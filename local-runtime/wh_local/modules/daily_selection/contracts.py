@@ -60,6 +60,24 @@ def _url(value: str, field_name: str) -> str:
     return candidate
 
 
+def _contract_records(
+    records: Sequence[Any], record_type: type[Any], field_name: str
+) -> tuple[Any, ...]:
+    """Parse untrusted nested mappings through their contract validators."""
+    parsed: list[Any] = []
+    for record in records:
+        if isinstance(record, record_type):
+            parsed.append(record)
+        elif isinstance(record, Mapping):
+            try:
+                parsed.append(record_type(**dict(record)))
+            except TypeError as error:
+                raise DailySelectionContractError(f"invalid {field_name} record") from error
+        else:
+            raise DailySelectionContractError(f"{field_name} records must be mappings or {record_type.__name__}")
+    return tuple(parsed)
+
+
 @dataclass(frozen=True)
 class ImageReference:
     """An image URL plus source-provided metadata; image bytes are never retained."""
@@ -152,10 +170,14 @@ class DailySelectionCandidate:
             object.__setattr__(self, "main_image_url", _url(self.main_image_url, "main_image_url"))
         object.__setattr__(self, "source_image_urls", tuple(_url(url, "source_image_urls") for url in self.source_image_urls))
         object.__setattr__(self, "source_detail_image_urls", tuple(_url(url, "source_detail_image_urls") for url in self.source_detail_image_urls))
-        object.__setattr__(self, "source_variant_records", tuple(self.source_variant_records))
+        object.__setattr__(
+            self,
+            "source_variant_records",
+            _contract_records(self.source_variant_records, SourceVariantRecord, "source_variant_records"),
+        )
         object.__setattr__(self, "selection_reasons", tuple(self.selection_reasons))
         object.__setattr__(self, "risk_tags", tuple(self.risk_tags))
-        object.__setattr__(self, "evidence", tuple(self.evidence))
+        object.__setattr__(self, "evidence", _contract_records(self.evidence, ApiEvidence, "evidence"))
         object.__setattr__(self, "captured_fields", tuple(self.captured_fields))
         object.__setattr__(self, "missing_capture_fields", tuple(self.missing_capture_fields))
         for field_name in ("source_attributes", "score_components", "raw_payload"):

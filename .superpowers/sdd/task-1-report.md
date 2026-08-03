@@ -67,3 +67,30 @@ conda run -n base python -m compileall -q local-runtime/wh_local/modules/daily_s
 ## 提交
 
 实现：`4e29a0b feat: add daily selection contracts and criteria`。
+
+## 审查修复
+
+### 修改
+
+- `DailySelectionCandidate` 现在会将嵌套映射强制解析为 `SourceVariantRecord` 和 `ApiEvidence`，因此 SKU 属性中的 `token` 与证据摘要中的 `Authorization` 会被既有安全过滤处理；SKU 图片字段中的 bytes 会在 URL 契约验证中被拒绝。
+- 关键词模式携带 `reference_image_url` 现在会抛出 `DailySelectionCriteriaError`。
+- `exclude_risks` 的非字符串元素现在会抛出 `DailySelectionCriteriaError`，不再泄露 `AttributeError`。
+
+### 覆盖测试
+
+先添加回归测试并运行：
+
+```sh
+conda run -n base python -m pytest local-runtime/tests/daily_selection/test_contracts.py local-runtime/tests/daily_selection/test_criteria.py -q
+```
+
+RED：退出码 1，`4 failed, 11 passed`。失败分别证明原始嵌套 SKU 映射未被解析、SKU 图片 bytes 未被拒绝、关键词模式允许参考图、以及 `exclude_risks` 抛出 `AttributeError`。
+
+实现最小修复后运行同一命令并附加编译检查：
+
+```sh
+conda run -n base python -m pytest local-runtime/tests/daily_selection/test_contracts.py local-runtime/tests/daily_selection/test_criteria.py -q
+conda run -n base python -m compileall -q local-runtime/wh_local/modules/daily_selection
+```
+
+GREEN：退出码 0，`15 passed in 0.03s`；编译检查退出码 0。

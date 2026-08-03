@@ -47,6 +47,14 @@ def test_image_request_rejects_invalid_reference_image_url() -> None:
         DailySelectionCriteria(collection_mode="image", reference_image_url="file:///tmp/tent.jpg")
 
 
+def test_keyword_request_rejects_reference_image_url() -> None:
+    with pytest.raises(DailySelectionCriteriaError, match="keyword mode"):
+        DailySelectionCriteria(
+            keywords=["帐篷"],
+            reference_image_url="https://images.example.com/tent.jpg",
+        )
+
+
 def test_price_range_requires_minimum_not_greater_than_maximum() -> None:
     with pytest.raises(DailySelectionCriteriaError, match="min_price"):
         DailySelectionCriteria(keywords=["帐篷"], min_price=200, max_price=100)
@@ -61,3 +69,8 @@ def test_api_budget_must_be_between_one_and_sixty(budget: int) -> None:
 def test_selection_scope_accepts_only_exact_or_divergent() -> None:
     with pytest.raises(DailySelectionCriteriaError, match="selection_scope"):
         DailySelectionCriteria(keywords=["帐篷"], selection_scope="similar")
+
+
+def test_exclude_risks_requires_strings() -> None:
+    with pytest.raises(DailySelectionCriteriaError, match="exclude_risks"):
+        DailySelectionCriteria(keywords=["帐篷"], exclude_risks=["侵权", 1])

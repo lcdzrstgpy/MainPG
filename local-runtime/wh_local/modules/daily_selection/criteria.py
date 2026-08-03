@@ -85,7 +85,7 @@ class DailySelectionCriteria:
         if mode == "image":
             object.__setattr__(self, "reference_image_url", _reference_image_url(self.reference_image_url))
         elif self.reference_image_url is not None:
-            object.__setattr__(self, "reference_image_url", _reference_image_url(self.reference_image_url))
+            raise DailySelectionCriteriaError("keyword mode cannot include reference_image_url")
 
         min_price = _number(self.min_price, "min_price")
         max_price = _number(self.max_price, "max_price")
@@ -101,7 +101,14 @@ class DailySelectionCriteria:
                 raise DailySelectionCriteriaError(f"{field_name} must be a positive integer")
         if isinstance(self.max_api_calls, bool) or not isinstance(self.max_api_calls, int) or not 1 <= self.max_api_calls <= 60:
             raise DailySelectionCriteriaError("max_api_calls must be between 1 and 60")
-        object.__setattr__(self, "exclude_risks", tuple(" ".join(value.split()) for value in self.exclude_risks if value.strip()))
+        normalized_risks: list[str] = []
+        for value in self.exclude_risks:
+            if not isinstance(value, str):
+                raise DailySelectionCriteriaError("exclude_risks must contain strings")
+            normalized = " ".join(value.split())
+            if normalized:
+                normalized_risks.append(normalized)
+        object.__setattr__(self, "exclude_risks", tuple(normalized_risks))
 
     @property
     def keyword_tags(self) -> tuple[str, ...]:

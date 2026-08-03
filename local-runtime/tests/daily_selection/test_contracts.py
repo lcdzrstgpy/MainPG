@@ -3,12 +3,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from wh_local.modules.daily_selection.contracts import (  # noqa: E402
     ApiEvidence,
     DailySelectionCandidate,
+    DailySelectionContractError,
     DailySelectionError,
     SourceVariantRecord,
 )
@@ -67,3 +70,46 @@ def test_error_contract_removes_sensitive_context() -> None:
     )
 
     assert error.context == {"request_id": "r-1"}
+
+
+def test_candidate_parses_nested_records_before_filtering_sensitive_fields() -> None:
+    candidate = DailySelectionCandidate(
+        candidate_id="candidate-2",
+        offer_id="offer-10",
+        source_platform="1688",
+        source_url="https://detail.1688.com/offer/10.html",
+        source_title="折叠椅",
+        main_image_url=None,
+        source_variant_records=[
+            {
+                "sku_id": "sku-blue",
+                "attributes": {"颜色": "蓝色", "token": "not-retained"},
+                "image_url": "https://img.example.com/blue.jpg",
+            }
+        ],
+        evidence=[
+            {
+                "provider": "1688",
+                "operation": "offer.detail",
+                "request_summary": {"Authorization": "not-retained", "offer_id": "offer-10"},
+            }
+        ],
+    )
+
+    assert isinstance(candidate.source_variant_records[0], SourceVariantRecord)
+    assert candidate.source_variant_records[0].attributes == {"颜色": "蓝色"}
+    assert isinstance(candidate.evidence[0], ApiEvidence)
+    assert candidate.evidence[0].request_summary == {"offer_id": "offer-10"}
+
+
+def test_candidate_rejects_binary_sku_image_in_raw_variant_record() -> None:
+    with pytest.raises(DailySelectionContractError, match="URL string"):
+        DailySelectionCandidate(
+            candidate_id="candidate-3",
+            offer_id="offer-11",
+            source_platform="1688",
+            source_url="https://detail.1688.com/offer/11.html",
+            source_title="收纳箱",
+            main_image_url=None,
+            source_variant_records=[{"sku_id": "sku-1", "image_url": b"not-an-image-url"}],
+        )
