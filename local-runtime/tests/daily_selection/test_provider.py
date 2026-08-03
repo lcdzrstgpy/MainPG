@@ -264,3 +264,44 @@ def test_image_download_rejects_local_or_private_image_hosts_without_calling_tra
     assert result.error is not None
     assert result.error.code == "invalid_request"
     assert transport.requests == []
+
+
+def test_image_download_does_not_follow_a_redirect_to_an_untrusted_target() -> None:
+    image_url = "https://images.example.test/redirect.jpg"
+    transport = FakeTransport(
+        {image_url: HttpResponse(status=302, body=b"", headers={"Location": "http://127.0.0.1/secret"})}
+    )
+    criteria = DailySelectionCriteria(collection_mode="image", reference_image_url=image_url)
+
+    result = provider(transport).search_by_image(criteria)
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "upstream_failed"
+    assert len(transport.requests) == 1
+
+
+def test_provider_rejects_credential_bearing_base_url_before_safe_summary_can_leak_it() -> None:
+    transport = FakeTransport({})
+
+    with pytest.raises(ValueError, match="base_url"):
+        provider(transport, base_url="https://user:secret@onebound.test/1688?token=unsafe")
+
+
+def test_provider_requires_a_boolean_enabled_configuration() -> None:
+    transport = FakeTransport({})
+
+    with pytest.raises(ValueError, match="enabled"):
+        provider(transport, enabled="false")
+
+
+def test_non_success_http_status_cannot_be_reclassified_as_empty_result() -> None:
+    transport = FakeTransport(
+        {endpoint("item_search"): response(fixture("1688_empty_result.json"), status=500)}
+    )
+
+    result = provider(transport).search_keyword(DailySelectionCriteria(keywords=["帐篷"]))
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "upstream_failed"

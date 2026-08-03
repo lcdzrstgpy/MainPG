@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from typing import Any, Mapping, Protocol
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlparse, urlunparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .contracts import ApiEvidence, DailySelectionError
 from .criteria import DailySelectionCriteria
@@ -64,6 +64,7 @@ class UrllibTransport:
 
     def __init__(self, *, max_response_bytes: int | None = None) -> None:
         self._max_response_bytes = max_response_bytes
+        self._opener = build_opener(_NoRedirect())
 
     def request(
         self,
@@ -79,7 +80,7 @@ class UrllibTransport:
         target = f"{url}?{query}" if query else url
         request = Request(target, data=body, headers=dict(headers or {}), method=method)
         try:
-            with urlopen(request, timeout=timeout) as upstream:  # noqa: S310 - explicitly configured API URL
+            with self._opener.open(request, timeout=timeout) as upstream:  # noqa: S310 - explicitly configured API URL
                 return HttpResponse(
                     status=upstream.status,
                     body=self._read_response(upstream),
@@ -98,6 +99,13 @@ class UrllibTransport:
         # Read one extra byte so callers can reject oversize images without
         # materialising the remainder of an untrusted remote response.
         return upstream.read(self._max_response_bytes + 1)
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    """Return redirects to the provider so an image target is never silently changed."""
+
+    def redirect_request(self, request: Request, fp: Any, code: int, message: str, headers: Any, newurl: str) -> None:
+        return None
 
 
 @dataclass(frozen=True)
@@ -128,7 +136,10 @@ class OneBound1688Provider:
         self._api_key = self._required_text(config, "api_key")
         self._api_secret = self._required_text(config, "api_secret")
         self._timeout_seconds = self._positive_number(config.get("timeout_seconds", 10), "timeout_seconds")
-        self._enabled = bool(config.get("enabled", True))
+        enabled = config.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+        self._enabled = enabled
         self._image_max_bytes = self._positive_integer(config.get("image_max_bytes", 5 * 1024 * 1024), "image_max_bytes")
         self._transport = transport or UrllibTransport(max_response_bytes=self._image_max_bytes)
 
@@ -363,7 +374,7 @@ class OneBound1688Provider:
         code = str(payload.get("code", "")).casefold()
         message = str(payload.get("msg", payload.get("message", ""))).casefold()
         signal = f"{code} {message}"
-        if code == "2000":
+        if 200 <= status < 300 and code == "2000":
             return "no_results"
         if 200 <= status < 300 and code in {"", "0", "200"}:
             return "success"
@@ -450,7 +461,14 @@ class OneBound1688Provider:
     def _required_url(cls, config: Mapping[str, Any], name: str) -> str:
         value = cls._required_text(config, name)
         parsed = urlparse(value)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
             raise ValueError(f"{name} must be an http or https URL")
         return value.rstrip("/")
 
