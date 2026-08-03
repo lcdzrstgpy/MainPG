@@ -8,6 +8,7 @@ retains downloaded image bytes beyond encoding the upload request.
 from __future__ import annotations
 
 import base64
+import http.client
 import ipaddress
 import json
 import re
@@ -16,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Mapping, Protocol
 from urllib.error import HTTPError
-from urllib.parse import urlencode, urlparse, urlunparse
+from urllib.parse import unquote, urlencode, urlparse, urlunparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .contracts import ApiEvidence, DailySelectionError
@@ -35,6 +36,7 @@ _SENSITIVE_MARKERS = (
 _INLINE_CREDENTIAL = re.compile(
     r"(?i)\b(api[_-]?key|secret|token|cookie|session|authorization)\s*[=:]\s*[^\s,;]+"
 )
+_SENSITIVE_VALUE = re.compile(r"(?i)(api[_-]?key|apikey|secret|token|cookie|session|authorization|\bbearer\s+\S+)")
 
 
 @dataclass(frozen=True)
@@ -56,7 +58,22 @@ class HttpTransport(Protocol):
         body: bytes | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float,
+        resolved_address: str | None = None,
     ) -> HttpResponse: ...
+
+
+class HostResolver(Protocol):
+    """Resolve a hostname once before a pinned reference-image connection."""
+
+    def resolve(self, hostname: str, port: int) -> tuple[str, ...]: ...
+
+
+class SocketHostResolver:
+    """Standard-library resolver that returns only numeric socket addresses."""
+
+    def resolve(self, hostname: str, port: int) -> tuple[str, ...]:
+        answers = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        return tuple(dict.fromkeys(answer[4][0] for answer in answers))
 
 
 class UrllibTransport:
@@ -75,9 +92,12 @@ class UrllibTransport:
         body: bytes | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float,
+        resolved_address: str | None = None,
     ) -> HttpResponse:
         query = urlencode({key: value for key, value in (params or {}).items() if value is not None})
         target = f"{url}?{query}" if query else url
+        if resolved_address is not None:
+            return self._request_pinned(method, target, body, headers, timeout, resolved_address)
         request = Request(target, data=body, headers=dict(headers or {}), method=method)
         try:
             with self._opener.open(request, timeout=timeout) as upstream:  # noqa: S310 - explicitly configured API URL
@@ -93,6 +113,50 @@ class UrllibTransport:
                 headers=dict(error.headers.items()),
             )
 
+    def _request_pinned(
+        self,
+        method: str,
+        target: str,
+        body: bytes | None,
+        headers: Mapping[str, str] | None,
+        timeout: float,
+        resolved_address: str,
+    ) -> HttpResponse:
+        """Connect to the checked numeric address, never re-resolving the hostname."""
+        parsed = urlparse(target)
+        hostname = parsed.hostname
+        if hostname is None:
+            raise ValueError("pinned request requires a hostname")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        request_target = urlunparse(("", "", parsed.path or "/", parsed.params, parsed.query, ""))
+        host_header = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+        if parsed.scheme == "https":
+            connection: http.client.HTTPConnection = _PinnedHTTPSConnection(
+                hostname, port, resolved_address, timeout
+            )
+        elif parsed.scheme == "http":
+            connection = http.client.HTTPConnection(resolved_address, port, timeout=timeout)
+        else:
+            raise ValueError("pinned request requires http or https")
+        try:
+            connection.putrequest(method, request_target, skip_host=True)
+            connection.putheader("Host", host_header)
+            for key, value in (headers or {}).items():
+                if key.casefold() != "host":
+                    connection.putheader(key, value)
+            connection.endheaders(body)
+            upstream = connection.getresponse()
+            try:
+                return HttpResponse(
+                    status=upstream.status,
+                    body=self._read_response(upstream),
+                    headers=dict(upstream.getheaders()),
+                )
+            finally:
+                upstream.close()
+        finally:
+            connection.close()
+
     def _read_response(self, upstream: Any) -> bytes:
         if self._max_response_bytes is None:
             return upstream.read()
@@ -106,6 +170,20 @@ class _NoRedirect(HTTPRedirectHandler):
 
     def redirect_request(self, request: Request, fp: Any, code: int, message: str, headers: Any, newurl: str) -> None:
         return None
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection with TLS verification for hostname but a fixed IP peer."""
+
+    def __init__(self, host: str, port: int, resolved_address: str, timeout: float) -> None:
+        super().__init__(host, port, timeout=timeout)
+        self._resolved_address = resolved_address
+
+    def connect(self) -> None:
+        self.sock = self._create_connection((self._resolved_address, self.port), self.timeout, self.source_address)
+        if self._tunnel_host:
+            self._tunnel()
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
 
 
 @dataclass(frozen=True)
@@ -131,7 +209,13 @@ class OneBound1688Provider:
 
     _provider_name = "onebound-1688"
 
-    def __init__(self, config: Mapping[str, Any], *, transport: HttpTransport | None = None) -> None:
+    def __init__(
+        self,
+        config: Mapping[str, Any],
+        *,
+        transport: HttpTransport | None = None,
+        resolver: HostResolver | None = None,
+    ) -> None:
         self._base_url = self._required_url(config, "base_url")
         self._api_key = self._required_text(config, "api_key")
         self._api_secret = self._required_text(config, "api_secret")
@@ -142,6 +226,7 @@ class OneBound1688Provider:
         self._enabled = enabled
         self._image_max_bytes = self._positive_integer(config.get("image_max_bytes", 5 * 1024 * 1024), "image_max_bytes")
         self._transport = transport or UrllibTransport(max_response_bytes=self._image_max_bytes)
+        self._resolver = resolver or SocketHostResolver()
 
     def safe_summary(self) -> Mapping[str, Any]:
         """Return diagnostic configuration without credentials or credential hints."""
@@ -164,6 +249,8 @@ class OneBound1688Provider:
         )
 
     def upload_reference_image(self, reference_image_url: str) -> ProviderCallResult:
+        if not self._enabled:
+            return self._local_error("upload_img", "provider_disabled", "provider is disabled")
         downloaded, download_audit, error = self._download_reference_image(reference_image_url)
         if error is not None:
             return ProviderCallResult(response={}, audits=(download_audit,), error=error)
@@ -184,6 +271,8 @@ class OneBound1688Provider:
     def search_by_image(self, criteria: DailySelectionCriteria) -> ProviderCallResult:
         if criteria.collection_mode != "image" or criteria.reference_image_url is None:
             return self._local_error("item_search_img", "invalid_request", "image criteria are required")
+        if not self._enabled:
+            return self._local_error("item_search_img", "provider_disabled", "provider is disabled")
         uploaded = self.upload_reference_image(criteria.reference_image_url)
         if not uploaded.ok:
             return uploaded
@@ -223,9 +312,30 @@ class OneBound1688Provider:
                 request_summary={"http_method": "GET", "source": "reference_image"},
             )
             return None, audit, self._error("invalid_request", "reference image URL must be a public http or https URL")
+        parsed = urlparse(reference_image_url)
+        hostname = parsed.hostname
+        try:
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError:
+            hostname = None
+            port = 0
+        resolved_address = self._resolve_public_address(hostname, port)
+        if resolved_address is None:
+            audit = self._audit(
+                "download_reference_image",
+                "invalid_request",
+                request_summary={"http_method": "GET", "image_url": safe_url},
+            )
+            return None, audit, self._error("invalid_request", "reference image URL must resolve to a public address")
         try:
             image = self._transport.request(
-                "GET", reference_image_url, params=None, body=None, headers=None, timeout=self._timeout_seconds
+                "GET",
+                reference_image_url,
+                params=None,
+                body=None,
+                headers=None,
+                timeout=self._timeout_seconds,
+                resolved_address=resolved_address,
             )
         except (TimeoutError, socket.timeout):
             audit = self._audit(
@@ -421,7 +531,8 @@ class OneBound1688Provider:
         redacted = value
         for credential in (self._api_key, self._api_secret):
             redacted = redacted.replace(credential, "[redacted]")
-        return _INLINE_CREDENTIAL.sub(lambda match: f"{match.group(1)}=[redacted]", redacted)
+        redacted = _INLINE_CREDENTIAL.sub(lambda match: f"{match.group(1)}=[redacted]", redacted)
+        return "[redacted]" if _SENSITIVE_VALUE.search(redacted) else redacted
 
     @staticmethod
     def _sensitive_key(key: object) -> bool:
@@ -438,17 +549,36 @@ class OneBound1688Provider:
         parsed = urlparse(value.strip())
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
             return None
-        if parsed.hostname.casefold() == "localhost":
+        hostname = parsed.hostname.rstrip(".").casefold()
+        if hostname == "localhost":
             return None
         try:
-            address = ipaddress.ip_address(parsed.hostname)
+            address = ipaddress.ip_address(hostname)
         except ValueError:
             address = None
-        if address is not None and (
-            address.is_private or address.is_loopback or address.is_link_local or address.is_reserved
-        ):
+        if address is not None and not address.is_global:
             return None
         return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+
+    def _resolve_public_address(self, hostname: str | None, port: int) -> str | None:
+        if not hostname or port < 1:
+            return None
+        normalized_host = hostname.rstrip(".")
+        try:
+            answers = self._resolver.resolve(normalized_host, port)
+        except (OSError, ValueError):
+            return None
+        if not answers:
+            return None
+        try:
+            addresses = tuple(ipaddress.ip_address(answer) for answer in answers)
+        except ValueError:
+            return None
+        # Reject mixed answers as well as each non-public address; the selected
+        # first address is passed to the transport, preventing DNS rebinding.
+        if any(not address.is_global for address in addresses):
+            return None
+        return str(addresses[0])
 
     @staticmethod
     def _required_text(config: Mapping[str, Any], name: str) -> str:
@@ -468,6 +598,7 @@ class OneBound1688Provider:
             or parsed.password
             or parsed.query
             or parsed.fragment
+            or _SENSITIVE_VALUE.search(unquote(parsed.path))
         ):
             raise ValueError(f"{name} must be an http or https URL")
         return value.rstrip("/")

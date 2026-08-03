@@ -75,4 +75,41 @@ git diff --check
 
 ## 疑虑
 
-无阻塞疑虑。标准库传输已禁止自动重定向；对于域名在 DNS 解析后指向私有地址的部署环境，建议在传输层增加组织网络策略或受控出站代理作为纵深防御。
+无阻塞疑虑。标准库传输已禁止自动重定向，且参考图下载现已在解析后检查地址并固定连接到已检查 IP；组织网络策略或受控出站代理仍可作为纵深防御。
+
+## 正式审查修复（追加）
+
+### RED 3：DNS 固定连接、值级脱敏与早停
+
+先在 `test_provider.py` 增加 hostname 解析到私网、已检查地址必须传给传输层、`localhost.`/非常规 IPv4、普通字段中的 token/Bearer 值、敏感 `base_url` 路径及禁用图片模式早停测试。命令：
+
+```bash
+conda run -n base python -m pytest local-runtime/tests/daily_selection/test_provider.py -q
+```
+
+实际结果：`23 failed in 0.14s`。首个明确失败为
+`OneBound1688Provider.__init__() got an unexpected keyword argument 'resolver'`，证明 Provider 当时尚无可注入的受控 DNS 解析/固定连接边界；其余新增测试同样无法执行该安全契约。
+
+### GREEN 3：固定 DNS 地址与安全摘要
+
+实现 `HostResolver` / `SocketHostResolver`，参考图下载先对标准库 DNS 的每个答案做 `ipaddress.is_global` 检查，拒绝 loopback、private、link-local、reserved、multicast 和 unspecified 地址；随后仅把第一个已检查的数值地址传给标准库传输。HTTP 直接连接该地址；HTTPS 连接同一地址并保留原 hostname 进行 TLS SNI/证书校验，因此不会因连接阶段重新解析 hostname 而被 DNS rebinding 绕过。
+
+同时：
+
+- 普通字符串只要含 Bearer 或 credential-like 标记即统一替换为 `[redacted]`，覆盖响应、审计及错误上下文；
+- `base_url` 含凭据、query、fragment 或经 URL 解码后含敏感路径成分时拒绝；
+- Provider 禁用时，图片模式和单独上传都会在下载前返回 `provider_disabled`。
+
+命令：
+
+```bash
+conda run -n base python -m pytest local-runtime/tests/daily_selection/test_provider.py -q
+```
+
+实际结果：`23 passed in 0.05s`。
+
+### 修复文件
+
+- `local-runtime/wh_local/modules/daily_selection/provider.py`
+- `local-runtime/tests/daily_selection/test_provider.py`
+- `.superpowers/sdd/task-2-report.md`

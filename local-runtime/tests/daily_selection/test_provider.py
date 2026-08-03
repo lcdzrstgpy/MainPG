@@ -41,6 +41,7 @@ class FakeTransport:
         body: bytes | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float,
+        resolved_address: str | None = None,
     ) -> HttpResponse:
         self.requests.append(
             {
@@ -50,6 +51,7 @@ class FakeTransport:
                 "body": body,
                 "headers": dict(headers or {}),
                 "timeout": timeout,
+                "resolved_address": resolved_address,
             }
         )
         selected = self.responses[url]
@@ -63,7 +65,19 @@ def response(payload: Mapping[str, Any], status: int = 200) -> HttpResponse:
     return HttpResponse(status=status, body=json.dumps(payload).encode("utf-8"))
 
 
-def provider(transport: FakeTransport, **overrides: Any) -> OneBound1688Provider:
+class FakeResolver:
+    def __init__(self, addresses: Mapping[str, tuple[str, ...]]) -> None:
+        self.addresses = dict(addresses)
+        self.calls: list[tuple[str, int]] = []
+
+    def resolve(self, hostname: str, port: int) -> tuple[str, ...]:
+        self.calls.append((hostname, port))
+        return self.addresses.get(hostname, ("93.184.216.34",))
+
+
+def provider(
+    transport: FakeTransport, *, resolver: FakeResolver | None = None, **overrides: Any
+) -> OneBound1688Provider:
     config = {
         "base_url": "https://onebound.test/1688",
         "api_key": "test-api-key",
@@ -73,7 +87,7 @@ def provider(transport: FakeTransport, **overrides: Any) -> OneBound1688Provider
         "image_max_bytes": 64,
     }
     config.update(overrides)
-    return OneBound1688Provider(config, transport=transport)
+    return OneBound1688Provider(config, transport=transport, resolver=resolver or FakeResolver({}))
 
 
 def endpoint(operation: str) -> str:
@@ -305,3 +319,87 @@ def test_non_success_http_status_cannot_be_reclassified_as_empty_result() -> Non
     assert result.ok is False
     assert result.error is not None
     assert result.error.code == "upstream_failed"
+
+
+def test_dns_resolved_private_image_host_is_rejected_before_transport() -> None:
+    image_url = "https://images.example.test/reference.jpg"
+    transport = FakeTransport({})
+    resolver = FakeResolver({"images.example.test": ("10.0.0.7",)})
+    criteria = DailySelectionCriteria(collection_mode="image", reference_image_url=image_url)
+
+    result = provider(transport, resolver=resolver).search_by_image(criteria)
+
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+    assert resolver.calls == [("images.example.test", 443)]
+    assert transport.requests == []
+
+
+def test_image_download_pins_the_checked_dns_address_for_transport() -> None:
+    image_url = "https://images.example.test/reference.jpg"
+    image_bytes = b"small-image-content"
+    transport = FakeTransport(
+        {
+            image_url: HttpResponse(status=200, body=image_bytes),
+            endpoint("upload_img"): response(fixture("1688_image_upload_success.json")),
+            endpoint("item_search_img"): response(fixture("1688_image_search_success.json")),
+        }
+    )
+    resolver = FakeResolver({"images.example.test": ("93.184.216.34",)})
+    criteria = DailySelectionCriteria(collection_mode="image", reference_image_url=image_url)
+
+    result = provider(transport, resolver=resolver).search_by_image(criteria)
+
+    assert result.ok is True
+    assert transport.requests[0]["resolved_address"] == "93.184.216.34"
+
+
+@pytest.mark.parametrize("hostname", ["localhost.", "0177.0.0.1"])
+def test_noncanonical_local_image_hosts_are_rejected_after_host_validation(hostname: str) -> None:
+    image_url = f"http://{hostname}/private.jpg"
+    transport = FakeTransport({})
+    resolver = FakeResolver({hostname.rstrip("."): ("127.0.0.1",)})
+    criteria = DailySelectionCriteria(collection_mode="image", reference_image_url=image_url)
+
+    result = provider(transport, resolver=resolver).search_by_image(criteria)
+
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+    assert transport.requests == []
+
+
+def test_sensitive_values_in_ordinary_fields_are_removed_from_response_audit_and_error() -> None:
+    payload = {
+        "code": 500,
+        "request_id": "upstream-token-must-not-escape",
+        "note": "Bearer token-value",
+        "data": {"items": []},
+    }
+    transport = FakeTransport({endpoint("item_search"): response(payload, status=500)})
+
+    result = provider(transport).search_keyword(DailySelectionCriteria(keywords=["帐篷"]))
+
+    assert result.error is not None
+    assert_no_sensitive_values({"response": result.response, "audit": result.audit, "error": result.error})
+    rendered = json.dumps({"response": result.response, "audit": result.audit, "error": result.error}, default=str)
+    assert "token-value" not in rendered
+    assert "Bearer" not in rendered
+
+
+def test_provider_rejects_sensitive_base_url_path_before_safe_summary() -> None:
+    transport = FakeTransport({})
+
+    with pytest.raises(ValueError, match="base_url"):
+        provider(transport, base_url="https://onebound.test/1688/api_key=unsafe")
+
+
+def test_disabled_image_provider_stops_before_downloading_reference_image() -> None:
+    image_url = "https://images.example.test/reference.jpg"
+    transport = FakeTransport({})
+    criteria = DailySelectionCriteria(collection_mode="image", reference_image_url=image_url)
+
+    result = provider(transport, enabled=False).search_by_image(criteria)
+
+    assert result.error is not None
+    assert result.error.code == "provider_disabled"
+    assert transport.requests == []
