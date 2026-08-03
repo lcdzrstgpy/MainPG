@@ -1,0 +1,8 @@
+{
+  "code": 2000,
+  "msg": "no result",
+  "request_id": "empty-001",
+  "data": {
+    "items": []
+  }
+}
