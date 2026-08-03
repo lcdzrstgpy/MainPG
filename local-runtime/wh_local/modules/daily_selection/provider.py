@@ -8,6 +8,7 @@ retains downloaded image bytes beyond encoding the upload request.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import re
 import socket
@@ -425,6 +426,16 @@ class OneBound1688Provider:
             return None
         parsed = urlparse(value.strip())
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            return None
+        if parsed.hostname.casefold() == "localhost":
+            return None
+        try:
+            address = ipaddress.ip_address(parsed.hostname)
+        except ValueError:
+            address = None
+        if address is not None and (
+            address.is_private or address.is_loopback or address.is_link_local or address.is_reserved
+        ):
             return None
         return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
 

@@ -250,3 +250,17 @@ def test_image_download_rejects_payload_larger_than_configured_limit() -> None:
     assert result.error is not None
     assert result.error.code == "image_too_large"
     assert len(transport.requests) == 1
+
+
+def test_image_download_rejects_local_or_private_image_hosts_without_calling_transport() -> None:
+    transport = FakeTransport({})
+    criteria = DailySelectionCriteria(
+        collection_mode="image", reference_image_url="http://127.0.0.1/private.jpg"
+    )
+
+    result = provider(transport).search_by_image(criteria)
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+    assert transport.requests == []
