@@ -38,3 +38,19 @@ conda run -n base python -m pytest local-runtime/tests/daily_selection -q
 
 - OneBound 的真实字段命名可能存在供应商版本差异；实现为常见别名提供了兼容路径，但任何新增字段仍应先补充脱敏夹具和 RED 测试。
 - 详情缺少时保持搜索字段和原有 API evidence；不生成猜测值。source_title 是候选契约的必填字段，因此无标题的搜索项会被跳过。
+
+## 审查修复（第 2 轮）
+
+- URL 域名检查已收紧为仅允许 `1688.com` 或 `*.1688.com`；`not1688.com` 这类后缀伪装域名不再被标准化为来源链接。
+- 详情补全的最终 `price_cny` 和 `min_order_quantity` 已参与 `missing_capture_fields` 重算，因此搜索阶段缺失、详情阶段补齐后不会继续标记为缺失。
+
+### TDD 证据
+
+RED：新增两条回归测试后，使用 Conda base 执行指定命令得到 `2 failed, 4 passed`：一条暴露 `not1688.com` 被接受，另一条暴露详情价格/MOQ 已存在但仍在缺失字段中。
+
+GREEN：
+
+```text
+conda run -n base python -m pytest local-runtime/tests/daily_selection/test_normalizer.py -q
+6 passed in 0.03s
+```

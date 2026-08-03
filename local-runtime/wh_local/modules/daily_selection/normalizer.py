@@ -93,6 +93,8 @@ def enrich_candidate_with_detail(
         candidate.missing_capture_fields,
         {
             "main_image_url": main_image,
+            "price_cny": price,
+            "min_order_quantity": moq,
             "source_image_urls": product_images,
             "source_detail_image_urls": detail_images,
             "source_attributes": attributes,
@@ -205,7 +207,8 @@ def _canonical_1688_url(value: str | None, offer_id: str | None) -> str | None:
     if candidate:
         parsed = urlparse(candidate)
         hostname = (parsed.hostname or "").casefold()
-        if parsed.scheme in {"http", "https"} and hostname.endswith("1688.com") and parsed.path:
+        is_1688_host = hostname == "1688.com" or hostname.endswith(".1688.com")
+        if parsed.scheme in {"http", "https"} and is_1688_host and parsed.path:
             return urlunparse(("https", parsed.netloc.casefold(), parsed.path, "", "", ""))
     if offer_id:
         return f"https://detail.1688.com/{offer_id}.html"

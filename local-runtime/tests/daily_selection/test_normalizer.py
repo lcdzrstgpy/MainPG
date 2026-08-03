@@ -148,6 +148,36 @@ def test_normalizer_records_absences_and_uses_canonical_url_when_offer_id_is_mis
     )
 
 
+def test_search_rejects_lookalike_non_1688_source_domain() -> None:
+    payload = fixture("1688_keyword_search_success.json")
+    payload["data"]["items"] = [
+        {
+            "detail_url": "https://not1688.com/offer/fallback.html",
+            "title": "伪装来源商品",
+        }
+    ]
+
+    assert normalize_search_response(payload) == ()
+
+
+def test_detail_price_and_moq_clear_search_missing_capture_fields() -> None:
+    payload = search_payload()
+    item = payload["data"]["items"][0]
+    del item["price"]
+    del item["moq"]
+    candidate = normalize_search_response(payload)[0]
+    detail = fixture("1688_item_get_success.json")
+    detail["data"]["moq"] = "4"
+
+    enriched = enrich_candidate_with_detail(candidate, detail, evidence=detail_evidence())
+
+    assert {"price_cny", "min_order_quantity"} <= set(candidate.missing_capture_fields)
+    assert enriched.price_cny == 19.9
+    assert enriched.min_order_quantity == 4
+    assert "price_cny" not in enriched.missing_capture_fields
+    assert "min_order_quantity" not in enriched.missing_capture_fields
+
+
 def test_image_caps_and_recursive_sanitization_never_retain_binary_data() -> None:
     candidate = normalize_search_response(search_payload())[0]
     payload = fixture("1688_item_get_success.json")
