@@ -54,6 +54,36 @@ The same boundary applies to sourcing: collect discovery evidence only. Keep
 credentials in the local host process configuration; do not paste them into
 the extension or capture payloads.
 
+## SQLite database integration
+
+The module uses the host workbench SQLite database (the same `database_path`
+injected by the local runtime). Its data must not be stored in the
+`daily_selection_*` or `data_collection_plugin_*` tables: the lifecycle,
+workspace isolation, and security requirements are different.
+
+On first construction, `PriceVerificationRepository` applies
+`migrations/001_price_verification.sql`. A database integration or migration
+owner must include this migration when provisioning/upgrading a workbench
+database. It creates these module-owned tables:
+
+- `price_verification_pairing_codes`: short-lived, single-use pairing-code
+  digests; plaintext codes are never stored.
+- `price_verification_plugin_sessions` and
+  `price_verification_plugin_commands`: browser sessions, command leases,
+  redacted payloads, and results.
+- `price_verification_provider_budgets`: per-workspace, credential-fingerprint,
+  Shanghai-date provider budget accounting.
+- `price_verification_quote_runs` and `price_verification_quote_items`:
+  immutable Temu quote snapshots.
+- `price_verification_sourcing_runs` and
+  `price_verification_source_candidates`: sourcing snapshots, candidates, and
+  employee-side decisions.
+
+All eight tables require `workspace_id`-scoped reads and writes. The shared
+SQLite connection configuration must keep WAL mode, foreign keys, and a busy
+timeout enabled. Do not add platform credentials, pairing codes, plugin
+session tokens, or unredacted raw plugin payloads to these tables.
+
 ## Verification boundary
 
 Python tests use saved fixtures under
