@@ -28,6 +28,7 @@ def create_database(database_url: str | None = None) -> ProfitActivityDatabase:
     if parsed.drivername == "sqlite":
         _configure_sqlite(engine)
     Base.metadata.create_all(engine)
+    _migrate_legacy_tables(engine)
     return ProfitActivityDatabase(engine=engine, sessions=sessionmaker(engine, expire_on_commit=False))
 
 
@@ -47,3 +48,28 @@ def _configure_sqlite(engine: Engine) -> None:
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
+
+
+def _migrate_legacy_tables(engine: Engine) -> None:
+    """Keep local databases created by earlier module versions usable."""
+    additions = {
+        "profit_activity_settings": {"save_root": "TEXT NOT NULL DEFAULT ''"},
+        "profit_activity_records": {
+            "visibility": "TEXT NOT NULL DEFAULT 'shared'",
+            "created_by": "INTEGER NOT NULL DEFAULT 1",
+            "created_by_username": "TEXT NOT NULL DEFAULT 'local'",
+            "image_path": "TEXT NOT NULL DEFAULT ''",
+            "source_image_path": "TEXT NOT NULL DEFAULT ''",
+            "source_groups_json": "TEXT NOT NULL DEFAULT '[]'",
+            "source_url": "TEXT NOT NULL DEFAULT ''",
+            "refund_rate": "NUMERIC NOT NULL DEFAULT 0",
+        },
+    }
+    if engine.dialect.name != "sqlite":
+        return
+    with engine.begin() as connection:
+        for table, columns in additions.items():
+            existing = {row[1] for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")}
+            for name, definition in columns.items():
+                if name not in existing:
+                    connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
