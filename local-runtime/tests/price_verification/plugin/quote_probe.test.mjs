@@ -28,7 +28,8 @@ test("quote filter excludes write endpoint", () => {
     isAllowedQuoteResponse({ url: "https://evil.example/api/batch/info/query" }),
     false,
   );
-  for (const path of ["/api/price/reject", "/api/price/cancel", "/api/price/modify", "/api/cart/query", "/api/set-price"]) {
+  assert.equal(isAllowedQuoteResponse({ url: "http://seller.temu.com/api/bargain-no-bom/batch/info/query" }), false);
+  for (const path of ["/api/price/reject", "/api/price/cancel", "/api/price/modify", "/api/cart/query", "/api/set-price", "/api/price/confirm", "/api/price/edit", "/api/batch/delist", "/api/payment/query", "/api/inventory/query", "/api/stock/query"]) {
     assert.equal(isAllowedQuoteResponse({ url: `https://seller.temu.com${path}` }), false, path);
   }
 });

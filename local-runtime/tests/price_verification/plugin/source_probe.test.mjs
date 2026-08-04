@@ -6,7 +6,9 @@ import test from "node:test";
 const require = createRequire(import.meta.url);
 const extensionRoot = path.resolve(import.meta.dirname, "../../../wh_local/price_verification/plugin/extension");
 const {
+  bindSourceTaskEvidence,
   extractSpecialSaleCards,
+  sourceSearchUrl,
   verify1688Sku,
 } = require(path.join(extensionRoot, "page_probe.js"));
 const { sanitizeResult } = require(path.join(extensionRoot, "network_probe_utils.js"));
@@ -82,6 +84,45 @@ test("source result retains the image and SKC binding plus SKU verification per 
         sku_verification: [{ sku_attributes: "Black", price: 12.5, moq: 2, domestic_freight: 8 }],
         candidates: [],
       }],
+    },
+  );
+});
+
+test("source task navigates with its image and SKC then only returns bound evidence", () => {
+  const task = {
+    task_key: "SKC-1",
+    skc_id: "SKC-1",
+    main_image_url: "https://images.example/sku-1.jpg",
+    source_quote_keys: ["SKC-1:SKU-1"],
+  };
+  assert.equal(
+    sourceSearchUrl(task),
+    "https://s.1688.com/selloffer/offer_search.htm?image_url=https%3A%2F%2Fimages.example%2Fsku-1.jpg&skc_id=SKC-1",
+  );
+  assert.deepEqual(
+    bindSourceTaskEvidence(task, {
+      candidates: [
+        { offer_id: "1", source_skc_id: "SKC-1", price: null, moq: null, main_image_url: "https://img.1688.com/1.jpg" },
+        { offer_id: "2", source_skc_id: "SKC-2", price: 8, moq: 1, main_image_url: "https://img.1688.com/2.jpg" },
+      ],
+      sku_verification: [{ sku_attributes: "Black", price: 12.5, moq: 2, domestic_freight: 8 }],
+    }),
+    {
+      task_key: "SKC-1",
+      skc_id: "SKC-1",
+      main_image_url: "https://images.example/sku-1.jpg",
+      source_quote_keys: ["SKC-1:SKU-1"],
+      candidates: [{
+        offer_id: "1",
+        source_skc_id: "SKC-1",
+        price: 12.5,
+        moq: 2,
+        domestic_freight: 8,
+        main_image_url: "https://img.1688.com/1.jpg",
+        sku_attributes: "Black",
+        variants: ["Black"],
+      }],
+      sku_verification: [{ sku_attributes: "Black", price: 12.5, moq: 2, domestic_freight: 8 }],
     },
   );
 });

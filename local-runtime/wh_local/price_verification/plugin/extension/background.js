@@ -70,6 +70,11 @@ async function collectSources(payload) {
       main_image_url: String(task && task.main_image_url || ""),
       source_quote_keys: Array.isArray(task && task.source_quote_keys) ? task.source_quote_keys : [],
     };
+    const searchUrl = PriceVerificationPageProbe.sourceSearchUrl(boundTask);
+    if (!searchUrl) throw new Error("source task requires an image URL and SKC ID");
+    const sourcePageReady = waitForSourceSearchPage(tab.id);
+    await chrome.tabs.update(tab.id, { url: searchUrl });
+    await sourcePageReady;
     const evidence = await runPageProbe(tab, (sourceTask) => globalThis.PriceVerificationPageProbe.sourceEvidenceFromPage(sourceTask), [boundTask]);
     items.push({ ...boundTask, status: "succeeded", candidates: evidence.candidates || [], sku_verification: evidence.sku_verification || [] });
   }
@@ -81,6 +86,19 @@ async function runPageProbe(tab, func, args) {
   await chrome.scripting.executeScript({ target, files: ["network_probe_utils.js", "page_probe.js"] });
   const [result] = await chrome.scripting.executeScript({ target, func, args: args || [] });
   return result && result.result ? result.result : {};
+}
+
+async function waitForSourceSearchPage(tabId) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => { chrome.tabs.onUpdated.removeListener(onUpdated); reject(new Error("1688 source search page did not finish loading")); }, 15_000);
+    const onUpdated = (updatedTabId, change) => {
+      if (updatedTabId !== tabId || change.status !== "complete") return;
+      clearTimeout(timeout);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+  });
 }
 
 function boundedWait(value, fallback) { const parsed = Number(value); return Number.isFinite(parsed) ? Math.max(500, Math.min(Math.trunc(parsed), 15_000)) : fallback; }
