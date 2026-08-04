@@ -11,11 +11,24 @@ from typing import Any, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .contracts import PluginCommandRequest, PriceVerificationContractError, safe_json_dumps
+from .contracts import (
+    ALLOWED_PLUGIN_COMMAND_TYPES,
+    PluginCommandRequest,
+    PriceVerificationContractError,
+    safe_json_dumps,
+)
 
 
 class PriceVerificationNotFound(LookupError):
     """Resource was not found in the caller's workspace."""
+
+
+class PairingCodeConsumed(PermissionError):
+    """A pairing credential has already been consumed."""
+
+
+class PairingCodeExpired(PermissionError):
+    """A pairing credential has passed its short validity window."""
 
 
 class _Record(BaseModel):
@@ -160,6 +173,39 @@ class PriceVerificationRepository:
             )
         return self.get_pairing_code(workspace_id=workspace_id, pairing_id=pairing_id)
 
+    def consume_pairing_code(self, *, code_sha256: str, now: str) -> PairingCodeRecord:
+        """Atomically validate and consume a hashed pairing credential."""
+        code_sha256 = _digest(code_sha256, "code_sha256")
+        now = _required_text(now, "now")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM price_verification_pairing_codes WHERE code_sha256 = ?",
+                (code_sha256,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise PriceVerificationNotFound("pairing code not found")
+            if row["used_at"] is not None:
+                connection.rollback()
+                raise PairingCodeConsumed("pairing code has already been used")
+            if str(row["expires_at"]) <= now:
+                connection.rollback()
+                raise PairingCodeExpired("pairing code has expired")
+            if connection.execute(
+                """UPDATE price_verification_pairing_codes SET used_at = ?
+                WHERE pairing_id = ? AND used_at IS NULL""",
+                (now, row["pairing_id"]),
+            ).rowcount != 1:
+                connection.rollback()
+                raise PairingCodeConsumed("pairing code has already been used")
+            row = connection.execute(
+                "SELECT * FROM price_verification_pairing_codes WHERE pairing_id = ?",
+                (row["pairing_id"],),
+            ).fetchone()
+            connection.commit()
+        return PairingCodeRecord(**dict(row))
+
     def create_plugin_session(
         self,
         *,
@@ -213,6 +259,33 @@ class PriceVerificationRepository:
             raise PriceVerificationNotFound("plugin session not found")
         return _session_record(row)
 
+    def list_plugin_sessions(self, *, workspace_id: str) -> tuple[PluginSessionRecord, ...]:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM price_verification_plugin_sessions
+                WHERE workspace_id = ? ORDER BY last_seen_at DESC, session_id""",
+                (workspace_id,),
+            ).fetchall()
+        return tuple(_session_record(row) for row in rows)
+
+    def touch_plugin_session(
+        self, *, workspace_id: str, session_id: str, now: str
+    ) -> PluginSessionRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        session_id = _required_text(session_id, "session_id")
+        now = _required_text(now, "now")
+        with self._connect() as connection:
+            self._owned_row_in(
+                connection, "price_verification_plugin_sessions", workspace_id, "session_id", session_id
+            )
+            connection.execute(
+                """UPDATE price_verification_plugin_sessions
+                SET last_seen_at = ?, status = 'connected' WHERE session_id = ?""",
+                (now, session_id),
+            )
+        return self.get_plugin_session(workspace_id=workspace_id, session_id=session_id)
+
     def create_command(
         self,
         *,
@@ -261,6 +334,128 @@ class PriceVerificationRepository:
             "price_verification_plugin_commands", workspace_id, "command_id", command_id
         )
         return _command_record(row)
+
+    def lease_plugin_commands(
+        self,
+        *,
+        workspace_id: str,
+        session_id: str,
+        command_types: Sequence[str],
+        now: str,
+        lease_expires_at: str,
+        limit: int,
+    ) -> tuple[PluginCommandRecord, ...]:
+        """Lease queued or expired commands owned by one workspace session."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        session_id = _required_text(session_id, "session_id")
+        now = _required_text(now, "now")
+        lease_expires_at = _required_text(lease_expires_at, "lease_expires_at")
+        types = tuple(dict.fromkeys(str(value) for value in command_types))
+        if not types or any(value not in ALLOWED_PLUGIN_COMMAND_TYPES for value in types):
+            raise PriceVerificationContractError("unsupported plugin command type")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            raise ValueError("limit must be between 1 and 50")
+        marks = ",".join("?" for _ in types)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._owned_row_in(
+                connection, "price_verification_plugin_sessions", workspace_id, "session_id", session_id
+            )
+            rows = connection.execute(
+                f"""SELECT command_id FROM price_verification_plugin_commands
+                WHERE workspace_id = ? AND session_id = ? AND command_type IN ({marks})
+                  AND (status = 'queued' OR (status IN ('leased', 'running')
+                       AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?))
+                ORDER BY created_at, command_id LIMIT ?""",
+                (workspace_id, session_id, *types, now, limit),
+            ).fetchall()
+            command_ids = tuple(str(row["command_id"]) for row in rows)
+            if command_ids:
+                id_marks = ",".join("?" for _ in command_ids)
+                connection.execute(
+                    f"""UPDATE price_verification_plugin_commands
+                    SET status = 'leased', lease_expires_at = ?, updated_at = ?
+                    WHERE command_id IN ({id_marks})""",
+                    (lease_expires_at, now, *command_ids),
+                )
+            connection.execute(
+                """UPDATE price_verification_plugin_sessions
+                SET last_seen_at = ?, status = 'connected' WHERE session_id = ?""",
+                (now, session_id),
+            )
+            leased = (
+                connection.execute(
+                    f"""SELECT * FROM price_verification_plugin_commands
+                    WHERE command_id IN ({','.join('?' for _ in command_ids)})
+                    ORDER BY created_at, command_id""",
+                    command_ids,
+                ).fetchall()
+                if command_ids
+                else ()
+            )
+            connection.commit()
+        return tuple(_command_record(row) for row in leased)
+
+    def record_plugin_result(
+        self,
+        *,
+        workspace_id: str,
+        session_id: str,
+        command_id: str,
+        status: str,
+        result: Mapping[str, Any],
+        now: str,
+        lease_expires_at: str | None = None,
+    ) -> PluginCommandRecord:
+        """Persist a validated result only while the caller owns a live lease."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        session_id = _required_text(session_id, "session_id")
+        command_id = _required_text(command_id, "command_id")
+        now = _required_text(now, "now")
+        if status not in {"running", "succeeded", "failed"}:
+            raise PriceVerificationContractError("unsupported command status")
+        if status == "running":
+            lease_expires_at = _required_text(lease_expires_at, "lease_expires_at")
+        elif lease_expires_at is not None:
+            raise ValueError("terminal command results cannot retain a lease")
+        if not isinstance(result, Mapping):
+            raise PriceVerificationContractError("result must be a mapping")
+        serialized_result = safe_json_dumps(result)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT * FROM price_verification_plugin_commands
+                WHERE command_id = ? AND workspace_id = ? AND session_id = ?""",
+                (command_id, workspace_id, session_id),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise PriceVerificationNotFound("plugin command not found")
+            if row["command_type"] not in ALLOWED_PLUGIN_COMMAND_TYPES:
+                connection.rollback()
+                raise PriceVerificationContractError("unsupported plugin command type")
+            if row["status"] in {"succeeded", "failed"}:
+                connection.rollback()
+                raise ValueError("command is already complete")
+            if row["lease_expires_at"] is None or str(row["lease_expires_at"]) <= now:
+                connection.rollback()
+                raise ValueError("command lease has expired")
+            connection.execute(
+                """UPDATE price_verification_plugin_commands
+                SET status = ?, result_json = ?, lease_expires_at = ?, updated_at = ?
+                WHERE command_id = ?""",
+                (status, serialized_result, lease_expires_at, now, command_id),
+            )
+            connection.execute(
+                """UPDATE price_verification_plugin_sessions
+                SET last_seen_at = ?, status = 'connected' WHERE session_id = ?""",
+                (now, session_id),
+            )
+            record = connection.execute(
+                "SELECT * FROM price_verification_plugin_commands WHERE command_id = ?", (command_id,)
+            ).fetchone()
+            connection.commit()
+        return _command_record(record)
 
     def create_quote_run(
         self,
