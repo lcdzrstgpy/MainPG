@@ -8,7 +8,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from wh_local.price_verification.quote_normalizer import QuoteItem  # noqa: E402
-from wh_local.price_verification.sourcing.normalizer import normalize_source_candidate  # noqa: E402
+from wh_local.price_verification.sourcing.normalizer import (  # noqa: E402
+    canonical_source_url,
+    normalize_source_candidate,
+    normalize_source_candidates,
+)
 
 
 def quote(*, sku_attributes: str = "红色") -> QuoteItem:
@@ -53,3 +57,35 @@ def test_explicit_variant_conflict_is_review_not_recommendation() -> None:
     assert candidate["product_evidence_status"] == "compatible"
     assert candidate["sku_evidence_status"] == "conflict"
     assert candidate["source_decision"] == "review"
+
+
+def test_lookalike_1688_host_is_not_canonicalized_or_deduplicated() -> None:
+    candidates = normalize_source_candidates(
+        quote(),
+        [
+            {"url": "https://detail.1688.com/offer/12345.html", "title": "同款收纳盒 红色", "variants": ["红色"], "price": 10, "freight": 2},
+            {"url": "https://not1688.com/offer/12345.html", "title": "同款收纳盒 红色", "variants": ["红色"], "price": 10, "freight": 2},
+        ],
+    )
+
+    assert canonical_source_url("https://not1688.com/offer/12345.html") == "https://not1688.com/offer/12345.html"
+    assert len(candidates) == 2
+
+
+def test_explicit_nonpositive_moq_requires_review_but_missing_moq_defaults() -> None:
+    absent_moq = normalize_source_candidate(
+        quote(), {"title": "同款收纳盒 红色", "variants": ["红色"], "price": 10, "freight": 2}
+    )
+    zero_moq = normalize_source_candidate(
+        quote(), {"title": "同款收纳盒 红色", "variants": ["红色"], "price": 10, "freight": 2, "moq": 0}
+    )
+    negative_moq = normalize_source_candidate(
+        quote(), {"title": "同款收纳盒 红色", "variants": ["红色"], "price": 10, "freight": 2, "moq": -2}
+    )
+
+    assert absent_moq["moq"] == 1.0
+    assert absent_moq["source_decision"] == "recommended"
+    assert zero_moq["moq"] is None
+    assert zero_moq["source_decision"] == "review"
+    assert negative_moq["moq"] is None
+    assert negative_moq["source_decision_reason"] == "invalid_moq"

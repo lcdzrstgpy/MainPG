@@ -75,7 +75,16 @@ class SourcingService:
         if not resolved_quote_run_id:
             raise PriceVerificationContractError("quote_run_id is required")
         quotes = self._repository.get_quote_run(workspace_id=actor.workspace_id, run_id=resolved_quote_run_id).items
-        preview = build_source_preview(quotes, persisted.result)
+        source_result: Mapping[str, Any] = persisted.result
+        parent_run_id = _text(persisted.payload.get("retry_of_sourcing_run_id"))
+        if parent_run_id:
+            parent_run = self._repository.get_sourcing_run(
+                workspace_id=actor.workspace_id, run_id=parent_run_id
+            )
+            if parent_run.quote_run_id != resolved_quote_run_id:
+                raise PriceVerificationContractError("retry source run must use the same quote run")
+            source_result = _merge_retry_source_result(self.preview(actor, parent_run_id), persisted.result)
+        preview = build_source_preview(quotes, source_result)
         snapshots: list[dict[str, Any]] = []
         for item in preview["items"]:
             quote_key = str(item["quote_key"])
@@ -229,6 +238,33 @@ def _result_items_by_quote_key(source_result: Mapping[str, Any] | None) -> dict[
             if key and key not in output:
                 output[key] = entry
     return output
+
+
+def _merge_retry_source_result(
+    parent_preview: Mapping[str, Any], retry_result: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Overlay returned retry items without losing terminal parent snapshots."""
+    retry_by_key = _result_items_by_quote_key(retry_result)
+    entries: list[dict[str, Any]] = []
+    parent_items = parent_preview.get("items")
+    if not isinstance(parent_items, list):
+        parent_items = []
+    for parent in parent_items:
+        if not isinstance(parent, Mapping):
+            continue
+        quote_key = _text(parent.get("quote_key"))
+        replacement = retry_by_key.get(quote_key) or retry_by_key.get(_text(parent.get("skc_id")))
+        if replacement is not None:
+            entries.append(dict(replacement))
+            continue
+        candidates = parent.get("all_candidates")
+        entries.append({
+            "quote_key": quote_key,
+            "status": _text(parent.get("source_search_status")) or "succeeded",
+            "error": _text(parent.get("source_search_error")),
+            "candidates": list(candidates) if isinstance(candidates, list) else [],
+        })
+    return {"items": entries}
 
 
 def _counts(items: Sequence[Mapping[str, Any]]) -> dict[str, int]:

@@ -26,20 +26,20 @@ def normalize_source_candidate(
     title = _first_text(raw_candidate, "source_title", "title", "product_title", "name")
     variants = _variants(raw_candidate)
     price = _number(raw_candidate, "price", "price_cny", "unit_price", "unit_price_cny", "sku_price")
-    moq = _number(raw_candidate, "moq", "minimum_order_quantity", "min_order_quantity") or 1.0
+    moq, moq_status = _moq(raw_candidate)
     freight = _number(raw_candidate, "freight", "freight_cny", "domestic_freight", "domestic_freight_cny")
     weight = _number(raw_candidate, "weight", "weight_kg")
     product_status, product_evidence = evaluate_product_evidence(quote, raw_candidate)
     sku_status, sku_evidence = evaluate_sku_evidence(quote, raw_candidate)
     costs = None
-    if price is not None and price > 0:
+    if price is not None and price > 0 and moq is not None:
         try:
             costs = calculate_candidate_costs(
                 CandidateCostInputs(price=price, moq=moq, domestic_freight=freight)
             ).to_payload()
         except ValueError:
             costs = None
-    decision, reason = _decision(product_status, sku_status, price, costs)
+    decision, reason = _decision(product_status, sku_status, price, costs, moq_status)
     candidate_key = _first_text(raw_candidate, "candidate_key", "id", "candidate_id") or offer_id or source_url or title
     return {
         "quote_key": quote_key,
@@ -52,6 +52,7 @@ def normalize_source_candidate(
         "sku_attributes": _first_text(raw_candidate, "sku_attributes", "sku_attribute_text", "source_sku_attributes"),
         "price": price,
         "moq": moq,
+        "moq_status": moq_status,
         "domestic_freight": freight,
         "weight_kg": weight,
         "product_evidence_status": product_status,
@@ -93,7 +94,7 @@ def canonical_source_url(value: object, offer_id: str = "") -> str:
     except ValueError:
         return ""
     product_id = product_id or offer_id_from_url(url)
-    if parts.netloc.casefold().endswith("1688.com") and product_id:
+    if _is_1688_host(parts.hostname) and product_id:
         return f"https://detail.1688.com/offer/{product_id}.html"
     blocked = {"token", "access_token", "session", "sessionid", "sid", "authorization", "auth", "password", "secret", "key"}
     query = [(key, item) for key, item in parse_qsl(parts.query, keep_blank_values=True) if key.casefold() not in blocked]
@@ -101,11 +102,22 @@ def canonical_source_url(value: object, offer_id: str = "") -> str:
 
 
 def offer_id_from_url(value: str) -> str:
+    try:
+        host = urlsplit(value).hostname
+    except ValueError:
+        return ""
+    if not _is_1688_host(host):
+        return ""
     match = re.search(r"(?:offer/|offerId=|offer_id=)(\d{3,})", value, flags=re.IGNORECASE)
     return match.group(1) if match else ""
 
 
-def _decision(product_status: str, sku_status: str, price: float | None, costs: Mapping[str, Any] | None) -> tuple[str, str]:
+def _is_1688_host(host: str | None) -> bool:
+    normalized = host.casefold().rstrip(".") if isinstance(host, str) else ""
+    return normalized == "1688.com" or normalized.endswith(".1688.com")
+
+
+def _decision(product_status: str, sku_status: str, price: float | None, costs: Mapping[str, Any] | None, moq_status: str) -> tuple[str, str]:
     # A detected SKU contradiction remains useful review evidence even when
     # the short result title cannot independently prove the product identity.
     # Image search intentionally starts from the quote image, so withholding it
@@ -119,6 +131,8 @@ def _decision(product_status: str, sku_status: str, price: float | None, costs: 
         return "review", "missing_compatible_product_evidence"
     if sku_status != "compatible":
         return "sku_validation", "sku_attributes_need_validation"
+    if moq_status == "invalid":
+        return "review", "invalid_moq"
     if price is None or price <= 0:
         return "review", "missing_sku_price"
     if not costs or costs.get("cost_status") != "closed":
@@ -150,18 +164,34 @@ def _number(raw: Mapping[str, Any], *keys: str) -> float | None:
         value = raw.get(key)
         if value is None or isinstance(value, bool):
             continue
-        if isinstance(value, str):
-            match = re.search(r"-?\d+(?:\.\d+)?", value.replace(",", ""))
-            if not match:
-                continue
-            value = match.group(0)
-        try:
-            number = Decimal(str(value))
-        except (InvalidOperation, ValueError):
-            continue
-        if number.is_finite() and number >= 0:
-            return float(number)
+        number = _parsed_number(value)
+        if number is not None and number >= 0:
+            return number
     return None
+
+
+def _moq(raw: Mapping[str, Any]) -> tuple[float | None, str]:
+    for key in ("moq", "minimum_order_quantity", "min_order_quantity"):
+        if key not in raw or raw[key] is None:
+            continue
+        number = _parsed_number(raw[key])
+        return (number, "provided") if number is not None and number > 0 else (None, "invalid")
+    return 1.0, "defaulted"
+
+
+def _parsed_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        match = re.search(r"-?\d+(?:\.\d+)?", value.replace(",", ""))
+        if not match:
+            return None
+        value = match.group(0)
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return float(number) if number.is_finite() else None
 
 
 def _first_text(raw: Mapping[str, Any], *keys: str) -> str:
