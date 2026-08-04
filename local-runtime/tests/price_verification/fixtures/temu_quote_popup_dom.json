@@ -1,0 +1,40 @@
+{
+  "records": [
+    {
+      "url": "https://seller.temu.com/api/bargain-no-bom/batch/info/query",
+      "status": 200,
+      "capturedAt": "2026-08-04T09:30:00Z",
+      "responseJson": {
+        "data": {
+          "priceReviewItemList": [
+            {
+              "skcId": "SKC-1001",
+              "productSkuId": "SKU-2001",
+              "productId": "SPU-3001",
+              "siteName": "美国站",
+              "orderStatus": "待卖家确认",
+              "supplyPrice": "20.00",
+              "productName": "Canvas travel bag",
+              "mainImageUrl": "https://images.example/1001.jpg"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "actions": {"batch_price_popup": {"ok": true}},
+  "dom": {
+    "dialog_present": true,
+    "rows": [
+      {
+        "source": "batch_price_popup",
+        "capturedAt": "2026-08-04T09:30:02Z",
+        "cellsByHeader": {
+          "SKC ID": "SKC-1001",
+          "SKU ID": "SKU-2001",
+          "调整后申报价格(CNY)": "¥18.90"
+        }
+      }
+    ]
+  }
+}
