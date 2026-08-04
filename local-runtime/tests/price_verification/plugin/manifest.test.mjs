@@ -19,11 +19,11 @@ test("manifest is limited to sourcing hosts", () => {
   assert.ok(manifest.host_permissions.some((host) => host.includes("*.temu.com")));
   assert.ok(manifest.host_permissions.some((host) => host.includes("1688.com")));
   assert.deepEqual(manifest.host_permissions.sort(), [
-    "http://127.0.0.1/*",
-    "http://localhost/*",
     "https://*.1688.com/*",
     "https://*.temu.com/*",
+    "https://127.0.0.1/*",
     "https://1688.com/*",
+    "https://localhost/*",
   ]);
   assert.ok(!JSON.stringify(manifest).toLowerCase().includes("dianxiaomi"));
   assert.ok(!JSON.stringify(manifest).toLowerCase().includes("websocket"));

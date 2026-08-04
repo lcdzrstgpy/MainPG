@@ -9,6 +9,7 @@ const extensionRoot = path.resolve(import.meta.dirname, "../../../wh_local/price
 const {
   isAllowedQuoteResponse,
   isLocalBridgeUrl,
+  collectAllowedQuoteRecords,
   sanitizeQuoteRecord,
   sanitizeResult,
 } = require(path.join(extensionRoot, "network_probe_utils.js"));
@@ -27,6 +28,9 @@ test("quote filter excludes write endpoint", () => {
     isAllowedQuoteResponse({ url: "https://evil.example/api/batch/info/query" }),
     false,
   );
+  for (const path of ["/api/price/reject", "/api/price/cancel", "/api/price/modify", "/api/cart/query", "/api/set-price"]) {
+    assert.equal(isAllowedQuoteResponse({ url: `https://seller.temu.com${path}` }), false, path);
+  }
 });
 
 test("quote evidence retains read-only JSON while redacting sensitive values", () => {
@@ -48,10 +52,55 @@ test("quote evidence retains read-only JSON while redacting sensitive values", (
 });
 
 test("bridge targets are limited to local loopback HTTP origins", () => {
-  assert.equal(isLocalBridgeUrl("http://127.0.0.1:8000"), true);
-  assert.equal(isLocalBridgeUrl("http://localhost:8000"), true);
+  assert.equal(isLocalBridgeUrl("https://127.0.0.1:8000"), true);
+  assert.equal(isLocalBridgeUrl("https://localhost:8000"), true);
+  assert.equal(isLocalBridgeUrl("http://127.0.0.1:8000"), false);
   assert.equal(isLocalBridgeUrl("https://bridge.example"), false);
   assert.equal(isLocalBridgeUrl("http://127.0.0.2:8000"), false);
+});
+
+test("response capture filters platform writes and redacts credential text before delivery", () => {
+  assert.deepEqual(
+    collectAllowedQuoteRecords([
+      {
+        url: "https://seller.temu.com/api/bargain-no-bom/batch/info/query?sid=private",
+        method: "POST",
+        status: 200,
+        responseJson: { note: "Bearer secret-token", data: { priceReviewItemList: [] } },
+      },
+      {
+        url: "https://seller.temu.com/api/price/reject",
+        method: "POST",
+        status: 200,
+        responseJson: { data: { priceReviewItemList: [] } },
+      },
+    ]),
+    [{
+      url: "https://seller.temu.com/api/bargain-no-bom/batch/info/query",
+      status: 200,
+      capturedAt: "",
+      responseJson: { note: "Bearer [REDACTED]", data: { priceReviewItemList: [] } },
+    }],
+  );
+});
+
+test("sanitization removes credential text from every retained string", () => {
+  const result = sanitizeResult({
+    message: "authorization=Bearer private-token",
+    records: [{
+      url: "https://seller.temu.com/api/price/query",
+      status: 200,
+      responseJson: { note: "api_key=private-key", title: "Safe title" },
+    }],
+    items: [{
+      task_key: "task-1",
+      candidates: [{ source_url: "https://detail.1688.com/offer/1.html?note=api_key=private-key" }],
+    }],
+  });
+  assert.equal(result.message, "authorization=[REDACTED]");
+  assert.equal(result.records[0].responseJson.note, "api_key=[REDACTED]");
+  assert.equal(result.records[0].responseJson.title, "Safe title");
+  assert.equal(result.items[0].candidates[0].source_url, "https://detail.1688.com/offer/1.html?note=api_key=[REDACTED]");
 });
 
 test("result sanitization rejects unsupported fields and redacts nested credentials", () => {
@@ -113,4 +162,6 @@ test("confirmed Temu popup rows produce stable read-only DOM evidence", () => {
 test("worker injects only the page probe helpers into inspected tabs", () => {
   const worker = fs.readFileSync(path.join(extensionRoot, "background.js"), "utf8");
   assert.match(worker, /files:\s*\["network_probe_utils\.js", "page_probe\.js"\]/);
+  assert.match(worker, /collectAllowedQuoteRecords\(captured\)/);
+  assert.match(worker, /world:\s*"MAIN"/);
 });

@@ -57,8 +57,16 @@
     return { dom: { dialog_present: Boolean(document.querySelector("[role='dialog']")), rows: extractTemuQuoteRows(document, options) } };
   }
 
-  function sourceEvidenceFromPage() {
-    return { candidates: extractSpecialSaleCards(document), sku_verification: verify1688Sku(document) };
+  function sourceEvidenceFromPage(task) {
+    const safeTask = task && typeof task === "object" ? task : {};
+    return {
+      task_key: safeText(safeTask.task_key),
+      skc_id: safeText(safeTask.skc_id),
+      main_image_url: redactUrl(safeTask.main_image_url || ""),
+      source_quote_keys: Array.isArray(safeTask.source_quote_keys) ? safeTask.source_quote_keys.map((key) => safeText(key)).filter(Boolean) : [],
+      candidates: extractSpecialSaleCards(document),
+      sku_verification: verify1688Sku(document),
+    };
   }
 
   function copyLabel(text, label, target, key, money) {

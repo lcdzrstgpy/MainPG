@@ -8,10 +8,12 @@
   const SENSITIVE_NAMES = new Set([
     "access_token", "access_key", "api_token", "api_key", "api_secret", "apikey", "authorization", "auth_token", "bearer_token", "client_secret", "client_token", "cookie", "cookies", "credential", "credentials", "id_token", "key", "password", "private_key", "refresh_token", "secret", "session", "session_token", "sid", "token",
   ]);
-  const WRITE_ACTION = /(?:accept|approve|confirm|submit|save|update|delete|create|edit|write|publish|delist|order|payment|inventory|stock)/i;
+  const WRITE_ACTION = /(?:^|[^a-z])(?:accept|reject|approve|cancel|create|delete|modify|publish|purchase|save|submit|update|write|cart|order|(?:change|modify|set|update)[\s_-]?price|price[\s_-]?(?:change|modify|set|update))(?:[^a-z]|$)/i;
   const READ_QUOTE_PATH = /(?:bargain-no-bom\/batch\/info\/query|price|quote|declar)/i;
+  const INLINE_CREDENTIAL = /\b(?:access[_-]?(?:key|token)|api[_-]?(?:key|secret|token)|auth(?:orization|[_-]?token)|bearer[_-]?token|client[_-]?(?:secret|token)|cookie(?:s)?|credential(?:s)?|id[_-]?token|key|password|private[_-]?key|refresh[_-]?token|secret|session(?:[_-]?token)?|sid|token)\b\s*[=:]\s*(?:bearer\s+)?[^\s,;]+/gi;
+  const BEARER_CREDENTIAL = /\bbearer\s+[^\s,;]+/gi;
   const SAFE_RESULT_FIELDS = new Set(["items", "progress", "message", "error", "records", "actions", "dom"]);
-  const SAFE_ITEM_FIELDS = new Set(["task_key", "quote_key", "skc_id", "source_quote_keys", "status", "error", "candidates"]);
+  const SAFE_ITEM_FIELDS = new Set(["task_key", "quote_key", "skc_id", "main_image_url", "source_quote_keys", "status", "error", "candidates", "sku_verification"]);
   const SAFE_CANDIDATE_FIELDS = new Set(["offer_id", "source_url", "source_title", "main_image_url", "price", "moq", "domestic_freight", "weight_kg", "sku_attributes", "variants"]);
 
   function isAllowedQuoteResponse(record) {
@@ -34,13 +36,17 @@
     };
   }
 
+  function collectAllowedQuoteRecords(records) {
+    return Array.isArray(records) ? records.map(sanitizeQuoteRecord).filter(Boolean) : [];
+  }
+
   function sanitizeResult(result) {
     if (!result || typeof result !== "object" || Array.isArray(result)) return {};
     const sanitized = {};
     for (const [key, value] of Object.entries(result)) {
       if (!SAFE_RESULT_FIELDS.has(key)) continue;
       if (key === "items" && Array.isArray(value)) sanitized.items = value.map(sanitizeItem).filter(Boolean);
-      else if (key === "records" && Array.isArray(value)) sanitized.records = value.map(sanitizeQuoteRecord).filter(Boolean);
+      else if (key === "records" && Array.isArray(value)) sanitized.records = collectAllowedQuoteRecords(value);
       else if (key === "actions") sanitized.actions = sanitizeActions(value);
       else if (key === "dom") sanitized.dom = sanitizeDom(value);
       else if (key === "progress") sanitized.progress = finiteInteger(value);
@@ -77,6 +83,8 @@
       } else if (SAFE_ITEM_FIELDS.has(key)) {
         if (key === "candidates" && Array.isArray(value)) sanitized.candidates = value.map(sanitizeCandidate).filter(Boolean);
         else if (key === "source_quote_keys" && Array.isArray(value)) sanitized.source_quote_keys = value.map((entry) => safeText(entry, 240)).filter(Boolean);
+        else if (key === "main_image_url") sanitized[key] = redactUrl(value);
+        else if (key === "sku_verification" && Array.isArray(value)) sanitized[key] = value.map(sanitizeCandidate).filter(Boolean);
         else sanitized[key] = safeJsonValue(value);
       }
     }
@@ -113,7 +121,7 @@
     if (!url) return "";
     for (const key of Array.from(url.searchParams.keys())) if (isSensitiveKey(key)) url.searchParams.delete(key);
     url.hash = "";
-    return url.toString();
+    return redactText(url.toString());
   }
 
   function parseUrl(value) {
@@ -127,7 +135,7 @@
 
   function isLocalBridgeUrl(value) {
     const url = parseUrl(value);
-    return Boolean(url && url.protocol === "http:" && !url.username && !url.password && (url.hostname === "127.0.0.1" || url.hostname === "localhost"));
+    return Boolean(url && url.protocol === "https:" && !url.username && !url.password && (url.hostname === "127.0.0.1" || url.hostname === "localhost"));
   }
 
   function isSensitiveKey(key) {
@@ -137,7 +145,7 @@
   }
 
   function safeJsonValue(value) {
-    if (typeof value === "string") return value.slice(0, 4000);
+    if (typeof value === "string") return redactText(value.slice(0, 4000));
     if (typeof value === "number") return Number.isFinite(value) ? value : null;
     if (typeof value === "boolean" || value === null) return value;
     if (Array.isArray(value)) return value.slice(0, 100).map(safeJsonValue);
@@ -145,7 +153,11 @@
   }
 
   function safeText(value, maximum) {
-    return typeof value === "string" ? value.trim().slice(0, maximum || 240) : "";
+    return typeof value === "string" ? redactText(value.trim().slice(0, maximum || 240)) : "";
+  }
+
+  function redactText(value) {
+    return String(value || "").replace(INLINE_CREDENTIAL, (match) => `${match.slice(0, match.search(/[=:]/) + 1)}[REDACTED]`).replace(BEARER_CREDENTIAL, "Bearer [REDACTED]");
   }
 
   function finiteInteger(value) {
@@ -153,5 +165,5 @@
     return Number.isFinite(number) ? Math.trunc(number) : 0;
   }
 
-  return { REDACTED, isAllowedQuoteResponse, isLocalBridgeUrl, redactUrl, sanitizeQuoteRecord, sanitizeResult };
+  return { REDACTED, collectAllowedQuoteRecords, isAllowedQuoteResponse, isLocalBridgeUrl, redactUrl, sanitizeQuoteRecord, sanitizeResult };
 });

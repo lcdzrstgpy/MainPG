@@ -17,8 +17,8 @@
     "tabs"
   ],
   "host_permissions": [
-    "http://127.0.0.1/*",
-    "http://localhost/*",
+    "https://127.0.0.1/*",
+    "https://localhost/*",
     "https://*.temu.com/*",
     "https://1688.com/*",
     "https://*.1688.com/*"

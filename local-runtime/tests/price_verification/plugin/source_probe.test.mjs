@@ -9,6 +9,7 @@ const {
   extractSpecialSaleCards,
   verify1688Sku,
 } = require(path.join(extensionRoot, "page_probe.js"));
+const { sanitizeResult } = require(path.join(extensionRoot, "network_probe_utils.js"));
 
 test("special-sale cards expose only sourcing fields", () => {
   const root = {
@@ -56,4 +57,31 @@ test("1688 SKU verification returns variant, price, minimum order, and freight o
     moq: 3,
     domestic_freight: 8,
   }]);
+});
+
+test("source result retains the image and SKC binding plus SKU verification per task", () => {
+  assert.deepEqual(
+    sanitizeResult({
+      items: [{
+        task_key: "SKC-1",
+        skc_id: "SKC-1",
+        main_image_url: "https://img.1688.com/source.jpg?token=private",
+        source_quote_keys: ["SKC-1:SKU-1"],
+        status: "succeeded",
+        sku_verification: [{ sku_attributes: "Black", price: 12.5, moq: 2, domestic_freight: 8 }],
+        candidates: [],
+      }],
+    }),
+    {
+      items: [{
+        task_key: "SKC-1",
+        skc_id: "SKC-1",
+        main_image_url: "https://img.1688.com/source.jpg",
+        source_quote_keys: ["SKC-1:SKU-1"],
+        status: "succeeded",
+        sku_verification: [{ sku_attributes: "Black", price: 12.5, moq: 2, domestic_freight: 8 }],
+        candidates: [],
+      }],
+    },
+  );
 });
