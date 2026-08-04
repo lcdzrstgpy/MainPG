@@ -72,6 +72,19 @@ def test_lookalike_1688_host_is_not_canonicalized_or_deduplicated() -> None:
     assert len(candidates) == 2
 
 
+def test_tokenized_urls_for_same_canonical_1688_offer_are_deduplicated() -> None:
+    candidates = normalize_source_candidates(
+        quote(),
+        [
+            {"url": "https://detail.1688.com/offer/12345.html?token=one", "title": "同款收纳盒 红色", "variants": ["红色"], "price": 10, "freight": 2},
+            {"url": "https://m.1688.com/offer/12345.html?access_token=two", "title": "同款收纳盒 红色", "variants": ["红色"], "price": 11, "freight": 2},
+        ],
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["source_url"] == "https://detail.1688.com/offer/12345.html"
+
+
 def test_explicit_nonpositive_moq_requires_review_but_missing_moq_defaults() -> None:
     absent_moq = normalize_source_candidate(
         quote(), {"title": "同款收纳盒 红色", "variants": ["红色"], "price": 10, "freight": 2}
