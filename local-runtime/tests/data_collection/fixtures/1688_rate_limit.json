@@ -1,8 +1,0 @@
-{
-  "code": 429,
-  "msg": "rate limit exceeded",
-  "request_id": "limit-001",
-  "data": {
-    "api_key": "upstream-key-must-not-escape"
-  }
-}
