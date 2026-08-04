@@ -19,13 +19,23 @@ ALLOWED_PLUGIN_COMMAND_TYPES = frozenset(
 _SENSITIVE_FIELD_NAMES = frozenset(
     {
         "access_token",
+        "api_token",
         "api_key",
         "api_secret",
         "apikey",
         "authorization",
+        "auth_token",
+        "bearer_token",
+        "client_secret",
+        "client_token",
         "cookie",
+        "credential",
+        "credentials",
+        "id_token",
         "key",
         "password",
+        "private_key",
+        "refresh_token",
         "secret",
         "session",
         "session_token",
@@ -33,14 +43,17 @@ _SENSITIVE_FIELD_NAMES = frozenset(
     }
 )
 _INLINE_CREDENTIAL = re.compile(
-    r"(?i)(\b(?:access[_-]?token|api[_-]?key|api[_-]?secret|authorization|"
-    r"cookie|key|password|secret|session(?:[_-]?token)?|token)\b\s*[=:]\s*)"
+    r"(?i)(\b(?:access[_-]?token|api[_-]?(?:key|secret|token)|auth(?:orization|[_-]?token)|"
+    r"bearer[_-]?token|client[_-]?(?:secret|token)|cookie|credential(?:s)?|id[_-]?token|"
+    r"key|password|private[_-]?key|refresh[_-]?token|secret|session(?:[_-]?token)?|token)\b\s*[=:]\s*)"
     r"(?:bearer\s+)?[^\s,;]+"
 )
 _BEARER_CREDENTIAL = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
 _WRITE_ACTION = re.compile(
     r"(?i)(?:^|[^a-z])(?:accept|reject|approve|cancel|create|delete|"
-    r"modify|publish|purchase|submit|update|write)(?:[^a-z]|$)"
+    r"modify|publish|purchase|save|submit|update|write|cart|order|"
+    r"(?:change|modify|set|update)[_-]?price|price[_-]?(?:change|modify|set|update))"
+    r"(?:[^a-z]|$)"
 )
 
 
@@ -55,7 +68,17 @@ def _required_text(value: object, field_name: str) -> str:
 
 
 def _is_sensitive_field(name: object) -> bool:
-    return str(name).strip().replace("-", "_").casefold() in _SENSITIVE_FIELD_NAMES
+    value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(name).strip())
+    normalized = value.replace("-", "_").casefold()
+    if normalized in _SENSITIVE_FIELD_NAMES:
+        return True
+    return bool(set(part for part in normalized.split("_") if part) & {
+        "credential",
+        "credentials",
+        "password",
+        "secret",
+        "token",
+    })
 
 
 def redact_sensitive_text(value: str) -> str:
@@ -121,6 +144,7 @@ def _safe_json_value(value: Any, *, depth: int = 0) -> Any:
 
 def safe_json_dumps(value: Any) -> str:
     """Serialize redacted JSON only, with deterministic depth and size limits."""
+    _reject_platform_write(value)
     safe = _safe_json_value(redact_sensitive(value))
     encoded = json.dumps(safe, ensure_ascii=False, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > MAX_JSON_BYTES:

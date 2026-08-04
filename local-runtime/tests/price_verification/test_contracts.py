@@ -60,6 +60,27 @@ def test_command_payload_recursively_redacts_credentials_and_platform_writes() -
         )
 
 
+@pytest.mark.parametrize(
+    "write_action",
+    ["save_price_quote", "add_to_cart", "create_order", "change_price"],
+)
+def test_safe_json_rejects_every_forbidden_platform_write_category(
+    write_action: str,
+) -> None:
+    with pytest.raises(PriceVerificationContractError, match="platform write"):
+        safe_json_dumps({"action": write_action})
+
+
+def test_redaction_covers_nested_conventional_credential_variants() -> None:
+    value = redact_sensitive(
+        {"provider": {"client_secret": "must-not-persist", "apiToken": "also-secret"}}
+    )
+
+    assert value == {
+        "provider": {"client_secret": "[REDACTED]", "apiToken": "[REDACTED]"}
+    }
+
+
 def test_safe_json_has_fixed_size_depth_and_binary_boundaries() -> None:
     with pytest.raises(PriceVerificationContractError, match="binary"):
         safe_json_dumps({"image": b"not-json"})

@@ -9,7 +9,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from wh_local.price_verification.contracts import PluginCommandRequest  # noqa: E402
+from wh_local.price_verification.contracts import (  # noqa: E402
+    PluginCommandRequest,
+    PriceVerificationContractError,
+)
 from wh_local.price_verification.repository import (  # noqa: E402
     PriceVerificationNotFound,
     PriceVerificationRepository,
@@ -87,6 +90,39 @@ def test_workspace_cannot_read_another_workspace_quote_run(tmp_path: Path) -> No
 
     with pytest.raises(PriceVerificationNotFound):
         repository.get_quote_run(workspace_id="B", run_id=run.run_id)
+
+
+def test_quote_snapshot_rejects_platform_writes_before_persistence(tmp_path: Path) -> None:
+    repository = PriceVerificationRepository(tmp_path / "runtime.sqlite3")
+
+    with pytest.raises(PriceVerificationContractError, match="platform write"):
+        repository.create_quote_run(
+            workspace_id="A",
+            command_id="cmd-1",
+            items=[{"quote_key": "quote-1", "action": "save_price"}],
+        )
+
+    with sqlite3.connect(repository.database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM price_verification_quote_runs"
+        ).fetchone()[0] == 0
+
+
+def test_quote_run_cannot_reference_another_workspace_command(tmp_path: Path) -> None:
+    repository = PriceVerificationRepository(tmp_path / "runtime.sqlite3")
+    session = repository.create_plugin_session(
+        workspace_id="A", session_token_hash="a" * 64, browser="Edge"
+    )
+    command = repository.create_command(
+        workspace_id="A",
+        session_id=session.session_id,
+        request=PluginCommandRequest(
+            command_type="temu_price_quote_discovery", payload={}, idempotency_key="cmd-1"
+        ),
+    )
+
+    with pytest.raises(PriceVerificationNotFound):
+        repository.create_quote_run(workspace_id="B", command_id=command.command_id, items=[])
 
 
 def test_workspace_scopes_sessions_commands_and_sourcing_runs(tmp_path: Path) -> None:

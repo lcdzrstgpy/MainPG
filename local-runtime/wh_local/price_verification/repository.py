@@ -283,6 +283,13 @@ class PriceVerificationRepository:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
+                command = connection.execute(
+                    """SELECT workspace_id FROM price_verification_plugin_commands
+                    WHERE command_id = ?""",
+                    (command_id,),
+                ).fetchone()
+                if command is not None and command["workspace_id"] != workspace_id:
+                    raise PriceVerificationNotFound("resource not found")
                 connection.execute(
                     """INSERT INTO price_verification_quote_runs
                     (run_id, workspace_id, command_id, status, item_count,
