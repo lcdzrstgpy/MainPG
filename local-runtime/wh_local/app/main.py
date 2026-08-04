@@ -17,10 +17,10 @@ from ..data_collection.provider import OneBound1688Provider
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
 from ..price_verification import (
-    PriceVerificationActor,
     PriceVerificationRouteDependencies,
     register_price_verification_routes,
 )
+from ..price_verification.contracts import PriceVerificationActor
 from ..session import Actor, actor_from_authorization
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import socket
 import sys
@@ -45,3 +46,23 @@ def test_public_module_exports_only_registration_surface() -> None:
     ]
     assert PriceVerificationRouteDependencies is not None
     assert callable(register_price_verification_routes)
+
+
+def test_host_imports_actor_from_contracts_not_package_root() -> None:
+    main_path = Path(__file__).resolve().parents[2] / "wh_local" / "app" / "main.py"
+    module = ast.parse(main_path.read_text(encoding="utf-8"))
+
+    imports = [
+        (node.level, node.module, {alias.name for alias in node.names})
+        for node in ast.walk(module)
+        if isinstance(node, ast.ImportFrom)
+    ]
+
+    assert all(
+        not (level == 2 and module == "price_verification" and "PriceVerificationActor" in names)
+        for level, module, names in imports
+    )
+    assert any(
+        level == 2 and module == "price_verification.contracts" and "PriceVerificationActor" in names
+        for level, module, names in imports
+    )
