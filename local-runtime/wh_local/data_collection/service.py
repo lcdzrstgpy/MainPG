@@ -24,6 +24,7 @@ from .repository import (
     DailySelectionRunSummary,
 )
 from .handoff import DailySelectionHandoff
+from .link_collection import canonical_1688_offer_url, detail_seed
 
 
 class DailySelectionActor(BaseModel):
@@ -154,6 +155,66 @@ class DailySelectionService:
             candidates=public_candidates,
             criteria=criteria,
             metadata=_collection_metadata(collected),
+        )
+
+    def preview_from_1688_link(
+        self, *, actor: DailySelectionActor, request: Mapping[str, Any]
+    ) -> DailySelectionRun:
+        """Use a 1688 product detail as the seed for image-first similar search."""
+        request_data = dict(request)
+        source_url = request_data.pop("source_url", request_data.pop("product_url", None))
+        canonical_url, offer_id = canonical_1688_offer_url(source_url)
+        # Link collection derives its actual search seed from item_get.  Ignore
+        # any stale front-end mode/image values while retaining filter settings.
+        request_data.pop("collection_mode", None)
+        request_data.pop("reference_image_url", None)
+        request_data.setdefault("keywords", ("1688 similar products",))
+        criteria = DailySelectionCriteria.model_validate(request_data)
+        provider_config = self._provider_config_resolver(actor)
+        if not isinstance(provider_config, Mapping):
+            raise TypeError("provider config resolver must return a mapping")
+        provider = self._provider_factory(provider_config)
+        detail = provider.get_item_detail(offer_id)
+        if not detail.ok:
+            message = detail.error.message if detail.error is not None else "1688 item detail lookup failed"
+            raise ValueError(message)
+        title, image_url = detail_seed(detail.response)
+        seed_criteria = criteria.model_copy(
+            update={
+                "collection_mode": "image" if image_url else "keyword",
+                "reference_image_url": image_url,
+                "keywords": (title,),
+            }
+        )
+        collected = DailySelectionCollector(
+            workspace_id=actor.workspace_id,
+            provider=provider,
+            budget=self._budget,
+            provider_credentials=provider_config,
+        ).collect(seed_criteria)
+        filtered = filter_and_score_candidates(
+            tuple(item.candidate for item in collected.candidates), seed_criteria
+        )
+        public_candidates = (
+            *filtered.candidates[: seed_criteria.target_count],
+            *filtered.filtered,
+        )
+        metadata = dict(_collection_metadata(collected))
+        metadata["source_link"] = {
+            "platform": "1688",
+            "source_url": canonical_url,
+            "offer_id": offer_id,
+            "seed_title": title,
+            "seed_image_used": image_url is not None,
+            "detail_evidence": [item.model_dump(mode="json") for item in detail.audits],
+        }
+        return self._repository.save_run(
+            workspace_id=actor.workspace_id,
+            run_id=self._run_id_factory(),
+            status=collected.status,
+            candidates=public_candidates,
+            criteria=seed_criteria,
+            metadata=metadata,
         )
 
     def list_runs(
