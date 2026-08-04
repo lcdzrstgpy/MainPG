@@ -116,6 +116,13 @@ async function postResult(session, commandId, status, result) {
   return bridgeFetch(session.bridgeBaseUrl, "/plugin/result", { session_token: session.sessionToken, command_id: commandId, status, result: PriceVerificationNetworkProbeUtils.sanitizeResult(result) });
 }
 
-async function getSession() { return (await chrome.storage.local.get(SESSION_KEY))[SESSION_KEY] || null; }
+async function getSession() {
+  const session = (await chrome.storage.local.get(SESSION_KEY))[SESSION_KEY] || null;
+  if (!session || !PriceVerificationNetworkProbeUtils.isLocalBridgeUrl(session.bridgeBaseUrl)) {
+    if (session) await chrome.storage.local.remove(SESSION_KEY);
+    return null;
+  }
+  return session;
+}
 function validBridgeBase(value) { const url = new URL(String(value || "")); if (!PriceVerificationNetworkProbeUtils.isLocalBridgeUrl(url.toString())) throw new Error("Bridge URL must be local HTTPS loopback"); url.pathname = ""; url.search = ""; url.hash = ""; return url.toString().replace(/\/$/, ""); }
-async function bridgeFetch(base, path, body, headers) { if (!BRIDGE_PATHS.has(path)) throw new Error("Unsupported bridge path"); const response = await fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", ...(headers || {}) }, body: JSON.stringify(body) }); if (!response.ok) throw new Error(`Bridge request failed (${response.status})`); return response.json(); }
+async function bridgeFetch(base, path, body, headers) { if (!PriceVerificationNetworkProbeUtils.isLocalBridgeUrl(base)) throw new Error("Bridge URL must be local HTTPS loopback"); if (!BRIDGE_PATHS.has(path)) throw new Error("Unsupported bridge path"); const response = await fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", ...(headers || {}) }, body: JSON.stringify(body) }); if (!response.ok) throw new Error(`Bridge request failed (${response.status})`); return response.json(); }

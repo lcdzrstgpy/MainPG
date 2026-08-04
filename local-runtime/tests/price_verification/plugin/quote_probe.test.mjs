@@ -164,4 +164,6 @@ test("worker injects only the page probe helpers into inspected tabs", () => {
   assert.match(worker, /files:\s*\["network_probe_utils\.js", "page_probe\.js"\]/);
   assert.match(worker, /collectAllowedQuoteRecords\(captured\)/);
   assert.match(worker, /world:\s*"MAIN"/);
+  assert.match(worker, /!session\s*\|\|\s*!PriceVerificationNetworkProbeUtils\.isLocalBridgeUrl\(session\.bridgeBaseUrl\)/);
+  assert.match(worker, /if\s*\(!PriceVerificationNetworkProbeUtils\.isLocalBridgeUrl\(base\)\)/);
 });
