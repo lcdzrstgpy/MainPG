@@ -124,7 +124,7 @@ def test_keyword_search_returns_sanitized_result_and_audit_record() -> None:
     assert_no_sensitive_values({"response": result.response, "audit": result.audit})
 
 
-def test_image_search_downloads_uploads_then_uses_imgid_without_retaining_bytes() -> None:
+def test_image_search_downloads_uploads_then_uses_legacy_imgid_without_retaining_bytes() -> None:
     image_url = "https://images.example.test/reference.jpg"
     image_bytes = b"small-image-content"
     transport = FakeTransport(
@@ -150,9 +150,12 @@ def test_image_search_downloads_uploads_then_uses_imgid_without_retaining_bytes(
         endpoint("upload_img"),
         endpoint("item_search_img"),
     ]
-    upload_payload = json.loads(transport.requests[1]["body"].decode("utf-8"))
-    assert upload_payload["img"] == base64.b64encode(image_bytes).decode("ascii")
+    assert transport.requests[1]["method"] == "GET"
+    assert transport.requests[1]["body"] is None
+    assert transport.requests[1]["params"]["imgcode"] == base64.b64encode(image_bytes).decode("ascii")
+    assert transport.requests[1]["params"]["cache"] == "no"
     assert transport.requests[2]["params"]["imgid"] == "img-abc-123"
+    assert transport.requests[2]["params"]["cache"] == "no"
     assert result.audit.operation == "item_search_img"
     assert result.audit.response_summary["upload_outcome"] == "success"
     assert [audit.operation for audit in result.audits] == [
@@ -162,6 +165,49 @@ def test_image_search_downloads_uploads_then_uses_imgid_without_retaining_bytes(
     ]
     assert all(not isinstance(value, (bytes, bytearray)) for value in vars(selected).values())
     assert_no_sensitive_values({"response": result.response, "audit": result.audit})
+
+
+def test_keyword_search_audit_counts_real_top_level_items_item_list() -> None:
+    payload = {
+        "code": 200,
+        "msg": "success",
+        "items": {
+            "item": [
+                {"num_iid": "offer-301", "title": "真实回包商品一"},
+                {"num_iid": "offer-302", "title": "真实回包商品二"},
+            ]
+        },
+    }
+    transport = FakeTransport({endpoint("item_search"): response(payload)})
+
+    result = provider(transport).search_keyword(DailySelectionCriteria(keywords=["帐篷"]))
+
+    assert result.ok is True
+    assert result.audit.response_summary["item_count"] == 2
+
+
+def test_image_search_uses_real_top_level_upload_imgid_and_cache_bypass() -> None:
+    image_url = "https://images.example.test/reference.jpg"
+    image_bytes = b"small-image-content"
+    transport = FakeTransport(
+        {
+            image_url: HttpResponse(status=200, body=image_bytes),
+            endpoint("upload_img"): response({"code": 200, "items": {"imgid": "img-real-456"}}),
+            endpoint("item_search_img"): response(
+                {"code": 200, "items": {"item": [{"num_iid": "offer-456", "title": "真实图搜商品"}]}}
+            ),
+        }
+    )
+    criteria = DailySelectionCriteria(collection_mode="image", reference_image_url=image_url)
+
+    result = provider(transport).search_by_image(criteria)
+
+    assert result.ok is True
+    assert transport.requests[1]["method"] == "GET"
+    assert transport.requests[1]["params"]["imgcode"] == base64.b64encode(image_bytes).decode("ascii")
+    assert transport.requests[1]["params"]["cache"] == "no"
+    assert transport.requests[2]["params"]["imgid"] == "img-real-456"
+    assert transport.requests[2]["params"]["cache"] == "no"
 
 
 def test_timeout_is_a_sanitized_error_with_audit_record() -> None:

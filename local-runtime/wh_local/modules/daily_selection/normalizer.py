@@ -194,7 +194,12 @@ def _candidate_from_search_item(
 
 def _items_from_payload(payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
     data = payload.get("data")
-    collection = data.get("items") if isinstance(data, Mapping) else payload.get("items")
+    collection = data.get("items") if isinstance(data, Mapping) else None
+    if collection is None:
+        items = payload.get("items")
+        collection = items.get("item") if isinstance(items, Mapping) else items
+    if isinstance(collection, Mapping):
+        return (collection,)
     if not isinstance(collection, Sequence) or isinstance(collection, (str, bytes, bytearray)):
         return ()
     return tuple(item for item in collection if isinstance(item, Mapping))

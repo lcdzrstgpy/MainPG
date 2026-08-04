@@ -73,6 +73,42 @@ def test_normalize_search_extracts_a_traceable_1688_candidate() -> None:
     assert candidate.raw_payload["detail_payload"] is None
 
 
+def test_normalize_search_accepts_real_top_level_items_item_list() -> None:
+    payload = {
+        "code": 200,
+        "items": {
+            "item": [
+                {
+                    "num_iid": "offer-real-list",
+                    "title": "真实列表商品",
+                    "detail_url": "https://detail.1688.com/offer-real-list.html",
+                }
+            ]
+        },
+    }
+
+    candidates = normalize_search_response(payload)
+
+    assert [candidate.offer_id for candidate in candidates] == ["offer-real-list"]
+
+
+def test_normalize_search_accepts_real_top_level_items_item_object() -> None:
+    payload = {
+        "code": 200,
+        "items": {
+            "item": {
+                "num_iid": "offer-real-object",
+                "title": "真实单商品",
+                "detail_url": "https://detail.1688.com/offer-real-object.html",
+            }
+        },
+    }
+
+    candidates = normalize_search_response(payload)
+
+    assert [candidate.offer_id for candidate in candidates] == ["offer-real-object"]
+
+
 def test_detail_enrichment_preserves_search_evidence_and_captures_source_fields() -> None:
     candidate = normalize_search_response(search_payload(), evidence=search_evidence())[0]
     payload = fixture("1688_item_get_success.json")

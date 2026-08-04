@@ -254,9 +254,7 @@ class OneBound1688Provider:
             del downloaded
         return self._api_call(
             "upload_img",
-            {},
-            body=json.dumps({"img": encoded_image}).encode("utf-8"),
-            http_method="POST",
+            {"imgcode": encoded_image, "cache": "no"},
             request_metadata={"image_size_bytes": None},
             prior_audits=(download_audit,),
         )
@@ -269,7 +267,7 @@ class OneBound1688Provider:
         uploaded = self.upload_reference_image(criteria.reference_image_url)
         if not uploaded.ok:
             return uploaded
-        image_id = uploaded.response.get("data", {}).get("imgid")
+        image_id = self._image_id_from_upload_response(uploaded.response)
         if not isinstance(image_id, str) or not image_id.strip():
             return self._result_with_error(
                 uploaded.audits,
@@ -279,7 +277,7 @@ class OneBound1688Provider:
             )
         return self._api_call(
             "item_search_img",
-            {"imgid": image_id.strip(), "page_size": criteria.target_count},
+            {"imgid": image_id.strip(), "page_size": criteria.target_count, "cache": "no"},
             request_metadata={"image_id_present": True, "keyword_tag_count": len(criteria.keyword_tags)},
             prior_audits=uploaded.audits,
             extra_response_summary={"upload_outcome": uploaded.audit.response_summary.get("outcome")},
@@ -494,10 +492,25 @@ class OneBound1688Provider:
     @staticmethod
     def _item_count(payload: Mapping[str, Any]) -> int | None:
         data = payload.get("data")
-        if not isinstance(data, Mapping):
+        if isinstance(data, Mapping):
+            items = data.get("items")
+            if isinstance(items, list):
+                return len(items)
+        items = payload.get("items")
+        if not isinstance(items, Mapping):
             return None
-        items = data.get("items")
-        return len(items) if isinstance(items, list) else None
+        collection = items.get("item")
+        if isinstance(collection, list):
+            return len(collection)
+        return 1 if isinstance(collection, Mapping) else None
+
+    @staticmethod
+    def _image_id_from_upload_response(payload: Mapping[str, Any]) -> Any:
+        items = payload.get("items")
+        if isinstance(items, Mapping) and "imgid" in items:
+            return items["imgid"]
+        data = payload.get("data")
+        return data.get("imgid") if isinstance(data, Mapping) else None
 
     @staticmethod
     def _json_mapping(body: bytes) -> Mapping[str, Any]:
