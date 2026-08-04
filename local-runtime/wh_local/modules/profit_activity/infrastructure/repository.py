@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 
@@ -7,7 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..domain.models import ProfitPreview, ProfitSettings, SiteCode
-from .orm import ActivityDecisionRow, ActivityRunRow, ProfitRecordRow, ProfitSettingsRow
+from .orm import (
+    ActivityDecisionRow, ActivityRunRow, FilterTaskRow, ImportSessionRow,
+    ImportTaskRow, ProfitRecordRow, ProfitSettingsRow,
+)
 
 
 class SettingsRevisionConflict(ValueError):
@@ -40,10 +44,16 @@ class ProfitActivityRepository:
             session.flush()
             return SettingsSnapshot(row.revision, _settings(row))
 
-    def upsert_record(self, *, skc: str, note: str, preview: ProfitPreview, calculation_hash: str, settings_revision: int) -> ProfitRecordRow:
+    def upsert_record(self, *, skc: str, note: str, preview: ProfitPreview, calculation_hash: str, settings_revision: int, refund_rate: Decimal = Decimal("0"), visibility: str = "shared", source_url: str = "", image_path: str = "", source_image_path: str = "", source_groups: list[dict] | None = None) -> ProfitRecordRow:
         with self._sessions.begin() as session:
             row = session.scalar(select(ProfitRecordRow).where(ProfitRecordRow.site_code == preview.site_code, ProfitRecordRow.skc == skc))
-            values = {**asdict(preview), "note": note, "calculation_hash": calculation_hash, "settings_revision": settings_revision}
+            values = {
+                **asdict(preview), "note": note, "calculation_hash": calculation_hash,
+                "settings_revision": settings_revision, "refund_rate": refund_rate, "visibility": visibility,
+                "source_url": source_url, "image_path": image_path,
+                "source_image_path": source_image_path,
+                "source_groups_json": json.dumps(source_groups or [], ensure_ascii=False, separators=(",", ":")),
+            }
             if row is None:
                 row = ProfitRecordRow(skc=skc, **values)
                 session.add(row)
@@ -78,6 +88,52 @@ class ProfitActivityRepository:
             if record_ids is not None:
                 query = query.where(ProfitRecordRow.id.in_(record_ids))
             return list(session.scalars(query))
+
+    def product_keys(self) -> set[tuple[str, str]]:
+        with self._sessions() as session:
+            return {(str(site), str(skc)) for site, skc in session.execute(select(ProfitRecordRow.site_code, ProfitRecordRow.skc))}
+
+    def find_product(self, skc: str, site: SiteCode) -> ProfitRecordRow | None:
+        with self._sessions() as session:
+            return session.scalar(select(ProfitRecordRow).where(ProfitRecordRow.site_code == site, ProfitRecordRow.skc == skc))
+
+    def delete_product(self, skc: str, site: SiteCode) -> bool:
+        with self._sessions.begin() as session:
+            row = session.scalar(select(ProfitRecordRow).where(ProfitRecordRow.site_code == site, ProfitRecordRow.skc == skc))
+            if row is None:
+                return False
+            session.delete(row)
+            return True
+
+    def save_import_session(self, import_id: str, original_filename: str, site: SiteCode, rows: list[dict]) -> None:
+        with self._sessions.begin() as session:
+            session.merge(ImportSessionRow(import_id=import_id, original_filename=original_filename, site=site, rows_json=json.dumps(rows, ensure_ascii=False, separators=(",", ":"))))
+
+    def get_import_session(self, import_id: str) -> ImportSessionRow | None:
+        with self._sessions() as session:
+            return session.get(ImportSessionRow, import_id)
+
+    def create_import_task(self, import_id: str, result: dict) -> ImportTaskRow:
+        with self._sessions.begin() as session:
+            task = ImportTaskRow(import_id=import_id, status="completed", result_json=json.dumps(result, ensure_ascii=False, default=str))
+            session.add(task)
+            session.flush()
+            return task
+
+    def get_import_task(self, task_id: int) -> ImportTaskRow | None:
+        with self._sessions() as session:
+            return session.get(ImportTaskRow, task_id)
+
+    def create_filter_task(self, result: dict) -> FilterTaskRow:
+        with self._sessions.begin() as session:
+            task = FilterTaskRow(status="completed", result_json=json.dumps(result, ensure_ascii=False, default=str))
+            session.add(task)
+            session.flush()
+            return task
+
+    def get_filter_task(self, task_id: int) -> FilterTaskRow | None:
+        with self._sessions() as session:
+            return session.get(FilterTaskRow, task_id)
 
     def get_activity_run(self, run_id: int) -> tuple[ActivityRunRow, list[ActivityDecisionRow]] | None:
         with self._sessions() as session:

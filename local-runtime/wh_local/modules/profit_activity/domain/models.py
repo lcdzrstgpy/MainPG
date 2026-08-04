@@ -12,6 +12,7 @@ SiteCode = Literal["US", "CO", "EC"]
 class ProfitSettings:
     """与原工作台一致的利润计算配置快照。"""
 
+    save_root: str = ""
     domestic_fee: Decimal = Decimal("2.5")
     shipping_subsidy: Decimal = Decimal("21")
     refund_rate: Decimal = Decimal("0.05")
@@ -29,6 +30,10 @@ class ProfitSettings:
     activity_min_net_profit: Decimal = Decimal("8")
     activity_profit_rate_threshold: Decimal = Decimal("0.20")
     rule_version: int = 2
+
+    @property
+    def activity_filter_rule_version(self) -> int:
+        return self.rule_version
 
 
 @dataclass(frozen=True)

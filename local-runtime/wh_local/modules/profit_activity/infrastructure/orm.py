@@ -15,6 +15,7 @@ class ProfitSettingsRow(Base):
     __tablename__ = "profit_activity_settings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    save_root: Mapped[str] = mapped_column(Text, nullable=False, default="")
     domestic_fee: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("2.5"))
     shipping_subsidy: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("21"))
     refund_rate: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0.05"))
@@ -41,12 +42,20 @@ class ProfitRecordRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     site_code: Mapped[str] = mapped_column(String(2), nullable=False, index=True)
     skc: Mapped[str] = mapped_column(String(128), nullable=False)
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="shared")
+    created_by: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by_username: Mapped[str] = mapped_column(String(128), nullable=False, default="local")
+    image_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_image_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_groups_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    source_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
     note: Mapped[str] = mapped_column(Text, nullable=False, default="")
     selling_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     cost_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     weight_kg: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     domestic_fee: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     shipping_subsidy: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    refund_rate: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
     shipping_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     end_fee: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     total_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
@@ -80,3 +89,29 @@ class ActivityDecisionRow(Base):
     record_id: Mapped[int] = mapped_column(ForeignKey("profit_activity_records.id", ondelete="CASCADE"), nullable=False)
     decision: Mapped[str] = mapped_column(String(16), nullable=False)
     reason_code: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
+class ImportSessionRow(Base):
+    __tablename__ = "profit_activity_import_sessions"
+    import_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    original_filename: Mapped[str] = mapped_column(Text, nullable=False)
+    site: Mapped[str] = mapped_column(String(2), nullable=False)
+    rows_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ImportTaskRow(Base):
+    __tablename__ = "profit_activity_import_tasks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    import_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class FilterTaskRow(Base):
+    __tablename__ = "profit_activity_filter_tasks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
