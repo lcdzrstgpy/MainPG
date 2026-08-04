@@ -104,9 +104,7 @@ def test_exact_keyword_collection_uses_only_user_keywords_and_audits_each_query(
     assert collected.image_search_calls == 0
     assert collected.detail_calls == 1
     assert collected.api_calls == 2
-    assert collected.api_calls_used_before == 0
-    assert collected.api_calls_used_after == 2
-    assert collected.api_calls_used_after - collected.api_calls_used_before == collected.api_calls
+    assert collected.budget_state.api_calls_used == 2
 
 
 def test_divergent_keyword_collection_uses_versioned_local_extensions_and_audits_them(tmp_path: Path) -> None:
@@ -125,7 +123,6 @@ def test_divergent_keyword_collection_uses_versioned_local_extensions_and_audits
     assert [attempt.query for attempt in collected.query_attempts][0] == "露营灯"
     assert any(attempt.expanded for attempt in collected.query_attempts)
     assert all(attempt.expansion_rule_version == "local-v1" for attempt in collected.query_attempts)
-    assert collected.api_calls_used_after - collected.api_calls_used_before == collected.api_calls
 
 
 def test_image_collection_uploads_before_image_search_and_keeps_reference_url_on_candidates(tmp_path: Path) -> None:
@@ -149,7 +146,6 @@ def test_image_collection_uploads_before_image_search_and_keeps_reference_url_on
     assert collected.image_search_calls == 1
     assert collected.search_calls == 0
     assert collected.api_calls == 3
-    assert collected.api_calls_used_after - collected.api_calls_used_before == collected.api_calls
     assert collected.derived_image_terms == ("极简露营灯",)
 
 
@@ -164,7 +160,6 @@ def test_empty_search_returns_empty_with_one_counted_search(tmp_path: Path) -> N
     assert collected.search_calls == 1
     assert collected.detail_calls == 0
     assert collected.api_calls == 1
-    assert collected.api_calls_used_after - collected.api_calls_used_before == collected.api_calls
 
 
 def test_partial_provider_failures_keep_successful_candidates_and_errors(tmp_path: Path) -> None:
@@ -179,7 +174,6 @@ def test_partial_provider_failures_keep_successful_candidates_and_errors(tmp_pat
     assert [candidate.offer_id for candidate in collected.candidates] == ["one"]
     assert collected.errors == (failure,)
     assert collected.search_calls == 2
-    assert collected.api_calls_used_after - collected.api_calls_used_before == collected.api_calls
 
 
 def test_details_are_limited_to_deduplicated_top_candidates_and_failure_is_retained(tmp_path: Path) -> None:
@@ -204,7 +198,6 @@ def test_details_are_limited_to_deduplicated_top_candidates_and_failure_is_retai
     assert collected.candidates[1].candidate.evidence[-1] == audit("item_get")
     assert collected.status == "partial"
     assert collected.detail_calls == 2
-    assert collected.api_calls_used_after - collected.api_calls_used_before == collected.api_calls
 
 
 def test_budget_exhaustion_before_image_operation_returns_failed_without_provider_call(tmp_path: Path) -> None:
@@ -223,7 +216,6 @@ def test_budget_exhaustion_before_image_operation_returns_failed_without_provide
     assert collected.errors[0].code == "budget_exhausted"
     assert provider.calls == []
     assert collected.api_calls == 0
-    assert collected.api_calls_used_after - collected.api_calls_used_before == collected.api_calls
 
 
 @pytest.mark.parametrize(
@@ -255,7 +247,6 @@ def test_image_failures_settle_budget_to_exact_audit_count(
     assert collected.status == "failed"
     assert collected.api_calls == expected_api_calls
     assert collected.image_search_calls == expected_image_search_calls
-    assert collected.api_calls_used_after - collected.api_calls_used_before == collected.api_calls
 
 
 def test_image_audit_must_prove_upload_precedes_image_search(tmp_path: Path) -> None:
@@ -311,7 +302,7 @@ def test_details_rank_zero_score_candidates_by_source_sales_before_provider_enco
     assert [candidate.offer_id for candidate in collected.candidates] == ["high", "low"]
 
 
-def test_result_exposes_this_run_budget_delta_when_daily_ledger_already_has_usage(tmp_path: Path) -> None:
+def test_result_returns_a_shared_budget_snapshot_after_existing_usage(tmp_path: Path) -> None:
     budget = SQLiteDailyApiBudget(tmp_path / "budget.sqlite3")
     budget.reserve(
         workspace_id="workspace-a",
@@ -326,12 +317,10 @@ def test_result_exposes_this_run_budget_delta_when_daily_ledger_already_has_usag
 
     assert collected.status == "empty"
     assert collected.api_calls == 1
-    assert collected.api_calls_used_before == 4
-    assert collected.api_calls_used_after == 5
-    assert collected.api_calls_used_after - collected.api_calls_used_before == collected.api_calls
+    assert collected.budget_state.api_calls_used == 5
 
 
-def test_partial_result_reports_this_run_budget_delta_after_existing_usage(tmp_path: Path) -> None:
+def test_partial_result_keeps_a_shared_budget_snapshot_after_existing_usage(tmp_path: Path) -> None:
     budget = SQLiteDailyApiBudget(tmp_path / "budget.sqlite3")
     budget.reserve(
         workspace_id="workspace-a",
@@ -350,6 +339,27 @@ def test_partial_result_reports_this_run_budget_delta_after_existing_usage(tmp_p
 
     assert collected.status == "partial"
     assert collected.api_calls == 2
-    assert collected.api_calls_used_before == 2
-    assert collected.api_calls_used_after == 4
-    assert collected.api_calls_used_after - collected.api_calls_used_before == collected.api_calls
+    assert collected.budget_state.api_calls_used == 4
+
+
+def test_interleaved_shared_budget_usage_is_not_attributed_to_this_collection(tmp_path: Path) -> None:
+    budget = SQLiteDailyApiBudget(tmp_path / "budget.sqlite3")
+
+    class InterleavingProvider(FakeProvider):
+        def search_keyword(self, criteria: DailySelectionCriteria) -> ProviderCallResult:
+            budget.reserve(
+                workspace_id="workspace-a",
+                provider_fingerprint=self.credential_fingerprint,
+                max_api_calls=10,
+            )
+            return super().search_keyword(criteria)
+
+    provider = InterleavingProvider(keyword_results=[result([])])
+    selected = DailySelectionCollector(workspace_id="workspace-a", provider=provider, budget=budget)
+
+    collected = selected.collect(DailySelectionCriteria(keywords=["交错"], selection_scope="exact", max_api_calls=10))
+
+    assert collected.api_calls == 1
+    assert collected.budget_state.api_calls_used == 2
+    assert not hasattr(collected, "api_calls_used_before")
+    assert not hasattr(collected, "api_calls_used_after")

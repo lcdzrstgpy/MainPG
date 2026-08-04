@@ -62,8 +62,6 @@ class CollectionResult:
     image_search_calls: int
     detail_calls: int
     api_calls: int
-    api_calls_used_before: int
-    api_calls_used_after: int
     budget_state: BudgetState
     expansion_rule_version: str | None = None
     derived_image_terms: tuple[str, ...] = ()
@@ -105,7 +103,6 @@ class DailySelectionCollector:
             max_api_calls=criteria.max_api_calls,
             now=collection_time,
         )
-        api_calls_used_before = latest_budget.api_calls_used
 
         if criteria.collection_mode == "image":
             latest_budget = self._reserve(criteria, _IMAGE_OPERATION_BUDGET_COST, collection_time)
@@ -189,8 +186,6 @@ class DailySelectionCollector:
             image_search_calls=image_search_calls,
             detail_calls=detail_calls,
             api_calls=api_calls,
-            api_calls_used_before=api_calls_used_before,
-            api_calls_used_after=latest_budget.api_calls_used,
             budget_state=latest_budget,
             expansion_rule_version=LOCAL_EXPANSION_RULESET_VERSION if criteria.selection_scope == "divergent" else None,
             derived_image_terms=derived_terms,

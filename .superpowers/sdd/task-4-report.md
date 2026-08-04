@@ -74,7 +74,7 @@ conda run -n base python -m pytest local-runtime/tests/daily_selection/test_coll
 
 ### 修复内容
 
-- `CollectionResult` 现在包含 `api_calls_used_before` 与 `api_calls_used_after`。`api_calls` 是本次运行的审计调用数；前/后字段是当天共享账本快照，正确关系为 `after - before == api_calls`，不再把本次计数与跨运行累计值混为一谈。
+- 该轮曾在 `CollectionResult` 中加入 `api_calls_used_before` 与 `api_calls_used_after`；第三轮复审确认这两个共享快照在并发时不能归因本次调用，现已移除，最终语义以第三轮为准。
 - 详情请求失败时，原候选仍保留，并通过 Pydantic `model_copy` 追加该次 `item_get` 的审计 evidence，同时保留 `detail_error`。
 - 预详情排序使用已有 `selection_score`；若早期分数为零，继续按搜索结果中的销量（降序）、价格（升序）、MOQ（升序）排序。所有字段相同才稳定保留 Provider 顺序。回归测试直接经过真实 normalizer，不使用 monkeypatch。
 
@@ -82,3 +82,27 @@ conda run -n base python -m pytest local-runtime/tests/daily_selection/test_coll
 
 - 定向：`conda run -n base python -m pytest local-runtime/tests/daily_selection/test_collector.py -q` → `15 passed in 0.11s`
 - 全量：`conda run -n base python -m pytest local-runtime/tests/daily_selection -q` → `76 passed in 0.12s`
+
+## 复审修复（任务 4 第三轮）
+
+### RED 证据
+
+新增一个交错账本用例：当前采集已经预留一次调用时，Fake Provider 在返回搜索结果前为同一工作空间/凭据/日期额外预留一次。旧结果仍暴露 `api_calls_used_before/after`，于是以共享快照差值归因本次调用的语义不成立。
+
+```text
+conda run -n base python -m pytest local-runtime/tests/daily_selection/test_collector.py -q
+```
+
+结果：`1 failed, 15 passed`，失败断言确认结果仍有 `api_calls_used_before`。
+
+### 修复内容
+
+- 移除 `CollectionResult.api_calls_used_before` 和 `api_calls_used_after`。
+- `api_calls` 只累计当前 collector 实例已结算的 Provider 审计调用；不从共享 SQLite 状态推导。
+- `budget_state` 仅表示返回时的当天共享账本快照，可能包含其他并发/交错运行的预留；消费者不得将其与 `api_calls` 做差来归因本次使用量。
+- 交错回归证明：本次 `api_calls == 1`，而共享快照为 `api_calls_used == 2`，且结果不再暴露前/后差值字段。
+
+### GREEN 与完整验证
+
+- 定向：`conda run -n base python -m pytest local-runtime/tests/daily_selection/test_collector.py -q` → `16 passed in 0.10s`
+- 全量：`conda run -n base python -m pytest local-runtime/tests/daily_selection -q` → `77 passed in 0.13s`
