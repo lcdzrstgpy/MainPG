@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from datetime import datetime
+import re
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .budget import BudgetState, SQLiteDailyApiBudget, credential_fingerprint, is_credential_fingerprint
@@ -16,6 +18,7 @@ from .provider import ProviderCallResult
 LOCAL_EXPANSION_RULESET_VERSION = "local-v1"
 _LOCAL_EXPANSIONS = {"露营灯": ("便携露营灯",)}
 _IMAGE_OPERATION_BUDGET_COST = 3  # download, upload, then image search
+_NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
 
 
 class DailySelectionProvider(Protocol):
@@ -59,6 +62,8 @@ class CollectionResult:
     image_search_calls: int
     detail_calls: int
     api_calls: int
+    api_calls_used_before: int
+    api_calls_used_after: int
     budget_state: BudgetState
     expansion_rule_version: str | None = None
     derived_image_terms: tuple[str, ...] = ()
@@ -100,6 +105,7 @@ class DailySelectionCollector:
             max_api_calls=criteria.max_api_calls,
             now=collection_time,
         )
+        api_calls_used_before = latest_budget.api_calls_used
 
         if criteria.collection_mode == "image":
             latest_budget = self._reserve(criteria, _IMAGE_OPERATION_BUDGET_COST, collection_time)
@@ -158,7 +164,13 @@ class DailySelectionCollector:
             if response.error is not None:
                 errors.append(response.error)
                 detail_errors[collected.offer_id] = response.error
-                unique[index] = CollectedCandidate(collected.candidate, collected.reference_image_url, response.error)
+                unique[index] = CollectedCandidate(
+                    collected.candidate.model_copy(
+                        update={"evidence": collected.candidate.evidence + response.audits}
+                    ),
+                    collected.reference_image_url,
+                    response.error,
+                )
             else:
                 unique[index] = CollectedCandidate(
                     enrich_candidate_with_detail(collected.candidate, response.response, evidence=response.audit),
@@ -177,6 +189,8 @@ class DailySelectionCollector:
             image_search_calls=image_search_calls,
             detail_calls=detail_calls,
             api_calls=api_calls,
+            api_calls_used_before=api_calls_used_before,
+            api_calls_used_after=latest_budget.api_calls_used,
             budget_state=latest_budget,
             expansion_rule_version=LOCAL_EXPANSION_RULESET_VERSION if criteria.selection_scope == "divergent" else None,
             derived_image_terms=derived_terms,
@@ -235,8 +249,35 @@ def _deduplicate(candidates: Sequence[CollectedCandidate]) -> list[CollectedCand
 
 
 def _rank_candidates(candidates: Sequence[CollectedCandidate]) -> list[CollectedCandidate]:
-    """Rank by the contract's computed selection score, preserving tied source order."""
-    return sorted(candidates, key=lambda candidate: -candidate.selection_score)
+    """Rank by score then source sales, price, and MOQ before fetching details.
+
+    Collection candidates commonly have a zero ``selection_score`` before later
+    scoring stages. Source fields give the production path a local, auditable
+    ordering; an exact tie retains the provider order as Python's stable sort.
+    """
+    return sorted(candidates, key=_pre_detail_rank_key)
+
+
+def _pre_detail_rank_key(candidate: CollectedCandidate) -> tuple[Decimal, Decimal, bool, Decimal, bool, int]:
+    score = candidate.selection_score if candidate.selection_score is not None else Decimal("0")
+    sales = _sales_count(candidate.sales_text)
+    price = candidate.price_cny
+    moq = candidate.min_order_quantity
+    return (
+        -score,
+        -sales,
+        price is None,
+        price if price is not None else Decimal("Infinity"),
+        moq is None,
+        moq if moq is not None else 2**63 - 1,
+    )
+
+
+def _sales_count(value: str | None) -> Decimal:
+    if not isinstance(value, str):
+        return Decimal("0")
+    match = _NUMBER.search(value.replace(",", ""))
+    return Decimal(match.group()) if match else Decimal("0")
 
 
 def _titles(candidates: Sequence[CollectedCandidate]) -> tuple[str, ...]:

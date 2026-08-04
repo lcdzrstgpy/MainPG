@@ -59,3 +59,26 @@ conda run -n base python -m pytest local-runtime/tests/daily_selection/test_budg
 - 全量每日选品：`conda run -n base python -m pytest local-runtime/tests/daily_selection -q` → `74 passed in 0.12s`
 
 这些测试只使用本地 Fake Provider 与临时 SQLite，未进行外部网络/API 调用。
+
+## 复审修复（任务 4 第二轮）
+
+### RED 证据
+
+新增预算快照、失败详情证据和真实搜索数据排序回归后执行：
+
+```text
+conda run -n base python -m pytest local-runtime/tests/daily_selection/test_collector.py -q
+```
+
+结果：`13 failed, 2 passed`。失败原因均为目标缺陷：结果未公开本次运行前/后已用额度、失败详情未保留 `item_get` audit、以及两项均为零的候选仍按 Provider 输入顺序详情补全。
+
+### 修复内容
+
+- `CollectionResult` 现在包含 `api_calls_used_before` 与 `api_calls_used_after`。`api_calls` 是本次运行的审计调用数；前/后字段是当天共享账本快照，正确关系为 `after - before == api_calls`，不再把本次计数与跨运行累计值混为一谈。
+- 详情请求失败时，原候选仍保留，并通过 Pydantic `model_copy` 追加该次 `item_get` 的审计 evidence，同时保留 `detail_error`。
+- 预详情排序使用已有 `selection_score`；若早期分数为零，继续按搜索结果中的销量（降序）、价格（升序）、MOQ（升序）排序。所有字段相同才稳定保留 Provider 顺序。回归测试直接经过真实 normalizer，不使用 monkeypatch。
+
+### GREEN 与完整验证
+
+- 定向：`conda run -n base python -m pytest local-runtime/tests/daily_selection/test_collector.py -q` → `15 passed in 0.11s`
+- 全量：`conda run -n base python -m pytest local-runtime/tests/daily_selection -q` → `76 passed in 0.12s`
