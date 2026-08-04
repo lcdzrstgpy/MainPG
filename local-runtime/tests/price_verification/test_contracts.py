@@ -71,6 +71,28 @@ def test_safe_json_rejects_every_forbidden_platform_write_category(
         safe_json_dumps({"action": write_action})
 
 
+@pytest.mark.parametrize("write_action", ["change price", "price change"])
+def test_safe_json_rejects_whitespace_price_change_actions(write_action: str) -> None:
+    with pytest.raises(PriceVerificationContractError, match="platform write"):
+        safe_json_dumps({"action": write_action})
+
+
+def test_redaction_covers_access_key_field_and_inline_variants() -> None:
+    value = redact_sensitive(
+        {
+            "accessKey": "camel-case-secret",
+            "access_key": "snake-case-secret",
+            "message": "access_key=inline-secret",
+        }
+    )
+
+    assert value == {
+        "accessKey": "[REDACTED]",
+        "access_key": "[REDACTED]",
+        "message": "access_key=[REDACTED]",
+    }
+
+
 def test_redaction_covers_nested_conventional_credential_variants() -> None:
     value = redact_sensitive(
         {"provider": {"client_secret": "must-not-persist", "apiToken": "also-secret"}}

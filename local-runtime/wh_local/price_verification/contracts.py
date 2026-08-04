@@ -19,6 +19,7 @@ ALLOWED_PLUGIN_COMMAND_TYPES = frozenset(
 _SENSITIVE_FIELD_NAMES = frozenset(
     {
         "access_token",
+        "access_key",
         "api_token",
         "api_key",
         "api_secret",
@@ -43,7 +44,7 @@ _SENSITIVE_FIELD_NAMES = frozenset(
     }
 )
 _INLINE_CREDENTIAL = re.compile(
-    r"(?i)(\b(?:access[_-]?token|api[_-]?(?:key|secret|token)|auth(?:orization|[_-]?token)|"
+    r"(?i)(\b(?:access[_-]?(?:key|token)|api[_-]?(?:key|secret|token)|auth(?:orization|[_-]?token)|"
     r"bearer[_-]?token|client[_-]?(?:secret|token)|cookie|credential(?:s)?|id[_-]?token|"
     r"key|password|private[_-]?key|refresh[_-]?token|secret|session(?:[_-]?token)?|token)\b\s*[=:]\s*)"
     r"(?:bearer\s+)?[^\s,;]+"
@@ -52,7 +53,7 @@ _BEARER_CREDENTIAL = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
 _WRITE_ACTION = re.compile(
     r"(?i)(?:^|[^a-z])(?:accept|reject|approve|cancel|create|delete|"
     r"modify|publish|purchase|save|submit|update|write|cart|order|"
-    r"(?:change|modify|set|update)[_-]?price|price[_-]?(?:change|modify|set|update))"
+    r"(?:change|modify|set|update)[\s_-]?price|price[\s_-]?(?:change|modify|set|update))"
     r"(?:[^a-z]|$)"
 )
 
