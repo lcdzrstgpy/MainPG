@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import ValidationError
 
 from .contracts import (
@@ -80,9 +80,36 @@ def register_price_verification_routes(
                 return PriceVerificationActor(actor_id=actor_id, workspace_id=actor_id)
             raise HTTPException(status_code=401, detail="authenticated workspace required") from error
 
-    # The extension bridge has intentionally separate credential handling: only
-    # /plugin/connect receives the short-lived pairing code; poll/result accept
-    # the plugin session token in JSON and never the workbench bearer token.
+    @router.post("/plugin/connect")
+    def connect_plugin_with_pairing_code(
+        request: Mapping[str, Any] = Body(...),
+        authorization: str | None = Header(default=None),
+    ) -> Mapping[str, str]:
+        """Consume the opaque pairing code without invoking host business auth.
+
+        The pairing code is already a short-lived, single-use credential tied
+        to its persisted workspace.  Supplying it to the host's business actor
+        resolver would mistake it for an administrator bearer token.
+        """
+        try:
+            pairing_code = _pairing_code(authorization)
+            session = bridge.connect(
+                pairing_code,
+                browser_name=_required(request, "browser_name"),
+                capabilities=_mapping(request.get("capabilities"), "capabilities"),
+                plugin_version=_text(request.get("plugin_version")),
+            )
+            return {
+                "session_id": session.session_id,
+                "session_token": session.token,
+                "status": session.status,
+            }
+        except Exception as error:
+            _raise_http(error)
+
+    # The bridge's poll/result routes use only the plugin session token in
+    # JSON.  The dedicated connect route above is registered first so its
+    # pairing-code authentication remains independent from host business auth.
     register_plugin_bridge_routes(
         router,
         PluginBridgeRouteDependencies(service=bridge, resolve_actor=actor_dependency),
@@ -498,6 +525,15 @@ def _positive_int(value: object, field_name: str) -> int:
 
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _pairing_code(authorization: str | None) -> str:
+    if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+        raise PluginAuthenticationError("missing pairing-code bearer token")
+    value = authorization.removeprefix("Bearer ").strip()
+    if not value:
+        raise PluginAuthenticationError("missing pairing-code bearer token")
+    return value
 
 
 def _raise_http(error: Exception) -> None:
