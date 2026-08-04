@@ -65,6 +65,51 @@ CREATE TABLE IF NOT EXISTS customer_sessions (
 CREATE INDEX IF NOT EXISTS idx_customer_sessions_user_active
     ON customer_sessions (user_id, expires_at, revoked_at);
 
+-- 本地真实账号表：第二阶段账号服务使用。后续迁移 MySQL 时保持字段语义不变。
+CREATE TABLE IF NOT EXISTS auth_accounts (
+    account_id TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    email TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'operator',
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    account_status TEXT NOT NULL DEFAULT 'active',
+    email_verified_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (workspace_id, username),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces (workspace_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_accounts_email_unique
+    ON auth_accounts (email)
+    WHERE email <> '';
+
+CREATE INDEX IF NOT EXISTS idx_auth_accounts_workspace_status
+    ON auth_accounts (workspace_id, role, account_status);
+
+-- 本地密码凭据表：只保存密码哈希、盐和算法参数，不保存明文密码。
+CREATE TABLE IF NOT EXISTS auth_password_credentials (
+    account_id TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    algorithm TEXT NOT NULL DEFAULT 'pbkdf2_sha256',
+    iterations INTEGER NOT NULL DEFAULT 200000,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE
+);
+
+-- 登录日志表：记录成功/失败，便于后续风控、审计和问题排查。
+CREATE TABLE IF NOT EXISTS auth_login_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    success INTEGER NOT NULL,
+    failure_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 店铺表：给每日运营、产品处理、利润活动、核价及货源等模块统一关联店铺。
 CREATE TABLE IF NOT EXISTS stores (
     store_id TEXT PRIMARY KEY,

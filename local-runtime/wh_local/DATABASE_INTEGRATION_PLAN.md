@@ -109,7 +109,7 @@ SQLite 阶段 JSON 可以先使用 `TEXT` 保存 UTF-8 JSON；迁移到 MySQL �
 | `token` | 本地会话 token，前端后续请求接口时放入 Authorization |
 | `expires_at` | token 过期时间 |
 
-第二阶段计划将 mock 账号服务升级为真实 SQLite 账号服务，建议新增：
+第二阶段已将 mock 账号服务升级为真实 SQLite 账号服务，新增：
 
 | 表名 | 作用 |
 | --- | --- |
@@ -117,7 +117,7 @@ SQLite 阶段 JSON 可以先使用 `TEXT` 保存 UTF-8 JSON；迁移到 MySQL �
 | `auth_password_credentials` | 密码哈希、盐、算法版本 |
 | `auth_login_logs` | 登录成功/失败日志 |
 
-密码不得明文保存，建议使用 PBKDF2-HMAC-SHA256 或后续替换为 bcrypt/argon2。
+密码不明文保存，当前使用 PBKDF2-HMAC-SHA256，并保存独立 salt、算法名和迭代次数；后续可替换为 bcrypt/argon2。
 
 ## 4.2 每日选品 / 数据采集模块
 
@@ -280,6 +280,8 @@ flowchart LR
 
 - 已建立 SQLite 基础表；
 - 已建立账号登录会话持久化；
+- 已建立本地真实 SQLite 账号服务；
+- 已新增 `auth_accounts`、`auth_password_credentials`、`auth_login_logs`；
 - 已接入 `workspace_id`、用户、会话等基础结构；
 - 已将每日选品部分迁移纳入统一初始化；
 - 已确认产品处理和利润活动模块各自的字段说明文档。
@@ -289,9 +291,8 @@ flowchart LR
 1. 将产品处理模块的建表纳入统一迁移机制。
 2. 将利润活动模块当前 SQLAlchemy 自建表方式纳入统一数据库文件。
 3. 为利润活动表补充 `workspace_id` 设计方案。
-4. 将 mock 账号服务升级为真实 SQLite 账号服务。
-5. 统一 `created_by`、`workspace_id`、权限上下文，让各模块都能从登录态获得当前用户。
-6. 与尚未上传字段说明的模块负责人确认字段，例如：
+4. 统一 `created_by`、`workspace_id`、权限上下文，让各模块都能从登录态获得当前用户。
+5. 与尚未上传字段说明的模块负责人确认字段，例如：
    - 每日运营；
    - 精致作图；
    - 核价及货源；

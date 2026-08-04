@@ -9,7 +9,7 @@
 ```text
 前端登录页
   -> 本地工作台 /api/customer/login
-  -> 远端账号服务
+  -> 本地 SQLite 账号服务，或正式远端账号服务
   -> 本地工作台写入 SQLite
   -> 返回 wh_local_xxx token
   -> 后续接口通过 Authorization: Bearer wh_local_xxx 识别当前用户
@@ -32,6 +32,7 @@ local-runtime/wh_local/customer/
 ```text
 contracts.py          数据结构约定
 remote_client.py      远端账号服务适配器
+auth_service.py       本地 SQLite 真实账号服务
 local_session.py      本地 session 服务
 routes.py             FastAPI customer 路由
 db_store.py           SQLite 存储实现
@@ -86,6 +87,36 @@ wh_local_xxx           customer 登录后生成的本地工作台 token
 ```
 
 后续其他模块可统一通过 `actor_from_authorization` 获取当前用户。
+
+### 2.4 本地 SQLite 真实账号服务
+
+实现文件：
+
+```text
+local-runtime/wh_local/customer/auth_service.py
+```
+
+当前在未配置 `WH_LOCAL_CUSTOMER_AUTH_BASE_URL` 时，系统默认使用本地 SQLite 账号服务；如果配置了远端账号地址，则继续走远端账号服务。
+
+本地 SQLite 账号服务已支持：
+
+```text
+注册账号
+账号密码登录
+账号激活
+本地邮箱验证码占位响应
+密码重置
+登录成功/失败日志
+```
+
+密码安全约定：
+
+```text
+不保存明文密码
+使用 PBKDF2-HMAC-SHA256
+每个账号使用独立 salt
+保存算法名和迭代次数，便于后续升级
+```
 
 ## 3. 接口清单
 
@@ -167,6 +198,56 @@ token_hash 是 SHA-256 哈希
 不会保存明文 wh_local_xxx
 ```
 
+### 4.4 `auth_accounts`
+
+真实账号主表，保存注册账号信息。
+
+核心字段：
+
+```text
+account_id
+username
+email
+display_name
+role
+workspace_id
+account_status
+email_verified_at
+created_at
+updated_at
+```
+
+### 4.5 `auth_password_credentials`
+
+密码凭据表，只保存密码哈希和算法参数。
+
+核心字段：
+
+```text
+account_id
+password_hash
+salt
+algorithm
+iterations
+updated_at
+```
+
+### 4.6 `auth_login_logs`
+
+登录日志表，用于记录登录成功、失败和失败原因。
+
+核心字段：
+
+```text
+id
+account_id
+username
+email
+success
+failure_reason
+created_at
+```
+
 ## 5. 其他模块对接方式
 
 后续其他模块不要自己实现登录判断，统一使用请求头：
@@ -209,6 +290,8 @@ updated_by
 
 ## 6. 远端账号服务对接
 
+当前本地阶段不依赖远端账号服务。未配置 `WH_LOCAL_CUSTOMER_AUTH_BASE_URL` 时，注册和登录会直接使用 SQLite 账号表。
+
 本地工作台通过环境变量配置远端账号服务地址：
 
 ```text
@@ -240,7 +323,7 @@ expires_at
 ## 7. 当前暂未处理事项
 
 ```text
-1. 正式远端账号服务部署方式
+1. 正式远端账号服务部署方式，或是否长期保留本地 SQLite 账号服务
 2. 正式注册、验证码、找回密码是否需要真实邮件服务
 3. workspace_id 最终是否使用 workspace_code、UUID 或公司编号
 4. 正式前端登录页如何存 token、续期 token、退出登录
@@ -256,6 +339,7 @@ local-runtime/wh_local/db.py
 local-runtime/wh_local/session.py
 local-runtime/wh_local/config.py
 local-runtime/wh_local/app/main.py
+local-runtime/wh_local/customer/auth_service.py
 local-runtime/wh_local/customer/db_store.py
 local-runtime/wh_local/customer/SQLITE_STORE.md
 local-runtime/wh_local/customer/HANDOFF.md

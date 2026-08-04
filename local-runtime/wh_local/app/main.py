@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from ..config import default_config
+from ..customer.auth_service import SQLiteCustomerAuthService
 from ..customer.db_store import SQLiteCustomerSessionStore
 from ..customer.local_session import LocalSessionService
 from ..customer.remote_client import CustomerAuthClient
@@ -60,7 +61,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     def health() -> dict[str, Any]:
         return {"ok": True, "database_path": str(db_path)}
 
-    customer_auth = CustomerAuthClient(config.customer_auth_base_url)
+    remote_customer_auth = CustomerAuthClient(config.customer_auth_base_url)
+    customer_auth = remote_customer_auth if remote_customer_auth.configured() else SQLiteCustomerAuthService(db_path)
     customer_sessions = LocalSessionService(SQLiteCustomerSessionStore(db_path))
     app.include_router(create_customer_router(customer_auth, customer_sessions))
 

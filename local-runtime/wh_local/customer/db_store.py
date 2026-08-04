@@ -27,11 +27,15 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
 
     def upsert_customer_user(self, customer: CustomerAuthResult) -> str:
         user_id = _stable_user_id(customer)
-        workspace_id = _workspace_id(customer)
         workspace_code = customer.workspace_code or DEFAULT_WORKSPACE_CODE
         workspace_name = customer.workspace_name or DEFAULT_WORKSPACE_NAME
         now = _utc_now()
         with transaction(self.database_path) as conn:
+            workspace_row = conn.execute(
+                "SELECT workspace_id FROM workspaces WHERE workspace_code = ?",
+                (workspace_code,),
+            ).fetchone()
+            workspace_id = workspace_row["workspace_id"] if workspace_row else _workspace_id(customer)
             conn.execute(
                 """
                 INSERT INTO workspaces (
