@@ -10,12 +10,18 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from .domain.engine import activity_decision, calculate_profit
+from .domain.engine import activity_decision, calculate_profit, validate_settings
 from .domain.models import ProfitPreview, ProfitSettings, SiteCode
 from .infrastructure.database import ProfitActivityDatabase, create_database
 from .infrastructure.repository import ProfitActivityRepository, SettingsRevisionConflict, SettingsSnapshot
-from .infrastructure.assets import resolve_asset, save_asset
-from .domain.workbooks import new_workbook, parse_activity_workbook, parse_product_workbook, workbook_bytes
+from .infrastructure.assets import ensure_writable_directory, resolve_asset, save_asset
+from .domain.workbooks import (
+    extract_product_workbook_images,
+    filter_activity_workbook,
+    new_workbook,
+    parse_product_workbook,
+    workbook_bytes,
+)
 
 
 class ProfitActivityConflict(ValueError):
@@ -41,11 +47,15 @@ class ProfitActivityService:
 
     def legacy_settings(self) -> dict[str, Any]:
         settings = asdict(self.get_settings().settings)
+        settings["save_root"] = str(self._asset_root(self.get_settings().settings))
         settings["activity_filter_rule_version"] = settings["rule_version"]
         return settings
 
     def update_settings(self, expected_revision: int, settings: ProfitSettings) -> SettingsSnapshot:
         try:
+            validate_settings(settings)
+            if settings.save_root:
+                ensure_writable_directory(Path(settings.save_root))
             return self._repository.update_settings(expected_revision, settings)
         except SettingsRevisionConflict as exc:
             raise ProfitActivityConflict("settings_revision_conflict") from exc
@@ -60,6 +70,8 @@ class ProfitActivityService:
         if "activity_filter_rule_version" in payload:
             values["rule_version"] = payload["activity_filter_rule_version"]
         settings = ProfitSettings(**_decimal_settings(values))
+        if settings.save_root:
+            ensure_writable_directory(Path(settings.save_root))
         self.update_settings(int(payload.get("expected_revision", snapshot.revision)), settings)
         return self.legacy_settings()
 
@@ -151,6 +163,20 @@ class ProfitActivityService:
     def preview_import(self, workbook: bytes, original_filename: str, site: SiteCode) -> dict[str, Any]:
         rows = parse_product_workbook(workbook, site, self._repository.product_keys())
         import_id = uuid.uuid4().hex
+        image_rows = extract_product_workbook_images(workbook)
+        root = self._asset_root(self.get_settings().settings)
+        for row in rows:
+            extracted = image_rows.get(row["row_id"], {})
+            product_images = extracted.get("product", [])
+            source_images = extracted.get("source", [])
+            if product_images:
+                filename, content = product_images[0]
+                row["product_image_path"] = save_asset(root, site=site, skc=f"import_{import_id}_{row['row_id']}", kind="preview_product", filename=filename, content=content)
+                row["has_product_image"] = True
+            if source_images:
+                filename, content = source_images[0]
+                row["source_image_path"] = save_asset(root, site=site, skc=f"import_{import_id}_{row['row_id']}", kind="preview_source", filename=filename, content=content)
+                row["has_source_image"] = True
         self._repository.save_import_session(import_id, original_filename, site, rows)
         summary = _import_summary(rows)
         return {"import_id": import_id, "original_filename": original_filename, "site": site, "summary": summary, "rows": rows}
@@ -172,7 +198,13 @@ class ProfitActivityService:
             if exists and on_conflict == "skip":
                 skipped += 1
                 continue
-            product = self.upsert_product({**row, "site": session.site, "visibility": "shared"})
+            image = _asset_tuple(row.get("product_image_path"))
+            source_image = _asset_tuple(row.get("source_image_path"))
+            product = self.upsert_product(
+                {**row, "site": session.site, "visibility": "shared"},
+                image=image,
+                source_image=source_image,
+            )
             products.append(product)
             if exists:
                 replaced += 1
@@ -195,40 +227,48 @@ class ProfitActivityService:
         sheet.append(["site", "SKC", "售价", "成本", "重量KG", "备注", "货源", "利润", "利润率"])
         for product in self.list_products(site=site):
             sheet.append([product["site"], product["skc"], product["selling_price"], product["cost_price"], product["weight_kg"], product["note"], product["source_url"], product["net_profit"], product["profit_rate"]])
-        path = self._output_root() / f"{site}_product_catalog.xlsx"
+        root = self._asset_root(self.get_settings().settings)
+        path = root / f"{site}_product_catalog.xlsx"
         path.write_bytes(workbook_bytes(workbook))
         return path
 
     def filter_activity_template(self, workbook: bytes, original_filename: str, site: SiteCode) -> dict[str, Any]:
-        _, template_rows = parse_activity_workbook(workbook)
         products = {product["skc"]: product for product in self.list_products(site=site)}
-        kept: list[list[Any]] = []
-        removed: list[list[Any]] = []
-        qualification_counts: dict[str, int] = {}
-        decisions: list[dict[str, Any]] = []
         settings = self.get_settings().settings
-        for _, row_number, skc in template_rows:
+        def evaluate(skc: str, price: Decimal) -> dict[str, Any]:
             product = products.get(skc)
             if product is None:
-                decision, reason = "excluded", "missing_product"
-            else:
-                preview = _preview_from_product(product)
-                decision, reason = activity_decision(preview, settings)
-            qualification_counts[reason] = qualification_counts.get(reason, 0) + 1
-            entry = [skc, decision, reason, product.get("net_profit") if product else None, product.get("profit_rate") if product else None]
-            (kept if decision == "eligible" else removed).append(entry)
-            decisions.append({"row_id": f"row_{row_number}", "skc": skc, "decision": decision, "reason_code": reason})
-        filtered_path, removed_path = self._write_filter_outputs(kept, removed)
+                return {"keep": False, "decision": "excluded", "reason_code": "missing_product", "net_profit": None, "profit_rate": None}
+            preview = calculate_profit(
+                site_code=site,
+                selling_price=price,
+                cost_price=Decimal(str(product["cost_price"])),
+                weight_kg=Decimal(str(product["weight_kg"])),
+                settings=settings,
+            )
+            decision, reason = activity_decision(preview, settings)
+            return {
+                "keep": decision == "eligible", "decision": decision, "reason_code": reason,
+                "net_profit": float(preview.net_profit), "profit_rate": float(preview.profit_rate),
+                "net_profit_passed": preview.net_profit >= settings.activity_min_net_profit,
+                "profit_rate_passed": preview.profit_rate >= settings.activity_profit_rate_threshold,
+            }
+
+        filtered = filter_activity_workbook(workbook, site=site, evaluate=evaluate)
+        root = self._asset_root(settings) / "activity_outputs"
+        root.mkdir(parents=True, exist_ok=True)
+        token = uuid.uuid4().hex[:12]
+        filtered_path = root / f"eligible_{token}.xlsx"
+        removed_path = root / f"excluded_{token}.xlsx"
+        filtered_path.write_bytes(filtered.pop("filtered_bytes"))
+        removed_path.write_bytes(filtered.pop("removed_bytes"))
         result = {
             "site": site, "requested_site": site, "site_auto_switched": False,
-            "template_site_summary": {"total_price_rows": len(template_rows), "site_counts": {site: len(template_rows)}, "unique_skc_count_by_site": {site: len({item[2] for item in template_rows})}},
             "original_filename": original_filename, "filtered_path": str(filtered_path), "removed_path": str(removed_path),
-            "kept_skc_count": len({row[0] for row in kept}), "removed_skc_count": len({row[0] for row in removed}),
-            "kept_row_count": len(kept), "removed_row_count": len(removed), "kept_activity_count": len(kept), "removed_activity_count": len(removed),
             "threshold": float(settings.activity_min_net_profit), "min_net_profit_threshold": float(settings.activity_min_net_profit),
             "profit_rate_threshold": float(settings.activity_profit_rate_threshold), "activity_profit_rate_threshold": float(settings.activity_profit_rate_threshold),
-            "activity_filter_rule_version": settings.rule_version, "qualification_counts": qualification_counts,
-            "removed_rows": [{"skc": row[0], "reason_code": row[2]} for row in removed], "activity_decisions": decisions,
+            "activity_filter_rule_version": settings.rule_version,
+            **filtered,
         }
         task = self._repository.create_filter_task(result)
         return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": "completed", **result}
@@ -245,6 +285,17 @@ class ProfitActivityService:
             raise ValueError("kind must be filtered or removed")
         return Path(result[f"{kind}_path"])
 
+    def import_image_path(self, import_id: str, row_id: str, kind: str) -> Path:
+        session = self._repository.get_import_session(import_id)
+        if session is None:
+            raise ProfitActivityNotFound("import_not_found")
+        rows = json.loads(session.rows_json)
+        row = next((item for item in rows if item.get("row_id") == row_id), None)
+        if row is None:
+            raise ProfitActivityNotFound("import_row_not_found")
+        field = "product_image_path" if kind == "product" else "source_image_path"
+        return resolve_asset(str(row.get(field) or ""))
+
     def image_path(self, skc: str, site: SiteCode, kind: str, group: int = 0, index: int = 0) -> Path:
         product = self._repository.find_product(skc, site)
         if product is None:
@@ -256,9 +307,7 @@ class ProfitActivityService:
         return resolve_asset(paths[index] if index < len(paths) else product.source_image_path)
 
     def _asset_root(self, settings: ProfitSettings) -> Path:
-        root = Path(settings.save_root) if settings.save_root else self._output_root()
-        root.mkdir(parents=True, exist_ok=True)
-        return root
+        return ensure_writable_directory(Path(settings.save_root) if settings.save_root else self._output_root())
 
     def _output_root(self) -> Path:
         root = Path(os.getenv("PROFIT_ACTIVITY_OUTPUT_DIR") or Path(__file__).resolve().parents[4] / "real-workbench" / "employee_workbench" / "outputs" / "profit_activity")
@@ -382,3 +431,14 @@ def _preview_from_product(product: dict[str, Any]) -> ProfitPreview:
 
 def _import_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
     return {"total_rows": len(rows), "importable_rows": sum(row["status"] == "ready" for row in rows), "warning_rows": sum(bool(row["warnings"]) for row in rows), "blocked_rows": sum(row["status"] != "ready" for row in rows), "duplicate_rows": sum(bool(row["is_duplicate"]) for row in rows), "default_selected_rows": sum(row["status"] == "ready" and not row["is_duplicate"] for row in rows)}
+
+
+def _asset_tuple(path_value: Any) -> tuple[str, bytes] | None:
+    """Convert a persisted preview image into the normal upload input shape."""
+    if not path_value:
+        return None
+    try:
+        path = resolve_asset(str(path_value))
+    except ValueError:
+        return None
+    return path.name, path.read_bytes()

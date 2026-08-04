@@ -16,6 +16,9 @@ from ..data_collection import (
 from ..data_collection.provider import OneBound1688Provider
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
+from ..modules.basic_settings.service import SystemConfigService
+from ..modules.product_processing import create_product_processing_router
+from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
 from ..session import Actor, actor_from_authorization
 
 
@@ -77,6 +80,35 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
     # 每日选品数据采集模块
     _register_data_collection(app, db_path)
+
+    # 利润活动保留既有 /api/v1 前缀，避免影响已对接的页面接口。测试注入
+    # database_path 时将模块库置于测试目录；常规运行仍使用模块默认库。
+    profit_database_url = None
+    if database_path is not None:
+        profit_database_url = f"sqlite:///{(db_path.parent / 'profit_activity.sqlite3').as_posix()}"
+    profit_activity_service = create_profit_activity_service(profit_database_url)
+    # Preserve the versioned route and also serve the path used by the
+    # original Profit Activity page.  The two routers share one service and
+    # SQLite/WAL database, so this is an alias rather than a second module.
+    app.include_router(create_profit_activity_router(profit_activity_service), prefix="/api/v1")
+    app.include_router(create_profit_activity_router(profit_activity_service))
+
+    # 产品处理使用自己的 SQLAlchemy 表和 WAL 数据库；它通过 handoff HTTP
+    # 合同消费每日采集确认结果，不直接访问 daily_selection_* 表。
+    product_database_url = f"sqlite:///{db_path.as_posix()}" if database_path is not None else None
+    product_assets_root = db_path.parent / "product_processing_assets" if database_path is not None else None
+    system_config_service = SystemConfigService(db_path)
+    app.include_router(
+        create_product_processing_router(
+            database_url=product_database_url,
+            assets_root=product_assets_root,
+            media_config_provider=system_config_service.runtime_media_config,
+        )
+    )
+
+    @app.on_event("shutdown")
+    def close_profit_activity_database() -> None:
+        profit_activity_service.close()
 
     return app
 
