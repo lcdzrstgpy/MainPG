@@ -135,6 +135,7 @@ SQLite 阶段 JSON 可以先使用 `TEXT` 保存 UTF-8 JSON；迁移到 MySQL �
 | --- | --- |
 | 每日选品/数据采集 | `data_collection.read`、`data_collection.collect`、`data_collection.feedback`、`data_collection.confirm`、`data_collection.plugin` |
 | 产品处理 | `product_processing.read`、`product_processing.draft_write`、`product_processing.draft_delete`、`product_processing.process`、`product_processing.prompt_manage`、`product_processing.export`、`product_processing.handoff_consume` |
+| 核价及货源 | `price_verification.read`、`price_verification.quote_collect`、`price_verification.sourcing_match`、`price_verification.export`、`price_verification.plugin` |
 | 卖家中心上架/核价 | `seller_listing.read`、`seller_listing.price_confirm`、`seller_listing.attribute_write`、`seller_listing.publish` |
 | 系统配置/管理 | `settings.read`、`settings.manage`、`stores.manage`、`users.manage` |
 
@@ -297,6 +298,55 @@ require_permission(actor, "product_processing.process")
 - `created_by` 当前为本地默认值，后续应接入账号登录模块提供的真实用户 ID；
 - 图片字段当前保存本地路径，后续可逐步抽象为统一资产表。
 
+## 4.5 核价及货源模块
+
+模块目录：`local-runtime/wh_local/price_verification`
+
+当前状态：已新增版本化 SQL 迁移 `price_verification/migrations/001_price_verification.sql`，并纳入统一 SQLite 初始化。
+
+该模块负责：
+
+- 通过 Edge 插件只读采集 Temu 核价证据；
+- 保存不可变核价批次和证据快照；
+- 创建 1688 图搜货源匹配任务；
+- 保存货源候选和员工侧决策；
+- 管理 OneBound Provider 调用预算；
+- 提供预览、Excel 导出和证据报告所需数据。
+
+核心边界：
+
+- 核价及货源模块不写入 `daily_selection_*` 表；
+- 核价及货源模块不写入 `data_collection_plugin_*` 表；
+- 插件只读采集证据，不执行 Temu/1688 平台写操作；
+- 不保存平台凭据、配对码明文、插件会话令牌或未脱敏原始插件载荷；
+- 所有读写必须带 `workspace_id`。
+
+核心表：
+
+| 表名 | 作用 |
+| --- | --- |
+| `price_verification_pairing_codes` | 一次性插件配对码摘要，不保存明文 |
+| `price_verification_plugin_sessions` | Edge 插件只读连接会话 |
+| `price_verification_plugin_commands` | 插件命令租约、脱敏载荷和结果 |
+| `price_verification_provider_budgets` | 按工作区、凭据指纹和上海日期统计 Provider 调用预算 |
+| `price_verification_quote_runs` | 不可变 Temu 核价批次 |
+| `price_verification_quote_items` | 核价批次中的单个报价快照 |
+| `price_verification_sourcing_runs` | 货源匹配批次 |
+| `price_verification_source_candidates` | 货源候选和员工侧决策快照 |
+
+关键字段：
+
+| 表 | 关键字段 |
+| --- | --- |
+| `price_verification_pairing_codes` | `pairing_id`、`workspace_id`、`code_sha256`、`expires_at`、`used_at`、`created_at` |
+| `price_verification_plugin_sessions` | `session_id`、`workspace_id`、`token_sha256`、`browser`、`plugin_version`、`capabilities_json`、`status`、`last_seen_at` |
+| `price_verification_plugin_commands` | `command_id`、`workspace_id`、`session_id`、`command_type`、`idempotency_key`、`payload_json`、`result_json`、`status`、`lease_expires_at` |
+| `price_verification_provider_budgets` | `workspace_id`、`credential_fingerprint`、`shanghai_date`、`call_limit`、`used_count`、`updated_at` |
+| `price_verification_quote_runs` | `run_id`、`workspace_id`、`command_id`、`status`、`item_count`、`adapter_version`、`captured_at`、`created_at` |
+| `price_verification_quote_items` | `workspace_id`、`run_id`、`quote_key`、`snapshot_json` |
+| `price_verification_sourcing_runs` | `run_id`、`workspace_id`、`quote_run_id`、`source_mode`、`status`、`task_count`、`candidate_count`、`created_at` |
+| `price_verification_source_candidates` | `workspace_id`、`sourcing_run_id`、`quote_key`、`candidate_key`、`snapshot_json` |
+
 ## 5. 跨模块数据流
 
 当前推荐的数据流如下：
@@ -325,11 +375,12 @@ flowchart LR
 - 已建立本地真实 SQLite 账号服务；
 - 已新增 `auth_accounts`、`auth_password_credentials`、`auth_login_logs`；
 - 已新增 `permissions`、`role_permissions`、`user_permission_overrides`；
-- 已将选品、产品处理、卖家中心上架/核价、系统配置权限点统一收敛到数据库；
+- 已将选品、产品处理、核价及货源、卖家中心上架/核价、系统配置权限点统一收敛到数据库；
 - 已接入 `workspace_id`、用户、会话等基础结构；
 - 已将每日选品核心采集表纳入统一初始化；
 - 已将每日选品 Temu 插件队列表纳入统一初始化；
 - 已将产品处理 7 张表纳入统一初始化；
+- 已将核价及货源 8 张表纳入统一初始化；
 - 已确认利润活动模块字段说明文档。
 
 ### 6.2 待推进
@@ -340,7 +391,6 @@ flowchart LR
 4. 与尚未上传字段说明的模块负责人确认字段，例如：
    - 每日运营；
    - 精致作图；
-   - 核价及货源；
    - 员工管理；
    - 店铺配置。
 

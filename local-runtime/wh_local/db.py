@@ -232,6 +232,15 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 product_processing_sql.read_text(encoding="utf-8"),
             )
         )
+    price_verification_sql = root / "price_verification" / "migrations" / "001_price_verification.sql"
+    if price_verification_sql.exists():
+        migrations.append(
+            (
+                "price_verification:001_price_verification",
+                "price_verification",
+                price_verification_sql.read_text(encoding="utf-8"),
+            )
+        )
     return migrations
 
 
@@ -260,6 +269,11 @@ DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (
     ("product_processing.prompt_manage", "product_processing", "prompt_manage", "维护产品处理 AI 提示词"),
     ("product_processing.export", "product_processing", "export", "下载店小秘文件、失败原因和视频清单"),
     ("product_processing.handoff_consume", "product_processing", "handoff_consume", "消费每日选品 handoff 并生成草稿"),
+    ("price_verification.read", "price_verification", "read", "查看核价批次、货源匹配批次和证据快照"),
+    ("price_verification.quote_collect", "price_verification", "quote_collect", "通过只读插件采集 Temu 核价证据"),
+    ("price_verification.sourcing_match", "price_verification", "sourcing_match", "创建 1688 货源匹配任务并查看候选"),
+    ("price_verification.export", "price_verification", "export", "导出核价 Excel 和证据报告"),
+    ("price_verification.plugin", "price_verification", "plugin", "创建配对码、连接插件会话并处理插件命令"),
     ("seller_listing.read", "seller_listing", "read", "查看卖家中心上架、核价和库存流程数据"),
     ("seller_listing.price_confirm", "seller_listing", "price_confirm", "处理核价、调价和价格待确认产品"),
     ("seller_listing.attribute_write", "seller_listing", "attribute_write", "修改产品属性、详情和库存"),
@@ -283,6 +297,11 @@ OPERATOR_PERMISSIONS: frozenset[str] = frozenset(
         "product_processing.process",
         "product_processing.export",
         "product_processing.handoff_consume",
+        "price_verification.read",
+        "price_verification.quote_collect",
+        "price_verification.sourcing_match",
+        "price_verification.export",
+        "price_verification.plugin",
         "seller_listing.read",
         "seller_listing.price_confirm",
         "seller_listing.attribute_write",
