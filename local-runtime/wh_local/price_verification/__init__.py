@@ -7,6 +7,7 @@ from .contracts import (
     redact_sensitive,
 )
 from .repository import PriceVerificationNotFound, PriceVerificationRepository
+from .routes import PriceVerificationRouteDependencies, register_price_verification_routes
 
 __all__ = [
     "PluginCommandRequest",
@@ -14,7 +15,8 @@ __all__ = [
     "PriceVerificationContractError",
     "PriceVerificationNotFound",
     "PriceVerificationRepository",
+    "PriceVerificationRouteDependencies",
     "redact_sensitive",
+    "register_price_verification_routes",
 ]
-
 
