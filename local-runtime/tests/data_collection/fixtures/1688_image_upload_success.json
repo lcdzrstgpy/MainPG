@@ -1,9 +1,0 @@
-{
-  "code": 200,
-  "msg": "success",
-  "request_id": "upload-001",
-  "data": {
-    "imgid": "img-abc-123",
-    "Authorization": "upstream-authorization-must-not-escape"
-  }
-}
