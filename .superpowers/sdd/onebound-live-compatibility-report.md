@@ -5,35 +5,42 @@ Date: 2026-08-04
 ## Scope
 
 - `local-runtime/wh_local/modules/daily_selection/provider.py`
-- `local-runtime/wh_local/modules/daily_selection/normalizer.py`
-- Provider and normalizer regression tests only
+- `local-runtime/wh_local/modules/daily_selection/normalizer.py` (previous response-shape compatibility)
+- Provider and normalizer regression tests
+
+## Response-shape compatibility
+
+- Provider audit counts top-level `items.item` lists and single objects while retaining legacy `data.items` lists.
+- The normalizer accepts top-level `items.item` as either a list or a single object while retaining legacy `data.items` support.
+
+## Corrected image-search protocol
+
+The earlier GET upload assumption was superseded by verified protocol evidence. `upload_img` now uses:
+
+- `POST`;
+- URL query parameters `key`, `secret`, and `cache=no` only;
+- an `application/x-www-form-urlencoded` body containing only `imgcode=<base64>`.
+
+Image-ID extraction preserves legacy `data.imgid` and recursively searches `items.item` mappings/lists for non-empty `imgid`, `img_id`, or `url` fields. Image search continues to send `cache=no`.
 
 ## TDD evidence
 
-The new regression tests were written before the implementation. The initial Conda-base run of the provider and normalizer tests failed in the expected five places:
+The protocol tests were updated before the provider implementation. The initial Conda-base provider run failed in four expected cases:
 
-- upload used `POST` instead of the required `GET` query parameters;
-- provider audit did not count top-level `items.item`;
-- image search did not read top-level `items.imgid`;
-- normalizer returned no candidates for both list and single-object `items.item` payloads.
+- upload was GET rather than POST;
+- `imgcode` was incorrectly in query parameters rather than the form body;
+- nested object `items.item.imgid` was not accepted;
+- list/nested `img_id` and `url` paths were not accepted.
 
-## Changes
-
-- `upload_img` now uses a GET request with `imgcode=<base64>` and `cache=no`, with no request body.
-- Image search now accepts `items.imgid` and preserves the legacy `data.imgid` fallback; it passes `cache=no`.
-- Provider audit item counts support top-level `items.item` lists and single objects while retaining legacy `data.items` lists.
-- The normalizer accepts top-level `items.item` as either a list or a single object, while retaining legacy `data.items` support.
+The regression tests use only `FakeTransport`; no OneBound or other real network/API request was made.
 
 ## Verification
 
-All verification used the injected `FakeTransport`; no real OneBound or other network/API request was made.
-
 ```text
-conda run -n base python -m pytest local-runtime/tests/daily_selection/test_provider.py local-runtime/tests/daily_selection/test_normalizer.py -q
-36 passed in 0.09s
-
-conda run -n base python -m pytest local-runtime/tests/daily_selection -q
-90 passed in 0.13s
+conda run -n base python -m pytest local-runtime/tests/daily_selection/test_provider.py -q
+28 passed in 0.10s
 ```
 
-`git diff --check` reported no whitespace errors for the changed implementation and test files.
+The unfiltered daily-selection suite is currently blocked at collection by an unrelated, untracked `test_routes.py`: it imports `wh_local.modules.daily_selection.routes`, which is not present. This task did not change that test or module.
+
+`git diff --check` reported no whitespace errors for the provider, provider-test, and report changes.

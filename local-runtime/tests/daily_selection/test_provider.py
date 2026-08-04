@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlencode
 
 import pytest
 
@@ -124,7 +125,7 @@ def test_keyword_search_returns_sanitized_result_and_audit_record() -> None:
     assert_no_sensitive_values({"response": result.response, "audit": result.audit})
 
 
-def test_image_search_downloads_uploads_then_uses_legacy_imgid_without_retaining_bytes() -> None:
+def test_image_search_uploads_form_imgcode_then_uses_legacy_imgid_without_retaining_bytes() -> None:
     image_url = "https://images.example.test/reference.jpg"
     image_bytes = b"small-image-content"
     transport = FakeTransport(
@@ -150,10 +151,16 @@ def test_image_search_downloads_uploads_then_uses_legacy_imgid_without_retaining
         endpoint("upload_img"),
         endpoint("item_search_img"),
     ]
-    assert transport.requests[1]["method"] == "GET"
-    assert transport.requests[1]["body"] is None
-    assert transport.requests[1]["params"]["imgcode"] == base64.b64encode(image_bytes).decode("ascii")
-    assert transport.requests[1]["params"]["cache"] == "no"
+    assert transport.requests[1]["method"] == "POST"
+    assert transport.requests[1]["params"] == {
+        "key": "test-api-key",
+        "secret": "test-api-secret",
+        "cache": "no",
+    }
+    assert transport.requests[1]["body"] == urlencode(
+        {"imgcode": base64.b64encode(image_bytes).decode("ascii")}
+    ).encode("utf-8")
+    assert transport.requests[1]["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
     assert transport.requests[2]["params"]["imgid"] == "img-abc-123"
     assert transport.requests[2]["params"]["cache"] == "no"
     assert result.audit.operation == "item_search_img"
@@ -186,13 +193,23 @@ def test_keyword_search_audit_counts_real_top_level_items_item_list() -> None:
     assert result.audit.response_summary["item_count"] == 2
 
 
-def test_image_search_uses_real_top_level_upload_imgid_and_cache_bypass() -> None:
+@pytest.mark.parametrize(
+    ("upload_items", "expected_image_id"),
+    [
+        ({"item": {"imgid": "img-object-456"}}, "img-object-456"),
+        ({"item": [{"img_id": "img-list-456"}]}, "img-list-456"),
+        ({"item": [{"result": {"url": "img-nested-456"}}]}, "img-nested-456"),
+    ],
+)
+def test_image_search_uses_nested_real_upload_image_id(
+    upload_items: Mapping[str, Any], expected_image_id: str
+) -> None:
     image_url = "https://images.example.test/reference.jpg"
     image_bytes = b"small-image-content"
     transport = FakeTransport(
         {
             image_url: HttpResponse(status=200, body=image_bytes),
-            endpoint("upload_img"): response({"code": 200, "items": {"imgid": "img-real-456"}}),
+            endpoint("upload_img"): response({"code": 200, "items": upload_items}),
             endpoint("item_search_img"): response(
                 {"code": 200, "items": {"item": [{"num_iid": "offer-456", "title": "真实图搜商品"}]}}
             ),
@@ -203,10 +220,17 @@ def test_image_search_uses_real_top_level_upload_imgid_and_cache_bypass() -> Non
     result = provider(transport).search_by_image(criteria)
 
     assert result.ok is True
-    assert transport.requests[1]["method"] == "GET"
-    assert transport.requests[1]["params"]["imgcode"] == base64.b64encode(image_bytes).decode("ascii")
+    assert transport.requests[1]["method"] == "POST"
+    assert transport.requests[1]["params"] == {
+        "key": "test-api-key",
+        "secret": "test-api-secret",
+        "cache": "no",
+    }
+    assert transport.requests[1]["body"] == urlencode(
+        {"imgcode": base64.b64encode(image_bytes).decode("ascii")}
+    ).encode("utf-8")
     assert transport.requests[1]["params"]["cache"] == "no"
-    assert transport.requests[2]["params"]["imgid"] == "img-real-456"
+    assert transport.requests[2]["params"]["imgid"] == expected_image_id
     assert transport.requests[2]["params"]["cache"] == "no"
 
 

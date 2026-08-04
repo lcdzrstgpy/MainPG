@@ -254,7 +254,10 @@ class OneBound1688Provider:
             del downloaded
         return self._api_call(
             "upload_img",
-            {"imgcode": encoded_image, "cache": "no"},
+            {"cache": "no"},
+            body=urlencode({"imgcode": encoded_image}).encode("utf-8"),
+            http_method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
             request_metadata={"image_size_bytes": None},
             prior_audits=(download_audit,),
         )
@@ -374,6 +377,7 @@ class OneBound1688Provider:
         *,
         body: bytes | None = None,
         http_method: str = "GET",
+        headers: Mapping[str, str] | None = None,
         request_metadata: Mapping[str, Any],
         prior_audits: tuple[ApiEvidence, ...] = (),
         extra_response_summary: Mapping[str, Any] | None = None,
@@ -387,7 +391,7 @@ class OneBound1688Provider:
                 self._endpoint(operation),
                 params={"key": self._api_key, "secret": self._api_secret, **parameters},
                 body=body,
-                headers={"Content-Type": "application/json"} if body is not None else None,
+                headers=dict(headers) if headers is not None else None,
                 timeout=self._timeout_seconds,
             )
         except (TimeoutError, socket.timeout):
@@ -507,10 +511,29 @@ class OneBound1688Provider:
     @staticmethod
     def _image_id_from_upload_response(payload: Mapping[str, Any]) -> Any:
         items = payload.get("items")
-        if isinstance(items, Mapping) and "imgid" in items:
-            return items["imgid"]
+        image_id = OneBound1688Provider._nested_image_id(items)
+        if image_id is not None:
+            return image_id
         data = payload.get("data")
         return data.get("imgid") if isinstance(data, Mapping) else None
+
+    @staticmethod
+    def _nested_image_id(value: Any) -> str | None:
+        if isinstance(value, Mapping):
+            for name in ("imgid", "img_id", "url"):
+                candidate = value.get(name)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate
+            for child in value.values():
+                image_id = OneBound1688Provider._nested_image_id(child)
+                if image_id is not None:
+                    return image_id
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                image_id = OneBound1688Provider._nested_image_id(child)
+                if image_id is not None:
+                    return image_id
+        return None
 
     @staticmethod
     def _json_mapping(body: bytes) -> Mapping[str, Any]:
