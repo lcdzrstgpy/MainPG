@@ -46,3 +46,22 @@ ImportError: cannot import name 'filter_and_score_candidates'
 - `local-runtime/wh_local/modules/daily_selection/scoring.py`
 - `local-runtime/tests/daily_selection/test_filtering_scoring.py`
 - `.superpowers/sdd/task-5-report.md`
+
+## 复审修复：真实 offer ID 与 URL 回退身份
+
+### RED 证据
+
+新增“一个记录有真实 `offer_id`，另一个以相同规范来源链接作为 ID 缺失回退”回归后执行：
+
+```text
+conda run -n base python -m pytest local-runtime/tests/daily_selection/test_filtering_scoring.py -q
+```
+
+结果：`1 failed, 9 passed`。回退记录错误地留在通过列表，证明先前的单一身份键无法将真实 ID 记录登记的来源链接与 URL 回退记录关联。
+
+### 修复与验证
+
+- 去重同时维护 `source_platform + real offer_id` 与 `source_platform + canonical source_url` 两套集合；真实 ID 仍优先报告 `duplicate_source_offer`，URL 回退或同来源链接报告 `duplicate_source_url`。
+- 测试夹具现在为不同 `offer_id` 生成不同来源链接，避免把本应独立的商品误构造成来源链接相同的重复项；刻意的重复用例仍显式使用共享链接。
+- 定向 GREEN：`conda run -n base python -m pytest local-runtime/tests/daily_selection/test_filtering_scoring.py -q` → `10 passed in 0.09s`
+- 完整回归：`conda run -n base python -m pytest local-runtime/tests/daily_selection -q` → `91 passed in 0.14s`；`compileall filtering.py` 退出码 0。

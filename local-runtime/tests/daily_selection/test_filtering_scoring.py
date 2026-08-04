@@ -46,6 +46,8 @@ def candidate(**overrides: object) -> DailySelectionCandidate:
         "evidence": (ApiEvidence(provider="1688", operation="item_get", captured_at="2026-08-04T09:00:00+08:00"),),
     }
     data.update(overrides)
+    if "offer_id" in overrides and "source_url" not in overrides:
+        data["source_url"] = f"https://detail.1688.com/{data['offer_id']}.html"
     return DailySelectionCandidate(**data)
 
 
@@ -81,6 +83,24 @@ def test_filter_uses_canonical_source_url_when_offer_id_is_normalized_from_url()
     result = filter_candidates((first, duplicate), DailySelectionCriteria(keywords=["露营灯"]))
 
     assert result.candidates == (first,)
+    assert result.filtered[0].selection_reasons == ("duplicate_source_url",)
+
+
+def test_filter_deduplicates_real_offer_id_against_url_fallback_identity() -> None:
+    identified = candidate(
+        candidate_id="1688:identified",
+        offer_id="known-offer-9",
+        source_url="https://detail.1688.com/shared-offer.html?spm=search",
+    )
+    idless_fallback = candidate(
+        candidate_id="1688:idless",
+        offer_id="https://detail.1688.com/shared-offer.html",
+        source_url="https://DETAIL.1688.COM/shared-offer.html#details",
+    )
+
+    result = filter_candidates((identified, idless_fallback), DailySelectionCriteria(keywords=["露营灯"]))
+
+    assert result.candidates == (identified,)
     assert result.filtered[0].selection_reasons == ("duplicate_source_url",)
 
 

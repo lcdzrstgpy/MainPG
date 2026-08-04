@@ -40,12 +40,13 @@ def filter_candidates(
     """
     accepted: list[DailySelectionCandidate] = []
     filtered: list[DailySelectionCandidate] = []
-    seen: set[tuple[str, str]] = set()
+    seen_offer_ids: set[tuple[str, str]] = set()
+    seen_source_urls: set[tuple[str, str]] = set()
 
     for candidate in candidates:
         risks = _risk_tags(candidate)
         risk_reasons = tuple(f"risk_{tag}" for tag in risks) if criteria.exclude_risks else ()
-        duplicate_reason = _duplicate_reason(candidate, seen)
+        duplicate_reason = _duplicate_reason(candidate, seen_offer_ids, seen_source_urls)
         if duplicate_reason is not None:
             filtered.append(_filtered(candidate, (duplicate_reason, *risk_reasons), risks))
             continue
@@ -81,22 +82,31 @@ def filter_and_score_candidates(
     )
 
 
-def _duplicate_reason(candidate: DailySelectionCandidate, seen: set[tuple[str, str]]) -> str | None:
-    key, reason = _candidate_identity(candidate)
-    if key in seen:
-        return reason
-    seen.add(key)
+def _duplicate_reason(
+    candidate: DailySelectionCandidate,
+    seen_offer_ids: set[tuple[str, str]],
+    seen_source_urls: set[tuple[str, str]],
+) -> str | None:
+    offer_id = _real_offer_identity(candidate)
+    source_url = (candidate.source_platform, canonical_source_url(candidate.source_url))
+    if offer_id is not None and offer_id in seen_offer_ids:
+        return "duplicate_source_offer"
+    if source_url in seen_source_urls:
+        return "duplicate_source_url"
+    if offer_id is not None:
+        seen_offer_ids.add(offer_id)
+    seen_source_urls.add(source_url)
     return None
 
 
-def _candidate_identity(candidate: DailySelectionCandidate) -> tuple[tuple[str, str], str]:
+def _real_offer_identity(candidate: DailySelectionCandidate) -> tuple[str, str] | None:
     source_url = canonical_source_url(candidate.source_url)
     offer_id = candidate.offer_id.strip()
     # The normalizer uses the source URL as ``offer_id`` when an upstream item
     # has no product ID.  Keep that fallback distinct from a genuine offer ID.
     if _canonical_url_or_none(offer_id) == source_url:
-        return (candidate.source_platform, source_url), "duplicate_source_url"
-    return (candidate.source_platform, offer_id), "duplicate_source_offer"
+        return None
+    return candidate.source_platform, offer_id
 
 
 def canonical_source_url(value: str) -> str:
