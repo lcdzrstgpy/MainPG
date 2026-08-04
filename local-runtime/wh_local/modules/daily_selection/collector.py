@@ -118,7 +118,7 @@ class DailySelectionCollector:
                     errors.append(_budget_error())
                     break
                 per_query = DailySelectionCriteria(
-                    **{**criteria.__dict__, "keywords": (query,)},
+                    **{**criteria.model_dump(mode="python"), "keywords": (query,)},
                 )
                 response = self._provider.search_keyword(per_query)
                 search_calls += 1

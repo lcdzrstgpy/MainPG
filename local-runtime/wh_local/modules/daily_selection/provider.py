@@ -11,7 +11,6 @@ import base64
 import http.client
 import ipaddress
 import json
-import re
 import socket
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -20,23 +19,13 @@ from urllib.error import HTTPError
 from urllib.parse import unquote, urlencode, urlparse, urlunparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from .contracts import ApiEvidence, DailySelectionError
+from .contracts import (
+    ApiEvidence,
+    DailySelectionError,
+    is_sensitive_field,
+    redact_sensitive_text,
+)
 from .criteria import DailySelectionCriteria
-
-
-_SENSITIVE_MARKERS = (
-    "api_key",
-    "apikey",
-    "secret",
-    "token",
-    "cookie",
-    "session",
-    "authorization",
-)
-_INLINE_CREDENTIAL = re.compile(
-    r"(?i)\b(api[_-]?key|secret|token|cookie|session|authorization)\s*[=:]\s*[^\s,;]+"
-)
-_SENSITIVE_VALUE = re.compile(r"(?i)(api[_-]?key|apikey|secret|token|cookie|session|authorization|\bbearer\s+\S+)")
 
 
 @dataclass(frozen=True)
@@ -216,9 +205,13 @@ class OneBound1688Provider:
         transport: HttpTransport | None = None,
         resolver: HostResolver | None = None,
     ) -> None:
-        self._base_url = self._required_url(config, "base_url")
         self._api_key = self._required_text(config, "api_key")
         self._api_secret = self._required_text(config, "api_secret")
+        self._base_url = self._required_url(
+            config,
+            "base_url",
+            sensitive_values=(self._api_key, self._api_secret),
+        )
         self._timeout_seconds = self._positive_number(config.get("timeout_seconds", 10), "timeout_seconds")
         enabled = config.get("enabled", True)
         if not isinstance(enabled, bool):
@@ -528,16 +521,11 @@ class OneBound1688Provider:
         return self._redact_text(value) if isinstance(value, str) else value
 
     def _redact_text(self, value: str) -> str:
-        redacted = value
-        for credential in (self._api_key, self._api_secret):
-            redacted = redacted.replace(credential, "[redacted]")
-        redacted = _INLINE_CREDENTIAL.sub(lambda match: f"{match.group(1)}=[redacted]", redacted)
-        return "[redacted]" if _SENSITIVE_VALUE.search(redacted) else redacted
+        return redact_sensitive_text(value, (self._api_key, self._api_secret))
 
     @staticmethod
     def _sensitive_key(key: object) -> bool:
-        normalized = str(key).replace("-", "_").casefold()
-        return any(marker in normalized for marker in _SENSITIVE_MARKERS)
+        return is_sensitive_field(key)
 
     def _endpoint(self, operation: str) -> str:
         return f"{self._base_url}/{operation}/"
@@ -588,7 +576,13 @@ class OneBound1688Provider:
         return value.strip()
 
     @classmethod
-    def _required_url(cls, config: Mapping[str, Any], name: str) -> str:
+    def _required_url(
+        cls,
+        config: Mapping[str, Any],
+        name: str,
+        *,
+        sensitive_values: tuple[str, ...] = (),
+    ) -> str:
         value = cls._required_text(config, name)
         parsed = urlparse(value)
         if (
@@ -598,7 +592,10 @@ class OneBound1688Provider:
             or parsed.password
             or parsed.query
             or parsed.fragment
-            or _SENSITIVE_VALUE.search(unquote(parsed.path))
+            or redact_sensitive_text(
+                unquote(parsed.path), sensitive_values
+            )
+            != unquote(parsed.path)
         ):
             raise ValueError(f"{name} must be an http or https URL")
         return value.rstrip("/")

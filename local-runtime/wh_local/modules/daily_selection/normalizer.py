@@ -8,24 +8,22 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-from .contracts import ApiEvidence, DailySelectionCandidate, SourceVariantRecord
+from .contracts import (
+    ApiEvidence,
+    DailySelectionCandidate,
+    SourceVariantRecord,
+    is_sensitive_field,
+    redact_sensitive_text,
+)
 
 
 MAX_PRODUCT_IMAGES = 8
 MAX_DETAIL_IMAGES = 12
 
-_SENSITIVE_FIELD_MARKERS = (
-    "key",
-    "secret",
-    "token",
-    "session",
-    "authorization",
-    "cookie",
-    "access_token",
-)
 _NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
 
 
@@ -37,10 +35,12 @@ def sanitize_raw_payload(value: Any) -> Any:
         return {
             str(key): sanitize_raw_payload(item)
             for key, item in value.items()
-            if not _is_sensitive_field(key)
+            if not is_sensitive_field(key)
         }
     if isinstance(value, (list, tuple)):
         return tuple(sanitize_raw_payload(item) for item in value)
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
     return value
 
 
@@ -53,7 +53,11 @@ def normalize_search_response(
     audit = evidence or _response_evidence(cleaned, "item_search")
     candidates: list[DailySelectionCandidate] = []
     for item in items:
-        candidate = _candidate_from_search_item(item, cleaned, audit)
+        candidate = _candidate_from_search_item(
+            item,
+            {"search_payload": cleaned, "detail_payload": None},
+            audit,
+        )
         if candidate is not None:
             candidates.append(candidate)
     return tuple(candidates)
@@ -85,7 +89,8 @@ def enrich_candidate_with_detail(
     package_info = _text_value(detail, ("package_info", "package_info_text", "package", "packing"))
     weight = _text_value(detail, ("weight", "weight_text", "item_weight"))
     freight = _number_value(detail, ("freight", "freight_cny", "post_fee", "shipping_fee"))
-    price = _number_value(detail, ("price", "price_cny", "promotion_price")) or candidate.price_cny
+    detail_price = _number_value(detail, ("price", "price_cny", "promotion_price"))
+    price = detail_price if detail_price is not None else candidate.price_cny
     moq = _integer_value(detail, ("moq", "min_order_quantity", "begin_num", "start_quantity")) or candidate.min_order_quantity
     main_image = _url_value(detail, ("main_image_url", "main_image", "pic_url", "image_url")) or candidate.main_image_url
     evidence_records = candidate.evidence + ((evidence or _response_evidence(cleaned, "item_get")),)
@@ -131,7 +136,12 @@ def enrich_candidate_with_detail(
         captured_fields=_captured_fields(missing),
         missing_capture_fields=missing,
         score_components=candidate.score_components,
-        raw_payload=cleaned,
+        raw_payload={
+            "search_payload": candidate.raw_payload.get(
+                "search_payload", candidate.raw_payload
+            ),
+            "detail_payload": cleaned,
+        },
     )
 
 
@@ -193,11 +203,6 @@ def _items_from_payload(payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], 
 def _detail_from_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     data = payload.get("data")
     return data if isinstance(data, Mapping) else payload
-
-
-def _is_sensitive_field(name: object) -> bool:
-    normalized = str(name).replace("-", "_").casefold()
-    return any(marker in normalized for marker in _SENSITIVE_FIELD_MARKERS)
 
 
 def _canonical_1688_url(value: str | None, offer_id: str | None) -> str | None:
@@ -267,12 +272,18 @@ def _text_value(source: Mapping[str, Any], names: Sequence[str]) -> str | None:
     return None
 
 
-def _number_value(source: Mapping[str, Any], names: Sequence[str]) -> float | None:
+def _number_value(source: Mapping[str, Any], names: Sequence[str]) -> Decimal | None:
     value = _text_value(source, names)
     if value is None:
         return None
     match = _NUMBER.search(value.replace(",", ""))
-    return float(match.group()) if match else None
+    if match is None:
+        return None
+    try:
+        value = Decimal(match.group())
+    except InvalidOperation:
+        return None
+    return value if value.is_finite() else None
 
 
 def _integer_value(source: Mapping[str, Any], names: Sequence[str]) -> int | None:

@@ -166,7 +166,11 @@ def test_details_are_limited_to_deduplicated_top_candidates_and_failure_is_retai
         },
     )
 
-    collected = collector(tmp_path, provider).collect(DailySelectionCriteria(keywords=["露营灯"], detail_count=2))
+    collected = collector(tmp_path, provider).collect(
+        DailySelectionCriteria(
+            keywords=["露营灯"], selection_scope="exact", detail_count=2
+        )
+    )
 
     assert [call for call in provider.calls if call[0] == "detail"] == [("detail", "one"), ("detail", "two")]
     assert [candidate.offer_id for candidate in collected.candidates] == ["one", "two", "three"]

@@ -368,11 +368,13 @@ def test_noncanonical_local_image_hosts_are_rejected_after_host_validation(hostn
     assert transport.requests == []
 
 
-def test_sensitive_values_in_ordinary_fields_are_removed_from_response_audit_and_error() -> None:
+def test_explicit_and_configured_sensitive_values_are_removed_without_redacting_ordinary_words() -> None:
     payload = {
         "code": 500,
-        "request_id": "upstream-token-must-not-escape",
-        "note": "Bearer token-value",
+        "request_id": "cookie-jar-tokenizer-sessional",
+        "ordinary_note": "cookie jar tokenizer sessional secretary",
+        "configured_values": "test-api-key and test-api-secret",
+        "credentials": "api_key=must-not-escape; Authorization: Bearer token-value",
         "data": {"items": []},
     }
     transport = FakeTransport({endpoint("item_search"): response(payload, status=500)})
@@ -380,10 +382,13 @@ def test_sensitive_values_in_ordinary_fields_are_removed_from_response_audit_and
     result = provider(transport).search_keyword(DailySelectionCriteria(keywords=["帐篷"]))
 
     assert result.error is not None
-    assert_no_sensitive_values({"response": result.response, "audit": result.audit, "error": result.error})
     rendered = json.dumps({"response": result.response, "audit": result.audit, "error": result.error}, default=str)
+    assert "cookie jar tokenizer sessional secretary" in rendered
+    assert "cookie-jar-tokenizer-sessional" in rendered
+    assert "test-api-key" not in rendered
+    assert "test-api-secret" not in rendered
+    assert "must-not-escape" not in rendered
     assert "token-value" not in rendered
-    assert "Bearer" not in rendered
 
 
 def test_provider_rejects_sensitive_base_url_path_before_safe_summary() -> None:
@@ -391,6 +396,13 @@ def test_provider_rejects_sensitive_base_url_path_before_safe_summary() -> None:
 
     with pytest.raises(ValueError, match="base_url"):
         provider(transport, base_url="https://onebound.test/1688/api_key=unsafe")
+
+
+def test_provider_rejects_configured_credential_value_in_base_url_path() -> None:
+    transport = FakeTransport({})
+
+    with pytest.raises(ValueError, match="base_url"):
+        provider(transport, base_url="https://onebound.test/1688/test-api-key")
 
 
 def test_disabled_image_provider_stops_before_downloading_reference_image() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -61,14 +62,15 @@ def test_normalize_search_extracts_a_traceable_1688_candidate() -> None:
     assert candidate.source_url == "https://detail.1688.com/offer-100.html"
     assert candidate.source_title == "便携露营灯"
     assert candidate.main_image_url == "https://images.example.test/products/main.jpg"
-    assert candidate.price_cny == 19.9
+    assert candidate.price_cny == Decimal("19.90")
     assert candidate.min_order_quantity == 2
     assert candidate.sales_text == "123件成交"
     assert candidate.shop_name == "露营用品旗舰店"
     assert candidate.location == "浙江 金华"
     assert candidate.evidence == (search_evidence(),)
-    assert candidate.raw_payload["data"]["items"][0].get("token") is None
-    assert candidate.raw_payload["data"].get("api_secret") is None
+    assert candidate.raw_payload["search_payload"]["data"]["items"][0].get("token") is None
+    assert candidate.raw_payload["search_payload"]["data"].get("api_secret") is None
+    assert candidate.raw_payload["detail_payload"] is None
 
 
 def test_detail_enrichment_preserves_search_evidence_and_captures_source_fields() -> None:
@@ -117,13 +119,14 @@ def test_detail_enrichment_preserves_search_evidence_and_captures_source_fields(
     assert len(enriched.source_variant_records) == 1
     assert enriched.source_variant_records[0].sku_id == "sku-black"
     assert enriched.source_variant_records[0].image_url == "https://images.example.test/sku/black.jpg"
-    assert enriched.source_variant_records[0].price_cny == 21.5
+    assert enriched.source_variant_records[0].price_cny == Decimal("21.50")
     assert enriched.source_variant_records[0].min_order_quantity == 3
     assert enriched.package_info_text == "24 x 12 x 12 cm"
     assert enriched.weight_text == "0.55 kg"
-    assert enriched.freight_cny == 5.5
+    assert enriched.freight_cny == Decimal("5.50")
     assert enriched.evidence == (search_evidence(), detail_evidence())
-    assert enriched.raw_payload["data"].get("access_token") is None
+    assert enriched.raw_payload["search_payload"]["data"]["items"][0]["num_iid"] == "offer-100"
+    assert enriched.raw_payload["detail_payload"]["data"].get("access_token") is None
     assert all(isinstance(url, str) for url in enriched.source_image_urls + enriched.source_detail_image_urls)
 
 
@@ -172,7 +175,7 @@ def test_detail_price_and_moq_clear_search_missing_capture_fields() -> None:
     enriched = enrich_candidate_with_detail(candidate, detail, evidence=detail_evidence())
 
     assert {"price_cny", "min_order_quantity"} <= set(candidate.missing_capture_fields)
-    assert enriched.price_cny == 19.9
+    assert enriched.price_cny == Decimal("19.90")
     assert enriched.min_order_quantity == 4
     assert "price_cny" not in enriched.missing_capture_fields
     assert "min_order_quantity" not in enriched.missing_capture_fields
@@ -196,3 +199,45 @@ def test_image_caps_and_recursive_sanitization_never_retain_binary_data() -> Non
     assert len(enriched.source_image_urls) == MAX_PRODUCT_IMAGES
     assert len(enriched.source_detail_image_urls) == MAX_DETAIL_IMAGES
     assert b"bytes" not in repr(enriched.raw_payload).encode()
+
+
+def test_recursive_sanitization_uses_exact_field_names_and_preserves_ordinary_text() -> None:
+    payload = {
+        "monkey": "kept",
+        "secretary": "kept",
+        "tokenizer": "kept",
+        "sessional": "kept",
+        "cookie jar": "kept",
+        "note": "cookie jar tokenizer sessional",
+        "credentials": "key=must-not-escape; api_key=must-not-escape; Authorization: Bearer hidden-value",
+        "api_key": "must-not-escape",
+    }
+
+    cleaned = sanitize_raw_payload(payload)
+
+    assert cleaned["monkey"] == "kept"
+    assert cleaned["secretary"] == "kept"
+    assert cleaned["tokenizer"] == "kept"
+    assert cleaned["sessional"] == "kept"
+    assert cleaned["cookie jar"] == "kept"
+    assert cleaned["note"] == "cookie jar tokenizer sessional"
+    assert "must-not-escape" not in repr(cleaned)
+    assert "hidden-value" not in repr(cleaned)
+    assert "api_key" not in cleaned
+
+
+def test_detail_enrichment_keeps_separate_sanitized_search_and_detail_snapshots() -> None:
+    search = search_payload()
+    search["data"]["search_note"] = "search-only"
+    candidate = normalize_search_response(search)[0]
+    detail = fixture("1688_item_get_success.json")
+    detail["data"]["detail_note"] = "detail-only"
+    detail["data"]["authorization"] = "Bearer must-not-escape"
+
+    enriched = enrich_candidate_with_detail(candidate, detail)
+
+    assert enriched.raw_payload["search_payload"]["data"]["search_note"] == "search-only"
+    assert "detail_note" not in enriched.raw_payload["search_payload"]["data"]
+    assert enriched.raw_payload["detail_payload"]["data"]["detail_note"] == "detail-only"
+    assert "search_note" not in enriched.raw_payload["detail_payload"]["data"]
+    assert "authorization" not in enriched.raw_payload["detail_payload"]["data"]
