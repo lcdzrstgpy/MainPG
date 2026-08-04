@@ -10,6 +10,7 @@ class LocalRuntimeConfig:
     data_dir: Path
     database_path: Path
     dev_admin_token: str
+    customer_auth_base_url: str
 
 
 def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
@@ -21,4 +22,5 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
         data_dir=data_dir,
         database_path=database_path,
         dev_admin_token=os.environ.get("WH_LOCAL_DEV_ADMIN_TOKEN", "dev-admin-token"),
+        customer_auth_base_url=os.environ.get("WH_LOCAL_CUSTOMER_AUTH_BASE_URL", ""),
     )
