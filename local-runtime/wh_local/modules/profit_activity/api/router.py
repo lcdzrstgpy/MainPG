@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
@@ -75,6 +76,7 @@ def create_profit_activity_router(service: ProfitActivityService) -> APIRouter:
     @router.get("/products")
     def list_products(site: Literal["US", "CO", "EC"] | None = None, site_code: Literal["US", "CO", "EC"] | None = None, skcs: str = "", scope: str = "default", owner_user_id: int | None = None) -> dict[str, Any]:
         requested = [item.strip() for item in skcs.replace("，", ",").replace("\n", ",").split(",") if item.strip()]
+        requested = [item.strip() for item in re.split(r"[\s,，]+", skcs) if item.strip()]
         return {"products": service.list_products(site=site or site_code, skcs=requested), "scope": scope, "owner_user_id": owner_user_id}
 
     @router.post("/products")
@@ -147,10 +149,23 @@ def create_profit_activity_router(service: ProfitActivityService) -> APIRouter:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     @router.get("/products/import/{import_id}/image/{row_id}")
-    def import_preview_image(import_id: str, row_id: str, kind: Literal["product", "source"] = "product"):
-        # The preview response advertises image availability per row. This endpoint
-        # intentionally returns 404 when the uploaded workbook has no embedded image.
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "import_preview_image_not_available")
+    def import_preview_image(
+        import_id: str,
+        row_id: str,
+        kind: Literal["product", "source"] = "product",
+        variant: Literal["original", "thumb", "thumbnail", "preview"] = "original",
+    ):
+        """Return an embedded workbook image for the requested preview row.
+
+        ``variant`` is accepted for the original front-end contract.  Local
+        storage keeps the source bytes, so each supported variant returns that
+        original image instead of making an extra lossy derivative.
+        """
+        try:
+            path = service.import_image_path(import_id, row_id, kind)
+        except (ProfitActivityNotFound, ValueError) as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        return FileResponse(path, filename=path.name)
 
     @router.get("/products/import/tasks/{task_id}")
     def import_task(task_id: int) -> dict[str, Any]:
@@ -207,13 +222,17 @@ async def _product_form(request: Request) -> tuple[dict[str, Any], tuple[str, by
     source_image = await _uploaded_file(form.get("source_image"))
     groups: dict[int, list[tuple[str, bytes]]] = {}
     for key, value in form.multi_items():
-        if not key.startswith("source_group_image_"):
+        if key.startswith("source_group_images_"):
+            suffix = key.removeprefix("source_group_images_")
+        elif key.startswith("source_group_image_"):
+            suffix = key.removeprefix("source_group_image_")
+        else:
             continue
         uploaded = await _uploaded_file(value)
         if uploaded is None:
             continue
         try:
-            index = int(key.rsplit("_", 1)[1])
+            index = int(suffix)
         except ValueError:
             index = 0
         groups.setdefault(index, []).append(uploaded)
