@@ -167,13 +167,30 @@ def _module_migrations() -> list[tuple[str, str, str]]:
     """Return module SQL migrations managed by the shared local runtime database."""
     root = Path(__file__).resolve().parent
     migrations: list[tuple[str, str, str]] = []
-    daily_selection_sql = root / "data_collection" / "migrations" / "001_daily_selection.sql"
-    if daily_selection_sql.exists():
+    data_collection_migrations = [
+        ("data_collection:001_daily_selection", root / "data_collection" / "migrations" / "001_daily_selection.sql"),
+        (
+            "data_collection:002_data_collection_plugin_queue",
+            root / "data_collection" / "migrations" / "002_data_collection_plugin_queue.sql",
+        ),
+    ]
+    for migration_id, sql_path in data_collection_migrations:
+        if sql_path.exists():
+            migrations.append(
+                (
+                    migration_id,
+                    "data_collection",
+                    sql_path.read_text(encoding="utf-8"),
+                )
+            )
+
+    product_processing_sql = root / "modules" / "product_processing" / "migrations" / "001_product_processing.sql"
+    if product_processing_sql.exists():
         migrations.append(
             (
-                "data_collection:001_daily_selection",
-                "data_collection",
-                daily_selection_sql.read_text(encoding="utf-8"),
+                "product_processing:001_product_processing",
+                "product_processing",
+                product_processing_sql.read_text(encoding="utf-8"),
             )
         )
     return migrations

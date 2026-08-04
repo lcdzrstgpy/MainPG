@@ -123,6 +123,8 @@ SQLite 阶段 JSON 可以先使用 `TEXT` 保存 UTF-8 JSON；迁移到 MySQL �
 
 模块目录：`local-runtime/wh_local/data_collection`
 
+当前状态：已纳入统一 SQLite 初始化，包含核心采集表和 Temu 插件队列表。
+
 该模块负责：
 
 - 1688 关键词采集；
@@ -167,6 +169,8 @@ SQLite 阶段 JSON 可以先使用 `TEXT` 保存 UTF-8 JSON；迁移到 MySQL �
 ## 4.3 产品处理模块
 
 模块目录：`local-runtime/wh_local/modules/product_processing`
+
+当前状态：已新增版本化 SQL 迁移 `modules/product_processing/migrations/001_product_processing.sql`，并纳入统一 SQLite 初始化。
 
 该模块负责：
 
@@ -283,16 +287,17 @@ flowchart LR
 - 已建立本地真实 SQLite 账号服务；
 - 已新增 `auth_accounts`、`auth_password_credentials`、`auth_login_logs`；
 - 已接入 `workspace_id`、用户、会话等基础结构；
-- 已将每日选品部分迁移纳入统一初始化；
-- 已确认产品处理和利润活动模块各自的字段说明文档。
+- 已将每日选品核心采集表纳入统一初始化；
+- 已将每日选品 Temu 插件队列表纳入统一初始化；
+- 已将产品处理 7 张表纳入统一初始化；
+- 已确认利润活动模块字段说明文档。
 
 ### 6.2 待推进
 
-1. 将产品处理模块的建表纳入统一迁移机制。
-2. 将利润活动模块当前 SQLAlchemy 自建表方式纳入统一数据库文件。
-3. 为利润活动表补充 `workspace_id` 设计方案。
-4. 统一 `created_by`、`workspace_id`、权限上下文，让各模块都能从登录态获得当前用户。
-5. 与尚未上传字段说明的模块负责人确认字段，例如：
+1. 将利润活动模块当前 SQLAlchemy 自建表方式纳入统一数据库文件。
+2. 为利润活动表补充 `workspace_id` 设计方案。
+3. 统一 `created_by`、`workspace_id`、权限上下文，让各模块都能从登录态获得当前用户。
+4. 与尚未上传字段说明的模块负责人确认字段，例如：
    - 每日运营；
    - 精致作图；
    - 核价及货源；
