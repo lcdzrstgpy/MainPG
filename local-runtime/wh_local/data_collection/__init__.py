@@ -7,6 +7,7 @@ from .routes import (
     register_daily_selection_routes,
 )
 from .service import DailySelectionService
+from .plugin_queue import DataCollectionPluginQueue, PluginCommand, TEMU_LINK_CAPTURE
 
 
 __all__ = [
@@ -14,5 +15,8 @@ __all__ = [
     "DailySelectionActor",
     "DailySelectionRouteDependencies",
     "DailySelectionService",
+    "DataCollectionPluginQueue",
+    "PluginCommand",
+    "TEMU_LINK_CAPTURE",
     "register_daily_selection_routes",
 ]

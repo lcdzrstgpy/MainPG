@@ -1,6 +1,6 @@
 # 每日选品后端模块
 
-本目录提供宿主无关的 1688 每日选品后端：关键词/参考图采集、候选规范化与评分、SQLite 批次快照、反馈、确认交接和受控图片读取。模块不注册宿主应用、不创建前端页面，也不写入草稿池或产品库表。
+本目录提供宿主无关的数据采集后端：1688 关键词/参考图/相似链接采集、Temu 链接浏览器插件采集、候选规范化与评分、SQLite 批次快照、反馈、确认交接和受控图片读取。模块不注册宿主应用、不创建前端页面，也不写入草稿池或产品库表。
 
 ## 安全配置与宿主接线
 
@@ -32,11 +32,19 @@ register_daily_selection_routes(router, dependencies)
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | `POST` | `/desktop/daily-selection/preview` | 校验条件，采集、筛选、评分并保存批次快照 |
+| `POST` | `/desktop/daily-selection/preview-from-1688-link` | 输入 `source_url`，先调用 `item_get`，再以主图优先、标题兜底执行 1688 相似商品采集 |
 | `GET` | `/desktop/daily-selection/runs` | 列出当前 workspace 的批次摘要 |
 | `GET` | `/desktop/daily-selection/runs/{run_id}` | 回读完整批次与候选快照 |
 | `POST` | `/desktop/daily-selection/runs/{run_id}/feedback` | 保存反馈并把候选标记为 rejected |
 | `POST` | `/desktop/daily-selection/runs/{run_id}/confirm` | 把候选标记为 confirmed，并幂等创建 handoff |
 | `GET` | `/desktop/daily-selection/image?run_id=...&url=...` | 通过宿主注入的安全图片缓存读取已记录 URL |
+| `POST` | `/desktop/data-collection/plugin-sessions` | 为当前 workspace 建立浏览器插件会话，返回一次性 session token |
+| `POST` | `/desktop/data-collection/temu-link/collect` | 使用 `session_id` 和 Temu 商品链接创建 `temu_link_capture` 命令 |
+| `GET` | `/desktop/data-collection/plugin/poll` | 插件以 `session_token` 领取待执行命令 |
+| `POST` | `/desktop/data-collection/plugin/results` | 插件回传 `running`、`succeeded` 或 `failed` 结果 |
+| `GET` | `/desktop/data-collection/plugin-commands/{command_id}` | 当前 workspace 查询命令及回传结果 |
+
+Temu 链接不会交给 OneBound：它只允许受控浏览器插件在已登录 Temu 页面执行。插件需要识别 `temu_link_capture`，从 payload 的 `source_url` 打开/读取商品详情后，向结果接口回传脱敏的 JSON 数据。当前服务端已实现和原 Demo 一致的 `queued → sent → running → succeeded/failed` 数据流；待拿到插件源码后只需对接这一条命令，不需要迁移 Demo 的用户、权限或其它业务模块。
 
 关键词预览至少提供 1 个、最多 5 个 `keywords`。参考图预览设置 `collection_mode: "image"` 和一个 HTTP(S) `reference_image_url`；图片模式中的 `keywords` 只是描述标签，不会触发第二次关键词搜索。`upload_img` 只为图搜取得图片 ID，不发布商品，也不向 1688 写入商品数据。
 
@@ -54,7 +62,9 @@ register_daily_selection_routes(router, dependencies)
 
 ## SQLite 表归属
 
-每日选品模块当前拥有六张物理表。迁移 `migrations/001_daily_selection.sql` 创建下列五张：
+每日选品模块当前拥有八张物理表（六张核心表 + 两张插件队列表）。
+
+迁移 `migrations/001_daily_selection.sql` 创建下列五张核心表：
 
 - `daily_selection_runs`：workspace 范围的批次状态、条件、元数据和候选计数。
 - `daily_selection_candidates`：完整候选 JSON 快照及用于查询的关键列。
@@ -62,7 +72,14 @@ register_daily_selection_routes(router, dependencies)
 - `daily_selection_provider_budgets`：迁移预留的预算表；默认路由接线当前不读写此表。
 - `daily_selection_handoffs`：给下游草稿池/产品库消费者的待处理确认单。
 
-默认路由接线使用 `SQLiteDailyApiBudget`，它会额外创建并实际读写第六张 `daily_selection_api_budget`，按 workspace、Provider 凭据指纹和上海日期保存调用上限与已用次数；两张预算表都不保存原始凭据。宿主迁移、备份、恢复和清理时必须把这六张表一起纳入。`daily_selection_provider_budgets` 与 `daily_selection_api_budget` 的并存是当前实现事实；在另行完成生产迁移和数据兼容方案前，不得把两者当作可互换表或删除其中之一。
+默认路由接线使用 `SQLiteDailyApiBudget`，它会额外创建并实际读写第六张核心表 `daily_selection_api_budget`，按 workspace、Provider 凭据指纹和上海日期保存调用上限与已用次数；两张预算表都不保存原始凭据。
+
+迁移 `migrations/002_data_collection_plugin_queue.sql` 创建两张插件队列表：
+
+- `data_collection_plugin_sessions`：浏览器插件会话（actor_id、workspace_id、一次性 session_token、状态、心跳）。
+- `data_collection_plugin_commands`：插件命令队列（`temu_link_capture`，`queued → sent → running → succeeded/failed` 数据流），关联插件会话并支持级联删除。
+
+宿主迁移、备份、恢复和清理时必须把这八张表一起纳入。`daily_selection_provider_budgets` 与 `daily_selection_api_budget` 的并存是当前实现事实；在另行完成生产迁移和数据兼容方案前，不得把两者当作可互换表或删除其中之一。
 
 每日选品模块不拥有、创建或写入 `product_drafts`。宿主与下游模块不得复用上述表保存其他业务对象。
 
