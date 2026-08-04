@@ -118,6 +118,32 @@ local-runtime/wh_local/customer/auth_service.py
 保存算法名和迭代次数，便于后续升级
 ```
 
+### 2.5 细粒度权限基座
+
+当前已在 SQLite 中建立统一权限表：
+
+```text
+permissions
+role_permissions
+user_permission_overrides
+```
+
+默认角色：
+
+```text
+admin       默认拥有全部权限
+operator    默认拥有选品、产品处理、基础卖家中心操作权限
+```
+
+后端模块可以统一使用：
+
+```python
+from wh_local.session import actor_from_authorization, require_permission
+
+actor = actor_from_authorization(...)
+require_permission(actor, "product_processing.process")
+```
+
 ## 3. 接口清单
 
 路由文件：
@@ -198,7 +224,50 @@ token_hash 是 SHA-256 哈希
 不会保存明文 wh_local_xxx
 ```
 
-### 4.4 `auth_accounts`
+### 4.4 `permissions`
+
+统一权限点表，保存各模块权限点。
+
+核心字段：
+
+```text
+permission_key
+module
+action
+description
+created_at
+updated_at
+```
+
+### 4.5 `role_permissions`
+
+角色和权限点关联表。
+
+核心字段：
+
+```text
+role
+permission_key
+created_at
+```
+
+### 4.6 `user_permission_overrides`
+
+用户级权限覆盖表，后续可对单个用户单独授权或拒绝。
+
+核心字段：
+
+```text
+user_id
+workspace_id
+permission_key
+effect
+reason
+created_by
+created_at
+```
+
+### 4.7 `auth_accounts`
 
 真实账号主表，保存注册账号信息。
 
@@ -217,7 +286,7 @@ created_at
 updated_at
 ```
 
-### 4.5 `auth_password_credentials`
+### 4.8 `auth_password_credentials`
 
 密码凭据表，只保存密码哈希和算法参数。
 
@@ -232,7 +301,7 @@ iterations
 updated_at
 ```
 
-### 4.6 `auth_login_logs`
+### 4.9 `auth_login_logs`
 
 登录日志表，用于记录登录成功、失败和失败原因。
 

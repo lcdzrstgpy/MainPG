@@ -48,6 +48,45 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_users_email_unique
     ON customer_users (email)
     WHERE email <> '';
 
+-- 细粒度权限点表：统一收敛各业务模块的权限命名和说明。
+CREATE TABLE IF NOT EXISTS permissions (
+    permission_key TEXT PRIMARY KEY,
+    module TEXT NOT NULL,
+    action TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_permissions_module
+    ON permissions (module, action);
+
+-- 角色-权限关联表：当前先使用 admin/operator，后续可扩展更多角色。
+CREATE TABLE IF NOT EXISTS role_permissions (
+    role TEXT NOT NULL,
+    permission_key TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (role, permission_key),
+    FOREIGN KEY (permission_key) REFERENCES permissions (permission_key) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_role_permissions_permission
+    ON role_permissions (permission_key, role);
+
+-- 用户权限覆盖表：用于后续给某个用户单独授予/拒绝权限，当前业务可暂不使用。
+CREATE TABLE IF NOT EXISTS user_permission_overrides (
+    user_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    permission_key TEXT NOT NULL,
+    effect TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
+    reason TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, workspace_id, permission_key),
+    FOREIGN KEY (user_id) REFERENCES customer_users (user_id) ON DELETE CASCADE,
+    FOREIGN KEY (permission_key) REFERENCES permissions (permission_key) ON DELETE CASCADE
+);
+
 -- 登录会话表：只保存 token_hash，不保存明文 token。
 CREATE TABLE IF NOT EXISTS customer_sessions (
     session_id TEXT PRIMARY KEY,
@@ -208,6 +247,82 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "action_logs", "module", "TEXT NOT NULL DEFAULT ''")
 
 
+DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (
+    ("data_collection.read", "data_collection", "read", "查看选品/采集批次和候选商品"),
+    ("data_collection.collect", "data_collection", "collect", "发起单采、批量采集、关键词采集和插件采集"),
+    ("data_collection.feedback", "data_collection", "feedback", "提交候选商品反馈或拒绝原因"),
+    ("data_collection.confirm", "data_collection", "confirm", "确认候选商品并生成下游 handoff"),
+    ("data_collection.plugin", "data_collection", "plugin", "连接浏览器插件并处理插件命令"),
+    ("product_processing.read", "product_processing", "read", "查看产品草稿、任务和处理结果"),
+    ("product_processing.draft_write", "product_processing", "draft_write", "新增、编辑、导入产品草稿"),
+    ("product_processing.draft_delete", "product_processing", "draft_delete", "删除或清理产品草稿"),
+    ("product_processing.process", "product_processing", "process", "发起产品处理、预检、重试和恢复任务"),
+    ("product_processing.prompt_manage", "product_processing", "prompt_manage", "维护产品处理 AI 提示词"),
+    ("product_processing.export", "product_processing", "export", "下载店小秘文件、失败原因和视频清单"),
+    ("product_processing.handoff_consume", "product_processing", "handoff_consume", "消费每日选品 handoff 并生成草稿"),
+    ("seller_listing.read", "seller_listing", "read", "查看卖家中心上架、核价和库存流程数据"),
+    ("seller_listing.price_confirm", "seller_listing", "price_confirm", "处理核价、调价和价格待确认产品"),
+    ("seller_listing.attribute_write", "seller_listing", "attribute_write", "修改产品属性、详情和库存"),
+    ("seller_listing.publish", "seller_listing", "publish", "执行或确认产品上架完成"),
+    ("settings.read", "settings", "read", "查看系统配置"),
+    ("settings.manage", "settings", "manage", "维护系统配置、密钥和运行参数"),
+    ("stores.manage", "stores", "manage", "维护店铺配置和平台站点信息"),
+    ("users.manage", "users", "manage", "维护用户、角色和权限"),
+)
+
+
+OPERATOR_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        "data_collection.read",
+        "data_collection.collect",
+        "data_collection.feedback",
+        "data_collection.confirm",
+        "data_collection.plugin",
+        "product_processing.read",
+        "product_processing.draft_write",
+        "product_processing.process",
+        "product_processing.export",
+        "product_processing.handoff_consume",
+        "seller_listing.read",
+        "seller_listing.price_confirm",
+        "seller_listing.attribute_write",
+    }
+)
+
+
+def _seed_permissions(conn: sqlite3.Connection) -> None:
+    for permission_key, module, action, description in DEFAULT_PERMISSIONS:
+        conn.execute(
+            """
+            INSERT INTO permissions (
+                permission_key, module, action, description, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(permission_key) DO UPDATE SET
+                module = excluded.module,
+                action = excluded.action,
+                description = excluded.description,
+                updated_at = datetime('now')
+            """,
+            (permission_key, module, action, description),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO role_permissions (role, permission_key)
+            VALUES ('admin', ?)
+            """,
+            (permission_key,),
+        )
+        if permission_key in OPERATOR_PERMISSIONS:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO role_permissions (role, permission_key)
+                VALUES ('operator', ?)
+                """,
+                (permission_key,),
+            )
+
+
 def connect(database_path: Path) -> sqlite3.Connection:
     database_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(database_path, timeout=30)
@@ -230,6 +345,7 @@ def init_db(database_path: Path) -> None:
             VALUES ('default', 'local-demo', '本地演示工作区', 'active')
             """
         )
+        _seed_permissions(conn)
         for migration_id, module, sql in _module_migrations():
             exists = conn.execute(
                 "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
