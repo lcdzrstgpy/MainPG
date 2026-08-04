@@ -5,6 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -27,7 +29,7 @@ def test_sqlite_budget_never_overspends_concurrent_same_workspace_provider_and_d
             api_calls=1,
             now=moment,
         )
-        return state.allowed
+        return state.reservation_granted
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         allowed = list(executor.map(lambda _: reserve_one_call(), range(2)))
@@ -42,3 +44,15 @@ def test_sqlite_budget_never_overspends_concurrent_same_workspace_provider_and_d
     assert allowed.count(True) == 1
     assert final_state.api_calls_used == 1
     assert final_state.api_calls_remaining == 0
+    assert final_state.allowed is False
+
+
+def test_budget_rejects_non_sha256_provider_fingerprint(tmp_path: Path) -> None:
+    budget = SQLiteDailyApiBudget(tmp_path / "budget.sqlite3")
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        budget.reserve(
+            workspace_id="workspace-a",
+            provider_fingerprint="api-key-must-not-be-persisted",
+            max_api_calls=1,
+        )

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from .budget import BudgetState, SQLiteDailyApiBudget, credential_fingerprint
+from .budget import BudgetState, SQLiteDailyApiBudget, credential_fingerprint, is_credential_fingerprint
 from .contracts import ApiEvidence, DailySelectionCandidate, DailySelectionError
 from .criteria import DailySelectionCriteria
 from .normalizer import enrich_candidate_with_detail, normalize_search_response
@@ -73,18 +73,19 @@ class DailySelectionCollector:
         budget: SQLiteDailyApiBudget,
         provider_credentials: Mapping[str, Any] | str | None = None,
         provider_credential_fingerprint: str | None = None,
-        clock: callable | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._workspace_id = workspace_id
         self._provider = provider
         self._budget = budget
         self._clock = clock or datetime.now
         inherited = getattr(provider, "credential_fingerprint", None)
-        self._provider_fingerprint = provider_credential_fingerprint or inherited
-        if self._provider_fingerprint is None and provider_credentials is not None:
-            self._provider_fingerprint = credential_fingerprint(provider_credentials)
-        if not isinstance(self._provider_fingerprint, str) or not self._provider_fingerprint.strip():
-            raise ValueError("provider credential fingerprint or credentials are required")
+        fingerprint = provider_credential_fingerprint or inherited
+        if fingerprint is None and provider_credentials is not None:
+            fingerprint = credential_fingerprint(provider_credentials)
+        if not is_credential_fingerprint(fingerprint):
+            raise ValueError("provider credential fingerprint must be a SHA-256 hexadecimal digest")
+        self._provider_fingerprint = fingerprint.casefold()
 
     def collect(self, criteria: DailySelectionCriteria) -> CollectionResult:
         errors: list[DailySelectionError] = []
@@ -92,35 +93,42 @@ class DailySelectionCollector:
         candidates: list[CollectedCandidate] = []
         detail_errors: dict[str, DailySelectionError] = {}
         search_calls = image_search_calls = detail_calls = api_calls = 0
+        collection_time = self._clock()
         latest_budget = self._budget.state(
             workspace_id=self._workspace_id,
             provider_fingerprint=self._provider_fingerprint,
             max_api_calls=criteria.max_api_calls,
-            now=self._clock(),
+            now=collection_time,
         )
 
         if criteria.collection_mode == "image":
-            latest_budget = self._reserve(criteria, _IMAGE_OPERATION_BUDGET_COST)
-            if not latest_budget.allowed:
+            latest_budget = self._reserve(criteria, _IMAGE_OPERATION_BUDGET_COST, collection_time)
+            if not latest_budget.reservation_granted:
                 errors.append(_budget_error())
             else:
                 response = self._provider.search_by_image(criteria)
-                image_search_calls = 1
-                api_calls += len(response.audits)
+                actual_calls = len(response.audits)
+                latest_budget = self._settle(criteria, _IMAGE_OPERATION_BUDGET_COST, actual_calls, collection_time)
+                image_search_calls = int(any(audit.operation == "item_search_img" for audit in response.audits))
+                api_calls += actual_calls
                 attempts.append(QueryAttempt(None, False, None, response.audits))
-                candidates.extend(_collected_candidates(response, criteria.reference_image_url))
+                if not _valid_image_audits(response):
+                    errors.append(_provider_sequence_error())
+                else:
+                    candidates.extend(_collected_candidates(response, criteria.reference_image_url))
                 if response.error is not None:
                     errors.append(response.error)
         else:
             for query, expanded in _queries(criteria):
-                latest_budget = self._reserve(criteria, 1)
-                if not latest_budget.allowed:
+                latest_budget = self._reserve(criteria, 1, collection_time)
+                if not latest_budget.reservation_granted:
                     errors.append(_budget_error())
                     break
                 per_query = DailySelectionCriteria(
                     **{**criteria.model_dump(mode="python"), "keywords": (query,)},
                 )
                 response = self._provider.search_keyword(per_query)
+                latest_budget = self._settle(criteria, 1, len(response.audits), collection_time)
                 search_calls += 1
                 api_calls += len(response.audits)
                 attempts.append(
@@ -135,15 +143,16 @@ class DailySelectionCollector:
                 if response.error is not None:
                     errors.append(response.error)
 
-        unique = _deduplicate(candidates)
+        unique = _rank_candidates(_deduplicate(candidates))
         for index, collected in enumerate(unique):
             if index >= criteria.detail_count:
                 break
-            latest_budget = self._reserve(criteria, 1)
-            if not latest_budget.allowed:
+            latest_budget = self._reserve(criteria, 1, collection_time)
+            if not latest_budget.reservation_granted:
                 errors.append(_budget_error())
                 break
             response = self._provider.get_item_detail(collected.offer_id)
+            latest_budget = self._settle(criteria, 1, len(response.audits), collection_time)
             detail_calls += 1
             api_calls += len(response.audits)
             if response.error is not None:
@@ -173,13 +182,31 @@ class DailySelectionCollector:
             derived_image_terms=derived_terms,
         )
 
-    def _reserve(self, criteria: DailySelectionCriteria, api_calls: int) -> BudgetState:
+    def _reserve(self, criteria: DailySelectionCriteria, api_calls: int, now: datetime) -> BudgetState:
         return self._budget.reserve(
             workspace_id=self._workspace_id,
             provider_fingerprint=self._provider_fingerprint,
             max_api_calls=criteria.max_api_calls,
             api_calls=api_calls,
-            now=self._clock(),
+            now=now,
+        )
+
+    def _settle(self, criteria: DailySelectionCriteria, reserved_calls: int, actual_calls: int, now: datetime) -> BudgetState:
+        if actual_calls > reserved_calls:
+            raise ValueError("provider audit count exceeds the operation budget")
+        if actual_calls == reserved_calls:
+            return self._budget.state(
+                workspace_id=self._workspace_id,
+                provider_fingerprint=self._provider_fingerprint,
+                max_api_calls=criteria.max_api_calls,
+                now=now,
+            )
+        return self._budget.release(
+            workspace_id=self._workspace_id,
+            provider_fingerprint=self._provider_fingerprint,
+            max_api_calls=criteria.max_api_calls,
+            api_calls=reserved_calls - actual_calls,
+            now=now,
         )
 
 
@@ -207,12 +234,32 @@ def _deduplicate(candidates: Sequence[CollectedCandidate]) -> list[CollectedCand
     return selected
 
 
+def _rank_candidates(candidates: Sequence[CollectedCandidate]) -> list[CollectedCandidate]:
+    """Rank by the contract's computed selection score, preserving tied source order."""
+    return sorted(candidates, key=lambda candidate: -candidate.selection_score)
+
+
 def _titles(candidates: Sequence[CollectedCandidate]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(candidate.source_title for candidate in candidates if candidate.source_title))
 
 
 def _budget_error() -> DailySelectionError:
     return DailySelectionError(code="budget_exhausted", message="daily API-call budget is exhausted")
+
+
+def _provider_sequence_error() -> DailySelectionError:
+    return DailySelectionError(
+        code="invalid_provider_sequence",
+        message="image provider audits must show download, upload, then image search",
+    )
+
+
+def _valid_image_audits(response: ProviderCallResult) -> bool:
+    expected = ("download_reference_image", "upload_img", "item_search_img")
+    observed = tuple(audit.operation for audit in response.audits)
+    if observed != expected[: len(observed)]:
+        return False
+    return not response.ok or observed == expected
 
 
 def _status(candidates: Sequence[CollectedCandidate], errors: Sequence[DailySelectionError]) -> str:

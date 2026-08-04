@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 
 def credential_fingerprint(credentials: Mapping[str, Any] | str) -> str:
@@ -26,6 +28,10 @@ def credential_fingerprint(credentials: Mapping[str, Any] | str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def is_credential_fingerprint(value: object) -> bool:
+    return isinstance(value, str) and _SHA256_HEX.fullmatch(value.casefold()) is not None
+
+
 @dataclass(frozen=True)
 class BudgetState:
     allowed: bool
@@ -35,6 +41,7 @@ class BudgetState:
     api_calls_limit: int
     api_calls_used: int
     api_calls_remaining: int
+    reservation_granted: bool = False
 
 
 class SQLiteDailyApiBudget:
@@ -54,7 +61,7 @@ class SQLiteDailyApiBudget:
         now: datetime | None = None,
     ) -> BudgetState:
         workspace_id = _required_text(workspace_id, "workspace_id")
-        provider_fingerprint = _required_text(provider_fingerprint, "provider_fingerprint")
+        provider_fingerprint = _provider_fingerprint(provider_fingerprint)
         _positive_int(max_api_calls, "max_api_calls")
         _positive_int(api_calls, "api_calls")
         usage_date = _shanghai_date(now)
@@ -74,7 +81,7 @@ class SQLiteDailyApiBudget:
             else:
                 # A later request can tighten, but never loosen, the day's first budget.
                 limit, used = min(int(row[0]), max_api_calls), int(row[1])
-            allowed = used + api_calls <= limit
+            reservation_granted = used + api_calls <= limit
             if row is None:
                 connection.execute(
                     """
@@ -82,7 +89,7 @@ class SQLiteDailyApiBudget:
                         (workspace_id, provider_fingerprint, shanghai_date, api_calls_limit, api_calls_used)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    (workspace_id, provider_fingerprint, usage_date, limit, used + api_calls if allowed else used),
+                    (workspace_id, provider_fingerprint, usage_date, limit, used + api_calls if reservation_granted else used),
                 )
             else:
                 connection.execute(
@@ -91,18 +98,20 @@ class SQLiteDailyApiBudget:
                     SET api_calls_limit = ?, api_calls_used = ?
                     WHERE workspace_id = ? AND provider_fingerprint = ? AND shanghai_date = ?
                     """,
-                    (limit, used + api_calls if allowed else used, workspace_id, provider_fingerprint, usage_date),
+                    (limit, used + api_calls if reservation_granted else used, workspace_id, provider_fingerprint, usage_date),
                 )
             connection.commit()
-            final_used = used + api_calls if allowed else used
+            final_used = used + api_calls if reservation_granted else used
+            remaining = max(limit - final_used, 0)
             return BudgetState(
-                allowed=allowed,
+                allowed=remaining > 0,
                 workspace_id=workspace_id,
                 provider_fingerprint=provider_fingerprint,
                 shanghai_date=usage_date,
                 api_calls_limit=limit,
                 api_calls_used=final_used,
-                api_calls_remaining=limit - final_used,
+                api_calls_remaining=remaining,
+                reservation_granted=reservation_granted,
             )
         except BaseException:
             connection.rollback()
@@ -119,7 +128,7 @@ class SQLiteDailyApiBudget:
         now: datetime | None = None,
     ) -> BudgetState:
         workspace_id = _required_text(workspace_id, "workspace_id")
-        provider_fingerprint = _required_text(provider_fingerprint, "provider_fingerprint")
+        provider_fingerprint = _provider_fingerprint(provider_fingerprint)
         _positive_int(max_api_calls, "max_api_calls")
         usage_date = _shanghai_date(now)
         connection = self._connect()
@@ -135,7 +144,55 @@ class SQLiteDailyApiBudget:
         finally:
             connection.close()
         limit, used = (max_api_calls, 0) if row is None else (min(int(row[0]), max_api_calls), int(row[1]))
-        return BudgetState(True, workspace_id, provider_fingerprint, usage_date, limit, used, max(limit - used, 0))
+        remaining = max(limit - used, 0)
+        return BudgetState(remaining > 0, workspace_id, provider_fingerprint, usage_date, limit, used, remaining)
+
+    def release(
+        self,
+        *,
+        workspace_id: str,
+        provider_fingerprint: str,
+        max_api_calls: int,
+        api_calls: int,
+        now: datetime | None = None,
+    ) -> BudgetState:
+        """Return unused pre-reserved slots after a short-circuited operation."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        provider_fingerprint = _provider_fingerprint(provider_fingerprint)
+        _positive_int(max_api_calls, "max_api_calls")
+        _positive_int(api_calls, "api_calls")
+        usage_date = _shanghai_date(now)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT api_calls_limit, api_calls_used
+                FROM daily_selection_api_budget
+                WHERE workspace_id = ? AND provider_fingerprint = ? AND shanghai_date = ?
+                """,
+                (workspace_id, provider_fingerprint, usage_date),
+            ).fetchone()
+            if row is None:
+                raise ValueError("cannot release an unreserved API-call budget")
+            limit, used = min(int(row[0]), max_api_calls), int(row[1])
+            final_used = max(used - api_calls, 0)
+            connection.execute(
+                """
+                UPDATE daily_selection_api_budget
+                SET api_calls_limit = ?, api_calls_used = ?
+                WHERE workspace_id = ? AND provider_fingerprint = ? AND shanghai_date = ?
+                """,
+                (limit, final_used, workspace_id, provider_fingerprint, usage_date),
+            )
+            connection.commit()
+            remaining = max(limit - final_used, 0)
+            return BudgetState(remaining > 0, workspace_id, provider_fingerprint, usage_date, limit, final_used, remaining)
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     consume = reserve
 
@@ -172,6 +229,13 @@ def _required_text(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} is required")
     return value.strip()
+
+
+def _provider_fingerprint(value: object) -> str:
+    fingerprint = _required_text(value, "provider_fingerprint").casefold()
+    if not is_credential_fingerprint(fingerprint):
+        raise ValueError("provider_fingerprint must be a SHA-256 hexadecimal digest")
+    return fingerprint
 
 
 def _positive_int(value: object, name: str) -> None:
