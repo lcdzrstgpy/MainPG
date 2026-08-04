@@ -17,6 +17,7 @@ from ..contracts import (
 from ..repository import (
     PairingCodeConsumed,
     PairingCodeExpired,
+    PairingCodeWorkspaceNotFound,
     PluginCommandRecord,
     PluginSessionRecord,
     PriceVerificationNotFound,
@@ -35,6 +36,10 @@ class PluginAuthenticationError(PermissionError):
 
 class PluginLeaseError(ValueError):
     """Raised when a plugin tries to update a command without its live lease."""
+
+
+class PluginResourceNotFound(LookupError):
+    """Raised when a valid plugin credential lacks ownership of a resource."""
 
 
 @dataclass(frozen=True)
@@ -101,6 +106,7 @@ class PluginBridgeService:
         browser_name: str,
         capabilities: Mapping[str, Any],
         plugin_version: str = "",
+        actor: PriceVerificationActor | None = None,
     ) -> PluginSession:
         pairing_code = _required_text(pairing_code, "pairing_code")
         browser_name = _required_text(browser_name, "browser_name")
@@ -109,20 +115,23 @@ class PluginBridgeService:
         now = _timestamp(_as_utc(self._clock()))
         code_hash = _sha256(pairing_code)
 
+        actor = _actor(actor) if actor is not None else None
         try:
-            pairing = self._repository.consume_pairing_code(code_sha256=code_hash, now=now)
+            record = self._repository.connect_plugin_session(
+                code_sha256=code_hash,
+                session_token_hash=_sha256(token),
+                browser=browser_name,
+                capabilities=safe_capabilities,
+                plugin_version=str(plugin_version),
+                now=now,
+                expected_workspace_id=actor.workspace_id if actor is not None else None,
+            )
+        except PairingCodeWorkspaceNotFound as error:
+            raise PluginResourceNotFound("pairing code not found") from error
         except (PriceVerificationNotFound, PairingCodeConsumed) as error:
             raise PluginAuthenticationError(str(error)) from error
         except PairingCodeExpired as error:
             raise PluginAuthenticationError("pairing code has expired") from error
-
-        record = self._repository.create_plugin_session(
-            workspace_id=pairing.workspace_id,
-            session_token_hash=_sha256(token),
-            browser=browser_name,
-            plugin_version=str(plugin_version),
-            capabilities=safe_capabilities,
-        )
         return PluginSession(
             session_id=record.session_id,
             token=token,
@@ -175,7 +184,7 @@ class PluginBridgeService:
                 lease_expires_at=lease_expires_at if status == "running" else None,
             )
         except PriceVerificationNotFound as error:
-            raise PluginAuthenticationError("plugin command not found") from error
+            raise PluginResourceNotFound("plugin command not found") from error
         except ValueError as error:
             raise PluginLeaseError(str(error)) from error
 

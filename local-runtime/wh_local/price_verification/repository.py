@@ -31,6 +31,10 @@ class PairingCodeExpired(PermissionError):
     """A pairing credential has passed its short validity window."""
 
 
+class PairingCodeWorkspaceNotFound(PriceVerificationNotFound):
+    """A pairing code exists but is not owned by the authenticated workspace."""
+
+
 class _Record(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -205,6 +209,83 @@ class PriceVerificationRepository:
             ).fetchone()
             connection.commit()
         return PairingCodeRecord(**dict(row))
+
+    def connect_plugin_session(
+        self,
+        *,
+        code_sha256: str,
+        session_token_hash: str,
+        browser: str,
+        capabilities: Mapping[str, Any] | None,
+        now: str,
+        plugin_version: str = "",
+        expected_workspace_id: str | None = None,
+        session_id: str | None = None,
+    ) -> PluginSessionRecord:
+        """Atomically validate a pairing code and create its plugin session.
+
+        ``expected_workspace_id`` is supplied by the authenticated route. A
+        mismatch deliberately looks like a missing resource and leaves the
+        pairing credential untouched.
+        """
+        code_sha256 = _digest(code_sha256, "code_sha256")
+        token_sha256 = _digest(session_token_hash, "session_token_hash")
+        browser = _required_text(browser, "browser")
+        now = _required_text(now, "now")
+        if expected_workspace_id is not None:
+            expected_workspace_id = _required_text(expected_workspace_id, "expected_workspace_id")
+        serialized_capabilities = safe_json_dumps(capabilities or {})
+        session_id = session_id or _new_id()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            pairing = connection.execute(
+                "SELECT * FROM price_verification_pairing_codes WHERE code_sha256 = ?",
+                (code_sha256,),
+            ).fetchone()
+            if pairing is None:
+                connection.rollback()
+                raise PriceVerificationNotFound("pairing code not found")
+            if (
+                expected_workspace_id is not None
+                and pairing["workspace_id"] != expected_workspace_id
+            ):
+                connection.rollback()
+                raise PairingCodeWorkspaceNotFound("pairing code not found")
+            if pairing["used_at"] is not None:
+                connection.rollback()
+                raise PairingCodeConsumed("pairing code has already been used")
+            if str(pairing["expires_at"]) <= now:
+                connection.rollback()
+                raise PairingCodeExpired("pairing code has expired")
+            if connection.execute(
+                """UPDATE price_verification_pairing_codes SET used_at = ?
+                WHERE pairing_id = ? AND used_at IS NULL""",
+                (now, pairing["pairing_id"]),
+            ).rowcount != 1:
+                connection.rollback()
+                raise PairingCodeConsumed("pairing code has already been used")
+            connection.execute(
+                """INSERT INTO price_verification_plugin_sessions
+                (session_id, workspace_id, token_sha256, browser, plugin_version,
+                 capabilities_json, status, created_at, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'connected', ?, ?)""",
+                (
+                    session_id,
+                    pairing["workspace_id"],
+                    token_sha256,
+                    browser,
+                    str(plugin_version),
+                    serialized_capabilities,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM price_verification_plugin_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            connection.commit()
+        return _session_record(row)
 
     def create_plugin_session(
         self,

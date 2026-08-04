@@ -6,6 +6,7 @@ from .service import (
     PluginAuthenticationError,
     PluginBridgeService,
     PluginLeaseError,
+    PluginResourceNotFound,
     PluginSession,
     PluginSessionSummary,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "PluginBridgeRouteDependencies",
     "PluginBridgeService",
     "PluginLeaseError",
+    "PluginResourceNotFound",
     "PluginSession",
     "PluginSessionSummary",
     "register_plugin_bridge_routes",

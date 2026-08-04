@@ -10,7 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..contracts import PriceVerificationActor, PriceVerificationContractError, safe_json_value
 from ..repository import PluginCommandRecord
-from .service import PluginAuthenticationError, PluginBridgeService, PluginLeaseError
+from .service import (
+    PluginAuthenticationError,
+    PluginBridgeService,
+    PluginLeaseError,
+    PluginResourceNotFound,
+)
 
 
 @dataclass(frozen=True)
@@ -71,13 +76,14 @@ def register_plugin_bridge_routes(
                 browser_name=request.browser_name,
                 capabilities=capabilities,
                 plugin_version=request.plugin_version,
+                actor=actor,
             )
+        except PluginResourceNotFound as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
         except PluginAuthenticationError as error:
             raise HTTPException(status_code=401, detail=str(error)) from error
         except PriceVerificationContractError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        if session.workspace_id != actor.workspace_id:
-            raise HTTPException(status_code=401, detail="pairing code is not valid for this workspace")
         return {"session_id": session.session_id, "session_token": session.token, "status": session.status}
 
     @router.post("/plugin/poll")
@@ -90,6 +96,8 @@ def register_plugin_bridge_routes(
             commands = dependencies.service.poll(request.session_token, limit=request.limit)
         except PluginAuthenticationError as error:
             raise HTTPException(status_code=401, detail=str(error)) from error
+        except PluginResourceNotFound as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
         except PriceVerificationContractError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return [_command_response(command) for command in commands]
@@ -106,6 +114,8 @@ def register_plugin_bridge_routes(
             command = dependencies.service.receive_result(
                 request.session_token, request.command_id, request.status, result
             )
+        except PluginResourceNotFound as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
         except PluginAuthenticationError as error:
             raise HTTPException(status_code=401, detail=str(error)) from error
         except (PluginLeaseError, PriceVerificationContractError) as error:
