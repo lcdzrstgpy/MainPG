@@ -11,12 +11,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from wh_local.modules.daily_selection.contracts import (  # noqa: E402
+from wh_local.data_collection.contracts import (  # noqa: E402
     ApiEvidence,
     DailySelectionCandidate,
     SourceVariantRecord,
 )
-from wh_local.modules.daily_selection.repository import (  # noqa: E402
+from wh_local.data_collection.repository import (  # noqa: E402
     DailySelectionRepository,
     DailySelectionRunNotFound,
 )

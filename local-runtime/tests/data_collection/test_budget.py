@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from wh_local.modules.daily_selection.budget import (  # noqa: E402
+from wh_local.data_collection.budget import (  # noqa: E402
     SQLiteDailyApiBudget,
     credential_fingerprint,
 )

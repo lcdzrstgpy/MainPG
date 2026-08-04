@@ -9,8 +9,8 @@ from typing import Any, Mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from wh_local.modules.daily_selection.contracts import ApiEvidence  # noqa: E402
-from wh_local.modules.daily_selection.normalizer import (  # noqa: E402
+from wh_local.data_collection.contracts import ApiEvidence  # noqa: E402
+from wh_local.data_collection.normalizer import (  # noqa: E402
     MAX_DETAIL_IMAGES,
     MAX_PRODUCT_IMAGES,
     enrich_candidate_with_detail,

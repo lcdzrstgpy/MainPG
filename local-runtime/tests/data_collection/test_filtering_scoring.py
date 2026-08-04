@@ -7,17 +7,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from wh_local.modules.daily_selection.contracts import (  # noqa: E402
+from wh_local.data_collection.contracts import (  # noqa: E402
     ApiEvidence,
     DailySelectionCandidate,
     SourceVariantRecord,
 )
-from wh_local.modules.daily_selection.criteria import DailySelectionCriteria  # noqa: E402
-from wh_local.modules.daily_selection.filtering import (  # noqa: E402
+from wh_local.data_collection.criteria import DailySelectionCriteria  # noqa: E402
+from wh_local.data_collection.filtering import (  # noqa: E402
     filter_and_score_candidates,
     filter_candidates,
 )
-from wh_local.modules.daily_selection.scoring import score_candidate  # noqa: E402
+from wh_local.data_collection.scoring import score_candidate  # noqa: E402
 
 
 def candidate(**overrides: object) -> DailySelectionCandidate:

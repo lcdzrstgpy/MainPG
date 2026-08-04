@@ -13,21 +13,21 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from wh_local.modules.daily_selection.budget import BudgetState  # noqa: E402
-from wh_local.modules.daily_selection.contracts import (  # noqa: E402
+from wh_local.data_collection.budget import BudgetState  # noqa: E402
+from wh_local.data_collection.contracts import (  # noqa: E402
     ApiEvidence,
     DailySelectionCandidate,
 )
-from wh_local.modules.daily_selection.criteria import DailySelectionCriteria  # noqa: E402
-from wh_local.modules.daily_selection.provider import ProviderCallResult  # noqa: E402
-from wh_local.modules.daily_selection.repository import DailySelectionRepository  # noqa: E402
-from wh_local.modules.daily_selection.routes import (  # noqa: E402
+from wh_local.data_collection.criteria import DailySelectionCriteria  # noqa: E402
+from wh_local.data_collection.provider import ProviderCallResult  # noqa: E402
+from wh_local.data_collection.repository import DailySelectionRepository  # noqa: E402
+from wh_local.data_collection.routes import (  # noqa: E402
     CachedDailySelectionImage,
     DailySelectionActor,
     DailySelectionRouteDependencies,
     register_daily_selection_routes,
 )
-from wh_local.modules.daily_selection.service import (  # noqa: E402
+from wh_local.data_collection.service import (  # noqa: E402
     DailySelectionImageAccessDenied,
     validate_public_image_target,
 )

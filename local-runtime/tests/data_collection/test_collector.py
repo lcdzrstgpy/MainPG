@@ -9,14 +9,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from wh_local.modules.daily_selection.budget import SQLiteDailyApiBudget, credential_fingerprint  # noqa: E402
-from wh_local.modules.daily_selection.collector import DailySelectionCollector  # noqa: E402
-from wh_local.modules.daily_selection.contracts import (  # noqa: E402
+from wh_local.data_collection.budget import SQLiteDailyApiBudget, credential_fingerprint  # noqa: E402
+from wh_local.data_collection.collector import DailySelectionCollector  # noqa: E402
+from wh_local.data_collection.contracts import (  # noqa: E402
     ApiEvidence,
     DailySelectionError,
 )
-from wh_local.modules.daily_selection.criteria import DailySelectionCriteria  # noqa: E402
-from wh_local.modules.daily_selection.provider import ProviderCallResult  # noqa: E402
+from wh_local.data_collection.criteria import DailySelectionCriteria  # noqa: E402
+from wh_local.data_collection.provider import ProviderCallResult  # noqa: E402
 
 
 def audit(operation: str) -> ApiEvidence:
