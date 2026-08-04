@@ -1,0 +1,59 @@
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import path from "node:path";
+import test from "node:test";
+
+const require = createRequire(import.meta.url);
+const extensionRoot = path.resolve(import.meta.dirname, "../../../wh_local/price_verification/plugin/extension");
+const {
+  extractSpecialSaleCards,
+  verify1688Sku,
+} = require(path.join(extensionRoot, "page_probe.js"));
+
+test("special-sale cards expose only sourcing fields", () => {
+  const root = {
+    querySelectorAll: () => [
+      {
+        dataset: {
+          offerId: "123456789",
+          url: "https://detail.1688.com/offer/123456789.html?token=private",
+          title: "Canvas travel bag",
+          price: "¥12.50",
+          imageUrl: "https://img.1688.com/bag.jpg",
+          moq: "2件起批",
+        },
+      },
+    ],
+  };
+
+  assert.deepEqual(extractSpecialSaleCards(root), [{
+    offer_id: "123456789",
+    source_url: "https://detail.1688.com/offer/123456789.html",
+    source_title: "Canvas travel bag",
+    main_image_url: "https://img.1688.com/bag.jpg",
+    price: 12.5,
+    moq: 2,
+  }]);
+});
+
+test("1688 SKU verification returns variant, price, minimum order, and freight only", () => {
+  const root = {
+    querySelectorAll: () => [
+      {
+        dataset: {
+          variant: "Black / Large",
+          price: "13.80",
+          moq: "3",
+          freight: "8.00",
+        },
+      },
+    ],
+  };
+
+  assert.deepEqual(verify1688Sku(root), [{
+    sku_attributes: "Black / Large",
+    price: 13.8,
+    moq: 3,
+    domestic_freight: 8,
+  }]);
+});

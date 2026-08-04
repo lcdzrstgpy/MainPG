@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Price Verification Connector</title></head>
+  <body>
+    <main>
+      <h1>Read-only connector</h1>
+      <p>Only price quotes and 1688 sourcing evidence are collected.</p>
+      <label>Local bridge URL <input id="bridge-url" inputmode="url" placeholder="http://127.0.0.1:8000"></label>
+      <label>Pairing code <input id="pairing-code" type="password" autocomplete="off"></label>
+      <button id="connect" type="button">Connect</button>
+      <output id="status" aria-live="polite"></output>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
