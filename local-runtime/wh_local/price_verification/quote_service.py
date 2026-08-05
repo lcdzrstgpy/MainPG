@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from .contracts import PluginCommandRequest, PriceVerificationActor, PriceVerificationContractError
 from .exports import ExportedQuoteRun, export_quote_snapshot
 from .plugin.service import PluginBridgeService
+from .plugin.shared_gateway import SharedPluginGateway
 from .quote_normalizer import (
     QuoteCounts,
     QuoteItem,
@@ -50,14 +51,18 @@ class QuoteService:
         self,
         *,
         repository: PriceVerificationRepository,
-        plugin_bridge: PluginBridgeService,
         output_root: str | Path,
+        plugin_gateway: SharedPluginGateway | None = None,
+        plugin_bridge: PluginBridgeService | None = None,
     ) -> None:
         if not isinstance(repository, PriceVerificationRepository):
             raise TypeError("repository must be PriceVerificationRepository")
-        if not isinstance(plugin_bridge, PluginBridgeService):
-            raise TypeError("plugin_bridge must be PluginBridgeService")
+        if plugin_gateway is None and not isinstance(plugin_bridge, PluginBridgeService):
+            raise TypeError("plugin_gateway or plugin_bridge is required")
+        if plugin_gateway is not None and not isinstance(plugin_gateway, SharedPluginGateway):
+            raise TypeError("plugin_gateway must be SharedPluginGateway")
         self._repository = repository
+        self._plugin_gateway = plugin_gateway
         self._plugin_bridge = plugin_bridge
         self._output_root = Path(output_root)
 
@@ -78,6 +83,15 @@ class QuoteService:
         actor = _actor(actor)
         if not isinstance(session_id, str) or not session_id.strip():
             raise PriceVerificationContractError("session_id is required")
+        if self._plugin_gateway is not None:
+            return self._plugin_gateway.queue_command(
+                actor,
+                session_id=session_id,
+                command_type="temu_price_quote_discovery",
+                payload={} if payload is None else payload,
+                idempotency_key=idempotency_key,
+            )
+        assert self._plugin_bridge is not None
         owned_session_ids = {session.session_id for session in self._plugin_bridge.list_sessions(actor)}
         if session_id not in owned_session_ids:
             raise PriceVerificationNotFound("resource not found")
@@ -99,8 +113,12 @@ class QuoteService:
         actor = _actor(actor)
         if not isinstance(command, PluginCommandRecord):
             raise TypeError("command must be PluginCommandRecord")
-        persisted_command = self._repository.get_command(
-            workspace_id=actor.workspace_id, command_id=command.command_id
+        persisted_command = (
+            self._plugin_gateway.get_command(actor, command.command_id)
+            if self._plugin_gateway is not None
+            else self._repository.get_command(
+                workspace_id=actor.workspace_id, command_id=command.command_id
+            )
         )
         if persisted_command.command_type != "temu_price_quote_discovery":
             raise PriceVerificationContractError("command must be a Temu price quote discovery")
@@ -154,6 +172,30 @@ class QuoteService:
         preview = self.get_preview(actor, run_id)
         return export_quote_snapshot(output_root=self._output_root, run=run, preview=preview)
 
+    def record_decision(
+        self,
+        actor: PriceVerificationActor,
+        run_id: str,
+        quote_key: str,
+        decision: str,
+        note: str = "",
+    ) -> Any:
+        actor = _actor(actor)
+        return self._repository.record_quote_decision(
+            workspace_id=actor.workspace_id,
+            quote_run_id=run_id,
+            quote_key=quote_key,
+            decision=decision,
+            decided_by=actor.actor_id,
+            note=note,
+        )
+
+    def list_current_decisions(self, actor: PriceVerificationActor, run_id: str) -> tuple[Any, ...]:
+        actor = _actor(actor)
+        return self._repository.list_current_quote_decisions(
+            workspace_id=actor.workspace_id, quote_run_id=run_id
+        )
+
 
 def _actor(value: PriceVerificationActor) -> PriceVerificationActor:
     if not isinstance(value, PriceVerificationActor):
@@ -167,11 +209,13 @@ def _captured_at(preview: QuotePreview, *, fallback: str) -> str:
 
 def _quote_snapshot(item: QuoteItem, *, index: int) -> Mapping[str, Any]:
     snapshot = asdict(item)
-    snapshot["quote_key"] = _quote_key(item, index=index)
+    snapshot["quote_key"] = item.quote_key.strip() or _quote_key(item, index=index)
     return snapshot
 
 
 def _quote_key(item: QuoteItem, *, index: int) -> str:
+    if item.quote_key.strip():
+        return item.quote_key.strip()
     values = (item.skc_id, item.sku_id, item.spu_or_goods_id, item.site)
     key = "|".join(value.strip() for value in values if value and value.strip())
     return key or f"quote-{index}"

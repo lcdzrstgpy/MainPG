@@ -15,6 +15,7 @@ from .budget import TaskApiBudget
 from .contracts import DailySelectionContractError
 from .criteria import DailySelectionCriteriaError
 from .repository import (
+    DailySelectionCandidateNotConfirmable,
     DailySelectionFeedback,
     DailySelectionRepository,
     DailySelectionRun,
@@ -29,6 +30,8 @@ from .service import (
     DailySelectionImageAccessDenied,
     DailySelectionImageCache,
     DailySelectionImageNotFound,
+    DailySelectionHandoffConsumer,
+    DailySelectionProviderUnavailable,
     DailySelectionService,
     ProviderConfigResolver,
     ProviderFactory,
@@ -95,6 +98,7 @@ class DailySelectionRouteDependencies:
     run_id_factory: RunIdFactory | None = None
     plugin_queue: DataCollectionPluginQueue | None = None
     plugin_draft_writer: Any | None = None
+    handoff_consumer: DailySelectionHandoffConsumer | None = None
 
     def build_service(self) -> DailySelectionService:
         repository = self.repository
@@ -127,6 +131,7 @@ def register_daily_selection_routes(
     if plugin_queue is None and dependencies.database_path is not None:
         plugin_queue = DataCollectionPluginQueue(dependencies.database_path)
     plugin_draft_writer = dependencies.plugin_draft_writer
+    handoff_consumer = dependencies.handoff_consumer
     if plugin_draft_writer is None and dependencies.database_path is not None:
         # This is an adapter only: product processing remains the owner of
         # its draft table, mapping, de-duplication, and raw payload storage.
@@ -140,6 +145,22 @@ def register_daily_selection_routes(
             ProductProcessingRepository(create_database(f"sqlite:///{database_path.as_posix()}")),
             ProductProcessingAssets(database_path.parent / "product-processing-assets"),
         )
+    if handoff_consumer is None and plugin_draft_writer is not None:
+        from ..modules.product_processing.domain.models import DailySelectionHandoffEnvelope
+
+        def consume_handoffs(
+            handoffs: tuple[DailySelectionHandoff, ...],
+        ) -> Mapping[str, Any]:
+            return plugin_draft_writer.consume_daily_selection_handoffs(
+                [
+                    DailySelectionHandoffEnvelope.model_validate(
+                        handoff.model_dump(mode="python")
+                    )
+                    for handoff in handoffs
+                ]
+            )
+
+        handoff_consumer = consume_handoffs
 
     def actor_dependency(
         actor_value: Any = Depends(dependencies.resolve_actor),
@@ -174,6 +195,14 @@ def register_daily_selection_routes(
             ValidationError,
         ) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+        except DailySelectionProviderUnavailable as error:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "PROVIDER_NOT_CONFIGURED",
+                    "message": "1688 采集服务尚未配置",
+                },
+            ) from error
 
     @router.post(
         "/desktop/daily-selection/preview-from-1688-link",
@@ -187,6 +216,14 @@ def register_daily_selection_routes(
             return service.preview_from_1688_link(actor=actor, request=request)
         except (ValueError, DailySelectionCriteriaError, DailySelectionContractError, ValidationError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+        except DailySelectionProviderUnavailable as error:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "PROVIDER_NOT_CONFIGURED",
+                    "message": "1688 采集服务尚未配置",
+                },
+            ) from error
 
     @router.post("/desktop/data-collection/plugin-sessions")
     def create_plugin_session(
@@ -368,9 +405,11 @@ def register_daily_selection_routes(
         response_model=list[DailySelectionRunSummary],
     )
     def list_runs(
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
         actor: DailySelectionActor = Depends(actor_dependency),
     ) -> tuple[DailySelectionRunSummary, ...]:
-        return service.list_runs(actor=actor)
+        return service.list_runs(actor=actor, limit=limit, offset=offset)
 
     @router.get(
         "/desktop/daily-selection/runs/{run_id}",
@@ -417,13 +456,40 @@ def register_daily_selection_routes(
         actor: DailySelectionActor = Depends(actor_dependency),
     ) -> tuple[DailySelectionHandoff, ...]:
         try:
-            return service.confirm_candidates(
+            handoffs = service.confirm_candidates(
                 actor=actor,
                 run_id=run_id,
                 candidate_ids=request.candidate_ids,
             )
+            if handoff_consumer is None:
+                # The handoff is durable and remains pending; a host may inject
+                # a dedicated consumer when product processing is deployed.
+                return handoffs
+            try:
+                handoff_consumer(handoffs)
+            except Exception as error:
+                # Confirmation has already been committed.  Do not expose a
+                # downstream stack trace or discard the durable pending record;
+                # the user can retry the same idempotent confirmation later.
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "PRODUCT_PROCESSING_UNAVAILABLE",
+                        "message": "产品处理服务暂不可用，确认记录已保留，稍后可重试",
+                    },
+                ) from error
+            return service.mark_handoffs_consumed(actor=actor, handoffs=handoffs)
         except DailySelectionRunNotFound as error:
             raise _run_not_found(error) from error
+        except DailySelectionCandidateNotConfirmable as error:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "CANDIDATE_NOT_CONFIRMABLE",
+                    "message": "候选商品当前不可确认入库",
+                    "candidates": error.reasons,
+                },
+            ) from error
         except (DailySelectionContractError, ValueError, TypeError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 

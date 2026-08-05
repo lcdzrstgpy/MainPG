@@ -22,7 +22,7 @@ from .contracts import SourceSearchTask
 
 _PROVIDER_NAME = "onebound-1688"
 _PROVIDER_FINGERPRINT = hashlib.sha256(_PROVIDER_NAME.encode("utf-8")).hexdigest()
-_MAX_CALLS_PER_TASK = 6  # reference upload, image search's provider sequence, one detail lookup
+_MAX_CALLS_PER_TASK = 6  # provider image-search sequence plus one detail lookup
 _DEFAULT_CALL_LIMIT = 60
 _OFFER_ID = re.compile(r"(?:offer/|offerId=|offer_id=)(\d{3,})", flags=re.IGNORECASE)
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -35,8 +35,6 @@ class _ProviderResult(Protocol):
 
 
 class _OneBoundProvider(Protocol):
-    def upload_reference_image(self, reference_image_url: str) -> _ProviderResult: ...
-
     def search_by_image(self, criteria: object) -> _ProviderResult: ...
 
     def get_item_detail(self, offer_id: str) -> _ProviderResult: ...
@@ -109,11 +107,6 @@ class OneBoundSourceAdapter:
     def _search_task(self, provider: _OneBoundProvider, task: SourceSearchTask) -> tuple[dict[str, Any], int]:
         evidence: list[dict[str, Any]] = []
         try:
-            uploaded = provider.upload_reference_image(task.main_image_url)
-            evidence.extend(_redacted_audits(uploaded))
-            if not _result_ok(uploaded):
-                return _failed_item(task, "provider request failed", evidence), len(evidence)
-
             searched = provider.search_by_image(_ImageSearchCriteria(task.main_image_url))
             evidence.extend(_redacted_audits(searched))
             if not _result_ok(searched):

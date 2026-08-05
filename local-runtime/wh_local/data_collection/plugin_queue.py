@@ -20,6 +20,11 @@ from .normalizer import sanitize_raw_payload
 
 
 TEMU_LINK_CAPTURE = "temu_link_capture"
+TEMU_PRICE_QUOTE_DISCOVERY = "temu_price_quote_discovery"
+SOURCE_BROWSER_IMAGE_SEARCH = "source_browser_image_search"
+ALLOWED_PLUGIN_COMMAND_TYPES = frozenset(
+    {TEMU_LINK_CAPTURE, TEMU_PRICE_QUOTE_DISCOVERY, SOURCE_BROWSER_IMAGE_SEARCH}
+)
 _TERMINAL = frozenset({"succeeded", "failed"})
 _ACTIVE_WINDOW = timedelta(minutes=10)
 
@@ -29,6 +34,7 @@ class PluginCommand(BaseModel):
 
     command_id: int
     command_type: str
+    idempotency_key: str = ""
     payload: Mapping[str, Any]
     status: str
     result: Mapping[str, Any] = Field(default_factory=dict)
@@ -88,6 +94,65 @@ class DataCollectionPluginQueue:
             )
             return self._command(conn, int(cur.lastrowid))
 
+    def queue_command(
+        self,
+        *,
+        actor_id: str,
+        workspace_id: str,
+        session_id: int,
+        command_type: str,
+        payload: Mapping[str, Any],
+        idempotency_key: str,
+    ) -> PluginCommand:
+        """Queue one whitelisted read-only command for an owned live session."""
+        command_type = _required_text(command_type, "command_type")
+        idempotency_key = _required_text(idempotency_key, "idempotency_key")
+        if command_type not in ALLOWED_PLUGIN_COMMAND_TYPES:
+            raise ValueError("unsupported plugin command type")
+        if not isinstance(payload, Mapping):
+            raise ValueError("payload must be an object")
+        now = _now()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            session = self._owned_session(
+                conn,
+                actor_id=actor_id,
+                workspace_id=workspace_id,
+                session_id=session_id,
+            )
+            if not _active(session["last_seen_at"]):
+                conn.rollback()
+                raise ValueError("plugin session is offline")
+            capabilities = _load(session["capabilities_json"])
+            if capabilities.get(command_type) is not True:
+                conn.rollback()
+                raise ValueError(f"plugin session does not support {command_type}")
+            existing = conn.execute(
+                """SELECT command_id FROM data_collection_plugin_command_requests
+                WHERE workspace_id = ? AND command_type = ? AND idempotency_key = ?""",
+                (workspace_id, command_type, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                command = self._command(conn, int(existing["command_id"]))
+                conn.commit()
+                return command
+            cur = conn.execute(
+                """INSERT INTO data_collection_plugin_commands
+                (session_id, command_type, payload_json, status, result_json, created_at, updated_at)
+                VALUES (?, ?, ?, 'queued', '{}', ?, ?)""",
+                (session_id, command_type, _dump(payload), now, now),
+            )
+            command_id = int(cur.lastrowid)
+            conn.execute(
+                """INSERT INTO data_collection_plugin_command_requests
+                (workspace_id, command_type, idempotency_key, command_id, created_at)
+                VALUES (?, ?, ?, ?, ?)""",
+                (workspace_id, command_type, idempotency_key, command_id, now),
+            )
+            command = self._command(conn, command_id)
+            conn.commit()
+            return command
+
     def poll(self, session_token: str, *, limit: int = 10) -> tuple[PluginCommand, ...]:
         now = _now()
         with self._connect() as conn:
@@ -145,15 +210,69 @@ class DataCollectionPluginQueue:
                 raise PermissionError("plugin command not found")
             return self._command(conn, int(row["id"]))
 
+    def list_sessions(self, *, actor_id: str, workspace_id: str) -> tuple[Mapping[str, Any], ...]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, actor_id, workspace_id, capabilities_json, status, created_at, last_seen_at
+                FROM data_collection_plugin_sessions
+                WHERE actor_id = ? AND workspace_id = ?
+                ORDER BY last_seen_at DESC, id DESC""",
+                (actor_id, workspace_id),
+            ).fetchall()
+        return tuple(
+            {
+                "session_id": int(row["id"]),
+                "actor_id": str(row["actor_id"]),
+                "workspace_id": str(row["workspace_id"]),
+                "capabilities": _load(row["capabilities_json"]),
+                "status": str(row["status"]),
+                "created_at": str(row["created_at"]),
+                "last_seen_at": str(row["last_seen_at"]),
+            }
+            for row in rows
+        )
+
+    def list_commands(
+        self,
+        *,
+        actor_id: str,
+        workspace_id: str,
+        command_type: str | None = None,
+        limit: int = 20,
+    ) -> tuple[PluginCommand, ...]:
+        limit = max(1, min(int(limit), 50))
+        values: list[Any] = [actor_id, workspace_id]
+        clause = ""
+        if command_type is not None:
+            if command_type not in ALLOWED_PLUGIN_COMMAND_TYPES:
+                raise ValueError("unsupported plugin command type")
+            clause = " AND c.command_type = ?"
+            values.append(command_type)
+        values.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT c.id FROM data_collection_plugin_commands c
+                JOIN data_collection_plugin_sessions s ON s.id = c.session_id
+                WHERE s.actor_id = ? AND s.workspace_id = ?"""
+                + clause
+                + " ORDER BY c.created_at DESC, c.id DESC LIMIT ?",
+                tuple(values),
+            ).fetchall()
+            return tuple(self._command(conn, int(row["id"])) for row in rows)
+
     def workspace_for_session(self, session_token: str) -> str:
         """Return the workspace bound to a connected browser session."""
         with self._connect() as conn:
             return str(self._session(conn, session_token)["workspace_id"])
 
     def _initialize(self) -> None:
-        migration = Path(__file__).with_name("migrations") / "002_data_collection_plugin_queue.sql"
+        migrations = Path(__file__).with_name("migrations")
         with self._connect() as conn:
-            conn.executescript(migration.read_text(encoding="utf-8"))
+            for migration in (
+                migrations / "002_data_collection_plugin_queue.sql",
+                migrations / "003_plugin_command_requests.sql",
+            ):
+                conn.executescript(migration.read_text(encoding="utf-8"))
 
     def _connect(self) -> sqlite3.Connection:
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,10 +293,31 @@ class DataCollectionPluginQueue:
         return row
 
     @staticmethod
+    def _owned_session(
+        conn: sqlite3.Connection,
+        *,
+        actor_id: str,
+        workspace_id: str,
+        session_id: int,
+    ) -> sqlite3.Row:
+        row = conn.execute(
+            """SELECT id, actor_id, workspace_id, capabilities_json, last_seen_at
+            FROM data_collection_plugin_sessions
+            WHERE id = ? AND actor_id = ? AND workspace_id = ?""",
+            (session_id, actor_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise PermissionError("plugin session not found")
+        return row
+
+    @staticmethod
     def _command(conn: sqlite3.Connection, command_id: int) -> PluginCommand:
         row = conn.execute(
-            "SELECT id, command_type, payload_json, status, result_json, created_at, updated_at "
-            "FROM data_collection_plugin_commands WHERE id = ?",
+            """SELECT c.id, c.command_type, c.payload_json, c.status, c.result_json,
+            c.created_at, c.updated_at, COALESCE(r.idempotency_key, '') AS idempotency_key
+            FROM data_collection_plugin_commands c
+            LEFT JOIN data_collection_plugin_command_requests r ON r.command_id = c.id
+            WHERE c.id = ?""",
             (command_id,),
         ).fetchone()
         if row is None:
@@ -185,6 +325,7 @@ class DataCollectionPluginQueue:
         return PluginCommand(
             command_id=row["id"],
             command_type=row["command_type"],
+            idempotency_key=row["idempotency_key"],
             payload=_load(row["payload_json"]),
             status=row["status"],
             result=_load(row["result_json"]),
@@ -212,6 +353,12 @@ def _dump(value: Mapping[str, Any]) -> str:
 def _load(value: str) -> Mapping[str, Any]:
     parsed = json.loads(value)
     return parsed if isinstance(parsed, Mapping) else {}
+
+
+def _required_text(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} is required")
+    return value.strip()
 
 
 def _is_temu_product_url(value: object) -> bool:
