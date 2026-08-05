@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -37,23 +36,13 @@ def _price_verification_actor(
 
 
 def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
-    """Resolve OneBound 1688 credentials from environment variables."""
-    api_key = os.environ.get("DAILY_SELECTION_ONEBOUND_API_KEY", "")
-    api_secret = os.environ.get("DAILY_SELECTION_ONEBOUND_API_SECRET", "")
-    base_url = os.environ.get(
-        "DAILY_SELECTION_ONEBOUND_BASE_URL",
-        "https://api.onebound.cn/1688/api_call.php",
-    )
-    enabled = os.environ.get("DAILY_SELECTION_ONEBOUND_ENABLED", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    """Resolve OneBound credentials from local global configuration."""
+    config = default_config()
     return {
-        "api_key": api_key,
-        "api_secret": api_secret,
-        "base_url": base_url,
-        "enabled": enabled,
+        "api_key": config.onebound_1688_api_key,
+        "api_secret": config.onebound_1688_api_secret,
+        "base_url": config.onebound_1688_base_url,
+        "enabled": config.onebound_1688_enabled,
     }
 
 

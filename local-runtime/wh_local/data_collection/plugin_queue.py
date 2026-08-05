@@ -145,6 +145,11 @@ class DataCollectionPluginQueue:
                 raise PermissionError("plugin command not found")
             return self._command(conn, int(row["id"]))
 
+    def workspace_for_session(self, session_token: str) -> str:
+        """Return the workspace bound to a connected browser session."""
+        with self._connect() as conn:
+            return str(self._session(conn, session_token)["workspace_id"])
+
     def _initialize(self) -> None:
         migration = Path(__file__).with_name("migrations") / "002_data_collection_plugin_queue.sql"
         with self._connect() as conn:
@@ -160,7 +165,7 @@ class DataCollectionPluginQueue:
     @staticmethod
     def _session(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
         row = conn.execute(
-            "SELECT id, last_seen_at FROM data_collection_plugin_sessions "
+            "SELECT id, workspace_id, last_seen_at FROM data_collection_plugin_sessions "
             "WHERE session_token = ?",
             (token,),
         ).fetchone()
