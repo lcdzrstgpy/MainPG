@@ -16,7 +16,7 @@ export function Sidebar({ collapsed, activeId, modules, onSelect }: SidebarProps
       </div>
       <p className="sidebar-caption">本地运营中台</p>
       <nav className="sidebar-menu">
-        {modules.map((module) => (
+        {modules.filter((module) => !module.hiddenFromSidebar).map((module) => (
           <button key={module.id} className={`sidebar-item ${activeId === module.id ? "is-active" : ""}`} onClick={() => onSelect(module.id)} title={module.label}>
             <span aria-hidden="true">{module.icon}</span>
             {!collapsed && <span>{module.label}</span>}

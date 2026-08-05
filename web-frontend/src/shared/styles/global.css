@@ -9,6 +9,9 @@
 body { min-width: 320px; min-height: 100vh; margin: 0; }
 button, input { font: inherit; }
 button { cursor: pointer; }
+.workspace-notice { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 11px 13px; border: 1px solid #f0d28c; border-radius: 10px; color: #7d6022; background: #fff9e9; font-size: .8rem; }
+.workspace-notice > span { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; color: #fff; background: #e2a82d; font-weight: 850; }
+.workspace-notice > button { margin-left: auto; border: 0; color: #987934; background: transparent; font-size: 1.1rem; }
 
 .auth-screen { position: relative; min-height: 100vh; display: grid; grid-template-columns: minmax(300px, 1.08fr) minmax(340px, .92fr); gap: 24px; padding: 24px; overflow: hidden; background: linear-gradient(135deg, #082b55 0%, #0d4d82 34%, #147ea0 62%, #1fc6bc 100%); }
 .auth-screen::before { content: ""; position: absolute; z-index: 0; inset: 0; background: radial-gradient(circle at 14% 18%, rgba(129, 226, 255, .22) 0, transparent 28%), radial-gradient(circle at 78% 78%, rgba(199, 255, 246, .24) 0, transparent 34%), linear-gradient(105deg, transparent 20%, rgba(255,255,255,.14) 36%, transparent 52%); background-size: 100% 100%, 100% 100%, 180% 100%; animation: auth-shine 8s ease-in-out infinite; }

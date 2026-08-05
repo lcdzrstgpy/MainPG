@@ -1,20 +1,28 @@
-import type { WorkspaceModule, WorkspaceModuleId } from "../navigation/modules";
+import type { WorkspaceModuleId } from "../navigation/modules";
+
+export type WorkspaceTab = {
+  key: string;
+  moduleId: WorkspaceModuleId;
+  label: string;
+  icon: string;
+  directionId?: string;
+};
 
 type TopNavigationProps = {
-  activeId: WorkspaceModuleId;
-  tabs: WorkspaceModule[];
+  activeKey: string;
+  tabs: WorkspaceTab[];
   onToggleSidebar: () => void;
-  onSelectTab: (id: WorkspaceModuleId) => void;
-  onCloseTab: (id: WorkspaceModuleId) => void;
+  onSelectTab: (key: string) => void;
+  onCloseTab: (key: string) => void;
   onSignOut: () => void;
 };
 
-export function TopNavigation({ activeId, tabs, onToggleSidebar, onSelectTab, onCloseTab, onSignOut }: TopNavigationProps) {
+export function TopNavigation({ activeKey, tabs, onToggleSidebar, onSelectTab, onCloseTab, onSignOut }: TopNavigationProps) {
   return (
     <header className="topbar-card">
       <div className="topbar-main">
         <button className="icon-button" onClick={onToggleSidebar} aria-label="展开或收起侧边栏">☰</button>
-        <div className="breadcrumb"><span>工作台</span><span>/</span><strong>{tabs.find((tab) => tab.id === activeId)?.label}</strong></div>
+        <div className="breadcrumb"><span>工作台</span><span>/</span><strong>{tabs.find((tab) => tab.key === activeKey)?.label}</strong></div>
         <div className="topbar-actions">
           <button className="soft-action" type="button">⌕ 搜索</button>
           <details className="user-menu">
@@ -29,9 +37,9 @@ export function TopNavigation({ activeId, tabs, onToggleSidebar, onSelectTab, on
       </div>
       <div className="tab-strip" aria-label="内容页标签导航">
         {tabs.map((tab) => (
-          <div key={tab.id} className={`page-tab ${activeId === tab.id ? "is-active" : ""}`}>
-            <button onClick={() => onSelectTab(tab.id)}>{tab.icon} {tab.label}</button>
-            {tab.id !== "dashboard" && <button className="tab-close" onClick={() => onCloseTab(tab.id)} aria-label={`关闭${tab.label}`}>×</button>}
+          <div key={tab.key} className={`page-tab ${activeKey === tab.key ? "is-active" : ""}`}>
+            <button onClick={() => onSelectTab(tab.key)}>{tab.icon} {tab.label}</button>
+            {tab.moduleId !== "dashboard" && <button className="tab-close" onClick={() => onCloseTab(tab.key)} aria-label={`关闭${tab.label}`}>×</button>}
           </div>
         ))}
       </div>
