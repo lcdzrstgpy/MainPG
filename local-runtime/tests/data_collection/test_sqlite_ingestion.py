@@ -31,11 +31,14 @@ ACTOR_ID = "ingestion-user"
 WORKSPACE_ID = "ingestion-workspace"
 
 
-def _evidence(operation: str) -> ApiEvidence:
+def _evidence(
+    operation: str,
+    captured_at: str = "2026-08-04T10:00:00+08:00",
+) -> ApiEvidence:
     return ApiEvidence(
         provider="fake-1688",
         operation=operation,
-        captured_at="2026-08-04T10:00:00+08:00",
+        captured_at=captured_at,
     )
 
 
@@ -81,12 +84,21 @@ def _detail_item(offer_id: str) -> dict[str, Any]:
 class FakeProvider:
     credential_fingerprint = "f" * 64
 
+    def __init__(self) -> None:
+        self.keyword_searches = 0
+
     def search_keyword(
         self, criteria: DailySelectionCriteria
     ) -> ProviderCallResult:
+        self.keyword_searches += 1
         return ProviderCallResult(
             response={"data": {"items": [_search_item("keyword-offer")]}},
-            audits=(_evidence("item_search"),),
+            audits=(
+                _evidence(
+                    "item_search",
+                    f"2026-08-04T10:00:0{self.keyword_searches}+08:00",
+                ),
+            ),
         )
 
     def search_by_image(
@@ -398,6 +410,53 @@ def test_preview_immediately_creates_api_drafts(
     payload = json.loads(row[1])
     assert payload["collection_mode"] == "keyword"
     assert payload["source_evidence"][0]["operation"] == "item_search"
+
+
+def test_repeated_preview_refreshes_existing_api_draft_with_current_run_provenance(
+    tmp_path: Path,
+    no_network: None,
+) -> None:
+    database_path = tmp_path / "workbench.sqlite3"
+    with _client(database_path, iter(("run-first", "run-second"))) as client:
+        first = client.post(
+            "/desktop/daily-selection/preview",
+            json={
+                "keywords": ["第一次关键词"],
+                "selection_scope": "exact",
+                "target_count": 1,
+                "detail_count": 1,
+                "max_api_calls": 2,
+            },
+        )
+        second = client.post(
+            "/desktop/daily-selection/preview",
+            json={
+                "keywords": ["第二次关键词"],
+                "selection_scope": "exact",
+                "target_count": 1,
+                "detail_count": 1,
+                "max_api_calls": 2,
+            },
+        )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id, selection_run_id, raw_payload_json
+            FROM product_processing_drafts
+            WHERE workspace_id = ?
+            """,
+            (WORKSPACE_ID,),
+        ).fetchall()
+    assert len(rows) == 1
+    _, selection_run_id, raw_payload_json = rows[0]
+    assert selection_run_id == "run-second"
+    payload = json.loads(raw_payload_json)
+    assert payload["collection_mode"] == "keyword"
+    assert payload["selection_criteria"]["keywords"] == ["第二次关键词"]
+    assert payload["source_evidence"][0]["captured_at"] == "2026-08-04T10:00:02+08:00"
 
 
 def test_temu_plugin_result_persists_sanitized_json_in_shared_sqlite(

@@ -110,6 +110,20 @@ class ProductProcessingService:
         candidate_id = self._text(raw.get("candidate_id")) or None
         existing = self.repository.draft_by_candidate(candidate_id or "", workspace_id)
         if existing and existing["status"] != "deleted":
+            # A OneBound candidate may legitimately recur in a later preview.
+            # Keep its single draft, but replace the run-scoped provenance with
+            # the evidence and criteria from the current collection run.
+            if self._text(raw.get("source_type")) == "onebound_api" and selection_run_id:
+                refreshed = self.repository.update_draft(
+                    existing["id"],
+                    {"selection_run_id": selection_run_id},
+                    raw,
+                    workspace_id=workspace_id,
+                )
+                if refreshed is None:
+                    raise ProductProcessingNotFound("product draft not found")
+                self._seed_draft_source_images(refreshed, raw)
+                return refreshed, False
             return existing, False
         title = self._text(raw.get("title") or raw.get("source_title") or raw.get("product_name"))
         product_name = self._text(raw.get("product_name") or title)
