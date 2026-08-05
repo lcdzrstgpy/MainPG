@@ -115,6 +115,21 @@ def test_sync_keeps_remote_url_and_makes_failure_retryable(
     assert retried[1]["sync_error"] == ""
 
 
+def test_draft_list_exposes_ready_primary_source_image_without_replacing_remote_url(
+    service_with_fetcher: ProductProcessingService,
+) -> None:
+    draft = make_pending_draft(service_with_fetcher)
+
+    assert service_with_fetcher.sync_draft_source_images(draft["id"]) == {"ready": 1, "failed": 1}
+    ready_source = service_with_fetcher.source_images(draft_id=draft["id"])["images"][0]
+    listed = service_with_fetcher.list_drafts(None, 20, 0, summary=False)["drafts"]
+    projected = next(item for item in listed if item["id"] == draft["id"])
+
+    assert projected["image_path"] == ready_source["local_path"]
+    assert projected["image_url"] == "https://cdn.example.test/main.jpg"
+    assert service_with_fetcher.draft_image_path(draft["id"]) == Path(ready_source["local_path"])
+
+
 def test_retry_reclaims_a_stale_syncing_source_image(service_with_fetcher: ProductProcessingService) -> None:
     draft = make_pending_draft(service_with_fetcher)
     claimed = service_with_fetcher.repository.claim_syncable_source_images(draft["id"])

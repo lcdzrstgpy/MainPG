@@ -66,7 +66,7 @@ export function ProductProcessingPage() {
       await retryProductDraftSourceImages(draft.id);
       setFailedImages((items) => ({ ...items, [draft.id]: false }));
       setImageVersion((value) => value + 1);
-      setNotice(`已提交“${draft.title || `草稿 #${draft.id}`}”的图片补齐请求。`);
+      await loadDrafts();
     } catch (error) {
       setNotice(`图片补齐请求失败：${errorMessage(error)}`);
     } finally {

@@ -223,6 +223,17 @@ class ProductProcessingService:
             source_type=source_type,
             workspace_id=workspace_id,
         )
+        ready_source_paths = self.repository.ready_primary_source_image_paths(
+            (draft["id"] for draft in drafts),
+            workspace_id=workspace_id,
+        )
+        drafts = [
+            {
+                **draft,
+                "image_path": draft["image_path"] or ready_source_paths.get(draft["id"], ""),
+            }
+            for draft in drafts
+        ]
         if summary:
             drafts = [self._draft_summary(draft) for draft in drafts]
         return {
@@ -303,6 +314,8 @@ class ProductProcessingService:
     def draft_image_path(self, draft_id: int, workspace_id: str = "local") -> Path:
         draft = self.get_draft(draft_id, workspace_id)
         path = self._text(draft.get("image_path") or draft["raw_payload"].get("image_path"))
+        if not path:
+            path = self.repository.ready_primary_source_image_paths([draft_id], workspace_id=workspace_id).get(draft_id, "")
         if not path:
             raise ProductProcessingNotFound("draft does not have a local image")
         try:

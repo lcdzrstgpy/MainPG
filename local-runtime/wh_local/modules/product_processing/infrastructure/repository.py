@@ -521,6 +521,33 @@ class ProductProcessingRepository:
             rows = session.scalars(statement.order_by(SourceImageAssetRow.id)).all()
             return [self._source_image(row) for row in rows]
 
+    def ready_primary_source_image_paths(
+        self,
+        draft_ids: Iterable[int],
+        *,
+        workspace_id: str = "local",
+    ) -> dict[int, str]:
+        ids = list(dict.fromkeys(int(item) for item in draft_ids))
+        if not ids:
+            return {}
+        with self.database.sessions() as session:
+            rows = session.execute(
+                select(SourceImageAssetRow.product_draft_id, SourceImageAssetRow.local_path)
+                .join(ProductDraftRow, ProductDraftRow.id == SourceImageAssetRow.product_draft_id)
+                .where(
+                    ProductDraftRow.workspace_id == workspace_id,
+                    SourceImageAssetRow.product_draft_id.in_(ids),
+                    SourceImageAssetRow.kind == "source",
+                    SourceImageAssetRow.sync_status == "ready",
+                    SourceImageAssetRow.local_path != "",
+                )
+                .order_by(SourceImageAssetRow.product_draft_id, SourceImageAssetRow.id)
+            ).all()
+            paths: dict[int, str] = {}
+            for draft_id, local_path in rows:
+                paths.setdefault(int(draft_id), str(local_path))
+            return paths
+
     def handoff_receipt(self, handoff_id: str, workspace_id: str) -> dict[str, Any] | None:
         with self.database.sessions() as session:
             row = session.scalar(
