@@ -149,6 +149,23 @@ CREATE TABLE IF NOT EXISTS auth_login_logs (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 远端平台账号服务会话表：由独立 customer auth 服务签发，和本地工作台 customer_sessions 分开。
+CREATE TABLE IF NOT EXISTS auth_platform_sessions (
+    session_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT NOT NULL DEFAULT '',
+    last_used_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    user_agent TEXT NOT NULL DEFAULT '',
+    client_ip TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_platform_sessions_account_active
+    ON auth_platform_sessions (account_id, expires_at, revoked_at);
+
 -- 店铺表：给每日运营、产品处理、利润活动、核价及货源等模块统一关联店铺。
 CREATE TABLE IF NOT EXISTS stores (
     store_id TEXT PRIMARY KEY,
