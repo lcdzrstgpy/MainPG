@@ -149,6 +149,23 @@ CREATE TABLE IF NOT EXISTS auth_login_logs (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 远端平台账号服务会话表：由独立 customer auth 服务签发，和本地工作台 customer_sessions 分开。
+CREATE TABLE IF NOT EXISTS auth_platform_sessions (
+    session_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT NOT NULL DEFAULT '',
+    last_used_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    user_agent TEXT NOT NULL DEFAULT '',
+    client_ip TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_platform_sessions_account_active
+    ON auth_platform_sessions (account_id, expires_at, revoked_at);
+
 -- 店铺表：给每日运营、产品处理、利润活动、核价及货源等模块统一关联店铺。
 CREATE TABLE IF NOT EXISTS stores (
     store_id TEXT PRIMARY KEY,
@@ -232,6 +249,15 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 product_processing_sql.read_text(encoding="utf-8"),
             )
         )
+    profit_activity_sql = root / "modules" / "profit_activity" / "migrations" / "001_profit_activity.sql"
+    if profit_activity_sql.exists():
+        migrations.append(
+            (
+                "profit_activity:001_profit_activity",
+                "profit_activity",
+                profit_activity_sql.read_text(encoding="utf-8"),
+            )
+        )
     price_verification_sql = root / "price_verification" / "migrations" / "001_price_verification.sql"
     if price_verification_sql.exists():
         migrations.append(
@@ -274,6 +300,16 @@ DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (
     ("price_verification.sourcing_match", "price_verification", "sourcing_match", "创建 1688 货源匹配任务并查看候选"),
     ("price_verification.export", "price_verification", "export", "导出核价 Excel 和证据报告"),
     ("price_verification.plugin", "price_verification", "plugin", "创建配对码、连接插件会话并处理插件命令"),
+    ("profit_activity.read", "profit_activity", "read", "查询本人利润产品和活动筛选结果"),
+    ("profit_activity.company_read", "profit_activity", "company_read", "查询本工作区/公司共享利润产品"),
+    ("profit_activity.write", "profit_activity", "write", "新增、编辑和归档本人利润产品"),
+    ("profit_activity.company_write", "profit_activity", "company_write", "编辑本工作区/公司共享利润产品"),
+    ("profit_activity.delete", "profit_activity", "delete", "删除本人利润产品"),
+    ("profit_activity.company_delete", "profit_activity", "company_delete", "删除本工作区/公司共享利润产品"),
+    ("profit_activity.settings_manage", "profit_activity", "settings_manage", "维护利润活动配置和规则版本"),
+    ("profit_activity.import", "profit_activity", "import", "导入产品资料 Excel 并确认入档"),
+    ("profit_activity.filter", "profit_activity", "filter", "执行活动报名 Excel 利润筛选"),
+    ("profit_activity.export", "profit_activity", "export", "导出产品档案和活动筛选结果"),
     ("seller_listing.read", "seller_listing", "read", "查看卖家中心上架、核价和库存流程数据"),
     ("seller_listing.price_confirm", "seller_listing", "price_confirm", "处理核价、调价和价格待确认产品"),
     ("seller_listing.attribute_write", "seller_listing", "attribute_write", "修改产品属性、详情和库存"),
@@ -302,6 +338,11 @@ OPERATOR_PERMISSIONS: frozenset[str] = frozenset(
         "price_verification.sourcing_match",
         "price_verification.export",
         "price_verification.plugin",
+        "profit_activity.read",
+        "profit_activity.write",
+        "profit_activity.import",
+        "profit_activity.filter",
+        "profit_activity.export",
         "seller_listing.read",
         "seller_listing.price_confirm",
         "seller_listing.attribute_write",
