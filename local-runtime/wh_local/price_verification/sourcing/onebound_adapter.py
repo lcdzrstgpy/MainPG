@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import re
 from typing import Any, Protocol
@@ -70,7 +70,7 @@ class OneBoundSourceAdapter:
         self._repository = repository
         self._provider_factory = provider_factory
         self._call_limit = call_limit
-        self._clock = clock or (lambda: datetime.now(UTC))
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def search_by_image(
         self, actor: PriceVerificationActor, tasks: Sequence[SourceSearchTask]
@@ -304,7 +304,7 @@ def _optional_text(value: object) -> str | None:
 
 
 def _timestamp() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _shanghai_date(value: datetime) -> str:

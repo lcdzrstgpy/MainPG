@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -335,12 +335,12 @@ class DataCollectionPluginQueue:
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _active(value: str) -> bool:
     try:
-        return datetime.now(UTC) - datetime.fromisoformat(value) <= _ACTIVE_WINDOW
+        return datetime.now(timezone.utc) - datetime.fromisoformat(value) <= _ACTIVE_WINDOW
     except ValueError:
         return False
 

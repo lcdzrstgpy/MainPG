@@ -41,7 +41,7 @@ class RemoteCustomerAuthServerTest(unittest.TestCase):
 
         remote_customer = normalize_login_response(payload)
         self.assertEqual(remote_customer.username, "remote_admin")
-        self.assertEqual(remote_customer.role, "admin")
+        self.assertEqual(remote_customer.role, "operator")
         self.assertEqual(remote_customer.workspace_code, "wh_remote")
         self.assertTrue(remote_customer.remote_token.startswith("wh_auth_"))
 
@@ -70,9 +70,136 @@ class RemoteCustomerAuthServerTest(unittest.TestCase):
         with sqlite3.connect(db_path) as conn:
             remote_token_hash = conn.execute("SELECT token_hash FROM auth_platform_sessions").fetchone()[0]
             local_token_hash = conn.execute("SELECT token_hash FROM customer_sessions").fetchone()[0]
+            user_role = conn.execute(
+                "SELECT role FROM user_roles WHERE account_id = ?",
+                (remote_customer.customer_id,),
+            ).fetchone()[0]
         self.assertEqual(len(remote_token_hash), 64)
         self.assertEqual(len(local_token_hash), 64)
         self.assertNotIn(payload["token"], {remote_token_hash, local_token_hash})
+        self.assertEqual(user_role, "operator")
+
+    def test_commercial_auth_tables_and_seed_roles_exist(self) -> None:
+        db_path = Path(tempfile.mkdtemp(prefix="wh_commercial_auth_schema_test_")) / "auth.sqlite3"
+        client = TestClient(create_auth_app(db_path))
+        self.assertEqual(client.get("/health").status_code, 200)
+
+        expected_tables = {
+            "roles",
+            "user_roles",
+            "auth_email_verifications",
+            "account_invitations",
+            "license_state",
+            "license_activation_logs",
+        }
+        with sqlite3.connect(db_path) as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            roles = {row[0] for row in conn.execute("SELECT role FROM roles")}
+            owner_permissions = conn.execute(
+                "SELECT COUNT(*) FROM role_permissions WHERE role = 'owner'"
+            ).fetchone()[0]
+            viewer_permissions = conn.execute(
+                "SELECT COUNT(*) FROM role_permissions WHERE role = 'viewer'"
+            ).fetchone()[0]
+        self.assertTrue(expected_tables.issubset(tables))
+        self.assertTrue({"owner", "admin", "operator", "viewer"}.issubset(roles))
+        self.assertGreater(owner_permissions, 0)
+        self.assertGreater(viewer_permissions, 0)
+
+    def test_forgot_and_reset_password_flow(self) -> None:
+        db_path = Path(tempfile.mkdtemp(prefix="wh_remote_auth_reset_test_")) / "auth.sqlite3"
+        client = TestClient(create_auth_app(db_path))
+
+        self.assertEqual(
+            client.post(
+                "/api/customer/register",
+                json={
+                    "username": "reset_user",
+                    "email": "reset_user@example.com",
+                    "password": "OldSecret123!",
+                    "role": "operator",
+                },
+            ).status_code,
+            200,
+        )
+        old_login = client.post("/api/customer/login", json={"username": "reset_user", "password": "OldSecret123!"})
+        self.assertEqual(old_login.status_code, 200, old_login.text)
+        old_token = old_login.json()["token"]
+
+        forgot_response = client.post("/api/customer/forgot-password", json={"username": "reset_user"})
+        self.assertEqual(forgot_response.status_code, 200, forgot_response.text)
+        reset_token = forgot_response.json()["raw"]["reset_token"]
+        self.assertTrue(reset_token.startswith("wh_reset_"))
+
+        with sqlite3.connect(db_path) as conn:
+            token_hash = conn.execute("SELECT token_hash FROM auth_password_reset_tokens").fetchone()[0]
+        self.assertEqual(len(token_hash), 64)
+        self.assertNotEqual(token_hash, reset_token)
+
+        reset_response = client.post(
+            "/api/customer/reset-password",
+            json={"reset_token": reset_token, "new_password": "NewSecret123!"},
+        )
+        self.assertEqual(reset_response.status_code, 200, reset_response.text)
+
+        self.assertEqual(
+            client.get("/api/customer/me", headers={"Authorization": f"Bearer {old_token}"}).status_code,
+            401,
+        )
+        self.assertEqual(
+            client.post("/api/customer/login", json={"username": "reset_user", "password": "OldSecret123!"}).status_code,
+            403,
+        )
+        self.assertEqual(
+            client.post("/api/customer/login", json={"username": "reset_user", "password": "NewSecret123!"}).status_code,
+            200,
+        )
+        self.assertEqual(
+            client.post(
+                "/api/customer/reset-password",
+                json={"reset_token": reset_token, "new_password": "AnotherSecret123!"},
+            ).status_code,
+            403,
+        )
+
+    def test_change_password_requires_current_password(self) -> None:
+        db_path = Path(tempfile.mkdtemp(prefix="wh_remote_auth_change_test_")) / "auth.sqlite3"
+        client = TestClient(create_auth_app(db_path))
+
+        self.assertEqual(
+            client.post(
+                "/api/customer/register",
+                json={
+                    "username": "change_user",
+                    "email": "change_user@example.com",
+                    "password": "Before123!",
+                    "role": "admin",
+                },
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            client.post(
+                "/api/customer/change-password",
+                json={"username": "change_user", "current_password": "Wrong123!", "new_password": "After123!"},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            client.post(
+                "/api/customer/change-password",
+                json={"username": "change_user", "current_password": "Before123!", "new_password": "After123!"},
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            client.post("/api/customer/login", json={"username": "change_user", "password": "Before123!"}).status_code,
+            403,
+        )
+        self.assertEqual(
+            client.post("/api/customer/login", json={"username": "change_user", "password": "After123!"}).status_code,
+            200,
+        )
 
 
 if __name__ == "__main__":

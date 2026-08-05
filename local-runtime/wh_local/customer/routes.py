@@ -38,7 +38,7 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         try:
             customer = remote_auth.login(payload)
             session = sessions.login_customer(customer)
-            return {"user_id": session.user_id, "token": session.token, "expires_at": session.expires_at, "account": asdict(customer)}
+            return {"ok": True, "user_id": session.user_id, "token": session.token, "expires_at": session.expires_at, "account": asdict(customer)}
         except Exception as exc:
             handle_auth_error(exc)
 
@@ -67,6 +67,27 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
     def password_reset(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             return asdict(remote_auth.password_reset(payload))
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/change-password")
+    def change_password(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return asdict(remote_auth.change_password(payload))
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/forgot-password")
+    def forgot_password(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return asdict(remote_auth.forgot_password(payload))
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/reset-password")
+    def reset_password(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return asdict(remote_auth.reset_password(payload))
         except Exception as exc:
             handle_auth_error(exc)
 

@@ -159,6 +159,9 @@ local-runtime/wh_local/customer/routes.py
 | POST | `/api/customer/activate` | 激活 |
 | POST | `/api/customer/email-code` | 邮箱验证码 |
 | POST | `/api/customer/password-reset` | 密码重置 |
+| POST | `/api/customer/change-password` | 已知旧密码时修改密码 |
+| POST | `/api/customer/forgot-password` | 忘记密码，生成一次性重置凭证 |
+| POST | `/api/customer/reset-password` | 使用一次性凭证重置密码 |
 | GET | `/api/customer/me` | 查询当前用户 |
 | POST | `/api/customer/logout` | 退出登录 |
 

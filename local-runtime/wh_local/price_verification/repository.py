@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -893,7 +893,7 @@ class PriceVerificationRepository:
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _new_id() -> str:

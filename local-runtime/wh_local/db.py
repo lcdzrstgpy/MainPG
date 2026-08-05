@@ -61,6 +61,16 @@ CREATE TABLE IF NOT EXISTS permissions (
 CREATE INDEX IF NOT EXISTS idx_permissions_module
     ON permissions (module, action);
 
+-- 正式角色表：商业化后由 owner/admin 给员工分配角色，普通注册不应自行选择 admin。
+CREATE TABLE IF NOT EXISTS roles (
+    role TEXT PRIMARY KEY,
+    role_name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    is_system INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 角色-权限关联表：当前先使用 admin/operator，后续可扩展更多角色。
 CREATE TABLE IF NOT EXISTS role_permissions (
     role TEXT NOT NULL,
@@ -72,6 +82,21 @@ CREATE TABLE IF NOT EXISTS role_permissions (
 
 CREATE INDEX IF NOT EXISTS idx_role_permissions_permission
     ON role_permissions (permission_key, role);
+
+-- 用户-角色关联表：支持一个员工在一个工作区下拥有一个或多个角色。
+CREATE TABLE IF NOT EXISTS user_roles (
+    account_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    role TEXT NOT NULL,
+    assigned_by TEXT NOT NULL DEFAULT '',
+    assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (account_id, workspace_id, role),
+    FOREIGN KEY (role) REFERENCES roles (role),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces (workspace_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_roles_workspace_role
+    ON user_roles (workspace_id, role, account_id);
 
 -- 用户权限覆盖表：用于后续给某个用户单独授予/拒绝权限，当前业务可暂不使用。
 CREATE TABLE IF NOT EXISTS user_permission_overrides (
@@ -165,6 +190,106 @@ CREATE TABLE IF NOT EXISTS auth_platform_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_auth_platform_sessions_account_active
     ON auth_platform_sessions (account_id, expires_at, revoked_at);
+
+-- 密码重置凭证表：忘记密码时生成一次性 token，只保存 token_hash，不保存明文 token。
+CREATE TABLE IF NOT EXISTS auth_password_reset_tokens (
+    reset_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    request_ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_password_reset_tokens_account_active
+    ON auth_password_reset_tokens (account_id, expires_at, used_at);
+
+-- 账号安全事件表：记录注册、修改密码、忘记密码、重置密码等关键安全动作。
+CREATE TABLE IF NOT EXISTS auth_security_events (
+    event_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL,
+    success INTEGER NOT NULL DEFAULT 1,
+    ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_security_events_account_type
+    ON auth_security_events (account_id, event_type, created_at);
+
+-- 邮箱验证凭证表：注册、改邮箱或邀请接受时验证邮箱，正式阶段通过邮件发送 token。
+CREATE TABLE IF NOT EXISTS auth_email_verifications (
+    verification_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    purpose TEXT NOT NULL DEFAULT 'verify_email',
+    expires_at TEXT NOT NULL,
+    used_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    request_ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_email_verifications_email_active
+    ON auth_email_verifications (email, purpose, expires_at, used_at);
+
+-- 员工邀请表：商业化客户由 owner/admin 邀请员工加入工作区并指定角色。
+CREATE TABLE IF NOT EXISTS account_invitations (
+    invitation_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'operator',
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    accepted_at TEXT NOT NULL DEFAULT '',
+    revoked_at TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces (workspace_id),
+    FOREIGN KEY (role) REFERENCES roles (role)
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_invitations_workspace_email
+    ON account_invitations (workspace_id, email, expires_at, accepted_at, revoked_at);
+
+-- 商业授权状态表：打包售卖时限制客户、域名、用户数、模块和到期时间。
+CREATE TABLE IF NOT EXISTS license_state (
+    license_id TEXT PRIMARY KEY,
+    license_key_hash TEXT NOT NULL DEFAULT '',
+    company_name TEXT NOT NULL DEFAULT '',
+    workspace_limit INTEGER NOT NULL DEFAULT 1,
+    user_limit INTEGER NOT NULL DEFAULT 5,
+    enabled_modules_json TEXT NOT NULL DEFAULT '[]',
+    expires_at TEXT NOT NULL DEFAULT '',
+    machine_fingerprint TEXT NOT NULL DEFAULT '',
+    domain TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'inactive',
+    activated_at TEXT NOT NULL DEFAULT '',
+    last_checked_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_license_state_status_expiry
+    ON license_state (status, expires_at);
+
+-- 商业授权激活日志表：记录授权激活、校验、失败原因和设备信息。
+CREATE TABLE IF NOT EXISTS license_activation_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    license_id TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    success INTEGER NOT NULL DEFAULT 1,
+    failure_reason TEXT NOT NULL DEFAULT '',
+    machine_fingerprint TEXT NOT NULL DEFAULT '',
+    domain TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- 店铺表：给每日运营、产品处理、利润活动、核价及货源等模块统一关联店铺。
 CREATE TABLE IF NOT EXISTS stores (
@@ -336,6 +461,18 @@ DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (
 )
 
 
+DEFAULT_ROLES: tuple[tuple[str, str, str], ...] = (
+    ("owner", "老板/超级管理员", "客户公司最高权限账号，可管理授权、员工、店铺和全部模块"),
+    ("admin", "管理员", "管理工作区配置、员工账号和多数业务模块"),
+    ("operator", "运营", "执行日常运营、选品、产品处理等常规任务"),
+    ("product_specialist", "产品处理人员", "负责产品草稿、生成、导出和下游交接"),
+    ("designer", "精致作图人员", "负责图片处理、作图任务和素材协作"),
+    ("pricing_specialist", "核价及货源人员", "负责核价证据采集、货源匹配和报价处理"),
+    ("finance", "利润活动人员", "负责利润测算、活动筛选和成本数据维护"),
+    ("viewer", "只读观察员", "仅查看被授权模块数据，不执行写入操作"),
+)
+
+
 OPERATOR_PERMISSIONS: frozenset[str] = frozenset(
     {
         "data_collection.read",
@@ -365,6 +502,21 @@ OPERATOR_PERMISSIONS: frozenset[str] = frozenset(
 )
 
 
+def _seed_roles(conn: sqlite3.Connection) -> None:
+    for role, role_name, description in DEFAULT_ROLES:
+        conn.execute(
+            """
+            INSERT INTO roles (role, role_name, description, is_system, created_at, updated_at)
+            VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))
+            ON CONFLICT(role) DO UPDATE SET
+                role_name = excluded.role_name,
+                description = excluded.description,
+                updated_at = datetime('now')
+            """,
+            (role, role_name, description),
+        )
+
+
 def _seed_permissions(conn: sqlite3.Connection) -> None:
     for permission_key, module, action, description in DEFAULT_PERMISSIONS:
         conn.execute(
@@ -388,6 +540,21 @@ def _seed_permissions(conn: sqlite3.Connection) -> None:
             """,
             (permission_key,),
         )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO role_permissions (role, permission_key)
+            VALUES ('owner', ?)
+            """,
+            (permission_key,),
+        )
+        if action == "read" or permission_key.endswith(".read"):
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO role_permissions (role, permission_key)
+                VALUES ('viewer', ?)
+                """,
+                (permission_key,),
+            )
         if permission_key in OPERATOR_PERMISSIONS:
             conn.execute(
                 """
@@ -420,6 +587,7 @@ def init_db(database_path: Path) -> None:
             VALUES ('default', 'local-demo', '本地演示工作区', 'active')
             """
         )
+        _seed_roles(conn)
         _seed_permissions(conn)
         for migration_id, module, sql in _module_migrations():
             exists = conn.execute(

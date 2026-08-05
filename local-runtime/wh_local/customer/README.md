@@ -23,6 +23,9 @@
 - `POST /api/customer/activate`
 - `POST /api/customer/email-code`
 - `POST /api/customer/password-reset`
+- `POST /api/customer/change-password`
+- `POST /api/customer/forgot-password`
+- `POST /api/customer/reset-password`
 - `GET /api/customer/me`
 - `POST /api/customer/logout`
 
