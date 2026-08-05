@@ -78,7 +78,11 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
         @app.get("/dev/customer-login-demo", response_class=HTMLResponse)
         def customer_login_demo() -> str:
-            return CUSTOMER_LOGIN_DEMO_HTML
+            return AUTH_FLOW_DEMO_HTML
+
+        @app.get("/dev/auth/{page_path:path}", response_class=HTMLResponse)
+        def customer_auth_flow_demo(page_path: str = "login") -> str:
+            return AUTH_FLOW_DEMO_HTML
 
     remote_customer_auth = CustomerAuthClient(config.customer_auth_base_url)
     customer_auth = remote_customer_auth if remote_customer_auth.configured() else SQLiteCustomerAuthService(db_path)
@@ -449,6 +453,437 @@ CUSTOMER_LOGIN_DEMO_HTML = """
     }
 
     document.getElementById("localToken").textContent = localToken ? maskToken(localToken) : "未登录";
+  </script>
+</body>
+</html>
+"""
+
+
+AUTH_FLOW_DEMO_HTML = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>W-H 账号登录临时前端</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: #08213f;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 8% 8%, rgba(40, 222, 195, .22), transparent 24rem),
+        radial-gradient(circle at 90% 10%, rgba(21, 151, 255, .18), transparent 26rem),
+        #eaf7ff;
+    }
+    a { color: #0b83d8; text-decoration: none; font-weight: 800; }
+    .shell { min-height: 100vh; display: grid; place-items: center; padding: 28px 18px; }
+    .layout { width: min(1080px, 100%); display: grid; grid-template-columns: 1.05fr .95fr; gap: 22px; align-items: stretch; }
+    .brand, .panel {
+      background: rgba(255, 255, 255, .93);
+      border: 1px solid #bfe8ff;
+      border-radius: 28px;
+      box-shadow: 0 24px 70px rgba(38, 92, 128, .16);
+    }
+    .brand { padding: 42px; display: flex; flex-direction: column; justify-content: space-between; min-height: 620px; }
+    .panel { padding: 34px; }
+    .badge {
+      display: inline-flex;
+      width: fit-content;
+      padding: 9px 14px;
+      border-radius: 999px;
+      color: #057052;
+      background: #dcfce7;
+      font-weight: 900;
+      margin-bottom: 18px;
+    }
+    h1 { margin: 0 0 16px; font-size: clamp(38px, 5vw, 62px); letter-spacing: -0.05em; line-height: 1.02; }
+    h2 { margin: 0 0 8px; font-size: 30px; letter-spacing: -0.03em; }
+    p { color: #57708d; line-height: 1.75; }
+    .steps { display: grid; gap: 12px; margin-top: 28px; }
+    .step {
+      display: flex; gap: 12px; align-items: flex-start;
+      padding: 14px; border-radius: 18px; background: #f3fbff; color: #31506d;
+    }
+    .step b {
+      display: grid; place-items: center; flex: 0 0 28px; height: 28px;
+      border-radius: 999px; color: #fff; background: linear-gradient(135deg, #1597ff, #28dec3);
+    }
+    label { display: block; margin: 16px 0 8px; color: #31506d; font-weight: 900; }
+    input, select {
+      width: 100%; height: 50px; padding: 0 14px; border-radius: 15px;
+      border: 1px solid #b7d7ed; outline: none; background: #f8fcff; font-size: 16px;
+    }
+    input:focus, select:focus { border-color: #1597ff; box-shadow: 0 0 0 4px rgba(21, 151, 255, .12); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; align-items: center; }
+    button {
+      border: 0; border-radius: 999px; padding: 13px 20px; min-height: 48px;
+      color: #fff; font-weight: 950; font-size: 15px; cursor: pointer;
+      background: linear-gradient(135deg, #1597ff, #28dec3);
+      box-shadow: 0 12px 28px rgba(21, 151, 255, .22);
+    }
+    button.secondary { color: #31506d; background: #eaf3fb; box-shadow: none; }
+    button.danger { background: linear-gradient(135deg, #ff5c70, #ff8a8a); }
+    .status {
+      margin-top: 18px; min-height: 52px; padding: 14px 16px; border-radius: 18px;
+      white-space: pre-wrap; background: #f1f9ff; border: 1px solid #d3ecff; color: #31506d;
+    }
+    .status.ok { border-color: #bbf7d0; background: #f0fdf4; color: #166534; }
+    .status.err { border-color: #fecdd3; background: #fff1f2; color: #be123c; }
+    .kv { display: grid; gap: 10px; margin-top: 18px; }
+    .kv div { display: flex; justify-content: space-between; gap: 16px; padding: 12px 14px; border-radius: 14px; background: #f6fbff; color: #31506d; }
+    pre {
+      max-height: 260px; overflow: auto; padding: 16px; border-radius: 18px;
+      color: #d9efff; background: #071426; white-space: pre-wrap; word-break: break-word;
+    }
+    code { background: #e8f4ff; padding: 2px 6px; border-radius: 8px; }
+    .hidden { display: none; }
+    .topline { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 20px; }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } .brand { min-height: auto; } .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="layout">
+      <aside class="brand">
+        <div>
+          <div class="badge">W-H 真实账号链路演示</div>
+          <h1 id="brandTitle">账号登录系统</h1>
+          <p>
+            这是临时前端，但按真实用户流程拆成多个页面：
+            注册、登录、忘记密码、重置密码、工作台首页、修改密码。
+            页面调用工作台后端，再由后端调用远端账号服务。
+          </p>
+          <div class="steps">
+            <div class="step"><b>1</b><span>注册成功后跳转登录页</span></div>
+            <div class="step"><b>2</b><span>登录成功后跳转工作台首页</span></div>
+            <div class="step"><b>3</b><span>忘记密码生成一次性凭证，再跳转重置密码页</span></div>
+            <div class="step"><b>4</b><span>修改或重置密码后清空登录态，需要重新登录</span></div>
+          </div>
+        </div>
+        <p>API 前缀：<code id="apiLabel"></code></p>
+      </aside>
+
+      <section class="panel">
+        <div id="viewLogin">
+          <h2>登录</h2>
+          <p>输入账号密码，成功后进入工作台首页。</p>
+          <label>用户名 / 邮箱</label>
+          <input id="loginIdentifier" autocomplete="username" />
+          <label>密码</label>
+          <input id="loginPassword" type="password" autocomplete="current-password" />
+          <div class="actions">
+            <button onclick="login()">登录</button>
+            <a id="toRegister">没有账号？注册</a>
+            <a id="toForgot">忘记密码？</a>
+          </div>
+        </div>
+
+        <div id="viewRegister" class="hidden">
+          <h2>注册账号</h2>
+          <p>创建账号后自动跳回登录页。</p>
+          <div class="row">
+            <div><label>用户名</label><input id="regUsername" autocomplete="username" /></div>
+            <div><label>邮箱</label><input id="regEmail" autocomplete="email" /></div>
+          </div>
+          <label>密码</label>
+          <input id="regPassword" type="password" autocomplete="new-password" />
+          <label>角色</label>
+          <select id="regRole"><option value="admin">admin</option><option value="operator">operator</option></select>
+          <div class="actions">
+            <button onclick="registerAccount()">注册</button>
+            <a id="toLoginFromRegister">已有账号？去登录</a>
+          </div>
+        </div>
+
+        <div id="viewForgot" class="hidden">
+          <h2>忘记密码</h2>
+          <p>开发演示阶段会直接返回 reset token；正式阶段这里应改为发送邮箱链接。</p>
+          <label>用户名 / 邮箱</label>
+          <input id="forgotIdentifier" autocomplete="username" />
+          <div class="actions">
+            <button onclick="forgotPassword()">获取重置凭证</button>
+            <a id="toLoginFromForgot">想起来了？去登录</a>
+          </div>
+        </div>
+
+        <div id="viewReset" class="hidden">
+          <h2>重置密码</h2>
+          <p>使用一次性 reset token 设置新密码。成功后跳回登录页。</p>
+          <label>Reset Token</label>
+          <input id="resetToken" />
+          <label>新密码</label>
+          <input id="resetNewPassword" type="password" autocomplete="new-password" />
+          <div class="actions">
+            <button onclick="resetPassword()">重置密码</button>
+            <a id="toLoginFromReset">返回登录</a>
+          </div>
+        </div>
+
+        <div id="viewDashboard" class="hidden">
+          <div class="topline">
+            <div>
+              <h2>工作台首页</h2>
+              <p>这里模拟登录后进入系统。后续可接左侧栏各业务模块。</p>
+            </div>
+            <button class="danger" onclick="logout()">退出</button>
+          </div>
+          <div class="kv">
+            <div><strong>本地 token</strong><span id="dashLocalToken">-</span></div>
+            <div><strong>远端 token</strong><span id="dashRemoteToken">-</span></div>
+            <div><strong>用户</strong><span id="dashUser">-</span></div>
+            <div><strong>角色</strong><span id="dashRole">-</span></div>
+            <div><strong>工作区</strong><span id="dashWorkspace">-</span></div>
+          </div>
+          <div class="actions">
+            <button onclick="me()">刷新登录态</button>
+            <button class="secondary" onclick="go('/dev/auth/change-password')">修改密码</button>
+          </div>
+        </div>
+
+        <div id="viewChange" class="hidden">
+          <h2>修改密码</h2>
+          <p>已登录用户知道旧密码时修改密码。成功后退出登录并返回登录页。</p>
+          <label>用户名 / 邮箱</label>
+          <input id="changeIdentifier" autocomplete="username" />
+          <label>当前密码</label>
+          <input id="changeOldPassword" type="password" autocomplete="current-password" />
+          <label>新密码</label>
+          <input id="changeNewPassword" type="password" autocomplete="new-password" />
+          <div class="actions">
+            <button onclick="changePassword()">确认修改</button>
+            <button class="secondary" onclick="go('/dev/auth/dashboard')">返回首页</button>
+          </div>
+        </div>
+
+        <div id="status" class="status">等待操作。</div>
+        <pre id="output">{}</pre>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const apiBase = (new URLSearchParams(location.search).get("api") || "").replace(/\\/$/, "");
+    const apiQuery = apiBase ? "?api=" + encodeURIComponent(apiBase) : "";
+    let localToken = sessionStorage.getItem("wh_demo_token") || "";
+    let account = JSON.parse(sessionStorage.getItem("wh_demo_account") || "{}");
+
+    document.getElementById("apiLabel").textContent = apiBase || "同源 /api/customer";
+
+    function maskToken(value) {
+      if (!value) return "";
+      return value.slice(0, 9) + "***" + value.slice(-6);
+    }
+
+    function go(path) {
+      history.pushState({}, "", path + apiQuery);
+      render();
+    }
+
+    function setStatus(message, type = "") {
+      const el = document.getElementById("status");
+      el.className = "status " + type;
+      el.textContent = message;
+    }
+
+    function showOutput(method, path, status, body) {
+      const safe = JSON.parse(JSON.stringify(body || {}));
+      if (safe.token) safe.token = maskToken(safe.token);
+      if (safe.reset_token) safe.reset_token = maskToken(safe.reset_token);
+      if (safe.raw && safe.raw.reset_token) safe.raw.reset_token = maskToken(safe.raw.reset_token);
+      if (safe.raw && safe.raw.raw && safe.raw.raw.reset_token) safe.raw.raw.reset_token = maskToken(safe.raw.raw.reset_token);
+      if (safe.account && safe.account.remote_token) safe.account.remote_token = maskToken(safe.account.remote_token);
+      if (safe.account && safe.account.raw && safe.account.raw.token) safe.account.raw.token = maskToken(safe.account.raw.token);
+      document.getElementById("output").textContent = method + " " + path + "\\nHTTP " + status + "\\n\\n" + JSON.stringify(safe, null, 2);
+    }
+
+    async function request(method, path, body) {
+      const headers = {"Content-Type": "application/json"};
+      if (localToken) headers.Authorization = "Bearer " + localToken;
+      const url = apiBase + path;
+      const response = await fetch(url, {method, headers, body: body ? JSON.stringify(body) : undefined});
+      let data = {};
+      try { data = await response.json(); } catch (_) { data = {detail: await response.text()}; }
+      showOutput(method, url, response.status, data);
+      if (!response.ok) throw new Error(data.detail || data.message || "请求失败");
+      return data;
+    }
+
+    function saveSession(data) {
+      localToken = data.token || "";
+      account = data.account || {};
+      sessionStorage.setItem("wh_demo_token", localToken);
+      sessionStorage.setItem("wh_demo_account", JSON.stringify(account));
+    }
+
+    function clearSession() {
+      localToken = "";
+      account = {};
+      sessionStorage.removeItem("wh_demo_token");
+      sessionStorage.removeItem("wh_demo_account");
+    }
+
+    function fillDashboard() {
+      const remoteToken = account.remote_token || (account.raw && account.raw.token) || "";
+      document.getElementById("dashLocalToken").textContent = localToken ? maskToken(localToken) : "-";
+      document.getElementById("dashRemoteToken").textContent = remoteToken ? maskToken(remoteToken) : "-";
+      document.getElementById("dashUser").textContent = account.username || "-";
+      document.getElementById("dashRole").textContent = account.role || "-";
+      document.getElementById("dashWorkspace").textContent = account.workspace_code || "-";
+    }
+
+    function render() {
+      const path = location.pathname;
+      const views = ["viewLogin", "viewRegister", "viewForgot", "viewReset", "viewDashboard", "viewChange"];
+      views.forEach(id => document.getElementById(id).classList.add("hidden"));
+      const map = {
+        "/dev/auth/register": "viewRegister",
+        "/dev/auth/forgot-password": "viewForgot",
+        "/dev/auth/reset-password": "viewReset",
+        "/dev/auth/dashboard": "viewDashboard",
+        "/dev/auth/change-password": "viewChange",
+      };
+      const view = map[path] || "viewLogin";
+      document.getElementById(view).classList.remove("hidden");
+      document.getElementById("brandTitle").textContent = {
+        viewLogin: "欢迎回来",
+        viewRegister: "创建账号",
+        viewForgot: "找回密码",
+        viewReset: "设置新密码",
+        viewDashboard: "进入工作台",
+        viewChange: "账号安全",
+      }[view];
+      if (view === "viewDashboard") fillDashboard();
+    }
+
+    async function registerAccount() {
+      try {
+        const username = document.getElementById("regUsername").value.trim();
+        const email = document.getElementById("regEmail").value.trim();
+        const password = document.getElementById("regPassword").value;
+        const role = document.getElementById("regRole").value;
+        if (!username || !password) throw new Error("请输入用户名和密码");
+        await request("POST", "/api/customer/register", {
+          username, email, password, role,
+          workspace_code: "wh_demo",
+          workspace_name: "真实服务器演示工作区"
+        });
+        setStatus("注册成功，已跳转到登录页。", "ok");
+        document.getElementById("loginIdentifier").value = username;
+        go("/dev/auth/login");
+      } catch (err) {
+        setStatus("注册失败：" + err.message, "err");
+      }
+    }
+
+    async function login() {
+      try {
+        const identifier = document.getElementById("loginIdentifier").value.trim();
+        const password = document.getElementById("loginPassword").value;
+        if (!identifier || !password) throw new Error("请输入账号和密码");
+        const payload = identifier.includes("@") ? {email: identifier, password} : {username: identifier, password};
+        const data = await request("POST", "/api/customer/login", payload);
+        saveSession(data);
+        setStatus("登录成功，已进入工作台首页。", "ok");
+        go("/dev/auth/dashboard");
+      } catch (err) {
+        setStatus("登录失败：" + err.message, "err");
+      }
+    }
+
+    async function forgotPassword() {
+      try {
+        const identifier = document.getElementById("forgotIdentifier").value.trim();
+        if (!identifier) throw new Error("请输入账号或邮箱");
+        const payload = identifier.includes("@") ? {email: identifier} : {username: identifier};
+        const data = await request("POST", "/api/customer/forgot-password", payload);
+        const resetToken = data.raw && data.raw.raw && data.raw.raw.reset_token || data.raw && data.raw.reset_token || "";
+        if (resetToken) {
+          sessionStorage.setItem("wh_demo_reset_token", resetToken);
+          document.getElementById("resetToken").value = resetToken;
+          setStatus("已生成 reset token，跳转到重置密码页。正式阶段应改为邮件链接。", "ok");
+        } else {
+          setStatus("如果账号存在，系统已生成重置凭证。", "ok");
+        }
+        go("/dev/auth/reset-password");
+      } catch (err) {
+        setStatus("忘记密码失败：" + err.message, "err");
+      }
+    }
+
+    async function resetPassword() {
+      try {
+        const resetToken = document.getElementById("resetToken").value.trim();
+        const newPassword = document.getElementById("resetNewPassword").value;
+        if (!resetToken || !newPassword) throw new Error("请输入 reset token 和新密码");
+        await request("POST", "/api/customer/reset-password", {reset_token: resetToken, new_password: newPassword});
+        clearSession();
+        sessionStorage.removeItem("wh_demo_reset_token");
+        setStatus("密码重置成功，已跳转登录页，请用新密码登录。", "ok");
+        go("/dev/auth/login");
+      } catch (err) {
+        setStatus("重置密码失败：" + err.message, "err");
+      }
+    }
+
+    async function changePassword() {
+      try {
+        const identifier = document.getElementById("changeIdentifier").value.trim();
+        const currentPassword = document.getElementById("changeOldPassword").value;
+        const newPassword = document.getElementById("changeNewPassword").value;
+        if (!identifier || !currentPassword || !newPassword) throw new Error("请输入账号、当前密码和新密码");
+        const payload = identifier.includes("@")
+          ? {email: identifier, current_password: currentPassword, new_password: newPassword}
+          : {username: identifier, current_password: currentPassword, new_password: newPassword};
+        await request("POST", "/api/customer/change-password", payload);
+        clearSession();
+        setStatus("修改密码成功，旧登录态已失效，请重新登录。", "ok");
+        go("/dev/auth/login");
+      } catch (err) {
+        setStatus("修改密码失败：" + err.message, "err");
+      }
+    }
+
+    async function me() {
+      try {
+        if (!localToken) throw new Error("请先登录");
+        const data = await request("GET", "/api/customer/me");
+        setStatus("登录态有效。", "ok");
+        if (data.username) account = {...account, ...data};
+        fillDashboard();
+      } catch (err) {
+        setStatus("登录态验证失败：" + err.message, "err");
+      }
+    }
+
+    async function logout() {
+      try {
+        if (localToken) await request("POST", "/api/customer/logout");
+      } catch (_) {
+      } finally {
+        clearSession();
+        setStatus("已退出登录，跳转回登录页。", "ok");
+        go("/dev/auth/login");
+      }
+    }
+
+    document.getElementById("toRegister").onclick = () => go("/dev/auth/register");
+    document.getElementById("toForgot").onclick = () => go("/dev/auth/forgot-password");
+    document.getElementById("toLoginFromRegister").onclick = () => go("/dev/auth/login");
+    document.getElementById("toLoginFromForgot").onclick = () => go("/dev/auth/login");
+    document.getElementById("toLoginFromReset").onclick = () => go("/dev/auth/login");
+    window.onpopstate = render;
+
+    const savedReset = sessionStorage.getItem("wh_demo_reset_token") || "";
+    if (savedReset) document.getElementById("resetToken").value = savedReset;
+    if (account.username) {
+      document.getElementById("changeIdentifier").value = account.username;
+      document.getElementById("loginIdentifier").value = account.username;
+    }
+    render();
   </script>
 </body>
 </html>
