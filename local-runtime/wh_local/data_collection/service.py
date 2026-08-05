@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .budget import SQLiteDailyApiBudget
+from .budget import TaskApiBudget
 from .collector import DailySelectionCollector, DailySelectionProvider
 from .criteria import DailySelectionCriteria
 from .filtering import filter_and_score_candidates
@@ -120,7 +120,7 @@ class DailySelectionService:
         """Construct the two existing SQLite owners without changing schemas."""
         return cls(
             repository=DailySelectionRepository(database_path),
-            budget=SQLiteDailyApiBudget(database_path),
+            budget=TaskApiBudget(),
             provider_config_resolver=provider_config_resolver,
             provider_factory=provider_factory,
             image_cache=image_cache,

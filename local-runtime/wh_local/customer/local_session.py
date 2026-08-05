@@ -18,7 +18,7 @@ class CustomerSessionStore(Protocol):
     when the shared DB layer is ready.
     """
 
-    def upsert_customer_user(self, customer: CustomerAuthResult) -> str:
+    def upsert_customer_user(self, customer: CustomerAuthResult) -> tuple[str, str]:
         ...
 
     def save_session(self, session: LocalSession, customer: CustomerAuthResult) -> None:
@@ -38,17 +38,18 @@ class MemoryCustomerSessionStore:
         self.users_by_customer_id: dict[str, dict[str, str]] = {}
         self.sessions_by_token: dict[str, LocalSession] = {}
 
-    def upsert_customer_user(self, customer: CustomerAuthResult) -> str:
+    def upsert_customer_user(self, customer: CustomerAuthResult) -> tuple[str, str]:
         user_id = customer.customer_id or customer.email or customer.username
         self.users_by_customer_id[user_id] = {
             "user_id": user_id,
             "username": customer.username,
             "email": customer.email,
             "role": customer.role,
+            "workspace_id": "default",
             "workspace_code": customer.workspace_code,
             "workspace_name": customer.workspace_name,
         }
-        return user_id
+        return user_id, "default"
 
     def save_session(self, session: LocalSession, customer: CustomerAuthResult) -> None:
         self.sessions_by_token[session.token] = session
@@ -70,13 +71,14 @@ class LocalSessionService:
         status = str(customer.account_status or "active").strip().lower()
         if status in {"disabled", "inactive", "locked", "suspended", "deleted"}:
             raise PermissionError("customer account is not active")
-        user_id = self.store.upsert_customer_user(customer)
+        user_id, workspace_id = self.store.upsert_customer_user(customer)
         session = LocalSession(
             user_id=user_id,
             token=f"wh_local_{secrets.token_urlsafe(32)}",
             expires_at=(datetime.now(timezone.utc) + SESSION_TTL).isoformat(timespec="seconds"),
             username=customer.username,
             role=customer.role,
+            workspace_id=workspace_id,
             workspace_code=customer.workspace_code,
             workspace_name=customer.workspace_name,
         )

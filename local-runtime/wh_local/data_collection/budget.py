@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -217,6 +218,83 @@ class SQLiteDailyApiBudget:
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._database_path, timeout=10, isolation_level=None)
 
+
+class TaskApiBudget:
+    """In-memory API-call guard scoped to one collection request.
+
+    It deliberately has no SQLite ledger: provider quotas are owned by the
+    provider, while ``max_api_calls`` only caps one local collection task.
+    Context variables keep concurrent FastAPI requests isolated.
+    """
+
+    def __init__(self) -> None:
+        self._used: ContextVar[int] = ContextVar("data_collection_task_api_calls_used", default=0)
+
+    def start(self) -> None:
+        self._used.set(0)
+
+    def reserve(
+        self,
+        *,
+        workspace_id: str,
+        provider_fingerprint: str,
+        max_api_calls: int,
+        api_calls: int = 1,
+        now: datetime | None = None,
+    ) -> BudgetState:
+        _positive_int(max_api_calls, "max_api_calls")
+        _positive_int(api_calls, "api_calls")
+        used = self._used.get()
+        granted = used + api_calls <= max_api_calls
+        if granted:
+            used += api_calls
+            self._used.set(used)
+        return self._state(workspace_id, provider_fingerprint, max_api_calls, used, granted, now)
+
+    def state(
+        self,
+        *,
+        workspace_id: str,
+        provider_fingerprint: str,
+        max_api_calls: int,
+        now: datetime | None = None,
+    ) -> BudgetState:
+        _positive_int(max_api_calls, "max_api_calls")
+        return self._state(workspace_id, provider_fingerprint, max_api_calls, self._used.get(), True, now)
+
+    def release(
+        self,
+        *,
+        workspace_id: str,
+        provider_fingerprint: str,
+        max_api_calls: int,
+        api_calls: int,
+        now: datetime | None = None,
+    ) -> BudgetState:
+        _positive_int(api_calls, "api_calls")
+        used = max(self._used.get() - api_calls, 0)
+        self._used.set(used)
+        return self._state(workspace_id, provider_fingerprint, max_api_calls, used, True, now)
+
+    @staticmethod
+    def _state(
+        workspace_id: str,
+        provider_fingerprint: str,
+        limit: int,
+        used: int,
+        granted: bool,
+        now: datetime | None,
+    ) -> BudgetState:
+        return BudgetState(
+            allowed=used < limit,
+            reservation_granted=granted,
+            workspace_id=_required_text(workspace_id, "workspace_id"),
+            provider_fingerprint=_provider_fingerprint(provider_fingerprint),
+            shanghai_date=_shanghai_date(now),
+            api_calls_limit=limit,
+            api_calls_used=used,
+            api_calls_remaining=max(limit - used, 0),
+        )
 
 def _shanghai_date(now: datetime | None) -> str:
     instant = now or datetime.now(SHANGHAI)

@@ -38,6 +38,13 @@ def detail_seed(payload: Mapping[str, Any]) -> tuple[str, str | None]:
     """Extract the title and a main image from documented OneBound detail shapes."""
     data = payload.get("data")
     source = data if isinstance(data, Mapping) else payload
+    # OneBound item_get commonly wraps the product as {"item": {...}}.
+    if not _text(source, "title", "name", "item_title"):
+        item = source.get("item") if isinstance(source, Mapping) else None
+        if not isinstance(item, Mapping):
+            item = payload.get("item")
+        if isinstance(item, Mapping):
+            source = item
     title = _text(source, "title", "name", "item_title")
     if not title:
         raise ValueError("1688 item detail did not include a title")

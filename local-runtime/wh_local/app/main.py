@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from ..config import default_config
@@ -22,6 +24,7 @@ from ..data_collection import (
 from ..data_collection.provider import OneBound1688Provider
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
+from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
 from ..price_verification import (
     PriceVerificationRouteDependencies,
     register_price_verification_routes,
@@ -38,23 +41,13 @@ def _price_verification_actor(
 
 
 def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
-    """Resolve OneBound 1688 credentials from environment variables."""
-    api_key = os.environ.get("DAILY_SELECTION_ONEBOUND_API_KEY", "")
-    api_secret = os.environ.get("DAILY_SELECTION_ONEBOUND_API_SECRET", "")
-    base_url = os.environ.get(
-        "DAILY_SELECTION_ONEBOUND_BASE_URL",
-        "https://api.onebound.cn/1688/api_call.php",
-    )
-    enabled = os.environ.get("DAILY_SELECTION_ONEBOUND_ENABLED", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    """Resolve OneBound credentials from local global configuration."""
+    config = default_config()
     return {
-        "api_key": api_key,
-        "api_secret": api_secret,
-        "base_url": base_url,
-        "enabled": enabled,
+        "api_key": config.onebound_1688_api_key,
+        "api_secret": config.onebound_1688_api_secret,
+        "base_url": config.onebound_1688_base_url,
+        "enabled": config.onebound_1688_enabled,
     }
 
 
@@ -69,6 +62,13 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     init_db(db_path)
 
     app = FastAPI(title="H Smart Ecommerce Local Runtime", version="0.1.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -91,6 +91,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
     app.include_router(create_basic_settings_router(db_path))
     _register_data_collection(app, db_path)
+    _register_profit_activity(app, db_path)
 
     # 核价及货源模块
     _register_price_verification(app, db_path, config.data_dir)
@@ -107,6 +108,13 @@ def _register_data_collection(app: FastAPI, db_path: Path) -> None:
         database_path=db_path,
     )
     register_daily_selection_routes(app.router, dependencies)
+
+
+def _register_profit_activity(app: FastAPI, db_path: Path) -> None:
+    """Register profit-activity routes against the shared runtime database."""
+    service = create_profit_activity_service(db_path)
+    app.include_router(create_profit_activity_router(service, db_path), prefix="/api")
+
 
 def _register_price_verification(app: FastAPI, db_path: Path, data_dir: Path) -> None:
     """Register read-only price-verification routes with host-owned adapters."""

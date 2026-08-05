@@ -25,7 +25,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
     def __init__(self, database_path: Path):
         self.database_path = database_path
 
-    def upsert_customer_user(self, customer: CustomerAuthResult) -> str:
+    def upsert_customer_user(self, customer: CustomerAuthResult) -> tuple[str, str]:
         user_id = _stable_user_id(customer)
         workspace_code = customer.workspace_code or DEFAULT_WORKSPACE_CODE
         workspace_name = customer.workspace_name or DEFAULT_WORKSPACE_NAME
@@ -87,7 +87,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                     now,
                 ),
             )
-        return user_id
+        return user_id, workspace_id
 
     def save_session(self, session: LocalSession, customer: CustomerAuthResult) -> None:
         session_id = f"sess_{secrets.token_urlsafe(24)}"
@@ -120,6 +120,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                     s.expires_at,
                     u.username,
                     u.role,
+                    u.workspace_id,
                     w.workspace_code,
                     w.workspace_name
                 FROM customer_sessions s
@@ -143,6 +144,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 expires_at=row["expires_at"],
                 username=row["username"],
                 role=row["role"],
+                workspace_id=row["workspace_id"] or DEFAULT_WORKSPACE_ID,
                 workspace_code=row["workspace_code"] or "",
                 workspace_name=row["workspace_name"] or "",
             )

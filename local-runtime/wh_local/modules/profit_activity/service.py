@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import uuid
+from dataclasses import dataclass
 from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
@@ -32,6 +33,20 @@ class ProfitActivityNotFound(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class ProfitActivityActorContext:
+    actor_id: str = "local-demo-admin"
+    username: str = "local-demo"
+    role: str = "admin"
+    workspace_id: str = "default"
+    workspace_code: str = "local-demo"
+    workspace_name: str = "本地演示工作区"
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
+
+
 class ProfitActivityService:
     def __init__(self, repository: ProfitActivityRepository, database: ProfitActivityDatabase | None = None) -> None:
         self._repository = repository
@@ -42,26 +57,31 @@ class ProfitActivityService:
         if self._database is not None:
             self._database.dispose()
 
-    def get_settings(self) -> SettingsSnapshot:
-        return self._repository.get_settings()
+    def get_settings(self, actor: Any | None = None) -> SettingsSnapshot:
+        context = _actor_context(actor)
+        return self._repository.get_settings(context.workspace_id)
 
-    def legacy_settings(self) -> dict[str, Any]:
-        settings = asdict(self.get_settings().settings)
-        settings["save_root"] = str(self._asset_root(self.get_settings().settings))
+    def legacy_settings(self, actor: Any | None = None) -> dict[str, Any]:
+        snapshot = self.get_settings(actor)
+        settings = asdict(snapshot.settings)
+        settings["save_root"] = str(self._asset_root(snapshot.settings))
         settings["activity_filter_rule_version"] = settings["rule_version"]
+        settings["revision"] = snapshot.revision
+        settings["workspace"] = asdict(_actor_context(actor))
         return settings
 
-    def update_settings(self, expected_revision: int, settings: ProfitSettings) -> SettingsSnapshot:
+    def update_settings(self, expected_revision: int, settings: ProfitSettings, actor: Any | None = None) -> SettingsSnapshot:
+        context = _actor_context(actor)
         try:
             validate_settings(settings)
             if settings.save_root:
                 ensure_writable_directory(Path(settings.save_root))
-            return self._repository.update_settings(expected_revision, settings)
+            return self._repository.update_settings(expected_revision, settings, context.workspace_id)
         except SettingsRevisionConflict as exc:
             raise ProfitActivityConflict("settings_revision_conflict") from exc
 
-    def update_legacy_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        snapshot = self.get_settings()
+    def update_legacy_settings(self, payload: dict[str, Any], actor: Any | None = None) -> dict[str, Any]:
+        snapshot = self.get_settings(actor)
         values = asdict(snapshot.settings)
         for name in values:
             if name not in payload:
@@ -72,11 +92,11 @@ class ProfitActivityService:
         settings = ProfitSettings(**_decimal_settings(values))
         if settings.save_root:
             ensure_writable_directory(Path(settings.save_root))
-        self.update_settings(int(payload.get("expected_revision", snapshot.revision)), settings)
-        return self.legacy_settings()
+        self.update_settings(int(payload.get("expected_revision", snapshot.revision)), settings, actor)
+        return self.legacy_settings(actor)
 
-    def calculate(self, site_code: SiteCode, selling_price: Decimal, cost_price: Decimal, weight_kg: Decimal) -> dict[str, Any]:
-        snapshot = self._repository.get_settings()
+    def calculate(self, site_code: SiteCode, selling_price: Decimal, cost_price: Decimal, weight_kg: Decimal, actor: Any | None = None) -> dict[str, Any]:
+        snapshot = self.get_settings(actor)
         preview = calculate_profit(site_code=site_code, selling_price=selling_price, cost_price=cost_price, weight_kg=weight_kg, settings=snapshot.settings)
         return {
             "preview": preview,
@@ -86,15 +106,16 @@ class ProfitActivityService:
             "confirmation_required": "negative_profit" if preview.net_profit < 0 else None,
         }
 
-    def calculate_legacy(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def calculate_legacy(self, payload: dict[str, Any], actor: Any | None = None) -> dict[str, Any]:
         site = _site(payload.get("site", payload.get("site_code", "US")))
-        result = self.calculate(site, _decimal(payload.get("selling_price")), _decimal(payload.get("cost_price")), _decimal(payload.get("weight_kg")))
+        result = self.calculate(site, _decimal(payload.get("selling_price")), _decimal(payload.get("cost_price")), _decimal(payload.get("weight_kg")), actor)
         calculation = asdict(result["preview"])
         calculation["site"] = calculation.pop("site_code")
-        return {"calculation": calculation, "settings": self.legacy_settings()}
+        return {"calculation": calculation, "settings": self.legacy_settings(actor)}
 
-    def archive(self, *, site_code: SiteCode, skc: str, note: str, selling_price: Decimal, cost_price: Decimal, weight_kg: Decimal, calculation_hash: str, settings_revision: int, confirm_negative_profit: bool):
-        current = self.calculate(site_code, selling_price, cost_price, weight_kg)
+    def archive(self, *, site_code: SiteCode, skc: str, note: str, selling_price: Decimal, cost_price: Decimal, weight_kg: Decimal, calculation_hash: str, settings_revision: int, confirm_negative_profit: bool, actor: Any | None = None):
+        context = _actor_context(actor)
+        current = self.calculate(site_code, selling_price, cost_price, weight_kg, actor)
         if current["settings_revision"] != settings_revision:
             raise ProfitActivityConflict("settings_revision_conflict")
         if not hmac.compare_digest(current["calculation_hash"], calculation_hash):
@@ -102,26 +123,31 @@ class ProfitActivityService:
         preview: ProfitPreview = current["preview"]
         if preview.net_profit < 0 and not confirm_negative_profit:
             raise ProfitActivityConflict("negative_profit_confirmation_required")
-        return self._repository.upsert_record(skc=skc, note=note, preview=preview, calculation_hash=calculation_hash, settings_revision=settings_revision)
+        return self._repository.upsert_record(workspace_id=context.workspace_id, created_by=context.actor_id, created_by_username=context.username, skc=skc, note=note, preview=preview, calculation_hash=calculation_hash, settings_revision=settings_revision)
 
-    def list_records(self, site_code: SiteCode | None, offset: int, limit: int):
-        return self._repository.list_records(site_code, offset, limit)
+    def list_records(self, site_code: SiteCode | None, offset: int, limit: int, actor: Any | None = None, *, include_workspace_shared: bool = False):
+        context = _actor_context(actor)
+        return self._repository.list_records(context.workspace_id, site_code, offset, limit, actor_id=context.actor_id, include_workspace_shared=include_workspace_shared or context.is_admin)
 
-    def list_products(self, *, site: SiteCode | None = None, skcs: list[str] | None = None) -> list[dict[str, Any]]:
-        records = self.list_records(site, 0, 10_000)
+    def list_products(self, *, site: SiteCode | None = None, skcs: list[str] | None = None, actor: Any | None = None, include_workspace_shared: bool = False) -> list[dict[str, Any]]:
+        context = _actor_context(actor)
+        records = self.list_records(site, 0, 10_000, actor, include_workspace_shared=include_workspace_shared)
         requested = {item.strip() for item in (skcs or []) if item.strip()}
         if requested:
             records = [record for record in records if record.skc in requested]
-        return [_product_payload(record) for record in records]
+        return [_product_payload(record, context) for record in records]
 
-    def upsert_product(self, payload: dict[str, Any], *, image: tuple[str, bytes] | None = None, source_image: tuple[str, bytes] | None = None, source_group_images: dict[int, list[tuple[str, bytes]]] | None = None) -> dict[str, Any]:
+    def upsert_product(self, payload: dict[str, Any], *, actor: Any | None = None, allow_company_write: bool = False, require_complete_profile: bool = False, image: tuple[str, bytes] | None = None, source_image: tuple[str, bytes] | None = None, source_group_images: dict[int, list[tuple[str, bytes]]] | None = None) -> dict[str, Any]:
+        context = _actor_context(actor)
         site = _site(payload.get("site", payload.get("site_code", "US")))
         skc = str(payload.get("skc") or payload.get("skc_id") or "").strip()
         if not skc:
             raise ValueError("skc is required")
-        settings = self.get_settings()
+        settings = self.get_settings(actor)
         preview = calculate_profit(site_code=site, selling_price=_decimal(payload.get("selling_price")), cost_price=_decimal(payload.get("cost_price")), weight_kg=_decimal(payload.get("weight_kg")), settings=settings.settings)
-        current = self._repository.find_product(skc, site)
+        current = self._repository.find_product(skc, site, context.workspace_id)
+        if current is not None and current.created_by != context.actor_id and not (allow_company_write or context.is_admin):
+            raise ProfitActivityConflict("profit_activity_company_write_required")
         root = self._asset_root(settings.settings)
         image_path = current.image_path if current else ""
         source_groups = _source_groups(payload.get("source_groups_json"), current.source_groups_json if current else "[]")
@@ -135,18 +161,33 @@ class ProfitActivityService:
                 group["image_paths"].append(save_asset(root, site=site, skc=skc, kind="source", filename=filename, content=content))
         source_url = str(payload.get("source_url") or "").strip() or next((str(group.get("source_url") or "") for group in source_groups if group.get("source_url")), "")
         source_image_path = next((path for group in source_groups for path in group.get("image_paths", []) if path), current.source_image_path if current else "")
+        note = str(payload.get("note") or "").strip()[:500]
+        if require_complete_profile:
+            missing = []
+            if not image_path:
+                missing.append("product_image_required")
+            if not source_url:
+                missing.append("source_url_required")
+            if not source_image_path:
+                missing.append("source_image_required")
+            if not note:
+                missing.append("note_required")
+            if missing:
+                raise ValueError(",".join(missing))
         record = self._repository.upsert_record(
-            skc=skc, note=str(payload.get("note") or "")[:500], preview=preview,
+            workspace_id=context.workspace_id, created_by=context.actor_id, created_by_username=context.username,
+            skc=skc, note=note, preview=preview,
             calculation_hash=_calculation_hash(preview, settings.revision), settings_revision=settings.revision,
             refund_rate=settings.settings.ec_refund_rate if site == "EC" else settings.settings.refund_rate,
             visibility=str(payload.get("visibility") or (current.visibility if current else "shared")), source_url=source_url,
             image_path=image_path, source_image_path=source_image_path, source_groups=source_groups,
         )
-        return _product_payload(record)
+        return _product_payload(record, context)
 
-    def update_product_values(self, skc: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_product_values(self, skc: str, payload: dict[str, Any], actor: Any | None = None, *, allow_company_write: bool = False) -> dict[str, Any]:
+        context = _actor_context(actor)
         site = _site(payload.get("site", "US"))
-        current = self._repository.find_product(skc, site)
+        current = self._repository.find_product(skc, site, context.workspace_id)
         if current is None:
             raise ProfitActivityNotFound("product_not_found")
         merged = {
@@ -155,16 +196,21 @@ class ProfitActivityService:
             "note": payload.get("note", current.note), "visibility": payload.get("visibility", current.visibility),
             "source_url": payload.get("source_url", current.source_url), "source_groups_json": payload.get("source_groups_json", current.source_groups_json),
         }
-        return self.upsert_product(merged)
+        return self.upsert_product(merged, actor=actor, allow_company_write=allow_company_write, require_complete_profile=True)
 
-    def delete_product(self, skc: str, site: SiteCode) -> dict[str, Any]:
-        return {"status": "deleted" if self._repository.delete_product(skc, site) else "not_found", "skc": skc, "site": site}
+    def delete_product(self, skc: str, site: SiteCode, actor: Any | None = None, *, allow_company_delete: bool = False) -> dict[str, Any]:
+        context = _actor_context(actor)
+        current = self._repository.find_product(skc, site, context.workspace_id)
+        if current is not None and current.created_by != context.actor_id and not (allow_company_delete or context.is_admin):
+            raise ProfitActivityConflict("profit_activity_company_delete_required")
+        return {"status": "deleted" if self._repository.delete_product(skc, site, context.workspace_id) else "not_found", "skc": skc, "site": site}
 
-    def preview_import(self, workbook: bytes, original_filename: str, site: SiteCode) -> dict[str, Any]:
-        rows = parse_product_workbook(workbook, site, self._repository.product_keys())
+    def preview_import(self, workbook: bytes, original_filename: str, site: SiteCode, actor: Any | None = None) -> dict[str, Any]:
+        context = _actor_context(actor)
+        rows = parse_product_workbook(workbook, site, self._repository.product_keys(context.workspace_id))
         import_id = uuid.uuid4().hex
         image_rows = extract_product_workbook_images(workbook)
-        root = self._asset_root(self.get_settings().settings)
+        root = self._asset_root(self.get_settings(actor).settings)
         for row in rows:
             extracted = image_rows.get(row["row_id"], {})
             product_images = extracted.get("product", [])
@@ -177,12 +223,13 @@ class ProfitActivityService:
                 filename, content = source_images[0]
                 row["source_image_path"] = save_asset(root, site=site, skc=f"import_{import_id}_{row['row_id']}", kind="preview_source", filename=filename, content=content)
                 row["has_source_image"] = True
-        self._repository.save_import_session(import_id, original_filename, site, rows)
+        self._repository.save_import_session(context.workspace_id, import_id, original_filename, site, rows)
         summary = _import_summary(rows)
         return {"import_id": import_id, "original_filename": original_filename, "site": site, "summary": summary, "rows": rows}
 
-    def confirm_import(self, import_id: str, selected_row_ids: list[str] | None, on_conflict: str) -> dict[str, Any]:
-        session = self._repository.get_import_session(import_id)
+    def confirm_import(self, import_id: str, selected_row_ids: list[str] | None, on_conflict: str, actor: Any | None = None) -> dict[str, Any]:
+        context = _actor_context(actor)
+        session = self._repository.get_import_session(import_id, context.workspace_id)
         if session is None:
             raise ProfitActivityNotFound("import_not_found")
         if on_conflict not in {"skip", "replace"}:
@@ -194,7 +241,7 @@ class ProfitActivityService:
         for row in rows:
             if row["row_id"] not in selected or row["status"] != "ready":
                 continue
-            exists = self._repository.find_product(row["skc"], _site(session.site)) is not None
+            exists = self._repository.find_product(row["skc"], _site(session.site), context.workspace_id) is not None
             if exists and on_conflict == "skip":
                 skipped += 1
                 continue
@@ -203,6 +250,8 @@ class ProfitActivityService:
             product = self.upsert_product(
                 {**row, "site": session.site, "visibility": "shared"},
                 image=image,
+                actor=actor,
+                allow_company_write=True,
                 source_image=source_image,
             )
             products.append(product)
@@ -211,30 +260,32 @@ class ProfitActivityService:
             else:
                 imported += 1
         result = {"imported": imported, "skipped": skipped, "replaced": replaced, "products": products, "summary": _import_summary(rows)}
-        task = self._repository.create_import_task(import_id, result)
+        task = self._repository.create_import_task(context.workspace_id, import_id, result)
         return {"task_id": task.id, "status": "completed", "task_status": "completed", "task": {"id": task.id, "status": "completed", "updated_at": task.updated_at}, **result}
 
-    def get_import_task(self, task_id: int) -> dict[str, Any]:
-        task = self._repository.get_import_task(task_id)
+    def get_import_task(self, task_id: int, actor: Any | None = None) -> dict[str, Any]:
+        context = _actor_context(actor)
+        task = self._repository.get_import_task(task_id, context.workspace_id)
         if task is None:
             raise ProfitActivityNotFound("import_task_not_found")
         return {"task": {"id": task.id, "status": task.status, "updated_at": task.updated_at}, "result": json.loads(task.result_json), "blockers": []}
 
-    def create_catalog(self, site: SiteCode) -> Path:
+    def create_catalog(self, site: SiteCode, actor: Any | None = None, *, include_workspace_shared: bool = False) -> Path:
         workbook = new_workbook()
         sheet = workbook.active
         sheet.title = "products"
         sheet.append(["site", "SKC", "售价", "成本", "重量KG", "备注", "货源", "利润", "利润率"])
-        for product in self.list_products(site=site):
+        for product in self.list_products(site=site, actor=actor, include_workspace_shared=include_workspace_shared):
             sheet.append([product["site"], product["skc"], product["selling_price"], product["cost_price"], product["weight_kg"], product["note"], product["source_url"], product["net_profit"], product["profit_rate"]])
-        root = self._asset_root(self.get_settings().settings)
+        root = self._asset_root(self.get_settings(actor).settings)
         path = root / f"{site}_product_catalog.xlsx"
         path.write_bytes(workbook_bytes(workbook))
         return path
 
-    def filter_activity_template(self, workbook: bytes, original_filename: str, site: SiteCode) -> dict[str, Any]:
-        products = {product["skc"]: product for product in self.list_products(site=site)}
-        settings = self.get_settings().settings
+    def filter_activity_template(self, workbook: bytes, original_filename: str, site: SiteCode, actor: Any | None = None, *, include_workspace_shared: bool = False) -> dict[str, Any]:
+        context = _actor_context(actor)
+        products = {product["skc"]: product for product in self.list_products(site=site, actor=actor, include_workspace_shared=include_workspace_shared)}
+        settings = self.get_settings(actor).settings
         def evaluate(skc: str, price: Decimal) -> dict[str, Any]:
             product = products.get(skc)
             if product is None:
@@ -270,23 +321,25 @@ class ProfitActivityService:
             "activity_filter_rule_version": settings.rule_version,
             **filtered,
         }
-        task = self._repository.create_filter_task(result)
+        task = self._repository.create_filter_task(context.workspace_id, result)
         return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": "completed", **result}
 
-    def get_filter_task_legacy(self, task_id: int) -> dict[str, Any]:
-        task = self._repository.get_filter_task(task_id)
+    def get_filter_task_legacy(self, task_id: int, actor: Any | None = None) -> dict[str, Any]:
+        context = _actor_context(actor)
+        task = self._repository.get_filter_task(task_id, context.workspace_id)
         if task is None:
             raise ProfitActivityNotFound("filter_task_not_found")
         return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": task.status, **json.loads(task.result_json)}
 
-    def output_path(self, task_id: int, kind: str) -> Path:
-        result = self.get_filter_task_legacy(task_id)
+    def output_path(self, task_id: int, kind: str, actor: Any | None = None) -> Path:
+        result = self.get_filter_task_legacy(task_id, actor)
         if kind not in {"filtered", "removed"}:
             raise ValueError("kind must be filtered or removed")
         return Path(result[f"{kind}_path"])
 
-    def import_image_path(self, import_id: str, row_id: str, kind: str) -> Path:
-        session = self._repository.get_import_session(import_id)
+    def import_image_path(self, import_id: str, row_id: str, kind: str, actor: Any | None = None) -> Path:
+        context = _actor_context(actor)
+        session = self._repository.get_import_session(import_id, context.workspace_id)
         if session is None:
             raise ProfitActivityNotFound("import_not_found")
         rows = json.loads(session.rows_json)
@@ -296,8 +349,9 @@ class ProfitActivityService:
         field = "product_image_path" if kind == "product" else "source_image_path"
         return resolve_asset(str(row.get(field) or ""))
 
-    def image_path(self, skc: str, site: SiteCode, kind: str, group: int = 0, index: int = 0) -> Path:
-        product = self._repository.find_product(skc, site)
+    def image_path(self, skc: str, site: SiteCode, kind: str, group: int = 0, index: int = 0, actor: Any | None = None) -> Path:
+        context = _actor_context(actor)
+        product = self._repository.find_product(skc, site, context.workspace_id)
         if product is None:
             raise ProfitActivityNotFound("product_not_found")
         if kind == "product":
@@ -328,10 +382,11 @@ class ProfitActivityService:
             path.write_bytes(workbook_bytes(workbook))
         return paths
 
-    def run_filter(self, site_code: SiteCode | None, record_ids: list[int] | None):
-        settings = self._repository.get_settings().settings
+    def run_filter(self, site_code: SiteCode | None, record_ids: list[int] | None, actor: Any | None = None, *, include_workspace_shared: bool = False):
+        context = _actor_context(actor)
+        settings = self.get_settings(actor).settings
         decisions = []
-        for record in self._repository.get_records_for_filter(site_code, record_ids):
+        for record in self._repository.get_records_for_filter(context.workspace_id, site_code, record_ids, actor_id=context.actor_id, include_workspace_shared=include_workspace_shared or context.is_admin):
             preview = ProfitPreview(
                 site_code=record.site_code, selling_price=record.selling_price, cost_price=record.cost_price, weight_kg=record.weight_kg,
                 domestic_fee=record.domestic_fee, shipping_subsidy=record.shipping_subsidy, shipping_cost=record.shipping_cost,
@@ -340,16 +395,17 @@ class ProfitActivityService:
             )
             decision, reason = activity_decision(preview, settings)
             decisions.append((record.id, decision, reason))
-        return self._repository.create_activity_run(site_code, settings, decisions)
+        return self._repository.create_activity_run(context.workspace_id, site_code, settings, decisions)
 
-    def get_filter_run(self, run_id: int):
-        result = self._repository.get_activity_run(run_id)
+    def get_filter_run(self, run_id: int, actor: Any | None = None):
+        context = _actor_context(actor)
+        result = self._repository.get_activity_run(run_id, context.workspace_id)
         if result is None:
             raise ProfitActivityNotFound("activity_run_not_found")
         return result
 
 
-def create_profit_activity_service(database_url: str | None = None) -> ProfitActivityService:
+def create_profit_activity_service(database_url: str | Path | None = None) -> ProfitActivityService:
     database = create_database(database_url)
     return ProfitActivityService(ProfitActivityRepository(database.sessions), database)
 
@@ -409,12 +465,27 @@ def _ensure_group(groups: list[dict[str, Any]], index: int) -> dict[str, Any]:
     return groups[index]
 
 
-def _product_payload(record) -> dict[str, Any]:
+def _actor_context(actor: Any | None = None) -> ProfitActivityActorContext:
+    if actor is None:
+        return ProfitActivityActorContext()
+    return ProfitActivityActorContext(
+        actor_id=str(getattr(actor, "id", getattr(actor, "actor_id", "")) or "local-demo-admin"),
+        username=str(getattr(actor, "username", "") or "local-demo"),
+        role=str(getattr(actor, "role", "") or "operator"),
+        workspace_id=str(getattr(actor, "workspace_id", "") or "default"),
+        workspace_code=str(getattr(actor, "workspace_code", "") or getattr(actor, "workspace_id", "") or "default"),
+        workspace_name=str(getattr(actor, "workspace_name", "") or "本地演示工作区"),
+    )
+
+
+def _product_payload(record, actor: ProfitActivityActorContext) -> dict[str, Any]:
     groups = _source_groups(record.source_groups_json, "[]")
+    is_owner = record.created_by == actor.actor_id
     return {
         "id": record.id, "site": record.site_code, "site_code": record.site_code, "skc": record.skc,
         "visibility": record.visibility, "created_by": record.created_by, "created_by_username": record.created_by_username,
-        "workspace_id": None, "workspace_code": "local", "workspace_name": "本地工作台", "is_owner": True, "can_edit": True,
+        "workspace_id": record.workspace_id, "workspace_code": actor.workspace_code, "workspace_name": actor.workspace_name,
+        "is_owner": is_owner, "can_edit": is_owner or actor.is_admin,
         "image_path": record.image_path, "source_image_path": record.source_image_path, "source_groups": groups,
         "selling_price": float(record.selling_price), "cost_price": float(record.cost_price), "weight_kg": float(record.weight_kg),
         "source_url": record.source_url, "note": record.note, "domestic_fee": float(record.domestic_fee),
