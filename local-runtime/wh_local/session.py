@@ -29,18 +29,15 @@ class Actor:
         return self.id
 
 
-def actor_from_authorization(authorization: str | None = Header(default=None)) -> Actor:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="missing bearer token")
-
-    token = authorization.removeprefix("Bearer ").strip()
+def actor_from_bearer_token(token: str, database_path: Path | None = None) -> Actor:
     config = default_config()
 
     if token == config.dev_admin_token:
         return Actor(id="local-demo-admin", username="local-demo", role="admin")
 
+    db_path = database_path or config.database_path
     try:
-        session = SQLiteCustomerSessionStore(config.database_path).get_session(token)
+        session = SQLiteCustomerSessionStore(db_path).get_session(token)
     except sqlite3.Error as exc:
         raise HTTPException(status_code=401, detail="invalid bearer token") from exc
     if session is None:
@@ -50,10 +47,18 @@ def actor_from_authorization(authorization: str | None = Header(default=None)) -
         id=session.user_id,
         username=session.username,
         role=session.role,
-        workspace_id=session.workspace_code or "default",
+        workspace_id=session.workspace_id or session.workspace_code or "default",
         workspace_code=session.workspace_code,
         workspace_name=session.workspace_name,
     )
+
+
+def actor_from_authorization(authorization: str | None = Header(default=None)) -> Actor:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    token = authorization.removeprefix("Bearer ").strip()
+    return actor_from_bearer_token(token)
 
 
 def daily_selection_actor_from_authorization(authorization: str | None = Header(default=None)) -> dict[str, str]:

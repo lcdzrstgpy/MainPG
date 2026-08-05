@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from ..config import default_config
 from ..customer.auth_service import SQLiteCustomerAuthService
@@ -21,6 +22,7 @@ from ..data_collection import (
 from ..data_collection.provider import OneBound1688Provider
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
+from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
 from ..price_verification import (
     PriceVerificationRouteDependencies,
     register_price_verification_routes,
@@ -68,6 +70,13 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     init_db(db_path)
 
     app = FastAPI(title="H Smart Ecommerce Local Runtime", version="0.1.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -80,6 +89,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
     app.include_router(create_basic_settings_router(db_path))
     _register_data_collection(app, db_path)
+    _register_profit_activity(app, db_path)
 
     # 核价及货源模块
     _register_price_verification(app, db_path, config.data_dir)
@@ -96,6 +106,13 @@ def _register_data_collection(app: FastAPI, db_path: Path) -> None:
         database_path=db_path,
     )
     register_daily_selection_routes(app.router, dependencies)
+
+
+def _register_profit_activity(app: FastAPI, db_path: Path) -> None:
+    """Register profit-activity routes against the shared runtime database."""
+    service = create_profit_activity_service(db_path)
+    app.include_router(create_profit_activity_router(service, db_path), prefix="/api")
+
 
 def _register_price_verification(app: FastAPI, db_path: Path, data_dir: Path) -> None:
     """Register read-only price-verification routes with host-owned adapters."""
