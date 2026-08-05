@@ -54,10 +54,43 @@ class CustomerAuthClient:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 return json.loads(response.read().decode("utf-8") or "{}")
         except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise PermissionError(detail or f"customer auth service returned HTTP {exc.code}") from exc
+            detail = _extract_error_message(exc)
+            if exc.code in (401, 403):
+                raise PermissionError(detail or f"customer auth service returned HTTP {exc.code}") from exc
+            if 400 <= exc.code < 500:
+                raise ValueError(detail or f"customer auth service rejected the request (HTTP {exc.code})") from exc
+            raise CustomerAuthUnavailable(f"customer auth service returned HTTP {exc.code}: {detail}") from exc
         except (URLError, TimeoutError) as exc:
             raise CustomerAuthUnavailable(str(getattr(exc, "reason", exc))) from exc
+
+
+def _extract_error_message(exc: HTTPError) -> str:
+    """Extract a single-line error message from a FastAPI-style error response.
+
+    Remote auth services usually answer with ``{"detail": "..."}``. The detail
+    value may itself be a JSON string wrapping another ``detail`` key (e.g. a
+    proxied FastAPI exception). Unwrap one level so the surfaced message is not
+    double-encoded.
+    """
+    raw = exc.read().decode("utf-8", errors="replace")
+    try:
+        body = json.loads(raw or "{}")
+    except Exception:
+        return raw[:300]
+    detail = body.get("detail") or body.get("message") or body.get("error") if isinstance(body, dict) else ""
+    if isinstance(detail, dict):
+        detail = detail.get("detail") or detail.get("message") or str(detail)
+    if isinstance(detail, str):
+        try:
+            inner = json.loads(detail)
+        except Exception:
+            inner = None
+        if isinstance(inner, dict):
+            detail = inner.get("detail") or inner.get("message") or inner.get("error") or str(inner)
+        elif inner is not None:
+            detail = inner
+        detail = str(detail).strip()
+    return detail if detail else raw[:300]
 
 
 def normalize_login_response(payload: dict[str, Any], *, fallback_username: str = "") -> CustomerAuthResult:

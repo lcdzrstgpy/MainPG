@@ -38,7 +38,7 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         try:
             customer = remote_auth.login(payload)
             session = sessions.login_customer(customer)
-            return {"user_id": session.user_id, "token": session.token, "expires_at": session.expires_at, "account": asdict(customer)}
+            return {"ok": True, "user_id": session.user_id, "token": session.token, "expires_at": session.expires_at, "account": asdict(customer)}
         except Exception as exc:
             handle_auth_error(exc)
 
