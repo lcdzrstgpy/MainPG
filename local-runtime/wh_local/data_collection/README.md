@@ -172,7 +172,7 @@ Temu 链接不会交给 OneBound：它只允许受控浏览器插件在已登录
 
 宿主迁移、备份、恢复和清理时必须把这八张表一起纳入。`daily_selection_provider_budgets` 与 `daily_selection_api_budget` 的并存是当前实现事实；在另行完成生产迁移和数据兼容方案前，不得把两者当作可互换表或删除其中之一。
 
-每日选品的批次表不充当草稿池。产品处理模块拥有并写入唯一的 `product_processing_drafts` 物理草稿池；其 `source_type` 仅用 `web_manual_capture` 或 `onebound_api` 区分两个来源视图。宿主与下游模块不得复用每日选品的批次表保存其他业务对象。
+每日选品的批次表不充当草稿池。产品处理模块拥有唯一的 `product_processing_drafts` 物理草稿池；每日选品写入该池的草稿仅使用 `web_manual_capture` 或 `onebound_api` 区分两个来源视图。产品处理模块的其他入口仍可使用其自身的来源类型；宿主与下游模块不得复用每日选品的批次表保存其他业务对象。
 
 ## Handoff 消费契约
 
