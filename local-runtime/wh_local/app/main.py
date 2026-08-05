@@ -592,7 +592,7 @@ AUTH_FLOW_DEMO_HTML = """
           <label>密码</label>
           <input id="regPassword" type="password" autocomplete="new-password" />
           <label>角色</label>
-          <select id="regRole"><option value="admin">admin</option><option value="operator">operator</option></select>
+          <select id="regRole"><option value="operator">operator（普通用户，默认）</option><option value="admin">admin（演示用）</option></select>
           <div class="actions">
             <button onclick="registerAccount()">注册</button>
             <a id="toLoginFromRegister">已有账号？去登录</a>
@@ -648,7 +648,7 @@ AUTH_FLOW_DEMO_HTML = """
           <h2>修改密码</h2>
           <p>已登录用户知道旧密码时修改密码。成功后退出登录并返回登录页。</p>
           <label>用户名 / 邮箱</label>
-          <input id="changeIdentifier" autocomplete="username" />
+          <input id="changeIdentifier" autocomplete="username" readonly />
           <label>当前密码</label>
           <input id="changeOldPassword" type="password" autocomplete="current-password" />
           <label>新密码</label>
@@ -681,6 +681,35 @@ AUTH_FLOW_DEMO_HTML = """
     function go(path) {
       history.pushState({}, "", path + apiQuery);
       render();
+    }
+
+    function replaceTo(path) {
+      history.replaceState({}, "", path + apiQuery);
+      render();
+    }
+
+    function setFlash(message, type = "") {
+      sessionStorage.setItem("wh_demo_flash", JSON.stringify({message, type}));
+    }
+
+    function resetFeedback() {
+      const el = document.getElementById("status");
+      el.className = "status";
+      el.textContent = "等待操作。";
+      document.getElementById("output").textContent = "{}";
+    }
+
+    function consumeFlash() {
+      const raw = sessionStorage.getItem("wh_demo_flash");
+      if (!raw) return false;
+      sessionStorage.removeItem("wh_demo_flash");
+      try {
+        const data = JSON.parse(raw);
+        setStatus(data.message || "", data.type || "");
+        return true;
+      } catch (_) {
+        return false;
+      }
     }
 
     function setStatus(message, type = "") {
@@ -736,6 +765,7 @@ AUTH_FLOW_DEMO_HTML = """
     }
 
     function render() {
+      resetFeedback();
       const path = location.pathname;
       const views = ["viewLogin", "viewRegister", "viewForgot", "viewReset", "viewDashboard", "viewChange"];
       views.forEach(id => document.getElementById(id).classList.add("hidden"));
@@ -746,7 +776,12 @@ AUTH_FLOW_DEMO_HTML = """
         "/dev/auth/dashboard": "viewDashboard",
         "/dev/auth/change-password": "viewChange",
       };
-      const view = map[path] || "viewLogin";
+      let view = map[path] || "viewLogin";
+      if ((view === "viewDashboard" || view === "viewChange") && !localToken) {
+        setFlash("请先登录后再访问该页面。", "err");
+        history.replaceState({}, "", "/dev/auth/login" + apiQuery);
+        view = "viewLogin";
+      }
       document.getElementById(view).classList.remove("hidden");
       document.getElementById("brandTitle").textContent = {
         viewLogin: "欢迎回来",
@@ -757,6 +792,13 @@ AUTH_FLOW_DEMO_HTML = """
         viewChange: "账号安全",
       }[view];
       if (view === "viewDashboard") fillDashboard();
+      if (view === "viewChange") {
+        document.getElementById("changeIdentifier").value = account.username || account.email || "";
+      }
+      if (view === "viewReset") {
+        document.getElementById("resetToken").value = sessionStorage.getItem("wh_demo_reset_token") || document.getElementById("resetToken").value;
+      }
+      consumeFlash();
     }
 
     async function registerAccount() {
@@ -771,7 +813,7 @@ AUTH_FLOW_DEMO_HTML = """
           workspace_code: "wh_demo",
           workspace_name: "真实服务器演示工作区"
         });
-        setStatus("注册成功，已跳转到登录页。", "ok");
+        setFlash("注册成功，已跳转到登录页。", "ok");
         document.getElementById("loginIdentifier").value = username;
         go("/dev/auth/login");
       } catch (err) {
@@ -787,7 +829,7 @@ AUTH_FLOW_DEMO_HTML = """
         const payload = identifier.includes("@") ? {email: identifier, password} : {username: identifier, password};
         const data = await request("POST", "/api/customer/login", payload);
         saveSession(data);
-        setStatus("登录成功，已进入工作台首页。", "ok");
+        setFlash("登录成功，已进入工作台首页。", "ok");
         go("/dev/auth/dashboard");
       } catch (err) {
         setStatus("登录失败：" + err.message, "err");
@@ -804,9 +846,9 @@ AUTH_FLOW_DEMO_HTML = """
         if (resetToken) {
           sessionStorage.setItem("wh_demo_reset_token", resetToken);
           document.getElementById("resetToken").value = resetToken;
-          setStatus("已生成 reset token，跳转到重置密码页。正式阶段应改为邮件链接。", "ok");
+          setFlash("已生成一次性 reset token，跳转到重置密码页。正式阶段应改为邮件链接。", "ok");
         } else {
-          setStatus("如果账号存在，系统已生成重置凭证。", "ok");
+          setFlash("如果账号存在，系统已生成重置凭证。", "ok");
         }
         go("/dev/auth/reset-password");
       } catch (err) {
@@ -822,7 +864,7 @@ AUTH_FLOW_DEMO_HTML = """
         await request("POST", "/api/customer/reset-password", {reset_token: resetToken, new_password: newPassword});
         clearSession();
         sessionStorage.removeItem("wh_demo_reset_token");
-        setStatus("密码重置成功，已跳转登录页，请用新密码登录。", "ok");
+        setFlash("密码重置成功，已跳转登录页，请用新密码登录。", "ok");
         go("/dev/auth/login");
       } catch (err) {
         setStatus("重置密码失败：" + err.message, "err");
@@ -831,16 +873,17 @@ AUTH_FLOW_DEMO_HTML = """
 
     async function changePassword() {
       try {
-        const identifier = document.getElementById("changeIdentifier").value.trim();
+        if (!localToken) throw new Error("请先登录");
+        const identifier = account.username || account.email || document.getElementById("changeIdentifier").value.trim();
         const currentPassword = document.getElementById("changeOldPassword").value;
         const newPassword = document.getElementById("changeNewPassword").value;
-        if (!identifier || !currentPassword || !newPassword) throw new Error("请输入账号、当前密码和新密码");
+        if (!identifier || !currentPassword || !newPassword) throw new Error("请输入当前密码和新密码");
         const payload = identifier.includes("@")
           ? {email: identifier, current_password: currentPassword, new_password: newPassword}
           : {username: identifier, current_password: currentPassword, new_password: newPassword};
         await request("POST", "/api/customer/change-password", payload);
         clearSession();
-        setStatus("修改密码成功，旧登录态已失效，请重新登录。", "ok");
+        setFlash("修改密码成功，旧登录态已失效，请重新登录。", "ok");
         go("/dev/auth/login");
       } catch (err) {
         setStatus("修改密码失败：" + err.message, "err");
@@ -865,7 +908,7 @@ AUTH_FLOW_DEMO_HTML = """
       } catch (_) {
       } finally {
         clearSession();
-        setStatus("已退出登录，跳转回登录页。", "ok");
+        setFlash("已退出登录，跳转回登录页。", "ok");
         go("/dev/auth/login");
       }
     }
