@@ -94,6 +94,21 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     def password_reset(payload: dict[str, Any]) -> dict[str, Any]:
         return _action_response(_call_action(service.password_reset, payload))
 
+    @app.post("/api/customer/change-password")
+    def change_password(payload: dict[str, Any]) -> dict[str, Any]:
+        return _action_response(_call_action(service.change_password, payload))
+
+    @app.post("/api/customer/forgot-password")
+    def forgot_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        enriched_payload = dict(payload)
+        enriched_payload.setdefault("request_ip", request.client.host if request.client else "")
+        enriched_payload.setdefault("user_agent", request.headers.get("user-agent", ""))
+        return _action_response(_call_action(service.forgot_password, enriched_payload))
+
+    @app.post("/api/customer/reset-password")
+    def reset_password(payload: dict[str, Any]) -> dict[str, Any]:
+        return _action_response(_call_action(service.reset_password, payload))
+
     return app
 
 
@@ -223,4 +238,3 @@ def _raise_http_error(exc: Exception) -> None:
     if isinstance(exc, ValueError):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise exc
-

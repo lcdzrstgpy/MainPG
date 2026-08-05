@@ -166,6 +166,37 @@ CREATE TABLE IF NOT EXISTS auth_platform_sessions (
 CREATE INDEX IF NOT EXISTS idx_auth_platform_sessions_account_active
     ON auth_platform_sessions (account_id, expires_at, revoked_at);
 
+-- 密码重置凭证表：忘记密码时生成一次性 token，只保存 token_hash，不保存明文 token。
+CREATE TABLE IF NOT EXISTS auth_password_reset_tokens (
+    reset_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    request_ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_password_reset_tokens_account_active
+    ON auth_password_reset_tokens (account_id, expires_at, used_at);
+
+-- 账号安全事件表：记录注册、修改密码、忘记密码、重置密码等关键安全动作。
+CREATE TABLE IF NOT EXISTS auth_security_events (
+    event_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL,
+    success INTEGER NOT NULL DEFAULT 1,
+    ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_security_events_account_type
+    ON auth_security_events (account_id, event_type, created_at);
+
 -- 店铺表：给每日运营、产品处理、利润活动、核价及货源等模块统一关联店铺。
 CREATE TABLE IF NOT EXISTS stores (
     store_id TEXT PRIMARY KEY,

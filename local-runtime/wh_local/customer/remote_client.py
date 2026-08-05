@@ -40,6 +40,15 @@ class CustomerAuthClient:
     def password_reset(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
         return normalize_action_response(self._post("/api/customer/password-reset", payload))
 
+    def change_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
+        return normalize_action_response(self._post("/api/customer/change-password", payload))
+
+    def forgot_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
+        return normalize_action_response(self._post("/api/customer/forgot-password", payload))
+
+    def reset_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
+        return normalize_action_response(self._post("/api/customer/reset-password", payload))
+
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.base_url:
             raise CustomerAuthUnavailable("customer auth service is not configured")

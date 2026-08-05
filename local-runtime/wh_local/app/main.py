@@ -240,7 +240,7 @@ CUSTOMER_LOGIN_DEMO_HTML = """
 
     <section class="grid">
       <div class="card">
-        <h2>1. 登录</h2>
+        <h2>1. 注册 / 登录 / 密码</h2>
         <div class="row">
           <div>
             <label for="username">username</label>
@@ -248,11 +248,27 @@ CUSTOMER_LOGIN_DEMO_HTML = """
           </div>
           <div>
             <label for="password">password</label>
-            <input id="password" placeholder="输入密码" type="password" autocomplete="current-password" />
+            <input id="password" placeholder="登录密码 / 当前密码" type="password" autocomplete="current-password" />
+          </div>
+          <div>
+            <label for="email">email</label>
+            <input id="email" placeholder="注册或找回密码邮箱" autocomplete="email" />
+          </div>
+          <div>
+            <label for="newPassword">new password</label>
+            <input id="newPassword" placeholder="修改/重置后的新密码" type="password" autocomplete="new-password" />
+          </div>
+          <div style="grid-column: 1 / -1;">
+            <label for="resetToken">reset token</label>
+            <input id="resetToken" placeholder="点击忘记密码后自动填入；未来会改成邮箱链接" />
           </div>
         </div>
         <div class="actions">
+          <button class="secondary" onclick="registerAccount()">注册</button>
           <button onclick="login()">登录</button>
+          <button class="secondary" onclick="forgotPassword()">忘记密码</button>
+          <button class="secondary" onclick="resetPassword()">重置密码</button>
+          <button class="secondary" onclick="changePassword()">修改密码</button>
           <button class="secondary" onclick="me()">验证 me</button>
           <button class="danger" onclick="logout()">退出登录</button>
         </div>
@@ -290,6 +306,9 @@ CUSTOMER_LOGIN_DEMO_HTML = """
     function showOutput(method, path, status, body) {
       const safe = JSON.parse(JSON.stringify(body || {}));
       if (safe.token) safe.token = maskToken(safe.token);
+      if (safe.reset_token) safe.reset_token = maskToken(safe.reset_token);
+      if (safe.raw && safe.raw.reset_token) safe.raw.reset_token = maskToken(safe.raw.reset_token);
+      if (safe.raw && safe.raw.raw && safe.raw.raw.reset_token) safe.raw.raw.reset_token = maskToken(safe.raw.raw.reset_token);
       if (safe.account && safe.account.remote_token) safe.account.remote_token = maskToken(safe.account.remote_token);
       if (safe.account && safe.account.raw && safe.account.raw.token) safe.account.raw.token = maskToken(safe.account.raw.token);
       document.getElementById("output").textContent = method + " " + path + "\\nHTTP " + status + "\\n\\n" + JSON.stringify(safe, null, 2);
@@ -328,6 +347,80 @@ CUSTOMER_LOGIN_DEMO_HTML = """
         setStatus("登录成功：工作台已返回 wh_local 本地业务 token。", "ok");
       } catch (err) {
         setStatus("登录失败：" + err.message, "err");
+      }
+    }
+
+    async function registerAccount() {
+      try {
+        const username = document.getElementById("username").value.trim();
+        const email = document.getElementById("email").value.trim();
+        const password = document.getElementById("password").value;
+        if (!username || !password) throw new Error("请输入账号和密码");
+        const data = await request("POST", "/api/customer/register", {
+          username,
+          email,
+          password,
+          role: "admin",
+          workspace_code: "wh_demo",
+          workspace_name: "真实服务器演示工作区"
+        });
+        setStatus("注册成功：现在可以用这个账号登录。", "ok");
+        updateSummary(data.raw || {});
+      } catch (err) {
+        setStatus("注册失败：" + err.message, "err");
+      }
+    }
+
+    async function forgotPassword() {
+      try {
+        const username = document.getElementById("username").value.trim();
+        const email = document.getElementById("email").value.trim();
+        if (!username && !email) throw new Error("请输入账号或邮箱");
+        const data = await request("POST", "/api/customer/forgot-password", {username, email});
+        const resetToken = data.raw && data.raw.raw && data.raw.raw.reset_token || data.raw && data.raw.reset_token || "";
+        if (resetToken) {
+          document.getElementById("resetToken").value = resetToken;
+          setStatus("已生成一次性 reset token，并自动填入。开发阶段直接展示；正式阶段会发到邮箱。", "ok");
+        } else {
+          setStatus("如果账号存在，系统已生成重置凭证。", "ok");
+        }
+      } catch (err) {
+        setStatus("忘记密码请求失败：" + err.message, "err");
+      }
+    }
+
+    async function resetPassword() {
+      try {
+        const resetToken = document.getElementById("resetToken").value.trim();
+        const newPassword = document.getElementById("newPassword").value;
+        if (!resetToken || !newPassword) throw new Error("请输入 reset token 和新密码");
+        const data = await request("POST", "/api/customer/reset-password", {reset_token: resetToken, new_password: newPassword});
+        localToken = "";
+        sessionStorage.removeItem("wh_demo_token");
+        updateSummary(data);
+        setStatus("密码重置成功：旧登录态已失效，请用新密码重新登录。", "ok");
+      } catch (err) {
+        setStatus("重置密码失败：" + err.message, "err");
+      }
+    }
+
+    async function changePassword() {
+      try {
+        const username = document.getElementById("username").value.trim();
+        const currentPassword = document.getElementById("password").value;
+        const newPassword = document.getElementById("newPassword").value;
+        if (!username || !currentPassword || !newPassword) throw new Error("请输入账号、当前密码和新密码");
+        const data = await request("POST", "/api/customer/change-password", {
+          username,
+          current_password: currentPassword,
+          new_password: newPassword
+        });
+        localToken = "";
+        sessionStorage.removeItem("wh_demo_token");
+        updateSummary(data);
+        setStatus("修改密码成功：旧登录态已失效，请用新密码重新登录。", "ok");
+      } catch (err) {
+        setStatus("修改密码失败：" + err.message, "err");
       }
     }
 

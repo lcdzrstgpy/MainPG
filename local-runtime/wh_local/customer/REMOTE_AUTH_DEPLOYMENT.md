@@ -213,6 +213,11 @@ WantedBy=multi-user.target
 | `POST` | `/api/customer/activate` | 激活账号 |
 | `POST` | `/api/customer/email-code` | 邮箱验证码占位 |
 | `POST` | `/api/customer/password-reset` | 重置密码 |
+| `POST` | `/api/customer/change-password` | 用户知道旧密码时修改密码 |
+| `POST` | `/api/customer/forgot-password` | 忘记密码，生成一次性重置凭证 |
+| `POST` | `/api/customer/reset-password` | 使用一次性凭证重置密码 |
+
+> 当前阶段还未接真实邮件服务，`forgot-password` 会在响应中返回开发演示用的 `reset_token`。正式接邮箱后，应改为发送邮件，不再把明文重置凭证返回给前端。
 
 ## 九、安全注意事项
 

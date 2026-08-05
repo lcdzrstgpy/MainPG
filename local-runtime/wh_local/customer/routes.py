@@ -70,6 +70,27 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.post("/change-password")
+    def change_password(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return asdict(remote_auth.change_password(payload))
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/forgot-password")
+    def forgot_password(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return asdict(remote_auth.forgot_password(payload))
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/reset-password")
+    def reset_password(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return asdict(remote_auth.reset_password(payload))
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.get("/me")
     def me(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         try:
