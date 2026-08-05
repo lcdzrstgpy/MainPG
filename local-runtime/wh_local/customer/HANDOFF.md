@@ -132,7 +132,7 @@ user_permission_overrides
 
 ```text
 admin       默认拥有全部权限
-operator    默认拥有选品、产品处理、核价及货源、基础卖家中心操作权限
+operator    默认拥有选品、产品处理、核价及货源、利润活动常用操作、基础卖家中心操作权限
 ```
 
 后端模块可以统一使用：

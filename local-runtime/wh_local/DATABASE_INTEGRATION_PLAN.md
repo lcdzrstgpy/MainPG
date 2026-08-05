@@ -136,6 +136,7 @@ SQLite 阶段 JSON 可以先使用 `TEXT` 保存 UTF-8 JSON；迁移到 MySQL �
 | 每日选品/数据采集 | `data_collection.read`、`data_collection.collect`、`data_collection.feedback`、`data_collection.confirm`、`data_collection.plugin` |
 | 产品处理 | `product_processing.read`、`product_processing.draft_write`、`product_processing.draft_delete`、`product_processing.process`、`product_processing.prompt_manage`、`product_processing.export`、`product_processing.handoff_consume` |
 | 核价及货源 | `price_verification.read`、`price_verification.quote_collect`、`price_verification.sourcing_match`、`price_verification.export`、`price_verification.plugin` |
+| 利润活动 | `profit_activity.read`、`profit_activity.company_read`、`profit_activity.write`、`profit_activity.company_write`、`profit_activity.delete`、`profit_activity.company_delete`、`profit_activity.settings_manage`、`profit_activity.import`、`profit_activity.filter`、`profit_activity.export` |
 | 卖家中心上架/核价 | `seller_listing.read`、`seller_listing.price_confirm`、`seller_listing.attribute_write`、`seller_listing.publish` |
 | 系统配置/管理 | `settings.read`、`settings.manage`、`stores.manage`、`users.manage` |
 
@@ -258,6 +259,8 @@ require_permission(actor, "product_processing.process")
 
 模块目录：`local-runtime/wh_local/modules/profit_activity`
 
+当前状态：已新增版本化 SQL 迁移 `modules/profit_activity/migrations/001_profit_activity.sql`，并纳入统一 SQLite 初始化。
+
 该模块负责：
 
 - 单品利润计算；
@@ -283,20 +286,21 @@ require_permission(actor, "product_processing.process")
 
 | 表 | 关键字段 |
 | --- | --- |
-| `profit_activity_settings` | `revision`、`save_root`、`domestic_fee`、`shipping_subsidy`、`refund_rate`、`us_first_mile_rate`、`us_first_mile_fixed`、`co_first_mile_rate`、`co_first_mile_fixed`、`ec_domestic_fee`、`ec_shipping_subsidy`、`ec_shipping_subsidy_price_limit`、`ec_first_mile_rate`、`ec_first_mile_fixed`、`ec_end_fee`、`ec_refund_rate`、`activity_min_net_profit`、`activity_profit_rate_threshold`、`rule_version` |
-| `profit_activity_records` | `site_code`、`skc`、`visibility`、`created_by`、`created_by_username`、`image_path`、`source_image_path`、`source_groups_json`、`source_url`、`note`、`selling_price`、`cost_price`、`weight_kg`、`domestic_fee`、`shipping_subsidy`、`refund_rate`、`shipping_cost`、`end_fee`、`total_cost`、`gross_profit`、`net_profit`、`profit_rate`、`calculation_hash`、`settings_revision`、`revision` |
-| `profit_activity_runs` | `site_code`、`rule_version`、`minimum_net_profit`、`minimum_profit_rate`、`retained_count`、`excluded_count` |
-| `profit_activity_decisions` | `run_id`、`record_id`、`decision`、`reason_code` |
-| `profit_activity_import_sessions` | `import_id`、`original_filename`、`site`、`rows_json` |
-| `profit_activity_import_tasks` | `import_id`、`status`、`result_json` |
-| `profit_activity_filter_tasks` | `status`、`result_json` |
+| `profit_activity_settings` | `workspace_id`、`revision`、`save_root`、`domestic_fee`、`shipping_subsidy`、`refund_rate`、`us_first_mile_rate`、`us_first_mile_fixed`、`co_first_mile_rate`、`co_first_mile_fixed`、`ec_domestic_fee`、`ec_shipping_subsidy`、`ec_shipping_subsidy_price_limit`、`ec_first_mile_rate`、`ec_first_mile_fixed`、`ec_end_fee`、`ec_refund_rate`、`activity_min_net_profit`、`activity_profit_rate_threshold`、`rule_version` |
+| `profit_activity_records` | `workspace_id`、`site_code`、`skc`、`visibility`、`created_by`、`created_by_username`、`product_id`、`product_version`、`main_image_asset_id`、`image_path`、`source_image_path`、`source_groups_json`、`source_url`、`note`、`selling_price`、`cost_price`、`weight_kg`、`domestic_fee`、`shipping_subsidy`、`refund_rate`、`shipping_cost`、`end_fee`、`total_cost`、`gross_profit`、`net_profit`、`profit_rate`、`calculation_hash`、`settings_revision`、`revision` |
+| `profit_activity_runs` | `workspace_id`、`site_code`、`rule_version`、`minimum_net_profit`、`minimum_profit_rate`、`retained_count`、`excluded_count` |
+| `profit_activity_decisions` | `workspace_id`、`run_id`、`record_id`、`decision`、`reason_code` |
+| `profit_activity_import_sessions` | `workspace_id`、`import_id`、`original_filename`、`site`、`rows_json` |
+| `profit_activity_import_tasks` | `workspace_id`、`import_id`、`status`、`result_json` |
+| `profit_activity_filter_tasks` | `workspace_id`、`status`、`result_json` |
 
-当前风险点：
+统一迁移已处理的关键点：
 
-- 当前利润活动模块唯一约束为 `site_code + skc`；
-- 后续多工作区/多公司场景应调整为 `workspace_id + site_code + skc`；
-- `created_by` 当前为本地默认值，后续应接入账号登录模块提供的真实用户 ID；
-- 图片字段当前保存本地路径，后续可逐步抽象为统一资产表。
+- `profit_activity_records` 唯一约束使用 `workspace_id + site_code + skc`，避免不同工作区同一 SKC 冲突；
+- 利润配置表补充 `workspace_id`，为后续按工作区维护利润参数预留；
+- 导入、筛选、活动批次和决策表均补充 `workspace_id`；
+- `created_by` 使用账号模块提供的用户 ID 字段语义；
+- 预留 `product_id`、`product_version`、`main_image_asset_id`，便于后续对接产品库和统一资产表。
 
 ## 4.5 核价及货源模块
 
@@ -381,14 +385,12 @@ flowchart LR
 - 已将每日选品 Temu 插件队列表纳入统一初始化；
 - 已将产品处理 7 张表纳入统一初始化；
 - 已将核价及货源 8 张表纳入统一初始化；
-- 已确认利润活动模块字段说明文档。
+- 已将利润活动 7 张表纳入统一初始化；
 
 ### 6.2 待推进
 
-1. 将利润活动模块当前 SQLAlchemy 自建表方式纳入统一数据库文件。
-2. 为利润活动表补充 `workspace_id` 设计方案。
-3. 统一 `created_by`、`workspace_id`、权限上下文，让各模块都能从登录态获得当前用户。
-4. 与尚未上传字段说明的模块负责人确认字段，例如：
+1. 统一 `created_by`、`workspace_id`、权限上下文，让各模块运行时都从登录态获得当前用户。
+2. 与尚未上传字段说明的模块负责人确认字段，例如：
    - 每日运营；
    - 精致作图；
    - 员工管理；

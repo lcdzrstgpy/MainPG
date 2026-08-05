@@ -26,6 +26,34 @@
 - `GET /api/customer/me`
 - `POST /api/customer/logout`
 
+## Standalone platform auth service
+
+Phase 3 adds a standalone customer auth server:
+
+```powershell
+cd local-runtime
+python devtools/run_customer_auth_server.py --port 8011 --database outputs/auth/platform-auth.sqlite3
+```
+
+Alternatively, for uvicorn import-string startup:
+
+```powershell
+uvicorn "wh_local.customer.auth_server:create_default_auth_app" --factory --host 127.0.0.1 --port 8011
+```
+
+Then start the workbench runtime with:
+
+```powershell
+set WH_LOCAL_CUSTOMER_AUTH_BASE_URL=http://127.0.0.1:8011
+uvicorn wh_local.app.main:app --host 127.0.0.1 --port 8010
+```
+
+The platform auth service owns account/password verification and issues
+`wh_auth_*` tokens. The workbench runtime exchanges the normalized account
+result for a local `wh_local_*` session used by business modules.
+
+For Linux server deployment, see `REMOTE_AUTH_DEPLOYMENT.md`.
+
 ## 待团队整合项
 
 1. 确认远端认证服务地址和字段名。
