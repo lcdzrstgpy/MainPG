@@ -8,7 +8,7 @@ from datetime import datetime
 import re
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from .budget import BudgetState, SQLiteDailyApiBudget, credential_fingerprint, is_credential_fingerprint
+from .budget import BudgetState, TaskApiBudget, credential_fingerprint, is_credential_fingerprint
 from .contracts import ApiEvidence, DailySelectionCandidate, DailySelectionError
 from .criteria import DailySelectionCriteria
 from .normalizer import enrich_candidate_with_detail, normalize_search_response
@@ -73,7 +73,7 @@ class DailySelectionCollector:
         *,
         workspace_id: str,
         provider: DailySelectionProvider,
-        budget: SQLiteDailyApiBudget,
+        budget: TaskApiBudget,
         provider_credentials: Mapping[str, Any] | str | None = None,
         provider_credential_fingerprint: str | None = None,
         clock: Callable[[], datetime] | None = None,
@@ -97,6 +97,7 @@ class DailySelectionCollector:
         detail_errors: dict[str, DailySelectionError] = {}
         search_calls = image_search_calls = detail_calls = api_calls = 0
         collection_time = self._clock()
+        self._budget.start()
         latest_budget = self._budget.state(
             workspace_id=self._workspace_id,
             provider_fingerprint=self._provider_fingerprint,
