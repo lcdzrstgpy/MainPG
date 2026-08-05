@@ -36,6 +36,17 @@ class ProductProcessingAssets:
             path.write_bytes(content)
         return path
 
+    def save_source_image(self, content: bytes, filename: str, content_type: str = "") -> Path:
+        if not content:
+            raise ValueError("source image is empty")
+        suffix = self._image_suffix(filename, content_type)
+        digest = hashlib.sha256(content).hexdigest()
+        path = self.library_root / digest[:2] / f"{digest}{suffix}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_bytes(content)
+        return path
+
     def materialize_source_manifest(self, task_id: int, image_urls: list[str]) -> Path:
         path = self.library_root / f"task_{task_id}_source_images.txt"
         unique_urls = list(dict.fromkeys(item.strip() for item in image_urls if item and item.strip()))

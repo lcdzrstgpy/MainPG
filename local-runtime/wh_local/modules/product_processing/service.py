@@ -4,8 +4,11 @@ import importlib.util
 import hashlib
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 
 from .domain.handoff import candidate_from_handoff
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
@@ -23,9 +26,15 @@ class ProductProcessingConflict(RuntimeError):
 
 
 class ProductProcessingService:
-    def __init__(self, repository: ProductProcessingRepository, assets: ProductProcessingAssets):
+    def __init__(
+        self,
+        repository: ProductProcessingRepository,
+        assets: ProductProcessingAssets,
+        public_image_fetcher: Callable[[str], FetchedPublicImage] = fetch_public_image,
+    ):
         self.repository = repository
         self.assets = assets
+        self._public_image_fetcher = public_image_fetcher
 
     def engine_status(self) -> dict[str, Any]:
         dependency_status = {
@@ -152,8 +161,11 @@ class ProductProcessingService:
             )
             if revived is None:
                 raise ProductProcessingNotFound("product draft not found")
+            self._seed_draft_source_images(revived, raw)
             return revived, True
-        return self.repository.create_draft(values), True
+        draft = self.repository.create_draft(values)
+        self._seed_draft_source_images(draft, raw)
+        return draft, True
 
     def demo_draft(self, workspace_id: str = "local") -> dict[str, Any]:
         draft, created = self.create_draft(
@@ -390,6 +402,34 @@ class ProductProcessingService:
             workspace_id=workspace_id,
         )
         return {"images": images, "count": len(images)}
+
+    def sync_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
+        self.get_draft(draft_id, workspace_id)
+        ready = failed = 0
+        for image in self.repository.claim_syncable_source_images(draft_id, workspace_id):
+            try:
+                fetched = self._public_image_fetcher(image["url"])
+                path = self.assets.save_source_image(fetched.content, fetched.final_url, fetched.media_type)
+            except Exception as error:
+                self.repository.fail_source_image(image["id"], str(error), workspace_id)
+                failed += 1
+            else:
+                self.repository.complete_source_image(image["id"], str(path), workspace_id)
+                ready += 1
+        return {"ready": ready, "failed": failed}
+
+    def retry_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
+        return self.sync_draft_source_images(draft_id, workspace_id)
+
+    def _seed_draft_source_images(self, draft: dict[str, Any], raw: dict[str, Any]) -> None:
+        source_urls = [self._text(draft.get("image_url"))]
+        source_urls.extend(self._url_list(raw.get("source_image_urls")))
+        self.repository.preserve_source_images(
+            task_id=None,
+            product_draft_id=int(draft["id"]),
+            source_urls=source_urls,
+            detail_urls=self._url_list(raw.get("source_detail_image_urls")),
+        )
 
     def consume_daily_selection_handoffs(
         self, handoffs: list[DailySelectionHandoffEnvelope]
@@ -883,6 +923,10 @@ class ProductProcessingService:
     @staticmethod
     def _first(value: Any) -> Any:
         return value[0] if isinstance(value, list) and value else ""
+
+    @staticmethod
+    def _url_list(value: Any) -> list[str]:
+        return [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else []
 
     @staticmethod
     def _number(value: Any) -> float | None:
