@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from ..config import default_config
 from ..customer.auth_service import SQLiteCustomerAuthService
@@ -21,8 +21,19 @@ from ..data_collection import (
 from ..data_collection.provider import OneBound1688Provider
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
-from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
-from ..session import daily_selection_actor_from_authorization
+from ..price_verification import (
+    PriceVerificationRouteDependencies,
+    register_price_verification_routes,
+)
+from ..price_verification.contracts import PriceVerificationActor
+from ..session import Actor, actor_from_authorization, daily_selection_actor_from_authorization
+
+def _price_verification_actor(
+    actor: Actor = Depends(actor_from_authorization),
+) -> PriceVerificationActor:
+    """Bridge the local host actor to the price-verification workspace."""
+    return PriceVerificationActor(actor_id=actor.id, workspace_id=actor.workspace_id)
+
 
 
 def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
@@ -70,19 +81,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.include_router(create_basic_settings_router(db_path))
     _register_data_collection(app, db_path)
 
-    # Profit Activity retains the versioned local-runtime contract and the
-    # unversioned path used by the existing screen.  Both routes share one
-    # service/database; this is an alias, not a duplicate registration.
-    profit_database_url = None
-    if database_path is not None:
-        profit_database_url = f"sqlite:///{(db_path.parent / 'profit_activity.sqlite3').as_posix()}"
-    profit_activity_service = create_profit_activity_service(profit_database_url)
-    app.include_router(create_profit_activity_router(profit_activity_service), prefix="/api/v1")
-    app.include_router(create_profit_activity_router(profit_activity_service))
+    # 核价及货源模块
+    _register_price_verification(app, db_path, config.data_dir)
 
-    @app.on_event("shutdown")
-    def close_profit_activity_database() -> None:
-        profit_activity_service.close()
     return app
 
 
@@ -95,6 +96,18 @@ def _register_data_collection(app: FastAPI, db_path: Path) -> None:
         database_path=db_path,
     )
     register_daily_selection_routes(app.router, dependencies)
+
+def _register_price_verification(app: FastAPI, db_path: Path, data_dir: Path) -> None:
+    """Register read-only price-verification routes with host-owned adapters."""
+    dependencies = PriceVerificationRouteDependencies(
+        resolve_actor=_price_verification_actor,
+        database_path=db_path,
+        output_root=data_dir / "price-verification",
+        provider_config_resolver=_provider_config,
+        provider_factory=_provider_factory,
+    )
+    register_price_verification_routes(app.router, dependencies)
+
 
 
 app = create_app()
