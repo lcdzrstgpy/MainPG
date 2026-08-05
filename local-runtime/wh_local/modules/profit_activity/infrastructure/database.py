@@ -20,9 +20,9 @@ class ProfitActivityDatabase:
         self.engine.dispose()
 
 
-def create_database(database_url: str | None = None) -> ProfitActivityDatabase:
+def create_database(database_url: str | Path | None = None) -> ProfitActivityDatabase:
     """建立 SQLite 连接，并为每个连接启用 WAL、外键和忙等待。"""
-    url = database_url or os.getenv("PROFIT_ACTIVITY_DATABASE_URL") or _default_database_url()
+    url = _database_url(database_url)
     parsed = make_url(url)
     engine = create_engine(url, future=True, connect_args={"check_same_thread": False} if parsed.drivername == "sqlite" else {})
     if parsed.drivername == "sqlite":
@@ -30,6 +30,13 @@ def create_database(database_url: str | None = None) -> ProfitActivityDatabase:
     Base.metadata.create_all(engine)
     _migrate_legacy_tables(engine)
     return ProfitActivityDatabase(engine=engine, sessions=sessionmaker(engine, expire_on_commit=False))
+
+
+def _database_url(database_url: str | Path | None) -> str:
+    if isinstance(database_url, Path):
+        database_url.parent.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{database_url.as_posix()}"
+    return database_url or os.getenv("PROFIT_ACTIVITY_DATABASE_URL") or _default_database_url()
 
 
 def _default_database_url() -> str:
@@ -53,8 +60,12 @@ def _configure_sqlite(engine: Engine) -> None:
 def _migrate_legacy_tables(engine: Engine) -> None:
     """Keep local databases created by earlier module versions usable."""
     additions = {
-        "profit_activity_settings": {"save_root": "TEXT NOT NULL DEFAULT ''"},
+        "profit_activity_settings": {
+            "workspace_id": "TEXT NOT NULL DEFAULT 'default'",
+            "save_root": "TEXT NOT NULL DEFAULT ''",
+        },
         "profit_activity_records": {
+            "workspace_id": "TEXT NOT NULL DEFAULT 'default'",
             "visibility": "TEXT NOT NULL DEFAULT 'shared'",
             "created_by": "TEXT NOT NULL DEFAULT ''",
             "created_by_username": "TEXT NOT NULL DEFAULT 'local'",
@@ -64,6 +75,11 @@ def _migrate_legacy_tables(engine: Engine) -> None:
             "source_url": "TEXT NOT NULL DEFAULT ''",
             "refund_rate": "NUMERIC NOT NULL DEFAULT 0",
         },
+        "profit_activity_runs": {"workspace_id": "TEXT NOT NULL DEFAULT 'default'"},
+        "profit_activity_decisions": {"workspace_id": "TEXT NOT NULL DEFAULT 'default'"},
+        "profit_activity_import_sessions": {"workspace_id": "TEXT NOT NULL DEFAULT 'default'"},
+        "profit_activity_import_tasks": {"workspace_id": "TEXT NOT NULL DEFAULT 'default'"},
+        "profit_activity_filter_tasks": {"workspace_id": "TEXT NOT NULL DEFAULT 'default'"},
     }
     if engine.dialect.name != "sqlite":
         return

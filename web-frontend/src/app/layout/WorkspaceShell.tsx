@@ -4,6 +4,7 @@ import { workspaceModules, type WorkspaceModuleId } from "../navigation/modules"
 import { Sidebar } from "./Sidebar";
 import { TopNavigation } from "./TopNavigation";
 import { WorkspaceHomePage } from "../../modules/dashboard/pages/WorkspaceHomePage";
+import { ProfitActivityTestPage } from "../../modules/profit_activity/pages/ProfitActivityTestPage";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
 
 type WorkspaceShellProps = { onSignOut: () => void };
@@ -34,7 +35,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
       <section className="workspace-main">
         <TopNavigation activeId={activeId} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onSelectTab={setActiveId} onCloseTab={closeTab} onSignOut={onSignOut} />
         <div className="content-card">
-          {activeId === "dashboard" ? <WorkspaceHomePage onOpenModule={openModule} /> : <EmptyModulePage module={activeModule} />}
+          {activeId === "dashboard" ? <WorkspaceHomePage onOpenModule={openModule} /> : activeId === "profit_activity" ? <ProfitActivityTestPage /> : <EmptyModulePage module={activeModule} />}
         </div>
       </section>
     </main>

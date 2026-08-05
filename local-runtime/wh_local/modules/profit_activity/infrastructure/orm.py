@@ -13,7 +13,8 @@ class Base(DeclarativeBase):
 
 class ProfitSettingsRow(Base):
     __tablename__ = "profit_activity_settings"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(Text, nullable=False, default="default", index=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     save_root: Mapped[str] = mapped_column(Text, nullable=False, default="")
     domestic_fee: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("2.5"))
@@ -38,8 +39,9 @@ class ProfitSettingsRow(Base):
 
 class ProfitRecordRow(Base):
     __tablename__ = "profit_activity_records"
-    __table_args__ = (UniqueConstraint("site_code", "skc", name="uq_profit_activity_site_skc"),)
+    __table_args__ = (UniqueConstraint("workspace_id", "site_code", "skc", name="uq_profit_activity_workspace_site_skc"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(Text, nullable=False, default="default", index=True)
     site_code: Mapped[str] = mapped_column(String(2), nullable=False, index=True)
     skc: Mapped[str] = mapped_column(String(128), nullable=False)
     visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="shared")
@@ -72,6 +74,7 @@ class ProfitRecordRow(Base):
 class ActivityRunRow(Base):
     __tablename__ = "profit_activity_runs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(Text, nullable=False, default="default", index=True)
     site_code: Mapped[str | None] = mapped_column(String(2), index=True)
     rule_version: Mapped[int] = mapped_column(Integer, nullable=False)
     minimum_net_profit: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
@@ -85,6 +88,7 @@ class ActivityDecisionRow(Base):
     __tablename__ = "profit_activity_decisions"
     __table_args__ = (UniqueConstraint("run_id", "record_id", name="uq_profit_activity_run_record"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(Text, nullable=False, default="default", index=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("profit_activity_runs.id", ondelete="CASCADE"), nullable=False)
     record_id: Mapped[int] = mapped_column(ForeignKey("profit_activity_records.id", ondelete="CASCADE"), nullable=False)
     decision: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -94,6 +98,7 @@ class ActivityDecisionRow(Base):
 class ImportSessionRow(Base):
     __tablename__ = "profit_activity_import_sessions"
     import_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(Text, nullable=False, default="default", index=True)
     original_filename: Mapped[str] = mapped_column(Text, nullable=False)
     site: Mapped[str] = mapped_column(String(2), nullable=False)
     rows_json: Mapped[str] = mapped_column(Text, nullable=False)
@@ -103,6 +108,7 @@ class ImportSessionRow(Base):
 class ImportTaskRow(Base):
     __tablename__ = "profit_activity_import_tasks"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(Text, nullable=False, default="default", index=True)
     import_id: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
@@ -112,6 +118,7 @@ class ImportTaskRow(Base):
 class FilterTaskRow(Base):
     __tablename__ = "profit_activity_filter_tasks"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(Text, nullable=False, default="default", index=True)
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
