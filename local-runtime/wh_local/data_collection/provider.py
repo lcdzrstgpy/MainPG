@@ -26,6 +26,11 @@ from .contracts import (
     redact_sensitive_text,
 )
 from .criteria import DailySelectionCriteria
+from .public_image_fetch import (
+    FetchedPublicImage,
+    PublicImageFetchError,
+    fetch_public_image,
+)
 
 
 @dataclass(frozen=True)
@@ -52,7 +57,7 @@ class HttpTransport(Protocol):
 
 
 class HostResolver(Protocol):
-    """Resolve a hostname once before a pinned reference-image connection."""
+    """Resolve a hostname before each pinned public-image connection."""
 
     def resolve(self, hostname: str, port: int) -> tuple[str, ...]: ...
 
@@ -63,6 +68,35 @@ class SocketHostResolver:
     def resolve(self, hostname: str, port: int) -> tuple[str, ...]:
         answers = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
         return tuple(dict.fromkeys(answer[4][0] for answer in answers))
+
+
+class PublicImageFetcher(Protocol):
+    """Download one untrusted public image under the safe-fetch contract."""
+
+    def fetch(self, url: str) -> FetchedPublicImage: ...
+
+
+class DefaultPublicImageFetcher:
+    """Production adapter around the isolated public image downloader."""
+
+    def __init__(
+        self,
+        *,
+        max_bytes: int,
+        timeout_seconds: float,
+        resolver: HostResolver | None = None,
+    ) -> None:
+        self._max_bytes = max_bytes
+        self._timeout_seconds = timeout_seconds
+        self._resolver = resolver
+
+    def fetch(self, url: str) -> FetchedPublicImage:
+        return fetch_public_image(
+            url,
+            max_bytes=self._max_bytes,
+            timeout_seconds=self._timeout_seconds,
+            resolver=self._resolver.resolve if self._resolver is not None else None,
+        )
 
 
 class UrllibTransport:
@@ -204,6 +238,7 @@ class OneBound1688Provider:
         *,
         transport: HttpTransport | None = None,
         resolver: HostResolver | None = None,
+        image_fetcher: PublicImageFetcher | None = None,
     ) -> None:
         self._api_key = self._required_text(config, "api_key")
         self._api_secret = self._required_text(config, "api_secret")
@@ -220,6 +255,10 @@ class OneBound1688Provider:
         self._image_max_bytes = self._positive_integer(config.get("image_max_bytes", 5 * 1024 * 1024), "image_max_bytes")
         self._transport = transport or UrllibTransport(max_response_bytes=self._image_max_bytes)
         self._resolver = resolver or SocketHostResolver()
+        self._image_fetcher = image_fetcher or DefaultPublicImageFetcher(
+            max_bytes=self._image_max_bytes,
+            timeout_seconds=self._timeout_seconds,
+        )
 
     def safe_summary(self) -> Mapping[str, Any]:
         """Return diagnostic configuration without credentials or credential hints."""
@@ -299,76 +338,34 @@ class OneBound1688Provider:
         self, reference_image_url: str
     ) -> tuple[bytes | None, ApiEvidence, DailySelectionError | None]:
         safe_url = self._validated_remote_image_url(reference_image_url)
-        if safe_url is None:
+        try:
+            image = self._image_fetcher.fetch(reference_image_url)
+        except PublicImageFetchError:
             audit = self._audit(
                 "download_reference_image",
                 "invalid_request",
-                request_summary={"http_method": "GET", "source": "reference_image"},
+                request_summary={"http_method": "GET", "image_url": safe_url or "[invalid]"},
+                response_summary={"fetch_policy": "rejected"},
             )
-            return None, audit, self._error("invalid_request", "reference image URL must be a public http or https URL")
-        parsed = urlparse(reference_image_url)
-        hostname = parsed.hostname
-        try:
-            port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        except ValueError:
-            hostname = None
-            port = 0
-        resolved_address = self._resolve_public_address(hostname, port)
-        if resolved_address is None:
-            audit = self._audit(
-                "download_reference_image",
-                "invalid_request",
-                request_summary={"http_method": "GET", "image_url": safe_url},
-            )
-            return None, audit, self._error("invalid_request", "reference image URL must resolve to a public address")
-        try:
-            image = self._transport.request(
-                "GET",
-                reference_image_url,
-                params=None,
-                body=None,
-                headers=None,
-                timeout=self._timeout_seconds,
-                resolved_address=resolved_address,
-            )
-        except (TimeoutError, socket.timeout):
-            audit = self._audit(
-                "download_reference_image",
-                "timeout",
-                request_summary={"http_method": "GET", "image_url": safe_url},
-            )
-            return None, audit, self._error("timeout", "reference image download timed out")
+            return None, audit, self._error("invalid_request", "reference image could not be fetched safely")
         except Exception:
             audit = self._audit(
                 "download_reference_image",
                 "upstream_failed",
-                request_summary={"http_method": "GET", "image_url": safe_url},
+                request_summary={"http_method": "GET", "image_url": safe_url or "[invalid]"},
             )
             return None, audit, self._error("upstream_failed", "reference image download failed")
-        if not 200 <= image.status < 300:
-            outcome = self._outcome_for_status(image.status, {})
-            audit = self._audit(
-                "download_reference_image",
-                outcome,
-                request_summary={"http_method": "GET", "image_url": safe_url},
-                response_summary={"http_status": image.status},
-            )
-            return None, audit, self._error(outcome, "reference image download was rejected", image.status)
-        if len(image.body) > self._image_max_bytes:
-            audit = self._audit(
-                "download_reference_image",
-                "image_too_large",
-                request_summary={"http_method": "GET", "image_url": safe_url},
-                response_summary={"http_status": image.status, "image_size_bytes": len(image.body)},
-            )
-            return None, audit, self._error("image_too_large", "reference image exceeds the configured size limit")
         audit = self._audit(
             "download_reference_image",
             "success",
-            request_summary={"http_method": "GET", "image_url": safe_url},
-            response_summary={"http_status": image.status, "image_size_bytes": len(image.body)},
+            request_summary={"http_method": "GET", "image_url": safe_url or "[validated by fetcher]"},
+            response_summary={
+                "media_type": image.media_type,
+                "image_size_bytes": len(image.content),
+                "final_url": self._validated_remote_image_url(image.final_url) or "[validated]",
+            },
         )
-        return image.body, audit, None
+        return image.content, audit, None
 
     def _api_call(
         self,
