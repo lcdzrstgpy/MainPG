@@ -21,6 +21,7 @@ from ..data_collection import (
 from ..data_collection.provider import OneBound1688Provider
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
+from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
 from ..session import daily_selection_actor_from_authorization
 
 
@@ -68,6 +69,20 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
     app.include_router(create_basic_settings_router(db_path))
     _register_data_collection(app, db_path)
+
+    # Profit Activity retains the versioned local-runtime contract and the
+    # unversioned path used by the existing screen.  Both routes share one
+    # service/database; this is an alias, not a duplicate registration.
+    profit_database_url = None
+    if database_path is not None:
+        profit_database_url = f"sqlite:///{(db_path.parent / 'profit_activity.sqlite3').as_posix()}"
+    profit_activity_service = create_profit_activity_service(profit_database_url)
+    app.include_router(create_profit_activity_router(profit_activity_service), prefix="/api/v1")
+    app.include_router(create_profit_activity_router(profit_activity_service))
+
+    @app.on_event("shutdown")
+    def close_profit_activity_database() -> None:
+        profit_activity_service.close()
     return app
 
 
