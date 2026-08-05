@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
-from sqlalchemy import Select, select, update
+from sqlalchemy import Select, and_, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from .database import ProductProcessingDatabase
@@ -32,6 +34,8 @@ def loads(value: str | None, fallback: Any) -> Any:
 
 
 class ProductProcessingRepository:
+    SOURCE_IMAGE_SYNC_LEASE = timedelta(minutes=5)
+
     def __init__(self, database: ProductProcessingDatabase):
         self.database = database
 
@@ -398,6 +402,18 @@ class ProductProcessingRepository:
     def claim_syncable_source_images(
         self, product_draft_id: int, workspace_id: str = "local"
     ) -> list[dict[str, Any]]:
+        claimed_at = utc_now()
+        lease_expires_at = (datetime.now(timezone.utc) - self.SOURCE_IMAGE_SYNC_LEASE).isoformat()
+        claimable = or_(
+            SourceImageAssetRow.sync_status.in_(["pending", "failed"]),
+            and_(
+                SourceImageAssetRow.sync_status == "syncing",
+                or_(
+                    SourceImageAssetRow.sync_claimed_at == "",
+                    SourceImageAssetRow.sync_claimed_at <= lease_expires_at,
+                ),
+            ),
+        )
         with self.database.sessions.begin() as session:
             rows = session.scalars(
                 select(SourceImageAssetRow)
@@ -405,32 +421,43 @@ class ProductProcessingRepository:
                 .where(
                     ProductDraftRow.workspace_id == workspace_id,
                     SourceImageAssetRow.product_draft_id == product_draft_id,
-                    SourceImageAssetRow.sync_status.in_(["pending", "failed"]),
+                    claimable,
                 )
                 .order_by(SourceImageAssetRow.id)
             ).all()
-            claimed_ids: list[int] = []
+            claimed_tokens: dict[int, str] = {}
             for row in rows:
+                claim_token = uuid4().hex
                 result = session.execute(
                     update(SourceImageAssetRow)
                     .where(
                         SourceImageAssetRow.id == row.id,
-                        SourceImageAssetRow.sync_status.in_(["pending", "failed"]),
+                        claimable,
                     )
-                    .values(sync_status="syncing", sync_error="")
+                    .values(
+                        sync_status="syncing",
+                        sync_error="",
+                        sync_claimed_at=claimed_at,
+                        sync_claim_token=claim_token,
+                    )
                 )
                 if result.rowcount:
-                    claimed_ids.append(row.id)
-            if not claimed_ids:
+                    claimed_tokens[row.id] = claim_token
+            if not claimed_tokens:
                 return []
             claimed = session.scalars(
                 select(SourceImageAssetRow)
-                .where(SourceImageAssetRow.id.in_(claimed_ids))
+                .where(SourceImageAssetRow.id.in_(claimed_tokens))
                 .order_by(SourceImageAssetRow.id)
             ).all()
-            return [self._source_image(row) for row in claimed]
+            return [
+                {**self._source_image(row), "_sync_claim_token": claimed_tokens[row.id]}
+                for row in claimed
+            ]
 
-    def complete_source_image(self, image_id: int, local_path: str, workspace_id: str = "local") -> None:
+    def complete_source_image(
+        self, image_id: int, local_path: str, claim_token: str, workspace_id: str = "local"
+    ) -> bool:
         with self.database.sessions.begin() as session:
             row = session.scalar(
                 select(SourceImageAssetRow)
@@ -438,15 +465,20 @@ class ProductProcessingRepository:
                 .where(
                     SourceImageAssetRow.id == image_id,
                     ProductDraftRow.workspace_id == workspace_id,
+                    SourceImageAssetRow.sync_status == "syncing",
+                    SourceImageAssetRow.sync_claim_token == claim_token,
                 )
             )
             if row is None:
-                return
+                return False
             row.local_path = local_path
             row.sync_status = "ready"
             row.sync_error = ""
+            row.sync_claimed_at = ""
+            row.sync_claim_token = ""
+            return True
 
-    def fail_source_image(self, image_id: int, error: str, workspace_id: str = "local") -> None:
+    def fail_source_image(self, image_id: int, error: str, claim_token: str, workspace_id: str = "local") -> bool:
         with self.database.sessions.begin() as session:
             row = session.scalar(
                 select(SourceImageAssetRow)
@@ -454,12 +486,17 @@ class ProductProcessingRepository:
                 .where(
                     SourceImageAssetRow.id == image_id,
                     ProductDraftRow.workspace_id == workspace_id,
+                    SourceImageAssetRow.sync_status == "syncing",
+                    SourceImageAssetRow.sync_claim_token == claim_token,
                 )
             )
             if row is None:
-                return
+                return False
             row.sync_status = "failed"
             row.sync_error = (str(error).strip() or "source image synchronization failed")[:500]
+            row.sync_claimed_at = ""
+            row.sync_claim_token = ""
+            return True
 
     def list_source_images(
         self,

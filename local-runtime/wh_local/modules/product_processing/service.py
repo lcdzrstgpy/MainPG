@@ -411,11 +411,11 @@ class ProductProcessingService:
                 fetched = self._public_image_fetcher(image["url"])
                 path = self.assets.save_source_image(fetched.content, fetched.final_url, fetched.media_type)
             except Exception as error:
-                self.repository.fail_source_image(image["id"], str(error), workspace_id)
-                failed += 1
+                if self.repository.fail_source_image(image["id"], str(error), image["_sync_claim_token"], workspace_id):
+                    failed += 1
             else:
-                self.repository.complete_source_image(image["id"], str(path), workspace_id)
-                ready += 1
+                if self.repository.complete_source_image(image["id"], str(path), image["_sync_claim_token"], workspace_id):
+                    ready += 1
         return {"ready": ready, "failed": failed}
 
     def retry_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:

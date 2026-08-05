@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -90,3 +91,20 @@ def test_sync_keeps_remote_url_and_makes_failure_retryable(
     retried = service_with_fetcher.source_images(draft_id=draft["id"])["images"]
     assert retried[1]["sync_status"] == "ready"
     assert retried[1]["sync_error"] == ""
+
+
+def test_retry_reclaims_a_stale_syncing_source_image(service_with_fetcher: ProductProcessingService) -> None:
+    draft = make_pending_draft(service_with_fetcher)
+    claimed = service_with_fetcher.repository.claim_syncable_source_images(draft["id"])
+    stale_claimed_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+
+    with service_with_fetcher.repository.database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "UPDATE product_processing_source_images SET sync_claimed_at = ? WHERE id = ?",
+            (stale_claimed_at, claimed[0]["id"]),
+        )
+
+    assert service_with_fetcher.retry_draft_source_images(draft["id"]) == {"ready": 1, "failed": 0}
+    retried = service_with_fetcher.source_images(draft_id=draft["id"])["images"]
+    assert retried[0]["url"] == "https://cdn.example.test/main.jpg"
+    assert retried[0]["sync_status"] == "ready"

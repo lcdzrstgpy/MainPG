@@ -137,6 +137,8 @@ class SourceImageAssetRow(Base):
     local_path: Mapped[str] = mapped_column(Text, default="")
     sync_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     sync_error: Mapped[str] = mapped_column(Text, default="")
+    sync_claimed_at: Mapped[str] = mapped_column(String(64), default="")
+    sync_claim_token: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
 
 
