@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -13,6 +14,27 @@ from wh_local.modules.product_processing.infrastructure.assets import ProductPro
 from wh_local.modules.product_processing.infrastructure.database import create_database  # noqa: E402
 from wh_local.modules.product_processing.infrastructure.repository import ProductProcessingRepository  # noqa: E402
 from wh_local.modules.product_processing.service import ProductProcessingService  # noqa: E402
+
+
+@pytest.fixture
+def client(tmp_path: Path) -> TestClient:
+    from wh_local.app.main import create_app
+
+    with TestClient(create_app(tmp_path / "runtime.sqlite3")) as test_client:
+        yield test_client
+
+
+def create_draft(client: TestClient, *, source_type: str, candidate_id: str) -> int:
+    response = client.post(
+        "/product-processing/drafts",
+        json={
+            "source_type": source_type,
+            "candidate_id": candidate_id,
+            "title": candidate_id,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["draft"]["id"]
 
 
 class FakePublicImageFetcher:
@@ -108,3 +130,29 @@ def test_retry_reclaims_a_stale_syncing_source_image(service_with_fetcher: Produ
     retried = service_with_fetcher.source_images(draft_id=draft["id"])["images"]
     assert retried[0]["url"] == "https://cdn.example.test/main.jpg"
     assert retried[0]["sync_status"] == "ready"
+
+
+def test_drafts_filter_by_source_type(client: TestClient) -> None:
+    create_draft(client, source_type="web_manual_capture", candidate_id="manual-1")
+    create_draft(client, source_type="onebound_api", candidate_id="api-1")
+
+    response = client.get("/product-processing/drafts", params={"source_type": "onebound_api"})
+
+    assert response.status_code == 200, response.text
+    assert [item["candidate_id"] for item in response.json()["drafts"]] == ["api-1"]
+
+
+def test_drafts_reject_unknown_source_type(client: TestClient) -> None:
+    response = client.get("/product-processing/drafts", params={"source_type": "excel"})
+
+    assert response.status_code == 422
+
+
+def test_retry_source_images_schedules_existing_draft(client: TestClient) -> None:
+    draft_id = create_draft(client, source_type="web_manual_capture", candidate_id="manual-retry")
+
+    response = client.post(f"/product-processing/drafts/{draft_id}/source-images/retry")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["draft"]["id"] == draft_id
+    assert response.json()["sync"] == {"status": "scheduled"}

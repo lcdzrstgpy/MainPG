@@ -212,6 +212,7 @@ class ProductProcessingService:
         *,
         summary: bool,
         selection_run_id: str | None = None,
+        source_type: str | None = None,
         workspace_id: str = "local",
     ) -> dict[str, Any]:
         drafts, has_more = self.repository.list_drafts(
@@ -219,6 +220,7 @@ class ProductProcessingService:
             limit,
             offset,
             selection_run_id=selection_run_id,
+            source_type=source_type,
             workspace_id=workspace_id,
         )
         if summary:

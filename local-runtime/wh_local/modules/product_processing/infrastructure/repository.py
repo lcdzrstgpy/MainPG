@@ -99,6 +99,7 @@ class ProductProcessingRepository:
         offset: int,
         *,
         selection_run_id: str | None = None,
+        source_type: str | None = None,
         workspace_id: str = "local",
     ) -> tuple[list[dict[str, Any]], bool]:
         with self.database.sessions() as session:
@@ -109,6 +110,8 @@ class ProductProcessingRepository:
                 statement = statement.where(ProductDraftRow.status == "draft")
             if selection_run_id is not None:
                 statement = statement.where(ProductDraftRow.selection_run_id == selection_run_id)
+            if source_type is not None:
+                statement = statement.where(ProductDraftRow.source_type == source_type)
             statement = statement.order_by(ProductDraftRow.updated_at.desc(), ProductDraftRow.id.desc()).offset(offset).limit(limit + 1)
             rows = session.scalars(statement).all()
             return [self._draft(row) for row in rows[:limit]], len(rows) > limit
