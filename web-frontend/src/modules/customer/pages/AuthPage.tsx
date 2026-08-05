@@ -1,11 +1,85 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
+
+import { httpJson, saveAuthSession } from "../../../transport/http/client";
 
 type AuthPageProps = { onEnter: () => void };
 type AuthMode = "login" | "register";
 
+type LoginResponse = {
+  ok?: boolean;
+  user_id?: string;
+  token: string;
+  expires_at?: string;
+  account?: Record<string, unknown>;
+};
+
+type RegisterResponse = {
+  ok?: boolean;
+  message?: string;
+  raw?: Record<string, unknown>;
+};
+
+type AccountInfo = {
+  username?: string;
+  email?: string;
+  role?: string;
+  workspace_code?: string;
+};
+
 export function AuthPage({ onEnter }: AuthPageProps) {
   const [mode, setMode] = useState<AuthMode>("login");
   const isLogin = mode === "login";
+
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("");
+  const [workspaceCode, setWorkspaceCode] = useState("wh_demo");
+  const [workspaceName, setWorkspaceName] = useState("");
+
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      if (isLogin) {
+        const payload = identifier.includes("@")
+          ? { email: identifier, password }
+          : { username: identifier, password };
+        const data = await httpJson<LoginResponse>("/api/customer/login", {
+          method: "POST",
+          body: payload,
+          token: "",
+        });
+        if (!data.token) throw new Error("登录失败：服务端未返回 token");
+        saveAuthSession(data.token, data.account ?? {});
+        onEnter();
+      } else {
+        const data = await httpJson<RegisterResponse>("/api/customer/register", {
+          method: "POST",
+          body: {
+            username: identifier,
+            email,
+            password,
+            role: "operator",
+            workspace_code: workspaceCode.trim() || "wh_demo",
+            workspace_name: workspaceName.trim() || "默认工作区",
+          },
+          token: "",
+        });
+        if (data.ok === false) throw new Error(data.message ?? "注册失败");
+        setMode("login");
+        setError("");
+        alert("注册成功，请用新账号登录");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "请求失败，请稍后再试");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <main className="auth-screen">
@@ -13,21 +87,37 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         <span className="brand-mark brand-mark-large">智</span>
         <p className="eyebrow">SMART ECOMMERCE PLATFORM</p>
         <h1>智能电商平台</h1>
-        <p>面向跨境电商团队的本地运营中台。此版本仅展示前端框架，不连接真实账户或后端接口。</p>
+        <p>面向跨境电商团队的本地运营中台。登录/注册已连接真实后端接口，账号数据由后端账号服务统一管理。</p>
         <div className="auth-feature-list"><span>✓ 模块化工作流</span><span>✓ 本地运行时</span><span>✓ 团队协作预留</span></div>
       </section>
       <section className="auth-form-card">
-        <div className="auth-tabs"><button className={isLogin ? "is-selected" : ""} onClick={() => setMode("login")}>登录</button><button className={!isLogin ? "is-selected" : ""} onClick={() => setMode("register")}>注册</button></div>
-        <p className="eyebrow">{isLogin ? "WELCOME BACK" : "CREATE LOCAL PROFILE"}</p>
-        <h2>{isLogin ? "登录工作台" : "创建演示账号"}</h2>
-        <form onSubmit={(event) => { event.preventDefault(); onEnter(); }}>
-          {!isLogin && <label>显示名称<input placeholder="例如：运营小组 A" /></label>}
-          <label>账号<input type="text" placeholder="name@example.com" defaultValue={isLogin ? "demo@mainpg.local" : ""} /></label>
-          <label>密码<input type="password" placeholder="输入任意内容即可演示" /></label>
-          <button className="primary-button" type="submit">{isLogin ? "登录并进入工作台" : "注册并进入工作台"} →</button>
+        <div className="auth-tabs"><button type="button" className={isLogin ? "is-selected" : ""} onClick={() => { setMode("login"); setError(""); }}>登录</button><button type="button" className={!isLogin ? "is-selected" : ""} onClick={() => { setMode("register"); setError(""); }}>注册</button></div>
+        <p className="eyebrow">{isLogin ? "WELCOME BACK" : "CREATE ACCOUNT"}</p>
+        <h2>{isLogin ? "登录工作台" : "注册账号"}</h2>
+        <form onSubmit={handleSubmit}>
+          {isLogin ? (
+            <label>账号（用户名或邮箱）<input type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="name@example.com" autoComplete="username" required /></label>
+          ) : (
+            <>
+              <label>用户名<input type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="例如：ops-team-a" autoComplete="username" required /></label>
+              <label>邮箱<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" autoComplete="email" required /></label>
+            </>
+          )}
+          <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete={isLogin ? "current-password" : "new-password"} required /></label>
+          {!isLogin && (
+            <>
+              <label>工作区编码<input type="text" value={workspaceCode} onChange={(e) => setWorkspaceCode(e.target.value)} placeholder="wh_demo" /></label>
+              <label>工作区名称<input type="text" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} placeholder="默认工作区" /></label>
+            </>
+          )}
+          {error && <p className="auth-error">{error}</p>}
+          <button className="primary-button" type="submit" disabled={busy}>{busy ? "处理中…" : isLogin ? "登录并进入工作台 →" : "注册并进入工作台 →"}</button>
         </form>
-        <p className="form-hint">演示模式：点击按钮即可进入主界面，不会提交或保存账号信息。</p>
+        {isLogin && <p className="form-hint">登录后 token 保存在本地浏览器，可自动恢复登录态。</p>}
+        {!isLogin && <p className="form-hint">注册成功后自动切换到登录页。</p>}
       </section>
     </main>
   );
 }
+
+export type { AccountInfo };
