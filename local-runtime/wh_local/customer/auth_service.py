@@ -121,7 +121,9 @@ class SQLiteCustomerAuthService:
         if not password or len(password) < 6:
             raise ValueError("password must be at least 6 characters")
 
-        role = _normalize_role(_text(payload, "role"))
+        # Public self-registration must never grant admin/owner privileges.
+        # Higher roles should be assigned later by owner/admin invitation flows.
+        role = "operator"
         workspace_code = _text(payload, "workspace_code") or DEFAULT_WORKSPACE_CODE
         workspace_name = _text(payload, "workspace_name") or DEFAULT_WORKSPACE_NAME
         account_id = _account_id(username, email)
@@ -167,6 +169,15 @@ class SQLiteCustomerAuthService:
                     VALUES (?, ?, ?, 'pbkdf2_sha256', ?, ?)
                     """,
                     (account_id, password_hash, salt, DEFAULT_ITERATIONS, now),
+                )
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO user_roles (
+                        account_id, workspace_id, role, assigned_by, assigned_at
+                    )
+                    VALUES (?, ?, 'operator', 'self_register', ?)
+                    """,
+                    (account_id, workspace_id, now),
                 )
         except Exception as exc:
             message = str(exc)

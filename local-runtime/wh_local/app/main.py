@@ -364,7 +364,7 @@ CUSTOMER_LOGIN_DEMO_HTML = """
           username,
           email,
           password,
-          role: "admin",
+          role: "operator",
           workspace_code: "wh_demo",
           workspace_name: "真实服务器演示工作区"
         });
@@ -628,7 +628,7 @@ AUTH_FLOW_DEMO_HTML = """
           <label>密码</label>
           <input id="regPassword" type="password" autocomplete="new-password" />
           <label>角色</label>
-          <select id="regRole"><option value="operator">operator（普通用户，默认）</option><option value="admin">admin（演示用）</option></select>
+          <select id="regRole"><option value="operator">operator（普通用户，默认）</option></select>
           <div class="actions">
             <button onclick="registerAccount()">注册</button>
             <a id="toLoginFromRegister">已有账号？去登录</a>

@@ -41,7 +41,7 @@ class RemoteCustomerAuthServerTest(unittest.TestCase):
 
         remote_customer = normalize_login_response(payload)
         self.assertEqual(remote_customer.username, "remote_admin")
-        self.assertEqual(remote_customer.role, "admin")
+        self.assertEqual(remote_customer.role, "operator")
         self.assertEqual(remote_customer.workspace_code, "wh_remote")
         self.assertTrue(remote_customer.remote_token.startswith("wh_auth_"))
 
@@ -70,9 +70,41 @@ class RemoteCustomerAuthServerTest(unittest.TestCase):
         with sqlite3.connect(db_path) as conn:
             remote_token_hash = conn.execute("SELECT token_hash FROM auth_platform_sessions").fetchone()[0]
             local_token_hash = conn.execute("SELECT token_hash FROM customer_sessions").fetchone()[0]
+            user_role = conn.execute(
+                "SELECT role FROM user_roles WHERE account_id = ?",
+                (remote_customer.customer_id,),
+            ).fetchone()[0]
         self.assertEqual(len(remote_token_hash), 64)
         self.assertEqual(len(local_token_hash), 64)
         self.assertNotIn(payload["token"], {remote_token_hash, local_token_hash})
+        self.assertEqual(user_role, "operator")
+
+    def test_commercial_auth_tables_and_seed_roles_exist(self) -> None:
+        db_path = Path(tempfile.mkdtemp(prefix="wh_commercial_auth_schema_test_")) / "auth.sqlite3"
+        client = TestClient(create_auth_app(db_path))
+        self.assertEqual(client.get("/health").status_code, 200)
+
+        expected_tables = {
+            "roles",
+            "user_roles",
+            "auth_email_verifications",
+            "account_invitations",
+            "license_state",
+            "license_activation_logs",
+        }
+        with sqlite3.connect(db_path) as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            roles = {row[0] for row in conn.execute("SELECT role FROM roles")}
+            owner_permissions = conn.execute(
+                "SELECT COUNT(*) FROM role_permissions WHERE role = 'owner'"
+            ).fetchone()[0]
+            viewer_permissions = conn.execute(
+                "SELECT COUNT(*) FROM role_permissions WHERE role = 'viewer'"
+            ).fetchone()[0]
+        self.assertTrue(expected_tables.issubset(tables))
+        self.assertTrue({"owner", "admin", "operator", "viewer"}.issubset(roles))
+        self.assertGreater(owner_permissions, 0)
+        self.assertGreater(viewer_permissions, 0)
 
     def test_forgot_and_reset_password_flow(self) -> None:
         db_path = Path(tempfile.mkdtemp(prefix="wh_remote_auth_reset_test_")) / "auth.sqlite3"

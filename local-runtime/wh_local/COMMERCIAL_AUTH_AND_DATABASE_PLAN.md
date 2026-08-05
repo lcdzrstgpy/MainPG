@@ -33,8 +33,14 @@
 - `auth_password_reset_tokens`：密码重置凭证；
 - `auth_security_events`：账号安全事件；
 - `permissions`：权限点；
+- `roles`：正式角色字典；
 - `role_permissions`：角色权限；
+- `user_roles`：用户-角色关联；
 - `user_permission_overrides`：用户权限覆盖；
+- `auth_email_verifications`：邮箱验证凭证；
+- `account_invitations`：员工邀请；
+- `license_state`：商业授权状态；
+- `license_activation_logs`：授权激活日志；
 - `stores`：店铺；
 - `workbench_settings`：工作台配置；
 - `secret_values`：敏感配置；
@@ -157,10 +163,18 @@ module.action
 | `employee.manage` | 管理员工账号 |
 | `store.manage` | 管理店铺 |
 
+当前已具备：
+
+- `roles` 角色字典表；
+- `user_roles` 用户-角色关联表；
+- 默认角色种子；
+- `owner` 默认拥有全部权限；
+- `admin` 默认拥有全部权限；
+- `viewer` 默认拥有只读权限；
+- 普通自注册用户强制落为 `operator`。
+
 后续需要补：
 
-- 角色表；
-- 用户-角色关联表；
 - 管理员分配角色接口；
 - 各业务接口统一鉴权依赖。
 
@@ -407,7 +421,7 @@ nginx template
 1. 检查所有业务表是否包含 `workspace_id`；
 2. 检查所有业务查询是否按当前用户 `workspace_id` 过滤；
 3. 补 `roles`、`user_roles`、正式权限校验；
-4. 注册页去掉 admin 自选，改为初始化 owner + 邀请员工；
+4. 注册页已去掉 admin 自选，后续继续补初始化 owner + 邀请员工；
 5. 接入邮箱找回密码。
 
 ### P1：交付能力
@@ -438,4 +452,3 @@ nginx template
 可以对团队说明：
 
 > 当前账号登录和 SQLite 数据库基座已经可以支持真实链路演示与后端联调。注册、登录、退出、修改密码、忘记密码、重置密码等基础能力已完成，远端账号服务也已部署验证。下一阶段将从“项目可运行”升级到“商业化可交付”，重点补齐多租户隔离、正式角色权限、邮箱找回密码、授权 License、部署脚本和全模块数据审计。
-
