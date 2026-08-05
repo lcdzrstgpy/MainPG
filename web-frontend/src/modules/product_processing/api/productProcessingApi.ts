@@ -2,6 +2,11 @@ import { apiRequest } from "../../../shared/api/apiClient";
 
 export type DraftSourceType = "web_manual_capture" | "onebound_api";
 
+export type PrimarySourceImage = {
+  sync_status: "pending" | "syncing" | "ready" | "failed";
+  sync_error: string;
+};
+
 export type ProductDraft = {
   id: number;
   source_type: DraftSourceType;
@@ -9,6 +14,7 @@ export type ProductDraft = {
   title: string;
   image_url: string;
   image_path: string;
+  primary_source_image: PrimarySourceImage | null;
   raw_payload: {
     source_platform?: string;
     collection_mode?: string;

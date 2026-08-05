@@ -130,6 +130,23 @@ def test_draft_list_exposes_ready_primary_source_image_without_replacing_remote_
     assert service_with_fetcher.draft_image_path(draft["id"]) == Path(ready_source["local_path"])
 
 
+def test_draft_list_exposes_failed_primary_source_image_state(
+    service_with_fetcher: ProductProcessingService,
+) -> None:
+    service_with_fetcher._public_image_fetcher.failures.add("https://cdn.example.test/main.jpg")  # type: ignore[attr-defined]
+    draft = make_pending_draft(service_with_fetcher)
+
+    assert service_with_fetcher.sync_draft_source_images(draft["id"]) == {"ready": 0, "failed": 2}
+    projected = service_with_fetcher.list_drafts(None, 20, 0, summary=False)["drafts"][0]
+
+    assert projected["image_url"] == "https://cdn.example.test/main.jpg"
+    assert projected["image_path"] == ""
+    assert projected["primary_source_image"] == {
+        "sync_status": "failed",
+        "sync_error": "download was unavailable",
+    }
+
+
 def test_retry_reclaims_a_stale_syncing_source_image(service_with_fetcher: ProductProcessingService) -> None:
     draft = make_pending_draft(service_with_fetcher)
     claimed = service_with_fetcher.repository.claim_syncable_source_images(draft["id"])

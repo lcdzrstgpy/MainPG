@@ -25,6 +25,11 @@ from wh_local.data_collection.routes import (  # noqa: E402
     register_daily_selection_routes,
 )
 from wh_local.db import init_db  # noqa: E402
+from wh_local.modules.product_processing.api.router import create_product_processing_router  # noqa: E402
+from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets  # noqa: E402
+from wh_local.modules.product_processing.infrastructure.database import create_database  # noqa: E402
+from wh_local.modules.product_processing.infrastructure.repository import ProductProcessingRepository  # noqa: E402
+from wh_local.modules.product_processing.service import ProductProcessingService  # noqa: E402
 
 
 ACTOR_ID = "ingestion-user"
@@ -118,6 +123,21 @@ class FakeProvider:
             response={"data": _detail_item(offer_id)},
             audits=(_evidence("item_get"),),
         )
+
+
+class PartialIntakeProvider(FakeProvider):
+    def search_keyword(self, criteria: DailySelectionCriteria) -> ProviderCallResult:
+        return ProviderCallResult(
+            response={"data": {"items": [_search_item("intake-fails"), _search_item("intake-succeeds")]}},
+            audits=(_evidence("item_search"),),
+        )
+
+
+class CandidateFailingDraftWriter(ProductProcessingService):
+    def create_draft(self, payload: dict[str, Any], **kwargs: Any) -> tuple[dict[str, Any], bool]:
+        if payload.get("candidate_id") == "1688:intake-fails":
+            raise ValueError("token=private-intake-detail")
+        return super().create_draft(payload, **kwargs)
 
 
 @pytest.fixture
@@ -410,6 +430,67 @@ def test_preview_immediately_creates_api_drafts(
     payload = json.loads(row[1])
     assert payload["collection_mode"] == "keyword"
     assert payload["source_evidence"][0]["operation"] == "item_search"
+
+
+def test_preview_keeps_successful_drafts_when_one_candidate_intake_fails(
+    tmp_path: Path,
+    no_network: None,
+) -> None:
+    database_path = tmp_path / "workbench.sqlite3"
+    init_db(database_path)
+    product_database = create_database(f"sqlite:///{database_path.as_posix()}")
+    draft_writer = CandidateFailingDraftWriter(
+        ProductProcessingRepository(product_database),
+        ProductProcessingAssets(tmp_path / "product-processing-assets"),
+    )
+    router = APIRouter()
+    register_daily_selection_routes(
+        router,
+        DailySelectionRouteDependencies(
+            resolve_actor=lambda: DailySelectionActor(
+                actor_id=ACTOR_ID,
+                workspace_id=WORKSPACE_ID,
+            ),
+            provider_config_resolver=lambda actor: {"profile": "fake-only"},
+            provider_factory=lambda config: PartialIntakeProvider(),
+            database_path=database_path,
+            plugin_draft_writer=draft_writer,
+            run_id_factory=lambda: "run-partial-intake",
+        ),
+    )
+    app = FastAPI()
+    app.include_router(router)
+    app.include_router(create_product_processing_router(draft_writer))
+
+    with TestClient(app) as client:
+        preview = client.post(
+            "/desktop/daily-selection/preview",
+            json={
+                "keywords": ["露营灯"],
+                "selection_scope": "exact",
+                "target_count": 2,
+                "detail_count": 2,
+                "max_api_calls": 3,
+            },
+        )
+        intake = client.get(
+            "/product-processing/intake/daily-selection/run-partial-intake",
+            headers={"X-Workspace-ID": WORKSPACE_ID},
+        )
+
+    assert preview.status_code == 200, preview.text
+    assert _stored_draft_source_types(database_path) == ["onebound_api"]
+    assert intake.status_code == 200, intake.text
+    payload = intake.json()
+    assert [draft["candidate_id"] for draft in payload["drafts"]] == ["1688:intake-succeeds"]
+    assert payload["receipt"]["created_count"] == 1
+    assert payload["receipt"]["errors"] == [
+        {
+            "code": "PRODUCT_DRAFT_INTAKE_FAILED",
+            "message": "候选商品写入产品草稿池失败",
+            "context": {"candidate_id": "1688:intake-fails", "reason": "token=[redacted]"},
+        }
+    ]
 
 
 def test_repeated_preview_refreshes_existing_api_draft_with_current_run_provenance(

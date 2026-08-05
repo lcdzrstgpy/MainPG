@@ -25,6 +25,15 @@ function imageSource(draft: ProductDraft, version: number) {
   return draft.image_url;
 }
 
+function sourceImageStatus(draft: ProductDraft) {
+  const status = draft.primary_source_image?.sync_status;
+  if (status === "ready") return "图片已保存到本地库";
+  if (status === "syncing") return "图片正在同步";
+  if (status === "failed") return "图片同步失败";
+  if (status === "pending") return "图片等待同步";
+  return "未记录图片同步状态";
+}
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "请求失败，请稍后重试。";
 }
@@ -39,6 +48,7 @@ export function ProductProcessingPage() {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("正在读取产品草稿…");
   const [failedImages, setFailedImages] = useState<Record<number, boolean>>({});
+  const [useOriginalImage, setUseOriginalImage] = useState<Record<number, boolean>>({});
   const [retryingId, setRetryingId] = useState<number>();
   const [imageVersion, setImageVersion] = useState(0);
 
@@ -49,6 +59,7 @@ export function ProductProcessingPage() {
       const nextDrafts = await listProductDrafts(sourceType);
       setDrafts(nextDrafts);
       setFailedImages({});
+      setUseOriginalImage({});
       setNotice(nextDrafts.length ? `已显示 ${nextDrafts.length} 条草稿。` : "当前视图暂无产品草稿。");
     } catch (error) {
       setDrafts([]);
@@ -65,8 +76,9 @@ export function ProductProcessingPage() {
     try {
       await retryProductDraftSourceImages(draft.id);
       setFailedImages((items) => ({ ...items, [draft.id]: false }));
+      setUseOriginalImage((items) => ({ ...items, [draft.id]: false }));
       setImageVersion((value) => value + 1);
-      await loadDrafts();
+      await loadDrafts(selectedView.sourceType);
     } catch (error) {
       setNotice(`图片补齐请求失败：${errorMessage(error)}`);
     } finally {
@@ -92,20 +104,29 @@ export function ProductProcessingPage() {
 
       {loading ? <div className="product-processing-empty"><span>◌</span><strong>正在加载草稿</strong><p>请稍候，正在按来源整理商品信息。</p></div> : drafts.length ? <div className="product-draft-grid">
         {drafts.map((draft) => {
-          const source = imageSource(draft, imageVersion);
-          const imageFailed = failedImages[draft.id] || !source;
+          const syncFailed = draft.primary_source_image?.sync_status === "failed";
+          const source = useOriginalImage[draft.id] ? draft.image_url : imageSource(draft, imageVersion);
+          const imageFailed = syncFailed || failedImages[draft.id] || !source;
+          const retryable = syncFailed;
           const platform = draft.raw_payload.source_platform || "未标注平台";
           const mode = draft.raw_payload.collection_mode;
           return <article className="product-draft-card" key={draft.id}>
             <div className="product-draft-image">
-              {!imageFailed && <img src={source} alt={draft.title || `产品草稿 #${draft.id}`} onError={() => setFailedImages((items) => ({ ...items, [draft.id]: true }))} />}
-              {imageFailed && <div className="product-draft-image-missing"><span>▧</span><strong>图片待补齐</strong><button type="button" onClick={() => void retryImage(draft)} disabled={retryingId === draft.id}>{retryingId === draft.id ? "正在提交…" : "重新同步图片"}</button></div>}
+              {!imageFailed && <img src={source} alt={draft.title || `产品草稿 #${draft.id}`} onError={() => {
+                if (!useOriginalImage[draft.id] && draft.image_path && draft.image_url) {
+                  setUseOriginalImage((items) => ({ ...items, [draft.id]: true }));
+                  return;
+                }
+                setFailedImages((items) => ({ ...items, [draft.id]: true }));
+              }} />}
+              {imageFailed && <div className="product-draft-image-missing"><span>▧</span><strong>图片待补齐</strong>{retryable && <button type="button" onClick={() => void retryImage(draft)} disabled={retryingId === draft.id}>{retryingId === draft.id ? "正在提交…" : "重新同步图片"}</button>}</div>}
               <span className="product-draft-source">{sourceLabels[draft.source_type]}</span>
             </div>
             <div className="product-draft-body">
               <h2>{draft.title || `未命名草稿 #${draft.id}`}</h2>
               <dl>
                 <div><dt>来源平台</dt><dd>{platform}</dd></div>
+                <div><dt>图片同步</dt><dd>{sourceImageStatus(draft)}{draft.primary_source_image?.sync_error && <small>：{draft.primary_source_image.sync_error}</small>}</dd></div>
                 {mode && <div><dt>API 模式</dt><dd>{mode}</dd></div>}
                 <div><dt>来源链接</dt><dd>{isExternalLink(draft.source_ref) ? <a href={draft.source_ref} target="_blank" rel="noreferrer">打开商品页面 ↗</a> : (draft.source_ref || "未提供")}</dd></div>
               </dl>

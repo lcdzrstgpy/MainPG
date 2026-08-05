@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from wh_local.data_collection.contracts import DailySelectionError
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
@@ -227,10 +228,15 @@ class ProductProcessingService:
             (draft["id"] for draft in drafts),
             workspace_id=workspace_id,
         )
+        primary_source_images = self.repository.primary_source_images(
+            (draft["id"] for draft in drafts),
+            workspace_id=workspace_id,
+        )
         drafts = [
             {
                 **draft,
                 "image_path": draft["image_path"] or ready_source_paths.get(draft["id"], ""),
+                "primary_source_image": primary_source_images.get(draft["id"]),
             }
             for draft in drafts
         ]
@@ -360,6 +366,7 @@ class ProductProcessingService:
         drafts: list[dict[str, Any]] = []
         created: list[dict[str, Any]] = []
         skipped: list[str] = []
+        intake_errors = list(getattr(run, "errors", []) or run.metadata.get("errors") or [])
         criteria_source = run.criteria
         criteria = (
             dict(criteria_source)
@@ -379,11 +386,24 @@ class ProductProcessingService:
                     "selection_counts": counts,
                 }
             )
-            draft, was_created = self.create_draft(
-                payload,
-                selection_run_id=run.run_id,
-                workspace_id=run.workspace_id,
-            )
+            try:
+                draft, was_created = self.create_draft(
+                    payload,
+                    selection_run_id=run.run_id,
+                    workspace_id=run.workspace_id,
+                )
+            except Exception as error:
+                intake_errors.append(
+                    DailySelectionError(
+                        code="PRODUCT_DRAFT_INTAKE_FAILED",
+                        message="候选商品写入产品草稿池失败",
+                        context={
+                            "candidate_id": candidate.candidate_id,
+                            "reason": str(error),
+                        },
+                    ).model_dump(mode="json")
+                )
+                continue
             drafts.append(draft)
             if was_created:
                 created.append(draft)
@@ -392,7 +412,7 @@ class ProductProcessingService:
         receipt = self.repository.save_intake(
             run_id=run.run_id,
             workspace_id=run.workspace_id,
-            status=run.status,
+            status="partial" if intake_errors else run.status,
             criteria=criteria,
             counts=counts or {
                 key: int(value)
@@ -400,7 +420,7 @@ class ProductProcessingService:
                 if key in {"api_calls", "search_calls", "image_search_calls", "detail_calls"}
                 and isinstance(value, int)
             },
-            errors=getattr(run, "errors", []) or list(run.metadata.get("errors") or []),
+            errors=intake_errors,
             candidate_count=len(run.candidates),
             created_count=len(created),
             skipped_count=len(skipped),
