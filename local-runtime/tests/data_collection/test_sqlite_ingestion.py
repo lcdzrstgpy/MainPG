@@ -172,6 +172,29 @@ def _stored_candidate(database_path: Path, run_id: str) -> tuple[Any, ...]:
     return row
 
 
+def _stored_draft_source_types(database_path: Path) -> list[str]:
+    with sqlite3.connect(database_path) as connection:
+        return [
+            row[0]
+            for row in connection.execute(
+                """SELECT source_type FROM product_processing_drafts
+                WHERE workspace_id = ? ORDER BY id""",
+                (WORKSPACE_ID,),
+            )
+        ]
+
+
+def _valid_temu_product() -> dict[str, Any]:
+    return {
+        "platform": "temu",
+        "product_id": "temu-123",
+        "product_link": "https://www.temu.com/goods.html?goods_id=123&utm_source=test",
+        "title": "Temu 有效商品",
+        "price": "19.90",
+        "image_urls": ["https://images.example.test/temu-123/main.jpg"],
+    }
+
+
 def _assert_complete_candidate_snapshot(
     database_path: Path,
     *,
@@ -287,6 +310,7 @@ def test_similar_link_collection_persists_normalized_candidate_in_shared_sqlite(
         run_id="run-similar",
         offer_id="image-offer",
     )
+    assert _stored_draft_source_types(database_path) == ["onebound_api"]
     with sqlite3.connect(database_path) as connection:
         metadata_json = connection.execute(
             """
@@ -296,6 +320,84 @@ def test_similar_link_collection_persists_normalized_candidate_in_shared_sqlite(
             (WORKSPACE_ID, "run-similar"),
         ).fetchone()[0]
     assert json.loads(metadata_json)["source_link"]["offer_id"] == "123456"
+
+
+def test_plugin_product_capture_creates_manual_draft(
+    tmp_path: Path,
+    no_network: None,
+) -> None:
+    database_path = tmp_path / "workbench.sqlite3"
+    with _client(database_path, iter(())) as client:
+        session = client.post("/desktop/data-collection/plugin-sessions", json={}).json()
+        response = client.post(
+            "/plugin/product-capture/draft",
+            json={"session_token": session["session_token"], "product": _valid_temu_product()},
+        )
+
+    assert response.status_code == 200, response.text
+    assert _stored_draft_source_types(database_path) == ["web_manual_capture"]
+
+
+def test_successful_temu_link_result_creates_manual_draft(
+    tmp_path: Path,
+    no_network: None,
+) -> None:
+    database_path = tmp_path / "workbench.sqlite3"
+    with _client(database_path, iter(())) as client:
+        session = client.post(
+            "/desktop/data-collection/plugin-sessions", json={"temu_link_capture": True}
+        ).json()
+        queued = client.post(
+            "/desktop/data-collection/temu-link/collect",
+            json={
+                "session_id": session["session_id"],
+                "source_url": "https://www.temu.com/goods.html?goods_id=123",
+            },
+        ).json()
+        response = client.post(
+            "/plugin/result",
+            json={
+                "session_token": session["session_token"],
+                "command_id": queued["command_id"],
+                "status": "succeeded",
+                "result": {"product": _valid_temu_product()},
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert _stored_draft_source_types(database_path) == ["web_manual_capture"]
+
+
+def test_preview_immediately_creates_api_drafts(
+    tmp_path: Path,
+    no_network: None,
+) -> None:
+    database_path = tmp_path / "workbench.sqlite3"
+    with _client(database_path, iter(("run-api-ingress",))) as client:
+        response = client.post(
+            "/desktop/daily-selection/preview",
+            json={
+                "keywords": ["露营灯"],
+                "selection_scope": "exact",
+                "target_count": 1,
+                "detail_count": 1,
+                "max_api_calls": 2,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert _stored_draft_source_types(database_path) == ["onebound_api"]
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """SELECT selection_run_id, raw_payload_json
+            FROM product_processing_drafts WHERE workspace_id = ?""",
+            (WORKSPACE_ID,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "run-api-ingress"
+    payload = json.loads(row[1])
+    assert payload["collection_mode"] == "keyword"
+    assert payload["source_evidence"][0]["operation"] == "item_search"
 
 
 def test_temu_plugin_result_persists_sanitized_json_in_shared_sqlite(

@@ -10,7 +10,6 @@ from typing import Any
 
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 
-from .domain.handoff import candidate_from_handoff
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
 from .domain.workbooks import read_product_workbook
 from .infrastructure.assets import ProductProcessingAssets
@@ -329,16 +328,26 @@ class ProductProcessingService:
         }
 
     def intake_daily_selection(self, run: DailySelectionRun) -> dict[str, Any]:
+        drafts: list[dict[str, Any]] = []
         created: list[dict[str, Any]] = []
         skipped: list[str] = []
+        criteria_source = run.criteria
+        criteria = (
+            dict(criteria_source)
+            if isinstance(criteria_source, dict)
+            else criteria_source.model_dump(mode="json")
+        )
+        counts = dict(getattr(run, "counts", {}) or {})
         for candidate in run.candidates:
             payload = candidate.model_dump(mode="json")
             payload.update(
                 {
-                    "source_type": "daily_selection",
+                    "source_type": "onebound_api",
                     "selection_run_id": run.run_id,
-                    "selection_criteria": run.criteria.model_dump(mode="json"),
-                    "selection_counts": run.counts,
+                    "collection_mode": criteria.get("collection_mode", "keyword"),
+                    "source_evidence": payload.get("evidence", []),
+                    "selection_criteria": criteria,
+                    "selection_counts": counts,
                 }
             )
             draft, was_created = self.create_draft(
@@ -346,6 +355,7 @@ class ProductProcessingService:
                 selection_run_id=run.run_id,
                 workspace_id=run.workspace_id,
             )
+            drafts.append(draft)
             if was_created:
                 created.append(draft)
             else:
@@ -354,14 +364,14 @@ class ProductProcessingService:
             run_id=run.run_id,
             workspace_id=run.workspace_id,
             status=run.status,
-            criteria=run.criteria.model_dump(mode="json"),
-            counts=run.counts or {
+            criteria=criteria,
+            counts=counts or {
                 key: int(value)
                 for key, value in run.metadata.items()
                 if key in {"api_calls", "search_calls", "image_search_calls", "detail_calls"}
                 and isinstance(value, int)
             },
-            errors=run.errors or list(run.metadata.get("errors") or []),
+            errors=getattr(run, "errors", []) or list(run.metadata.get("errors") or []),
             candidate_count=len(run.candidates),
             created_count=len(created),
             skipped_count=len(skipped),
@@ -372,7 +382,7 @@ class ProductProcessingService:
             "skipped": len(skipped),
             "ids": [draft["id"] for draft in created],
             "skipped_candidate_ids": skipped,
-            "drafts": created,
+            "drafts": drafts,
             "exchange_contract": "daily-selection-product-processing-v1",
         }
 
@@ -451,24 +461,13 @@ class ProductProcessingService:
                 continue
             if handoff.status == "failed":
                 raise ValueError("failed daily-selection handoffs cannot be consumed")
-            candidate = candidate_from_handoff(handoff)
-            payload = candidate.model_dump(mode="json")
-            payload.update(
-                {
-                    "source_type": "daily_selection_handoff",
-                    "selection_run_id": handoff.run_id,
-                    "workspace_id": handoff.workspace_id,
-                    "daily_selection_handoff_id": handoff.handoff_id,
-                    "daily_selection_handoff_idempotency_key": handoff.idempotency_key,
-                }
+            draft = self.repository.draft_by_candidate(
+                handoff.candidate_id, handoff.workspace_id
             )
-            draft, created = self.create_draft(
-                payload,
-                selection_run_id=handoff.run_id,
-                workspace_id=handoff.workspace_id,
-                handoff_id=handoff.handoff_id,
-                handoff_idempotency_key=handoff.idempotency_key,
-            )
+            if draft is None or draft["status"] == "deleted":
+                raise ValueError(
+                    "daily-selection handoff requires an ingressed onebound_api draft"
+                )
             receipt = self.repository.save_handoff_receipt(
                 handoff_id=handoff.handoff_id,
                 idempotency_key=handoff.idempotency_key,
@@ -481,7 +480,9 @@ class ProductProcessingService:
             )
             receipts.append(receipt)
             drafts.append(draft)
-            created_count += int(created)
+            # Confirmation is selection state only. The OneBound preview
+            # ingress owns draft creation, so a handoff can never add a
+            # second candidate draft.
         return {
             "contract_version": "daily-selection-handoff-consumer-v1",
             "consumer_status": "consumed",
