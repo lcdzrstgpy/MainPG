@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 from ..contracts import (
@@ -86,7 +86,7 @@ class PluginBridgeService:
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._repository = repository
-        self._clock = clock or (lambda: datetime.now(UTC))
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def issue_pairing_code(self, actor: PriceVerificationActor) -> IssuedPairingCode:
         actor = _actor(actor)
@@ -240,7 +240,7 @@ def _sha256(value: str) -> str:
 
 
 def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
 def _timestamp(value: datetime) -> str:

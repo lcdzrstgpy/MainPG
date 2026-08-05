@@ -13,7 +13,7 @@ import ipaddress
 import json
 import socket
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol
 from urllib.error import HTTPError
 from urllib.parse import unquote, urlencode, urlparse, urlunparse
@@ -460,7 +460,7 @@ class OneBound1688Provider:
             provider=self._provider_name,
             operation=operation,
             request_id=self._redact_text(request_id) if request_id else None,
-            captured_at=datetime.now(UTC).isoformat(),
+            captured_at=datetime.now(timezone.utc).isoformat(),
             request_summary=self._sanitize(dict(request_summary)),
             response_summary=self._sanitize({"outcome": outcome, **dict(response_summary or {})}),
         )
