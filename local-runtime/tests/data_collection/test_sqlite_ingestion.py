@@ -480,6 +480,21 @@ def test_preview_keeps_successful_drafts_when_one_candidate_intake_fails(
 
     assert preview.status_code == 200, preview.text
     assert _stored_draft_source_types(database_path) == ["onebound_api"]
+    preview_payload = preview.json()
+    assert preview_payload["metadata"]["api_draft_intake"] == {
+        "status": "partial",
+        "created_count": 1,
+        "skipped_count": 0,
+        "errors": [
+            {
+                "code": "PRODUCT_DRAFT_INTAKE_FAILED",
+                "message": "候选商品写入产品草稿池失败",
+                "context": {
+                    "candidate_id": "1688:intake-fails",
+                },
+            }
+        ],
+    }
     assert intake.status_code == 200, intake.text
     payload = intake.json()
     assert [draft["candidate_id"] for draft in payload["drafts"]] == ["1688:intake-succeeds"]

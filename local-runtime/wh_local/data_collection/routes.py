@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Qu
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .budget import TaskApiBudget
-from .contracts import DailySelectionContractError
+from .contracts import DailySelectionContractError, DailySelectionError
 from .criteria import DailySelectionCriteriaError
 from .repository import (
     DailySelectionCandidateNotConfirmable,
@@ -191,8 +191,7 @@ def register_daily_selection_routes(
     ) -> DailySelectionRun:
         try:
             run = service.preview(actor=actor, request=request)
-            _ingest_api_run(run, background_tasks)
-            return run
+            return _with_api_draft_intake(run, _ingest_api_run(run, background_tasks))
         except (
             DailySelectionCriteriaError,
             DailySelectionContractError,
@@ -219,8 +218,7 @@ def register_daily_selection_routes(
     ) -> DailySelectionRun:
         try:
             run = service.preview_from_1688_link(actor=actor, request=request)
-            _ingest_api_run(run, background_tasks)
-            return run
+            return _with_api_draft_intake(run, _ingest_api_run(run, background_tasks))
         except (ValueError, DailySelectionCriteriaError, DailySelectionContractError, ValidationError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         except DailySelectionProviderUnavailable as error:
@@ -411,12 +409,57 @@ def register_daily_selection_routes(
         )["drafts"]
         return {"drafts": [draft for draft in listed if draft.get("source_ref") in requested]}
 
-    def _ingest_api_run(run: DailySelectionRun, background_tasks: BackgroundTasks | None) -> None:
+    def _ingest_api_run(
+        run: DailySelectionRun, background_tasks: BackgroundTasks | None
+    ) -> Mapping[str, Any]:
         if plugin_draft_writer is None:
             raise HTTPException(status_code=503, detail="product draft storage is unavailable")
         receipt = plugin_draft_writer.intake_daily_selection(run)
         for draft in receipt["drafts"]:
             _schedule_source_image_sync(plugin_draft_writer, background_tasks, draft, run.workspace_id)
+        return receipt
+
+    def _with_api_draft_intake(
+        run: DailySelectionRun, intake: Mapping[str, Any]
+    ) -> DailySelectionRun:
+        """Expose only stable, candidate-scoped intake state to preview callers."""
+        receipt = intake.get("receipt")
+        if not isinstance(receipt, Mapping):
+            raise RuntimeError("daily-selection draft intake did not return a receipt")
+        metadata = dict(run.metadata)
+        metadata["api_draft_intake"] = {
+            "status": "partial" if _intake_candidate_errors(receipt) else "completed",
+            "created_count": _intake_count(receipt.get("created_count")),
+            "skipped_count": _intake_count(receipt.get("skipped_count")),
+            "errors": _intake_candidate_errors(receipt),
+        }
+        return run.model_copy(update={"metadata": metadata})
+
+    def _intake_count(value: object) -> int:
+        return value if isinstance(value, int) and value >= 0 else 0
+
+    def _intake_candidate_errors(receipt: Mapping[str, Any]) -> list[dict[str, Any]]:
+        errors = receipt.get("errors")
+        if not isinstance(errors, list):
+            return []
+        summaries: list[dict[str, Any]] = []
+        for error in errors:
+            if not isinstance(error, Mapping):
+                continue
+            context = error.get("context")
+            candidate_id = context.get("candidate_id") if isinstance(context, Mapping) else None
+            if not isinstance(candidate_id, str) or not candidate_id.strip():
+                continue
+            try:
+                safe_error = DailySelectionError(
+                    code=error.get("code"),
+                    message=error.get("message"),
+                    context={"candidate_id": candidate_id},
+                )
+            except DailySelectionContractError:
+                continue
+            summaries.append(safe_error.model_dump(mode="json"))
+        return summaries
 
     def _ingest_temu_link_result(
         command: PluginCommand,
