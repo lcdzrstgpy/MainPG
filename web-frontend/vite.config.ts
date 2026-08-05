@@ -6,6 +6,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/desktop": "http://127.0.0.1:8010",
+      "/api": "http://127.0.0.1:8010",
     },
   },
 });
