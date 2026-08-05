@@ -27,6 +27,7 @@ from ..data_collection.image_cache import PublicDailySelectionImageCache
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
 from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
+from ..modules.product_processing.api.router import create_product_processing_router
 from ..modules.product_processing.domain.models import DailySelectionHandoffEnvelope
 from ..modules.product_processing.infrastructure.assets import ProductProcessingAssets
 from ..modules.product_processing.infrastructure.database import create_database
@@ -103,6 +104,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.include_router(create_basic_settings_router(db_path))
     plugin_queue = DataCollectionPluginQueue(db_path)
     product_processing = _product_processing_service(db_path)
+    app.include_router(create_product_processing_router(product_processing))
     _register_data_collection(app, db_path, plugin_queue, product_processing)
     _register_profit_activity(app, db_path)
 

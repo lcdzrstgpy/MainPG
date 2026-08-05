@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, and_, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from .database import ProductProcessingDatabase
@@ -32,6 +34,8 @@ def loads(value: str | None, fallback: Any) -> Any:
 
 
 class ProductProcessingRepository:
+    SOURCE_IMAGE_SYNC_LEASE = timedelta(minutes=5)
+
     def __init__(self, database: ProductProcessingDatabase):
         self.database = database
 
@@ -95,6 +99,7 @@ class ProductProcessingRepository:
         offset: int,
         *,
         selection_run_id: str | None = None,
+        source_type: str | None = None,
         workspace_id: str = "local",
     ) -> tuple[list[dict[str, Any]], bool]:
         with self.database.sessions() as session:
@@ -105,6 +110,8 @@ class ProductProcessingRepository:
                 statement = statement.where(ProductDraftRow.status == "draft")
             if selection_run_id is not None:
                 statement = statement.where(ProductDraftRow.selection_run_id == selection_run_id)
+            if source_type is not None:
+                statement = statement.where(ProductDraftRow.source_type == source_type)
             statement = statement.order_by(ProductDraftRow.updated_at.desc(), ProductDraftRow.id.desc()).offset(offset).limit(limit + 1)
             rows = session.scalars(statement).all()
             return [self._draft(row) for row in rows[:limit]], len(rows) > limit
@@ -363,7 +370,7 @@ class ProductProcessingRepository:
     def preserve_source_images(
         self,
         *,
-        task_id: int,
+        task_id: int | None,
         product_draft_id: int,
         source_urls: list[str],
         detail_urls: list[str],
@@ -395,6 +402,105 @@ class ProductProcessingRepository:
                 rows.append(row)
             return [self._source_image(row) for row in rows]
 
+    def claim_syncable_source_images(
+        self, product_draft_id: int, workspace_id: str = "local"
+    ) -> list[dict[str, Any]]:
+        claimed_at = utc_now()
+        lease_expires_at = (datetime.now(timezone.utc) - self.SOURCE_IMAGE_SYNC_LEASE).isoformat()
+        claimable = or_(
+            SourceImageAssetRow.sync_status.in_(["pending", "failed"]),
+            and_(
+                SourceImageAssetRow.sync_status == "syncing",
+                or_(
+                    SourceImageAssetRow.sync_claimed_at == "",
+                    SourceImageAssetRow.sync_claimed_at <= lease_expires_at,
+                ),
+            ),
+        )
+        with self.database.sessions.begin() as session:
+            rows = session.scalars(
+                select(SourceImageAssetRow)
+                .join(ProductDraftRow, ProductDraftRow.id == SourceImageAssetRow.product_draft_id)
+                .where(
+                    ProductDraftRow.workspace_id == workspace_id,
+                    SourceImageAssetRow.product_draft_id == product_draft_id,
+                    claimable,
+                )
+                .order_by(SourceImageAssetRow.id)
+            ).all()
+            claimed_tokens: dict[int, str] = {}
+            for row in rows:
+                claim_token = uuid4().hex
+                result = session.execute(
+                    update(SourceImageAssetRow)
+                    .where(
+                        SourceImageAssetRow.id == row.id,
+                        claimable,
+                    )
+                    .values(
+                        sync_status="syncing",
+                        sync_error="",
+                        sync_claimed_at=claimed_at,
+                        sync_claim_token=claim_token,
+                    )
+                )
+                if result.rowcount:
+                    claimed_tokens[row.id] = claim_token
+            if not claimed_tokens:
+                return []
+            claimed = session.scalars(
+                select(SourceImageAssetRow)
+                .where(SourceImageAssetRow.id.in_(claimed_tokens))
+                .order_by(SourceImageAssetRow.id)
+            ).all()
+            return [
+                {**self._source_image(row), "_sync_claim_token": claimed_tokens[row.id]}
+                for row in claimed
+            ]
+
+    def complete_source_image(
+        self, image_id: int, local_path: str, claim_token: str, workspace_id: str = "local"
+    ) -> bool:
+        with self.database.sessions.begin() as session:
+            row = session.scalar(
+                select(SourceImageAssetRow)
+                .join(ProductDraftRow, ProductDraftRow.id == SourceImageAssetRow.product_draft_id)
+                .where(
+                    SourceImageAssetRow.id == image_id,
+                    ProductDraftRow.workspace_id == workspace_id,
+                    SourceImageAssetRow.sync_status == "syncing",
+                    SourceImageAssetRow.sync_claim_token == claim_token,
+                )
+            )
+            if row is None:
+                return False
+            row.local_path = local_path
+            row.sync_status = "ready"
+            row.sync_error = ""
+            row.sync_claimed_at = ""
+            row.sync_claim_token = ""
+            return True
+
+    def fail_source_image(self, image_id: int, error: str, claim_token: str, workspace_id: str = "local") -> bool:
+        with self.database.sessions.begin() as session:
+            row = session.scalar(
+                select(SourceImageAssetRow)
+                .join(ProductDraftRow, ProductDraftRow.id == SourceImageAssetRow.product_draft_id)
+                .where(
+                    SourceImageAssetRow.id == image_id,
+                    ProductDraftRow.workspace_id == workspace_id,
+                    SourceImageAssetRow.sync_status == "syncing",
+                    SourceImageAssetRow.sync_claim_token == claim_token,
+                )
+            )
+            if row is None:
+                return False
+            row.sync_status = "failed"
+            row.sync_error = (str(error).strip() or "source image synchronization failed")[:500]
+            row.sync_claimed_at = ""
+            row.sync_claim_token = ""
+            return True
+
     def list_source_images(
         self,
         *,
@@ -414,6 +520,64 @@ class ProductProcessingRepository:
                 statement = statement.where(SourceImageAssetRow.task_id == task_id)
             rows = session.scalars(statement.order_by(SourceImageAssetRow.id)).all()
             return [self._source_image(row) for row in rows]
+
+    def ready_primary_source_image_paths(
+        self,
+        draft_ids: Iterable[int],
+        *,
+        workspace_id: str = "local",
+    ) -> dict[int, str]:
+        ids = list(dict.fromkeys(int(item) for item in draft_ids))
+        if not ids:
+            return {}
+        with self.database.sessions() as session:
+            rows = session.execute(
+                select(SourceImageAssetRow.product_draft_id, SourceImageAssetRow.local_path)
+                .join(ProductDraftRow, ProductDraftRow.id == SourceImageAssetRow.product_draft_id)
+                .where(
+                    ProductDraftRow.workspace_id == workspace_id,
+                    SourceImageAssetRow.product_draft_id.in_(ids),
+                    SourceImageAssetRow.kind == "source",
+                    SourceImageAssetRow.sync_status == "ready",
+                    SourceImageAssetRow.local_path != "",
+                )
+                .order_by(SourceImageAssetRow.product_draft_id, SourceImageAssetRow.id)
+            ).all()
+            paths: dict[int, str] = {}
+            for draft_id, local_path in rows:
+                paths.setdefault(int(draft_id), str(local_path))
+            return paths
+
+    def primary_source_images(
+        self,
+        draft_ids: Iterable[int],
+        *,
+        workspace_id: str = "local",
+    ) -> dict[int, dict[str, str]]:
+        ids = list(dict.fromkeys(int(item) for item in draft_ids))
+        if not ids:
+            return {}
+        with self.database.sessions() as session:
+            rows = session.scalars(
+                select(SourceImageAssetRow)
+                .join(ProductDraftRow, ProductDraftRow.id == SourceImageAssetRow.product_draft_id)
+                .where(
+                    ProductDraftRow.workspace_id == workspace_id,
+                    SourceImageAssetRow.product_draft_id.in_(ids),
+                    SourceImageAssetRow.kind == "source",
+                )
+                .order_by(SourceImageAssetRow.product_draft_id, SourceImageAssetRow.id)
+            ).all()
+            images: dict[int, dict[str, str]] = {}
+            for row in rows:
+                images.setdefault(
+                    int(row.product_draft_id),
+                    {
+                        "sync_status": row.sync_status,
+                        "sync_error": row.sync_error,
+                    },
+                )
+            return images
 
     def handoff_receipt(self, handoff_id: str, workspace_id: str) -> dict[str, Any] | None:
         with self.database.sessions() as session:
@@ -560,6 +724,8 @@ class ProductProcessingRepository:
             "kind": row.kind,
             "url": row.url,
             "local_path": row.local_path,
+            "sync_status": row.sync_status,
+            "sync_error": row.sync_error,
             "created_at": row.created_at,
         }
 

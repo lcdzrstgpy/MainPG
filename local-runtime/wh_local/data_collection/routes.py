@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .budget import TaskApiBudget
-from .contracts import DailySelectionContractError
+from .contracts import DailySelectionContractError, DailySelectionError
 from .criteria import DailySelectionCriteriaError
 from .repository import (
     DailySelectionCandidateNotConfirmable,
@@ -23,6 +23,7 @@ from .repository import (
     DailySelectionRunSummary,
 )
 from .handoff import DailySelectionHandoff
+from .normalizer import sanitize_raw_payload
 from .plugin_queue import DataCollectionPluginQueue, PluginCommand
 from .service import (
     CachedDailySelectionImage,
@@ -184,11 +185,13 @@ def register_daily_selection_routes(
         response_model=DailySelectionRun,
     )
     def preview(
+        background_tasks: BackgroundTasks,
         request: dict[str, Any] = Body(...),
         actor: DailySelectionActor = Depends(actor_dependency),
     ) -> DailySelectionRun:
         try:
-            return service.preview(actor=actor, request=request)
+            run = service.preview(actor=actor, request=request)
+            return _with_api_draft_intake(run, _ingest_api_run(run, background_tasks))
         except (
             DailySelectionCriteriaError,
             DailySelectionContractError,
@@ -209,11 +212,13 @@ def register_daily_selection_routes(
         response_model=DailySelectionRun,
     )
     def preview_from_1688_link(
+        background_tasks: BackgroundTasks,
         request: dict[str, Any] = Body(...),
         actor: DailySelectionActor = Depends(actor_dependency),
     ) -> DailySelectionRun:
         try:
-            return service.preview_from_1688_link(actor=actor, request=request)
+            run = service.preview_from_1688_link(actor=actor, request=request)
+            return _with_api_draft_intake(run, _ingest_api_run(run, background_tasks))
         except (ValueError, DailySelectionCriteriaError, DailySelectionContractError, ValidationError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         except DailySelectionProviderUnavailable as error:
@@ -307,23 +312,31 @@ def register_daily_selection_routes(
         }
 
     @router.post("/desktop/data-collection/plugin/results", response_model=PluginCommand)
-    def receive_plugin_result(request: PluginResultRequest) -> PluginCommand:
+    def receive_plugin_result(
+        request: PluginResultRequest,
+        background_tasks: BackgroundTasks,
+    ) -> PluginCommand:
         if plugin_queue is None:
             raise HTTPException(status_code=503, detail="plugin queue is unavailable")
         try:
-            return plugin_queue.receive_result(
+            command = plugin_queue.receive_result(
                 session_token=request.session_token,
                 command_id=request.command_id,
                 status=request.status,
                 result=request.result,
             )
+            _ingest_temu_link_result(command, request.session_token, background_tasks)
+            return command
         except PermissionError as error:
             raise HTTPException(status_code=401, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
     @router.post("/plugin/result")
-    def receive_legacy_plugin_result(payload: Mapping[str, Any] = Body(...)) -> Mapping[str, Any]:
+    def receive_legacy_plugin_result(
+        background_tasks: BackgroundTasks,
+        payload: Mapping[str, Any] = Body(...),
+    ) -> Mapping[str, Any]:
         if plugin_queue is None:
             raise HTTPException(status_code=503, detail="plugin queue is unavailable")
         try:
@@ -333,12 +346,13 @@ def register_daily_selection_routes(
             result = payload.get("result")
             if not isinstance(result, Mapping):
                 raise ValueError("result must be an object")
-            plugin_queue.receive_result(
+            command = plugin_queue.receive_result(
                 session_token=session_token,
                 command_id=command_id,
                 status=status,
                 result=result,
             )
+            _ingest_temu_link_result(command, session_token, background_tasks)
         except KeyError as error:
             raise HTTPException(status_code=422, detail=f"missing {error.args[0]}") from error
         except PermissionError as error:
@@ -348,7 +362,10 @@ def register_daily_selection_routes(
         return {"ok": True}
 
     @router.post("/plugin/product-capture/draft")
-    def save_plugin_product_draft(payload: Mapping[str, Any] = Body(...)) -> Mapping[str, Any]:
+    def save_plugin_product_draft(
+        background_tasks: BackgroundTasks,
+        payload: Mapping[str, Any] = Body(...),
+    ) -> Mapping[str, Any]:
         if plugin_queue is None or plugin_draft_writer is None:
             raise HTTPException(status_code=503, detail="plugin draft storage is unavailable")
         session_token = payload.get("session_token")
@@ -364,6 +381,7 @@ def register_daily_selection_routes(
         draft, created = plugin_draft_writer.create_draft(
             _plugin_product_to_draft(product), workspace_id=workspace_id
         )
+        _schedule_source_image_sync(plugin_draft_writer, background_tasks, draft, workspace_id)
         return {
             "ok": True,
             "skipped": not created,
@@ -390,6 +408,84 @@ def register_daily_selection_routes(
             None, 500, 0, summary=True, workspace_id=workspace_id
         )["drafts"]
         return {"drafts": [draft for draft in listed if draft.get("source_ref") in requested]}
+
+    def _ingest_api_run(
+        run: DailySelectionRun, background_tasks: BackgroundTasks | None
+    ) -> Mapping[str, Any]:
+        if plugin_draft_writer is None:
+            raise HTTPException(status_code=503, detail="product draft storage is unavailable")
+        receipt = plugin_draft_writer.intake_daily_selection(run)
+        for draft in receipt["drafts"]:
+            _schedule_source_image_sync(plugin_draft_writer, background_tasks, draft, run.workspace_id)
+        return receipt
+
+    def _with_api_draft_intake(
+        run: DailySelectionRun, intake: Mapping[str, Any]
+    ) -> DailySelectionRun:
+        """Expose only stable, candidate-scoped intake state to preview callers."""
+        receipt = intake.get("receipt")
+        if not isinstance(receipt, Mapping):
+            raise RuntimeError("daily-selection draft intake did not return a receipt")
+        metadata = dict(run.metadata)
+        metadata["api_draft_intake"] = {
+            "status": "partial" if _intake_candidate_errors(receipt) else "completed",
+            "created_count": _intake_count(receipt.get("created_count")),
+            "skipped_count": _intake_count(receipt.get("skipped_count")),
+            "errors": _intake_candidate_errors(receipt),
+        }
+        return run.model_copy(update={"metadata": metadata})
+
+    def _intake_count(value: object) -> int:
+        return value if isinstance(value, int) and value >= 0 else 0
+
+    def _intake_candidate_errors(receipt: Mapping[str, Any]) -> list[dict[str, Any]]:
+        errors = receipt.get("errors")
+        if not isinstance(errors, list):
+            return []
+        summaries: list[dict[str, Any]] = []
+        for error in errors:
+            if not isinstance(error, Mapping):
+                continue
+            context = error.get("context")
+            candidate_id = context.get("candidate_id") if isinstance(context, Mapping) else None
+            if not isinstance(candidate_id, str) or not candidate_id.strip():
+                continue
+            try:
+                safe_error = DailySelectionError(
+                    code=error.get("code"),
+                    message=error.get("message"),
+                    context={"candidate_id": candidate_id},
+                )
+            except DailySelectionContractError:
+                continue
+            summaries.append(safe_error.model_dump(mode="json"))
+        return summaries
+
+    def _ingest_temu_link_result(
+        command: PluginCommand,
+        session_token: str,
+        background_tasks: BackgroundTasks,
+    ) -> None:
+        if (
+            plugin_draft_writer is None
+            or command.command_type != "temu_link_capture"
+            or command.status != "succeeded"
+        ):
+            return
+        product = command.result.get("product")
+        if not isinstance(product, Mapping):
+            return
+        try:
+            draft_payload = _plugin_product_to_draft(product)
+        except HTTPException:
+            # The plugin result is retained as command diagnostics, but only a
+            # complete, usable product is allowed to enter the draft pool.
+            return
+        workspace_id = plugin_queue.workspace_for_session(session_token)
+        draft, _created = plugin_draft_writer.create_draft(
+            draft_payload, workspace_id=workspace_id
+        )
+        _schedule_source_image_sync(plugin_draft_writer, background_tasks, draft, workspace_id)
 
     @router.get("/desktop/data-collection/plugin-commands/{command_id}", response_model=PluginCommand)
     def get_plugin_command(command_id: int, actor: DailySelectionActor = Depends(actor_dependency)) -> PluginCommand:
@@ -527,7 +623,7 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
     title = str(product.get("title") or product.get("product_name") or "").strip()
     if not source_ref or not title:
         raise HTTPException(status_code=422, detail="product title and product_link are required")
-    sanitized_product = dict(product)
+    sanitized_product = dict(sanitize_raw_payload(product))
     for key in ("product_link", "link", "url"):
         value = sanitized_product.get(key)
         if isinstance(value, str):
@@ -540,21 +636,44 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
             sanitized_captured_fields["capture_url"] = _canonical_url(capture_url)
         sanitized_product["captured_fields"] = sanitized_captured_fields
     images = product.get("image_urls") or product.get("product_image_urls") or []
+    source_image_urls = [
+        str(value).strip()
+        for value in images
+        if isinstance(value, str) and _canonical_url(value)
+    ] if isinstance(images, (list, tuple)) else []
     image_url = str(
-        product.get("image_url") or product.get("imageUrl") or (images[0] if isinstance(images, list) and images else "")
+        product.get("image_url") or product.get("imageUrl") or (source_image_urls[0] if source_image_urls else "")
     ).strip()
     candidate_id = f"plugin:{platform}:{product_id or source_ref}"
     return {
         **sanitized_product,
-        "source_type": "plugin_capture",
+        "source_type": "web_manual_capture",
+        "source_platform": platform,
         "candidate_id": candidate_id,
         "source_ref": source_ref,
         "product_name": title,
         "title": title,
         "image_url": image_url,
+        "source_image_urls": source_image_urls,
         "declared_price": product.get("price"),
         "sku": str(product.get("sku") or "").strip() or None,
     }
+
+
+def _schedule_source_image_sync(
+    draft_writer: Any,
+    background_tasks: BackgroundTasks | None,
+    draft: Mapping[str, Any],
+    workspace_id: str,
+) -> None:
+    if background_tasks is not None:
+        # The task is scheduled only after create_draft has committed its
+        # draft and source-image rows. Failures leave rows retryable.
+        background_tasks.add_task(
+            draft_writer.sync_draft_source_images,
+            int(draft["id"]),
+            workspace_id,
+        )
 
 
 def _canonical_url(value: str) -> str:

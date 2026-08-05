@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
@@ -81,6 +81,7 @@ def create_product_processing_router(
     @router.get("/drafts")
     def list_drafts(
         status_filter: str | None = Query(default=None, alias="status"),
+        source_type: Literal["web_manual_capture", "onebound_api"] | None = None,
         limit: int = Query(default=200, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
         view: str = "full",
@@ -93,6 +94,7 @@ def create_product_processing_router(
             offset,
             summary=view.strip().lower() in {"summary", "compact", "list"},
             selection_run_id=selection_run_id,
+            source_type=source_type,
             workspace_id=_workspace(workspace_id),
         )
 
@@ -166,6 +168,17 @@ def create_product_processing_router(
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
         return {"draft": _call(service.get_draft, draft_id, _workspace(workspace_id))}
+
+    @router.post("/drafts/{draft_id}/source-images/retry")
+    def retry_source_images(
+        draft_id: int,
+        background_tasks: BackgroundTasks,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        workspace = _workspace(workspace_id)
+        draft = _call(service.get_draft, draft_id, workspace)
+        background_tasks.add_task(service.retry_draft_source_images, draft_id, workspace)
+        return {"draft": draft, "sync": {"status": "scheduled"}}
 
     @router.patch("/drafts/{draft_id}")
     def update_draft(

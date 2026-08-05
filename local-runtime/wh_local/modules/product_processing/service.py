@@ -4,10 +4,13 @@ import importlib.util
 import hashlib
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .domain.handoff import candidate_from_handoff
+from wh_local.data_collection.contracts import DailySelectionError
+from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
+
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
 from .domain.workbooks import read_product_workbook
 from .infrastructure.assets import ProductProcessingAssets
@@ -23,9 +26,15 @@ class ProductProcessingConflict(RuntimeError):
 
 
 class ProductProcessingService:
-    def __init__(self, repository: ProductProcessingRepository, assets: ProductProcessingAssets):
+    def __init__(
+        self,
+        repository: ProductProcessingRepository,
+        assets: ProductProcessingAssets,
+        public_image_fetcher: Callable[[str], FetchedPublicImage] = fetch_public_image,
+    ):
         self.repository = repository
         self.assets = assets
+        self._public_image_fetcher = public_image_fetcher
 
     def engine_status(self) -> dict[str, Any]:
         dependency_status = {
@@ -102,6 +111,20 @@ class ProductProcessingService:
         candidate_id = self._text(raw.get("candidate_id")) or None
         existing = self.repository.draft_by_candidate(candidate_id or "", workspace_id)
         if existing and existing["status"] != "deleted":
+            # A OneBound candidate may legitimately recur in a later preview.
+            # Keep its single draft, but replace the run-scoped provenance with
+            # the evidence and criteria from the current collection run.
+            if self._text(raw.get("source_type")) == "onebound_api" and selection_run_id:
+                refreshed = self.repository.update_draft(
+                    existing["id"],
+                    {"selection_run_id": selection_run_id},
+                    raw,
+                    workspace_id=workspace_id,
+                )
+                if refreshed is None:
+                    raise ProductProcessingNotFound("product draft not found")
+                self._seed_draft_source_images(refreshed, raw)
+                return refreshed, False
             return existing, False
         title = self._text(raw.get("title") or raw.get("source_title") or raw.get("product_name"))
         product_name = self._text(raw.get("product_name") or title)
@@ -152,8 +175,11 @@ class ProductProcessingService:
             )
             if revived is None:
                 raise ProductProcessingNotFound("product draft not found")
+            self._seed_draft_source_images(revived, raw)
             return revived, True
-        return self.repository.create_draft(values), True
+        draft = self.repository.create_draft(values)
+        self._seed_draft_source_images(draft, raw)
+        return draft, True
 
     def demo_draft(self, workspace_id: str = "local") -> dict[str, Any]:
         draft, created = self.create_draft(
@@ -187,6 +213,7 @@ class ProductProcessingService:
         *,
         summary: bool,
         selection_run_id: str | None = None,
+        source_type: str | None = None,
         workspace_id: str = "local",
     ) -> dict[str, Any]:
         drafts, has_more = self.repository.list_drafts(
@@ -194,8 +221,25 @@ class ProductProcessingService:
             limit,
             offset,
             selection_run_id=selection_run_id,
+            source_type=source_type,
             workspace_id=workspace_id,
         )
+        ready_source_paths = self.repository.ready_primary_source_image_paths(
+            (draft["id"] for draft in drafts),
+            workspace_id=workspace_id,
+        )
+        primary_source_images = self.repository.primary_source_images(
+            (draft["id"] for draft in drafts),
+            workspace_id=workspace_id,
+        )
+        drafts = [
+            {
+                **draft,
+                "image_path": draft["image_path"] or ready_source_paths.get(draft["id"], ""),
+                "primary_source_image": primary_source_images.get(draft["id"]),
+            }
+            for draft in drafts
+        ]
         if summary:
             drafts = [self._draft_summary(draft) for draft in drafts]
         return {
@@ -277,6 +321,8 @@ class ProductProcessingService:
         draft = self.get_draft(draft_id, workspace_id)
         path = self._text(draft.get("image_path") or draft["raw_payload"].get("image_path"))
         if not path:
+            path = self.repository.ready_primary_source_image_paths([draft_id], workspace_id=workspace_id).get(draft_id, "")
+        if not path:
             raise ProductProcessingNotFound("draft does not have a local image")
         try:
             return self.assets.require_managed_file(path)
@@ -317,23 +363,48 @@ class ProductProcessingService:
         }
 
     def intake_daily_selection(self, run: DailySelectionRun) -> dict[str, Any]:
+        drafts: list[dict[str, Any]] = []
         created: list[dict[str, Any]] = []
         skipped: list[str] = []
+        intake_errors = list(getattr(run, "errors", []) or run.metadata.get("errors") or [])
+        criteria_source = run.criteria
+        criteria = (
+            dict(criteria_source)
+            if isinstance(criteria_source, dict)
+            else criteria_source.model_dump(mode="json")
+        )
+        counts = dict(getattr(run, "counts", {}) or {})
         for candidate in run.candidates:
             payload = candidate.model_dump(mode="json")
             payload.update(
                 {
-                    "source_type": "daily_selection",
+                    "source_type": "onebound_api",
                     "selection_run_id": run.run_id,
-                    "selection_criteria": run.criteria.model_dump(mode="json"),
-                    "selection_counts": run.counts,
+                    "collection_mode": criteria.get("collection_mode", "keyword"),
+                    "source_evidence": payload.get("evidence", []),
+                    "selection_criteria": criteria,
+                    "selection_counts": counts,
                 }
             )
-            draft, was_created = self.create_draft(
-                payload,
-                selection_run_id=run.run_id,
-                workspace_id=run.workspace_id,
-            )
+            try:
+                draft, was_created = self.create_draft(
+                    payload,
+                    selection_run_id=run.run_id,
+                    workspace_id=run.workspace_id,
+                )
+            except Exception as error:
+                intake_errors.append(
+                    DailySelectionError(
+                        code="PRODUCT_DRAFT_INTAKE_FAILED",
+                        message="候选商品写入产品草稿池失败",
+                        context={
+                            "candidate_id": candidate.candidate_id,
+                            "reason": str(error),
+                        },
+                    ).model_dump(mode="json")
+                )
+                continue
+            drafts.append(draft)
             if was_created:
                 created.append(draft)
             else:
@@ -341,15 +412,15 @@ class ProductProcessingService:
         receipt = self.repository.save_intake(
             run_id=run.run_id,
             workspace_id=run.workspace_id,
-            status=run.status,
-            criteria=run.criteria.model_dump(mode="json"),
-            counts=run.counts or {
+            status="partial" if intake_errors else run.status,
+            criteria=criteria,
+            counts=counts or {
                 key: int(value)
                 for key, value in run.metadata.items()
                 if key in {"api_calls", "search_calls", "image_search_calls", "detail_calls"}
                 and isinstance(value, int)
             },
-            errors=run.errors or list(run.metadata.get("errors") or []),
+            errors=intake_errors,
             candidate_count=len(run.candidates),
             created_count=len(created),
             skipped_count=len(skipped),
@@ -360,7 +431,7 @@ class ProductProcessingService:
             "skipped": len(skipped),
             "ids": [draft["id"] for draft in created],
             "skipped_candidate_ids": skipped,
-            "drafts": created,
+            "drafts": drafts,
             "exchange_contract": "daily-selection-product-processing-v1",
         }
 
@@ -391,6 +462,34 @@ class ProductProcessingService:
         )
         return {"images": images, "count": len(images)}
 
+    def sync_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
+        self.get_draft(draft_id, workspace_id)
+        ready = failed = 0
+        for image in self.repository.claim_syncable_source_images(draft_id, workspace_id):
+            try:
+                fetched = self._public_image_fetcher(image["url"])
+                path = self.assets.save_source_image(fetched.content, fetched.final_url, fetched.media_type)
+            except Exception as error:
+                if self.repository.fail_source_image(image["id"], str(error), image["_sync_claim_token"], workspace_id):
+                    failed += 1
+            else:
+                if self.repository.complete_source_image(image["id"], str(path), image["_sync_claim_token"], workspace_id):
+                    ready += 1
+        return {"ready": ready, "failed": failed}
+
+    def retry_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
+        return self.sync_draft_source_images(draft_id, workspace_id)
+
+    def _seed_draft_source_images(self, draft: dict[str, Any], raw: dict[str, Any]) -> None:
+        source_urls = [self._text(draft.get("image_url"))]
+        source_urls.extend(self._url_list(raw.get("source_image_urls")))
+        self.repository.preserve_source_images(
+            task_id=None,
+            product_draft_id=int(draft["id"]),
+            source_urls=source_urls,
+            detail_urls=self._url_list(raw.get("source_detail_image_urls")),
+        )
+
     def consume_daily_selection_handoffs(
         self, handoffs: list[DailySelectionHandoffEnvelope]
     ) -> dict[str, Any]:
@@ -411,24 +510,13 @@ class ProductProcessingService:
                 continue
             if handoff.status == "failed":
                 raise ValueError("failed daily-selection handoffs cannot be consumed")
-            candidate = candidate_from_handoff(handoff)
-            payload = candidate.model_dump(mode="json")
-            payload.update(
-                {
-                    "source_type": "daily_selection_handoff",
-                    "selection_run_id": handoff.run_id,
-                    "workspace_id": handoff.workspace_id,
-                    "daily_selection_handoff_id": handoff.handoff_id,
-                    "daily_selection_handoff_idempotency_key": handoff.idempotency_key,
-                }
+            draft = self.repository.draft_by_candidate(
+                handoff.candidate_id, handoff.workspace_id
             )
-            draft, created = self.create_draft(
-                payload,
-                selection_run_id=handoff.run_id,
-                workspace_id=handoff.workspace_id,
-                handoff_id=handoff.handoff_id,
-                handoff_idempotency_key=handoff.idempotency_key,
-            )
+            if draft is None or draft["status"] == "deleted":
+                raise ValueError(
+                    "daily-selection handoff requires an ingressed onebound_api draft"
+                )
             receipt = self.repository.save_handoff_receipt(
                 handoff_id=handoff.handoff_id,
                 idempotency_key=handoff.idempotency_key,
@@ -441,7 +529,9 @@ class ProductProcessingService:
             )
             receipts.append(receipt)
             drafts.append(draft)
-            created_count += int(created)
+            # Confirmation is selection state only. The OneBound preview
+            # ingress owns draft creation, so a handoff can never add a
+            # second candidate draft.
         return {
             "contract_version": "daily-selection-handoff-consumer-v1",
             "consumer_status": "consumed",
@@ -883,6 +973,10 @@ class ProductProcessingService:
     @staticmethod
     def _first(value: Any) -> Any:
         return value[0] if isinstance(value, list) and value else ""
+
+    @staticmethod
+    def _url_list(value: Any) -> list[str]:
+        return [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else []
 
     @staticmethod
     def _number(value: Any) -> float | None:

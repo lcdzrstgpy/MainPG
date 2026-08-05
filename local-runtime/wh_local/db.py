@@ -378,6 +378,24 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 product_processing_sql.read_text(encoding="utf-8"),
             )
         )
+    source_image_sync_sql = root / "modules" / "product_processing" / "migrations" / "002_source_image_sync.sql"
+    if source_image_sync_sql.exists():
+        migrations.append(
+            (
+                "product_processing:002_source_image_sync",
+                "product_processing",
+                source_image_sync_sql.read_text(encoding="utf-8"),
+            )
+        )
+    source_image_sync_lease_sql = root / "modules" / "product_processing" / "migrations" / "003_source_image_sync_lease.sql"
+    if source_image_sync_lease_sql.exists():
+        migrations.append(
+            (
+                "product_processing:003_source_image_sync_lease",
+                "product_processing",
+                source_image_sync_lease_sql.read_text(encoding="utf-8"),
+            )
+        )
     profit_activity_sql = root / "modules" / "profit_activity" / "migrations" / "001_profit_activity.sql"
     if profit_activity_sql.exists():
         migrations.append(

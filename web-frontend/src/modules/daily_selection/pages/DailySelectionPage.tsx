@@ -331,7 +331,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       const run = await collectByCriteria(criteria);
       setActiveRun(run);
       setSelectedCandidates([]);
-      setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选`);
+      const intake = run.metadata.api_draft_intake;
+      const intakeNotice = intake?.status === "partial"
+        ? `；其中 ${intake.errors.length} 个候选未进入 API 草稿视图`
+        : "";
+      setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选${intakeNotice}`);
       await refreshRuns();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "采集请求失败");
