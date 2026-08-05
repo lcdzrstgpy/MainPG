@@ -6,6 +6,7 @@ import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
 import { WorkspaceHomePage } from "../../modules/dashboard/pages/WorkspaceHomePage";
 import { DailySelectionPage } from "../../modules/daily_selection/pages/DailySelectionPage";
 import { BasicSettingsPage } from "../../modules/basic_settings/pages/BasicSettingsPage";
+import { ProfitActivityProductsPage } from "../../modules/profit_activity/pages/ProfitActivityProductsPage";
 import { ProfitActivityTestPage } from "../../modules/profit_activity/pages/ProfitActivityTestPage";
 import { ProductProcessingPage } from "../../modules/product_processing/pages/ProductProcessingPage";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
@@ -14,8 +15,10 @@ type WorkspaceShellProps = { onSignOut: () => void };
 
 const MAX_COLLECTION_PANELS = 6;
 
+const flatModules = workspaceModules.flatMap((module) => [module, ...(module.children ?? [])]);
+
 function moduleTab(id: WorkspaceModuleId): WorkspaceTab {
-  const module = workspaceModules.find((item) => item.id === id)!;
+  const module = flatModules.find((item) => item.id === id)!;
   return { key: id, moduleId: id, label: module.label, icon: module.icon };
 }
 
@@ -25,7 +28,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const [tabs, setTabs] = useState<WorkspaceTab[]>([moduleTab("dashboard")]);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
   const collectionSequence = useRef(0);
-  const modulesById = useMemo(() => new Map(workspaceModules.map((module) => [module.id, module])), []);
+  const modulesById = useMemo(() => new Map(flatModules.map((module) => [module.id, module])), []);
   const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0];
   const activeModuleId = activeTab?.moduleId ?? "dashboard";
   const activeModule = modulesById.get(activeModuleId)!;
@@ -83,6 +86,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
           {activeModuleId === "dashboard" && <WorkspaceHomePage onOpenModule={openModule} />}
           {activeModuleId === "daily_selection" && <DailySelectionPage onOpenCollection={openCollectionPanel} />}
           {activeModuleId === "profit_activity" && <ProfitActivityTestPage />}
+          {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
           {activeModuleId === "basic_settings" && <BasicSettingsPage />}
           {activeModuleId === "product_processing" && <ProductProcessingPage />}
           {collectionTabs.map((tab) => (
@@ -90,7 +94,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
               <DailySelectionPage view="collection" initialDirectionId={tab.directionId} />
             </div>
           ))}
-          {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "profit_activity" && activeModuleId !== "basic_settings" && activeModuleId !== "product_processing" && <EmptyModulePage module={activeModule} />}
+          {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "basic_settings" && activeModuleId !== "product_processing" && <EmptyModulePage module={activeModule} />}
         </div>
       </section>
     </main>

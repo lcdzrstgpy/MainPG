@@ -59,3 +59,22 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
 
   return payload as T;
 }
+
+export async function httpBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const token = authToken(options.token);
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  const response = await fetch(`${apiBaseUrl()}${path}`, {
+    method: options.method ?? "GET",
+    headers,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "请求失败");
+    throw new Error(detail || "请求失败");
+  }
+
+  return response.blob();
+}

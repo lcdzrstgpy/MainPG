@@ -1,4 +1,12 @@
-export type WorkspaceModuleId = "dashboard" | "daily_selection" | "daily_selection_collection" | "product_processing" | "profit_activity" | "price_verification" | "basic_settings";
+export type WorkspaceModuleId =
+  | "dashboard"
+  | "daily_selection"
+  | "daily_selection_collection"
+  | "product_processing"
+  | "profit_activity"
+  | "profit_activity_products"
+  | "price_verification"
+  | "basic_settings";
 
 export type WorkspaceModule = {
   id: WorkspaceModuleId;
@@ -6,6 +14,7 @@ export type WorkspaceModule = {
   icon: string;
   description: string;
   hiddenFromSidebar?: boolean;
+  children?: WorkspaceModule[];
 };
 
 export const workspaceModules: WorkspaceModule[] = [
@@ -13,7 +22,15 @@ export const workspaceModules: WorkspaceModule[] = [
   { id: "daily_selection", label: "每日选品", icon: "⌁", description: "采集候选商品并确认入池" },
   { id: "daily_selection_collection", label: "采集面板", icon: "⌕", description: "OneBound 采集、候选商品和历史批次", hiddenFromSidebar: true },
   { id: "product_processing", label: "产品处理", icon: "▣", description: "管理草稿池和商品处理任务" },
-  { id: "profit_activity", label: "利润活动", icon: "◌", description: "核算利润、入档并过滤活动" },
+  {
+    id: "profit_activity",
+    label: "利润活动",
+    icon: "◌",
+    description: "核算利润、入档并过滤活动",
+    children: [
+      { id: "profit_activity_products", label: "产品库", icon: "└", description: "查询、批量管理和下载利润活动产品档案" },
+    ],
+  },
   { id: "price_verification", label: "核价及货源", icon: "◇", description: "核验价格与维护货源信息" },
   { id: "basic_settings", label: "系统配置", icon: "⚙", description: "管理本地运行参数和服务配置" },
 ];
