@@ -229,6 +229,10 @@ def _module_migrations() -> list[tuple[str, str, str]]:
             "data_collection:002_data_collection_plugin_queue",
             root / "data_collection" / "migrations" / "002_data_collection_plugin_queue.sql",
         ),
+        (
+            "data_collection:003_plugin_command_requests",
+            root / "data_collection" / "migrations" / "003_plugin_command_requests.sql",
+        ),
     ]
     for migration_id, sql_path in data_collection_migrations:
         if sql_path.exists():
@@ -265,6 +269,17 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 "price_verification:001_price_verification",
                 "price_verification",
                 price_verification_sql.read_text(encoding="utf-8"),
+            )
+        )
+    retained_link_sourcing_sql = (
+        root / "price_verification" / "migrations" / "002_retained_link_sourcing.sql"
+    )
+    if retained_link_sourcing_sql.exists():
+        migrations.append(
+            (
+                "price_verification:002_retained_link_sourcing",
+                "price_verification",
+                retained_link_sourcing_sql.read_text(encoding="utf-8"),
             )
         )
     return migrations

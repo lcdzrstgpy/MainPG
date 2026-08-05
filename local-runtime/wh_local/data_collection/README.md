@@ -1,6 +1,6 @@
 # 数据采集模块（后端 / 数据库交接版）
 
-本目录提供宿主无关的数据采集后端：1688 关键词/参考图/相似链接采集、Temu 链接浏览器插件采集、候选规范化与评分、批次快照、反馈、确认交接和受控图片读取。模块不注册宿主应用、不创建前端页面，也不写入草稿池或产品库表。
+本目录提供宿主无关的数据采集后端：1688 关键词/参考图/相似链接采集、Temu 链接浏览器插件采集、候选规范化与评分、批次快照、反馈、确认交接和受控图片读取。模块不创建前端页面；宿主可注入产品处理消费者，在用户确认后幂等创建草稿。
 
 本文档用于后端和数据库同事接手。当前默认实现使用 SQLite，业务边界与表结构可原样迁移到项目的正式数据库；不要把 Demo 的整套工作台用户、订单、商品草稿或插件表直接并入本模块。
 
@@ -9,7 +9,7 @@
 - 已完成 1688 关键词采集、1688 商品链接相似采集，以及 OneBound 图搜的完整链路：安全下载参考图、`upload_img`、`item_search_img`、候选规范化和 1688 商品详情链接生成。
 - 图片下载已具备公网 IP 固定连接、重定向限制、5 MiB 上限、MIME 与文件魔数校验；当本机 DNS 返回失败或非公网地址时，会通过固定 TLS 校验的 DoH 回退解析。对于 CDN 明确要求的 `format/avif` 转码，会受控改为 JPEG 后再执行同样校验与上传。
 - 已完成 Temu 浏览器插件命令队列、会话隔离、结果回传和脱敏入库接口；浏览器插件源码随本分支发布，负责读取已登录页面并回传商品结构化数据。
-- 已完成 SQLite 采集批次、候选、反馈、handoff、调用预算和插件队列表的迁移与接线。前端框架与正式数据库适配由各自模块继续对接；本分支只发布采集后端、浏览器插件和本 README，不包含 Demo、测试或规划文档。
+- 已完成 SQLite 采集批次、候选、反馈、handoff、调用预算和插件队列表的迁移与接线；宿主默认在确认后自动消费 handoff 并创建产品处理草稿。前端框架与正式数据库适配由各自模块继续对接；本分支只发布采集后端、浏览器插件和本 README，不包含 Demo、测试或规划文档。
 
 ## 三条采集数据流
 
@@ -32,12 +32,10 @@ flowchart LR
 
 | 环境变量 | Provider 配置键 | 说明 |
 | --- | --- | --- |
-| `ONEBOUND_1688_API_KEY` | `api_key` | 必填，只在进程内注入 |
-| `ONEBOUND_1688_API_SECRET` | `api_secret` | 必填，只在进程内注入 |
-| `ONEBOUND_1688_BASE_URL` | `base_url` | 必填 HTTP(S) API 根地址，生产必须使用 HTTPS；不得含 userinfo、query、fragment 或密钥 |
-| `ONEBOUND_1688_ENABLED` | `enabled` | 可选布尔值，默认启用 |
-| `ONEBOUND_1688_TIMEOUT_SECONDS` | `timeout_seconds` | 可选正数，默认 10 秒 |
-| `ONEBOUND_1688_IMAGE_MAX_BYTES` | `image_max_bytes` | 可选正整数，默认 5 MiB |
+| `DAILY_SELECTION_ONEBOUND_API_KEY` | `api_key` | 必填，只在进程内注入 |
+| `DAILY_SELECTION_ONEBOUND_API_SECRET` | `api_secret` | 必填，只在进程内注入 |
+| `DAILY_SELECTION_ONEBOUND_BASE_URL` | `base_url` | 必填 HTTP(S) API 根地址，生产必须使用 HTTPS；不得含 userinfo、query、fragment 或密钥 |
+| `DAILY_SELECTION_ONEBOUND_ENABLED` | `enabled` | 可选布尔值，默认启用 |
 
 不要把真实密钥写入本 README、源码、测试、fixture、SQLite、日志、错误信息或版本控制文件，也不要用 `.env` 文件提交密钥。Provider 的 `safe_summary()` 不返回密钥；审计、候选原始载荷、批次 criteria/metadata 会过滤或脱敏敏感字段。生产宿主应从密钥库或受保护的进程环境读取凭据，并通过 `DailySelectionRouteDependencies.provider_config_resolver` 按当前 actor/workspace 解析配置。
 
@@ -57,11 +55,11 @@ register_daily_selection_routes(router, dependencies)
 | --- | --- | --- |
 | `POST` | `/desktop/daily-selection/preview` | 校验条件，采集、筛选、评分并保存批次快照 |
 | `POST` | `/desktop/daily-selection/preview-from-1688-link` | 输入 `source_url`，先调用 `item_get`，再以主图优先、标题兜底执行 1688 相似商品采集 |
-| `GET` | `/desktop/daily-selection/runs` | 列出当前 workspace 的批次摘要 |
+| `GET` | `/desktop/daily-selection/runs?limit=20&offset=0` | 分页列出当前 workspace 的批次摘要（`limit` 最大 100） |
 | `GET` | `/desktop/daily-selection/runs/{run_id}` | 回读完整批次与候选快照 |
 | `POST` | `/desktop/daily-selection/runs/{run_id}/feedback` | 保存反馈并把候选标记为 rejected |
-| `POST` | `/desktop/daily-selection/runs/{run_id}/confirm` | 把候选标记为 confirmed，并幂等创建 handoff |
-| `GET` | `/desktop/daily-selection/image?run_id=...&url=...` | 通过宿主注入的安全图片缓存读取已记录 URL |
+| `POST` | `/desktop/daily-selection/runs/{run_id}/confirm` | 仅确认无风险候选；幂等创建 handoff 并由宿主自动创建产品草稿 |
+| `GET` | `/desktop/daily-selection/image?run_id=...&url=...` | 通过宿主注入的安全图片缓存读取已记录 URL；本地运行时默认已接线 |
 | `POST` | `/desktop/data-collection/plugin-sessions` | 为当前 workspace 建立浏览器插件会话，返回会话 token |
 | `POST` | `/desktop/data-collection/temu-link/collect` | 使用 `session_id` 和 Temu 商品链接创建 `temu_link_capture` 命令 |
 | `GET` | `/desktop/data-collection/plugin/poll` | 插件以 `session_token` 领取待执行命令 |
@@ -121,7 +119,7 @@ Temu 链接不会交给 OneBound：它只允许受控浏览器插件在已登录
 
 插件应先回传 `running`，完成后回传 `succeeded` 或 `failed`。成功结果至少包含 `source_url`、`title`、`main_image_url`、`price`、`currency`、`variants`、`captured_at`；失败结果至少包含安全的 `error_code` 与 `message`。不得回传登录 Cookie、Authorization、页面完整 HTML、图片二进制或任意密钥。
 
-关键词预览至少提供 1 个、最多 5 个 `keywords`。参考图预览设置 `collection_mode: "image"` 和一个 HTTP(S) `reference_image_url`；图片模式中的 `keywords` 只是描述标签，不会触发第二次关键词搜索。`upload_img` 只为图搜取得图片 ID，不发布商品，也不向 1688 写入商品数据。
+关键词预览至少提供 1 个、最多 5 个 `keywords`。`target_count` 为 1–100，`detail_count` 为 1–50，且必须落在本次 `max_api_calls`（最大 60）的可用预算内。参考图预览设置 `collection_mode: "image"` 和一个 HTTP(S) `reference_image_url`；图片模式中的 `keywords` 只是描述标签，不会触发第二次关键词搜索。`upload_img` 只为图搜取得图片 ID，不发布商品，也不向 1688 写入商品数据。
 
 ## 图片 URL 语义
 
@@ -160,7 +158,7 @@ Temu 链接不会交给 OneBound：它只允许受控浏览器插件在已登录
 
 ## Handoff 消费契约
 
-确认接口以 `workspace_id + run_id + candidate_id` 幂等；重复确认返回同一条 `DailySelectionHandoff`，数据库最多保留一条记录。新记录状态为 `pending`，`idempotency_key` 是稳定摘要。`payload_json` 是 UTF-8 JSON，包含：
+确认接口仅接受无 `risk_tags` 且状态为 `candidate` 的候选；`filtered`、`rejected` 和风险候选返回 `409 CANDIDATE_NOT_CONFIRMABLE`。确认以 `workspace_id + run_id + candidate_id` 幂等；重复确认返回同一条 `DailySelectionHandoff`，数据库最多保留一条记录。新记录先为 `pending`，`idempotency_key` 是稳定摘要。`payload_json` 是 UTF-8 JSON，包含：
 
 - `candidate`：来源平台、offer、标题、店铺、价格和 MOQ 等身份信息；
 - `images`：`main`、`gallery`、`detail`、`sku` URL；
@@ -169,7 +167,7 @@ Temu 链接不会交给 OneBound：它只允许受控浏览器插件在已登录
 - `source_evidence`：脱敏 API 审计证据；
 - `selection_metadata`：分数、原因、风险、状态、字段完整性和评分组成。
 
-下游消费者必须按 workspace 读取 `pending` 记录，在自己的事务/幂等边界内创建草稿或产品，再把记录更新为 `consumed`；失败可标记为 `failed` 并保留原始 payload 供诊断。消费者应以 `handoff_id` 或 `idempotency_key` 防止重放，并独占 `product_drafts` 等下游表的创建与写入职责。不要通过修改 handoff payload 回写每日选品候选。
+宿主默认在确认请求内调用产品处理消费者；消费者成功创建草稿和回执后，采集仓储才把 handoff 标记为 `consumed`。消费者异常时 handoff 保持 `pending`，重复确认会安全重放，不会重复创建草稿。消费者应以 `handoff_id` 或 `idempotency_key` 防止重放，并独占 `product_drafts` 等下游表的创建与写入职责。不要通过修改 handoff payload 回写每日选品候选。
 
 ## 验收记录
 

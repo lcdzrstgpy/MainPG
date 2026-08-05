@@ -31,6 +31,14 @@ class DailySelectionRunNotFound(PermissionError):
     """Raised without revealing whether a run belongs to another workspace."""
 
 
+class DailySelectionCandidateNotConfirmable(ValueError):
+    """Raised when a candidate is not eligible for downstream processing."""
+
+    def __init__(self, reasons: Mapping[str, str]) -> None:
+        self.reasons = dict(reasons)
+        super().__init__("one or more candidates cannot be confirmed")
+
+
 class DailySelectionRunSummary(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -179,8 +187,14 @@ class DailySelectionRepository:
             connection.close()
         return self.get_run(workspace_id=workspace_id, run_id=run_id)
 
-    def list_runs(self, *, workspace_id: str) -> tuple[DailySelectionRunSummary, ...]:
+    def list_runs(
+        self, *, workspace_id: str, limit: int = 20, offset: int = 0
+    ) -> tuple[DailySelectionRunSummary, ...]:
         workspace_id = _required_text(workspace_id, "workspace_id")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit must be an integer between 1 and 100")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset must be a non-negative integer")
         connection = self._connect()
         try:
             connection.execute("BEGIN")
@@ -190,8 +204,9 @@ class DailySelectionRepository:
                 FROM daily_selection_runs
                 WHERE workspace_id = ?
                 ORDER BY created_at DESC, run_id DESC
+                LIMIT ? OFFSET ?
                 """,
-                (workspace_id,),
+                (workspace_id, limit, offset),
             ).fetchall()
             connection.commit()
         except BaseException:
@@ -339,6 +354,31 @@ class DailySelectionRepository:
                 )
                 for candidate_id in normalized_ids
             }
+            non_confirmable: dict[str, str] = {}
+            for candidate_id, candidate in candidates.items():
+                handoff_exists = connection.execute(
+                    """
+                    SELECT 1
+                    FROM daily_selection_handoffs
+                    WHERE workspace_id = ? AND run_id = ? AND candidate_id = ?
+                    """,
+                    (workspace_id, run_id, candidate_id),
+                ).fetchone() is not None
+                if candidate.risk_tags:
+                    non_confirmable[candidate_id] = "candidate has risk tags"
+                elif candidate.status == "candidate":
+                    continue
+                elif candidate.status == "confirmed" and handoff_exists:
+                    # Confirmation is intentionally replay-safe.  A retry can
+                    # resume a failed downstream consume without another user
+                    # action, but cannot confirm an arbitrary stale record.
+                    continue
+                else:
+                    non_confirmable[candidate_id] = (
+                        f"candidate status {candidate.status!r} is not confirmable"
+                    )
+            if non_confirmable:
+                raise DailySelectionCandidateNotConfirmable(non_confirmable)
             for candidate_id in normalized_ids:
                 confirmed = candidates[candidate_id].model_copy(update={"status": "confirmed"})
                 self._upsert_candidate(
@@ -388,6 +428,64 @@ class DailySelectionRepository:
         finally:
             connection.close()
         return tuple(handoffs)
+
+    def mark_handoffs_consumed(
+        self,
+        *,
+        workspace_id: str,
+        handoff_ids: Iterable[str],
+    ) -> tuple[DailySelectionHandoff, ...]:
+        """Acknowledge successful internal draft creation without exposing an ACK API."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        normalized_ids = tuple(
+            dict.fromkeys(_required_text(item, "handoff_id") for item in handoff_ids)
+        )
+        if not normalized_ids:
+            raise ValueError("handoff_ids must not be empty")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            handoffs: list[DailySelectionHandoff] = []
+            for handoff_id in normalized_ids:
+                row = connection.execute(
+                    """
+                    SELECT handoff_id, run_id, candidate_id, workspace_id,
+                           payload_json, status, idempotency_key, created_at
+                    FROM daily_selection_handoffs
+                    WHERE workspace_id = ? AND handoff_id = ?
+                    """,
+                    (workspace_id, handoff_id),
+                ).fetchone()
+                if row is None:
+                    raise DailySelectionRunNotFound("daily-selection handoff not found")
+                if row["status"] == "failed":
+                    raise ValueError("failed handoffs cannot be acknowledged as consumed")
+                if row["status"] == "pending":
+                    connection.execute(
+                        """
+                        UPDATE daily_selection_handoffs
+                        SET status = 'consumed'
+                        WHERE workspace_id = ? AND handoff_id = ? AND status = 'pending'
+                        """,
+                        (workspace_id, handoff_id),
+                    )
+                    row = connection.execute(
+                        """
+                        SELECT handoff_id, run_id, candidate_id, workspace_id,
+                               payload_json, status, idempotency_key, created_at
+                        FROM daily_selection_handoffs
+                        WHERE workspace_id = ? AND handoff_id = ?
+                        """,
+                        (workspace_id, handoff_id),
+                    ).fetchone()
+                handoffs.append(DailySelectionHandoff(**dict(row)))
+            connection.commit()
+            return tuple(handoffs)
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         migration = (

@@ -48,7 +48,7 @@ class CachedDailySelectionImage:
     content: bytes
     media_type: str
     final_url: str
-    resolved_address: str
+    resolved_address: str | None = None
 
 
 class DailySelectionImageAccessDenied(PermissionError):
@@ -81,6 +81,16 @@ class ProviderConfigResolver(Protocol):
 
 class ProviderFactory(Protocol):
     def __call__(self, config: Mapping[str, Any]) -> DailySelectionProvider: ...
+
+
+class DailySelectionHandoffConsumer(Protocol):
+    """Host-owned bridge from an acknowledged candidate to product drafts."""
+
+    def __call__(self, handoffs: tuple[DailySelectionHandoff, ...]) -> Mapping[str, Any]: ...
+
+
+class DailySelectionProviderUnavailable(RuntimeError):
+    """Configuration failed before an upstream collection call could begin."""
 
 
 class RunIdFactory(Protocol):
@@ -134,7 +144,7 @@ class DailySelectionService:
         provider_config = self._provider_config_resolver(actor)
         if not isinstance(provider_config, Mapping):
             raise TypeError("provider config resolver must return a mapping")
-        provider = self._provider_factory(provider_config)
+        provider = self._build_provider(provider_config)
         collected = DailySelectionCollector(
             workspace_id=actor.workspace_id,
             provider=provider,
@@ -173,7 +183,7 @@ class DailySelectionService:
         provider_config = self._provider_config_resolver(actor)
         if not isinstance(provider_config, Mapping):
             raise TypeError("provider config resolver must return a mapping")
-        provider = self._provider_factory(provider_config)
+        provider = self._build_provider(provider_config)
         detail = provider.get_item_detail(offer_id)
         if not detail.ok:
             message = detail.error.message if detail.error is not None else "1688 item detail lookup failed"
@@ -218,9 +228,11 @@ class DailySelectionService:
         )
 
     def list_runs(
-        self, *, actor: DailySelectionActor
+        self, *, actor: DailySelectionActor, limit: int = 20, offset: int = 0
     ) -> tuple[DailySelectionRunSummary, ...]:
-        return self._repository.list_runs(workspace_id=actor.workspace_id)
+        return self._repository.list_runs(
+            workspace_id=actor.workspace_id, limit=limit, offset=offset
+        )
 
     def get_run(
         self, *, actor: DailySelectionActor, run_id: str
@@ -258,6 +270,24 @@ class DailySelectionService:
             run_id=run_id,
             candidate_ids=candidate_ids,
         )
+
+    def mark_handoffs_consumed(
+        self, *, actor: DailySelectionActor, handoffs: tuple[DailySelectionHandoff, ...]
+    ) -> tuple[DailySelectionHandoff, ...]:
+        return self._repository.mark_handoffs_consumed(
+            workspace_id=actor.workspace_id,
+            handoff_ids=(handoff.handoff_id for handoff in handoffs),
+        )
+
+    def _build_provider(self, config: Mapping[str, Any]) -> DailySelectionProvider:
+        try:
+            return self._provider_factory(config)
+        except (TypeError, ValueError) as error:
+            # Provider constructors may include key/secret names in validation
+            # messages.  Keep those operational details out of HTTP responses.
+            raise DailySelectionProviderUnavailable(
+                "1688 collection provider is not configured"
+            ) from error
 
     def get_image(
         self, *, actor: DailySelectionActor, run_id: str, url: str

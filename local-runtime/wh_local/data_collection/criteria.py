@@ -57,9 +57,9 @@ class DailySelectionCriteria(BaseModel):
     min_price: Decimal | None = None
     max_price: Decimal | None = None
     min_moq: int | None = None
-    target_count: int = Field(default=30, ge=1)
+    target_count: int = Field(default=30, ge=1, le=100)
     max_api_calls: int = Field(default=50, ge=1, le=60)
-    detail_count: int = Field(default=10, ge=1)
+    detail_count: int = Field(default=10, ge=1, le=50)
     exclude_risks: bool = True
     site: Literal["US", "CO", "EC"] = "US"
 
@@ -125,6 +125,19 @@ class DailySelectionCriteria(BaseModel):
             raise DailySelectionCriteriaError("min_price cannot be greater than max_price")
         if self.min_moq is not None and self.min_moq < 1:
             raise DailySelectionCriteriaError("min_moq must be a positive integer")
+        # An image search always consumes download, upload, and search slots
+        # before any item detail can be fetched.  Reject impossible requests
+        # up front instead of silently returning a partial batch.
+        reserved_search_calls = 3 if self.collection_mode == "image" else len(self.keywords)
+        if self.collection_mode == "keyword" and self.selection_scope == "divergent":
+            # Divergent mode may issue one locally expanded query per source
+            # keyword.  Reserve for the worst allowed request, rather than
+            # quietly leaving fewer detail slots than the client requested.
+            reserved_search_calls *= 2
+        if self.detail_count > self.max_api_calls - reserved_search_calls:
+            raise DailySelectionCriteriaError(
+                "detail_count exceeds the remaining API-call budget for this request"
+            )
         return self
 
     @property
