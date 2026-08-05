@@ -8,22 +8,53 @@ from typing import Any
 
 from ..contracts import PluginCommandRequest, PriceVerificationActor, PriceVerificationContractError
 from ..quote_normalizer import QuoteItem
-from ..repository import PluginCommandRecord, PriceVerificationNotFound, PriceVerificationRepository, SourcingRunRecord
+from ..repository import (
+    PluginCommandRecord,
+    PriceVerificationNotFound,
+    PriceVerificationRepository,
+    QuoteRunRecord,
+    SourcingRunRecord,
+)
 from ..plugin.service import PluginBridgeService
+from ..plugin.shared_gateway import SharedPluginGateway
 from .normalizer import normalize_source_candidates
 from .ranking import rank_source_candidates
-from .task_builder import build_source_browser_image_search_payload
+from .contracts import SourceBrowserImageSearchPayload, SourceSearchTask
+from .task_builder import (
+    build_retained_source_browser_image_search_payload,
+)
+
+
+class QuoteDecisionRequiredError(ValueError):
+    """Raised when sourcing is requested before a human has reviewed quotes."""
+
+
+class NoRetainedQuotesError(ValueError):
+    """Raised when the current human decisions retain no official links."""
+
+
+class IncompleteRetainedQuotesError(ValueError):
+    """Raised when retained links lack a URL, image, or selected price."""
 
 
 class SourcingService:
     """Queue and materialize only read-only source browser discovery results."""
 
-    def __init__(self, *, repository: PriceVerificationRepository, plugin_bridge: PluginBridgeService) -> None:
+    def __init__(
+        self,
+        *,
+        repository: PriceVerificationRepository,
+        plugin_gateway: SharedPluginGateway | None = None,
+        plugin_bridge: PluginBridgeService | None = None,
+    ) -> None:
         if not isinstance(repository, PriceVerificationRepository):
             raise TypeError("repository must be PriceVerificationRepository")
-        if not isinstance(plugin_bridge, PluginBridgeService):
-            raise TypeError("plugin_bridge must be PluginBridgeService")
+        if plugin_gateway is None and not isinstance(plugin_bridge, PluginBridgeService):
+            raise TypeError("plugin_gateway or plugin_bridge is required")
+        if plugin_gateway is not None and not isinstance(plugin_gateway, SharedPluginGateway):
+            raise TypeError("plugin_gateway must be SharedPluginGateway")
         self._repository = repository
+        self._plugin_gateway = plugin_gateway
         self._plugin_bridge = plugin_bridge
 
     def queue_browser_search(
@@ -37,10 +68,26 @@ class SourcingService:
     ) -> PluginCommandRecord:
         """Queue one bounded image search command for complete saved quotes."""
         actor = _actor(actor)
+        run, browser_payload = self._retained_browser_payload(
+            actor, quote_run_id=quote_run_id, max_quotes=max_quotes
+        )
+        frozen = [task.to_payload() for task in browser_payload.tasks]
+        payload = {
+            "quote_run_id": run.run_id,
+            "source_mode": "browser_image_search",
+            "source_quotes": frozen,
+            **browser_payload.to_payload(),
+        }
+        if self._plugin_gateway is not None:
+            return self._plugin_gateway.queue_command(
+                actor,
+                session_id=session_id,
+                command_type="source_browser_image_search",
+                payload=payload,
+                idempotency_key=idempotency_key,
+            )
+        assert self._plugin_bridge is not None
         _owned_session(self._plugin_bridge, actor, session_id)
-        run = self._repository.get_quote_run(workspace_id=actor.workspace_id, run_id=quote_run_id)
-        browser_payload = build_source_browser_image_search_payload(run.items, max_quotes=max_quotes)
-        payload = {"quote_run_id": run.run_id, "source_mode": "browser_image_search", **browser_payload.to_payload()}
         return self._repository.create_command(
             workspace_id=actor.workspace_id,
             session_id=session_id,
@@ -48,6 +95,47 @@ class SourcingService:
                 command_type="source_browser_image_search", payload=payload, idempotency_key=idempotency_key
             ),
         )
+
+    def retained_search_tasks(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        quote_run_id: str,
+        max_quotes: int = 50,
+    ) -> tuple[SourceSearchTask, ...]:
+        """Return validated one-link-per-task inputs for the direct provider adapter."""
+        actor = _actor(actor)
+        _, browser_payload = self._retained_browser_payload(
+            actor, quote_run_id=quote_run_id, max_quotes=max_quotes
+        )
+        return browser_payload.tasks
+
+    def _retained_browser_payload(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        quote_run_id: str,
+        max_quotes: int,
+    ) -> tuple[QuoteRunRecord, SourceBrowserImageSearchPayload]:
+        run = self._repository.get_quote_run(workspace_id=actor.workspace_id, run_id=quote_run_id)
+        decisions = self._repository.list_current_quote_decisions(
+            workspace_id=actor.workspace_id, quote_run_id=quote_run_id
+        )
+        if not decisions:
+            raise QuoteDecisionRequiredError("quote decisions are required before sourcing")
+        retained_keys = {item.quote_key for item in decisions if item.decision == "retained"}
+        if not retained_keys:
+            raise NoRetainedQuotesError("no retained quotes are available for sourcing")
+        retained = [_frozen_source_quote(item) for item in run.items if _quote_key(item) in retained_keys]
+        incomplete = [item["quote_key"] for item in retained if not _complete_frozen_quote(item)]
+        if incomplete:
+            raise IncompleteRetainedQuotesError(
+                "retained quotes are incomplete: " + ", ".join(incomplete)
+            )
+        browser_payload = build_retained_source_browser_image_search_payload(
+            retained, max_quotes=max_quotes
+        )
+        return run, browser_payload
 
     def materialize_browser_result(
         self,
@@ -65,7 +153,13 @@ class SourcingService:
         actor = _actor(actor)
         if not isinstance(command, PluginCommandRecord):
             raise TypeError("command must be PluginCommandRecord")
-        persisted = self._repository.get_command(workspace_id=actor.workspace_id, command_id=command.command_id)
+        persisted = (
+            self._plugin_gateway.get_command(actor, command.command_id)
+            if self._plugin_gateway is not None
+            else self._repository.get_command(
+                workspace_id=actor.workspace_id, command_id=command.command_id
+            )
+        )
         if persisted.command_type != "source_browser_image_search":
             raise PriceVerificationContractError("command must be a source browser image search")
         if persisted.status != "succeeded":
@@ -74,7 +168,16 @@ class SourcingService:
         resolved_quote_run_id = quote_run_id or (saved_run_id if isinstance(saved_run_id, str) else "")
         if not resolved_quote_run_id:
             raise PriceVerificationContractError("quote_run_id is required")
-        quotes = self._repository.get_quote_run(workspace_id=actor.workspace_id, run_id=resolved_quote_run_id).items
+        frozen_quotes = persisted.payload.get("source_quotes")
+        if not isinstance(frozen_quotes, list) or not all(
+            isinstance(item, Mapping) for item in frozen_quotes
+        ):
+            frozen_quotes = list(
+                self._repository.get_quote_run(
+                    workspace_id=actor.workspace_id, run_id=resolved_quote_run_id
+                ).items
+            )
+        quotes = tuple(frozen_quotes)
         source_result: Mapping[str, Any] = persisted.result
         parent_run_id = _text(persisted.payload.get("retry_of_sourcing_run_id"))
         if parent_run_id:
@@ -102,13 +205,23 @@ class SourcingService:
             source_mode="browser_image_search",
             status="partial" if preview["counts"]["failed_quotes"] else "succeeded",
             task_count=len(preview["items"]),
+            source_quotes=tuple(frozen_quotes),
         )
 
     def preview(self, actor: PriceVerificationActor, sourcing_run_id: str) -> dict[str, Any]:
         """Recreate a source preview solely from workspace-owned snapshots."""
         actor = _actor(actor)
         run = self._repository.get_sourcing_run(workspace_id=actor.workspace_id, run_id=sourcing_run_id)
-        quotes = self._repository.get_quote_run(workspace_id=actor.workspace_id, run_id=run.quote_run_id).items
+        frozen_quotes = self._repository.list_sourcing_run_quotes(
+            workspace_id=actor.workspace_id, sourcing_run_id=sourcing_run_id
+        )
+        quotes = (
+            tuple(item.snapshot for item in frozen_quotes)
+            if frozen_quotes
+            else self._repository.get_quote_run(
+                workspace_id=actor.workspace_id, run_id=run.quote_run_id
+            ).items
+        )
         source_items: dict[str, dict[str, Any]] = {}
         for snapshot in run.candidates:
             quote_key = _text(snapshot.get("quote_key"))
@@ -133,21 +246,43 @@ class SourcingService:
     ) -> PluginCommandRecord:
         """Queue only failed source tasks; recommendations and reviews remain saved."""
         actor = _actor(actor)
-        _owned_session(self._plugin_bridge, actor, session_id)
         run = self._repository.get_sourcing_run(workspace_id=actor.workspace_id, run_id=sourcing_run_id)
         current = self.preview(actor, sourcing_run_id)
         retry_keys = set(current["retry_quote_keys"])
         if not retry_keys:
             raise ValueError("no failed source items to retry")
-        quote_run = self._repository.get_quote_run(workspace_id=actor.workspace_id, run_id=run.quote_run_id)
-        retry_quotes = [quote for quote in quote_run.items if _quote_key(quote) in retry_keys]
-        browser_payload = build_source_browser_image_search_payload(retry_quotes, max_quotes=max_quotes)
+        frozen_quotes = self._repository.list_sourcing_run_quotes(
+            workspace_id=actor.workspace_id, sourcing_run_id=sourcing_run_id
+        )
+        retry_quotes = [
+            dict(item.snapshot) for item in frozen_quotes if item.quote_key in retry_keys
+        ]
+        if not retry_quotes:
+            quote_run = self._repository.get_quote_run(
+                workspace_id=actor.workspace_id, run_id=run.quote_run_id
+            )
+            retry_quotes = [quote for quote in quote_run.items if _quote_key(quote) in retry_keys]
+        browser_payload = build_retained_source_browser_image_search_payload(
+            retry_quotes, max_quotes=max_quotes
+        )
+        source_quotes = [task.to_payload() for task in browser_payload.tasks]
         payload = {
-            "quote_run_id": quote_run.run_id,
+            "quote_run_id": run.quote_run_id,
             "retry_of_sourcing_run_id": run.run_id,
             "source_mode": "browser_image_search",
+            "source_quotes": source_quotes,
             **browser_payload.to_payload(),
         }
+        if self._plugin_gateway is not None:
+            return self._plugin_gateway.queue_command(
+                actor,
+                session_id=session_id,
+                command_type="source_browser_image_search",
+                payload=payload,
+                idempotency_key=idempotency_key,
+            )
+        assert self._plugin_bridge is not None
+        _owned_session(self._plugin_bridge, actor, session_id)
         return self._repository.create_command(
             workspace_id=actor.workspace_id,
             session_id=session_id,
@@ -334,6 +469,38 @@ def _quote_sku(quote: QuoteItem | Mapping[str, Any]) -> str:
 
 def _quote_value(quote: QuoteItem | Mapping[str, Any], name: str) -> str:
     return _text(getattr(quote, name, "") if isinstance(quote, QuoteItem) else quote.get(name))
+
+
+def _frozen_source_quote(quote: QuoteItem | Mapping[str, Any]) -> dict[str, Any]:
+    values = dict(quote) if isinstance(quote, Mapping) else {
+        name: getattr(quote, name) for name in quote.__dataclass_fields__
+    }
+    selected_price = next(
+        (
+            values.get(name)
+            for name in (
+                "adjusted_declared_price_cny",
+                "new_declared_price_cny",
+                "original_declared_price_cny",
+            )
+            if values.get(name) not in (None, "")
+        ),
+        "",
+    )
+    return {
+        **values,
+        "quote_key": _quote_key(quote),
+        "official_link_url": _text(values.get("official_link_url")),
+        "main_image_url": _text(values.get("main_image_url")),
+        "selected_price_cny": str(selected_price),
+    }
+
+
+def _complete_frozen_quote(quote: Mapping[str, Any]) -> bool:
+    return all(
+        _text(quote.get(name))
+        for name in ("quote_key", "official_link_url", "main_image_url", "selected_price_cny")
+    )
 
 
 def _text(value: object) -> str:

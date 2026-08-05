@@ -18,6 +18,7 @@ from ..data_collection import (
     register_daily_selection_routes,
 )
 from ..data_collection.provider import OneBound1688Provider
+from ..data_collection.plugin_queue import DataCollectionPluginQueue
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
 from ..price_verification import (
@@ -68,25 +69,34 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.include_router(create_customer_router(customer_auth, customer_sessions))
 
     app.include_router(create_basic_settings_router(db_path))
-    _register_data_collection(app, db_path)
+    plugin_queue = DataCollectionPluginQueue(db_path)
+    _register_data_collection(app, db_path, plugin_queue)
 
     # 核价及货源模块
-    _register_price_verification(app, db_path, config.data_dir)
+    _register_price_verification(app, db_path, config.data_dir, plugin_queue)
 
     return app
 
 
-def _register_data_collection(app: FastAPI, db_path: Path) -> None:
+def _register_data_collection(
+    app: FastAPI, db_path: Path, plugin_queue: DataCollectionPluginQueue
+) -> None:
     """Register daily-selection routes with the host-owned adapters."""
     dependencies = DailySelectionRouteDependencies(
         resolve_actor=daily_selection_actor_from_authorization,
         provider_config_resolver=_provider_config,
         provider_factory=_provider_factory,
         database_path=db_path,
+        plugin_queue=plugin_queue,
     )
     register_daily_selection_routes(app.router, dependencies)
 
-def _register_price_verification(app: FastAPI, db_path: Path, data_dir: Path) -> None:
+def _register_price_verification(
+    app: FastAPI,
+    db_path: Path,
+    data_dir: Path,
+    plugin_queue: DataCollectionPluginQueue,
+) -> None:
     """Register read-only price-verification routes with host-owned adapters."""
     dependencies = PriceVerificationRouteDependencies(
         resolve_actor=_price_verification_actor,
@@ -94,6 +104,7 @@ def _register_price_verification(app: FastAPI, db_path: Path, data_dir: Path) ->
         output_root=data_dir / "price-verification",
         provider_config_resolver=_provider_config,
         provider_factory=_provider_factory,
+        plugin_queue=plugin_queue,
     )
     register_price_verification_routes(app.router, dependencies)
 

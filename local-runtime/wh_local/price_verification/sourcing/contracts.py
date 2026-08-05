@@ -36,6 +36,12 @@ class SourceSearchTask:
     skc_id: str
     main_image_url: str
     source_quote_keys: tuple[str, ...]
+    quote_key: str = ""
+    official_link_url: str = ""
+    selected_price_cny: str = ""
+    sku_id: str = ""
+    spu_or_goods_id: str = ""
+    product_title: str = ""
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -43,6 +49,12 @@ class SourceSearchTask:
             "skc_id": self.skc_id,
             "main_image_url": self.main_image_url,
             "source_quote_keys": list(self.source_quote_keys),
+            "quote_key": self.quote_key or self.task_key,
+            "official_link_url": self.official_link_url,
+            "selected_price_cny": self.selected_price_cny,
+            "sku_id": self.sku_id,
+            "spu_or_goods_id": self.spu_or_goods_id,
+            "product_title": self.product_title,
         }
 
 

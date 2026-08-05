@@ -13,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 import json
 import re
 from typing import Any, Iterable, Mapping
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunsplit
 
 from .contracts import PriceVerificationContractError, redact_sensitive, safe_json_value
 
@@ -24,6 +24,7 @@ class ForbiddenPlatformWriteError(PriceVerificationContractError):
 
 @dataclass
 class QuoteItem:
+    quote_key: str = ""
     skc_id: str = ""
     sku_id: str = ""
     sku_true_id: str = ""
@@ -41,6 +42,7 @@ class QuoteItem:
     new_declared_price_cny: Decimal | None = None
     product_title: str = ""
     main_image_url: str = ""
+    official_link_url: str = ""
     extra_image_urls: list[str] = field(default_factory=list)
     source_endpoint: str = ""
     capture_method: str = ""
@@ -236,16 +238,18 @@ def quote_item_from_dom_row(row: Mapping[str, Any], *, popup_confirmed: bool = F
     adjusted = money_for(cells, ("调整后申报价格(CNY)", "调整后申报价格", "建议价格", "建议供货价")) if popup_confirmed else None
     new = money_for(cells, ("新申报价格(CNY)", "新申报价格")) if popup_confirmed else None
     sku_id = id_from(cells, ("SKU ID", "sku_id", "SKU编号"), text, r"\bSKU(?:\s*ID|\s*编号)?[:：\s]*([A-Za-z0-9_-]{4,})\b")
+    goods_id = id_from(cells, ("SPU", "SPU ID", "商品ID", "goods_id"), text, r"\b(?:SPU|Goods)[:：\s]*([A-Za-z0-9_-]{4,})\b")
     return QuoteItem(
         skc_id=id_from(cells, ("SKC", "SKC ID", "skc_id"), text, r"\bSKC[:：\s]*([A-Za-z0-9_-]{4,})\b"),
         sku_id=sku_id,
         sku_true_id=sku_id,
         sku_identifier_kind="sku_id" if sku_id else "",
-        spu_or_goods_id=id_from(cells, ("SPU", "SPU ID", "商品ID", "goods_id"), text, r"\b(?:SPU|Goods)[:：\s]*([A-Za-z0-9_-]{4,})\b"),
+        spu_or_goods_id=goods_id,
         site=text_for(cells, ("站点", "site")), status=text_for(cells, ("状态", "status")),
         original_declared_price_cny=original, adjusted_declared_price_cny=adjusted,
         new_declared_price_cny=new, product_title=text_for(cells, ("商品标题", "商品名称", "title")),
-        main_image_url=first_url(row), source_endpoint=source, capture_method=source,
+        main_image_url=first_url(row), official_link_url=official_temu_link(row, goods_id),
+        source_endpoint=source, capture_method=source,
         captured_at=clean_text(row.get("capturedAt")), evidence_sources=source, dom_evidence_count=1,
     )
 
@@ -308,6 +312,7 @@ def quote_from_mapping(mapping: Mapping[str, Any], endpoint: str, captured_at: s
     sku_true_id = stringify_id(first_value(mapping, ("productSkuId", "skuId", "sku_id", "SKU ID")))
     merchant_code = stringify_id(first_value(mapping, ("productSkuExtCode", "skuExtCode", "productSkuCode", "skuCode", "sellerSku", "merchantSku")))
     images = image_urls(mapping)
+    goods_id = stringify_id(first_value(mapping, ("productId", "goodsId", "spuId", "goods_id")))
     return QuoteItem(
         skc_id=stringify_id(first_value(mapping, ("skcId", "productSkcId", "skc_id", "SKC ID"))),
         sku_id=sku_true_id, sku_true_id=sku_true_id,
@@ -316,14 +321,15 @@ def quote_from_mapping(mapping: Mapping[str, Any], endpoint: str, captured_at: s
         sku_attribute_text=clean_text(first_value(mapping, ("skuAttributeText", "skuAttributes", "skuPropsText"))),
         skc_attribute_text=clean_text(first_value(mapping, ("skcAttributeText", "skcAttributes", "productAttributesText"))),
         product_attribute_summary=attribute_summary(first_value(mapping, ("productPropertyList", "productAttributeList", "attributes"))),
-        spu_or_goods_id=stringify_id(first_value(mapping, ("productId", "goodsId", "spuId", "goods_id"))),
+        spu_or_goods_id=goods_id,
         site=site_text(first_value(mapping, ("siteName", "siteNameCn", "site", "站点"))),
         status=clean_text(first_value(mapping, ("orderStatus", "priceStatus", "reviewStatus", "status", "状态"))),
         original_declared_price_cny=money_for(mapping, _MONEY_KEYS["original"]),
         adjusted_declared_price_cny=money_for(mapping, _MONEY_KEYS["adjusted"]),
         new_declared_price_cny=money_for(mapping, _MONEY_KEYS["new"]),
         product_title=clean_text(first_value(mapping, ("productName", "goodsName", "title", "商品标题", "商品名称"))),
-        main_image_url=images[0] if images else "", extra_image_urls=images[1:], source_endpoint=endpoint,
+        main_image_url=images[0] if images else "", extra_image_urls=images[1:],
+        official_link_url=official_temu_link(mapping, goods_id), source_endpoint=endpoint,
         capture_method="network_json", captured_at=captured_at, evidence_sources="network_json",
         network_evidence_count=1, source_http_statuses=http_status,
     )
@@ -408,7 +414,10 @@ def dedupe_key(item: QuoteItem) -> tuple[str, str, str, str]:
 
 
 def merge_quote_evidence(target: QuoteItem, source: QuoteItem) -> None:
-    fields = tuple(field_name for field_name, _ in _COMPLETE_FIELDS) + ("spu_or_goods_id", "status", "new_declared_price_cny", "sku_merchant_code")
+    fields = tuple(field_name for field_name, _ in _COMPLETE_FIELDS) + (
+        "spu_or_goods_id", "status", "new_declared_price_cny", "sku_merchant_code",
+        "official_link_url",
+    )
     for field_name in fields:
         old, new = getattr(target, field_name), getattr(source, field_name)
         if new in (None, ""):
@@ -517,6 +526,32 @@ def image_urls(mapping: Mapping[str, Any]) -> list[str]:
 
 def first_url(row: Mapping[str, Any]) -> str:
     return (image_urls(row) or [""])[0]
+
+
+def official_temu_link(mapping: Mapping[str, Any], goods_id: str = "") -> str:
+    """Return a stable public Temu product URL without tracking parameters."""
+    raw = clean_text(
+        first_value(
+            mapping,
+            (
+                "officialLinkUrl", "official_link_url", "productUrl", "product_url",
+                "goodsUrl", "goods_url", "productLink", "product_link",
+                "linkUrl", "link_url", "href",
+            ),
+        )
+    )
+    resolved_goods_id = stringify_id(goods_id)
+    if raw:
+        parsed = urlparse(raw)
+        hostname = (parsed.hostname or "").casefold()
+        if hostname == "temu.com" or hostname.endswith(".temu.com"):
+            query_goods = parse_qs(parsed.query).get("goods_id", [""])[0]
+            resolved_goods_id = stringify_id(query_goods) or resolved_goods_id
+            if not resolved_goods_id and parsed.path and parsed.path != "/":
+                return urlunsplit(("https", "www.temu.com", parsed.path, "", ""))
+    if not resolved_goods_id:
+        return ""
+    return "https://www.temu.com/goods.html?" + urlencode({"goods_id": resolved_goods_id})
 
 
 def urls_from_value(value: Any) -> list[str]:

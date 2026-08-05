@@ -10,9 +10,18 @@ from .contracts import (
 from .costs import CandidateCosts, calculate_candidate_costs
 from .profit_adapter import preview_profit
 from .ranking import rank_source_candidates
-from .task_builder import build_source_browser_image_search_payload
+from .task_builder import (
+    build_retained_source_browser_image_search_payload,
+    build_source_browser_image_search_payload,
+)
 from .normalizer import canonical_source_url, normalize_source_candidate, normalize_source_candidates
-from .service import SourcingService, build_source_preview
+from .service import (
+    IncompleteRetainedQuotesError,
+    NoRetainedQuotesError,
+    QuoteDecisionRequiredError,
+    SourcingService,
+    build_source_preview,
+)
 
 __all__ = [
     "CandidateCostInputs",
@@ -22,6 +31,7 @@ __all__ = [
     "SourceSearchTask",
     "SourcingContractError",
     "build_source_browser_image_search_payload",
+    "build_retained_source_browser_image_search_payload",
     "calculate_candidate_costs",
     "preview_profit",
     "rank_source_candidates",
@@ -29,5 +39,8 @@ __all__ = [
     "normalize_source_candidate",
     "normalize_source_candidates",
     "SourcingService",
+    "IncompleteRetainedQuotesError",
+    "NoRetainedQuotesError",
+    "QuoteDecisionRequiredError",
     "build_source_preview",
 ]

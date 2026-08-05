@@ -60,6 +60,36 @@ def build_source_browser_image_search_payload(
     return SourceBrowserImageSearchPayload(tasks=tasks, skipped_quote_keys=tuple(skipped))
 
 
+def build_retained_source_browser_image_search_payload(
+    quotes: Iterable[Mapping[str, Any]], *, max_quotes: int = 50
+) -> SourceBrowserImageSearchPayload:
+    """Create one frozen image-search task for each retained official link."""
+    if isinstance(max_quotes, bool) or not isinstance(max_quotes, int) or max_quotes < 1:
+        raise ValueError("max_quotes must be a positive integer")
+    tasks: list[SourceSearchTask] = []
+    skipped: list[str] = []
+    for quote in quotes:
+        quote_key = _text(quote.get("quote_key"))
+        if len(tasks) >= max_quotes:
+            if quote_key:
+                skipped.append(quote_key)
+            continue
+        task = SourceSearchTask(
+            task_key=quote_key,
+            quote_key=quote_key,
+            skc_id=_text(quote.get("skc_id")),
+            sku_id=_text(quote.get("sku_id")),
+            spu_or_goods_id=_text(quote.get("spu_or_goods_id")),
+            product_title=_text(quote.get("product_title")),
+            main_image_url=_text(quote.get("main_image_url")),
+            official_link_url=_text(quote.get("official_link_url")),
+            selected_price_cny=_text(quote.get("selected_price_cny")),
+            source_quote_keys=(quote_key,),
+        )
+        tasks.append(task)
+    return SourceBrowserImageSearchPayload(tasks=tuple(tasks), skipped_quote_keys=tuple(skipped))
+
+
 def _eligible_source_quote(
     quote: QuoteItem | Mapping[str, Any],
 ) -> tuple[_SourceQuote | None, str]:

@@ -107,6 +107,30 @@ class ProviderBudgetRecord(_Record):
     updated_at: str
 
 
+class QuoteDecisionRecord(_Record):
+    decision_id: str
+    workspace_id: str
+    quote_run_id: str
+    quote_key: str
+    decision: str
+    decided_by: str
+    note: str
+    revision: int
+    decided_at: str
+
+
+class SourcingRunQuoteRecord(_Record):
+    workspace_id: str
+    sourcing_run_id: str
+    quote_run_id: str
+    quote_key: str
+    official_link_url: str
+    main_image_url: str
+    selected_price_cny: str
+    snapshot: Mapping[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
 class PriceVerificationRepository:
     """Own all price-verification tables without host routing dependencies."""
 
@@ -131,9 +155,10 @@ class PriceVerificationRepository:
             self._keeper_connection = None
 
     def initialize(self) -> None:
-        migration = Path(__file__).with_name("migrations") / "001_price_verification.sql"
+        migrations = Path(__file__).with_name("migrations")
         with self._connect() as connection:
-            connection.executescript(migration.read_text(encoding="utf-8"))
+            for migration in sorted(migrations.glob("*.sql")):
+                connection.executescript(migration.read_text(encoding="utf-8"))
 
     def create_pairing_code(
         self,
@@ -598,6 +623,95 @@ class PriceVerificationRepository:
             ).fetchall()
         return QuoteRunRecord(**dict(row), items=tuple(_load_snapshot(item["snapshot_json"]) for item in items))
 
+    def record_quote_decision(
+        self,
+        *,
+        workspace_id: str,
+        quote_run_id: str,
+        quote_key: str,
+        decision: str,
+        decided_by: str,
+        note: str = "",
+    ) -> QuoteDecisionRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        quote_run_id = _required_text(quote_run_id, "quote_run_id")
+        quote_key = _required_text(quote_key, "quote_key")
+        decided_by = _required_text(decided_by, "decided_by")
+        if decision not in {"retained", "rejected"}:
+            raise PriceVerificationContractError("decision must be retained or rejected")
+        if not isinstance(note, str):
+            raise PriceVerificationContractError("note must be text")
+        now = _now()
+        decision_id = _new_id()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            quote = connection.execute(
+                """SELECT 1 FROM price_verification_quote_items
+                WHERE workspace_id = ? AND run_id = ? AND quote_key = ?""",
+                (workspace_id, quote_run_id, quote_key),
+            ).fetchone()
+            if quote is None:
+                connection.rollback()
+                raise PriceVerificationNotFound("resource not found")
+            row = connection.execute(
+                """SELECT COALESCE(MAX(revision), 0) AS revision
+                FROM price_verification_quote_decisions
+                WHERE workspace_id = ? AND quote_run_id = ? AND quote_key = ?""",
+                (workspace_id, quote_run_id, quote_key),
+            ).fetchone()
+            revision = int(row["revision"]) + 1
+            connection.execute(
+                """INSERT INTO price_verification_quote_decisions
+                (decision_id, workspace_id, quote_run_id, quote_key, decision,
+                 decided_by, note, revision, decided_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    decision_id,
+                    workspace_id,
+                    quote_run_id,
+                    quote_key,
+                    decision,
+                    decided_by,
+                    note.strip(),
+                    revision,
+                    now,
+                ),
+            )
+            record = connection.execute(
+                "SELECT * FROM price_verification_quote_decisions WHERE decision_id = ?",
+                (decision_id,),
+            ).fetchone()
+            connection.commit()
+        return QuoteDecisionRecord(**dict(record))
+
+    def list_current_quote_decisions(
+        self, *, workspace_id: str, quote_run_id: str
+    ) -> tuple[QuoteDecisionRecord, ...]:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        quote_run_id = _required_text(quote_run_id, "quote_run_id")
+        with self._connect() as connection:
+            self._owned_row_in(
+                connection,
+                "price_verification_quote_runs",
+                workspace_id,
+                "run_id",
+                quote_run_id,
+            )
+            rows = connection.execute(
+                """SELECT d.* FROM price_verification_quote_decisions d
+                WHERE d.workspace_id = ? AND d.quote_run_id = ?
+                  AND d.revision = (
+                    SELECT MAX(current.revision)
+                    FROM price_verification_quote_decisions current
+                    WHERE current.workspace_id = d.workspace_id
+                      AND current.quote_run_id = d.quote_run_id
+                      AND current.quote_key = d.quote_key
+                  )
+                ORDER BY d.quote_key""",
+                (workspace_id, quote_run_id),
+            ).fetchall()
+        return tuple(QuoteDecisionRecord(**dict(row)) for row in rows)
+
     def create_sourcing_run(
         self,
         *,
@@ -608,12 +722,14 @@ class PriceVerificationRepository:
         status: str = "succeeded",
         task_count: int | None = None,
         run_id: str | None = None,
+        source_quotes: Sequence[Mapping[str, Any]] = (),
     ) -> SourcingRunRecord:
         workspace_id = _required_text(workspace_id, "workspace_id")
         quote_run_id = _required_text(quote_run_id, "quote_run_id")
         source_mode = _required_text(source_mode, "source_mode")
         status = _required_text(status, "status")
         snapshots = _source_candidate_rows(candidates)
+        frozen_quotes = _source_quote_rows(source_quotes)
         run_id = run_id or _new_id()
         now = _now()
         with self._connect() as connection:
@@ -637,11 +753,64 @@ class PriceVerificationRepository:
                     [(workspace_id, run_id, quote_key, candidate_key, serialized)
                      for quote_key, candidate_key, serialized in snapshots],
                 )
+                connection.executemany(
+                    """INSERT INTO price_verification_sourcing_run_quotes
+                    (workspace_id, sourcing_run_id, quote_run_id, quote_key,
+                     official_link_url, main_image_url, selected_price_cny,
+                     snapshot_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (
+                            workspace_id,
+                            run_id,
+                            quote_run_id,
+                            quote_key,
+                            official_link_url,
+                            main_image_url,
+                            selected_price_cny,
+                            serialized,
+                            now,
+                        )
+                        for (
+                            quote_key,
+                            official_link_url,
+                            main_image_url,
+                            selected_price_cny,
+                            serialized,
+                        ) in frozen_quotes
+                    ],
+                )
                 connection.commit()
             except BaseException:
                 connection.rollback()
                 raise
         return self.get_sourcing_run(workspace_id=workspace_id, run_id=run_id)
+
+    def list_sourcing_run_quotes(
+        self, *, workspace_id: str, sourcing_run_id: str
+    ) -> tuple[SourcingRunQuoteRecord, ...]:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        sourcing_run_id = _required_text(sourcing_run_id, "sourcing_run_id")
+        with self._connect() as connection:
+            self._owned_row_in(
+                connection,
+                "price_verification_sourcing_runs",
+                workspace_id,
+                "run_id",
+                sourcing_run_id,
+            )
+            rows = connection.execute(
+                """SELECT * FROM price_verification_sourcing_run_quotes
+                WHERE workspace_id = ? AND sourcing_run_id = ?
+                ORDER BY quote_key""",
+                (workspace_id, sourcing_run_id),
+            ).fetchall()
+        records: list[SourcingRunQuoteRecord] = []
+        for row in rows:
+            values = dict(row)
+            values["snapshot"] = _load_snapshot(values.pop("snapshot_json"))
+            records.append(SourcingRunQuoteRecord(**values))
+        return tuple(records)
 
     def get_sourcing_run(self, *, workspace_id: str, run_id: str) -> SourcingRunRecord:
         workspace_id = _required_text(workspace_id, "workspace_id")
@@ -770,6 +939,37 @@ def _source_candidate_rows(candidates: Sequence[Mapping[str, Any]]) -> tuple[tup
             raise ValueError("quote_key and candidate_key must be unique within a sourcing run")
         seen.add((quote_key, candidate_key))
         rows.append((quote_key, candidate_key, safe_json_dumps(candidate)))
+    return tuple(rows)
+
+
+def _source_quote_rows(
+    source_quotes: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[str, str, str, str, str], ...]:
+    rows: list[tuple[str, str, str, str, str]] = []
+    seen: set[str] = set()
+    for source_quote in source_quotes:
+        if not isinstance(source_quote, Mapping):
+            raise TypeError("source quote entries must be mappings")
+        quote_key = _required_text(source_quote.get("quote_key"), "quote_key")
+        if quote_key in seen:
+            raise ValueError("quote_key values must be unique within a sourcing run")
+        seen.add(quote_key)
+        official_link_url = _required_text(
+            source_quote.get("official_link_url"), "official_link_url"
+        )
+        main_image_url = _required_text(source_quote.get("main_image_url"), "main_image_url")
+        selected_price_cny = _required_text(
+            source_quote.get("selected_price_cny"), "selected_price_cny"
+        )
+        rows.append(
+            (
+                quote_key,
+                official_link_url,
+                main_image_url,
+                selected_price_cny,
+                safe_json_dumps(source_quote),
+            )
+        )
     return tuple(rows)
 
 
