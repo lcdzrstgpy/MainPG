@@ -46,5 +46,6 @@ class LocalSession:
     expires_at: str
     username: str
     role: str = "operator"
+    workspace_id: str = "default"
     workspace_code: str = ""
     workspace_name: str = ""
