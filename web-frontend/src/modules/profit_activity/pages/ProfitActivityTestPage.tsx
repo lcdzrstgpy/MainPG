@@ -32,8 +32,19 @@ type CalculateResult = {
 
 type ImportPreview = {
   import_id?: string;
+  original_filename?: string;
+  site?: Site;
+  created_at?: string;
   summary?: Record<string, number>;
   rows?: Array<Record<string, unknown>>;
+};
+
+type FilterDecision = {
+  record_id?: number;
+  skc?: string;
+  site?: string;
+  decision?: string;
+  reason_code?: string;
 };
 
 type FilterTask = {
@@ -44,6 +55,15 @@ type FilterTask = {
   removed_skc_count?: number;
   filtered_path?: string;
   removed_path?: string;
+  id?: number;
+  site_code?: string;
+  rule_version?: number;
+  minimum_net_profit?: number;
+  minimum_profit_rate?: number;
+  retained_count?: number;
+  excluded_count?: number;
+  created_at?: string;
+  decisions?: FilterDecision[];
   [key: string]: unknown;
 };
 
@@ -121,12 +141,28 @@ export function ProfitActivityTestPage() {
   const [querySkcs, setQuerySkcs] = useState("");
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [importFile, setImportFile] = useState<File | null>(null);
-  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importFiles, setImportFiles] = useState<File[]>([]);
+  const [importPreviews, setImportPreviews] = useState<ImportPreview[]>([]);
+  const [lastImportFiles, setLastImportFiles] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("profitActivityImportFileNames") || "[]");
+      return Array.isArray(saved) ? saved.filter((item): item is string => typeof item === "string") : [];
+    } catch {
+      return [];
+    }
+  });
   const [activityFile, setActivityFile] = useState<File | null>(null);
   const [filterTask, setFilterTask] = useState<FilterTask | null>(null);
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("输入 SKC、售价、成本、重量后会自动预览利润。");
+  const [recentSaved, setRecentSaved] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("profitActivityRecentSaved") || "[]");
+      return Array.isArray(saved) ? saved.slice(0, 3) : [];
+    } catch {
+      return [];
+    }
+  });
   const [log, setLog] = useState<string[]>([]);
   const debounceRef = useRef<number | undefined>();
 
@@ -138,6 +174,7 @@ export function ProfitActivityTestPage() {
     if (!apiBase) return;
     void loadSettings();
     void queryProducts("");
+    void restoreImportSessions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBase, token]);
 
@@ -192,12 +229,13 @@ export function ProfitActivityTestPage() {
     URL.revokeObjectURL(objectUrl);
   };
 
-  const withBusy = async (label: string, action: () => Promise<void>) => {
+  const withBusy = async (label: string, action: () => Promise<void>, successMessage?: string) => {
     setBusy(label);
     setMessage(`${label} 中...`);
     try {
       await action();
-      setMessage(`${label} 完成。`);
+      if (successMessage) setMessage(successMessage);
+      else setMessage(`${label} 完成。`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -231,12 +269,40 @@ export function ProfitActivityTestPage() {
     setSiteSettings(extractSiteSettings(data, site));
   });
 
-  const queryProducts = (overrideSkcs = querySkcs) => withBusy("查询数据库产品", async () => {
-    const params = new URLSearchParams({ site, scope, skcs: overrideSkcs });
-    const data = await request<{ products: ProductRow[] }>(`/api/profit-activity/products?${params}`);
-    setProducts(data.products || []);
-    setSelected(new Set());
-  });
+  const queryProducts = async (overrideSkcs = querySkcs) => {
+    // 静默查询：仅用于刷新产品列表与按钮禁用，不写顶部状态条
+    setBusy("查询数据库产品");
+    try {
+      const params = new URLSearchParams({ site, scope, skcs: overrideSkcs });
+      const data = await request<{ products: ProductRow[] }>(`/api/profit-activity/products?${params}`);
+      setProducts(data.products || []);
+      setSelected(new Set());
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const persistImportFileNames = (files: File[]) => {
+    const names = files.map((item) => item.name);
+    setLastImportFiles(names);
+    try {
+      localStorage.setItem("profitActivityImportFileNames", JSON.stringify(names));
+    } catch {
+      // 本地存储不可用时静默跳过
+    }
+  };
+
+  const restoreImportSessions = async () => {
+    try {
+      const sessions = await request<ImportPreview[]>("/api/profit-activity/products/import/sessions");
+      if (Array.isArray(sessions) && sessions.some((item) => item?.import_id)) {
+        setImportPreviews(sessions);
+        setMessage(`已恢复最近 ${sessions.length} 次产品导入预览（${sessions.map((item) => item.original_filename).filter(Boolean).join("、")}），可继续确认导入。`);
+      }
+    } catch {
+      // 无最近导入会话或接口不可用时静默跳过
+    }
+  };
 
   const calculateProfit = async (showBusy = true) => {
     const action = async () => {
@@ -273,9 +339,13 @@ export function ProfitActivityTestPage() {
     form.append("image", productImage);
     form.append("source_image", sourceImage);
     const data = await request<{ product: ProductRow }>("/api/profit-activity/products", { method: "POST", body: form });
-    setQuerySkcs(data.product.skc);
-    await queryProducts(data.product.skc);
-  });
+    const savedSkc = data.product.skc;
+    const nextRecent = [savedSkc, ...recentSaved].slice(0, 3);
+    setRecentSaved(nextRecent);
+    localStorage.setItem("profitActivityRecentSaved", JSON.stringify(nextRecent));
+    setQuerySkcs(savedSkc);
+    await queryProducts(savedSkc);
+  }, `${productForm.skc} 入库成功`);
 
   const deleteSelected = () => withBusy("删除已选产品", async () => {
     await request("/api/profit-activity/products", {
@@ -287,49 +357,75 @@ export function ProfitActivityTestPage() {
   });
 
   const previewImport = () => withBusy("产品 Excel 导入预览", async () => {
-    if (!importFile) throw new Error("请选择产品 Excel 文件。");
-    const form = new FormData();
-    form.append("site", site);
-    form.append("file", importFile);
-    setImportPreview(await request<ImportPreview>("/api/profit-activity/products/import/preview", { method: "POST", body: form }));
+    if (!importFiles.length) throw new Error("请选择产品 Excel 文件。");
+    const results: ImportPreview[] = [];
+    for (const file of importFiles) {
+      const form = new FormData();
+      form.append("site", site);
+      form.append("file", file);
+      results.push(await request<ImportPreview>("/api/profit-activity/products/import/preview", { method: "POST", body: form }));
+    }
+    setImportPreviews(results);
+    persistImportFileNames(importFiles);
+    setMessage(`已完成 ${results.length} 个文件的导入预览，可确认导入。`);
   });
 
   const confirmImport = () => withBusy("确认导入产品", async () => {
-    if (!importPreview?.import_id) throw new Error("请先预览导入文件。");
-    await request("/api/profit-activity/products/import/confirm", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ import_id: importPreview.import_id, on_conflict: "replace" }),
-    });
+    if (!importPreviews.length) throw new Error("请先预览导入文件。");
+    let imported = 0;
+    let replaced = 0;
+    let skipped = 0;
+    for (const preview of importPreviews) {
+      if (!preview.import_id) continue;
+      const result = await request<{ imported?: number; replaced?: number; skipped?: number }>("/api/profit-activity/products/import/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ import_id: preview.import_id, on_conflict: "replace" }),
+      });
+      imported += result.imported ?? 0;
+      replaced += result.replaced ?? 0;
+      skipped += result.skipped ?? 0;
+    }
+    setMessage(`确认导入完成：新增 ${imported}，替换 ${replaced}，跳过 ${skipped}。`);
     await queryProducts();
   });
 
-  const uploadActivityFilter = () => withBusy("生成可申报模板", async () => {
+  const generateAndDownloadFiltered = () => withBusy("生成并下载可申报产品", async () => {
     if (!activityFile) throw new Error("先选择活动 Excel。");
     const form = new FormData();
     form.append("site", site);
     form.append("scope", scope);
     form.append("file", activityFile);
-    setFilterTask(await request<FilterTask>("/api/profit-activity/activity-filter", { method: "POST", body: form }));
+    const task = await request<FilterTask>("/api/profit-activity/activity-filter", { method: "POST", body: form });
+    setFilterTask(task);
+    const taskId = task.task_id || task.filter_task_id;
+    if (!taskId) throw new Error("生成任务未返回任务编号。");
+    const saved = await request<{ saved_path?: string }>(`/api/profit-activity/activity-filter/${taskId}/save?kind=filtered`, { method: "POST" });
+    setMessage(`可申报产品已生成并保存到本地保存目录：${saved.saved_path || "-"}`);
   });
 
   const runRecordFilter = () => withBusy("按数据库产品跑过滤规则", async () => {
     const recordIds = products.filter((item) => selected.has(item.skc)).map((item) => item.id).filter((id): id is number => typeof id === "number");
-    setFilterTask(await request<FilterTask>("/api/profit-activity/filter-runs", {
+    const task = await request<FilterTask>("/api/profit-activity/filter-runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ site_code: site, record_ids: recordIds.length ? recordIds : undefined }),
-    }));
+    });
+    setFilterTask(task);
+    const retained = task.retained_count ?? 0;
+    const excluded = task.excluded_count ?? 0;
+    setMessage(`活动过滤完成：共过滤 ${retained + excluded} 条，可申报 ${retained} 条，剔除 ${excluded} 条。`);
   });
 
   const downloadCatalog = () => withBusy("下载产品档案", async () => {
     await download(`/api/profit-activity/catalog/rebuild?${new URLSearchParams({ site, scope })}`, `${site}_product_catalog.xlsx`);
   });
 
-  const downloadFilter = (kind: "filtered" | "removed") => withBusy(`下载${kind === "filtered" ? "可申报" : "剔除"}结果`, async () => {
+  const saveFilter = (kind: "filtered" | "removed") => withBusy(`保存${kind === "filtered" ? "可申报" : "剔除"}产品`, async () => {
     const taskId = filterTask?.task_id || filterTask?.filter_task_id;
-    if (!taskId) throw new Error("暂无活动过滤任务可下载。");
-    await download(`/api/profit-activity/activity-filter/${taskId}/download?kind=${kind}`, `profit_activity_${kind}_${taskId}.xlsx`);
+    if (!taskId) throw new Error("暂无活动过滤任务可保存。请先点击“生成并下载可申报产品”。");
+    const saved = await request<{ saved_path?: string }>(`/api/profit-activity/activity-filter/${taskId}/save?kind=${kind}`, { method: "POST" });
+    setMessage(`${kind === "filtered" ? "可申报" : "剔除"}产品已保存到本地保存目录：${saved.saved_path || "-"}`);
   });
 
   return (
@@ -367,6 +463,8 @@ export function ProfitActivityTestPage() {
         <label>查询范围<select value={scope} onChange={(event) => setScope(event.target.value as Scope)}><option value="default">只查本人/默认权限</option><option value="company">查本公司在档产品</option></select></label>
       </section>
 
+      {message && <p className="profit-status" role="status">{message}</p>}
+
       <section className="profit-business-grid">
         <article className="profit-test-card">
           <div className="profit-card-title">
@@ -376,15 +474,15 @@ export function ProfitActivityTestPage() {
           </div>
           <div className="profit-form-grid">
             <label>SKC ID<input value={productForm.skc} onChange={(event) => setProductForm({ ...productForm, skc: event.target.value })} placeholder="必填" /></label>
-            <label>售价<input value={productForm.selling_price} onChange={(event) => setProductForm({ ...productForm, selling_price: event.target.value })} /></label>
-            <label>成本<input value={productForm.cost_price} onChange={(event) => setProductForm({ ...productForm, cost_price: event.target.value })} /></label>
-            <label>重量 KG<input value={productForm.weight_kg} onChange={(event) => setProductForm({ ...productForm, weight_kg: event.target.value })} /></label>
+            <label>售价<input value={productForm.selling_price} onChange={(event) => setProductForm({ ...productForm, selling_price: event.target.value })} placeholder="必填" /></label>
+            <label>成本<input value={productForm.cost_price} onChange={(event) => setProductForm({ ...productForm, cost_price: event.target.value })} placeholder="必填" /></label>
+            <label>重量 KG<input value={productForm.weight_kg} onChange={(event) => setProductForm({ ...productForm, weight_kg: event.target.value })} placeholder="必填" /></label>
           </div>
-          <ImageDrop title="商品主图 Ctrl+V" hint="粘贴、拖入或选择图片" file={productImage} onFile={setProductImage} />
+          <ImageDrop title="商品主图 Ctrl+V" hint="必填：粘贴、拖入或选择图片" file={productImage} onFile={setProductImage} />
           <div className="profit-source-head"><h3>货源</h3><button type="button">新增货源</button></div>
-          <label className="profit-span-2">货源链接 1<input value={productForm.source_url} onChange={(event) => setProductForm({ ...productForm, source_url: event.target.value })} placeholder="采购页链接" /></label>
-          <ImageDrop title="货源1 Ctrl+V（可选）" hint="采购页截图可多次粘贴或选择；本页验证第一张货源图" file={sourceImage} onFile={setSourceImage} />
-          <label className="profit-span-2">备注<input value={productForm.note} onChange={(event) => setProductForm({ ...productForm, note: event.target.value })} placeholder="填写备注后才能成功入档" /></label>
+          <label className="profit-span-2">货源链接 1<input value={productForm.source_url} onChange={(event) => setProductForm({ ...productForm, source_url: event.target.value })} placeholder="必填" /></label>
+          <ImageDrop title="货源1 Ctrl+V" hint="必填：采购页截图可多次粘贴或选择；本页验证第一张货源图" file={sourceImage} onFile={setSourceImage} />
+          <label className="profit-span-2">备注<input value={productForm.note} onChange={(event) => setProductForm({ ...productForm, note: event.target.value })} placeholder="必填" /></label>
           <h3>利润预览</h3>
           <PreviewStrip calculation={calculation?.calculation} />
           <div className="profit-actions">
@@ -392,6 +490,9 @@ export function ProfitActivityTestPage() {
             <button className="primary-button" onClick={saveProduct} disabled={!!busy || !formReadyForArchive}>入产品库</button>
           </div>
           {!formReadyForArchive && <p className="muted">入档必填：SKC、售价、成本、重量、商品主图、货源链接、货源图、备注。</p>}
+          {recentSaved.length > 0 && (
+            <p className="profit-recent-saved">最近入库：{recentSaved.map((skc) => <span key={skc}>{skc}</span>)}</p>
+          )}
         </article>
 
         <article className="profit-test-card">
@@ -400,24 +501,32 @@ export function ProfitActivityTestPage() {
             <h2>活动过滤</h2>
           </div>
           <div className="profit-upload-row">
-            <label>产品资料 Excel<input type="file" accept=".xlsx,.xlsm" onChange={(event) => setImportFile(event.target.files?.[0] || null)} /></label>
-            <button onClick={previewImport} disabled={!!busy}>预览入档</button>
-            <button onClick={confirmImport} disabled={!!busy || !importPreview?.import_id}>确认导入</button>
-          </div>
-          <div className="profit-upload-row">
             <label>活动 Excel<input type="file" accept=".xlsx,.xlsm" onChange={(event) => setActivityFile(event.target.files?.[0] || null)} /></label>
-            <button className="primary-button" onClick={uploadActivityFilter} disabled={!!busy}>⇧ 生成可申报模板</button>
+            <p className="profit-warn">{activityFile ? `已选择：${activityFile.name}` : "先选择活动 Excel。"}</p>
           </div>
-          <p className="profit-warn">{activityFile ? `已选择：${activityFile.name}` : "先选择活动 Excel。"}</p>
-          <p className="muted">上传活动表后，后端会用数据库产品和当前站点利润设置生成可申报模板。</p>
+          <p className="muted">上传活动表后，后端会用数据库产品和当前站点利润设置生成可申报模板，并把可申报/剔除文件保存到“本地保存目录”。</p>
           <div className="profit-actions">
-            <button onClick={runRecordFilter} disabled={!!busy}>用数据库产品跑过滤</button>
-            <button onClick={() => downloadFilter("filtered")}>下载可申报</button>
-            <button onClick={() => downloadFilter("removed")}>下载剔除</button>
+            <button className="primary-button" onClick={runRecordFilter} disabled={!!busy}>产品过滤</button>
+            <button className="primary-button" onClick={generateAndDownloadFiltered} disabled={!!busy}>生成并下载可申报产品</button>
+            <button onClick={() => saveFilter("removed")} disabled={!!busy}>下载剔除产品</button>
           </div>
-          {importPreview && <ImportPreviewSummary preview={importPreview} />}
-          {filterTask && <ResultPanel title="过滤任务" data={filterTask} />}
+          {filterTask && <FilterRunSummary task={filterTask} />}
         </article>
+      </section>
+
+      <section className="profit-test-card">
+        <div className="profit-card-title">
+          <span className="profit-title-icon iconfont icon-upload" aria-hidden="true" />
+          <h2>产品资料导入</h2>
+        </div>
+        <p className="muted">首次使用本工作台时，把本地维护的产品资料 Excel（SKC、售价、成本、重量等）批量导入产品库；导入后无需重复操作。</p>
+        <div className="profit-upload-row">
+          <label>产品资料 Excel（可多选）<input type="file" accept=".xlsx,.xlsm" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setImportFiles(files); persistImportFileNames(files); }} /></label>
+          <button onClick={previewImport} disabled={!!busy}>预览入档</button>
+          <button onClick={confirmImport} disabled={!!busy || !importPreviews.length}>确认导入</button>
+        </div>
+        {importFiles.length ? <p className="profit-warn">已选择 {importFiles.length} 个文件：{importFiles.map((item) => item.name).join("、")}</p> : lastImportFiles.length ? <p className="muted">上次选择的文件：{lastImportFiles.join("、")}（浏览器出于安全原因不保留本地完整路径，切换页面后需重新选择文件）</p> : null}
+        {importPreviews.length > 0 && <ImportPreviewSummary previews={importPreviews} />}
       </section>
 
     </div>
@@ -464,19 +573,31 @@ function PreviewStrip({ calculation }: { calculation?: Record<string, unknown> }
   return <div className="profit-preview-strip">{items.map(([label, value]) => <div key={label}><span>{label}</span><strong>{formatValue(value)}</strong></div>)}</div>;
 }
 
-function ImportPreviewSummary({ preview }: { preview: ImportPreview }) {
-  const summary = preview.summary || {};
-  const reasons = importBlockerSummary(preview.rows || []);
+function ImportPreviewSummary({ previews }: { previews: ImportPreview[] }) {
+  const allRows = previews.flatMap((item) => item.rows || []);
+  const totalRows = allRows.length;
+  const importableRows = previews.reduce((sum, item) => sum + (item.summary?.importable_rows ?? 0), 0);
+  const blockedRows = previews.reduce((sum, item) => sum + (item.summary?.blocked_rows ?? 0), 0);
+  const reasons = importBlockerSummary(allRows);
   return (
     <section className="profit-import-summary" aria-label="产品资料导入预览结果">
       <div className="profit-import-summary-head">
-        <strong>产品资料导入结果</strong>
-        <span>{preview.import_id ? "已生成预览" : "等待预览"}</span>
+        <strong>产品资料导入结果（{previews.length} 个文件）</strong>
+        <span>{previews.some((item) => item.import_id) ? "已生成预览" : "等待预览"}</span>
       </div>
+      {previews.map((preview) => (
+        <div className="profit-import-file" key={preview.import_id}>
+          <strong title={preview.original_filename || preview.import_id}>{preview.original_filename || preview.import_id}</strong>
+          <span className="profit-import-file-meta">
+            <span>共 {preview.summary?.total_rows ?? 0} 条，可入库 {preview.summary?.importable_rows ?? 0} 条，拦截 {preview.summary?.blocked_rows ?? 0} 条</span>
+            {formatImportTime(preview.created_at) ? <time>{formatImportTime(preview.created_at)}</time> : null}
+          </span>
+        </div>
+      ))}
       <div className="profit-import-stats">
-        <div><span>共读取</span><strong>{summary.total_rows ?? 0}</strong><em>条</em></div>
-        <div><span>可入库</span><strong>{summary.importable_rows ?? 0}</strong><em>条</em></div>
-        <div><span>被拦截</span><strong>{summary.blocked_rows ?? 0}</strong><em>条</em></div>
+        <div><span>共读取</span><strong>{totalRows}</strong><em>条</em></div>
+        <div><span>可入库</span><strong>{importableRows}</strong><em>条</em></div>
+        <div><span>被拦截</span><strong>{blockedRows}</strong><em>条</em></div>
       </div>
       <div className="profit-import-reasons">
         <span>主要原因</span>
@@ -487,6 +608,29 @@ function ImportPreviewSummary({ preview }: { preview: ImportPreview }) {
         ) : (
           <p>暂无拦截原因，可直接确认导入。</p>
         )}
+      </div>
+    </section>
+  );
+}
+
+function FilterRunSummary({ task }: { task: FilterTask }) {
+  const decisions = Array.isArray(task.decisions) ? task.decisions : [];
+  const retained = task.retained_count ?? decisions.filter((item) => item.decision === "eligible").length;
+  const excluded = task.excluded_count ?? decisions.filter((item) => item.decision === "excluded").length;
+  const total = decisions.length || retained + excluded;
+  return (
+    <section className="profit-import-summary" aria-label="活动过滤任务结果">
+      <div className="profit-import-summary-head">
+        <strong>活动过滤结果</strong>
+        <span>规则 v{task.rule_version ?? "-"}</span>
+      </div>
+      <p className="profit-formula-note">
+        最低实际利润 {money(task.minimum_net_profit)} 元 · 最低利润率 {percent(task.minimum_profit_rate)} · 任务时间 {formatImportTime(task.created_at) || "-"}
+      </p>
+      <div className="profit-import-stats">
+        <div><span>过滤产品</span><strong>{total}</strong><em>条</em></div>
+        <div><span>可申报</span><strong className="profit-good">{retained}</strong><em>条</em></div>
+        <div><span>剔除</span><strong className="profit-bad">{excluded}</strong><em>条</em></div>
       </div>
     </section>
   );
@@ -582,13 +726,23 @@ function positive(value: string) {
 }
 
 function money(value: unknown) {
-  return typeof value === "number" ? value.toFixed(2) : "-";
+  const numberValue = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numberValue) ? numberValue.toFixed(2) : "-";
 }
 
 function percent(value: unknown) {
-  return typeof value === "number" ? `${(value * 100).toFixed(2)}%` : "-";
+  const numberValue = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numberValue) ? `${(numberValue * 100).toFixed(2)}%` : "-";
 }
 
 function formatValue(value: unknown) {
   return typeof value === "number" ? value.toFixed(2) : value === undefined || value === null ? "-" : String(value);
+}
+
+function formatImportTime(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
