@@ -492,7 +492,15 @@ export function ProductProcessingVerifyPage() {
         </div>
 
         {totalDrafts === 0 && <p className="verify-empty">草稿池为空，请先在每日选品中确认入池。</p>}
-        <div className="verify-draft-list">
+        <div className="verify-draft-table">
+          <div className="verify-draft-thead">
+            <span className="col-check">选择</span>
+            <span className="col-thumb">主图</span>
+            <span className="col-title">标题 / 来源</span>
+            <span className="col-sku">SKU</span>
+            <span className="col-cat">类目</span>
+            <span className="col-act">操作</span>
+          </div>
           {pageDrafts.map((draft) => {
             const raw = draft.raw_payload || {};
             const variants: DraftVariant[] = raw.source_variant_records || [];
@@ -503,72 +511,89 @@ export function ProductProcessingVerifyPage() {
             const category = raw.category || raw.source_category_path || '';
             const sourceUrl = raw.source_url || raw.product_link || '';
             const imageCount = Array.isArray(raw.source_image_urls) ? raw.source_image_urls.length : 0;
+            const displayTitle = edit?.title || draft.title || raw.source_title || '未命名商品';
+            const skcText = draft.skc || '-';
+            const skuText = draft.sku || '-';
+            const copy = (text: string) => { navigator.clipboard.writeText(text).catch(() => undefined); };
             return (
-              <article key={draft.id} className={`verify-draft-card ${selectedIds.has(draft.id) ? 'selected' : ''}`}>
-                <div className="verify-draft-summary">
-                  <label className="verify-select">
+              <article key={draft.id} className={`verify-draft-row ${selectedIds.has(draft.id) ? 'selected' : ''}`}>
+                <div className="verify-row-main">
+                  <label className="col-check">
                     <input
                       type="checkbox"
                       checked={selectedIds.has(draft.id)}
                       onChange={() => toggleDraft(draft.id)}
                     />
                   </label>
-                  <div className="verify-thumb">
-                    {imgUrl ? <img src={imgUrl} alt="" referrerPolicy="no-referrer" /> : <span>缺少主图</span>}
+                  <div className="col-thumb">
+                    {imgUrl ? <img src={imgUrl} alt="" referrerPolicy="no-referrer" /> : <span>无图</span>}
                   </div>
-                  <div className="verify-draft-info">
-                    <div className="verify-draft-head">
-                      <strong>{edit?.title || draft.title || raw.source_title || '未命名商品'}</strong>
+                  <div className="col-title">
+                    <div className="title-line">
+                      <strong title={displayTitle}>{displayTitle}</strong>
+                      <button className="btn-mini" title="复制标题" onClick={() => copy(displayTitle)}>复制</button>
+                      <button className="btn-mini" title="编辑" onClick={() => beginEdit(draft)}>编辑</button>
+                    </div>
+                    <div className="sub-line">
                       <span className="verify-platform">{platform}</span>
-                    </div>
-                    <div className="verify-flags">
-                      <span className={imgUrl ? 'ok' : 'missing'}>{imgUrl ? '主图已记录' : '缺少主图'}</span>
-                      {draft.status === 'processed' && <span className="processed">已处理</span>}
-                      {draft.status === 'attention_required' && <span className="attention">需确认</span>}
-                      {Array.isArray(raw.risk_tags) && raw.risk_tags.length > 0 && (
-                        <span className="risk">风险: {raw.risk_tags.join('、')}</span>
-                      )}
-                    </div>
-                    <dl className="verify-meta-grid">
-                      <div><dt>SKC</dt><dd>{draft.skc || '-'}</dd></div>
-                      <div><dt>SKU</dt><dd>{draft.sku || '-'}</dd></div>
-                      <div><dt>成本</dt><dd>{draft.cost != null ? `¥${draft.cost}` : (raw.price_cny != null ? `¥${raw.price_cny}` : '-')}</dd></div>
-                      <div><dt>申报价</dt><dd>{draft.declared_price != null ? `¥${draft.declared_price}` : '-'}</dd></div>
-                      <div><dt>类目</dt><dd className="ellipsis">{category || '-'}</dd></div>
-                      <div><dt>素材</dt><dd>{variants.length} 变种 · {imageCount} 图</dd></div>
-                    </dl>
-                    <div className="verify-source-line">
-                      <span>来源</span>
                       {sourceUrl ? (
-                        <a href={sourceUrl} target="_blank" rel="noreferrer">{draft.source_ref || sourceUrl}</a>
+                        <a href={sourceUrl} target="_blank" rel="noreferrer" className="source-link">{draft.source_ref || '查看来源'}</a>
                       ) : (
-                        <span className="plain">{draft.source_ref || '-'}</span>
+                        <span className="source-link muted">{draft.source_ref || '-'}</span>
                       )}
+                      {draft.status === 'attention_required' && <span className="badge attention">需确认</span>}
+                      {draft.status === 'processed' && <span className="badge processed">已处理</span>}
+                      {Array.isArray(raw.risk_tags) && raw.risk_tags.length > 0 && (
+                        <span className="badge risk">风险: {raw.risk_tags.join('、')}</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="col-sku">
+                    <div className="sku-line">
+                      <span title={skcText}>SKC: {skcText}</span>
+                      <button className="btn-mini" title="复制 SKC" onClick={() => copy(skcText)}>复制</button>
+                    </div>
+                    <div className="sku-line">
+                      <span title={skuText}>SKU: {skuText}</span>
+                      <button className="btn-mini" title="复制 SKU" onClick={() => copy(skuText)}>复制</button>
+                    </div>
+                    <div className="sku-meta">
+                      <span>{variants.length} 变种</span>
+                      {imageCount > 0 && <span>{imageCount} 图</span>}
+                      {draft.cost != null && <span>¥{draft.cost}</span>}
                     </div>
                     {variants.length > 0 && (
-                      <div className="verify-variant-chips">
-                        {variants.slice(0, 6).map((variant, idx) => {
-                          const attributes = variant.attributes || {};
-                          const label = Object.values(attributes).filter(Boolean).join(' / ') || variant.display_name || `SKU ${idx + 1}`;
-                          return <span key={idx} title={label}>{label}</span>;
+                      <div className="variant-chips">
+                        {variants.slice(0, 4).map((variant, idx) => {
+                          const attrs = variant.attributes || {};
+                          const chip = Object.values(attrs).filter(Boolean).join('/') || variant.display_name || '-';
+                          return <span key={idx} title={chip}>{chip}</span>;
                         })}
-                        {variants.length > 6 && <span className="more">+{variants.length - 6} 更多</span>}
+                        {variants.length > 4 && <span className="more">+{variants.length - 4}</span>}
                       </div>
                     )}
                   </div>
+                  <div className="col-cat">
+                    <span className="cat-text" title={category || '-'}>{category || '-'}</span>
+                    {category && <button className="btn-mini" title="复制类目" onClick={() => copy(category)}>复制</button>}
+                  </div>
+                  <div className="col-act">
+                    <button className="btn-act" title="展开编辑" onClick={() => beginEdit(draft)}>
+                      {isExpanded ? '收起' : '编辑'}
+                    </button>
+                    <button className="btn-act danger" title="删除草稿" onClick={() => {
+                      if (window.confirm('确认删除该草稿？')) deleteSelected();
+                    }}>
+                      删除
+                    </button>
+                  </div>
                 </div>
-                <button type="button" className="verify-edit-toggle" onClick={() => beginEdit(draft)}>
-                  核对与编辑 {isExpanded ? '▴' : '▾'}
-                </button>
 
                 {isExpanded && edit && (
-                  <div className="verify-draft-edit">
+                  <div className="verify-row-edit-panel">
                     <div className="verify-editor-grid">
                       <label>商品标题
-                        <input
-                          value={edit.title}
-                          onChange={(e) => setEdits((p) => ({ ...p, [draft.id]: { ...edit, title: e.target.value } }))}
-                        />
+                        <input value={edit.title} onChange={(e) => setEdits((p) => ({ ...p, [draft.id]: { ...edit, title: e.target.value } }))} />
                       </label>
                       <div className="verify-source-ref">
                         <span>来源</span>
@@ -590,44 +615,17 @@ export function ProductProcessingVerifyPage() {
                           return (
                             <section key={idx} className={`verify-sku ${isDeleted ? 'deleted' : ''}`}>
                               <header>
-                                <div>
-                                  <strong>SKU {idx + 1}</strong>
-                                  <small>{variant.source_sku_id ?? '无货号'}</small>
-                                </div>
-                                <button
-                                  onClick={() =>
-                                    setEdits((p) => {
-                                      const current = p[draft.id]!;
-                                      const set = new Set(current.skuDeletes);
-                                      if (set.has(skuId)) set.delete(skuId);
-                                      else set.add(skuId);
-                                      return { ...p, [draft.id]: { ...current, skuDeletes: Array.from(set) } };
-                                    })
-                                  }
-                                >
-                                  {isDeleted ? '恢复 SKU' : '删除 SKU'}
+                                <div><strong>SKU {idx + 1}</strong><small>{variant.source_sku_id ?? '无货号'}</small></div>
+                                <button onClick={() => setEdits((p) => { const cur = p[draft.id]!; const s = new Set(cur.skuDeletes); s.has(skuId) ? s.delete(skuId) : s.add(skuId); return { ...p, [draft.id]: { ...cur, skuDeletes: Array.from(s) } }; })}>
+                                  {isDeleted ? '恢复' : '删除'}
                                 </button>
                               </header>
                               {!isDeleted ? (
                                 <div className="verify-variant-grid">
-                                  <label>
-                                    <span>{label || '规格属性'}</span>
-                                    <input
-                                      value={value}
-                                      onChange={(e) =>
-                                        setEdits((p) => ({
-                                          ...p,
-                                          [draft.id]: {
-                                            ...edit,
-                                            skuEdits: { ...edit.skuEdits, [skuId]: e.target.value },
-                                          },
-                                        }))
-                                      }
-                                    />
+                                  <label><span>{label || '规格属性'}</span>
+                                    <input value={value} onChange={(e) => setEdits((p) => ({ ...p, [draft.id]: { ...edit, skuEdits: { ...edit.skuEdits, [skuId]: e.target.value } } }))} />
                                   </label>
-                                  <small>
-                                    价格 ¥{variant.price_cny ?? '-'} · 起订 {variant.min_order_quantity ?? '-'}
-                                  </small>
+                                  <small>¥{variant.price_cny ?? '-'} · 起订 {variant.min_order_quantity ?? '-'}</small>
                                 </div>
                               ) : (
                                 <p className="verify-sku-note">该 SKU 不会进入下次处理。</p>
@@ -638,9 +636,7 @@ export function ProductProcessingVerifyPage() {
                       </div>
                     )}
                     <div className="verify-row-actions">
-                      <button className="primary" onClick={() => saveRow(draft)} disabled={loading}>
-                        保存这一行
-                      </button>
+                      <button className="primary" onClick={() => saveRow(draft)} disabled={loading}>保存这一行</button>
                     </div>
                   </div>
                 )}
