@@ -30,6 +30,7 @@ type Direction = {
   accent: string;
   site?: TargetSite;
   custom?: boolean;
+  modified?: boolean;
 };
 
 const DEFAULT_DIRECTIONS: Direction[] = [
@@ -60,6 +61,7 @@ const DEFAULT_DIRECTIONS: Direction[] = [
 ];
 
 const CUSTOM_DIRECTIONS_KEY = "mainpg.daily-selection.custom-directions";
+const UPDATED_DEFAULT_DIRECTIONS_KEY = "mainpg.daily-selection.updated-default-directions";
 const REMOVED_DEFAULT_DIRECTIONS_KEY = "mainpg.daily-selection.removed-default-directions";
 const SITE_LABELS: Record<TargetSite, string> = { US: "美国站", CO: "哥伦比亚站", EC: "厄瓜多尔站" };
 
@@ -84,6 +86,19 @@ function loadCustomDirections(): Direction[] {
     if (!saved) return [];
     const parsed: unknown = JSON.parse(saved);
     return Array.isArray(parsed) ? parsed.filter(isStoredDirection) : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadUpdatedDefaultDirections(): Direction[] {
+  try {
+    const saved = window.localStorage.getItem(UPDATED_DEFAULT_DIRECTIONS_KEY);
+    if (!saved) return [];
+    const parsed: unknown = JSON.parse(saved);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is Direction => isStoredDirection(item) && DEFAULT_DIRECTIONS.some((direction) => direction.id === item.id))
+      : [];
   } catch {
     return [];
   }
@@ -183,11 +198,15 @@ type DailySelectionPageProps = {
 export function DailySelectionPage({ view = "directions", initialDirectionId, onOpenCollection }: DailySelectionPageProps) {
   const collectionView = view === "collection";
   const [customDirections, setCustomDirections] = useState<Direction[]>(loadCustomDirections);
+  const [updatedDefaultDirections, setUpdatedDefaultDirections] = useState<Direction[]>(loadUpdatedDefaultDirections);
   const [removedDefaultDirectionIds, setRemovedDefaultDirectionIds] = useState<string[]>(loadRemovedDefaultDirectionIds);
-  const directions = useMemo(
-    () => [...DEFAULT_DIRECTIONS.filter((item) => !removedDefaultDirectionIds.includes(item.id)), ...customDirections],
-    [customDirections, removedDefaultDirectionIds],
-  );
+  const directions = useMemo(() => {
+    const updatesById = new Map(updatedDefaultDirections.map((direction) => [direction.id, direction]));
+    const defaultDirections = DEFAULT_DIRECTIONS
+      .filter((item) => !removedDefaultDirectionIds.includes(item.id))
+      .map((item) => updatesById.get(item.id) ?? item);
+    return [...defaultDirections, ...customDirections];
+  }, [customDirections, removedDefaultDirectionIds, updatedDefaultDirections]);
   const validInitialDirection = directions.some((item) => item.id === initialDirectionId) ? initialDirectionId! : directions[0].id;
   const [selectedDirectionId, setSelectedDirectionId] = useState(validInitialDirection);
   const selectedDirection = useMemo(
@@ -209,6 +228,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [activeRun, setActiveRun] = useState<DailySelectionRun | null>(null);
   const [selectedCandidates, setSelectedCandidates] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [collecting, setCollecting] = useState(false);
+  const [collectionProgress, setCollectionProgress] = useState(0);
   const [historyBusy, setHistoryBusy] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -222,6 +243,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [presetTarget, setPresetTarget] = useState("16");
   const [presetAccent, setPresetAccent] = useState("cyan");
   const [presetError, setPresetError] = useState("");
+  const [editingDirectionId, setEditingDirectionId] = useState<string | null>(null);
+  const [editMode, setEditMode] = useState(false);
   const [deleteMode, setDeleteMode] = useState(false);
   const [pendingDeleteDirection, setPendingDeleteDirection] = useState<Direction | null>(null);
 
@@ -230,8 +253,24 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   }, []);
 
   useEffect(() => {
+    if (!collecting) return;
+    const timer = window.setInterval(() => {
+      setCollectionProgress((current) => {
+        if (current >= 92) return current;
+        const step = Math.max(1, Math.ceil((92 - current) * 0.08));
+        return Math.min(92, current + step);
+      });
+    }, 420);
+    return () => window.clearInterval(timer);
+  }, [collecting]);
+
+  useEffect(() => {
     window.localStorage.setItem(CUSTOM_DIRECTIONS_KEY, JSON.stringify(customDirections));
   }, [customDirections]);
+
+  useEffect(() => {
+    window.localStorage.setItem(UPDATED_DEFAULT_DIRECTIONS_KEY, JSON.stringify(updatedDefaultDirections));
+  }, [updatedDefaultDirections]);
 
   useEffect(() => {
     window.localStorage.setItem(REMOVED_DEFAULT_DIRECTIONS_KEY, JSON.stringify(removedDefaultDirectionIds));
@@ -257,7 +296,45 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     setTargetCount(String(direction.target));
   }
 
-  function addCustomPreset(event: FormEvent<HTMLFormElement>) {
+  function resetPresetForm() {
+    setPresetName("");
+    setPresetKeywords("");
+    setPresetAttributes("");
+    setPresetSite("US");
+    setPresetMinPrice("3");
+    setPresetMaxPrice("50");
+    setPresetTarget("16");
+    setPresetAccent("cyan");
+    setPresetError("");
+    setEditingDirectionId(null);
+  }
+
+  function closePresetDialog() {
+    setPresetDialogOpen(false);
+    resetPresetForm();
+  }
+
+  function openCreatePreset() {
+    resetPresetForm();
+    setPresetDialogOpen(true);
+  }
+
+  function openEditPreset(direction: Direction) {
+    setEditingDirectionId(direction.id);
+    setPresetName(direction.name);
+    setPresetKeywords(direction.keywords.join("，"));
+    setPresetAttributes(direction.attributes);
+    setPresetSite(direction.site ?? "US");
+    setPresetMinPrice(String(direction.price[0]));
+    setPresetMaxPrice(String(direction.price[1]));
+    setPresetTarget(String(direction.target));
+    setPresetAccent(direction.accent);
+    setPresetError("");
+    setEditMode(false);
+    setPresetDialogOpen(true);
+  }
+
+  function savePreset(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setPresetError("");
     const normalizedKeywords = presetKeywords.split(/[，,\n]/).map((item) => item.trim()).filter(Boolean).slice(0, 5);
@@ -276,8 +353,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       setPresetError("候选数量必须是正整数");
       return;
     }
+    const existingDirection = editingDirectionId
+      ? directions.find((direction) => direction.id === editingDirectionId)
+      : undefined;
     const direction: Direction = {
-      id: `custom-${Date.now()}`,
+      id: existingDirection?.id ?? `custom-${Date.now()}`,
       name: presetName.trim(),
       keywords: normalizedKeywords,
       attributes: presetAttributes.trim(),
@@ -285,21 +365,29 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       target: parsedTarget,
       accent: presetAccent,
       site: presetSite,
-      custom: true,
+      custom: existingDirection?.custom ?? true,
+      modified: existingDirection && !existingDirection.custom ? true : existingDirection?.modified,
     };
-    setCustomDirections((current) => [...current, direction]);
+    if (existingDirection?.custom) {
+      setCustomDirections((current) => current.map((item) => item.id === direction.id ? direction : item));
+    } else if (existingDirection) {
+      setUpdatedDefaultDirections((current) => [
+        ...current.filter((item) => item.id !== direction.id),
+        direction,
+      ]);
+    } else {
+      setCustomDirections((current) => [...current, direction]);
+    }
     chooseDirection(direction);
-    setPresetDialogOpen(false);
-    setPresetName("");
-    setPresetKeywords("");
-    setPresetAttributes("");
-    setPresetMinPrice("3");
-    setPresetMaxPrice("50");
-    setPresetTarget("16");
-    setNotice(`已添加自定义预设“${direction.name}”`);
+    closePresetDialog();
+    setNotice(existingDirection ? `已更改预设“${direction.name}”` : `已添加自定义预设“${direction.name}”`);
   }
 
   function requestDirectionAction(direction: Direction) {
+    if (editMode) {
+      openEditPreset(direction);
+      return;
+    }
     if (deleteMode) {
       setPendingDeleteDirection(direction);
       return;
@@ -319,6 +407,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     if (pendingDeleteDirection.custom) {
       setCustomDirections((current) => current.filter((item) => item.id !== pendingDeleteDirection.id));
     } else {
+      setUpdatedDefaultDirections((current) => current.filter((item) => item.id !== pendingDeleteDirection.id));
       setRemovedDefaultDirectionIds((current) => [...new Set([...current, pendingDeleteDirection.id])]);
     }
     if (selectedDirection.id === pendingDeleteDirection.id) {
@@ -373,9 +462,12 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     }
 
     setBusy(true);
+    setCollecting(true);
+    setCollectionProgress(2);
     try {
       const criteria = buildCriteria();
       const run = await collectByCriteria(criteria);
+      setCollectionProgress(100);
       setActiveRun(run);
       setSelectedCandidates(defaultSelectedIds(run));
       const intake = run.metadata.api_draft_intake;
@@ -384,9 +476,12 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         : "";
       setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选${intakeNotice}`);
       await refreshRuns();
+      await new Promise((resolve) => window.setTimeout(resolve, 320));
     } catch (requestError) {
+      setCollectionProgress(0);
       setError(requestError instanceof Error ? requestError.message : "采集请求失败");
     } finally {
+      setCollecting(false);
       setBusy(false);
     }
   }
@@ -472,10 +567,13 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
       <section className="daily-panel direction-panel">
         <div className="daily-panel-title">
-          <div><span className="title-icon">▣</span><strong>采集方向</strong></div>
+          <div><span className="title-icon iconfont icon-aim" aria-hidden="true" /><strong>采集方向</strong></div>
           <div className="direction-panel-actions">
             <span>关键词为中心 · 每词独立采集</span>
-            <button className={`toggle-delete-mode-button ${deleteMode ? "is-active" : ""}`} type="button" onClick={() => { setDeleteMode((current) => !current); setPendingDeleteDirection(null); }}>
+            <button className={`toggle-edit-mode-button ${editMode ? "is-active" : ""}`} type="button" onClick={() => { setEditMode((current) => !current); setDeleteMode(false); setPendingDeleteDirection(null); }}>
+              {editMode ? "✓ 完成" : "更改预设"}
+            </button>
+            <button className={`toggle-delete-mode-button ${deleteMode ? "is-active" : ""}`} type="button" onClick={() => { setDeleteMode((current) => !current); setEditMode(false); setPendingDeleteDirection(null); }}>
               {deleteMode ? "✓ 完成" : "删除预设"}
             </button>
           </div>
@@ -487,17 +585,18 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               <div className="direction-card-wrap" key={direction.id}>
                 <button
                   type="button"
-                  className={`direction-card accent-${direction.accent} ${selectedDirectionId === direction.id ? "is-selected" : ""} ${deleteMode ? "is-delete-mode" : ""}`}
+                  className={`direction-card accent-${direction.accent} ${selectedDirectionId === direction.id ? "is-selected" : ""} ${editMode ? "is-edit-mode" : ""} ${deleteMode ? "is-delete-mode" : ""}`}
                   onClick={() => requestDirectionAction(direction)}
-                  aria-describedby={deleteMode ? undefined : tooltipId}
+                  aria-describedby={deleteMode || editMode ? undefined : tooltipId}
                 >
+                  {editMode && <span className="direction-edit-indicator iconfont icon-edit" aria-hidden="true" />}
                   {deleteMode && <span className="direction-delete-indicator" aria-hidden="true">×</span>}
                   <div className="direction-card-heading">
                     <span className="direction-card-symbol" aria-hidden="true">{direction.name.slice(0, 1)}</span>
                     <div>
                       <div className="direction-card-meta">
                         <small>{SITE_LABELS[direction.site ?? "US"]}</small>
-                        <span className={direction.custom ? "is-custom" : ""}>{direction.custom ? "自定义" : "系统预设"}</span>
+                        <span className={direction.custom || direction.modified ? "is-custom" : ""}>{direction.custom ? "自定义" : direction.modified ? "已更改" : "系统预设"}</span>
                       </div>
                       <strong>{direction.name}</strong>
                     </div>
@@ -513,10 +612,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                     <i aria-hidden="true">→</i>
                   </div>
                 </button>
-                {!deleteMode && (
+                {!deleteMode && !editMode && (
                   <div className="direction-hover-card" id={tooltipId} role="tooltip">
                     <div className="direction-hover-heading">
-                      <span>{SITE_LABELS[direction.site ?? "US"]}{direction.custom ? " · 自定义" : " · 系统预设"}</span>
+                      <span>{SITE_LABELS[direction.site ?? "US"]}{direction.custom ? " · 自定义" : direction.modified ? " · 已更改" : " · 系统预设"}</span>
                       <strong>{direction.name}</strong>
                     </div>
                     <dl>
@@ -532,7 +631,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               </div>
             );
           })}
-          {!deleteMode && <button type="button" className="add-direction-card" onClick={() => { setPresetError(""); setPresetDialogOpen(true); }}>
+          {!deleteMode && !editMode && <button type="button" className="add-direction-card" onClick={openCreatePreset}>
             <span aria-hidden="true">＋</span>
             <strong>添加自定义预设</strong>
             <small>保存常用关键词与筛选条件</small>
@@ -541,11 +640,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       </section>
 
       {presetDialogOpen && (
-        <div className="preset-dialog-backdrop" role="presentation" onMouseDown={() => setPresetDialogOpen(false)}>
-          <form className="preset-dialog" onSubmit={addCustomPreset} onMouseDown={(event) => event.stopPropagation()}>
+        <div className="preset-dialog-backdrop" role="presentation" onMouseDown={closePresetDialog}>
+          <form className="preset-dialog" onSubmit={savePreset} onMouseDown={(event) => event.stopPropagation()}>
             <div className="preset-dialog-header">
-              <div><span>CUSTOM PRESET</span><strong>添加采集方向</strong></div>
-              <button type="button" onClick={() => setPresetDialogOpen(false)} aria-label="关闭添加预设">×</button>
+              <div><span>{editingDirectionId ? "EDIT PRESET" : "CUSTOM PRESET"}</span><strong>{editingDirectionId ? "更改采集方向" : "添加采集方向"}</strong></div>
+              <button type="button" onClick={closePresetDialog} aria-label={editingDirectionId ? "关闭更改预设" : "关闭添加预设"}>×</button>
             </div>
             {presetError && <div className="preset-error">{presetError}</div>}
             <div className="preset-form-grid">
@@ -559,8 +658,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               <label><span>卡片颜色</span><select value={presetAccent} onChange={(event) => setPresetAccent(event.target.value)}><option value="cyan">青色</option><option value="blue">蓝色</option><option value="green">绿色</option><option value="orange">橙色</option><option value="purple">紫色</option><option value="slate">灰色</option></select></label>
             </div>
             <div className="preset-dialog-actions">
-              <button type="button" onClick={() => setPresetDialogOpen(false)}>取消</button>
-              <button type="submit">保存预设</button>
+              <button type="button" onClick={closePresetDialog}>取消</button>
+              <button type="submit">{editingDirectionId ? "保存更改" : "保存预设"}</button>
             </div>
           </form>
         </div>
@@ -658,7 +757,18 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           </label>
           <div className="collection-actions">
             <span>{platform === "1688" ? "1688 每批最多调用 50 次 API，并拉取 10 条详情补充。" : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
-            <button className="collect-button" type="submit" disabled={busy}>{busy ? "正在采集…" : "开始采集"}</button>
+            <div className="collection-submit-area">
+              {collecting && (
+                <div className="collection-progress" role="progressbar" aria-label="采集进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={collectionProgress}>
+                  <svg viewBox="0 0 46 46" aria-hidden="true">
+                    <circle className="collection-progress-track" cx="23" cy="23" r="18" pathLength="100" />
+                    <circle className="collection-progress-value" cx="23" cy="23" r="18" pathLength="100" strokeDashoffset={100 - collectionProgress} />
+                  </svg>
+                  <strong>{collectionProgress}%</strong>
+                </div>
+              )}
+              <button className="collect-button" type="submit" disabled={busy}>{collecting ? "正在采集…" : "开始采集"}</button>
+            </div>
           </div>
         </form>
 

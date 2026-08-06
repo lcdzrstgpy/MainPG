@@ -3,7 +3,7 @@ import type { WorkspaceModule } from "../../app/navigation/modules";
 export function EmptyModulePage({ module }: { module: WorkspaceModule }) {
   return <div className="module-placeholder">
     <section className="module-empty-card">
-      <span className="empty-orbit">{module.icon}</span>
+      <span className={`empty-orbit ${module.iconClass ?? ""}`}>{module.icon}</span>
       <div>
         <p className="eyebrow">MODULE / {module.id.toUpperCase()}</p>
         <h1>{module.label}</h1>
