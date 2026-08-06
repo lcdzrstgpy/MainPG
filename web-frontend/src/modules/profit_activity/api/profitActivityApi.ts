@@ -3,7 +3,7 @@ import type { ProductQueryParams, ProfitActivityProduct, ProfitActivityScope, Pr
 // 与 ProfitActivityTestPage 保持一致：直连本地利润活动后端，使用 dev-admin-token。
 function resolveEndpoint() {
   return {
-    apiBase: localStorage.getItem("profitActivityApiBase") || "http://127.0.0.1:8000",
+    apiBase: localStorage.getItem("profitActivityApiBase") || "http://127.0.0.1:8010",
     token: localStorage.getItem("whLocalApiToken") || "dev-admin-token",
   };
 }

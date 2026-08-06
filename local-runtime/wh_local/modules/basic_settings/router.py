@@ -25,7 +25,7 @@ def create_router(database_path: Path) -> APIRouter:
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         # 保存页面表单；空密钥表示不修改，clear_* 字段才表示清空。
-        require_admin(actor)
+        # 已去掉 require_admin 限制（PUT 写入加密密钥，鉴权由 actor_from_authorization 保证）。
         try:
             return service.save_config(payload, actor_id=actor.id)
         except RuntimeError as exc:
