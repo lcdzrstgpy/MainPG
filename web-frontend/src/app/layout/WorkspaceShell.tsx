@@ -19,11 +19,12 @@ const flatModules = workspaceModules.flatMap((module) => [module, ...(module.chi
 
 function moduleTab(id: WorkspaceModuleId): WorkspaceTab {
   const module = flatModules.find((item) => item.id === id)!;
-  return { key: id, moduleId: id, label: module.label, icon: module.icon };
+  return { key: id, moduleId: id, label: module.label, icon: module.icon, iconClass: module.iconClass };
 }
 
 export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarHovered, setSidebarHovered] = useState(false);
   const [activeTabKey, setActiveTabKey] = useState("dashboard");
   const [tabs, setTabs] = useState<WorkspaceTab[]>([moduleTab("dashboard")]);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
@@ -69,12 +70,21 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   };
 
   const collectionTabs = tabs.filter((tab) => tab.moduleId === "daily_selection_collection");
+  const expandedSidebarModuleIds = tabs.map((tab) => tab.moduleId);
+  const sidebarTemporarilyExpanded = sidebarCollapsed && sidebarHovered;
 
   return (
     <main className="workspace-shell">
-      <Sidebar collapsed={sidebarCollapsed} activeId={activeModuleId} modules={workspaceModules} onSelect={openModule} />
+      <Sidebar
+        collapsed={sidebarCollapsed && !sidebarTemporarilyExpanded}
+        activeId={activeModuleId}
+        expandedModuleIds={expandedSidebarModuleIds}
+        modules={workspaceModules}
+        onSelect={openModule}
+        onHoverChange={setSidebarHovered}
+      />
       <section className="workspace-main">
-        <TopNavigation activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onSelectTab={setActiveTabKey} onCloseTab={closeTab} onSignOut={onSignOut} />
+        <TopNavigation sidebarPinned={!sidebarCollapsed} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onSelectTab={setActiveTabKey} onCloseTab={closeTab} onSignOut={onSignOut} />
         <div className="content-card">
           {workspaceNotice && (
             <div className="workspace-notice" role="status">
