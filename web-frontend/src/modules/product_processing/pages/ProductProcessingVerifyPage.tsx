@@ -500,7 +500,8 @@ export function ProductProcessingVerifyPage() {
             const isExpanded = expandedId === draft.id;
             const imgUrl = draft.image_url || raw.main_image_url || '';
             const platform = raw.source_platform || raw.platform || 'manual';
-            const categoryPath = raw.category || raw.source_category_path || raw.category_path || '';
+            const selectionCriteria = raw.selection_criteria || {};
+            const categoryPath = raw.category || raw.source_category_path || raw.category_path || selectionCriteria.category || '';
             const sourceUrl = raw.source_url || raw.product_link || '';
             const displayTitle = edit?.title || draft.title || raw.source_title || '未命名商品';
             const skcText = draft.skc || '-';
@@ -558,16 +559,21 @@ export function ProductProcessingVerifyPage() {
                       <span className="pool-label">SKU</span>
                       <span className="pool-value">
                         {variants.length > 0 ? (
-                          variants.map((v, i) => {
-                            const attrs = v.attributes || {};
-                            const vals = Object.values(attrs).filter(Boolean);
-                            const label = vals.length ? vals.join(' / ') : (v.display_name || '-');
-                            return (
-                              <span key={i} className="sku-chip" title={label}>
-                                SKU {i + 1}: {label}
-                              </span>
-                            );
-                          })
+                          <>
+                            {variants.slice(0, 4).map((v, i) => {
+                              const attrs = v.attributes || {};
+                              const vals = Object.values(attrs).filter(Boolean);
+                              const label = vals.length ? vals.join(' / ') : (v.display_name || '-');
+                              return (
+                                <span key={i} className="sku-chip" title={label}>
+                                  {label}
+                                </span>
+                              );
+                            })}
+                            {variants.length > 4 && (
+                              <span className="sku-chip more">+{variants.length - 4} 个变种</span>
+                            )}
+                          </>
                         ) : (
                           <span>单规格</span>
                         )}

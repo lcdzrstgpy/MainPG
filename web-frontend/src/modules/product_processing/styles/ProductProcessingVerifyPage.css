@@ -337,6 +337,12 @@
   white-space: nowrap;
 }
 
+.sku-chip.more {
+  background: #f8fafc;
+  border-color: #d9e8f2;
+  color: #7c91a6;
+}
+
 /* ── 类目 ── */
 .pool-cat-info {
   display: flex;
