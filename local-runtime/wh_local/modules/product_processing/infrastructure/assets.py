@@ -53,6 +53,25 @@ class ProductProcessingAssets:
         path.write_text("\n".join(unique_urls), encoding="utf-8")
         return path
 
+    def save_generated_image(
+        self,
+        task_id: int,
+        draft_id: int,
+        stage: str,
+        content: bytes,
+        suffix: str = ".jpg",
+    ) -> Path:
+        """Persist an AI-generated image under the task output tree and return its path."""
+        if not content:
+            raise ValueError("generated image is empty")
+        safe_suffix = suffix if suffix in {".jpg", ".jpeg", ".png", ".webp"} else ".jpg"
+        safe_stage = "".join(ch for ch in str(stage) if ch.isalnum() or ch in {"_", "-"}) or "generated"
+        task_root = self.output_root / f"task_{task_id}" / "images" / f"draft_{draft_id}"
+        task_root.mkdir(parents=True, exist_ok=True)
+        path = task_root / f"{safe_stage}{safe_suffix}"
+        path.write_bytes(content)
+        return path
+
     def write_task_outputs(
         self,
         task_id: int,

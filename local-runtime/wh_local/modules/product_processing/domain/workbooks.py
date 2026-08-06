@@ -1,11 +1,48 @@
 from __future__ import annotations
 
 import csv
+import re
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
+
+
+# 店小秘导入默认值（对齐原型 native_product_engine 常量）
+DEFAULT_SHIP_DAYS = 2
+DECLARED_PRICE_MULTIPLIER = 4
+DECLARED_PRICE_MIN_CNY = 150.0
+DXM_STOCK_MIN = 0
+DXM_STOCK_MAX = 999999
+
+# 外包装形状/类型（对齐原型 _build_dxm_row：soft → 软包装软物/气泡袋，rigid → 硬包装硬物/纸箱）
+_PACKAGE_EXPORT_BY_PROFILE = {
+    "rigid_container": ("硬包装硬物", "纸箱"),
+}
+_PACKAGE_EXPORT_DEFAULT = ("软包装软物", "气泡袋")
+
+# 变种规格轴名称本地映射（对齐原型 §8.2：映射为 Color/Size/Pack/Style/Capacity 等店小秘规格轴）
+_VARIANT_AXIS_NAMES = {
+    "规格": "Style",
+    "规格分类": "Style",
+    "款式": "Style",
+    "颜色": "Color",
+    "颜色分类": "Color",
+    "尺寸": "Size",
+    "尺码": "Size",
+    "型号": "Model",
+    "材质": "Material",
+    "材料": "Material",
+    "套装": "Pack",
+    "数量": "Quantity",
+    "容量": "Capacity",
+    "包装": "Packaging",
+    "高度": "Height",
+    "长度": "Length",
+    "宽度": "Width",
+    "形状": "Shape",
+}
 
 
 HEADER_ALIASES: dict[str, tuple[str, ...]] = {
@@ -18,6 +55,15 @@ HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "price": ("价格", "售价", "最低价格", "建议售价", "price", "price_cny"),
     "description": ("描述", "商品描述", "description"),
 }
+
+
+def _is_http_url(value: Any) -> bool:
+    """店小秘图片列只接受 http(s) 外部地址；本地生成图（未上传 COS）不可写进导入表。"""
+    return str(value or "").strip().lower().startswith(("http://", "https://"))
+
+
+def _http_urls(values: Any) -> list[str]:
+    return [str(value).strip() for value in (values or []) if _is_http_url(value)]
 
 
 def read_product_workbook(filename: str, content: bytes) -> list[dict[str, Any]]:
@@ -95,7 +141,8 @@ def create_result_workbook(rows: list[dict[str, Any]], destination: Path) -> Non
     sheet.title = "店小秘导入"
     sheet.append(DXM_COLUMNS + ["*产品分类", "产品分类", "类目路径", "类目ID"] + DXM_SKU_CLASSIFICATION_COLUMNS)
     for row in rows:
-        sheet.append(_dxm_export_row(row))
+        for export_row in _dxm_export_rows(row):
+            sheet.append(export_row)
     sheet.freeze_panes = "A2"
     for index, width in enumerate((36, 36, 60, 18, 14, 16, 14, 16, 45, 14, 18, 12, 12, 12, 14, 12, 16, 45, 60, 60, 14, 14, 45, 14, 10, 12), start=1):
         sheet.column_dimensions[_column_letter(index)].width = width
@@ -103,7 +150,16 @@ def create_result_workbook(rows: list[dict[str, Any]], destination: Path) -> Non
     workbook.save(destination)
 
 
-def _dxm_export_row(row: dict[str, Any]) -> list[Any]:
+def _dxm_export_rows(row: dict[str, Any]) -> list[list[Any]]:
+    """店小秘模板按 SKU 逐行输出：每个来源变种一行，无变种时输出单行。"""
+    variant_records = row.get("source_variant_records") or []
+    records = [item for item in variant_records if isinstance(item, dict)]
+    if not records:
+        return [_dxm_single_export_row(row, None)]
+    return [_dxm_single_export_row(row, record) for record in records]
+
+
+def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) -> list[Any]:
     optimized_title = str(row.get("optimized_title") or "").strip()
     description = str(row.get("description") or "").strip()
     skc = str(row.get("skc") or "").strip()
@@ -113,33 +169,128 @@ def _dxm_export_row(row: dict[str, Any]) -> list[Any]:
     source_image_urls = row.get("source_image_urls") or []
     source_detail_image_urls = row.get("source_detail_image_urls") or []
     source_attributes = row.get("source_attributes") or []
-    source_variant_records = row.get("source_variant_records") or []
-    declared_price = row.get("declared_price")
     cost = row.get("cost")
     category = str(row.get("category") or "").strip()
+    category_path = str(row.get("category_path") or category).strip()
+    category_id = str(row.get("category_id") or "").strip()
 
-    # 变种属性：取第一条变种记录的一/二级属性
+    # 变种属性值翻译表（来源中文值 → 目标语言显示名，由 service 的 AI 翻译步骤生成）
+    value_translations = row.get("variant_value_translations") or {}
+    if not isinstance(value_translations, dict):
+        value_translations = {}
+
+    # 变种属性：SKU 自己的 attributes 优先，其次取商品级前两条「名称+值」属性
+    if variant is not None:
+        attributes = variant.get("attributes") or {}
+        if not isinstance(attributes, dict):
+            attributes = {}
+        display_name = str(variant.get("display_name") or "").strip()
+        variant_values = []
+        for key, value in attributes.items():
+            name_text = str(key or "").strip()
+            value_text = str(value or "").strip()
+            if not name_text or not value_text:
+                continue
+            # 规格轴名称本地映射 + 属性值翻译（操作员编辑的 display_name 优先）
+            export_value = display_name if display_name else value_translations.get(value_text, value_text)
+            variant_values.append((_VARIANT_AXIS_NAMES.get(name_text, name_text), export_value))
+        variant_sku = str(variant.get("sku_id") or "").strip() or sku
+    else:
+        variant_values = []
+        variant_sku = sku
+
+    if not variant_values:
+        # 商品级属性兜底：兼容 list[dict] / dict / list[tuple]，仅取名称+值均完整、非来源类的属性
+        attribute_items: list[tuple[Any, Any]] = []
+        if isinstance(source_attributes, dict):
+            attribute_items = list(source_attributes.items())
+        elif isinstance(source_attributes, list):
+            for item in source_attributes:
+                if isinstance(item, dict):
+                    attribute_items.append((item.get("name"), item.get("value")))
+                else:
+                    try:
+                        attribute_items.append((item[0], item[1]))
+                    except (TypeError, IndexError, KeyError):
+                        continue
+        for name, value in attribute_items:
+            name_text = str(name or "").strip()
+            value_text = str(value or "").strip()
+            if not name_text or not value_text or name_text.casefold() in {"来源", "平台", "链接", "图片"}:
+                continue
+            variant_values.append(
+                (_VARIANT_AXIS_NAMES.get(name_text, name_text), value_translations.get(value_text, value_text))
+            )
+            if len(variant_values) >= 2:
+                break
+
     variant_name_1, variant_value_1, variant_name_2, variant_value_2 = "", "", "", ""
-    attribute_names = list(dict.fromkeys(str(attr.get("name") or "") for attr in source_attributes if isinstance(attr, dict)))
-    if attribute_names:
-        variant_name_1 = attribute_names[0]
-        if len(attribute_names) > 1:
-            variant_name_2 = attribute_names[1]
-    first_variant = source_variant_records[0] if source_variant_records else {}
-    if isinstance(first_variant, dict):
-        attributes = first_variant.get("attributes") or {}
-        values = [str(value) for value in attributes.values() if str(value)]
-        if values:
-            variant_value_1 = values[0]
-        if len(values) > 1:
-            variant_value_2 = values[1]
+    if variant_values:
+        variant_name_1, variant_value_1 = variant_values[0]
+        if len(variant_values) > 1:
+            variant_name_2, variant_value_2 = variant_values[1]
     if not variant_name_1:
         variant_name_1 = "规格"
+    if not variant_value_1:
+        # 店小秘 *变种属性值一 必填；无规格值数据时对齐原型 _default_variant_export_value()
+        variant_value_1 = "Estándar" if str(row.get("target_language") or "").strip().casefold() == "es" else "Standard"
 
-    carousel = "\n".join(str(url) for url in source_image_urls if str(url))
-    material_images = "\n".join(str(url) for url in source_detail_image_urls if str(url))
-    if not material_images and main_image_url:
-        material_images = main_image_url
+    # 四宫格落位（对齐交接文档 §11.3）：预览图/素材图=第1张分图；轮播图=4张分图+完整四宫格总览（总览放最后）。
+    # 生成图为本地路径（未上传 COS）时店小秘无法访问，仅 http(s) 生成图才可用，否则回退来源 http 图片。
+    generated_carousel = row.get("carousel_image_paths") or []
+    grid_summary_path = str(row.get("grid_image_summary_path") or "").strip()
+    detail_image_paths = row.get("detail_image_paths") or []
+    generated_images = _http_urls(list(generated_carousel) + [grid_summary_path])
+    if generated_images:
+        carousel = "\n".join(generated_images)
+        main_image = generated_images[0]
+        material_images = generated_images[0]
+    else:
+        carousel = "\n".join(_http_urls(source_image_urls))
+        main_image = main_image_url if _is_http_url(main_image_url) else next(iter(_http_urls(source_image_urls)), "")
+        # 店小秘 *产品素材图 为单值列（最大导入1条，对齐原型 DXM_COLUMNS[19]=main_image_url）
+        material_images = next(iter(_http_urls(source_detail_image_urls)), "")
+        if not material_images:
+            material_images = main_image
+
+    # 详情图以 HTML 追加到产品描述（交接文档 §10/§12）；仅追加可外部访问的 http(s) 地址
+    detail_html = "".join(f'<img src="{value}" />' for value in _http_urls(detail_image_paths))
+    if detail_html:
+        description = f"{description}\n{detail_html}".strip()
+
+    # 物流尺寸/重量与包装（对齐原型 _build_dxm_row：AI 尺寸预估 + 包装形状/类型导出标签）
+    dimensions = row.get("product_dimensions") or {}
+    if not isinstance(dimensions, dict):
+        dimensions = {}
+    length = _export_number(dimensions.get("length_cm"))
+    width = _export_number(dimensions.get("width_cm"))
+    height = _export_number(dimensions.get("height_cm"))
+    weight = _export_number(dimensions.get("weight_g"))
+    package_shape, package_type = _package_export_values(dimensions)
+
+    # 建议售价（对齐原型 _build_dxm_row）：变种建议售价 → 行建议售价 → 来源成本
+    suggested_price = variant.get("suggested_price") if variant else None
+    if suggested_price in (None, ""):
+        suggested_price = row.get("suggested_price")
+    if suggested_price in (None, ""):
+        suggested_price = cost
+
+    # 申报价格（对齐原型 _declared_price_for）：
+    # 显式申报价 → max(价, 150)；否则 建议售价×4，下限 150；无任何价据 → 150
+    declared_price_value = variant.get("declared_price") if variant else None
+    if declared_price_value in (None, ""):
+        declared_price_value = row.get("declared_price")
+    parsed_declared = _parse_money(declared_price_value)
+    if parsed_declared is not None:
+        declared_price_value = max(parsed_declared, DECLARED_PRICE_MIN_CNY)
+    else:
+        declared_price_value = _declared_price_fallback(suggested_price)
+        if declared_price_value is None:
+            declared_price_value = DECLARED_PRICE_MIN_CNY
+
+    stock = _normalize_stock(variant.get("stock") if variant else None)
+    if stock <= 0:
+        stock = _normalize_stock(row.get("stock"))
 
     return [
         optimized_title,
@@ -150,33 +301,79 @@ def _dxm_export_row(row: dict[str, Any]) -> list[Any]:
         variant_value_1,
         variant_name_2,
         variant_value_2,
-        main_image_url,
-        declared_price if declared_price not in (None, "") else "",
-        sku,
-        "",  # *长（cm）
-        "",  # *宽（cm）
-        "",  # *高（cm）
-        "",  # *重量（g）
+        main_image,
+        declared_price_value if declared_price_value not in (None, "") else "",
+        variant_sku,
+        length,
+        width,
+        height,
+        weight,
         "",  # 识别码类型
         "",  # 识别码
         source_url,
         carousel,
         material_images,
-        "",  # 外包装形状
-        "Bubble bag",  # 外包装类型
+        package_shape,
+        package_type,
         "",  # 外包装图片
-        cost if cost not in (None, "") else "",  # 建议售价（USD），暂以成本兜底
-        "",  # 库存
-        "",  # 发货时效（天）
-        category,  # *产品分类
-        category,  # 产品分类
-        category,  # 类目路径
-        "",  # 类目ID
+        suggested_price if suggested_price not in (None, "") else "",
+        stock,
+        DEFAULT_SHIP_DAYS,  # 发货时效（天）
+        category_path,  # *产品分类
+        category_path,  # 产品分类
+        category_path,  # 类目路径
+        category_id,  # 类目ID
         "单品",  # SKU分类
         1,  # SKU分类数量
         "件",  # SKU分类单位
         "", "", "", "", "", "", "", "", "",  # 其余 SKU 分类字段占位
     ]
+
+
+def _package_export_values(dimensions: dict[str, Any]) -> tuple[str, str]:
+    profile = str(dimensions.get("package_profile") or "").strip().lower()
+    return _PACKAGE_EXPORT_BY_PROFILE.get(profile, _PACKAGE_EXPORT_DEFAULT)
+
+
+def _export_number(value: Any) -> Any:
+    """把数值型字段转成整数/float，空值保持空串（避免写入 0 掩盖缺失）。"""
+    if value in (None, ""):
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if number == int(number):
+        return int(number)
+    return round(number, 2)
+
+
+def _normalize_stock(value: Any) -> int:
+    amount = _parse_money(value)
+    if amount is None:
+        return DXM_STOCK_MIN
+    return max(DXM_STOCK_MIN, min(DXM_STOCK_MAX, int(amount)))
+
+
+def _declared_price_fallback(cost: Any) -> float | None:
+    """对齐原型 _declared_price_for：无显式申报价时 按成本(CNY)×4，下限 150。"""
+    amount = _parse_money(cost)
+    if amount is None or amount <= 0:
+        return None
+    return round(max(amount * DECLARED_PRICE_MULTIPLIER, DECLARED_PRICE_MIN_CNY), 2)
+
+
+def _parse_money(value: Any) -> float | None:
+    """对齐原型 _parse_money：从任意文本中提取第一个非负数字（容忍 $、￥、逗号等）。"""
+    text = str(value or "").replace(",", "").strip()
+    match = re.search(r"([0-9]+(?:\.[0-9]{1,4})?)", text)
+    if not match:
+        return None
+    try:
+        number = float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and number not in (float("inf"), float("-inf")) else None
 
 
 def _column_letter(index: int) -> str:

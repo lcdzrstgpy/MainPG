@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import hashlib
+import json
+import os
 import re
 import sys
 from collections.abc import Callable
@@ -11,11 +13,69 @@ from typing import Any
 from wh_local.data_collection.contracts import DailySelectionError
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 
+from .ai_client import AiClient, AiProviderError
+from .domain.language_contract import (
+    apply_language_contract_to_prompt,
+    ensure_target_language_result,
+    language_profile,
+    normalize_target_language,
+)
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
 from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_issue, strict_external_url_issue
+from .domain.prompts import format_prompt
+from .domain.visual_planner import listing_prompt_context
 from .domain.workbooks import read_product_workbook
 from .infrastructure.assets import ProductProcessingAssets
 from .infrastructure.repository import ProductProcessingRepository
+from .provider_config import resolve_ai_provider
+
+_MEDIA_TYPES: tuple | None = None
+
+
+def _ai_enabled() -> bool:
+    """外部 AI 总开关：WH_PRODUCT_AI_ENABLED=0 时回退本地透传（测试/离线场景）。"""
+    return str(os.environ.get("WH_PRODUCT_AI_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """从 AI 回复中提取 JSON 对象（容忍代码围栏与前后说明文字）。"""
+    value = str(text or "").strip()
+    if not value:
+        return None
+    if value.startswith("```"):
+        value = re.sub(r"^```[a-zA-Z]*\s*", "", value)
+        value = re.sub(r"\s*```$", "", value)
+    start = value.find("{")
+    end = value.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(value[start : end + 1])
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _ai_error_reason(exc: Exception) -> str:
+    """将 AI 失败异常转成可展示的原因（超时/HTTP 状态/语言违规等）。"""
+    message = str(exc).strip()
+    return message[:200] if message else type(exc).__name__
+
+
+def _media_types() -> tuple:
+    """Lazily import the image adapter; requests/Pillow are optional at import time."""
+    global _MEDIA_TYPES
+    if _MEDIA_TYPES is None:
+        try:
+            from .infrastructure.media import (  # noqa: PLC0415
+                MediaConfigurationError,
+                MediaProcessingError,
+                ProductImageProcessor,
+            )
+            _MEDIA_TYPES = (ProductImageProcessor, MediaConfigurationError, MediaProcessingError)
+        except ModuleNotFoundError:
+            _MEDIA_TYPES = ()
+    return _MEDIA_TYPES
 
 
 class ProductProcessingNotFound(LookupError):
@@ -24,6 +84,10 @@ class ProductProcessingNotFound(LookupError):
 
 class ProductProcessingConflict(RuntimeError):
     pass
+
+
+class MediaUnavailableError(RuntimeError):
+    """Image processing dependencies are missing."""
 
 
 def _as_bool(value: Any, *, default: bool = False) -> bool:
@@ -45,6 +109,8 @@ class ProductProcessingService:
         self.repository = repository
         self.assets = assets
         self._public_image_fetcher = public_image_fetcher
+        self._ai_instance: AiClient | None = None
+        self._media_instance = None  # ProductImageProcessor (懒加载，可选依赖)
 
     def engine_status(self) -> dict[str, Any]:
         dependency_status = {
@@ -54,18 +120,23 @@ class ProductProcessingService:
             "opencv": importlib.util.find_spec("cv2") is not None,
             "rapidocr": importlib.util.find_spec("rapidocr_onnxruntime") is not None,
         }
-        # The local fallback keeps the screen operational without external AI keys.
-        # Integrators can replace it behind this service without changing the API.
+        # 真实 AI 中转已通过 provider_config 提供；未配置时保持本地透传兜底，
+        # 保证页面在无外部 key 时仍可操作。
+        provider = resolve_ai_provider()
+        media: dict[str, Any] = {}
+        media_types = _media_types()
+        if media_types:
+            media = media_types[0](config_provider=self._media_config_provider).status()
         config = {
-            "ai_provider": "local-deterministic",
-            "ai_model": "product-processing-local-v1",
-            "ai_configured": True,
+            "ai_provider": provider["provider"] if provider.get("api_key") else "local-deterministic",
+            "ai_model": provider.get("text_model") or "product-processing-local-v1",
+            "ai_configured": bool(provider.get("api_key")),
             "backup_ai_configured": False,
-            "image_provider": "local-source-pass-through",
-            "image_model": "source-image-preservation-v1",
-            "image_configured": True,
-            "backup_image_configured": False,
-            "cos_configured": False,
+            "image_provider": provider["provider"] if (provider.get("api_key") and media.get("image_configured")) else "local-source-pass-through",
+            "image_model": provider.get("reference_image_model") or provider.get("image_model") or "source-image-preservation-v1",
+            "image_configured": media.get("image_configured", False),
+            "backup_image_configured": media.get("backup_image_configured", False),
+            "cos_configured": media.get("cos_configured", False),
             "cos_upload_prefix": "product-processing",
         }
         return {
@@ -75,10 +146,10 @@ class ProductProcessingService:
             "app_file": str(Path(__file__)),
             "python": sys.executable,
             "worker": "local-synchronous-v1",
-            "message": "本地产品处理引擎已就绪；外部 AI/COS 可由系统配置模块后续替换。",
+            "message": "本地产品处理引擎已就绪；标题/描述/图片通过 AI 中转生成，失败时自动回退本地透传。",
             "diagnostics": {
                 "config": config,
-                "tenant_ai_capability": {"text": True, "image": True, "mode": "local_fallback"},
+                "tenant_ai_capability": {"text": config["ai_configured"], "image": config["image_configured"], "mode": "openai_compatible_relay"},
                 "dependencies": dependency_status,
                 "storage_root": str(self.assets.root),
             },
@@ -832,7 +903,7 @@ class ProductProcessingService:
         source_images: list[str] = []
         for item in task["items"]:
             draft = drafts.get(item["product_draft_id"])
-            processed = self._process_one(item, draft, settings, preflight_only)
+            processed = self._process_one(item, draft, settings, preflight_only, task_id=task_id)
             item_results.append(processed)
             if processed["status"] == "completed":
                 result = processed["result"]
@@ -889,6 +960,8 @@ class ProductProcessingService:
         draft: dict[str, Any] | None,
         settings: dict[str, Any],
         preflight_only: bool,
+        *,
+        task_id: int,
     ) -> dict[str, Any]:
         if draft is None or draft["status"] == "deleted":
             return {
@@ -958,31 +1031,164 @@ class ProductProcessingService:
         sku = self._text(draft.get("sku")) or skc
         target_site = self._text(settings.get("target_site")) or "US"
         target_language = self._text(settings.get("target_language")) or "en"
+        try:
+            target_language = normalize_target_language(target_language)
+        except ValueError:
+            target_language = "en"
+        category = self._text(raw.get("category") or raw.get("source_category_path"))
+        source_image_urls = self._url_list(raw.get("source_image_urls")) or ([image_url] if image_url else [])
+        source_detail_image_urls = self._url_list(raw.get("source_detail_image_urls"))
+        source_attributes = self._source_attributes_text(raw)
+
+        ai_notes: list[str] = []
         optimized_title = title
-        if not preflight_only and "title" in scope and settings.get("title_optimize", True):
-            optimized_title = self._normalized_title(title)
         description = self._text(draft.get("description") or raw.get("description"))
-        if not description and not preflight_only and "details" in scope:
+        if not preflight_only:
+            needs_title = "title" in scope and settings.get("title_optimize", True)
+            needs_desc = "details" in scope and not description
+            if needs_title and needs_desc:
+                combined = self._generate_combined_text(
+                    title,
+                    category,
+                    raw,
+                    target_language,
+                    target_site,
+                    ai_notes,
+                )
+                if combined:
+                    if combined.get("title"):
+                        optimized_title = self._normalized_title(combined["title"])
+                    if combined.get("description"):
+                        description = combined["description"]
+                    ai_notes.append("text:ai-combined")
+                    needs_title = needs_desc = False
+            if needs_title:
+                generated_title = self._generate_title(
+                    title,
+                    category,
+                    raw,
+                    target_language,
+                    target_site,
+                    ai_notes,
+                )
+                if generated_title:
+                    optimized_title = generated_title
+                    ai_notes.append("title:ai")
+            if needs_desc:
+                generated_desc = self._generate_description(
+                    optimized_title,
+                    category,
+                    raw,
+                    target_language,
+                    target_site,
+                    ai_notes,
+                )
+                if generated_desc:
+                    description = generated_desc
+                    ai_notes.append("details:ai")
+
+        if not description:
+            # AI 未启用或生成失败时保留旧模板兜底，避免导入表描述为空
             description = f"{optimized_title}. Source information preserved for operator review."
+
+        # 目标语言强制校验：AI 启用时不允许把未翻译标题/描述导出（对齐原型“已阻止导出”行为）
+        if not preflight_only and _ai_enabled():
+            try:
+                ensure_target_language_result("标题", optimized_title, target_language)
+                ensure_target_language_result("描述", description, target_language)
+            except ValueError as exc:
+                return {
+                    **item,
+                    "title": optimized_title,
+                    "image_url": image_url,
+                    "status": "attention_required",
+                    "reason": str(exc),
+                    "result": {
+                        "error_type": "target_language_unmet",
+                        "failure_class": "technical_retryable",
+                        "operator_hint": "AI 输出未通过目标语言校验（标题/描述仍含其他语言文本），请重试或检查 AI 配置",
+                        "retryable": True,
+                        "ai_notes": ai_notes,
+                    },
+                }
+
+        # 变种属性值翻译（对齐原型 VARIANT_VALUE_TRANSLATION_PROMPT）：来源中文规格值 → 目标语言可读显示名
+        variant_value_translations: dict[str, str] = {}
+        if not preflight_only:
+            variant_value_translations = self._translate_variant_values(
+                raw, optimized_title, target_language, target_site, ai_notes
+            )
+
+        product_dimensions: dict[str, Any] = {}
+        if not preflight_only and "product_dimensions" in scope:
+            product_dimensions = self._generate_size(raw, optimized_title, category, ai_notes) or {}
+            if product_dimensions:
+                ai_notes.append("product_dimensions:ai")
+
+        grid_image_paths: list[str] = []
+        grid_summary_path = ""
+        if not preflight_only and "four_grid" in scope and _as_bool(settings.get("ai_media_opt_in"), default=True):
+            grid_image_paths, grid_summary_path = self._generate_grid_images(
+                task_id,
+                draft["id"],
+                raw,
+                optimized_title,
+                category,
+                source_image_urls,
+                target_language,
+                target_site,
+                ai_notes,
+            )
+            if grid_image_paths:
+                ai_notes.append("four_grid:ai")
+
+        detail_image_paths: list[str] = []
+        if not preflight_only and "detail_images" in scope and _as_bool(settings.get("ai_media_opt_in"), default=True):
+            detail_image_paths = self._generate_detail_images(
+                task_id,
+                draft["id"],
+                raw,
+                optimized_title,
+                category,
+                source_detail_image_urls or source_image_urls,
+                target_language,
+                target_site,
+                ai_notes,
+            )
+            if detail_image_paths:
+                ai_notes.append("detail_images:ai")
+
         result = {
             "product_draft_id": draft["id"],
             "candidate_id": raw.get("candidate_id") or draft.get("candidate_id"),
             "skc": skc,
             "sku": sku,
-            "category": self._text(raw.get("category") or raw.get("source_category_path")),
+            "category": category,
+            "category_path": self._text(raw.get("category_path") or raw.get("source_category_path") or category),
+            "category_id": self._text(raw.get("category_id") or raw.get("leaf_category_id")),
             "optimized_title": optimized_title,
             "description": description,
             "image_url": image_url,
             "source_url": source_url,
             "source_platform": raw.get("source_platform") or raw.get("platform") or "",
-            "source_image_urls": raw.get("source_image_urls") or ([image_url] if image_url else []),
-            "source_detail_image_urls": raw.get("source_detail_image_urls") or [],
+            "source_image_urls": source_image_urls,
+            "source_detail_image_urls": source_detail_image_urls,
             "source_attributes": raw.get("source_attributes") or [],
             "source_variant_records": raw.get("source_variant_records") or [],
+            "variant_value_translations": variant_value_translations,
             "cost": draft.get("cost"),
             "declared_price": draft.get("declared_price"),
+            "suggested_price": draft.get("cost"),
+            "product_dimensions": product_dimensions,
+            "stock": self._source_stock(raw),
+            "ship_days": 2,
             "target_site": target_site,
             "target_language": target_language,
+            "target_language_label": language_profile(target_language)["label"],
+            "carousel_image_paths": grid_image_paths,
+            "grid_image_summary_path": grid_summary_path,
+            "detail_image_paths": detail_image_paths,
+            "ai_notes": ai_notes,
             "selection_run_id": draft.get("selection_run_id"),
             "selection_keyword": raw.get("selection_keyword") or "",
             "selection_score": raw.get("selection_score"),
@@ -1003,6 +1209,420 @@ class ProductProcessingService:
             "reason": "",
             "result": result,
         }
+
+    @staticmethod
+    def _note_ai_failure(ai_notes: list[str] | None, stage: str, reason: str) -> None:
+        """向 ai_notes 追加带真实原因的失败标记，便于操作员判断重试/换配置。"""
+        if ai_notes is not None:
+            ai_notes.append(f"{stage}:ai-failed: {reason}")
+
+    def _generate_combined_text(
+        self,
+        source_title: str,
+        category: str,
+        raw: dict[str, Any],
+        target_language: str,
+        target_site: str,
+        ai_notes: list[str] | None = None,
+    ) -> dict[str, str] | None:
+        """一次调用同时生成标题与描述（交接文档 §9.3）；失败返回 None。"""
+        if not _ai_enabled():
+            return None
+        template = self._effective_prompt("combined_text")
+        contracted = apply_language_contract_to_prompt(template, "combined_text", target_language, target_site)
+        context = listing_prompt_context(raw, title=source_title, category=category)
+        prompt = format_prompt(contracted, title=source_title, **context)
+        try:
+            text = self._ai_client().chat([{"role": "user", "content": prompt}])
+            data = _extract_json_object(text)
+            if not isinstance(data, dict) or not data.get("optimized_title"):
+                self._note_ai_failure(ai_notes, "text", "combined 输出未包含可用的 optimized_title")
+                return None
+            ensure_target_language_result("标题", data.get("optimized_title"), target_language)
+            ensure_target_language_result("详情", data.get("description"), target_language)
+            return {
+                "title": self._normalized_title(data["optimized_title"]),
+                "description": self._normalized_title(data.get("description") or ""),
+            }
+        except (AiProviderError, ValueError, OSError) as exc:
+            self._note_ai_failure(ai_notes, "text", _ai_error_reason(exc))
+            return None
+
+    def _generate_title(
+        self,
+        source_title: str,
+        category: str,
+        raw: dict[str, Any],
+        target_language: str,
+        target_site: str,
+        ai_notes: list[str] | None = None,
+    ) -> str:
+        """按目标语言生成标题；失败时返回空串（由调用方决定回退）。"""
+        if not _ai_enabled():
+            return ""
+        template = self._effective_prompt("title")
+        contracted = apply_language_contract_to_prompt(template, "title", target_language, target_site)
+        context = listing_prompt_context(raw, title=source_title, category=category)
+        prompt = format_prompt(
+            contracted,
+            title=source_title,
+            title_identity_context=source_title,
+            title_formula="product type + key real attributes + intended use, concise and scannable",
+            title_priority_terms="",
+            title_avoid_terms="",
+            **context,
+        )
+        try:
+            text = self._ai_client().chat([{"role": "user", "content": prompt}])
+            ensure_target_language_result("标题", text, target_language)
+            return self._normalized_title(text)
+        except (AiProviderError, ValueError, OSError) as exc:
+            self._note_ai_failure(ai_notes, "title", _ai_error_reason(exc))
+            return ""
+
+    def _generate_description(
+        self,
+        optimized_title: str,
+        category: str,
+        raw: dict[str, Any],
+        target_language: str,
+        target_site: str,
+        ai_notes: list[str] | None = None,
+    ) -> str:
+        if not _ai_enabled():
+            return ""
+        template = self._effective_prompt("desc")
+        contracted = apply_language_contract_to_prompt(template, "desc", target_language, target_site)
+        context = listing_prompt_context(raw, title=optimized_title, category=category)
+        prompt = format_prompt(contracted, title=optimized_title, **context)
+        try:
+            text = self._ai_client().chat([{"role": "user", "content": prompt}])
+            ensure_target_language_result("详情", text, target_language)
+            return self._normalized_title(text)
+        except (AiProviderError, ValueError, OSError) as exc:
+            self._note_ai_failure(ai_notes, "details", _ai_error_reason(exc))
+            return ""
+
+    def _translate_variant_values(
+        self,
+        raw: dict[str, Any],
+        title: str,
+        target_language: str,
+        target_site: str,
+        ai_notes: list[str] | None = None,
+    ) -> dict[str, str]:
+        """对齐原型 VARIANT_VALUE_TRANSLATION_PROMPT：把来源变种属性值翻译成目标语言可读显示名。
+
+        返回 {原始值: 翻译值}；仅在 AI 启用且存在含中文的变种值时调用。
+        """
+        if not _ai_enabled():
+            return {}
+        variants = raw.get("source_variant_records") or []
+        unique_values: list[str] = []
+        seen: set[str] = set()
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            attributes = variant.get("attributes")
+            if not isinstance(attributes, dict):
+                continue
+            for value in attributes.values():
+                text = str(value or "").strip()
+                if text and text not in seen:
+                    seen.add(text)
+                    unique_values.append(text)
+        if not unique_values or not any(re.search(r"[\u4e00-\u9fff]", value) for value in unique_values):
+            return {}
+        profile = language_profile(target_language)
+        template = self._effective_prompt("variant_values")
+        contracted = apply_language_contract_to_prompt(template, "variant_values", target_language, target_site)
+        prompt = format_prompt(
+            contracted,
+            title=str(title or "").strip()[:200],
+            variant_options="\n".join(f"- {value}" for value in unique_values),
+            target_language_name=profile.get("ai_language", target_language),
+            language_code=target_language,
+        )
+        try:
+            text = self._ai_client().chat([{"role": "user", "content": prompt}])
+            data = _extract_json_object(text)
+            mappings = data.get("mappings") if isinstance(data, dict) else None
+            if not isinstance(mappings, list):
+                self._note_ai_failure(ai_notes, "variant_values", "翻译输出缺少 mappings")
+                return {}
+            translations: dict[str, str] = {}
+            for item in mappings:
+                if not isinstance(item, dict):
+                    continue
+                raw_value = str(item.get("raw_value") or "").strip()
+                export_value = str(item.get("export_value") or "").strip()
+                if raw_value and export_value and raw_value in seen:
+                    translations[raw_value] = export_value
+            if translations:
+                ai_notes.append("variant_values:ai")
+            return translations
+        except (AiProviderError, ValueError, OSError) as exc:
+            self._note_ai_failure(ai_notes, "variant_values", _ai_error_reason(exc))
+            return {}
+
+    def _generate_grid_images(
+        self,
+        task_id: int,
+        draft_id: int,
+        raw: dict[str, Any],
+        optimized_title: str,
+        category: str,
+        reference_urls: list[str],
+        target_language: str,
+        target_site: str,
+        ai_notes: list[str] | None = None,
+    ) -> tuple[list[str], str]:
+        """按原型逻辑生成 2x2 四宫格并本地拆分为 4 张轮播图 + 1 张汇总图。"""
+        if not _ai_enabled() or not reference_urls:
+            return [], ""
+        media_types = _media_types()
+        if not media_types:
+            return [], ""
+        processor_cls, media_config_error, media_error = media_types
+        try:
+            processor = self._media_processor()
+            template = self._effective_prompt("grid_image")
+            contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)
+            context = listing_prompt_context(raw, title=optimized_title, category=category)
+            prompt = format_prompt(contracted, title=optimized_title, **context)
+            media = processor.generate(stage="grid_image", prompt=prompt, reference_values=reference_urls)
+            parts = processor.split_four_grid(media)
+        except (media_config_error, media_error, ValueError, OSError) as exc:
+            self._note_ai_failure(ai_notes, "four_grid", _ai_error_reason(exc))
+            return [], ""
+        carousel: list[str] = []
+        summary_path = ""
+        published = self._publish_media(processor, parts, task_id, draft_id)
+        for part, value in zip(parts, published):
+            if part.stage.startswith("grid_image_summary"):
+                summary_path = str(value)
+            elif part.stage.startswith("grid_image_"):
+                carousel.append(str(value))
+        return carousel[:4], summary_path
+
+    def _generate_detail_images(
+        self,
+        task_id: int,
+        draft_id: int,
+        raw: dict[str, Any],
+        optimized_title: str,
+        category: str,
+        reference_urls: list[str],
+        target_language: str,
+        target_site: str,
+        ai_notes: list[str] | None = None,
+    ) -> list[str]:
+        if not _ai_enabled() or not reference_urls:
+            return []
+        media_types = _media_types()
+        if not media_types:
+            return []
+        processor_cls, media_config_error, media_error = media_types
+        try:
+            processor = self._media_processor()
+            template = self._effective_prompt("detail_image")
+            contracted = apply_language_contract_to_prompt(template, "detail_image", target_language, target_site)
+            context = listing_prompt_context(raw, title=optimized_title, category=category)
+            prompt = format_prompt(contracted, title=optimized_title, **context)
+            media = processor.generate(stage="detail_image", prompt=prompt, reference_values=reference_urls)
+        except (media_config_error, media_error, ValueError, OSError) as exc:
+            self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
+            return []
+        return self._publish_media(processor, [media], task_id, draft_id)
+
+    def _effective_prompt(self, key: str) -> str:
+        custom = self.repository.prompts()
+        return str(custom.get(key) or DEFAULT_PROMPTS.get(key) or "")
+
+    def _generate_size(
+        self,
+        raw: dict[str, Any],
+        title: str,
+        category: str,
+        ai_notes: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """AI 尺寸预估（对齐原型 SIZE_PROMPT）：返回产品物流包装尺寸/重量；失败返回 None。"""
+        if not _ai_enabled():
+            return None
+        template = self._effective_prompt("size")
+        context = listing_prompt_context(raw, title=title, category=category)
+        prompt = format_prompt(
+            template,
+            title=title,
+            category=context["category"],
+            category_path=context["category_path"],
+            required_attributes=context["required_attributes"],
+            source_data=self._size_source_text(raw, title),
+        )
+        try:
+            text = self._ai_client().chat([{"role": "user", "content": prompt}])
+            data = _extract_json_object(text)
+            if not isinstance(data, dict):
+                self._note_ai_failure(ai_notes, "product_dimensions", "size 输出未包含 JSON")
+                return None
+            length = self._number(data.get("length_cm"))
+            width = self._number(data.get("width_cm"))
+            height = self._number(data.get("height_cm"))
+            weight = self._number(data.get("weight_g"))
+            if not all(value is not None and value > 0 for value in (length, width, height, weight)):
+                self._note_ai_failure(ai_notes, "product_dimensions", "size 输出缺少有效的长/宽/高/重量")
+                return None
+            return {
+                "length_cm": length,
+                "width_cm": width,
+                "height_cm": height,
+                "weight_g": weight,
+                "confidence": self._text(data.get("confidence")) or "medium",
+                "package_profile": self._text(data.get("package_profile")),
+                "reason": self._text(data.get("reason")),
+                "source": "ai_estimated",
+            }
+        except (AiProviderError, ValueError, OSError) as exc:
+            self._note_ai_failure(ai_notes, "product_dimensions", _ai_error_reason(exc))
+            return None
+
+    @staticmethod
+    def _size_source_text(raw: dict[str, Any], title: str) -> str:
+        """将来源文本/属性/变种记录拼成 SIZE_PROMPT 的 source_data（对齐原型 _size_source_text）。"""
+        parts: list[str] = []
+        if title:
+            parts.append(f"title: {title}")
+        category = raw.get("category") or raw.get("source_category_path")
+        if category:
+            parts.append(f"category: {category}")
+        attrs = ProductProcessingService._source_attributes_text(raw)
+        if attrs:
+            parts.append(f"attributes: {attrs}")
+        for key in ("weight_text", "package_info_text", "freight_cny"):
+            value = raw.get(key)
+            if value not in (None, ""):
+                parts.append(f"{key}: {value}")
+        for variant in raw.get("source_variant_records") or []:
+            if not isinstance(variant, dict):
+                continue
+            variant_attrs = variant.get("attributes")
+            if isinstance(variant_attrs, dict) and variant_attrs:
+                pairs = "; ".join(f"{key}: {value}" for key, value in variant_attrs.items() if value not in (None, ""))
+                parts.append(f"variant: {pairs}")
+        return " | ".join(parts)[:1200]
+
+    def _source_stock(self, raw: dict[str, Any]) -> int:
+        for key in ("stock", "stock_count", "quantity", "inventory"):
+            value = self._number(raw.get(key))
+            if value is not None and value > 0:
+                return int(value)
+        for variant in raw.get("source_variant_records") or []:
+            if not isinstance(variant, dict):
+                continue
+            value = self._number(variant.get("stock"))
+            if value is not None and value > 0:
+                return int(value)
+        return 0
+
+    @staticmethod
+    def _source_attributes_text(raw: dict[str, Any]) -> str:
+        attributes = raw.get("source_attributes") or []
+        if isinstance(attributes, dict):
+            attributes = attributes.items()
+        parts: list[str] = []
+        for item in attributes:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                value = str(item.get("value") or "").strip()
+            else:
+                try:
+                    name, value = str(item[0] or "").strip(), str(item[1] or "").strip()
+                except (TypeError, IndexError, KeyError):
+                    continue
+            if name and value and name.casefold() not in {"来源", "平台", "链接", "图片"}:
+                parts.append(f"{name}: {value}")
+        return "; ".join(parts[:12])
+
+    def _ai_client(self) -> AiClient:
+        if self._ai_instance is None:
+            self._ai_instance = AiClient()
+        return self._ai_instance
+
+    def _media_processor(self) -> Any:
+        if self._media_instance is None:
+            media_types = _media_types()
+            if not media_types:
+                raise MediaUnavailableError("图片处理依赖缺失：需要安装 requests 与 Pillow")
+            processor_cls, _, _ = media_types
+            self._media_instance = processor_cls(config_provider=self._media_config_provider)
+        return self._media_instance
+
+    @staticmethod
+    def _media_config_provider() -> dict[str, Any]:
+        provider = resolve_ai_provider()
+        image_section: dict[str, Any] = {}
+        if provider.get("api_key"):
+            image_section = {
+                "base_url": provider.get("base_url") or "",
+                "api_key": provider.get("api_key") or "",
+                "model": provider.get("image_model") or "",
+                "reference_model": provider.get("reference_image_model") or "",
+            }
+        # COS 图床：gitignored 本地配置 cos.local.json 优先，环境变量 WH_COS_* 可覆盖。
+        # 对齐原型出图保存逻辑——生成图上传 COS 转外链后写进导入表，店小秘可直接读取。
+        cos_config: dict[str, Any] = {}
+        local_cos = Path(__file__).resolve().parent / "cos.local.json"
+        try:
+            if local_cos.is_file():
+                loaded = json.loads(local_cos.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    cos_config = {
+                        "bucket": str(loaded.get("bucket") or "").strip(),
+                        "region": str(loaded.get("region") or "").strip(),
+                        "secret_id": str(loaded.get("secret_id") or "").strip(),
+                        "secret_key": str(loaded.get("secret_key") or "").strip(),
+                    }
+        except (OSError, ValueError):
+            cos_config = {}
+        bucket = os.environ.get("WH_COS_BUCKET", "").strip() or cos_config.get("bucket", "")
+        region = os.environ.get("WH_COS_REGION", "").strip() or cos_config.get("region", "")
+        secret_id = os.environ.get("WH_COS_SECRET_ID", "").strip() or cos_config.get("secret_id", "")
+        secret_key = os.environ.get("WH_COS_SECRET_KEY", "").strip() or cos_config.get("secret_key", "")
+        cos_config = {}
+        if bucket and region and secret_id and secret_key:
+            cos_config = {"bucket": bucket, "region": region, "secret_id": secret_id, "secret_key": secret_key}
+        return {
+            "image": image_section,
+            "backup_image": {},
+            "cos": cos_config,
+            "limits": {
+                "image_retry_attempts": 2,
+                "grid_image_reference_max_count": 4,
+                "detail_image_reference_max_count": 2,
+                "image_provider_strategy": "balanced",
+            },
+        }
+
+    def _publish_media(
+        self,
+        processor: Any,
+        parts: list[Any],
+        task_id: int,
+        draft_id: int,
+    ) -> list[str]:
+        """对齐原型出图保存逻辑：生成图优先整组上传 COS 取得外链，店小秘可直接读取；
+        任一上传失败或未配置 COS 时，整组回退本地保存（导出表再回退来源 http 图片）。"""
+        urls: list[str] = []
+        try:
+            urls = [processor.upload_to_cos(part, task_id=task_id, draft_id=draft_id) for part in parts]
+        except Exception:
+            urls = []
+        if urls:
+            return urls
+        return [
+            str(self.assets.save_generated_image(task_id, draft_id, part.stage, part.content, part.suffix))
+            for part in parts
+        ]
 
     def _task_response(self, task: dict[str, Any], message: str = "") -> dict[str, Any]:
         items = task["items"]
