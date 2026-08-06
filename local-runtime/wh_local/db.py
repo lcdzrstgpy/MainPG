@@ -425,6 +425,39 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 retained_link_sourcing_sql.read_text(encoding="utf-8"),
             )
         )
+    direct_quote_batches_sql = (
+        root / "price_verification" / "migrations" / "003_direct_price_quote_batches.sql"
+    )
+    if direct_quote_batches_sql.exists():
+        migrations.append(
+            (
+                "price_verification:003_direct_price_quote_batches",
+                "price_verification",
+                direct_quote_batches_sql.read_text(encoding="utf-8"),
+            )
+        )
+    quote_capture_chunk_sku_capacity_sql = (
+        root / "price_verification" / "migrations" / "004_quote_capture_chunk_sku_capacity.sql"
+    )
+    if quote_capture_chunk_sku_capacity_sql.exists():
+        migrations.append(
+            (
+                "price_verification:004_quote_capture_chunk_sku_capacity",
+                "price_verification",
+                quote_capture_chunk_sku_capacity_sql.read_text(encoding="utf-8"),
+            )
+        )
+    batch_selections_sql = (
+        root / "price_verification" / "migrations" / "005_batch_selections.sql"
+    )
+    if batch_selections_sql.exists():
+        migrations.append(
+            (
+                "price_verification:005_batch_selections",
+                "price_verification",
+                batch_selections_sql.read_text(encoding="utf-8"),
+            )
+        )
     return migrations
 
 

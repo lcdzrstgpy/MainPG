@@ -42,6 +42,7 @@ class SourceSearchTask:
     sku_id: str = ""
     spu_or_goods_id: str = ""
     product_title: str = ""
+    max_candidates: int = 10
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -55,6 +56,7 @@ class SourceSearchTask:
             "sku_id": self.sku_id,
             "spu_or_goods_id": self.spu_or_goods_id,
             "product_title": self.product_title,
+            "max_candidates": self.max_candidates,
         }
 
 

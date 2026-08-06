@@ -2,25 +2,31 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from ..contracts import PluginCommandRequest, PriceVerificationActor, PriceVerificationContractError
 from ..quote_normalizer import QuoteItem
 from ..repository import (
+    BatchSelectionRecord,
     PluginCommandRecord,
     PriceVerificationNotFound,
     PriceVerificationRepository,
     QuoteRunRecord,
+    SkcSourceLinkRecord,
     SourcingRunRecord,
 )
 from ..plugin.service import PluginBridgeService
 from ..plugin.shared_gateway import SharedPluginGateway
-from .normalizer import normalize_source_candidates
-from .ranking import rank_source_candidates
+from .normalizer import canonical_source_url, normalize_source_candidates
+from .profit_ranking import DEFAULT_CANDIDATE_LIMIT, DEFAULT_WEIGHT_KG, build_candidate_profit
+from .ranking import rank_candidates_by_mode, rank_source_candidates
 from .contracts import SourceBrowserImageSearchPayload, SourceSearchTask
 from .task_builder import (
+    build_batch_sourcing_payload,
     build_retained_source_browser_image_search_payload,
 )
 
@@ -57,6 +63,177 @@ class SourcingService:
         self._plugin_gateway = plugin_gateway
         self._plugin_bridge = plugin_bridge
 
+    def search_batch_selections_by_image(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        provider_factory: Callable[[], Any],
+        ranking_mode: str = "similarity",
+        skc_ids: Sequence[str] | None = None,
+        keyword_search: bool = False,
+    ) -> dict[str, Any]:
+        """Run the established OB 1688 image-search chain for retained SKCs.
+
+        Each retained selection becomes one task whose main image is first
+        downloaded and uploaded through the already-verified data-collection
+        provider (upload_img), then matched via item_search_img.  Results are
+        returned as a source preview grouped by SKC, honoring each selection's
+        candidate cap, ranked by the requested mode, and topped with a profit
+        preview for the best candidate against the Temu adjusted price.
+
+        ``skc_ids`` restricts the search to the user-selected SKCs; when it is
+        ``None`` every retained selection is searched (backward compatible).
+        ``keyword_search`` optionally adds the translated-title keyword channel;
+        it is off by default so the first run is pure image search.
+        """
+        from .onebound_adapter import OneBoundSourceAdapter
+
+        actor = _actor(actor)
+        selections = tuple(
+            item
+            for item in self._repository.list_batch_selections(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+            if item.status == "retained"
+        )
+        if skc_ids is not None:
+            selected = {_text(skc) for skc in skc_ids if _text(skc)}
+            selections = tuple(item for item in selections if item.skc_id in selected)
+        if not selections:
+            raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
+        payload = build_batch_sourcing_payload(
+            (_selection_sourcing_view(item) for item in selections)
+        )
+        tasks = payload.tasks
+        if not tasks:
+            raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
+        adapter = OneBoundSourceAdapter(self._repository, provider_factory)
+        result = adapter.search_by_image(actor, tasks, keyword_search=keyword_search)
+        quotes = [task.to_payload() for task in tasks]
+        preview = build_source_preview(quotes, result)
+        return _apply_batch_ranking(
+            preview,
+            selections_by_skc={item.skc_id: item for item in selections},
+            ranking_mode=ranking_mode,
+        )
+
+    def preview_candidate_profit(
+        self,
+        *,
+        site: str,
+        selling_price: object,
+        price: object,
+        moq: object = None,
+        domestic_freight: object = None,
+        weight_kg: object = DEFAULT_WEIGHT_KG,
+    ) -> Mapping[str, Any]:
+        """Recompute the profit preview for one candidate with adjustable weight."""
+        site_code = _site_code(site)
+        if not site_code:
+            raise PriceVerificationContractError("site must be US, CO or EC")
+        return build_candidate_profit(
+            {
+                "price": price,
+                "promotion_price": None,
+                "moq": moq,
+                "domestic_freight": domestic_freight,
+            },
+            site=site_code,
+            selling_price=selling_price,
+            weight_kg=weight_kg,
+        )
+
+    def link_skc_source(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        skc_id: str,
+        offer_id: str,
+        source_url: str,
+        source_title: str = "",
+        main_image_url: str = "",
+        price_cny: object = None,
+        moq: object = None,
+        domestic_freight_cny: object = None,
+        source_decision: str = "",
+        note: str = "",
+    ) -> Mapping[str, Any]:
+        """Link one 1688 offer to a retained Temu SKC (idempotent, one SKC to many offers).
+
+        Only SKCs that were retained in the final review (and therefore written
+        to the draft pool) may be linked; this keeps the dropshipping record
+        closed: retain -> image-search -> link.
+        """
+        actor = _actor(actor)
+        batch_id = _required_text(batch_id, "batch_id")
+        skc_id = _required_text(skc_id, "skc_id")
+        offer_id = _required_text(offer_id, "offer_id")
+        if not re.fullmatch(r"\d{3,}", offer_id):
+            raise PriceVerificationContractError("offer_id must be a 1688 offer id")
+        source_url = canonical_source_url(source_url, offer_id=offer_id)
+        if not source_url:
+            raise PriceVerificationContractError("source_url must be a valid 1688 offer URL")
+        selection = self._repository.get_batch_selection_by_skc(
+            workspace_id=actor.workspace_id, batch_id=batch_id, skc_id=skc_id
+        )
+        if selection.status != "retained":
+            raise PriceVerificationContractError(
+                "only retained SKC selections can link 1688 sources"
+            )
+        record = self._repository.upsert_skc_source_link(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            skc_id=skc_id,
+            offer_id=offer_id,
+            source_url=source_url,
+            source_title=_text(source_title),
+            main_image_url=_text(main_image_url),
+            price_cny=_nullable_decimal_text(price_cny),
+            moq=_nullable_decimal_text(moq),
+            domestic_freight_cny=_nullable_decimal_text(domestic_freight_cny),
+            source_decision=_text(source_decision),
+            note=_text(note),
+            now=_now_text(),
+        )
+        return _source_link_response(record, selection=selection)
+
+    def list_skc_source_links(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        skc_id: str | None = None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        actor = _actor(actor)
+        links = self._repository.list_skc_source_links(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            skc_id=_text(skc_id) or None,
+        )
+        if not links:
+            return ()
+        selections = {
+            item.skc_id: item
+            for item in self._repository.list_batch_selections(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+        }
+        return tuple(
+            _source_link_response(record, selection=selections.get(record.skc_id))
+            for record in links
+        )
+
+    def remove_skc_source_link(
+        self, actor: PriceVerificationActor, *, link_id: int
+    ) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        record = self._repository.soft_remove_skc_source_link(
+            workspace_id=actor.workspace_id, link_id=int(link_id), now=_now_text()
+        )
+        return _source_link_response(record)
+
     def queue_browser_search(
         self,
         actor: PriceVerificationActor,
@@ -74,6 +251,58 @@ class SourcingService:
         frozen = [task.to_payload() for task in browser_payload.tasks]
         payload = {
             "quote_run_id": run.run_id,
+            "source_mode": "browser_image_search",
+            "source_quotes": frozen,
+            **browser_payload.to_payload(),
+        }
+        if self._plugin_gateway is not None:
+            return self._plugin_gateway.queue_command(
+                actor,
+                session_id=session_id,
+                command_type="source_browser_image_search",
+                payload=payload,
+                idempotency_key=idempotency_key,
+            )
+        assert self._plugin_bridge is not None
+        _owned_session(self._plugin_bridge, actor, session_id)
+        return self._repository.create_command(
+            workspace_id=actor.workspace_id,
+            session_id=session_id,
+            request=PluginCommandRequest(
+                command_type="source_browser_image_search", payload=payload, idempotency_key=idempotency_key
+            ),
+        )
+
+    def queue_batch_sourcing(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        session_id: str,
+        batch_id: str,
+        idempotency_key: str,
+    ) -> PluginCommandRecord:
+        """Queue one bounded image-search command for retained SKC selections.
+
+        Each retained SKC becomes one search task carrying its requested
+        candidate cap.  The payload is tagged with a batch-scoped identifier
+        because the second panel drives sourcing without a quote-run snapshot.
+        """
+        actor = _actor(actor)
+        selections = tuple(
+            item
+            for item in self._repository.list_batch_selections(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+            if item.status == "retained"
+        )
+        if not selections:
+            raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
+        browser_payload = build_batch_sourcing_payload(
+            (_selection_sourcing_view(item) for item in selections)
+        )
+        frozen = [task.to_payload() for task in browser_payload.tasks]
+        payload = {
+            "quote_run_id": f"batch-sourcing:{batch_id}",
             "source_mode": "browser_image_search",
             "source_quotes": frozen,
             **browser_payload.to_payload(),
@@ -320,6 +549,7 @@ def build_source_preview(
             "source_search_status": item_status,
             "source_search_error": _text(result.get("error")) if result else "",
             "source_decision": item_decision,
+            "max_candidates": _quote_candidate_cap(quote),
             "candidates": recommended,
             "source_review_candidates": review,
             "source_sku_validation_targets": [_sku_validation_target(quote, candidate) for candidate in validation],
@@ -331,12 +561,127 @@ def build_source_preview(
     counts = _counts(items)
     return {
         "items": items,
+        "skc_groups": _group_source_items_by_skc(items),
         "counts": counts,
         "employee_action_summary": _employee_action_summary(counts),
         "source_review_candidates": review_candidates,
         "source_sku_validation_targets": sku_targets,
         "retry_quote_keys": [item["quote_key"] for item in items if item["source_decision"] == "failed"],
     }
+
+
+def _apply_batch_ranking(
+    preview: dict[str, Any],
+    *,
+    selections_by_skc: Mapping[str, BatchSelectionRecord],
+    ranking_mode: str,
+) -> dict[str, Any]:
+    """Reorder each SKC's candidates by the user-selected mode and attach the top profit.
+
+    The first ranked candidate is priced against the Temu adjusted declared
+    price so the employee immediately sees whether the most-similar or cheapest
+    1688 match clears the profit thresholds.  The displayed list is capped at
+    ``DEFAULT_CANDIDATE_LIMIT`` (3-5 links) per the sourcing convention.
+    """
+    mode = ranking_mode if ranking_mode in {"similarity", "price"} else "similarity"
+    for item in preview.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        raw_candidates = item.get("all_candidates")
+        all_candidates = (
+            [candidate for candidate in raw_candidates if isinstance(candidate, Mapping)]
+            if isinstance(raw_candidates, list)
+            else []
+        )
+        ranked = rank_candidates_by_mode(all_candidates, mode=mode)
+        selection = selections_by_skc.get(_text(item.get("skc_id")))
+        site = _site_code(selection.site) if selection is not None else ""
+        selling_price = _text(selection.adjusted_min) if selection is not None else ""
+        ranked_copies = [dict(candidate) for candidate in ranked]
+        for candidate in ranked_copies:
+            candidate["profit"] = _candidate_profit(candidate, site, selling_price)
+        item["all_candidates"] = ranked_copies
+        keyword_count = sum(1 for candidate in ranked_copies if candidate.get("source_channel") == "keyword")
+        item["keyword_count"] = keyword_count
+        # The default display stays at 3-5 links; when the user opted into the
+        # title-keyword channel, widen the list so those hits stay visible.
+        display_limit = min(len(ranked_copies), DEFAULT_CANDIDATE_LIMIT + keyword_count * DEFAULT_CANDIDATE_LIMIT) if keyword_count else DEFAULT_CANDIDATE_LIMIT
+        item["ranked_candidates"] = list(ranked_copies[:display_limit])
+        item["candidates"] = [
+            candidate
+            for candidate in ranked_copies
+            if candidate.get("source_decision") == "recommended"
+        ]
+        item["profit_context"] = {
+            "site": site,
+            "selling_price": selling_price,
+            "weight_kg": str(DEFAULT_WEIGHT_KG),
+        }
+        item["top_profit"] = _top_candidate_profit(ranked_copies, selection)
+    preview["ranking_mode"] = mode
+    preview["candidate_limit"] = DEFAULT_CANDIDATE_LIMIT
+    return preview
+
+
+def _candidate_profit(
+    candidate: Mapping[str, Any], site: str, selling_price: str
+) -> Mapping[str, Any]:
+    """Per-candidate profit preview against the Temu adjusted declared price."""
+    if not site:
+        return {"available": False, "reason": "missing_site"}
+    if not selling_price:
+        return {"available": False, "reason": "missing_selling_price"}
+    return build_candidate_profit(candidate, site=site, selling_price=selling_price)
+
+
+def _top_candidate_profit(
+    ranked: Sequence[Mapping[str, Any]], selection: BatchSelectionRecord | None
+) -> Mapping[str, Any]:
+    top = ranked[0] if ranked else None
+    if top is None:
+        return {"available": False, "reason": "no_candidates"}
+    if selection is None:
+        return {"available": False, "reason": "missing_selection"}
+    site = _site_code(selection.site)
+    if not site:
+        return {"available": False, "reason": "missing_site"}
+    if not selection.adjusted_min:
+        return {"available": False, "reason": "missing_selling_price"}
+    return build_candidate_profit(top, site=site, selling_price=selection.adjusted_min)
+
+
+def _site_code(value: object) -> str:
+    """Map a stored site label (e.g. 美国站) to the profit engine's US/CO/EC code."""
+    text = _text(value)
+    upper = text.upper()
+    if upper in {"US", "CO", "EC"}:
+        return upper
+    if "美国" in text:
+        return "US"
+    if "哥伦比亚" in text:
+        return "CO"
+    if "厄瓜多尔" in text:
+        return "EC"
+    return ""
+
+
+def _group_source_items_by_skc(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Present completed sourcing evidence by SKC without coalescing search tasks."""
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in items:
+        skc_id = _text(item.get("skc_id")) or _text(item.get("quote_key"))
+        group = grouped.setdefault(
+            skc_id,
+            {"skc_id": skc_id, "quote_keys": [], "sku_ids": [], "items": []},
+        )
+        quote_key = _text(item.get("quote_key"))
+        sku_id = _text(item.get("sku_id"))
+        if quote_key and quote_key not in group["quote_keys"]:
+            group["quote_keys"].append(quote_key)
+        if sku_id and sku_id not in group["sku_ids"]:
+            group["sku_ids"].append(sku_id)
+        group["items"].append(item)
+    return list(grouped.values())
 
 
 def _item_decision(status: str, normalized: Sequence[Mapping[str, Any]], recommended: Sequence[Mapping[str, Any]], review: Sequence[Mapping[str, Any]], validation: Sequence[Mapping[str, Any]]) -> tuple[str, str]:
@@ -471,6 +816,27 @@ def _quote_value(quote: QuoteItem | Mapping[str, Any], name: str) -> str:
     return _text(getattr(quote, name, "") if isinstance(quote, QuoteItem) else quote.get(name))
 
 
+def _quote_candidate_cap(quote: QuoteItem | Mapping[str, Any]) -> int:
+    raw = getattr(quote, "max_candidates", "") if isinstance(quote, QuoteItem) else quote.get("max_candidates")
+    try:
+        parsed = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 10
+    return 10 if parsed < 1 or parsed > 100 else parsed
+
+
+def _selection_sourcing_view(selection: BatchSelectionRecord) -> dict[str, Any]:
+    return {
+        "skc_id": selection.skc_id,
+        "quote_keys": list(selection.quote_keys),
+        "product_title": selection.product_title,
+        "main_image_url": selection.main_image_url,
+        "official_link_url": selection.official_link_url,
+        "sku_prices": list(selection.sku_prices),
+        "max_candidates": selection.max_candidates,
+    }
+
+
 def _frozen_source_quote(quote: QuoteItem | Mapping[str, Any]) -> dict[str, Any]:
     values = dict(quote) if isinstance(quote, Mapping) else {
         name: getattr(quote, name) for name in quote.__dataclass_fields__
@@ -505,3 +871,82 @@ def _complete_frozen_quote(quote: Mapping[str, Any]) -> bool:
 
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _now_text() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _required_text(value: object, field_name: str) -> str:
+    text = _text(value)
+    if not text:
+        raise PriceVerificationContractError(f"{field_name} is required")
+    return text
+
+
+def _nullable_decimal_text(value: object) -> str | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return None
+    if not number.is_finite() or number < 0:
+        return None
+    return str(number)
+
+
+def _source_link_response(
+    record: SkcSourceLinkRecord,
+    *,
+    selection: BatchSelectionRecord | None = None,
+) -> Mapping[str, Any]:
+    response: dict[str, Any] = {
+        "id": record.id,
+        "workspace_id": record.workspace_id,
+        "batch_id": record.batch_id,
+        "skc_id": record.skc_id,
+        "offer_id": record.offer_id,
+        "source_url": record.source_url,
+        "source_title": record.source_title,
+        "main_image_url": record.main_image_url,
+        "price_cny": record.price_cny,
+        "moq": record.moq,
+        "domestic_freight_cny": record.domestic_freight_cny,
+        "source_decision": record.source_decision,
+        "note": record.note,
+        "status": record.status,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+    site = _site_code(selection.site) if selection is not None else ""
+    selling_price = _text(selection.adjusted_min) if selection is not None else ""
+    response["product_title"] = selection.product_title if selection is not None else ""
+    response["site"] = site
+    response["selling_price"] = selling_price
+    response["profit"] = _link_profit(record, site, selling_price)
+    return response
+
+
+def _link_profit(
+    record: SkcSourceLinkRecord, site: str, selling_price: str
+) -> Mapping[str, Any]:
+    """Profit for one linked 1688 source against the Temu adjusted price."""
+    if not site:
+        return {"available": False, "reason": "missing_site"}
+    if not selling_price:
+        return {"available": False, "reason": "missing_selling_price"}
+    if not record.price_cny:
+        return {"available": False, "reason": "missing_source_price"}
+    return build_candidate_profit(
+        {
+            "price": record.price_cny,
+            "promotion_price": None,
+            "moq": record.moq,
+            "domestic_freight": record.domestic_freight_cny,
+        },
+        site=site,
+        selling_price=selling_price,
+    )

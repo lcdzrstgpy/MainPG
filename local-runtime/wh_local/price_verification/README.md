@@ -48,10 +48,12 @@ cd local-runtime
 
 ## SQLite 数据库变更交接
 
-模块使用本地工作台注入的 SQLite `database_path`。本次需要数据库同事纳入两个 migration，执行顺序如下（均为幂等建表，可重复执行）：
+模块使用本地工作台注入的 SQLite `database_path`。本次需要数据库发布流程纳入四个 migration，执行顺序如下：
 
 1. 先执行 `data_collection/migrations/003_plugin_command_requests.sql`。
 2. 再执行 `price_verification/migrations/002_retained_link_sourcing.sql`。
+3. 最后执行 `price_verification/migrations/003_direct_price_quote_batches.sql`。
+4. 紧接着执行 `price_verification/migrations/004_quote_capture_chunk_sku_capacity.sql`。
 
 应用本地启动时也会自动执行上述 migration，但正式环境仍应由数据库发布流程显式管理。
 
@@ -124,6 +126,27 @@ CREATE INDEX IF NOT EXISTS idx_price_verification_sourcing_run_quotes_quote
 
 `price_verification_quote_decisions` 采用追加式 revision，保留人工操作历史；查询当前决定时取每个 `quote_key` 的最大 revision。`price_verification_sourcing_run_quotes` 保存排队时的不可变输入，至少包含官方链接、主图和人工选中的人民币报价；重试必须继续使用该快照，不能重新读取后来已变化的决定。
 
+### 变更三：Temu 核价页直采大批次
+
+文件：`local-runtime/wh_local/price_verification/migrations/003_direct_price_quote_batches.sql`
+
+新增三张表：
+
+- `price_verification_quote_capture_batches`：用户创建并切换的核价大批次；每个 `workspace_id` 通过部分唯一索引仅允许一个 `is_current=1` 的当前批次。
+- `price_verification_quote_capture_chunks`：插件在 Temu“批量查看并确认申报价”页每次直采的一个分片，单页最多 50 个 SKC 分组；一个 SKC 可包含多 SKU，因此 `item_count` 记录 SKU 报价行并允许 1–5000 行。`(workspace_id, batch_id, content_sha256)` 唯一，重复点击同一页不会重复入库。`capture_json` 为脱敏只读证据，`items_json` 为当时已规范化的报价快照。
+- `price_verification_quote_capture_batch_snapshots`：用户点击“保存当前批次”时，将当时所有分片生成一个新的 `price_verification_quote_runs` 不可变快照；后续向同一批次追加分片不会改写旧快照。
+
+工作流：先在工作台新建/切换当前批次，再在 Temu 核价页点击插件“采集核价本页”；采集不会自动发起图搜。用户保存批次后，才在核价结果中人工保留链接，并点击“执行图搜”。图搜结果继续保留逐条报价明细，同时按 `skc_id` 输出聚合视图。
+
+### 变更四：核价分片 SKU 容量兼容
+
+文件：`local-runtime/wh_local/price_verification/migrations/004_quote_capture_chunk_sku_capacity.sql`
+
+该迁移会原子重建 `price_verification_quote_capture_chunks`，把
+`item_count` 的 SQLite 校验从 `1–50` 调整为 `1–5000`，并保留已有分片和
+唯一索引。业务层仍限制每页不超过 50 个 `skc_id` 分组；此变更仅允许同一个
+SKC 的多 SKU 报价一并入库，避免 Temu 核价页的 50 个 SKC 被误判为 50 条 SKU。
+
 核价快照 `price_verification_quote_items.snapshot_json` 新增/使用以下 JSON 字段，不需要增加实体列：
 
 - `quote_key`：单条报价稳定标识。
@@ -156,15 +179,18 @@ WHERE type = 'table'
   AND name IN (
     'data_collection_plugin_command_requests',
     'price_verification_quote_decisions',
-    'price_verification_sourcing_run_quotes'
+    'price_verification_sourcing_run_quotes',
+    'price_verification_quote_capture_batches',
+    'price_verification_quote_capture_chunks',
+    'price_verification_quote_capture_batch_snapshots'
   )
 ORDER BY name;
 
 PRAGMA foreign_key_check;
 ```
 
-预期 `PRAGMA foreign_keys` 为 `1`，表查询返回 3 行，`PRAGMA foreign_key_check` 返回 0 行。
+预期 `PRAGMA foreign_keys` 为 `1`，表查询返回 6 行，`PRAGMA foreign_key_check` 返回 0 行。
 
 ### 回滚边界
 
-应用回滚时不要直接删除上述三张表；保留它们不会影响旧版本运行，且人工决定和已冻结货源输入属于审计数据。若后续确认永久下线，应先备份，再按外键依赖顺序删除 `price_verification_sourcing_run_quotes`、`price_verification_quote_decisions`、`data_collection_plugin_command_requests`，并由数据库负责人单独审批执行。
+应用回滚时不要直接删除上述六张表；保留它们不会影响旧版本运行，且采集分片、人工决定和已冻结货源输入属于审计数据。若后续确认永久下线，应先备份，再按外键依赖顺序删除 `price_verification_quote_capture_batch_snapshots`、`price_verification_quote_capture_chunks`、`price_verification_quote_capture_batches`、`price_verification_sourcing_run_quotes`、`price_verification_quote_decisions`、`data_collection_plugin_command_requests`，并由数据库负责人单独审批执行。

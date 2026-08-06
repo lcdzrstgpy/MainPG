@@ -90,6 +90,65 @@ def build_retained_source_browser_image_search_payload(
     return SourceBrowserImageSearchPayload(tasks=tuple(tasks), skipped_quote_keys=tuple(skipped))
 
 
+def build_batch_sourcing_payload(
+    selections: Iterable[Mapping[str, Any]], *, max_tasks: int = 100
+) -> SourceBrowserImageSearchPayload:
+    """Create one image-search task per retained SKC with its requested candidate cap.
+
+    ``max_candidates`` rides along with each task so the plugin can bound the
+    number of similar products it returns, and the preview can honor the same
+    cap when rendering each SKC group.
+    """
+    if isinstance(max_tasks, bool) or not isinstance(max_tasks, int) or max_tasks < 1:
+        raise ValueError("max_tasks must be a positive integer")
+    tasks: list[SourceSearchTask] = []
+    skipped: list[str] = []
+    for selection in selections:
+        skc_id = _text(selection.get("skc_id"))
+        if not skc_id:
+            continue
+        if len(tasks) >= max_tasks:
+            if skc_id not in skipped:
+                skipped.append(skc_id)
+            continue
+        price = _selected_price(selection)
+        tasks.append(
+            SourceSearchTask(
+                task_key=skc_id,
+                skc_id=skc_id,
+                main_image_url=_text(selection.get("main_image_url")),
+                official_link_url=_text(selection.get("official_link_url")),
+                selected_price_cny=str(price) if price is not None else "",
+                product_title=_text(selection.get("product_title")),
+                source_quote_keys=tuple(
+                    str(key) for key in (selection.get("quote_keys") or ()) if str(key).strip()
+                ),
+                quote_key=skc_id,
+                max_candidates=_candidate_cap(selection.get("max_candidates")),
+            )
+        )
+    return SourceBrowserImageSearchPayload(tasks=tuple(tasks), skipped_quote_keys=tuple(skipped))
+
+
+def _selected_price(selection: Mapping[str, Any]) -> Decimal | None:
+    """Pick the adjusted (recommended) price first, then the original declared price."""
+    for field in ("adjusted_declared_price_cny", "original_declared_price_cny"):
+        for sku in selection.get("sku_prices") or ():
+            if isinstance(sku, Mapping):
+                price = _declared_price(sku.get(field))
+                if price is not None:
+                    return price
+    return None
+
+
+def _candidate_cap(value: object) -> int:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 10
+    return 10 if parsed < 1 or parsed > 100 else parsed
+
+
 def _eligible_source_quote(
     quote: QuoteItem | Mapping[str, Any],
 ) -> tuple[_SourceQuote | None, str]:

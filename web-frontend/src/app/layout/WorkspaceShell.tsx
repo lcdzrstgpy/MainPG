@@ -8,6 +8,7 @@ import { DailySelectionPage } from "../../modules/daily_selection/pages/DailySel
 import { BasicSettingsPage } from "../../modules/basic_settings/pages/BasicSettingsPage";
 import { ProfitActivityProductsPage } from "../../modules/profit_activity/pages/ProfitActivityProductsPage";
 import { ProfitActivityTestPage } from "../../modules/profit_activity/pages/ProfitActivityTestPage";
+import { PriceVerificationPage } from "../../modules/price_verification/pages/PriceVerificationPage";
 import { ProductProcessingVerifyPage } from "../../modules/product_processing/pages/ProductProcessingVerifyPage";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
 
@@ -98,13 +99,14 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
           {activeModuleId === "profit_activity" && <ProfitActivityTestPage />}
           {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
           {activeModuleId === "basic_settings" && <BasicSettingsPage />}
+          {activeModuleId === "price_verification" && <PriceVerificationPage />}
           {activeModuleId === "product_processing" && <ProductProcessingVerifyPage />}
           {collectionTabs.map((tab) => (
             <div key={tab.key} hidden={activeTabKey !== tab.key}>
               <DailySelectionPage view="collection" initialDirectionId={tab.directionId} />
             </div>
           ))}
-          {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "basic_settings" && activeModuleId !== "product_processing" && <EmptyModulePage module={activeModule} />}
+          {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "basic_settings" && activeModuleId !== "price_verification" && activeModuleId !== "product_processing" && <EmptyModulePage module={activeModule} />}
         </div>
       </section>
     </main>
