@@ -149,6 +149,7 @@ export interface ProductProcessingOptions {
   includeProductVideo: boolean;
   skipDuplicates: boolean;
   ipCheck: boolean;
+  maxParallelDrafts: number;
 }
 
 export interface TaskArtifact {

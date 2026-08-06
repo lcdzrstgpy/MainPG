@@ -66,6 +66,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
       includeProductVideo: false,
       skipDuplicates: false,
       ipCheck: true,
+      maxParallelDrafts: 5,
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
@@ -151,6 +152,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
           include_product_video: options.includeProductVideo,
           skip_duplicates: options.skipDuplicates,
           ip_check: options.ipCheck,
+          max_parallel_drafts: options.maxParallelDrafts,
         },
       });
       setBatch(data);
@@ -265,6 +267,11 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
               <span className="verify-scope-label">处理数量：</span>
               <input className="verify-slider" type="range" min={0} max={100} step={1} value={options.maxProducts} onChange={(e) => setOptions((p) => ({ ...p, maxProducts: Number(e.target.value) || 0 }))} />
               <span className="verify-slider-value">{options.maxProducts === 0 ? `全部 (${initialDraftIds?.length || 0}项)` : options.maxProducts}</span>
+            </div>
+            <div className="verify-slider-row">
+              <span className="verify-scope-label">最大并行：</span>
+              <input className="verify-slider" type="range" min={1} max={20} step={1} value={options.maxParallelDrafts} onChange={(e) => setOptions((p) => ({ ...p, maxParallelDrafts: Number(e.target.value) || 1 }))} />
+              <span className="verify-slider-value">{options.maxParallelDrafts} 线程{options.maxParallelDrafts <= 1 ? '（串行）' : ''}</span>
             </div>
             <div className="verify-actions">
               <button className="primary" onClick={() => startBatch(false)} disabled={loading || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>

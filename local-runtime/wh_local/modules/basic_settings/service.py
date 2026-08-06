@@ -75,6 +75,8 @@ def default_system_config() -> dict[str, Any]:
             "image_provider_strategy": "balanced",
             "provider_backup_share_percent": 0,
             "image_stop_after_billable_failure": True,
+            "max_parallel_drafts": 5,
+            "max_parallel_drafts_limit": 20,
         },
         "updates": {"cos_prefix": "temu-y2-control", "public_base_url": ""},
     }

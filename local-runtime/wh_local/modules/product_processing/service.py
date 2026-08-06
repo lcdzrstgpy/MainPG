@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -888,6 +889,7 @@ class ProductProcessingService:
         self.repository.set_task_status(task_id, "running", workspace_id)
         settings = task["settings"]
         preflight_only = bool(task["preflight_only"])
+        max_workers = max(1, min(20, int(settings.get("max_parallel_drafts", 1))))
         draft_ids = [item["product_draft_id"] for item in task["items"] if item["product_draft_id"]]
         drafts = {
             draft["id"]: draft
@@ -901,30 +903,58 @@ class ProductProcessingService:
         successes: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         source_images: list[str] = []
-        for item in task["items"]:
+        lock = threading.Lock()
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _process(item: dict[str, Any]) -> dict[str, Any]:
             draft = drafts.get(item["product_draft_id"])
-            processed = self._process_one(item, draft, settings, preflight_only, task_id=task_id)
-            item_results.append(processed)
-            if processed["status"] == "completed":
-                result = processed["result"]
-                successes.append(result)
-                source_images.extend(result.get("source_image_urls") or [])
-                if draft and not preflight_only:
-                    raw = dict(draft["raw_payload"])
-                    raw["product_processing_receipt"] = {
-                        "task_id": task_id,
-                        "status": "completed",
-                        "target_site": settings.get("target_site", "US"),
-                        "target_language": settings.get("target_language", "en"),
-                    }
-                    self.repository.update_draft(
-                        draft["id"],
-                        {"status": "processed"},
-                        raw,
-                        workspace_id=workspace_id,
-                    )
-            else:
-                failures.append(processed)
+            return self._process_one(item, draft, settings, preflight_only, task_id=task_id)
+
+        if max_workers <= 1:
+            # 串行模式：保持原有行为，便于调试和问题排查
+            for item in task["items"]:
+                processed = _process(item)
+                item_results.append(processed)
+                if processed["status"] == "completed":
+                    result = processed["result"]
+                    successes.append(result)
+                    source_images.extend(result.get("source_image_urls") or [])
+                    if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
+                        self._mark_draft_processed(draft, task_id, settings, workspace_id)
+                else:
+                    failures.append(processed)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures_map = {
+                    executor.submit(_process, item): item
+                    for item in task["items"]
+                }
+                for future in as_completed(futures_map):
+                    item = futures_map[future]
+                    try:
+                        processed = future.result()
+                    except Exception as exc:
+                        processed = {
+                            "product_draft_id": item["product_draft_id"],
+                            "status": "failed",
+                            "result": {
+                                "failure_class": "technical_retryable",
+                                "reason": f"并行处理异常: {_ai_error_reason(exc)}",
+                                "retryable": True,
+                            },
+                        }
+                    with lock:
+                        item_results.append(processed)
+                        if processed["status"] == "completed":
+                            result = processed["result"]
+                            successes.append(result)
+                            source_images.extend(result.get("source_image_urls") or [])
+                            if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
+                                self._mark_draft_processed(draft, task_id, settings, workspace_id)
+                        else:
+                            failures.append(processed)
+
         preserve = settings.get("source_image_to_library")
         if preserve is None:
             preserve = settings.get("preserve_source_images", True)
@@ -951,6 +981,24 @@ class ProductProcessingService:
             output_file=str(paths.workbook),
             error_report_file=str(paths.errors),
             video_manifest_file=str(paths.video_manifest) if paths.video_manifest else "",
+            workspace_id=workspace_id,
+        )
+
+    def _mark_draft_processed(
+        self, draft: dict[str, Any], task_id: int, settings: dict[str, Any], workspace_id: str
+    ) -> None:
+        """标记草稿为已处理（线程安全，由锁保护的外部调用保证）。"""
+        raw = dict(draft["raw_payload"])
+        raw["product_processing_receipt"] = {
+            "task_id": task_id,
+            "status": "completed",
+            "target_site": settings.get("target_site", "US"),
+            "target_language": settings.get("target_language", "en"),
+        }
+        self.repository.update_draft(
+            draft["id"],
+            {"status": "processed"},
+            raw,
             workspace_id=workspace_id,
         )
 
