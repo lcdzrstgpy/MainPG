@@ -10,14 +10,14 @@ function resolveEndpoint() {
   };
 }
 
-// 候选令牌：手动设置 > 登录会话 > 管理员令牌（永不过期，兜底）。
+// 候选令牌：dev-admin-token 优先（本地开发管理员，永不过期兜底）。
 function candidateTokens(): string[] {
   const tokens = new Set<string>();
+  tokens.add("dev-admin-token");  // 优先：本地开发管理员
   const manual = localStorage.getItem("whLocalApiToken");
   const customer = localStorage.getItem("wh_demo_token");
   if (manual) tokens.add(manual);
   if (customer) tokens.add(customer);
-  tokens.add("dev-admin-token");
   return [...tokens];
 }
 
