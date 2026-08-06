@@ -9,18 +9,39 @@ from typing import Any, Callable
 
 _HEADER_ALIASES = {
     "skc": {"skc", "skc id", "商品id", "商品 id", "商品编号", "产品id", "产品 id"},
-    "selling_price": {"售价", "销售价", "售卖价", "selling price", "price"},
-    "cost_price": {"成本", "成本价", "采购成本", "cost", "cost price"},
-    "weight_kg": {"重量", "重量kg", "重量 kg", "weight", "weight kg"},
+    "selling_price": {
+        "售价", "销售价", "售卖价", "selling price", "price",
+        # 核价审核表：核价通过即 Temu 平台售价
+        "核价通过", "核价通过价", "审核通过价", "平台核价", "平台价格", "temu价格", "temu售价",
+    },
+    "cost_price": {
+        "成本", "成本价", "采购成本", "cost", "cost price",
+        # 核价审核表：国内成本（单价+运输损耗+耗材+运输头程，见 _audit_cost_components）
+        "国内成本", "采购成本合计", "成本合计", "商品成本",
+    },
+    "weight_kg": {
+        "重量", "重量kg", "重量 kg", "weight", "weight kg",
+        # 核价审核表：实重量在第二行子表头，由 _headers 兜底扫描
+        "实重量kg", "实重量 kg", "实重kg", "实重", "实际重量", "实际重量kg",
+    },
     "note": {"备注", "说明", "note"},
-    "source_url": {"货源", "货源链接", "采购链接", "source", "source url"},
+    "source_url": {
+        "货源", "货源链接", "采购链接", "source", "source url",
+        "1688产品对应链接", "1688产品链接", "1688链接", "1688货源链接", "产品对应链接",
+    },
     "product_image": {"商品主图", "主图", "产品图片", "product image", "main image"},
     "source_image": {"货源图", "采购截图", "source image"},
-    "activity_price": {"活动申报价", "活动报价", "最低活动价", "activity price", "campaign price"},
+    "activity_price": {"活动申报价", "活动申报价格", "活动报价", "最低活动价", "activity price", "campaign price"},
     "activity_name": {"活动类型(活动主题)", "活动类型", "活动主题", "activity", "activity name"},
     "spu": {"spu", "spu id"},
     "site": {"站点", "site", "site code"},
 }
+
+# 核价审核表的国内成本被拆成第二行子表头；存在这些子列时，成本按子列求和而非只取“国内成本”合并单元格。
+_COST_COMPONENT_HEADERS = {"单价", "运输损耗", "耗材", "运输头程"}
+
+# 仅在首行找不到重量列时，回退扫描第二行子表头（例如 WPS 审核表的“实重量KG”）。
+_SECOND_ROW_WEIGHT_HEADERS = {"实重量kg", "实重量 kg", "实重kg", "实重", "实际重量", "实际重量kg"}
 
 
 def parse_product_workbook(workbook_bytes: bytes, site: str, duplicate_keys: set[tuple[str, str]]) -> list[dict[str, Any]]:
@@ -29,6 +50,7 @@ def parse_product_workbook(workbook_bytes: bytes, site: str, duplicate_keys: set
         rows: list[dict[str, Any]] = []
         for worksheet in workbook.worksheets:
             header_map = _headers(worksheet)
+            cost_components = _cost_component_indices(worksheet) if header_map.get("cost_price") is not None else []
             for row_number, cells in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
                 values = {field: _cell(cells, index) for field, index in header_map.items()}
                 if not any(str(value or "").strip() for value in values.values()):
@@ -39,6 +61,11 @@ def parse_product_workbook(workbook_bytes: bytes, site: str, duplicate_keys: set
                 if not skc:
                     blockers.append("missing_skc")
                 numeric = {name: _decimal(values.get(name)) for name in ("selling_price", "cost_price", "weight_kg")}
+                if cost_components:
+                    numeric["cost_price"] = _sum_decimal(_cell(cells, index) for index in cost_components)
+                if not skc and all(numeric[name] is None for name in ("selling_price", "cost_price", "weight_kg")):
+                    # 无 SKC 且没有可用的数值列，视为第二行子表头/说明行，不进入导入结果。
+                    continue
                 for name, value in numeric.items():
                     if value is None or value <= 0:
                         blockers.append(f"invalid_{name}")
@@ -110,6 +137,24 @@ def extract_product_workbook_images(workbook_bytes: bytes) -> dict[str, dict[str
         workbook.close()
 
 
+def _normalize_site_value(value: str) -> str:
+    """把报名表里的中文站名（美国站/哥伦比亚站…）归一化为站点代码，未匹配时原样返回。"""
+    site = str(value or "").strip().upper()
+    if site in {"US", "CO", "EC", "MX", "BR", "CA"}:
+        return site
+    aliases = {
+        "美国站": "US", "美区": "US", "美国": "US",
+        "哥伦比亚站": "CO", "哥伦比亚": "CO",
+        "厄瓜多尔站": "EC", "厄瓜多尔": "EC",
+    }
+    if site in aliases:
+        return aliases[site]
+    for name, code in aliases.items():
+        if name.upper() in site or site in name.upper():
+            return code
+    return site
+
+
 def filter_activity_workbook(
     workbook_bytes: bytes,
     *,
@@ -143,7 +188,7 @@ def filter_activity_workbook(
             skc = str(_cell(cells, skc_index) or "").strip()
             if not skc:
                 continue
-            row_site = str(_cell(cells, site_index) or "").strip().upper() if site_index is not None else ""
+            row_site = _normalize_site_value(str(_cell(cells, site_index) or "")) if site_index is not None else ""
             if row_site and row_site != site:
                 site_mismatch_rows.add(row_number)
                 removed_rows.append(_removed_row(worksheet, row_number, "site_mismatch", None))
@@ -253,7 +298,8 @@ def _load_workbook(workbook_bytes: bytes):
         raise ValueError("uploaded workbook is empty")
     try:
         from openpyxl import load_workbook
-        return load_workbook(BytesIO(workbook_bytes), data_only=False)
+        # data_only=True 读取公式的缓存结果，否则售价/成本等公式列会拿到公式原文而无法解析数值。
+        return load_workbook(BytesIO(workbook_bytes), data_only=True)
     except ImportError as exc:
         raise ValueError("openpyxl is required for Excel support; install openpyxl") from exc
     except Exception as exc:
@@ -279,11 +325,41 @@ def _headers(worksheet) -> dict[str, int]:
         for field, aliases in _HEADER_ALIASES.items():
             if key in aliases and field not in result:
                 result[field] = index
+    if result.get("weight_kg") is None:
+        # WPS 审核表的“实重量KG”位于第二行子表头，兜底扫描一次。
+        second_row = next(worksheet.iter_rows(min_row=2, max_row=2, values_only=True), ())
+        for index, raw in enumerate(second_row):
+            if _normalize_header(raw) in _SECOND_ROW_WEIGHT_HEADERS:
+                result["weight_kg"] = index
+                break
     return result
 
 
+def _cost_component_indices(worksheet) -> list[int]:
+    """返回第二行子表头中“单价/运输损耗/耗材/运输头程”的列下标。
+
+    核价审核表的“国内成本”是合并单元格，数值分散在这四列中，导入时应求和。
+    """
+    second_row = next(worksheet.iter_rows(min_row=2, max_row=2, values_only=True), ())
+    return [index for index, raw in enumerate(second_row) if _normalize_header(raw) in _COST_COMPONENT_HEADERS]
+
+
+def _sum_decimal(values: Any) -> Decimal | None:
+    """对生成器中的单元格值求和；全部为空时返回 None。"""
+    total = None
+    for value in values:
+        parsed = _decimal(value)
+        if parsed is None:
+            continue
+        total = parsed if total is None else total + parsed
+    return total
+
+
 def _normalize_header(value: object) -> str:
-    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+    text = str(value or "").strip().lower()
+    # 全角标点统一转半角，避免“活动类型(活动主题）”这类表头无法匹配别名。
+    text = text.replace("（", "(").replace("）", ")").replace("，", ",").replace("：", ":")
+    return re.sub(r"\s+", " ", text)
 
 
 def _cell(cells: tuple[object, ...], index: int | None) -> object | None:

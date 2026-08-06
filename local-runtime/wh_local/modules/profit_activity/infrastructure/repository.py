@@ -118,6 +118,25 @@ class ProfitActivityRepository:
             row = session.get(ImportSessionRow, import_id)
             return row if row is not None and row.workspace_id == workspace_id else None
 
+    def latest_import_session(self, workspace_id: str = "default") -> ImportSessionRow | None:
+        with self._sessions() as session:
+            return (
+                session.query(ImportSessionRow)
+                .filter(ImportSessionRow.workspace_id == workspace_id)
+                .order_by(ImportSessionRow.created_at.desc())
+                .first()
+            )
+
+    def list_import_sessions(self, workspace_id: str = "default", limit: int = 3) -> list[ImportSessionRow]:
+        with self._sessions() as session:
+            return (
+                session.query(ImportSessionRow)
+                .filter(ImportSessionRow.workspace_id == workspace_id)
+                .order_by(ImportSessionRow.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+
     def create_import_task(self, workspace_id: str, import_id: str, result: dict) -> ImportTaskRow:
         with self._sessions.begin() as session:
             task = ImportTaskRow(workspace_id=workspace_id, import_id=import_id, status="completed", result_json=json.dumps(result, ensure_ascii=False, default=str))

@@ -7,6 +7,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from dataclasses import asdict
+from datetime import timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -227,6 +228,28 @@ class ProfitActivityService:
         summary = _import_summary(rows)
         return {"import_id": import_id, "original_filename": original_filename, "site": site, "summary": summary, "rows": rows}
 
+    def latest_import_session(self, actor: Any | None = None) -> dict[str, Any] | None:
+        context = _actor_context(actor)
+        session = self._repository.latest_import_session(context.workspace_id)
+        if session is None:
+            return None
+        return self._import_session_payload(session)
+
+    def list_import_sessions(self, actor: Any | None = None, *, limit: int = 3) -> list[dict[str, Any]]:
+        context = _actor_context(actor)
+        return [self._import_session_payload(session) for session in self._repository.list_import_sessions(context.workspace_id, limit)]
+
+    def _import_session_payload(self, session) -> dict[str, Any]:
+        rows = json.loads(session.rows_json)
+        return {
+            "import_id": session.import_id,
+            "original_filename": session.original_filename,
+            "site": session.site,
+            "created_at": _local_iso(session.created_at) if session.created_at else None,
+            "summary": _import_summary(rows),
+            "rows": rows,
+        }
+
     def confirm_import(self, import_id: str, selected_row_ids: list[str] | None, on_conflict: str, actor: Any | None = None) -> dict[str, Any]:
         context = _actor_context(actor)
         session = self._repository.get_import_session(import_id, context.workspace_id)
@@ -337,6 +360,22 @@ class ProfitActivityService:
             raise ValueError("kind must be filtered or removed")
         return Path(result[f"{kind}_path"])
 
+    def save_filter_output(self, task_id: int, kind: str, actor: Any | None = None) -> Path:
+        """把已生成的可申报/剔除文件复制到本地保存目录（save_root），方便用户直接在该目录取用。"""
+        import shutil
+
+        result = self.get_filter_task_legacy(task_id, actor)
+        if kind not in {"filtered", "removed"}:
+            raise ValueError("kind must be filtered or removed")
+        source = Path(result[f"{kind}_path"])
+        if not source.exists():
+            raise ProfitActivityNotFound("filter_output_missing")
+        names = {"filtered": "可申报产品", "removed": "剔除产品"}
+        root = self._asset_root(self.get_settings(actor).settings)
+        target = root / f"{names[kind]}_{task_id}.xlsx"
+        shutil.copyfile(source, target)
+        return target
+
     def import_image_path(self, import_id: str, row_id: str, kind: str, actor: Any | None = None) -> Path:
         context = _actor_context(actor)
         session = self._repository.get_import_session(import_id, context.workspace_id)
@@ -385,8 +424,9 @@ class ProfitActivityService:
     def run_filter(self, site_code: SiteCode | None, record_ids: list[int] | None, actor: Any | None = None, *, include_workspace_shared: bool = False):
         context = _actor_context(actor)
         settings = self.get_settings(actor).settings
+        records = self._repository.get_records_for_filter(context.workspace_id, site_code, record_ids, actor_id=context.actor_id, include_workspace_shared=include_workspace_shared or context.is_admin)
         decisions = []
-        for record in self._repository.get_records_for_filter(context.workspace_id, site_code, record_ids, actor_id=context.actor_id, include_workspace_shared=include_workspace_shared or context.is_admin):
+        for record in records:
             preview = ProfitPreview(
                 site_code=record.site_code, selling_price=record.selling_price, cost_price=record.cost_price, weight_kg=record.weight_kg,
                 domestic_fee=record.domestic_fee, shipping_subsidy=record.shipping_subsidy, shipping_cost=record.shipping_cost,
@@ -394,8 +434,21 @@ class ProfitActivityService:
                 net_profit=record.net_profit, profit_rate=record.profit_rate,
             )
             decision, reason = activity_decision(preview, settings)
-            decisions.append((record.id, decision, reason))
-        return self._repository.create_activity_run(context.workspace_id, site_code, settings, decisions)
+            decisions.append((record, decision, reason))
+        run = self._repository.create_activity_run(
+            context.workspace_id, site_code, settings,
+            [(record.id, decision, reason) for record, decision, reason in decisions],
+        )
+        return run, [
+            {
+                "record_id": record.id,
+                "skc": record.skc,
+                "site": record.site_code,
+                "decision": decision,
+                "reason_code": reason,
+            }
+            for record, decision, reason in decisions
+        ]
 
     def get_filter_run(self, run_id: int, actor: Any | None = None):
         context = _actor_context(actor)
@@ -502,6 +555,14 @@ def _preview_from_product(product: dict[str, Any]) -> ProfitPreview:
 
 def _import_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
     return {"total_rows": len(rows), "importable_rows": sum(row["status"] == "ready" for row in rows), "warning_rows": sum(bool(row["warnings"]) for row in rows), "blocked_rows": sum(row["status"] != "ready" for row in rows), "duplicate_rows": sum(bool(row["is_duplicate"]) for row in rows), "default_selected_rows": sum(row["status"] == "ready" and not row["is_duplicate"] for row in rows)}
+
+
+def _local_iso(value: Any) -> str:
+    """SQLite 存储的是 UTC 时间且无时区信息，这里按 UTC 解析后转成服务器本地时区输出。"""
+    try:
+        return value.replace(tzinfo=timezone.utc).astimezone().isoformat(timespec="minutes")
+    except (TypeError, ValueError, AttributeError):
+        return str(value)
 
 
 def _asset_tuple(path_value: Any) -> tuple[str, bytes] | None:

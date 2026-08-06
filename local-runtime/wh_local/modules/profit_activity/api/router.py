@@ -81,7 +81,8 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
     @router.post("/filter-runs", status_code=status.HTTP_201_CREATED)
     def run_filter(body: FilterRequest, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.filter", database_path)
-        return _run_response(service.run_filter(**body.model_dump(), actor=actor, include_workspace_shared=actor_has_permission(actor, "profit_activity.company_read", database_path)))
+        run, decision_items = service.run_filter(**body.model_dump(), actor=actor, include_workspace_shared=actor_has_permission(actor, "profit_activity.company_read", database_path))
+        return _run_response(run, decision_items)
 
     @router.get("/filter-runs/{run_id}")
     def get_filter_run(run_id: int, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
@@ -177,6 +178,16 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         except (ProfitActivityNotFound, ValueError) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
+    @router.get("/products/import/sessions/latest")
+    def latest_import_session(actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any] | None:
+        require_permission(actor, "profit_activity.import", database_path)
+        return service.latest_import_session(actor)
+
+    @router.get("/products/import/sessions")
+    def list_import_sessions(actor: Actor = Depends(profit_activity_actor)) -> list[dict[str, Any]]:
+        require_permission(actor, "profit_activity.import", database_path)
+        return service.list_import_sessions(actor)
+
     @router.get("/products/import/{import_id}/image/{row_id}")
     def import_preview_image(
         import_id: str,
@@ -244,6 +255,15 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+    @router.post("/activity-filter/{task_id}/save")
+    def filter_save(task_id: int, kind: Literal["filtered", "removed"] = "filtered", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+        require_permission(actor, "profit_activity.export", database_path)
+        try:
+            saved_path = service.save_filter_output(task_id, kind, actor)
+        except (ProfitActivityNotFound, ValueError) as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        return {"saved_path": str(saved_path)}
+
     return router
 
 
@@ -302,6 +322,15 @@ def _record_response(row) -> dict[str, Any]:
 def _run_response(run, decisions=None) -> dict[str, Any]:
     result = {key: getattr(run, key) for key in ("id", "site_code", "rule_version", "minimum_net_profit", "minimum_profit_rate", "retained_count", "excluded_count", "created_at")}
     if decisions is not None:
-        result["decisions"] = [{"record_id": item.record_id, "decision": item.decision, "reason_code": item.reason_code} for item in decisions]
+        result["decisions"] = [
+            {
+                "record_id": item.get("record_id") if isinstance(item, dict) else item.record_id,
+                "skc": item.get("skc") if isinstance(item, dict) else None,
+                "site": item.get("site") if isinstance(item, dict) else None,
+                "decision": item.get("decision") if isinstance(item, dict) else item.decision,
+                "reason_code": item.get("reason_code") if isinstance(item, dict) else item.reason_code,
+            }
+            for item in decisions
+        ]
     return result
 

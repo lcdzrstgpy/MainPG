@@ -47,6 +47,50 @@
   align-items: end;
 }
 
+.profit-site-check-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.profit-products-page .profit-site-check-group label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  border: 1px solid #cfe0eb;
+  border-radius: 11px;
+  padding: 9px 12px;
+  color: #3a5c78;
+  background: #fff;
+  cursor: pointer;
+  font-size: .82rem;
+  font-weight: 850;
+  line-height: 1.2;
+}
+
+.profit-products-page .profit-site-check-group label input {
+  width: auto;
+  margin: 0;
+}
+
+.profit-site-check-group label.is-active {
+  border-color: #0a8cf2;
+  color: #0a8cf2;
+  background: #eefaff;
+}
+
+.profit-products-page .profit-site-master {
+  border-color: #b4d6f2;
+  background: #f1f7fc;
+}
+
+.profit-site-master.is-active {
+  border-color: #0a8cf2;
+  background: #eaf6ff;
+}
+
 .profit-products-page label {
   display: grid;
   gap: 7px;
