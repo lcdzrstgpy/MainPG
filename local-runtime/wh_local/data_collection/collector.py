@@ -143,7 +143,7 @@ class DailySelectionCollector:
                         response.audits,
                     )
                 )
-                candidates.extend(_collected_candidates(response, None))
+                candidates.extend(_tagged_candidates(response, query, expanded=expanded))
                 if response.error is not None:
                     errors.append(response.error)
 
@@ -231,7 +231,29 @@ def _queries(criteria: DailySelectionCriteria) -> tuple[tuple[str, bool], ...]:
 def _collected_candidates(response: ProviderCallResult, reference_image_url: str | None) -> list[CollectedCandidate]:
     if not response.ok:
         return []
-    return [CollectedCandidate(candidate, reference_image_url) for candidate in normalize_search_response(response.response, evidence=response.audit)]
+    return [
+        CollectedCandidate(
+            candidate.model_copy(update={"selection_result_label": "API 图搜候选"}),
+            reference_image_url,
+        )
+        for candidate in normalize_search_response(response.response, evidence=response.audit)
+    ]
+
+
+def _tagged_candidates(response: ProviderCallResult, query: str, *, expanded: bool) -> list[CollectedCandidate]:
+    """Attach the search keyword and result label that produced each candidate.
+
+    ``精准参考`` marks the seed query for a keyword center; ``同类发散`` marks
+    rule-based expansions, mirroring the reference workbench result labels.
+    """
+    label = "同类发散" if expanded else "精准参考"
+    return [
+        CollectedCandidate(
+            candidate.model_copy(update={"query_keyword": query, "selection_result_label": label}),
+            None,
+        )
+        for candidate in normalize_search_response(response.response, evidence=response.audit)
+    ]
 
 
 def _deduplicate(candidates: Sequence[CollectedCandidate]) -> list[CollectedCandidate]:

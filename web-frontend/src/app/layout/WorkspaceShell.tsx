@@ -8,7 +8,7 @@ import { DailySelectionPage } from "../../modules/daily_selection/pages/DailySel
 import { BasicSettingsPage } from "../../modules/basic_settings/pages/BasicSettingsPage";
 import { ProfitActivityProductsPage } from "../../modules/profit_activity/pages/ProfitActivityProductsPage";
 import { ProfitActivityTestPage } from "../../modules/profit_activity/pages/ProfitActivityTestPage";
-import { ProductProcessingPage } from "../../modules/product_processing/pages/ProductProcessingPage";
+import { ProductProcessingVerifyPage } from "../../modules/product_processing/pages/ProductProcessingVerifyPage";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
 
 type WorkspaceShellProps = { onSignOut: () => void };
@@ -88,7 +88,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
           {activeModuleId === "profit_activity" && <ProfitActivityTestPage />}
           {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
           {activeModuleId === "basic_settings" && <BasicSettingsPage />}
-          {activeModuleId === "product_processing" && <ProductProcessingPage />}
+          {activeModuleId === "product_processing" && <ProductProcessingVerifyPage />}
           {collectionTabs.map((tab) => (
             <div key={tab.key} hidden={activeTabKey !== tab.key}>
               <DailySelectionPage view="collection" initialDirectionId={tab.directionId} />

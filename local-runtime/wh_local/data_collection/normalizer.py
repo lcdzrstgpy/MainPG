@@ -91,8 +91,13 @@ def enrich_candidate_with_detail(
     freight = _number_value(detail, ("freight", "freight_cny", "post_fee", "shipping_fee"))
     detail_price = _number_value(detail, ("price", "price_cny", "promotion_price"))
     price = detail_price if detail_price is not None else candidate.price_cny
-    moq = _integer_value(detail, ("moq", "min_order_quantity", "begin_num", "start_quantity")) or candidate.min_order_quantity
+    moq = _integer_value(
+        detail,
+        ("moq", "min_order_quantity", "begin_num", "start_quantity", "min_num", "begin_amount", "beginAmount"),
+    ) or candidate.min_order_quantity
     main_image = _url_value(detail, ("main_image_url", "main_image", "pic_url", "image_url")) or candidate.main_image_url
+    shop_name = _shop_name_from_detail(detail) or candidate.shop_name
+    location = _text_value(detail, ("location", "area", "province")) or candidate.location
     evidence_records = candidate.evidence + ((evidence or _response_evidence(cleaned, "item_get")),)
     missing = _missing_fields(
         candidate.missing_capture_fields,
@@ -115,6 +120,9 @@ def enrich_candidate_with_detail(
         source_platform="1688",
         source_url=candidate.source_url,
         source_title=_text_value(detail, ("title", "name")) or candidate.source_title,
+        query_keyword=candidate.query_keyword,
+        selection_result_label=candidate.selection_result_label,
+        listed_at=_text_value(detail, ("listed_at", "listing_time", "online_time", "start_time")) or candidate.listed_at,
         main_image_url=main_image,
         source_image_urls=product_images,
         source_detail_image_urls=detail_images,
@@ -127,8 +135,8 @@ def enrich_candidate_with_detail(
         risk_tags=candidate.risk_tags,
         status=candidate.status,
         evidence=evidence_records,
-        shop_name=candidate.shop_name,
-        location=candidate.location,
+        shop_name=shop_name,
+        location=location,
         sales_text=candidate.sales_text,
         weight_text=weight or candidate.weight_text,
         package_info_text=package_info or candidate.package_info_text,
@@ -163,7 +171,7 @@ def _candidate_from_search_item(
         return None
     main_image = _url_value(item, ("pic_url", "main_image_url", "image_url", "image", "pic"))
     price = _number_value(item, ("price", "price_cny", "promotion_price"))
-    moq = _integer_value(item, ("moq", "min_order_quantity", "begin_num", "start_quantity"))
+    moq = _integer_value(item, ("moq", "min_order_quantity", "begin_num", "start_quantity", "min_num"))
     fields = {
         "main_image_url": main_image,
         "price_cny": price,
@@ -207,7 +215,23 @@ def _items_from_payload(payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], 
 
 def _detail_from_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     data = payload.get("data")
-    return data if isinstance(data, Mapping) else payload
+    if isinstance(data, Mapping):
+        return data
+    # OneBound 1688 item_get wraps the product under ``item``.
+    item = payload.get("item")
+    return item if isinstance(item, Mapping) else payload
+
+
+def _shop_name_from_detail(detail: Mapping[str, Any]) -> str | None:
+    seller_info = detail.get("seller_info")
+    if isinstance(seller_info, Mapping):
+        name = _text_value(seller_info, ("shop_name", "nick", "title", "seller_name"))
+        if name:
+            return name
+    return _text_value(
+        detail,
+        ("nick", "shop_name", "seller_name", "company", "companyName", "company_name"),
+    )
 
 
 def _canonical_1688_url(value: str | None, offer_id: str | None) -> str | None:
@@ -301,6 +325,17 @@ def _mapping_value(source: Mapping[str, Any], names: Sequence[str]) -> Mapping[s
         value = source.get(name)
         if isinstance(value, Mapping):
             return sanitize_raw_payload(value)
+        if isinstance(value, (list, tuple)):
+            # OneBound 1688 props are ``[{"name": ..., "value": ...}, ...]``.
+            converted: dict[str, Any] = {}
+            for entry in value:
+                if not isinstance(entry, Mapping):
+                    continue
+                key = entry.get("name")
+                if isinstance(key, str) and key.strip():
+                    converted[key.strip()] = entry.get("value")
+            if converted:
+                return converted
     return {}
 
 
@@ -311,6 +346,15 @@ def _variants_from(source: Mapping[str, Any]) -> tuple[SourceVariantRecord, ...]
         if name in source:
             entries = source[name]
             break
+    if isinstance(entries, Mapping):
+        # OneBound 1688 item_get wraps SKUs as ``{"sku": [...]}``.
+        for key in ("sku", "list", "items", "variant"):
+            nested = entries.get(key)
+            if isinstance(nested, (list, tuple)):
+                entries = nested
+                break
+        else:
+            return ()
     if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes, bytearray)):
         return ()
     for entry in entries:
@@ -319,16 +363,48 @@ def _variants_from(source: Mapping[str, Any]) -> tuple[SourceVariantRecord, ...]
         sku_id = _text_value(entry, ("sku_id", "skuId", "id", "spec_id"))
         if sku_id is None:
             continue
+        attributes = _mapping_value(entry, ("attributes", "props", "properties", "spec"))
+        if not attributes:
+            # OneBound 1688 item_get returns per-SKU specs as string fields,
+            # e.g. ``properties_name: "0:0:颜色:粉色"`` or ``"颜色:粉色;尺寸:L"``.
+            attributes = _string_spec_attributes(
+                _text_value(entry, ("properties_name", "property_alias"))
+            )
         records.append(
             SourceVariantRecord(
                 sku_id=sku_id,
-                attributes=_mapping_value(entry, ("attributes", "props", "properties", "spec")),
+                attributes=attributes or {},
                 image_url=_url_value(entry, ("image_url", "pic_url", "image", "sku_image")),
                 price_cny=_number_value(entry, ("price", "price_cny", "promotion_price")),
                 min_order_quantity=_integer_value(entry, ("moq", "min_order_quantity", "begin_num")),
             )
         )
     return tuple(records)
+
+
+def _string_spec_attributes(value: Any) -> dict[str, str]:
+    """Parse OneBound 1688 string-form SKU specs into a ``{name: value}`` map.
+
+    ``item_get`` returns per-SKU specs as strings such as ``"0:0:颜色:粉色"``
+    (``pid:vid:name:value``) or ``"颜色:粉色;尺寸:L"``.  The leading numeric
+    ``pid:vid:`` prefix is dropped when present.
+    """
+    if not isinstance(value, str):
+        return {}
+    result: dict[str, str] = {}
+    for segment in value.split(";"):
+        segment = segment.strip()
+        if not segment:
+            continue
+        parts = [part.strip() for part in segment.split(":") if part.strip()]
+        if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+            parts = parts[2:]
+        if len(parts) >= 2:
+            result[parts[0]] = parts[1]
+        elif len(parts) == 1:
+            # No attribute name exposed; keep the value under a generic key.
+            result.setdefault("规格", parts[0])
+    return result
 
 
 def _missing_fields(existing: Sequence[str], values: Mapping[str, Any]) -> tuple[str, ...]:

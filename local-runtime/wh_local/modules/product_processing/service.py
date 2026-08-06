@@ -12,6 +12,7 @@ from wh_local.data_collection.contracts import DailySelectionError
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
+from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_issue, strict_external_url_issue
 from .domain.workbooks import read_product_workbook
 from .infrastructure.assets import ProductProcessingAssets
 from .infrastructure.repository import ProductProcessingRepository
@@ -23,6 +24,15 @@ class ProductProcessingNotFound(LookupError):
 
 class ProductProcessingConflict(RuntimeError):
     pass
+
+
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    """Coerce form/JSON booleans (including string 'true'/'false') into bool."""
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class ProductProcessingService:
@@ -543,6 +553,73 @@ class ProductProcessingService:
             "upstream_ack_required": True,
         }
 
+    @staticmethod
+    def _normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
+        """Normalize prototype-style options and legacy booleans into a single shape."""
+        s = dict(settings)
+        scope: list[str] = []
+        raw_scope = s.get("processing_scope") or []
+        if isinstance(raw_scope, str):
+            scope = [x.strip() for x in raw_scope.split(",") if x.strip()]
+        elif isinstance(raw_scope, (list, tuple)):
+            scope = [str(x).strip() for x in raw_scope if str(x).strip()]
+        scope = list(dict.fromkeys(scope))
+        valid_scope = {
+            "title", "details", "product_dimensions", "four_grid",
+            "detail_images", "sku_images", "qualification",
+        }
+        scope = [x for x in scope if x in valid_scope]
+
+        if not scope:
+            # Derive scope from legacy booleans.
+            if s.get("title_optimize", True):
+                scope.append("title")
+            if s.get("description", True):
+                scope.append("details")
+            if s.get("size", True):
+                scope.append("product_dimensions")
+            if s.get("grid_image", True):
+                scope.append("four_grid")
+            if s.get("detail_image", True):
+                scope.append("detail_images")
+            if s.get("image_rewrite", True):
+                scope.append("sku_images")
+            qm = s.get("qualification_mode", False)
+            if isinstance(qm, bool) and qm:
+                scope.append("qualification")
+            elif isinstance(qm, str) and qm in {"standard", "strict"}:
+                scope.append("qualification")
+
+        s["processing_scope"] = scope
+
+        qm = s.get("qualification_mode", False)
+        if isinstance(qm, bool):
+            s["qualification_mode"] = "strict" if (qm and "qualification" in scope) else "standard"
+        elif qm not in {"standard", "strict"}:
+            s["qualification_mode"] = "standard"
+        elif "qualification" not in scope:
+            s["qualification_mode"] = "standard"
+
+        # Legacy booleans must stay in sync so existing code paths keep working.
+        s["title_optimize"] = "title" in scope
+        s["description"] = "details" in scope
+        s["size"] = "product_dimensions" in scope
+        s["grid_image"] = "four_grid" in scope
+        s["detail_image"] = "detail_images" in scope
+        s["image_rewrite"] = "sku_images" in scope
+        raw_video = s.get("include_product_video")
+        include_video = (
+            bool(raw_video)
+            if isinstance(raw_video, bool)
+            else str(raw_video or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
+        s["include_product_video"] = include_video
+        if include_video:
+            s["product_video_template"] = True
+        s["skip_duplicates"] = _as_bool(s.get("skip_duplicates"), default=False)
+        s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
+        return s
+
     def process_drafts(
         self,
         payload: dict[str, Any],
@@ -553,6 +630,7 @@ class ProductProcessingService:
         existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
         if existing is not None:
             return self._task_response(existing, "重复提交已返回原任务")
+        payload = self._normalize_settings(payload)
         draft_ids = list(dict.fromkeys(int(item) for item in payload.get("draft_ids") or [] if int(item) > 0))
         if not draft_ids:
             raise ValueError("draft_ids is required")
@@ -563,6 +641,17 @@ class ProductProcessingService:
         missing = sorted(set(draft_ids) - {draft["id"] for draft in drafts})
         if missing:
             raise ProductProcessingNotFound(f"product drafts not found: {missing}")
+        if payload.get("skip_duplicates"):
+            drafts = [draft for draft in drafts if draft["status"] != "processed"]
+        if not drafts:
+            return {
+                "status": "skipped",
+                "message": "本次勾选商品均为已处理状态（已勾选“跳过已处理”），未创建处理任务",
+                "total_count": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "skipped_count": 0,
+            }
         preflight_only = bool(payload.get("preflight_only") or payload.get("category_preflight_only"))
         task = self.repository.create_task(
             title=self._text(payload.get("title")) or "产品处理任务-草稿池商品",
@@ -802,35 +891,85 @@ class ProductProcessingService:
         preflight_only: bool,
     ) -> dict[str, Any]:
         if draft is None or draft["status"] == "deleted":
-            return {**item, "status": "failed", "reason": "product draft not found", "result": {}}
+            return {
+                **item,
+                "status": "failed",
+                "reason": "product draft not found",
+                "result": {
+                    "error_type": "not_found",
+                    "failure_class": "technical_retryable",
+                    "operator_hint": "草稿不存在或已被删除",
+                    "retryable": True,
+                },
+            }
         raw = draft["raw_payload"]
         title = self._text(draft.get("title") or draft.get("product_name") or raw.get("source_title"))
         image_url = self._text(draft.get("image_url") or raw.get("main_image_url") or self._first(raw.get("source_image_urls")))
         source_url = self._text(raw.get("source_url") or raw.get("product_link") or draft.get("source_ref"))
         missing = [name for name, value in (("title", title), ("image", image_url)) if not value]
         if missing:
-            reason = f"missing required fields: {', '.join(missing)}"
+            reason = f"缺少必填字段: {', '.join(missing)}"
             return {
                 **item,
                 "title": title,
                 "image_url": image_url,
                 "status": "attention_required",
                 "reason": reason,
-                "result": {"error_type": "validation", "operator_hint": "补充标题和主图后重试", "retryable": True},
+                "result": {
+                    "error_type": "validation",
+                    "failure_class": "configuration_blocked",
+                    "operator_hint": "补充标题和主图后重试",
+                    "retryable": True,
+                },
             }
+
+        scope = set(settings.get("processing_scope") or [])
+        qualification_enabled = "qualification" in scope
+        issue: PolicyIssue | None = None
+        if settings.get("strict_external"):
+            issue = strict_external_url_issue(source_url=source_url, image_url=image_url)
+        if issue is None:
+            category = self._text(raw.get("category") or raw.get("source_category_path"))
+            issue = product_policy_issue(
+                raw,
+                title=title,
+                category=category,
+                ip_check=_as_bool(settings.get("ip_check"), default=True),
+                qualification_enabled=qualification_enabled,
+                extra_infringement_terms=raw.get("extra_infringement_terms") or [],
+            )
+        if issue is not None:
+            failure_class = self._failure_class_from_issue(issue)
+            return {
+                **item,
+                "title": title,
+                "image_url": image_url,
+                "status": "attention_required",
+                "reason": issue.message,
+                "result": {
+                    "error_type": issue.code,
+                    "failure_class": failure_class,
+                    "operator_hint": issue.operator_hint,
+                    "retryable": failure_class in {"technical_retryable", "configuration_blocked"},
+                },
+            }
+
         skc = self._text(draft.get("skc")) or f"PP-{draft['id']:06d}"
         sku = self._text(draft.get("sku")) or skc
         target_site = self._text(settings.get("target_site")) or "US"
         target_language = self._text(settings.get("target_language")) or "en"
-        optimized_title = title if preflight_only or not settings.get("title_optimize", True) else self._normalized_title(title)
+        optimized_title = title
+        if not preflight_only and "title" in scope and settings.get("title_optimize", True):
+            optimized_title = self._normalized_title(title)
         description = self._text(draft.get("description") or raw.get("description"))
-        if not description and not preflight_only:
+        if not description and not preflight_only and "details" in scope:
             description = f"{optimized_title}. Source information preserved for operator review."
         result = {
             "product_draft_id": draft["id"],
             "candidate_id": raw.get("candidate_id") or draft.get("candidate_id"),
             "skc": skc,
             "sku": sku,
+            "category": self._text(raw.get("category") or raw.get("source_category_path")),
             "optimized_title": optimized_title,
             "description": description,
             "image_url": image_url,
@@ -850,6 +989,9 @@ class ProductProcessingService:
             "risk_tags": raw.get("risk_tags") or [],
             "preflight_only": preflight_only,
             "status": "preflight_passed" if preflight_only else "completed",
+            "processing_scope": sorted(scope),
+            "qualification_mode": settings.get("qualification_mode", "standard"),
+            "failure_class": None,
             "exchange_contract": "daily-selection-product-processing-v1" if draft.get("selection_run_id") else None,
         }
         return {
@@ -865,16 +1007,48 @@ class ProductProcessingService:
     def _task_response(self, task: dict[str, Any], message: str = "") -> dict[str, Any]:
         items = task["items"]
         attention = sum(item["status"] == "attention_required" for item in items)
+        failed = sum(item["status"] == "failed" for item in items)
+        failure_classes = [item.get("result", {}).get("failure_class") for item in items]
         technical = sum(
             item["status"] in {"failed", "attention_required"} and bool(item.get("result", {}).get("retryable"))
             for item in items
         )
+        configuration_blocked = sum(c == "configuration_blocked" for c in failure_classes)
+        identity_review = sum(c == "identity_review_required" for c in failure_classes)
+        logistics_review = sum(c == "logistics_review_required" for c in failure_classes)
+        technical_retryable = sum(c == "technical_retryable" for c in failure_classes)
         outputs = {
             "dxm_import": task["output_file"],
             "error_report": task["error_report_file"],
             "log_file": "",
             "product_video_manifest": task["video_manifest_file"],
         }
+        artifacts: list[dict[str, Any]] = []
+        if task["output_file"]:
+            artifacts.append({
+                "artifact_id": f"dxm_import_{task['id']}",
+                "kind": "dxm_import_workbook",
+                "name": f"dxm_import_task_{task['id']}.xlsx",
+                "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "path": task["output_file"],
+            })
+        if task["error_report_file"]:
+            artifacts.append({
+                "artifact_id": f"failure_manifest_{task['id']}",
+                "kind": "failure_manifest",
+                "name": f"error_report_task_{task['id']}.csv",
+                "content_type": "text/csv",
+                "path": task["error_report_file"],
+            })
+        if task["video_manifest_file"]:
+            artifacts.append({
+                "artifact_id": f"video_manifest_{task['id']}",
+                "kind": "product_video_manifest",
+                "name": f"product_video_manifest_task_{task['id']}.csv",
+                "content_type": "text/csv",
+                "path": task["video_manifest_file"],
+            })
+        settings = task["settings"]
         task_projection = {
             "id": task["id"],
             "task_id": task["id"],
@@ -889,29 +1063,65 @@ class ProductProcessingService:
             "metadata": {
                 "module": "product_processing",
                 "engine": "local_sqlalchemy",
-                "settings": task["settings"],
+                "settings": settings,
                 "preflight_only": task["preflight_only"],
                 "cleared_from_product_processing": task["cleared_from_product_processing"],
             },
+        }
+        manifest = {
+            "manifest_id": f"pp_manifest_{task['id']}",
+            "task_id": task["id"],
+            "contract_version": "product-processing-result-manifest-v1",
+            "item_counts": {
+                "total": task["total_count"],
+                "succeeded": task["success_count"],
+                "failed": failed,
+                "skipped": task["skipped_count"],
+                "not_processed": task["skipped_count"],
+                "attention_required": attention,
+                "auto_recovery_pending": 0,
+                "identity_review_required": identity_review,
+                "logistics_review_required": logistics_review,
+                "technical_retryable": technical_retryable,
+                "configuration_blocked": configuration_blocked,
+            },
+            "created_at": task["created_at"],
         }
         return {
             "task_id": task["id"],
             "total_count": task["total_count"],
             "success_count": task["success_count"],
-            "failed_count": task["failed_count"],
+            "failed_count": failed,
+            "not_processed_count": task["skipped_count"],
+            "attention_required_count": attention,
             "auto_recovery_pending_count": 0,
-            "identity_review_required_count": attention,
-            "logistics_review_required_count": 0,
-            "technical_retryable_count": technical,
-            "configuration_blocked_count": 0,
+            "identity_review_required_count": identity_review,
+            "logistics_review_required_count": logistics_review,
+            "technical_retryable_count": technical_retryable,
+            "configuration_blocked_count": configuration_blocked,
             "skipped_count": task["skipped_count"],
             "output_file": task["output_file"],
             "error_report_file": task["error_report_file"],
+            "video_manifest_file": task["video_manifest_file"],
+            "target_site": settings.get("target_site", "US"),
+            "target_language": settings.get("target_language", "en"),
+            "processing_scope": settings.get("processing_scope", []),
+            "qualification_mode": settings.get("qualification_mode", "standard"),
+            "include_product_video": settings.get("product_video_template", False),
             "items": items,
             "task": task_projection,
             "outputs": outputs,
+            "manifest": manifest,
+            "artifacts": artifacts,
             "message": message,
         }
+
+    @staticmethod
+    def _failure_class_from_issue(issue: PolicyIssue) -> str:
+        if issue.code in {"ip_risk_tagged", "ip_term_matched", "qualification_review_required",
+                          "strict_external_source_missing", "strict_external_url_invalid"}:
+            return "configuration_blocked"
+        return "configuration_blocked" if issue.status == "attention_required" else "technical_retryable"
 
     def _require_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
         task = self.repository.get_task(task_id, workspace_id)
@@ -927,6 +1137,8 @@ class ProductProcessingService:
             "raw_payload": {
                 "platform": raw.get("platform") or raw.get("source_platform") or "",
                 "source_platform": raw.get("source_platform") or "",
+                "source_title": raw.get("source_title") or "",
+                "main_image_url": raw.get("main_image_url") or "",
                 "product_link": raw.get("product_link") or raw.get("source_url") or "",
                 "source_url": raw.get("source_url") or "",
                 "image_path": raw.get("image_path") or draft.get("image_path") or "",

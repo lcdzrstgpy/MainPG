@@ -1,4 +1,4 @@
-const apiToken = import.meta.env.VITE_WH_API_TOKEN || "dev-admin-token";
+export const apiToken = import.meta.env.VITE_WH_API_TOKEN || "dev-admin-token";
 
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {

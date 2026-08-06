@@ -243,6 +243,9 @@ class DailySelectionCandidate(_ContractModel):
     source_platform: Literal["1688"]
     source_url: str
     source_title: str
+    query_keyword: str | None = None
+    selection_result_label: str | None = None
+    listed_at: str | None = None
     main_image_url: str | None
     source_image_urls: tuple[str, ...] = ()
     source_detail_image_urls: tuple[str, ...] = ()
@@ -272,6 +275,16 @@ class DailySelectionCandidate(_ContractModel):
         if not isinstance(value, str) or not value.strip():
             raise DailySelectionContractError(f"{info.field_name} is required")
         return value.strip()
+
+    @field_validator("query_keyword", "selection_result_label", "listed_at", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise DailySelectionContractError("optional text fields must be strings")
+        stripped = value.strip()
+        return stripped or None
 
     @field_validator("source_url", mode="before")
     @classmethod
