@@ -903,3 +903,121 @@
     margin-left: 0;
   }
 }
+
+/* ── 分页数字按钮 ── */
+.verify-pagination-pages {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.verify-pagination-pages button {
+  min-width: 32px;
+  padding: 4px 8px;
+  font-size: 0.8125rem;
+  border: 1px solid #dce3e8;
+  border-radius: 4px;
+  background: #fff;
+  color: #455a64;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.verify-pagination-pages button.active {
+  background: #1677ff;
+  color: #fff;
+  border-color: #1677ff;
+}
+.verify-pagination-pages button:hover:not(.active):not(:disabled) {
+  background: #f0f5ff;
+  border-color: #91bff9;
+}
+.verify-pagination-jump {
+  font-size: 0.8125rem;
+  color: #7c91a6;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.verify-pagination-jump input {
+  width: 48px;
+  padding: 4px 6px;
+  font-size: 0.8125rem;
+  text-align: center;
+  border: 1px solid #dce3e8;
+  border-radius: 4px;
+}
+
+/* ── 快速操作栏 ── */
+.verify-quickbar {
+  margin-top: 16px;
+  padding: 16px 20px;
+  background: #f8fafc;
+  border: 1px solid #dce3e8;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── 处理任务双栏布局 ── */
+.task-layout {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 24px;
+  align-items: start;
+}
+.task-main {
+  min-width: 0;
+}
+.task-history {
+  background: #f8fafc;
+  border: 1px solid #dce3e8;
+  border-radius: 8px;
+  padding: 16px;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+}
+.task-history .verify-section-head h2 {
+  font-size: 1rem;
+  margin: 0 0 12px 0;
+}
+.task-history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+.task-history-filters label {
+  font-size: 0.75rem;
+  color: #7c91a6;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.task-history-filters input[type="date"] {
+  width: 120px;
+  padding: 3px 6px;
+  font-size: 0.75rem;
+  border: 1px solid #dce3e8;
+  border-radius: 4px;
+}
+.task-history-pagination {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid #dce3e8;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+@media (max-width: 960px) {
+  .task-layout {
+    grid-template-columns: 1fr;
+  }
+  .task-history {
+    position: static;
+    max-height: none;
+  }
+}

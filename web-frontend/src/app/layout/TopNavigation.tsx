@@ -9,6 +9,8 @@ export type WorkspaceTab = {
   icon: string;
   iconClass?: string;
   directionId?: string;
+  draftIds?: number[];
+  processingOptions?: unknown;
 };
 
 type TopNavigationProps = {

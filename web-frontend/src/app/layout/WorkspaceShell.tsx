@@ -10,11 +10,14 @@ import { ProfitActivityProductsPage } from "../../modules/profit_activity/pages/
 import { ProfitActivityTestPage } from "../../modules/profit_activity/pages/ProfitActivityTestPage";
 import { PriceVerificationPage } from "../../modules/price_verification/pages/PriceVerificationPage";
 import { ProductProcessingVerifyPage } from "../../modules/product_processing/pages/ProductProcessingVerifyPage";
+import { ProductProcessingTaskPage } from "../../modules/product_processing/pages/ProductProcessingTaskPage";
+import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
 
 type WorkspaceShellProps = { onSignOut: () => void };
 
 const MAX_COLLECTION_PANELS = 6;
+const MAX_PROCESSING_PANELS = 3;
 
 const flatModules = workspaceModules.flatMap((module) => [module, ...(module.children ?? [])]);
 
@@ -30,6 +33,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const [tabs, setTabs] = useState<WorkspaceTab[]>([moduleTab("dashboard")]);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
   const collectionSequence = useRef(0);
+  const processingSequence = useRef(0);
   const modulesById = useMemo(() => new Map(flatModules.map((module) => [module.id, module])), []);
   const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0];
   const activeModuleId = activeTab?.moduleId ?? "dashboard";
@@ -70,6 +74,27 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
     setWorkspaceNotice("");
   };
 
+  const openProcessingTask = (draftIds: number[], options: ProductProcessingOptions) => {
+    const openPanelCount = tabs.filter((tab) => tab.moduleId === "product_processing_tasks").length;
+    if (openPanelCount >= MAX_PROCESSING_PANELS) {
+      setWorkspaceNotice(`最多同时打开 ${MAX_PROCESSING_PANELS} 个处理任务，请先关闭一个再继续。`);
+      return;
+    }
+
+    processingSequence.current += 1;
+    const key = `product-processing-tasks-${processingSequence.current}`;
+    setTabs((current) => [...current, {
+      key,
+      moduleId: "product_processing_tasks",
+      label: `处理·${draftIds.length}项`,
+      icon: "⚙",
+      draftIds,
+      processingOptions: options,
+    }]);
+    setActiveTabKey(key);
+    setWorkspaceNotice("");
+  };
+
   const collectionTabs = tabs.filter((tab) => tab.moduleId === "daily_selection_collection");
   const expandedSidebarModuleIds = tabs.map((tab) => tab.moduleId);
   const sidebarTemporarilyExpanded = sidebarCollapsed && sidebarHovered;
@@ -100,13 +125,21 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
           {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
           {activeModuleId === "basic_settings" && <BasicSettingsPage />}
           {activeModuleId === "price_verification" && <PriceVerificationPage />}
-          {activeModuleId === "product_processing" && <ProductProcessingVerifyPage />}
+          {activeModuleId === "product_processing" && <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} />}
           {collectionTabs.map((tab) => (
             <div key={tab.key} hidden={activeTabKey !== tab.key}>
               <DailySelectionPage view="collection" initialDirectionId={tab.directionId} />
             </div>
           ))}
-          {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "basic_settings" && activeModuleId !== "price_verification" && activeModuleId !== "product_processing" && <EmptyModulePage module={activeModule} />}
+          {tabs.filter((tab) => tab.moduleId === "product_processing_tasks").map((tab) => (
+            <div key={tab.key} hidden={activeTabKey !== tab.key}>
+              <ProductProcessingTaskPage
+                initialDraftIds={tab.draftIds}
+                initialOptions={tab.processingOptions as ProductProcessingOptions | undefined}
+              />
+            </div>
+          ))}
+          {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "product_processing" && activeModuleId !== "product_processing_tasks" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "basic_settings" && activeModuleId !== "price_verification" && <EmptyModulePage module={activeModule} />}
         </div>
       </section>
     </main>
