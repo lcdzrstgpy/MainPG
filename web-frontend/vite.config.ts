@@ -7,6 +7,8 @@ export default defineConfig({
     proxy: {
       "/desktop": "http://127.0.0.1:8000",
       "/api": "http://127.0.0.1:8000",
+      "/plugin": "http://127.0.0.1:8000",
+      "/local": "http://127.0.0.1:8000",
     },
   },
 });

@@ -10,8 +10,10 @@
   refreshConnectorBadge();
   syncProductCaptureButton();
   syncProductListCaptureButton();
+  syncPriceQuoteCaptureButton();
   safeInterval(syncProductCaptureButton, 1500);
   safeInterval(syncProductListCaptureButton, 1800);
+  safeInterval(syncPriceQuoteCaptureButton, 1800);
 
   try {
     if (chrome.storage?.onChanged) {
@@ -21,6 +23,7 @@
           refreshConnectorBadge();
           syncProductCaptureButton();
           syncProductListCaptureButton();
+          syncPriceQuoteCaptureButton();
         }
       });
     }
@@ -461,6 +464,7 @@
     }
     if (!/(^|\.)((temu)|(1688)|(alibaba))\.com$/i.test(parsed.hostname)) return false;
     if (isExcludedProductCapturePage(parsed)) return false;
+    if (isSupportedPriceQuotePage()) return false;
     const isTemu = /(^|\.)temu\.com$/i.test(parsed.hostname);
     const productPage = isSupportedProductPage();
     const offerLinks = productDetailLinkElements();
@@ -485,6 +489,99 @@
     const urlLooksLikeList = /(^|\.)(www|s|p4psearch|search|show|ye)\.1688\.com|(^|\.)(www|s|search|app)\.alibaba\.com|(^|\.)temu\.com|offer_search|search|market|huo|page|p4p|list|result|supplier|factory|wholesale/i.test(path);
     const textLooksLikeList = /找货源|精选货源|综合|销量|价格|起订量|店铺商品数|新人价|起批|包邮|跨境|源头厂家|严选|材质|风格|工厂|实力商家|同款|相似|采购|批发|粉销商品|5星好评|新品|分类|畅销商品|CA\$/.test(bodyText);
     return (urlLooksLikeList && listLikeProductSignalCount >= 1) || (textLooksLikeList && listLikeProductSignalCount >= 2);
+  }
+
+  function isSupportedPriceQuotePage() {
+    let parsed;
+    try {
+      parsed = new URL(location.href);
+    } catch (_error) {
+      return false;
+    }
+    if (!/(^|\.)temu\.com$/i.test(parsed.hostname)) return false;
+    const pageText = String(document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 18000);
+    const tableHeaders = Array.from(document.querySelectorAll("th, [role='columnheader'], .ant-table-thead, .semi-table-thead"))
+      .map((element) => String(element?.innerText || element?.textContent || "").replace(/\s+/g, " ").trim())
+      .join(" ");
+    const title = `${document.title || ""} ${pageText.slice(0, 1200)}`;
+    if (!/批量查看并确认申报价|批量查看并确认申报价格/.test(title)) return false;
+    const headers = ["SKC信息", "SKU属性", "原申报价", "调整后申报价", "新申报价"];
+    const headerEvidence = `${pageText} ${tableHeaders}`;
+    const headerCount = headers.filter((header) => headerEvidence.includes(header)).length;
+    if (headerCount < 3) return false;
+    return true;
+  }
+
+  function syncPriceQuoteCaptureButton() {
+    const button = document.getElementById("temu-price-quote-capture");
+    if (!isSupportedPriceQuotePage()) {
+      if (button) button.remove();
+      return;
+    }
+    renderPriceQuoteCaptureButton();
+    refreshPriceQuoteCaptureButton();
+  }
+
+  function renderPriceQuoteCaptureButton() {
+    if (!isSupportedPriceQuotePage() || document.getElementById("temu-price-quote-capture")) return;
+    const button = document.createElement("button");
+    button.id = "temu-price-quote-capture";
+    button.type = "button";
+    button.textContent = "采集核价本页";
+    button.style.cssText = [
+      "position:fixed", "left:14px", "bottom:96px", "z-index:2147483647",
+      "height:36px", "max-width:180px", "box-sizing:border-box", "padding:0 13px",
+      "border:1px solid rgba(124,58,237,0.52)", "border-radius:8px",
+      "background:#7c3aed", "box-shadow:0 10px 24px rgba(16,26,43,0.22)",
+      "color:#ffffff", "font:700 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif",
+      "cursor:pointer"
+    ].join(";");
+    button.addEventListener("click", capturePriceQuotePageToWorkbench);
+    document.documentElement.appendChild(button);
+  }
+
+  function refreshPriceQuoteCaptureButton() {
+    const button = document.getElementById("temu-price-quote-capture");
+    if (!button) return;
+    safeStorageGet(["connectionContext"], (settings) => {
+      let connected = false;
+      try {
+        connected = Boolean(tenantContext.validateConnectionContext(settings?.connectionContext));
+      } catch (_error) {
+        connected = false;
+      }
+      button.disabled = !connected;
+      button.textContent = connected ? "采集核价本页" : "先连接工作台";
+      button.style.opacity = connected ? "1" : "0.72";
+      button.title = connected
+        ? "只读取当前核价页的官方报价并写入工作台当前核价批次，不会提交或修改 Temu"
+        : "请先打开扩展弹窗连接本地工作台";
+    });
+  }
+
+  function setPriceQuoteCaptureButtonState(text, busy = false, help = "") {
+    const button = document.getElementById("temu-price-quote-capture");
+    if (!button) return;
+    button.textContent = text;
+    button.disabled = busy;
+    button.title = help || text;
+  }
+
+  async function capturePriceQuotePageToWorkbench() {
+    setPriceQuoteCaptureButtonState("正在采集核价...", true);
+    try {
+      const response = await safeSendRuntimeMessage({ type: "CAPTURE_TEMU_PRICE_QUOTE_PAGE" });
+      if (!response?.ok) {
+        setPriceQuoteCaptureButtonState(response?.statusText || "核价采集失败", false, response?.help || response?.error || "");
+        window.setTimeout(refreshPriceQuoteCaptureButton, 3000);
+        return;
+      }
+      setPriceQuoteCaptureButtonState(response.statusText || `已入库${Number(response.item_count || 0)}条`, false);
+      window.setTimeout(refreshPriceQuoteCaptureButton, 3000);
+    } catch (_error) {
+      setPriceQuoteCaptureButtonState("核价采集失败", false);
+      window.setTimeout(refreshPriceQuoteCaptureButton, 3000);
+    }
   }
 
   function syncProductListCaptureButton() {

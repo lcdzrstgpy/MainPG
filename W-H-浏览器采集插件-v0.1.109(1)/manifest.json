@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TEMU Y2 AI Workbench Connector",
-  "version": "0.1.109",
+  "version": "0.1.111",
   "description": "Connects logged-in TEMU/Dianxiaomi pages to the AI workbench without storing platform credentials.",
   "permissions": ["activeTab", "storage", "scripting", "alarms", "tabs"],
   "host_permissions": [

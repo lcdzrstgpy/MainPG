@@ -613,6 +613,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     captureVisibleProductsToWorkbench(sender.tab).then(sendResponse);
     return true;
   }
+  if (message?.type === "CAPTURE_TEMU_PRICE_QUOTE_PAGE") {
+    captureCurrentTemuPriceQuotePage(sender.tab).then(sendResponse);
+    return true;
+  }
   if (message?.type === "CANCEL_PRODUCT_BATCH_CAPTURE") {
     cancelProductBatchCapture(sender.tab).then(sendResponse);
     return true;
@@ -4217,6 +4221,67 @@ async function runTemuPriceQuoteDiscoveryCommand(command) {
       no_headers_or_cookies: true
     },
     capturedAt: new Date().toISOString()
+  };
+}
+
+async function captureCurrentTemuPriceQuotePage(sourceTab) {
+  const tab = sourceTab?.id ? sourceTab : await getActiveBusinessTab({ allowAny: true });
+  if (!tab?.id || !/temu\.com/i.test(String(tab.url || ""))) {
+    return { ok: false, error: "not_temu_quote_page", statusText: "请在 Temu 核价页面采集" };
+  }
+  const connection = await readConnectionContext();
+  if (!connection) {
+    return { ok: false, error: "missing_plugin_session", statusText: "插件未连接工作台" };
+  }
+  const baseUrl = connection.http_base;
+  if (!isAllowedWorkbenchUrl(baseUrl)) {
+    return { ok: false, error: "unsupported_workbench_url", statusText: "工作台地址不受支持" };
+  }
+
+  await waitForTabReady(tab.id, 20000);
+  await injectNetworkProbe(tab.id);
+  const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const rawRecords = await getProbeCaptures(tab.id, "temu_price_quote_discovery", since, 50);
+  const records = rawRecords.filter(isPriceQuoteDiscoveryNetworkRecord).slice(0, 50);
+  const extractedDom = await extractPriceQuoteDomSnapshot(tab.id, { requirePriceDialog: false });
+  const dom = { ...extractedDom, rows: Array.isArray(extractedDom?.rows) ? extractedDom.rows.slice(0, 50) : [] };
+  const capture = {
+    captures: { network: { matched_count: records.length, records } },
+    dom,
+    page: { url: tab.url || "", title: tab.title || "" },
+    safety: { read_only: true, direct_current_page: true, no_submit_clicks: true },
+    capturedAt: new Date().toISOString()
+  };
+  if (!records.length && !dom.rows.length) {
+    return { ok: false, error: "quote_page_not_recognized", statusText: "未识别到当前页核价数据，请确认页面已加载完成" };
+  }
+
+  const response = await fetch(workbenchHttpUrl(baseUrl, "/plugin/price-verification/capture-batches/current/chunks"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ session_token: connection.session_token, page_url: tab.url || "", capture })
+  });
+  if (!response.ok) {
+    if ([401, 403].includes(response.status)) await clearConnectionState();
+    const errorText = await readWorkbenchError(response);
+    return {
+      ok: false,
+      error: "price_quote_capture_failed",
+      statusText: errorText ? `核价入库失败：${errorText.slice(0, 40)}` : "核价入库失败",
+      help: errorText
+    };
+  }
+  const payload = await response.json();
+  if (payload.tenant_context !== undefined) {
+    tenantContext.assertServerTenantContext(connection, payload.tenant_context);
+  }
+  return {
+    ok: true,
+    command_type: "temu_price_quote_direct_capture",
+    item_count: Number(payload?.chunk?.item_count || 0),
+    batch_id: payload?.batch?.batch_id || "",
+    statusText: payload?.message || `核价本页已入库：${Number(payload?.chunk?.item_count || 0)} 条`,
+    capturedAt: capture.capturedAt
   };
 }
 
@@ -8944,8 +9009,27 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
     const scopes = (dialogScopes.length ? dialogScopes : (bodyFallbackUsed ? [document.body] : []))
       .filter(visible)
       .slice(0, 8);
+    const scrollTargets = Array.from(new Set(scopes.flatMap((scope) => [
+      scope,
+      ...Array.from(scope.querySelectorAll("*"))
+    ]))).filter((element) => {
+      const style = getComputedStyle(element);
+      return /(auto|scroll)/.test(style.overflowY)
+        && element.scrollHeight > element.clientHeight + 80
+        && element.clientHeight > 80;
+    }).sort((left, right) => (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight)).slice(0, 2);
+    const originalScrollTops = scrollTargets.map((element) => ({ element, top: element.scrollTop }));
+    const maxScrollableHeight = Math.max(0, ...scrollTargets.map((element) => element.scrollHeight - element.clientHeight));
+    const scrollStep = Math.max(240, ...scrollTargets.map((element) => Math.floor(element.clientHeight * 0.75)));
+    const scrollOffsets = scrollTargets.length
+      ? Array.from({ length: Math.min(20, Math.ceil(maxScrollableHeight / scrollStep) + 1) }, (_value, index) => Math.min(maxScrollableHeight, index * scrollStep))
+      : [0];
+    const nextPaint = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     let tableCount = 0;
-    for (const scope of scopes) {
+    for (const scrollOffset of scrollOffsets) {
+      for (const target of scrollTargets) target.scrollTop = scrollOffset;
+      if (scrollTargets.length) await nextPaint();
+      for (const scope of scopes) {
       for (const table of Array.from(scope.querySelectorAll("table")).filter(visible)) {
         tableCount += 1;
         const headers = Array.from(table.querySelectorAll("thead th")).map(text);
@@ -9025,7 +9109,9 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
           capturedAt: now
         });
       }
+      }
     }
+    for (const { element, top } of originalScrollTops) element.scrollTop = top;
     const imageCount = new Set(rows.flatMap((row) => row.images || [])).size;
     return {
       rows: rows.slice(0, 120),
