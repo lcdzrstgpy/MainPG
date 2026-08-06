@@ -448,6 +448,29 @@ button:disabled {
   min-width: 160px;
 }
 
+/* 分页 */
+.draft-pagination {
+  display: flex; align-items: center; gap: 6px; margin-top: 16px; padding: 10px 0;
+  border-top: 1px solid #e8eef4; flex-wrap: wrap; justify-content: center;
+}
+.draft-pagination button {
+  padding: 5px 11px; border: 1px solid #c8d6e3; border-radius: 6px; background: #fff; cursor: pointer; color: #37506e;
+  font-size: .82rem; min-width: 32px; text-align: center;
+}
+.draft-pagination button:disabled { opacity: .4; cursor: default; }
+.draft-pagination button.current { background: #0a8fca; color: #fff; border-color: #0a8fca; }
+.draft-pagination button:not(:disabled):hover { background: #eef5fc; }
+.draft-pagination .page-indicator { display: flex; gap: 4px; }
+.draft-pagination .jump-input { font-size: .82rem; color: #536b81; margin-left: 8px; }
+.draft-pagination .jump-input input {
+  width: 52px; padding: 3px 6px; border: 1px solid #c8d6e3; border-radius: 5px; text-align: center;
+}
+
+/* 上传 */
+.upload-image-label { width: 100%; }
+.upload-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.uploading-hint { font-size: .78rem; color: #0a8fca; }
+
 @media (max-width: 800px) {
   .form-row {
     flex-direction: column;
