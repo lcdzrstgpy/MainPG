@@ -27,6 +27,8 @@ ALLOWED_PLUGIN_COMMAND_TYPES = frozenset(
 )
 _TERMINAL = frozenset({"succeeded", "failed"})
 _ACTIVE_WINDOW = timedelta(minutes=10)
+_LEGACY_LOCAL_ACTOR_ID = "local-demo-admin"
+_LEGACY_LOCAL_WORKSPACE_ID = "default"
 
 
 class PluginCommand(BaseModel):
@@ -232,6 +234,49 @@ class DataCollectionPluginQueue:
             for row in rows
         )
 
+    def claim_connected_legacy_local_session(
+        self, *, actor_id: str, workspace_id: str
+    ) -> bool:
+        """Bind one active legacy local connector to the current workbench user.
+
+        The delivered browser extension was originally paired with the fixed
+        local ``dev-admin-token``.  Its session is therefore owned by the
+        compatibility ``default`` workspace even after a real operator signs
+        in.  On a local single-user runtime, the first authenticated workspace
+        opening the plugin-backed module claims the one active compatibility
+        connector.  This avoids silently writing a price batch into a different
+        workspace while keeping normal, explicitly paired sessions untouched.
+        """
+        if (
+            actor_id == _LEGACY_LOCAL_ACTOR_ID
+            and workspace_id == _LEGACY_LOCAL_WORKSPACE_ID
+        ):
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT id, last_seen_at
+                FROM data_collection_plugin_sessions
+                WHERE actor_id = ? AND workspace_id = ? AND status = 'connected'
+                ORDER BY last_seen_at DESC, id DESC
+                LIMIT 1""",
+                (_LEGACY_LOCAL_ACTOR_ID, _LEGACY_LOCAL_WORKSPACE_ID),
+            ).fetchone()
+            if row is None or not _active(str(row["last_seen_at"])):
+                return False
+            updated = conn.execute(
+                """UPDATE data_collection_plugin_sessions
+                SET actor_id = ?, workspace_id = ?
+                WHERE id = ? AND actor_id = ? AND workspace_id = ?""",
+                (
+                    actor_id,
+                    workspace_id,
+                    int(row["id"]),
+                    _LEGACY_LOCAL_ACTOR_ID,
+                    _LEGACY_LOCAL_WORKSPACE_ID,
+                ),
+            )
+            return updated.rowcount == 1
+
     def list_commands(
         self,
         *,
@@ -265,6 +310,17 @@ class DataCollectionPluginQueue:
         with self._connect() as conn:
             return str(self._session(conn, session_token)["workspace_id"])
 
+    def identity_for_session(self, session_token: str) -> Mapping[str, str]:
+        """Resolve the authenticated actor/workspace of a live plugin session."""
+        with self._connect() as conn:
+            session = self._session(conn, session_token)
+            if not _active(session["last_seen_at"]):
+                raise PermissionError("plugin session is offline")
+            return {
+                "actor_id": str(session["actor_id"]),
+                "workspace_id": str(session["workspace_id"]),
+            }
+
     def _initialize(self) -> None:
         migrations = Path(__file__).with_name("migrations")
         with self._connect() as conn:
@@ -284,7 +340,7 @@ class DataCollectionPluginQueue:
     @staticmethod
     def _session(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
         row = conn.execute(
-            "SELECT id, workspace_id, last_seen_at FROM data_collection_plugin_sessions "
+            "SELECT id, actor_id, workspace_id, last_seen_at FROM data_collection_plugin_sessions "
             "WHERE session_token = ?",
             (token,),
         ).fetchone()

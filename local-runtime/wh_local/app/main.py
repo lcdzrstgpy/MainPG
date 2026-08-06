@@ -8,7 +8,8 @@ from typing import Any
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from ..config import default_config
 from ..customer.auth_service import SQLiteCustomerAuthService
@@ -81,6 +82,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    _register_frontend_shell(app)
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -110,9 +112,27 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.include_router(create_product_processing_router(product_processing), prefix="/api")
 
     # 核价及货源模块
-    _register_price_verification(app, db_path, config.data_dir, plugin_queue)
+    _register_price_verification(app, db_path, config.data_dir, plugin_queue, product_processing)
 
     return app
+
+
+def _register_frontend_shell(app: FastAPI) -> None:
+    """Expose the built workbench at the same local origin as the plugin API."""
+    frontend_dist = Path(__file__).resolve().parents[3] / "web-frontend" / "dist"
+    assets = frontend_dist / "assets"
+    index = frontend_dist / "index.html"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="workbench-assets")
+
+    @app.get("/", include_in_schema=False, response_class=HTMLResponse)
+    def workbench_root():
+        if index.is_file():
+            return FileResponse(index)
+        return HTMLResponse(
+            "<h1>工作台前端尚未构建</h1><p>请在 web-frontend 目录执行 npm run build。</p>",
+            status_code=200,
+        )
 
 
 def _register_data_collection(
@@ -162,6 +182,7 @@ def _register_price_verification(
     db_path: Path,
     data_dir: Path,
     plugin_queue: DataCollectionPluginQueue,
+    product_processing: ProductProcessingService | None = None,
 ) -> None:
     """Register read-only price-verification routes with host-owned adapters."""
     dependencies = PriceVerificationRouteDependencies(
@@ -171,6 +192,11 @@ def _register_price_verification(
         provider_config_resolver=_provider_config,
         provider_factory=_provider_factory,
         plugin_queue=plugin_queue,
+        draft_writer=(
+            lambda payload: product_processing.create_draft(dict(payload))
+            if product_processing is not None
+            else None
+        ),
     )
     register_price_verification_routes(app.router, dependencies)
 

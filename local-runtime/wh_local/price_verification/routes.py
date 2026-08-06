@@ -25,7 +25,7 @@ from .plugin.service import (
     PluginResourceNotFound,
 )
 from .plugin.shared_gateway import SharedPluginGateway
-from .quote_service import QuoteService
+from .quote_service import CaptureBatchRequiredError, QuoteService
 from .repository import (
     PluginCommandRecord,
     PriceVerificationNotFound,
@@ -50,6 +50,7 @@ class PriceVerificationRouteDependencies:
     provider_config_resolver: Callable[[PriceVerificationActor], Mapping[str, Any]] | None = None
     provider_factory: Callable[[Mapping[str, Any]], Any] | None = None
     plugin_queue: DataCollectionPluginQueue | None = None
+    draft_writer: Callable[[Mapping[str, Any]], tuple[Mapping[str, Any], bool]] | None = None
 
     def build_services(self) -> tuple[
         PriceVerificationRepository, SharedPluginGateway, QuoteService, SourcingService
@@ -118,6 +119,278 @@ def register_price_verification_routes(
     ) -> Mapping[str, Any]:
         del actor
         return _plugin_package_response()
+
+    @router.post("/api/v1/price-verification/capture-batches")
+    def create_capture_batch(
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            batch = quote_service.create_capture_batch(
+                actor,
+                name=_required(request, "name"),
+                make_current=bool(request.get("make_current", True)),
+            )
+            return _capture_batch_response(batch)
+        except Exception as error:
+            _raise_http(error)
+
+    @router.get("/api/v1/price-verification/capture-batches")
+    def list_capture_batches(
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return {"batches": [_capture_batch_response(item) for item in quote_service.list_capture_batches(actor)]}
+        except Exception as error:
+            _raise_http(error)
+
+    @router.get("/api/v1/price-verification/capture-batches/{batch_id}")
+    def get_capture_batch(
+        batch_id: str, actor: PriceVerificationActor = Depends(actor_dependency)
+    ) -> Mapping[str, Any]:
+        try:
+            batch = quote_service.get_capture_batch(actor, batch_id)
+            chunks = repository.list_quote_capture_chunks(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+            return {
+                **_capture_batch_response(batch),
+                "chunks": [_capture_chunk_response(chunk) for chunk in chunks],
+            }
+        except Exception as error:
+            _raise_http(error)
+
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/activate")
+    def activate_capture_batch(
+        batch_id: str, actor: PriceVerificationActor = Depends(actor_dependency)
+    ) -> Mapping[str, Any]:
+        try:
+            return _capture_batch_response(quote_service.activate_capture_batch(actor, batch_id))
+        except Exception as error:
+            _raise_http(error)
+
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/snapshots")
+    def save_capture_batch_snapshot(
+        batch_id: str, actor: PriceVerificationActor = Depends(actor_dependency)
+    ) -> Mapping[str, Any]:
+        try:
+            return _quote_run_response(quote_service.save_capture_batch_snapshot(actor, batch_id))
+        except Exception as error:
+            _raise_http(error)
+
+    @router.get("/api/v1/price-verification/capture-batches/{batch_id}/items")
+    def list_capture_batch_items(
+        batch_id: str, actor: PriceVerificationActor = Depends(actor_dependency)
+    ) -> Mapping[str, Any]:
+        try:
+            return {
+                "batch_id": batch_id,
+                "items": list(quote_service.list_capture_batch_review_items(actor, batch_id)),
+            }
+        except Exception as error:
+            _raise_http(error)
+
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/drafts")
+    def confirm_capture_batch_drafts(
+        batch_id: str,
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            quote_keys = request.get("quote_keys")
+            if not isinstance(quote_keys, list) or not quote_keys:
+                raise PriceVerificationContractError("quote_keys must be a non-empty list")
+            return quote_service.confirm_batch_quotes_to_draft(
+                actor,
+                batch_id,
+                quote_keys=[str(key) for key in quote_keys],
+                draft_writer=dependencies.draft_writer,
+                note=_text(request.get("note")),
+            )
+        except Exception as error:
+            _raise_http(error)
+
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/selections")
+    def stage_batch_selections(
+        batch_id: str,
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        """First-panel confirm: reassemble checked SKC rows into the pending review list."""
+        try:
+            skc_ids = request.get("skc_ids")
+            if not isinstance(skc_ids, list) or not skc_ids:
+                raise PriceVerificationContractError("skc_ids must be a non-empty list")
+            return {
+                "batch_id": batch_id,
+                "selections": list(
+                    quote_service.stage_batch_selections(actor, batch_id, skc_ids=[str(item) for item in skc_ids])
+                ),
+            }
+        except Exception as error:
+            _raise_http(error)
+
+    @router.get("/api/v1/price-verification/capture-batches/{batch_id}/selections")
+    def list_batch_selections(
+        batch_id: str, actor: PriceVerificationActor = Depends(actor_dependency)
+    ) -> Mapping[str, Any]:
+        try:
+            return {
+                "batch_id": batch_id,
+                "selections": list(quote_service.list_batch_selections(actor, batch_id)),
+            }
+        except Exception as error:
+            _raise_http(error)
+
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/selections/{selection_id}/review")
+    def review_batch_selection(
+        batch_id: str,
+        selection_id: int,
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        """Second-panel final decision: retained → draft pool; deleted → drop."""
+        try:
+            return quote_service.review_batch_selection(
+                actor,
+                batch_id,
+                selection_id=selection_id,
+                decision=_required(request, "decision"),
+                max_candidates=_positive_int(request.get("max_candidates", 10), "max_candidates"),
+                draft_writer=dependencies.draft_writer,
+                note=_text(request.get("note")),
+            )
+        except Exception as error:
+            _raise_http(error)
+
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/sourcing")
+    def source_batch_selections(
+        batch_id: str,
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        """Run the established OB 1688 image-search chain for retained selections.
+
+        The data-collection module already verified the chain: download the
+        reference image, upload it to OB (upload_img), then run item_search_img.
+        Results return as a preview grouped by SKC with each selection's cap.
+        """
+        try:
+            if dependencies.provider_config_resolver is None or dependencies.provider_factory is None:
+                raise HTTPException(status_code=503, detail="OneBound provider is unavailable")
+            return sourcing_service.search_batch_selections_by_image(
+                actor,
+                batch_id=batch_id,
+                provider_factory=lambda: dependencies.provider_factory(
+                    dependencies.provider_config_resolver(actor)
+                ),
+                ranking_mode=_text(request.get("ranking_mode")) or "similarity",
+                skc_ids=_text_list(request.get("skc_ids")),
+                keyword_search=bool(request.get("keyword_search")),
+            )
+        except HTTPException:
+            raise
+        except Exception as error:
+            _raise_http(error)
+
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/source-profit-preview")
+    def preview_source_candidate_profit(
+        batch_id: str,
+        request: Mapping[str, Any] = Body(...),
+    ) -> Mapping[str, Any]:
+        """Recompute one candidate's profit against the Temu adjusted price (weight adjustable)."""
+        del batch_id
+        try:
+            return dict(
+                sourcing_service.preview_candidate_profit(
+                    site=_required(request, "site"),
+                    selling_price=_required_value(request, "selling_price"),
+                    price=_required_value(request, "price"),
+                    moq=request.get("moq"),
+                    domestic_freight=request.get("domestic_freight"),
+                    weight_kg=request.get("weight_kg", 0.5),
+                )
+            )
+        except Exception as error:
+            _raise_http(error)
+
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/skc-source-links")
+    def link_skc_source(
+        batch_id: str,
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        """Link one 1688 offer to a retained Temu SKC for later dropshipping lookup."""
+        try:
+            return sourcing_service.link_skc_source(
+                actor,
+                batch_id=batch_id,
+                skc_id=_required(request, "skc_id"),
+                offer_id=_required(request, "offer_id"),
+                source_url=_required(request, "source_url"),
+                source_title=_text(request.get("source_title")),
+                main_image_url=_text(request.get("main_image_url")),
+                price_cny=request.get("price_cny"),
+                moq=request.get("moq"),
+                domestic_freight_cny=request.get("domestic_freight_cny"),
+                source_decision=_text(request.get("source_decision")),
+                note=_text(request.get("note")),
+            )
+        except Exception as error:
+            _raise_http(error)
+
+    @router.get("/api/v1/price-verification/capture-batches/{batch_id}/skc-source-links")
+    def list_skc_source_links(
+        batch_id: str,
+        actor: PriceVerificationActor = Depends(actor_dependency),
+        skc_id: str | None = Query(default=None),
+    ) -> Mapping[str, Any]:
+        try:
+            return {
+                "links": [
+                    dict(link)
+                    for link in sourcing_service.list_skc_source_links(
+                        actor, batch_id=batch_id, skc_id=skc_id
+                    )
+                ]
+            }
+        except Exception as error:
+            _raise_http(error)
+
+    @router.delete("/api/v1/price-verification/capture-batches/{batch_id}/skc-source-links/{link_id}")
+    def remove_skc_source_link(
+        batch_id: str,
+        link_id: int,
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        del batch_id
+        try:
+            return dict(sourcing_service.remove_skc_source_link(actor, link_id=link_id))
+        except Exception as error:
+            _raise_http(error)
+
+    @router.post("/plugin/price-verification/capture-batches/current/chunks")
+    def capture_current_price_quote_page(request: Mapping[str, Any] = Body(...)) -> Mapping[str, Any]:
+        """Authenticated direct upload from the existing browser-plugin session only."""
+        try:
+            session_token = _required(request, "session_token")
+            plugin_actor = gateway.actor_for_session(session_token)
+        except (PriceVerificationNotFound, PriceVerificationContractError) as error:
+            raise HTTPException(status_code=401, detail="invalid plugin session") from error
+        try:
+            chunk = quote_service.capture_current_page(
+                plugin_actor,
+                _mapping(request.get("capture"), "capture"),
+                page_url=_text(request.get("page_url")),
+            )
+            batch = repository.get_current_quote_capture_batch(workspace_id=plugin_actor.workspace_id)
+            return {
+                "batch": _capture_batch_response(batch),
+                "chunk": _capture_chunk_response(chunk),
+                "message": f"核价本页已入库：{chunk.item_count} 条",
+            }
+        except Exception as error:
+            _raise_http(error)
 
     @router.post("/api/v1/price-verification/quote-runs")
     def create_or_materialize_quote_run(
@@ -446,6 +719,14 @@ def _sourcing_run_response(run: SourcingRunRecord) -> Mapping[str, Any]:
     return run.model_dump(mode="json", exclude={"candidates"})
 
 
+def _capture_batch_response(batch: Any) -> Mapping[str, Any]:
+    return batch.model_dump(mode="json")
+
+
+def _capture_chunk_response(chunk: Any) -> Mapping[str, Any]:
+    return chunk.model_dump(mode="json", exclude={"capture", "items"})
+
+
 def _quote_preview_response(run_id: str, preview: Any) -> Mapping[str, Any]:
     return {
         "run_id": run_id,
@@ -505,6 +786,13 @@ def _required(request: Mapping[str, Any], name: str) -> str:
     return value
 
 
+def _required_value(request: Mapping[str, Any], name: str) -> object:
+    value = request.get(name)
+    if value is None or value == "":
+        raise PriceVerificationContractError(f"{name} is required")
+    return value
+
+
 def _idempotency_key(request: Mapping[str, Any]) -> str:
     return _text(request.get("idempotency_key")) or uuid4().hex
 
@@ -525,6 +813,14 @@ def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _text_list(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        return None
+    return [_text(item) for item in value if _text(item)]
+
+
 def _raise_http(error: Exception) -> None:
     if isinstance(error, HTTPException):
         raise error
@@ -533,6 +829,8 @@ def _raise_http(error: Exception) -> None:
     if isinstance(error, PluginAuthenticationError):
         raise HTTPException(status_code=401, detail=str(error)) from error
     if isinstance(error, QuoteDecisionRequiredError):
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if isinstance(error, CaptureBatchRequiredError):
         raise HTTPException(status_code=409, detail=str(error)) from error
     if isinstance(
         error,

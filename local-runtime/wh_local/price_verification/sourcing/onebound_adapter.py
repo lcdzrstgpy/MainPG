@@ -9,23 +9,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
-import hashlib
 import re
 from typing import Any, Protocol
-from zoneinfo import ZoneInfo
 
 from ..contracts import PriceVerificationActor, redact_sensitive
 from ..repository import PriceVerificationRepository
+from ...data_collection.criteria import DailySelectionCriteria
 from .contracts import SourceSearchTask
+from .title_translation import to_search_keywords, translate_title_to_chinese
 
 
 _PROVIDER_NAME = "onebound-1688"
-_PROVIDER_FINGERPRINT = hashlib.sha256(_PROVIDER_NAME.encode("utf-8")).hexdigest()
-_MAX_CALLS_PER_TASK = 6  # provider image-search sequence plus one detail lookup
-_DEFAULT_CALL_LIMIT = 60
 _OFFER_ID = re.compile(r"(?:offer/|offerId=|offer_id=)(\d{3,})", flags=re.IGNORECASE)
-_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 class _ProviderResult(Protocol):
@@ -57,29 +52,26 @@ class OneBoundSourceAdapter:
         self,
         repository: PriceVerificationRepository,
         provider_factory: Callable[[], _OneBoundProvider],
-        *,
-        call_limit: int = _DEFAULT_CALL_LIMIT,
-        clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not isinstance(repository, PriceVerificationRepository):
             raise TypeError("repository must be PriceVerificationRepository")
         if not callable(provider_factory):
             raise TypeError("provider_factory must be callable")
-        if isinstance(call_limit, bool) or not isinstance(call_limit, int) or call_limit < _MAX_CALLS_PER_TASK:
-            raise ValueError(f"call_limit must be an integer of at least {_MAX_CALLS_PER_TASK}")
         self._repository = repository
         self._provider_factory = provider_factory
-        self._call_limit = call_limit
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def search_by_image(
-        self, actor: PriceVerificationActor, tasks: Sequence[SourceSearchTask]
+        self, actor: PriceVerificationActor, tasks: Sequence[SourceSearchTask], *, keyword_search: bool = False
     ) -> dict[str, Any]:
         """Run each task independently so one provider failure remains retriable.
 
-        The reservation is intentionally per task.  Slots reserved for the
-        provider's worst allowed sequence are released after its redacted audit
-        records reveal how many upstream calls actually occurred.
+        There is no daily call budget: every task always executes against the
+        provider, and provider-side failures surface per task so a single
+        upstream hiccup never blocks the rest of the batch.
+
+        ``keyword_search`` optionally adds the translated-title keyword channel;
+        it is off by default so the first run is pure image search (with
+        similarity scores) and the user can opt into title search afterwards.
         """
         if not isinstance(actor, PriceVerificationActor):
             raise TypeError("actor must be PriceVerificationActor")
@@ -95,37 +87,83 @@ class OneBoundSourceAdapter:
             return _result_for_items([_failed_item(task, "provider request failed") for task in task_list])
         items: list[dict[str, Any]] = []
         for task in task_list:
-            reservation_date = self._reserve(actor.workspace_id, _MAX_CALLS_PER_TASK)
-            if reservation_date is None:
-                items.append(_failed_item(task, "daily provider budget is exhausted"))
-                continue
-            item, audit_count = self._search_task(provider, task)
-            self._settle(actor.workspace_id, reservation_date, _MAX_CALLS_PER_TASK, audit_count)
+            item, _ = self._search_task(provider, task, keyword_search=keyword_search)
             items.append(item)
         return _result_for_items(items)
 
-    def _search_task(self, provider: _OneBoundProvider, task: SourceSearchTask) -> tuple[dict[str, Any], int]:
+    def _search_task(
+        self, provider: _OneBoundProvider, task: SourceSearchTask, *, keyword_search: bool = False
+    ) -> tuple[dict[str, Any], int]:
         evidence: list[dict[str, Any]] = []
         try:
-            searched = provider.search_by_image(_ImageSearchCriteria(task.main_image_url))
-            evidence.extend(_redacted_audits(searched))
-            if not _result_ok(searched):
-                return _failed_item(task, "provider request failed", evidence), len(evidence)
+            # Channel A: pure image search.  This is the established primary
+            # channel; it carries the OB similarity score used for ranking.
+            image_raw: list[Mapping[str, Any]] = []
+            image_ok = False
+            try:
+                searched = provider.search_by_image(_ImageSearchCriteria(task.main_image_url))
+                evidence.extend(_redacted_audits(searched))
+                if _result_ok(searched):
+                    image_ok = True
+                    image_raw = _search_items(_response(searched))
+            except Exception:
+                pass  # opaque: provider exceptions may contain credentials
 
-            raw_candidates = _search_items(_response(searched))
+            # Channel B (optional): translated-title keyword search.  Only runs
+            # when the user opts in, because the Temu title is translated to
+            # Chinese and hits carry no similarity score.
+            keyword_raw: list[Mapping[str, Any]] = []
+            keyword_ok = False
+            keywords = to_search_keywords(translate_title_to_chinese(task.product_title)) if keyword_search else ""
+            # Only run the keyword channel when the title translated into
+            # Chinese; a raw-English fallback would search 1688 with the wrong
+            # language and return noise.
+            if keywords and _contains_cjk(keywords):
+                try:
+                    keyword_hits = provider.search_keyword(
+                        DailySelectionCriteria(
+                            collection_mode="keyword",
+                            keywords=(keywords,),
+                            target_count=max(int(task.max_candidates or 0), 1),
+                        )
+                    )
+                    evidence.extend(_redacted_audits(keyword_hits))
+                    if _result_ok(keyword_hits):
+                        keyword_ok = True
+                        keyword_raw = _search_items(_response(keyword_hits))
+                except Exception:
+                    pass  # opaque: provider exceptions may contain credentials
+
+            merged = _merge_channels(image_raw, keyword_raw, max(int(task.max_candidates or 0), 1))
+            if not merged:
+                # A successful search with no hits is a valid empty result; only
+                # fail when every channel errored out.
+                if not image_ok and not keyword_ok:
+                    return _failed_item(task, "provider request failed", evidence), len(evidence)
+                return {
+                    "task_key": task.task_key,
+                    "skc_id": task.skc_id,
+                    "source_quote_keys": list(task.source_quote_keys),
+                    "status": "succeeded",
+                    "error": "",
+                    "candidates": [],
+                    "evidence": evidence,
+                }, len(evidence)
+
             candidates: list[dict[str, Any]] = []
-            # A detail request closes the evidence of the best provider result;
-            # one per task keeps the six-slot budget reservation enforceable.
-            for raw_candidate in raw_candidates[:1]:
+            # Only the first (most relevant) candidate gets a detail lookup; the
+            # rest keep the search payload the provider already returned.
+            for index, (raw_candidate, channel) in enumerate(merged):
                 offer_id = _offer_id(raw_candidate)
                 detailed = dict(raw_candidate)
-                if offer_id:
+                if index == 0 and offer_id:
                     detail = provider.get_item_detail(offer_id)
                     evidence.extend(_redacted_audits(detail))
-                    if not _result_ok(detail):
-                        return _failed_item(task, "provider request failed", evidence), len(evidence)
-                    detailed = {**raw_candidate, **_detail_item(_response(detail))}
-                candidates.append(_safe_candidate(detailed, evidence))
+                    # A failed detail lookup must not discard the results: keep
+                    # the search payload and skip the enrichment.
+                    if _result_ok(detail):
+                        detailed = {**raw_candidate, **_detail_item(_response(detail))}
+                candidates.append(_safe_candidate(detailed, evidence, channel=channel))
             return {
                 "task_key": task.task_key,
                 "skc_id": task.skc_id,
@@ -139,64 +177,6 @@ class OneBoundSourceAdapter:
             # Provider exceptions are intentionally opaque: they can contain
             # credentials or request URLs and must never cross this boundary.
             return _failed_item(task, "provider request failed", evidence), len(evidence)
-
-    def _reserve(self, workspace_id: str, calls: int) -> str | None:
-        now = _shanghai_date(self._clock())
-        with self._repository._connect() as connection:  # adapter owns only its module table rows
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """SELECT call_limit, used_count FROM price_verification_provider_budgets
-                WHERE workspace_id = ? AND credential_fingerprint = ? AND shanghai_date = ?""",
-                (workspace_id, _PROVIDER_FINGERPRINT, now),
-            ).fetchone()
-            limit, used = (self._call_limit, 0) if row is None else (min(int(row["call_limit"]), self._call_limit), int(row["used_count"]))
-            granted = used + calls <= limit
-            if row is None:
-                connection.execute(
-                    """INSERT INTO price_verification_provider_budgets
-                    (workspace_id, credential_fingerprint, shanghai_date, call_limit, used_count, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)""",
-                    (workspace_id, _PROVIDER_FINGERPRINT, now, limit, used + calls if granted else used, _timestamp()),
-                )
-            elif granted:
-                connection.execute(
-                    """UPDATE price_verification_provider_budgets
-                    SET call_limit = ?, used_count = ?, updated_at = ?
-                    WHERE workspace_id = ? AND credential_fingerprint = ? AND shanghai_date = ?""",
-                    (limit, used + calls, _timestamp(), workspace_id, _PROVIDER_FINGERPRINT, now),
-                )
-            connection.commit()
-        return now if granted else None
-
-    def _settle(
-        self, workspace_id: str, reservation_date: str, reserved_calls: int, actual_calls: int
-    ) -> None:
-        unused = max(reserved_calls - actual_calls, 0)
-        if not unused:
-            return
-        with self._repository._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """SELECT used_count FROM price_verification_provider_budgets
-                WHERE workspace_id = ? AND credential_fingerprint = ? AND shanghai_date = ?""",
-                (workspace_id, _PROVIDER_FINGERPRINT, reservation_date),
-            ).fetchone()
-            if row is None:
-                connection.rollback()
-                raise RuntimeError("provider budget reservation disappeared")
-            connection.execute(
-                """UPDATE price_verification_provider_budgets
-                SET used_count = ?, updated_at = ?
-                WHERE workspace_id = ? AND credential_fingerprint = ? AND shanghai_date = ?""",
-                (
-                    max(int(row["used_count"]) - unused, 0),
-                    _timestamp(),
-                    workspace_id,
-                    _PROVIDER_FINGERPRINT,
-                    reservation_date,
-                ),
-            )
-            connection.commit()
 
 
 def _failed_item(
@@ -264,8 +244,12 @@ def _search_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     for container in (payload, payload.get("data"), payload.get("result")):
         if not isinstance(container, Mapping):
             continue
-        values = container.get("items") or container.get("item_list")
-        if isinstance(values, list):
+        values = container.get("items") or container.get("item_list") or container.get("item")
+        # OB item_search_img nests the array under {"items": {"item": [...]}} and
+        # the provider parses the JSON array into a tuple.
+        if isinstance(values, Mapping):
+            values = values.get("item") or values.get("items") or values.get("item_list")
+        if isinstance(values, (list, tuple)):
             return [value for value in values if isinstance(value, Mapping)]
     return []
 
@@ -289,9 +273,52 @@ def _offer_id(candidate: Mapping[str, Any]) -> str:
     return ""
 
 
-def _safe_candidate(candidate: Mapping[str, Any], evidence: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _contains_cjk(value: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in value)
+
+
+def _merge_channels(
+    image_raw: Sequence[Mapping[str, Any]],
+    keyword_raw: Sequence[Mapping[str, Any]],
+    max_candidates: int,
+) -> list[tuple[Mapping[str, Any], str]]:
+    """Merge image hits ahead of keyword hits, de-duplicated by offer.
+
+    The image channel is the primary signal the user asked to keep first (it
+    carries the OB similarity score); the translated-title keyword channel only
+    fills in behind when the user opted into title search.  Each channel keeps
+    its own cap so the keyword supplement is not silently cut off by the image
+    channel filling the shared limit (e.g. five image hits + five keyword hits).
+    """
+    seen: set[str] = set()
+    merged: list[tuple[Mapping[str, Any], str]] = []
+    for raw, channel in ((image_raw, "image"), (keyword_raw, "keyword")):
+        channel_count = 0
+        for candidate in raw:
+            offer_id = _offer_id(candidate) or _text(candidate.get("title") or candidate.get("item_title"))[:40]
+            if offer_id:
+                if offer_id in seen:
+                    continue
+                seen.add(offer_id)
+            merged.append((candidate, channel))
+            channel_count += 1
+            if channel_count >= max_candidates:
+                break
+    return merged
+
+
+def _safe_candidate(
+    candidate: Mapping[str, Any],
+    evidence: Sequence[Mapping[str, Any]],
+    *,
+    channel: str = "",
+) -> dict[str, Any]:
     """Return provider fields only after recursive credential redaction."""
-    return redact_sensitive({**dict(candidate), "provider_evidence": list(evidence)})
+    return redact_sensitive({
+        **dict(candidate),
+        "source_channel": channel or _text(candidate.get("source_channel")),
+        "provider_evidence": list(evidence),
+    })
 
 
 def _text(value: object) -> str:
@@ -301,12 +328,3 @@ def _text(value: object) -> str:
 def _optional_text(value: object) -> str | None:
     text = _text(value)
     return text or None
-
-
-def _timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _shanghai_date(value: datetime) -> str:
-    instant = value if value.tzinfo is not None else value.replace(tzinfo=_SHANGHAI)
-    return instant.astimezone(_SHANGHAI).date().isoformat()
