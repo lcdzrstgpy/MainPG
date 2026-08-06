@@ -287,6 +287,15 @@ button:disabled {
   color: #b36b00;
 }
 
+.badge.category-badge {
+  background: #f5f0ff;
+  color: #6844b5;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .meta-line {
   font-size: 0.8rem;
   color: #72869a;

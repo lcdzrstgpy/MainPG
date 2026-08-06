@@ -634,6 +634,8 @@ export function ProductProcessingTestPage() {
             const variants: DraftVariant[] = raw.source_variant_records || [];
             const variantCount = variants.length;
             const skuLabel = variantCount > 0 ? `${variantCount}变体` : '单规格';
+            const selectionCriteria = raw.selection_criteria || {};
+            const category = selectionCriteria.category || raw.category || '';
             const imgStatus = imageUrlStatus(draft.image_url || raw.main_image_url || '');
             const checked = isSelected(draft.id);
             return (
@@ -659,6 +661,7 @@ export function ProductProcessingTestPage() {
                       <strong>{draft.title || raw.source_title || '(无标题)'}</strong>
                       <span className="badge">{platform}</span>
                       <span className="badge">{skuLabel}</span>
+                      {category && <span className="badge category-badge" title={category}>{category}</span>}
                       <span className="badge">rev 1</span>
                       <span className={`badge status-${imgStatus}`}>
                         主图 {imgStatus === 'ok' ? '可用' : imgStatus === 'missing' ? '缺失' : '不安全'}
