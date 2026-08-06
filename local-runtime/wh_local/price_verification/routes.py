@@ -51,6 +51,9 @@ class PriceVerificationRouteDependencies:
     provider_factory: Callable[[Mapping[str, Any]], Any] | None = None
     plugin_queue: DataCollectionPluginQueue | None = None
     draft_writer: Callable[[Mapping[str, Any]], tuple[Mapping[str, Any], bool]] | None = None
+    # Optional profit-activity product library: retained SKCs with active 1688
+    # source links are auto-synced here after link/unlink operations.
+    product_library_service: Any | None = None
 
     def build_services(self) -> tuple[
         PriceVerificationRepository, SharedPluginGateway, QuoteService, SourcingService
@@ -64,7 +67,11 @@ class PriceVerificationRouteDependencies:
             plugin_gateway=gateway,
             output_root=self.output_root,
         )
-        sourcing = SourcingService(repository=repository, plugin_gateway=gateway)
+        sourcing = SourcingService(
+            repository=repository,
+            plugin_gateway=gateway,
+            product_library_service=self.product_library_service,
+        )
         return repository, gateway, quote, sourcing
 
 

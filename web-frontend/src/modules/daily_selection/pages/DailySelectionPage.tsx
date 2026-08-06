@@ -196,7 +196,10 @@ type DailySelectionPageProps = {
 };
 
 export function DailySelectionPage({ view = "directions", initialDirectionId, onOpenCollection }: DailySelectionPageProps) {
-  const collectionView = view === "collection";
+  // 视图支持内部轮转：主模块默认直接进采集视图，点「模板预设」切到预设页，
+  // 在预设页点方向卡再回到采集视图，而不再新开独立面板。
+  const [internalView, setInternalView] = useState<"directions" | "collection">(view);
+  const collectionView = internalView === "collection";
   const [customDirections, setCustomDirections] = useState<Direction[]>(loadCustomDirections);
   const [updatedDefaultDirections, setUpdatedDefaultDirections] = useState<Direction[]>(loadUpdatedDefaultDirections);
   const [removedDefaultDirectionIds, setRemovedDefaultDirectionIds] = useState<string[]>(loadRemovedDefaultDirectionIds);
@@ -408,7 +411,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       return;
     }
     chooseDirection(direction);
-    onOpenCollection?.(direction.id, direction.name);
+    if (onOpenCollection) {
+      onOpenCollection(direction.id, direction.name);
+    } else {
+      setInternalView("collection");
+    }
   }
 
   function confirmDeletePreset() {
@@ -571,6 +578,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           <h1>每日选品</h1>
           <p>关键词或参考图驱动商品采集，筛选后确认进入产品处理。</p>
         </div>
+        {!onOpenCollection && (
+          <button type="button" className="back-to-collection-button" onClick={() => setInternalView("collection")}>
+            <span aria-hidden="true">←</span> 返回采集
+          </button>
+        )}
       </section>
 
       {(error || notice) && (
@@ -640,7 +652,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                       <div><dt>起订量上限</dt><dd>2 件</dd></div>
                       <div><dt>目标候选</dt><dd>{direction.target} 个</dd></div>
                     </dl>
-                    <small>点击预设打开独立采集面板</small>
+                    <small>点击预设进入采集</small>
                   </div>
                 )}
               </div>
@@ -698,6 +710,18 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
       {collectionView && (
         <div className="daily-collection-workspace">
+          <section className="daily-page-heading">
+            <div>
+              <p className="daily-kicker">DAILY PRODUCT DISCOVERY</p>
+              <h1>每日选品</h1>
+              <p>关键词或参考图驱动商品采集，筛选后确认进入产品处理。</p>
+            </div>
+            {!onOpenCollection && (
+              <button type="button" className="preset-entry-button" onClick={() => setInternalView("directions")}>
+                <span aria-hidden="true">▦</span> 模板预设
+              </button>
+            )}
+          </section>
           <section className="daily-collection-surface" aria-label="每日选品采集面板">
             <header className="daily-drawer-header">
               <div>

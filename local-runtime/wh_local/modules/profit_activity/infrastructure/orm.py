@@ -45,6 +45,7 @@ class ProfitRecordRow(Base):
     site_code: Mapped[str] = mapped_column(String(2), nullable=False, index=True)
     skc: Mapped[str] = mapped_column(String(128), nullable=False)
     visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="shared")
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False, default="manual", index=True)
     created_by: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_by_username: Mapped[str] = mapped_column(String(128), nullable=False, default="local")
     image_path: Mapped[str] = mapped_column(Text, nullable=False, default="")

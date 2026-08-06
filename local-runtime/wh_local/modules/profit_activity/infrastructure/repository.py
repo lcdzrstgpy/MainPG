@@ -44,12 +44,13 @@ class ProfitActivityRepository:
             session.flush()
             return SettingsSnapshot(row.revision, _settings(row))
 
-    def upsert_record(self, *, workspace_id: str, created_by: str, created_by_username: str, skc: str, note: str, preview: ProfitPreview, calculation_hash: str, settings_revision: int, refund_rate: Decimal = Decimal("0"), visibility: str = "shared", source_url: str = "", image_path: str = "", source_image_path: str = "", source_groups: list[dict] | None = None) -> ProfitRecordRow:
+    def upsert_record(self, *, workspace_id: str, created_by: str, created_by_username: str, skc: str, note: str, preview: ProfitPreview, calculation_hash: str, settings_revision: int, refund_rate: Decimal = Decimal("0"), visibility: str = "shared", source_type: str = "manual", source_url: str = "", image_path: str = "", source_image_path: str = "", source_groups: list[dict] | None = None) -> ProfitRecordRow:
         with self._sessions.begin() as session:
             row = session.scalar(select(ProfitRecordRow).where(ProfitRecordRow.workspace_id == workspace_id, ProfitRecordRow.site_code == preview.site_code, ProfitRecordRow.skc == skc))
             values = {
                 **asdict(preview), "workspace_id": workspace_id, "note": note, "calculation_hash": calculation_hash,
                 "settings_revision": settings_revision, "refund_rate": refund_rate, "visibility": visibility,
+                "source_type": source_type,
                 "source_url": source_url, "image_path": image_path,
                 "source_image_path": source_image_path,
                 "source_groups_json": json.dumps(source_groups or [], ensure_ascii=False, separators=(",", ":")),
@@ -64,13 +65,26 @@ class ProfitActivityRepository:
             session.flush()
             return row
 
-    def list_records(self, workspace_id: str, site_code: SiteCode | None, offset: int, limit: int, *, actor_id: str = "", include_workspace_shared: bool = False) -> list[ProfitRecordRow]:
+    def list_records(self, workspace_id: str, site_code: SiteCode | None, offset: int, limit: int, *, actor_id: str = "", include_workspace_shared: bool = False, source_type: str | None = None) -> list[ProfitRecordRow]:
         with self._sessions() as session:
-            query = select(ProfitRecordRow).where(ProfitRecordRow.workspace_id == workspace_id).order_by(ProfitRecordRow.id.desc()).offset(offset).limit(limit)
+            # 核价及货源自动入库的记录属于公司级产品库，跨工作区可见；
+            # 其余记录按工作区（非公司范围时再按创建人）隔离。
+            query = select(ProfitRecordRow).where(
+                (ProfitRecordRow.source_type == "price_verification")
+                | (ProfitRecordRow.workspace_id == workspace_id)
+            ).order_by(ProfitRecordRow.id.desc()).offset(offset).limit(limit)
             if site_code is not None:
                 query = query.where(ProfitRecordRow.site_code == site_code)
+            if source_type:
+                query = query.where(ProfitRecordRow.source_type == source_type)
             if not include_workspace_shared:
-                query = query.where(ProfitRecordRow.created_by == actor_id)
+                # 默认范围展示“本人创建 + 核价及货源自动入库”的记录：自动入库
+                # 的产品属于公司级产品库，工作区内成员默认可见，与核价及货源
+                # STEP 04 的展示语义保持一致（无需按创建人过滤）。
+                query = query.where(
+                    (ProfitRecordRow.created_by == actor_id)
+                    | (ProfitRecordRow.source_type == "price_verification")
+                )
             return list(session.scalars(query))
 
     def create_activity_run(self, workspace_id: str, site_code: SiteCode | None, settings: ProfitSettings, decisions: list[tuple[int, str, str]]) -> ActivityRunRow:

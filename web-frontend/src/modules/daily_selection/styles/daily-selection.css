@@ -3,6 +3,11 @@
 .daily-page-heading h1 { margin: 2px 0 4px; color: #fff; font-size: clamp(1.9rem, 3vw, 2.65rem); letter-spacing: -.045em; }
 .daily-page-heading p { margin: 0; color: #d9f1fb; }
 .daily-page-heading .daily-kicker { color: #9de7f3; font-size: .68rem; font-weight: 850; letter-spacing: .14em; }
+.daily-page-heading .back-to-collection-button { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid rgba(255,255,255,.45); border-radius: 11px; padding: 10px 16px; color: #fff; background: rgba(255,255,255,.14); font-size: .86rem; font-weight: 800; cursor: pointer; }
+.daily-page-heading .back-to-collection-button:hover { background: rgba(255,255,255,.26); box-shadow: 0 8px 18px rgba(7,48,83,.2); }
+.daily-page-heading .preset-entry-button { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid rgba(255,255,255,.45); border-radius: 11px; padding: 10px 16px; color: #fff; background: rgba(255,255,255,.14); font-size: .86rem; font-weight: 800; cursor: pointer; }
+.daily-page-heading .preset-entry-button:hover { background: rgba(255,255,255,.26); box-shadow: 0 8px 18px rgba(7,48,83,.2); }
+.daily-page-heading .preset-entry-button span { color: inherit; font-size: .92rem; letter-spacing: 0; }
 .daily-message { display: flex; align-items: center; gap: 10px; padding: 12px 15px; border: 1px solid; border-radius: 11px; font-size: .87rem; }
 .daily-message > span { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; color: #fff; font-weight: 850; }
 .daily-message button { margin-left: auto; border: 0; color: inherit; background: transparent; font-size: 1.15rem; }
@@ -57,7 +62,7 @@
 .direction-panel-actions > button.toggle-edit-mode-button.is-active { border-color: #168fc7; color: #fff; background: #168fc7; }
 .direction-panel-actions > button.toggle-delete-mode-button { border: 1px solid #ebd1d4; color: #a95b62; background: #fff7f8; box-shadow: none; }
 .direction-panel-actions > button.toggle-delete-mode-button.is-active { border-color: #d9959b; color: #fff; background: #d75c67; }
-.daily-collection-workspace { min-height: 0; }
+.daily-collection-workspace { min-height: 0; display: grid; gap: 18px; }
 .daily-collection-surface { display: grid; overflow: hidden; border: 1px solid #d8e5ee; border-radius: 16px; background: #f4f9fc; box-shadow: 0 12px 30px rgba(23, 67, 99, .08); }
 .daily-drawer-header { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 18px; border-bottom: 1px solid #1b91bd; color: #fff; background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%); }
 .daily-drawer-header > div { display: grid; gap: 3px; }.daily-drawer-header span { color: #9de7f3; font-size: .63rem; font-weight: 850; letter-spacing: .13em; }.daily-drawer-header strong { color: #fff; font-size: 1.05rem; }

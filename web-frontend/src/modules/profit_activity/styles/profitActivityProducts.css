@@ -176,6 +176,353 @@
   text-align: center;
 }
 
+.profit-source-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #e6f6ff;
+  color: #0e7bb8;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  vertical-align: 1px;
+  border: 1px solid #bfe6fb;
+}
+
+.profit-source-open {
+  border: 1px solid #cfe0eb !important;
+  border-radius: 9px;
+  padding: 6px 10px !important;
+  color: #0a8cf2 !important;
+  background: #f4fbff !important;
+  font-size: 0.8rem !important;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-open:hover {
+  border-color: #82c9ef !important;
+  box-shadow: none !important;
+}
+
+/* 货源侧边栏（产品库「打开」右侧抽屉） */
+.profit-source-drawer-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.profit-source-drawer-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 32, 52, 0.36);
+  backdrop-filter: blur(1px);
+}
+
+.profit-source-drawer {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 94vw);
+  height: 100%;
+  background: #fbfdff;
+  border-left: 1px solid #d8e7f2;
+  box-shadow: -18px 0 48px rgba(23, 61, 92, 0.18);
+  animation: profit-source-drawer-in 0.22s ease-out;
+}
+
+@keyframes profit-source-drawer-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.profit-source-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid #d8e7f2;
+  background: #f4fafd;
+}
+
+.profit-source-drawer-head h2 {
+  margin: 4px 0 8px;
+  color: #172b44;
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+}
+
+.profit-source-drawer-head p:not(.eyebrow) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #6d8399;
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.profit-source-drawer-sep {
+  color: #b4c7d8;
+}
+
+.profit-source-drawer-close {
+  border: 1px solid #cfe0eb;
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  color: #526a82;
+  background: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.profit-source-drawer-close:hover {
+  border-color: #82c9ef;
+  color: #0a8cf2;
+}
+
+.profit-source-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px 24px;
+}
+
+.profit-source-drawer-status {
+  margin: 14px 2px;
+  color: #657d94;
+  font-weight: 700;
+}
+
+.profit-source-drawer-status.is-error {
+  color: #b42318;
+  background: #fef3f2;
+  border: 1px solid #fecaca;
+  border-radius: 11px;
+  padding: 10px 12px;
+}
+
+.profit-source-card {
+  border: 1px solid #d8e7f2;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 10px 24px #265d8a0d;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.profit-source-card-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px;
+}
+
+.profit-source-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.profit-source-card-main img,
+.profit-source-card-img-fallback {
+  width: 64px;
+  height: 64px;
+  flex: none;
+  border-radius: 12px;
+  object-fit: cover;
+  border: 1px solid #e2eef6;
+}
+
+.profit-source-card-img-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #7a93ab;
+  background: #eef6fb;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.profit-source-card-body {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.profit-source-card-title {
+  color: #1c3752;
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.profit-source-card-meta {
+  color: #7a93ab;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.profit-source-card-main b {
+  flex: none;
+  color: #e2434c;
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.profit-source-unlink {
+  align-self: flex-start;
+  flex: none;
+  border: 1px solid #f3c4c9;
+  border-radius: 10px;
+  padding: 7px 10px;
+  color: #b42318;
+  background: #fff6f6;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-unlink:hover:not(:disabled) {
+  border-color: #f28b93;
+  background: #ffecee;
+}
+
+.profit-source-unlink:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.profit-source-card-profit {
+  border-top: 1px solid #eef4f9;
+  padding: 12px;
+  background: #f8fbfe;
+}
+
+.profit-source-card-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 0 0 10px;
+}
+
+.profit-source-card-fields > div {
+  display: grid;
+  gap: 5px;
+}
+
+.profit-source-card-fields dt,
+.profit-source-card-result-fields dt {
+  color: #6d8399;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.profit-source-card-fields dd {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #1c3752;
+  font-weight: 800;
+  font-size: 0.86rem;
+}
+
+.profit-source-card-fields input {
+  width: 100%;
+  border: 1px solid #cfe0eb;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+}
+
+.profit-source-card-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #e2eef6;
+}
+
+.profit-source-card-result.is-qualified {
+  border-color: #b6e7cf;
+  background: #f0fdf6;
+}
+
+.profit-source-card-result.is-empty {
+  color: #7a93ab;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.profit-source-card-result-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+}
+
+.profit-source-card-result-fields > div {
+  display: grid;
+  gap: 2px;
+}
+
+.profit-source-card-result-fields dd {
+  margin: 0;
+  color: #1c3752;
+  font-size: 0.86rem;
+  font-weight: 850;
+}
+
+.profit-source-card-result em {
+  flex: none;
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #9d2b2b;
+  background: #fdecec;
+  font-style: normal;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.profit-source-card-result em.is-qualified {
+  color: #087c4a;
+  background: #d9f6e7;
+}
+
+.profit-source-card-result small {
+  color: #0a8cf2;
+  font-weight: 750;
+}
+
+@media (max-width: 640px) {
+  .profit-source-card-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 900px) {
   .profit-products-filters,
   .profit-products-query,
