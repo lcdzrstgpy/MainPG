@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from .contracts import DailySelectionCandidate
@@ -50,14 +49,12 @@ def filter_candidates(
         if duplicate_reason is not None:
             filtered.append(_filtered(candidate, (duplicate_reason, *risk_reasons), risks))
             continue
-
-        reasons = _hard_filter_reasons(candidate, criteria)
         if risk_reasons:
-            reasons = (*reasons, *risk_reasons)
-        if reasons:
-            filtered.append(_filtered(candidate, reasons, risks))
+            filtered.append(_filtered(candidate, risk_reasons, risks))
             continue
-        accepted.append(_with_risks(candidate, risks))
+        # 对齐参考版本：价格/起订量/主图缺失等只是软性提示，不硬过滤，
+        # 由用户在人工复核时决定保留或排除。
+        accepted.append(_with_risks(_with_filter_notes(candidate, criteria), risks))
 
     result_candidates = tuple(accepted)
     return FilteringResult(
@@ -130,50 +127,50 @@ def _canonical_url_or_none(value: str) -> str | None:
     return canonical_source_url(value)
 
 
-def _hard_filter_reasons(
+def _with_filter_notes(
     candidate: DailySelectionCandidate, criteria: DailySelectionCriteria
-) -> tuple[str, ...]:
-    reasons: list[str] = []
+) -> DailySelectionCandidate:
+    """Append soft quality notes instead of hard-filtering on them.
+
+    Aligned with the reference workbench: price / MOQ / missing image only
+    affect the selection score and appear as machine-readable reasons, while
+    the reviewer decides whether to keep the candidate.
+    """
+    notes: list[str] = []
     if candidate.main_image_url is None:
-        reasons.append("missing_main_image")
-    if criteria.min_price is not None and (candidate.price_cny is None or candidate.price_cny < criteria.min_price):
-        reasons.append("missing_price" if candidate.price_cny is None else "price_below_min")
-    if criteria.max_price is not None and (candidate.price_cny is None or candidate.price_cny > criteria.max_price):
-        reason = "missing_price" if candidate.price_cny is None else "price_above_max"
-        if reason not in reasons:
-            reasons.append(reason)
-    if criteria.min_moq is not None and (
-        candidate.min_order_quantity is None or candidate.min_order_quantity < criteria.min_moq
+        notes.append("missing_main_image")
+    if criteria.min_price is not None and (
+        candidate.price_cny is None or candidate.price_cny < criteria.min_price
     ):
-        reasons.append("missing_moq" if candidate.min_order_quantity is None else "moq_below_min")
-    return tuple(reasons)
+        notes.append("missing_price" if candidate.price_cny is None else "price_below_min")
+    if criteria.max_price is not None and (
+        candidate.price_cny is None or candidate.price_cny > criteria.max_price
+    ):
+        reason = "missing_price" if candidate.price_cny is None else "price_above_max"
+        if reason not in notes:
+            notes.append(reason)
+    if criteria.min_moq is not None and (
+        candidate.min_order_quantity is not None and candidate.min_order_quantity > criteria.min_moq
+    ):
+        # ``min_moq`` 是起订量上限：高于上限提示“起订量偏高”，不硬过滤。
+        notes.append("moq_above_limit")
+    if candidate.min_order_quantity is None:
+        notes.append("missing_moq")
+    if not notes:
+        return candidate
+    return candidate.model_copy(
+        update={"selection_reasons": _unique((*candidate.selection_reasons, *notes))}
+    )
 
 
 def _risk_tags(candidate: DailySelectionCandidate) -> tuple[str, ...]:
-    text = " ".join(_candidate_text(candidate)).casefold()
+    # 对齐模板：风险词只扫描标题/链接/店铺，避免属性里的否定语境
+    # （如“不适宜人群：少年儿童”“本品不能代替药物”）被误判为风险。
+    text = " ".join(
+        value for value in (candidate.source_title, candidate.source_url, candidate.shop_name) if value
+    ).casefold()
     detected = [tag for tag, terms in _RISK_TERMS if any(term in text for term in terms)]
     return _unique((*candidate.risk_tags, *detected))
-
-
-def _candidate_text(candidate: DailySelectionCandidate) -> tuple[str, ...]:
-    values = [candidate.source_title]
-    values.extend(_mapping_text(candidate.source_attributes))
-    for sku in candidate.source_variant_records:
-        values.extend(_mapping_text(sku.attributes))
-    return tuple(values)
-
-
-def _mapping_text(value: Mapping[str, Any]) -> tuple[str, ...]:
-    values: list[str] = []
-    for key, item in value.items():
-        values.append(str(key))
-        if isinstance(item, Mapping):
-            values.extend(_mapping_text(item))
-        elif isinstance(item, (list, tuple)):
-            values.extend(str(entry) for entry in item)
-        else:
-            values.append(str(item))
-    return tuple(values)
 
 
 def _with_risks(candidate: DailySelectionCandidate, risks: Sequence[str]) -> DailySelectionCandidate:

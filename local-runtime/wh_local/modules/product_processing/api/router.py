@@ -57,6 +57,21 @@ def create_product_processing_router(
     def engine_status() -> dict[str, Any]:
         return service.engine_status()
 
+    @router.get("/ai-config")
+    def ai_config() -> dict[str, Any]:
+        from ..provider_config import ai_provider_summary
+
+        return ai_provider_summary()
+
+    @router.post("/ai/ping")
+    def ai_ping() -> dict[str, Any]:
+        from ..ai_client import AiClient, AiProviderError
+
+        try:
+            return AiClient().ping()
+        except AiProviderError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
     @router.get("/engine/prompts")
     def get_prompts() -> dict[str, Any]:
         return service.prompts()
@@ -418,6 +433,7 @@ def _normalize_form(form: dict[str, Any]) -> dict[str, Any]:
         "preserve_source_images",
         "source_image_to_library",
         "preflight_only",
+        "include_product_video",
     }
     int_fields = {"max_products", "plugin_session_id"}
     for key, value in form.items():

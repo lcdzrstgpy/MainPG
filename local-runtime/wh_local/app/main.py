@@ -107,6 +107,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.include_router(create_product_processing_router(product_processing))
     _register_data_collection(app, db_path, plugin_queue, product_processing)
     _register_profit_activity(app, db_path)
+    app.include_router(create_product_processing_router(product_processing), prefix="/api")
 
     # 核价及货源模块
     _register_price_verification(app, db_path, config.data_dir, plugin_queue)

@@ -34,6 +34,9 @@ export type DailySelectionCandidate = {
   source_platform: "1688";
   source_url: string;
   source_title: string;
+  query_keyword: string | null;
+  selection_result_label: string | null;
+  listed_at: string | null;
   main_image_url: string | null;
   source_image_urls: string[];
   source_detail_image_urls: string[];

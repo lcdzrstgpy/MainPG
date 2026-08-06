@@ -43,50 +43,148 @@ def read_product_workbook(filename: str, content: bytes) -> list[dict[str, Any]]
     return rows
 
 
+# 店小秘导入模板列（与原型程序 native_product_engine.DXM_COLUMNS 一致）
+DXM_COLUMNS = [
+    "*产品标题",
+    "*英文标题",
+    "产品描述",
+    "产品货号",
+    "*变种属性名称一",
+    "*变种属性值一",
+    "变种属性名称二",
+    "变种属性值二",
+    "预览图",
+    "*申报价格\n(店铺币种)",
+    "SKU货号",
+    "*长（cm）",
+    "*宽（cm）",
+    "*高（cm）",
+    "*重量（g）",
+    "识别码类型",
+    "识别码",
+    "站外产品链接",
+    "*轮播图",
+    "*产品素材图",
+    "外包装形状",
+    "外包装类型",
+    "外包装图片",
+    "建议售价（USD）",
+    "库存",
+    "发货时效（天）",
+]
+
+DXM_SKU_CLASSIFICATION_COLUMNS = [
+    "SKU分类",
+    "SKU分类数量",
+    "SKU分类单位",
+    "独立包装",
+    "净含量数值",
+    "净含量单位",
+    "混合套装类型",
+    "SKU分类总数量",
+    "SKU分类总数量单位",
+    "总净含量",
+    "总净含量单位",
+    "包装清单",
+]
+
+
 def create_result_workbook(rows: list[dict[str, Any]], destination: Path) -> None:
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "产品处理结果"
-    headers = [
-        "SKC",
-        "SKU",
-        "目标站点",
-        "目标语言",
-        "处理后标题",
-        "商品描述",
-        "主图",
-        "来源链接",
-        "成本(CNY)",
-        "申报价",
-        "来源平台",
-        "每日选品批次",
-        "处理状态",
-    ]
-    sheet.append(headers)
+    sheet.title = "店小秘导入"
+    sheet.append(DXM_COLUMNS + ["*产品分类", "产品分类", "类目路径", "类目ID"] + DXM_SKU_CLASSIFICATION_COLUMNS)
     for row in rows:
-        sheet.append(
-            [
-                row.get("skc", ""),
-                row.get("sku", ""),
-                row.get("target_site", ""),
-                row.get("target_language", ""),
-                row.get("optimized_title", ""),
-                row.get("description", ""),
-                row.get("image_url", ""),
-                row.get("source_url", ""),
-                row.get("cost"),
-                row.get("declared_price"),
-                row.get("source_platform", ""),
-                row.get("selection_run_id"),
-                row.get("status", ""),
-            ]
-        )
+        sheet.append(_dxm_export_row(row))
     sheet.freeze_panes = "A2"
-    widths = {"A": 18, "B": 18, "C": 12, "D": 12, "E": 48, "F": 60, "G": 45, "H": 45}
-    for column, width in widths.items():
-        sheet.column_dimensions[column].width = width
+    for index, width in enumerate((36, 36, 60, 18, 14, 16, 14, 16, 45, 14, 18, 12, 12, 12, 14, 12, 16, 45, 60, 60, 14, 14, 45, 14, 10, 12), start=1):
+        sheet.column_dimensions[_column_letter(index)].width = width
     destination.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(destination)
+
+
+def _dxm_export_row(row: dict[str, Any]) -> list[Any]:
+    optimized_title = str(row.get("optimized_title") or "").strip()
+    description = str(row.get("description") or "").strip()
+    skc = str(row.get("skc") or "").strip()
+    sku = str(row.get("sku") or skc).strip()
+    main_image_url = str(row.get("image_url") or "").strip()
+    source_url = str(row.get("source_url") or "").strip()
+    source_image_urls = row.get("source_image_urls") or []
+    source_detail_image_urls = row.get("source_detail_image_urls") or []
+    source_attributes = row.get("source_attributes") or []
+    source_variant_records = row.get("source_variant_records") or []
+    declared_price = row.get("declared_price")
+    cost = row.get("cost")
+    category = str(row.get("category") or "").strip()
+
+    # 变种属性：取第一条变种记录的一/二级属性
+    variant_name_1, variant_value_1, variant_name_2, variant_value_2 = "", "", "", ""
+    attribute_names = list(dict.fromkeys(str(attr.get("name") or "") for attr in source_attributes if isinstance(attr, dict)))
+    if attribute_names:
+        variant_name_1 = attribute_names[0]
+        if len(attribute_names) > 1:
+            variant_name_2 = attribute_names[1]
+    first_variant = source_variant_records[0] if source_variant_records else {}
+    if isinstance(first_variant, dict):
+        attributes = first_variant.get("attributes") or {}
+        values = [str(value) for value in attributes.values() if str(value)]
+        if values:
+            variant_value_1 = values[0]
+        if len(values) > 1:
+            variant_value_2 = values[1]
+    if not variant_name_1:
+        variant_name_1 = "规格"
+
+    carousel = "\n".join(str(url) for url in source_image_urls if str(url))
+    material_images = "\n".join(str(url) for url in source_detail_image_urls if str(url))
+    if not material_images and main_image_url:
+        material_images = main_image_url
+
+    return [
+        optimized_title,
+        optimized_title,
+        description,
+        skc,
+        variant_name_1,
+        variant_value_1,
+        variant_name_2,
+        variant_value_2,
+        main_image_url,
+        declared_price if declared_price not in (None, "") else "",
+        sku,
+        "",  # *长（cm）
+        "",  # *宽（cm）
+        "",  # *高（cm）
+        "",  # *重量（g）
+        "",  # 识别码类型
+        "",  # 识别码
+        source_url,
+        carousel,
+        material_images,
+        "",  # 外包装形状
+        "Bubble bag",  # 外包装类型
+        "",  # 外包装图片
+        cost if cost not in (None, "") else "",  # 建议售价（USD），暂以成本兜底
+        "",  # 库存
+        "",  # 发货时效（天）
+        category,  # *产品分类
+        category,  # 产品分类
+        category,  # 类目路径
+        "",  # 类目ID
+        "单品",  # SKU分类
+        1,  # SKU分类数量
+        "件",  # SKU分类单位
+        "", "", "", "", "", "", "", "", "",  # 其余 SKU 分类字段占位
+    ]
+
+
+def _column_letter(index: int) -> str:
+    result = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
 
 
 def create_error_report(rows: list[dict[str, Any]], destination: Path) -> None:

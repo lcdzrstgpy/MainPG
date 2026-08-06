@@ -7,6 +7,7 @@ import {
   listSelectionRuns,
   rejectCandidate,
 } from "../api/dailySelectionApi";
+import { apiToken } from "../../../shared/api/apiClient";
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -122,9 +123,55 @@ function formatDate(value: string): string {
 }
 
 function formatMoney(value: number | string | null): string {
-  if (value === null || value === "") return "价格待补齐";
+  if (value === null || value === "") return "-";
   const parsed = Number(value);
   return Number.isFinite(parsed) ? `¥${parsed.toFixed(2)}` : `¥${value}`;
+}
+
+function formatListedAt(value: string | null): string {
+  if (!value) return "上架时间未知";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "上架时间未知";
+  return date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+}
+
+/**
+ * Renders a candidate image through the authenticated local proxy instead of
+ * the raw CDN URL. alicdn rejects browser requests carrying a localhost
+ * Referer (403), so images are fetched with the API token and shown as a
+ * blob object URL.
+ */
+function DailySelectionImage({ runId, url }: { runId: string; url: string }) {
+  const [objectUrl, setObjectUrl] = useState("");
+  const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
+
+  useEffect(() => {
+    let alive = true;
+    let created: string | null = null;
+    setObjectUrl("");
+    setState("loading");
+    fetch(`/desktop/daily-selection/image?run_id=${encodeURIComponent(runId)}&url=${encodeURIComponent(url)}`, {
+      headers: { Authorization: `Bearer ${apiToken}` },
+    })
+      .then((response) => (response.ok ? response.blob() : null))
+      .then((blob) => {
+        if (!alive || !blob) return;
+        created = URL.createObjectURL(blob);
+        setObjectUrl(created);
+        setState("ready");
+      })
+      .catch(() => {
+        if (alive) setState("failed");
+      });
+    return () => {
+      alive = false;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [runId, url]);
+
+  if (state === "ready" && objectUrl) return <img src={objectUrl} alt="" loading="lazy" />;
+  if (state === "failed") return <span>图片加载失败</span>;
+  return <span className="image-loading">加载中…</span>;
 }
 
 type DailySelectionPageProps = {
@@ -330,7 +377,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       const criteria = buildCriteria();
       const run = await collectByCriteria(criteria);
       setActiveRun(run);
-      setSelectedCandidates([]);
+      setSelectedCandidates(defaultSelectedIds(run));
       const intake = run.metadata.api_draft_intake;
       const intakeNotice = intake?.status === "partial"
         ? `；其中 ${intake.errors.length} 个候选未进入 API 草稿视图`
@@ -348,14 +395,22 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     setError("");
     setBusy(true);
     try {
-      setActiveRun(await getSelectionRun(runId));
-      setSelectedCandidates([]);
+      const run = await getSelectionRun(runId);
+      setActiveRun(run);
+      setSelectedCandidates(defaultSelectedIds(run));
       document.querySelector(".daily-results")?.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "批次读取失败");
     } finally {
       setBusy(false);
     }
+  }
+
+  /** 对齐参考版：批次内所有处于 candidate 状态的候选默认保留（勾选）。 */
+  function defaultSelectedIds(run: DailySelectionRun): string[] {
+    return run.candidates
+      .filter((candidate) => candidate.status === "candidate")
+      .map((candidate) => candidate.candidate_id);
   }
 
   function toggleCandidate(candidateId: string) {
@@ -468,7 +523,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                       <div><dt>采集关键词</dt><dd>{direction.keywords.join("、")}</dd></div>
                       <div><dt>关注属性</dt><dd>{direction.attributes}</dd></div>
                       <div><dt>价格范围</dt><dd>{direction.price[0]}–{direction.price[1]} 元</dd></div>
-                      <div><dt>最低起订</dt><dd>2 件</dd></div>
+                      <div><dt>起订量上限</dt><dd>2 件</dd></div>
                       <div><dt>目标候选</dt><dd>{direction.target} 个</dd></div>
                     </dl>
                     <small>点击预设打开独立采集面板</small>
@@ -586,7 +641,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             )}
             <label><span>最低价格（元）</span><input type="number" min="0" step="0.01" value={minPrice} onChange={(event) => setMinPrice(event.target.value)} /></label>
             <label><span>最高价格（元）</span><input type="number" min="0" step="0.01" value={maxPrice} onChange={(event) => setMaxPrice(event.target.value)} /></label>
-            <label><span>最低起订量</span><input type="number" min="1" value={minMoq} onChange={(event) => setMinMoq(event.target.value)} /></label>
+            <label><span>起订量上限（件）</span><input type="number" min="1" value={minMoq} onChange={(event) => setMinMoq(event.target.value)} /></label>
           </div>
 
           {platform !== "1688" && (
@@ -637,22 +692,40 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             {activeRun.candidates.map((candidate) => {
               const selectable = candidate.status === "candidate";
               const checked = selectedCandidates.includes(candidate.candidate_id);
+              const statusText = STATUS_LABELS[candidate.status] ?? candidate.status;
               return (
-                <article key={candidate.candidate_id} className={`candidate-card status-${candidate.status} ${checked ? "is-checked" : ""}`}>
+                <article key={candidate.candidate_id} className={`candidate-card status-${candidate.status} ${checked ? "is-checked" : "is-removed"} ${!selectable ? "is-locked" : ""}`}>
+                  <label
+                    className="candidate-keep"
+                    title={!selectable ? statusText : checked ? "本次确认时保留" : "已从本次确认中剔除"}
+                  >
+                    <input type="checkbox" checked={checked} disabled={!selectable} onChange={() => toggleCandidate(candidate.candidate_id)} />
+                    <span>{!selectable ? statusText : checked ? "保留" : "已剔除"}</span>
+                  </label>
                   <div className="candidate-image">
-                    {candidate.main_image_url ? <img src={candidate.main_image_url} alt="" loading="lazy" /> : <span>暂无图片</span>}
-                    <label className="candidate-check"><input type="checkbox" checked={checked} disabled={!selectable} onChange={() => toggleCandidate(candidate.candidate_id)} /><span>选择</span></label>
-                    <b>{STATUS_LABELS[candidate.status] ?? candidate.status}</b>
+                    {candidate.main_image_url
+                      ? <DailySelectionImage runId={activeRun.run_id} url={candidate.main_image_url} />
+                      : <span>无有效图片</span>}
                   </div>
                   <div className="candidate-body">
                     <a href={candidate.source_url} target="_blank" rel="noreferrer" title={candidate.source_title}>{candidate.source_title}</a>
-                    <div className="candidate-price"><strong>{formatMoney(candidate.price_cny)}</strong><span>MOQ {candidate.min_order_quantity ?? "—"}</span></div>
+                    <div className="candidate-tags">
+                      <span>{candidate.source_platform ?? "1688"}</span>
+                      {candidate.query_keyword && <span title={`中心词：${candidate.query_keyword}`}>中心词 {candidate.query_keyword}</span>}
+                      {candidate.selection_result_label && <span>{candidate.selection_result_label}</span>}
+                      {candidate.status !== "candidate" && <span className="is-status">{statusText}</span>}
+                      {candidate.risk_tags.slice(0, 2).map((risk) => <span className="is-risk" key={risk}>{risk}</span>)}
+                    </div>
+                    <div className="candidate-facts">
+                      <span><b>{formatMoney(candidate.price_cny)}</b><em>价格</em></span>
+                      <span title={candidate.listed_at ?? ""}><b>{formatListedAt(candidate.listed_at)}</b><em>上架时间</em></span>
+                      <span><b>{candidate.min_order_quantity ?? "未知"}</b><em>起订</em></span>
+                    </div>
                     <div className="candidate-meta"><span>{candidate.shop_name || "店铺待补齐"}</span><span>{candidate.location || "产地待补齐"}</span></div>
                     <div className="candidate-score"><span>选品分</span><b>{Number(candidate.selection_score).toFixed(1)}</b></div>
-                    {(candidate.selection_reasons.length > 0 || candidate.risk_tags.length > 0) && (
-                      <div className="candidate-tags">
+                    {candidate.selection_reasons.length > 0 && (
+                      <div className="candidate-reasons">
                         {candidate.selection_reasons.slice(0, 2).map((reason) => <span key={reason}>{reason}</span>)}
-                        {candidate.risk_tags.slice(0, 2).map((risk) => <span className="is-risk" key={risk}>{risk}</span>)}
                       </div>
                     )}
                     {selectable && <button className="reject-button" type="button" disabled={busy} onClick={() => void reject(candidate)}>排除并反馈</button>}
