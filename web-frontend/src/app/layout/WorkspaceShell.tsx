@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { workspaceModules, type WorkspaceModuleId } from "../navigation/modules";
 import { Sidebar } from "./Sidebar";
@@ -26,14 +26,59 @@ function moduleTab(id: WorkspaceModuleId): WorkspaceTab {
 export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarHovered, setSidebarHovered] = useState(false);
+  const [topbarPinned, setTopbarPinned] = useState(true);
   const [activeTabKey, setActiveTabKey] = useState("dashboard");
   const [tabs, setTabs] = useState<WorkspaceTab[]>([moduleTab("dashboard")]);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
+  const [showScrollTop, setShowScrollTop] = useState(false);
   const collectionSequence = useRef(0);
+  const contentRef = useRef<HTMLDivElement>(null);
   const modulesById = useMemo(() => new Map(flatModules.map((module) => [module.id, module])), []);
   const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0];
   const activeModuleId = activeTab?.moduleId ?? "dashboard";
   const activeModule = modulesById.get(activeModuleId)!;
+
+  useEffect(() => {
+    const content = contentRef.current;
+
+    const updateVisibility = () => {
+      const documentHeight = document.documentElement.scrollHeight;
+      const windowDistanceToBottom = documentHeight - window.scrollY - window.innerHeight;
+      const windowNearBottom = documentHeight > window.innerHeight + 80
+        && window.scrollY > 240
+        && windowDistanceToBottom < 320;
+
+      const contentDistanceToBottom = content
+        ? content.scrollHeight - content.scrollTop - content.clientHeight
+        : Number.POSITIVE_INFINITY;
+      const contentNearBottom = Boolean(content
+        && content.scrollHeight > content.clientHeight + 80
+        && content.scrollTop > 180
+        && contentDistanceToBottom < 260);
+
+      setShowScrollTop(windowNearBottom || contentNearBottom);
+    };
+
+    window.addEventListener("scroll", updateVisibility, { passive: true });
+    content?.addEventListener("scroll", updateVisibility, { passive: true });
+    window.addEventListener("resize", updateVisibility);
+    updateVisibility();
+
+    return () => {
+      window.removeEventListener("scroll", updateVisibility);
+      content?.removeEventListener("scroll", updateVisibility);
+      window.removeEventListener("resize", updateVisibility);
+    };
+  }, []);
+
+  useEffect(() => {
+    setShowScrollTop(false);
+  }, [activeTabKey]);
+
+  const scrollBackToTop = () => {
+    contentRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   const openModule = (id: WorkspaceModuleId) => {
     if (id === "daily_selection_collection") return;
@@ -85,8 +130,8 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
         onHoverChange={setSidebarHovered}
       />
       <section className="workspace-main">
-        <TopNavigation sidebarPinned={!sidebarCollapsed} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onSelectTab={setActiveTabKey} onCloseTab={closeTab} onSignOut={onSignOut} />
-        <div className="content-card">
+        <TopNavigation sidebarPinned={!sidebarCollapsed} topbarPinned={topbarPinned} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onToggleTopbarPin={() => setTopbarPinned((value) => !value)} onSelectTab={setActiveTabKey} onCloseTab={closeTab} onSignOut={onSignOut} />
+        <div className="content-card" ref={contentRef}>
           {workspaceNotice && (
             <div className="workspace-notice" role="status">
               <span>!</span>
@@ -109,6 +154,15 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
           {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "basic_settings" && activeModuleId !== "price_verification" && activeModuleId !== "product_processing" && <EmptyModulePage module={activeModule} />}
         </div>
       </section>
+      <button
+        type="button"
+        className={`scroll-to-top ${showScrollTop ? "is-visible" : ""}`}
+        onClick={scrollBackToTop}
+        aria-label="返回页面顶部"
+        title="返回顶部"
+      >
+        <span aria-hidden="true">↑</span>
+      </button>
     </main>
   );
 }

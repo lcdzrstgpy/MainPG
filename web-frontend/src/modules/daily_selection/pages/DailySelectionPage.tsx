@@ -231,6 +231,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [collecting, setCollecting] = useState(false);
   const [collectionProgress, setCollectionProgress] = useState(0);
   const [historyBusy, setHistoryBusy] = useState(true);
+  const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [presetDialogOpen, setPresetDialogOpen] = useState(false);
@@ -263,6 +264,20 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     }, 420);
     return () => window.clearInterval(timer);
   }, [collecting]);
+
+  useEffect(() => {
+    if (!historyDrawerOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setHistoryDrawerOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [historyDrawerOpen]);
 
   useEffect(() => {
     window.localStorage.setItem(CUSTOM_DIRECTIONS_KEY, JSON.stringify(customDirections));
@@ -772,19 +787,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           </div>
         </form>
 
-        <aside className="daily-panel run-history-panel">
-          <div className="daily-panel-title"><div><span className="title-icon">◷</span><strong>最近批次</strong></div><span>{runs.length} 条</span></div>
-          <div className="run-list">
-            {historyBusy && <div className="run-empty">正在读取批次…</div>}
-            {!historyBusy && runs.length === 0 && <div className="run-empty">暂无采集记录<br /><small>完成首次采集后会显示在这里</small></div>}
-            {runs.map((run) => (
-              <button key={run.run_id} type="button" className={activeRun?.run_id === run.run_id ? "is-active" : ""} onClick={() => void openRun(run.run_id)}>
-                <span><strong>{run.run_id.slice(0, 8)}</strong><small>{formatDate(run.created_at)}</small></span>
-                <span><b>{run.candidate_count}</b><small>{STATUS_LABELS[run.status] ?? run.status}</small></span>
-              </button>
-            ))}
-          </div>
-        </aside>
       </div>
 
       <section className="daily-panel daily-results">
@@ -792,6 +794,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           <div><span className="title-icon">◇</span><strong>候选商品</strong></div>
           <div>
             {activeRun && <span>批次 {activeRun.run_id.slice(0, 8)} · {activeRun.candidate_count} 条</span>}
+            <button type="button" className="history-drawer-trigger" onClick={() => setHistoryDrawerOpen(true)}><span aria-hidden="true">◷</span> 最近批次 <b>{runs.length}</b></button>
             <button type="button" className="confirm-button" disabled={busy || selectedCandidates.length === 0} onClick={() => void confirmSelected()}>确认入池（{selectedCandidates.length}）</button>
           </div>
         </div>
@@ -850,6 +853,39 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           </section>
         </div>
       )}
+      <div
+        className={`history-drawer-layer ${historyDrawerOpen ? "is-open" : ""}`}
+        aria-hidden={!historyDrawerOpen}
+        onMouseDown={(event) => {
+          if (event.currentTarget === event.target) setHistoryDrawerOpen(false);
+        }}
+      >
+        <aside className="history-drawer" role="dialog" aria-modal="true" aria-label="最近批次">
+          <header className="history-drawer-header">
+            <div><span>COLLECTION HISTORY</span><strong>最近批次</strong><small>选择批次后将加载对应候选商品</small></div>
+            <button type="button" onClick={() => setHistoryDrawerOpen(false)} aria-label="关闭最近批次">×</button>
+          </header>
+          <div className="history-drawer-summary"><span>采集记录</span><b>{runs.length} 条</b></div>
+          <div className="run-list history-drawer-list">
+            {historyBusy && <div className="run-empty">正在读取批次…</div>}
+            {!historyBusy && runs.length === 0 && <div className="run-empty">暂无采集记录<br /><small>完成首次采集后会显示在这里</small></div>}
+            {runs.map((run) => (
+              <button
+                key={run.run_id}
+                type="button"
+                className={activeRun?.run_id === run.run_id ? "is-active" : ""}
+                onClick={() => {
+                  setHistoryDrawerOpen(false);
+                  void openRun(run.run_id);
+                }}
+              >
+                <span><strong>{run.run_id.slice(0, 8)}</strong><small>{formatDate(run.created_at)}</small></span>
+                <span><b>{run.candidate_count}</b><small>{STATUS_LABELS[run.status] ?? run.status}</small></span>
+              </button>
+            ))}
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }
