@@ -227,6 +227,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [minMoq, setMinMoq] = useState("2");
   const [targetCount, setTargetCount] = useState(String(selectedDirection.target));
   const [excludeRisks, setExcludeRisks] = useState(true);
+  const [maxParallelCollect, setMaxParallelCollect] = useState(3);
   const [runs, setRuns] = useState<DailySelectionRunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<DailySelectionRun | null>(null);
   const [selectedCandidates, setSelectedCandidates] = useState<string[]>([]);
@@ -451,6 +452,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       detail_count: 10,
       exclude_risks: excludeRisks,
       site,
+      max_parallel_collect: maxParallelCollect,
     };
     const parsedMinPrice = numberOrUndefined(minPrice);
     const parsedMaxPrice = numberOrUndefined(maxPrice);
@@ -780,6 +782,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             <label><span>最低价格（元）</span><input type="number" min="0" step="0.01" value={minPrice} onChange={(event) => setMinPrice(event.target.value)} /></label>
             <label><span>最高价格（元）</span><input type="number" min="0" step="0.01" value={maxPrice} onChange={(event) => setMaxPrice(event.target.value)} /></label>
             <label><span>起订量上限（件）</span><input type="number" min="1" value={minMoq} onChange={(event) => setMinMoq(event.target.value)} /></label>
+            <label className="field-slider">
+              <span>采集并行数</span>
+              <input type="range" min={1} max={10} step={1} value={maxParallelCollect} onChange={(event) => setMaxParallelCollect(Number(event.target.value) || 1)} />
+              <em>{maxParallelCollect} 线程{maxParallelCollect <= 1 ? '（串行）' : ''}</em>
+            </label>
           </div>
 
           {platform !== "1688" && (

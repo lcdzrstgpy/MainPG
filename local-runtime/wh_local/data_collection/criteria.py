@@ -62,6 +62,7 @@ class DailySelectionCriteria(BaseModel):
     detail_count: int = Field(default=10, ge=1, le=50)
     exclude_risks: bool = True
     site: Literal["US", "CO", "EC"] = "US"
+    max_parallel_collect: int = Field(default=3, ge=1, le=10, description="采集并行数，1=串行")
 
     def __init__(self, **data: Any) -> None:
         try:

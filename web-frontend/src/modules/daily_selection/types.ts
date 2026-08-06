@@ -18,6 +18,7 @@ export type DailySelectionCriteria = {
   detail_count: number;
   exclude_risks: boolean;
   site: TargetSite;
+  max_parallel_collect?: number;
 };
 
 export type SourceVariantRecord = {
