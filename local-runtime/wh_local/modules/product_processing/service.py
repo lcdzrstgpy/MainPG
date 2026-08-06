@@ -1591,16 +1591,43 @@ class ProductProcessingService:
         cos_config = {}
         if bucket and region and secret_id and secret_key:
             cos_config = {"bucket": bucket, "region": region, "secret_id": secret_id, "secret_key": secret_key}
+        # 系统配置优先于 cos.local.json（通过 BasicSettings Web UI 管理）
+        sys_cos = provider.get("_sys_cos")
+        if sys_cos and sys_cos.get("bucket") and sys_cos.get("region"):
+            sys_cos_secret = {}  # COS 密钥在 basic_settings 的 secret_values 中，_media_config_provider 暂不读取
+            if bucket and region and secret_id and secret_key:
+                sys_cos_secret = cos_config  # 优先用 cos.local.json/env 的密钥
+            cos_config = {
+                "bucket": sys_cos["bucket"],
+                "region": sys_cos["region"],
+                **sys_cos_secret,
+            }
+        sys_backup = provider.get("_sys_backup_image_ai")
+        backup_image = (
+            {
+                "base_url": sys_backup.get("base_url", ""),
+                "api_key": sys_backup.get("api_key", ""),
+                "model": sys_backup.get("model", ""),
+                "reference_model": sys_backup.get("reference_model", ""),
+            }
+            if sys_backup and sys_backup.get("base_url") and sys_backup.get("api_key")
+            else {}
+        )
+        sys_limits = provider.get("_sys_limits") or {}
+        limits = {
+            "image_retry_attempts": sys_limits.get("image_retry_attempts", 2),
+            "grid_image_reference_max_count": 4,
+            "detail_image_reference_max_count": 2,
+            "image_provider_strategy": sys_limits.get("image_provider_strategy", "balanced"),
+        }
+        sys_updates = provider.get("_sys_updates") or {}
+        if sys_updates.get("cos_prefix"):
+            limits["cos_prefix"] = sys_updates["cos_prefix"]
         return {
             "image": image_section,
-            "backup_image": {},
+            "backup_image": backup_image,
             "cos": cos_config,
-            "limits": {
-                "image_retry_attempts": 2,
-                "grid_image_reference_max_count": 4,
-                "detail_image_reference_max_count": 2,
-                "image_provider_strategy": "balanced",
-            },
+            "limits": limits,
         }
 
     def _publish_media(

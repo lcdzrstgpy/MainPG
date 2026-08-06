@@ -1,19 +1,21 @@
 """产品处理 AI 提供方中转配置。
 
 对照原型程序（ecommerce-automation-workbench）的 native_product_engine 配置，
-AI 调用统一走 OpenAI 兼容中转：https://api.aicoming.top/v1。
+AI 调用统一走 OpenAI 兼容中转。
 
-注意：api_key 为用户临时提供，暂时写死便于本地联调；环境变量可覆盖（WH_AI_API_KEY 等）。
+优先级：系统配置（BasicSettings DB） > 环境变量 > 硬编码默认值。
+系统配置通过"系统配置"板块的 Web UI 进行管理，密钥加密存储在 secret_values 表中。
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 AI_PROVIDER = "aicoming"
 AI_BASE_URL = "https://api.aicoming.top/v1"
-AI_API_KEY = "sk-980fea67bd0f1ffe46802653d114be5463e27f2e358267e3"
+AI_API_KEY = "sk-980fea67bd0f1ffe46802653d114be5463e27f2e358267e3"  # 硬编码兜底
 
 TEXT_MODEL = "gpt-5.4-mini"
 TEXT_MODEL_FALLBACK_ORDER = ("gpt-5.4-mini", "gpt-5.4", "deepseek-v4-pro")
@@ -25,25 +27,140 @@ IMAGE_QUALITY = "medium"
 
 DEFAULT_AI_TIMEOUT_SECONDS = 60.0
 
+# 应用组合根（create_app 中注入），指向 BasicSettings 使用的 SQLite 数据库。
+_system_config_db_path: str | None = None
+
+
+def register_system_config_db_path(db_path: str | Path) -> None:
+    """由应用组合根调用，注册系统配置数据库路径。
+
+    仅需在 create_app 中调用一次；调用后 resolve_ai_provider() 会尝试从此 DB
+    读取系统配置板块（BasicSettings）保存的 AI 提供方设置。
+    """
+    global _system_config_db_path
+    _system_config_db_path = str(db_path)
+
+
+def _try_system_runtime_config() -> Any | None:
+    """尝试从 BasicSettings 数据库加载 RuntimeSystemConfig，失败返回 None。"""
+    db_path = _system_config_db_path
+    if not db_path or not Path(db_path).is_file():
+        return None
+    try:
+        from ...modules.basic_settings.service import SystemConfigService
+    except Exception:
+        return None
+    try:
+        return SystemConfigService(Path(db_path)).get_runtime_config()
+    except Exception:
+        return None
+
 
 def resolve_ai_provider() -> dict[str, Any]:
-    """返回 AI 中转提供方配置（环境变量可覆盖写死的默认值）。"""
+    """返回 AI 中转提供方配置（系统配置 > 环境变量 > 硬编码默认值）。"""
+    sys_cfg = _try_system_runtime_config()
+
+    # 文本 AI
+    text_base_url = _first_truthy(
+        (sys_cfg and sys_cfg.text_ai.base_url),
+        os.environ.get("WH_AI_BASE_URL"),
+        AI_BASE_URL,
+    ).rstrip("/")
+    text_api_key = _first_truthy(
+        (sys_cfg and sys_cfg.text_ai.api_key),
+        os.environ.get("WH_AI_API_KEY"),
+        AI_API_KEY,
+    ).strip()
+    text_model = _first_truthy(
+        (sys_cfg and sys_cfg.text_ai.model),
+        os.environ.get("WH_AI_TEXT_MODEL"),
+        TEXT_MODEL,
+    ).strip()
+
+    # 图片 AI
+    image_api_key = _first_truthy(
+        (sys_cfg and sys_cfg.image_ai.api_key),
+        os.environ.get("WH_AI_API_KEY"),
+        AI_API_KEY,
+    ).strip()
+    image_model = _first_truthy(
+        (sys_cfg and sys_cfg.image_ai.model),
+        os.environ.get("WH_AI_IMAGE_MODEL"),
+        IMAGE_MODEL,
+    ).strip()
+    reference_image_model = _first_truthy(
+        (sys_cfg and sys_cfg.image_ai.reference_model),
+        os.environ.get("WH_AI_REFERENCE_IMAGE_MODEL"),
+        REFERENCE_IMAGE_MODEL,
+    ).strip()
+
+    fallback = [
+        m.strip() for m in os.environ.get("WH_AI_TEXT_MODEL_FALLBACK", ",".join(TEXT_MODEL_FALLBACK_ORDER)).split(",") if m.strip()
+    ]
+
+    # 读取 COS 系统配置公开字段（bucket/region），密钥由 _media_config_provider 处理
+    sys_cos: dict[str, str] = _try_system_cos_public()
+
     return {
         "provider": AI_PROVIDER,
-        "base_url": os.environ.get("WH_AI_BASE_URL", AI_BASE_URL).rstrip("/"),
-        "api_key": os.environ.get("WH_AI_API_KEY", AI_API_KEY).strip(),
-        "text_model": os.environ.get("WH_AI_TEXT_MODEL", TEXT_MODEL).strip(),
-        "text_model_fallback_order": [
-            model.strip()
-            for model in os.environ.get("WH_AI_TEXT_MODEL_FALLBACK", ",".join(TEXT_MODEL_FALLBACK_ORDER)).split(",")
-            if model.strip()
-        ],
-        "image_model": os.environ.get("WH_AI_IMAGE_MODEL", IMAGE_MODEL).strip(),
-        "reference_image_model": os.environ.get("WH_AI_REFERENCE_IMAGE_MODEL", REFERENCE_IMAGE_MODEL).strip(),
+        "base_url": text_base_url,
+        "api_key": text_api_key,
+        "text_model": text_model,
+        "text_model_fallback_order": fallback,
+        "image_model": image_model,
+        "reference_image_model": reference_image_model,
         "image_size": os.environ.get("WH_AI_IMAGE_SIZE", IMAGE_SIZE).strip(),
         "image_quality": os.environ.get("WH_AI_IMAGE_QUALITY", IMAGE_QUALITY).strip(),
         "timeout_seconds": DEFAULT_AI_TIMEOUT_SECONDS,
+        # 系统配置附加信息（供 _media_config_provider 使用）
+        "_sys_image_ai": (
+            {
+                "base_url": (sys_cfg.image_ai.base_url or text_base_url).rstrip("/"),
+                "api_key": image_api_key,
+                "model": image_model,
+                "reference_model": reference_image_model,
+            }
+            if sys_cfg and sys_cfg.image_ai.configured
+            else None
+        ),
+        "_sys_backup_image_ai": (
+            {
+                "base_url": sys_cfg.backup_image_ai.base_url.rstrip("/"),
+                "api_key": sys_cfg.backup_image_ai.api_key,
+                "model": sys_cfg.backup_image_ai.model,
+                "reference_model": sys_cfg.backup_image_ai.reference_model,
+            }
+            if sys_cfg and sys_cfg.backup_image_ai.configured
+            else None
+        ),
+        "_sys_limits": dict(sys_cfg.limits) if sys_cfg and sys_cfg.limits else {},
+        "_sys_updates": dict(sys_cfg.updates) if sys_cfg and sys_cfg.updates else {},
+        "_sys_cos": sys_cos,
     }
+
+
+def _try_system_cos_public() -> dict[str, str]:
+    """从系统配置 DB 读取 COS 公开字段（bucket/region），不包含密钥。"""
+    db_path = _system_config_db_path
+    if not db_path or not Path(db_path).is_file():
+        return {}
+    try:
+        from ...modules.basic_settings.service import SystemConfigService
+    except Exception:
+        return {}
+    try:
+        config = SystemConfigService(Path(db_path))._load_public_config()
+        cos = config.get("cos", {}) if isinstance(config, dict) else {}
+        return {"bucket": str(cos.get("bucket", "")).strip(), "region": str(cos.get("region", "")).strip()}
+    except Exception:
+        return {}
+
+
+def _first_truthy(*values: Any) -> str:
+    for v in values:
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return ""
 
 
 def masked_api_key(api_key: str) -> str:
