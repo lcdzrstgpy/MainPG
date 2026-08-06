@@ -22,6 +22,12 @@ import requests
 
 from ..domain.policy import is_safe_external_url
 
+# 对齐原项目 native_product_engine.DXM_IMAGE_TARGET_SIZE = 800
+# 店小秘导入要求图片不小于 800×800，拆分后每格缩放到该尺寸。
+DXM_IMAGE_TARGET_SIZE = 800
+# 对齐原项目 native_product_engine.IMAGE_JPEG_QUALITY = 90
+DXM_IMAGE_JPEG_QUALITY = 90
+
 
 class MediaConfigurationError(RuntimeError):
     pass
@@ -113,6 +119,9 @@ class ProductImageProcessor:
 
         The original workbench uses this contract for 店小秘 carousel images.
         Splitting happens locally so it does not consume four extra image API calls.
+
+        对齐原项目 native_product_engine._split_4grid_to_jpegs / _square_image_to_jpeg_bytes：
+        每格 trim 5% 边距后缩放到 DXM_IMAGE_TARGET_SIZE(800×800)，汇总图居中裁方后缩放到 800×800。
         """
         try:
             from PIL import Image  # type: ignore
@@ -124,19 +133,28 @@ class ProductImageProcessor:
             if width < 2 or height < 2:
                 raise ValueError("image is too small")
             x_mid, y_mid = width // 2, height // 2
-            boxes = ((0, 0, x_mid, y_mid), (x_mid, 0, width, y_mid), (0, y_mid, x_mid, height), (x_mid, y_mid, width, height))
-            parts = [source.crop(box) for box in boxes]
+            # 四象限：左上 → 右上 → 左下 → 右下（对齐原项目拆图顺序）
+            boxes = (
+                (0, 0, x_mid, y_mid),
+                (x_mid, 0, width, y_mid),
+                (0, y_mid, x_mid, height),
+                (x_mid, y_mid, width, height),
+            )
+            panels = [source.crop(box) for box in boxes]
         except Exception as exc:
             raise MediaProcessingError("generated four-grid image cannot be split") from exc
 
+        target_size = DXM_IMAGE_TARGET_SIZE
         result: list[GeneratedMedia] = []
-        for index, image in enumerate(parts, start=1):
-            buffer = BytesIO()
-            image.save(buffer, format="JPEG", quality=92)
+        for index, panel in enumerate(panels, start=1):
+            # 对齐原项目 _trim_grid_panel_margin：裁掉 5% 边距再缩放到 800×800
+            trimmed = _trim_panel_margin(panel)
+            resized = trimmed.resize((target_size, target_size), Image.Resampling.LANCZOS)
+            content = _image_to_jpeg_bytes(resized)
             result.append(
                 GeneratedMedia(
                     stage=f"grid_image_{index}",
-                    content=buffer.getvalue(),
+                    content=content,
                     content_type="image/jpeg",
                     suffix=".jpg",
                     provider="local-split",
@@ -144,12 +162,16 @@ class ProductImageProcessor:
                     reference_count=media.reference_count,
                 )
             )
+        # 汇总图：居中裁方 + 缩放到 800×800（对齐原项目 _square_image_to_jpeg_bytes）
+        square = _center_crop_to_square(source)
+        summary_resized = square.resize((target_size, target_size), Image.Resampling.LANCZOS)
+        summary_content = _image_to_jpeg_bytes(summary_resized)
         result.append(
             GeneratedMedia(
                 stage="grid_image_summary",
-                content=media.content,
-                content_type=media.content_type,
-                suffix=media.suffix,
+                content=summary_content,
+                content_type="image/jpeg",
+                suffix=".jpg",
                 provider=media.provider,
                 model=media.model,
                 reference_count=media.reference_count,
@@ -333,6 +355,31 @@ class ProductImageProcessor:
 def _safe_error(error: BaseException) -> str:
     message = str(error).replace("\n", " ").strip()
     return message[:180] or error.__class__.__name__
+
+
+def _trim_panel_margin(image: Any) -> Any:
+    """裁掉四宫格单格 5% 边距（对齐原项目 _trim_grid_panel_margin）。"""
+    margin_w = int(image.size[0] * 0.05)
+    margin_h = int(image.size[1] * 0.05)
+    if margin_w > 0 and margin_h > 0 and image.size[0] > margin_w * 2 and image.size[1] > margin_h * 2:
+        return image.crop((margin_w, margin_h, image.size[0] - margin_w, image.size[1] - margin_h))
+    return image
+
+
+def _center_crop_to_square(image: Any) -> Any:
+    """居中裁切成正方形（对齐原项目 _square_image_to_jpeg_bytes）。"""
+    width, height = image.size
+    side = min(width, height)
+    left = max((width - side) // 2, 0)
+    top = max((height - side) // 2, 0)
+    return image.crop((left, top, left + side, top + side))
+
+
+def _image_to_jpeg_bytes(image: Any) -> bytes:
+    """PIL Image → JPEG bytes, quality=DXM_IMAGE_JPEG_QUALITY（对齐原项目 _image_to_jpeg_bytes）。"""
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=DXM_IMAGE_JPEG_QUALITY, optimize=True)
+    return buffer.getvalue()
 
 
 def _suffix_for_content_type(content_type: str) -> str:
