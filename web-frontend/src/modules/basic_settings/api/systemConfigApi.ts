@@ -7,12 +7,13 @@ import type {
 } from "../types/systemConfig";
 
 const SYSTEM_CONFIG_PATH = "/desktop/basic-settings/system-config";
+const PRIMARY_AI_BASE_URL = "https://station-88.aicoming.top";
 
 const fallbackConfig: SystemConfigResponse = {
   ok: true,
-  ai: { base_url: "https://api.aicoming.top/v1", model: "gpt-5.4-mini" },
+  ai: { base_url: PRIMARY_AI_BASE_URL, model: "gpt-5.4-mini" },
   image: {
-    base_url: "https://api.aicoming.top/v1",
+    base_url: PRIMARY_AI_BASE_URL,
     model: "gpt-image-2",
     reference_model: "gpt-image-2-1k",
   },
@@ -56,12 +57,12 @@ export function createSystemConfigUpdatePayload(
 
   return {
     ai: {
-      base_url: base.ai.base_url,
+      base_url: PRIMARY_AI_BASE_URL,
       model: base.ai.model,
       ...(payload.textModelApiKey ? { api_key: payload.textModelApiKey } : {}),
     },
     image: {
-      base_url: base.image.base_url,
+      base_url: PRIMARY_AI_BASE_URL,
       model: base.image.model,
       reference_model: base.image.reference_model,
       ...(payload.imageModelApiKey ? { api_key: payload.imageModelApiKey } : {}),

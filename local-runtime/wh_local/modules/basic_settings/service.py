@@ -14,6 +14,7 @@ from .schemas import SystemConfigUpdate
 
 
 CONFIG_KEY = "system_config"
+PRIMARY_AI_BASE_URL = "https://station-88.aicoming.top"
 
 # 这些字段不进入普通配置 JSON，避免 GET 接口把密钥明文返回给前端。
 SECRET_FIELDS: tuple[tuple[str, str], ...] = (
@@ -25,6 +26,31 @@ SECRET_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
+@dataclass(frozen=True)
+class RuntimeAiConfig:
+    """AI provider settings for backend-only business module calls."""
+
+    base_url: str
+    model: str
+    api_key: str
+    reference_model: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url and self.model and self.api_key)
+
+
+@dataclass(frozen=True)
+class RuntimeSystemConfig:
+    """Decrypted runtime config consumed inside backend modules, never by frontend."""
+
+    text_ai: RuntimeAiConfig
+    image_ai: RuntimeAiConfig
+    backup_image_ai: RuntimeAiConfig
+    limits: dict[str, Any]
+    updates: dict[str, Any]
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -32,9 +58,9 @@ def utc_now() -> str:
 def default_system_config() -> dict[str, Any]:
     # 默认值来自旧工作台系统配置页和开发文档里的本地演示配置。
     return {
-        "ai": {"base_url": "https://api.aicoming.top/v1", "model": "gpt-5.4-mini"},
+        "ai": {"base_url": PRIMARY_AI_BASE_URL, "model": "gpt-5.4-mini"},
         "image": {
-            "base_url": "https://api.aicoming.top/v1",
+            "base_url": PRIMARY_AI_BASE_URL,
             "model": "gpt-image-2",
             "reference_model": "gpt-image-2-1k",
         },
@@ -131,6 +157,32 @@ class SystemConfigService:
             )
         return {"ok": True, "manifest": manifest}
 
+    def get_runtime_config(self) -> RuntimeSystemConfig:
+        """Return decrypted settings for backend modules that need to call AI providers."""
+        config = self._load_public_config()
+        secrets = self._load_secret_values()
+        return RuntimeSystemConfig(
+            text_ai=RuntimeAiConfig(
+                base_url=config["ai"].get("base_url", ""),
+                model=config["ai"].get("model", ""),
+                api_key=secrets.get(("ai", "api_key"), ""),
+            ),
+            image_ai=RuntimeAiConfig(
+                base_url=config["image"].get("base_url", ""),
+                model=config["image"].get("model", ""),
+                reference_model=config["image"].get("reference_model", ""),
+                api_key=secrets.get(("image", "api_key"), ""),
+            ),
+            backup_image_ai=RuntimeAiConfig(
+                base_url=config["backup_image"].get("base_url", ""),
+                model=config["backup_image"].get("model", ""),
+                reference_model=config["backup_image"].get("reference_model", ""),
+                api_key=secrets.get(("backup_image", "api_key"), ""),
+            ),
+            limits=dict(config["limits"]),
+            updates=dict(config["updates"]),
+        )
+
     def _load_raw_config(self) -> dict[str, Any]:
         # 数据库没有保存过配置时，直接返回默认配置，保证页面首次打开也能渲染。
         with transaction(self.database_path) as conn:
@@ -142,7 +194,7 @@ class SystemConfigService:
             loaded = json.loads(row["value_json"])
         except json.JSONDecodeError:
             return base
-        return _deep_merge(base, loaded if isinstance(loaded, dict) else {})
+        return _with_fixed_provider_defaults(_deep_merge(base, loaded if isinstance(loaded, dict) else {}))
 
     def _load_public_config(self) -> dict[str, Any]:
         config = self._load_raw_config()
@@ -165,11 +217,20 @@ class SystemConfigService:
             flags.setdefault(scope, {})[f"{name}_configured"] = (scope, name) in configured
         return flags
 
+    def _load_secret_values(self) -> dict[tuple[str, str], str]:
+        # 只给后端运行时使用；前端 GET 接口仍然只能看到配置状态。
+        with transaction(self.database_path) as conn:
+            rows = conn.execute("SELECT scope, name, ciphertext FROM secret_values").fetchall()
+        values: dict[tuple[str, str], str] = {}
+        for row in rows:
+            values[(row["scope"], row["name"])] = decrypt_secret(row["ciphertext"])
+        return values
+
     def _merge_public_fields(self, current: dict[str, Any], payload: SystemConfigUpdate) -> dict[str, Any]:
         return {
-            "ai": {"base_url": payload.ai.base_url.strip(), "model": payload.ai.model.strip()},
+            "ai": {"base_url": PRIMARY_AI_BASE_URL, "model": payload.ai.model.strip()},
             "image": {
-                "base_url": payload.image.base_url.strip(),
+                "base_url": PRIMARY_AI_BASE_URL,
                 "model": payload.image.model.strip(),
                 "reference_model": payload.image.reference_model.strip(),
             },
@@ -249,6 +310,24 @@ def encrypt_secret(value: str) -> str:
     return "AESGCM:" + base64.urlsafe_b64encode(nonce + encrypted).decode("ascii")
 
 
+def decrypt_secret(ciphertext: str) -> str:
+    # 仅供后端业务模块运行时读取密钥；不要通过前端接口返回这个结果。
+    if not ciphertext:
+        return ""
+    if not ciphertext.startswith("AESGCM:"):
+        raise RuntimeError("unsupported secret ciphertext format")
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("cryptography is required to read stored secrets with AES-256-GCM") from exc
+    try:
+        raw = base64.urlsafe_b64decode(ciphertext.removeprefix("AESGCM:").encode("ascii"))
+        nonce, encrypted = raw[:12], raw[12:]
+        return AESGCM(_secret_key()).decrypt(nonce, encrypted, None).decode("utf-8")
+    except Exception as exc:
+        raise RuntimeError("stored secret could not be decrypted") from exc
+
+
 def _secret_key() -> bytes:
     # 生产环境建议通过 WH_LOCAL_SECRET_KEY 固定密钥；开发环境用机器信息派生。
     raw = os.environ.get("WH_LOCAL_SECRET_KEY", "").strip()
@@ -266,6 +345,13 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
         else:
             result[key] = value
     return result
+
+
+def _with_fixed_provider_defaults(config: dict[str, Any]) -> dict[str, Any]:
+    """Keep hidden provider base URLs fixed even when an old local DB has stale values."""
+    config["ai"]["base_url"] = PRIMARY_AI_BASE_URL
+    config["image"]["base_url"] = PRIMARY_AI_BASE_URL
+    return config
 
 
 def _redacted_payload(payload: SystemConfigUpdate) -> dict[str, Any]:

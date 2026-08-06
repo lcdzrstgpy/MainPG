@@ -1,0 +1,146 @@
+.profit-products-page {
+  display: grid;
+  gap: 18px;
+  color: #20364d;
+}
+
+.profit-products-head,
+.profit-products-panel {
+  border: 1px solid #d8e7f2;
+  border-radius: 18px;
+  background: #fbfdff;
+  box-shadow: 0 12px 30px #265d8a0d;
+}
+
+.profit-products-head {
+  padding: 24px;
+}
+
+.profit-products-head h1 {
+  margin: 7px 0;
+  color: #172b44;
+  font-size: clamp(1.65rem, 2.8vw, 2.25rem);
+  letter-spacing: -.035em;
+}
+
+.profit-products-head p:not(.eyebrow) {
+  margin: 0;
+  color: #6d8399;
+  line-height: 1.7;
+}
+
+.profit-products-panel {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.profit-products-filters,
+.profit-products-query,
+.profit-products-pagination {
+  display: grid;
+  gap: 14px;
+}
+
+.profit-products-filters {
+  grid-template-columns: auto minmax(180px, 240px) minmax(150px, 190px);
+  align-items: end;
+}
+
+.profit-products-page label {
+  display: grid;
+  gap: 7px;
+  color: #526a82;
+  font-size: .82rem;
+  font-weight: 800;
+}
+
+.profit-products-page input,
+.profit-products-page select,
+.profit-products-page textarea {
+  width: 100%;
+  border: 1px solid #cfe0eb;
+  border-radius: 11px;
+  padding: 10px 12px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+}
+
+.profit-products-page textarea {
+  min-height: 118px;
+  resize: vertical;
+}
+
+.profit-products-query {
+  grid-template-columns: minmax(0, 1fr) 220px;
+  align-items: start;
+}
+
+.profit-products-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.profit-products-page button {
+  border: 1px solid #cfe0eb;
+  border-radius: 11px;
+  padding: 10px 14px;
+  color: #2f5878;
+  background: #fff;
+  font-weight: 850;
+}
+
+.profit-products-page button:hover:not(:disabled) {
+  border-color: #82c9ef;
+  box-shadow: 0 8px 18px #188bd61a;
+}
+
+.profit-products-page button:disabled {
+  cursor: not-allowed;
+  color: #9caaba;
+  background: #f5f8fb;
+}
+
+.profit-products-page .primary-button {
+  border: 0;
+  color: white;
+  background: linear-gradient(105deg, #087bf5, #14c8c0);
+}
+
+.profit-products-message {
+  margin: 0;
+  color: #657d94;
+  font-weight: 750;
+}
+
+.profit-products-pagination {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  color: #667d93;
+  font-size: .86rem;
+}
+
+.profit-products-pagination > div {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.profit-products-pagination input {
+  width: 64px;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .profit-products-filters,
+  .profit-products-query,
+  .profit-products-pagination {
+    grid-template-columns: 1fr;
+  }
+
+  .profit-products-pagination > div {
+    flex-wrap: wrap;
+  }
+}
+

@@ -336,18 +336,19 @@ export function ProfitActivityTestPage() {
     <div className="profit-test-page">
       <section className="profit-workflow-card">
         <div className="profit-section-title">
-          <span>▣</span>
-          <h1>保存目录与默认参数</h1>
+          <span className="profit-title-icon iconfont icon-moneycollect-fill" aria-hidden="true" />
+          <h1>利润活动</h1>
           <button onClick={() => setSettingsOpen((value) => !value)}>{settingsOpen ? "⌃ 收起设置" : "⌄ 展开设置"}</button>
         </div>
         <div className="profit-step-row">
           <StepCard step="1" title="填单品" text="SKC、售价、成本、重量" />
-          <StepCard step="2" title="入产品库" text="保存后可查询" active />
+          <StepCard step="2" title="入产品库" text="保存后可查询" />
           <StepCard step="3" title="导活动表" text="上传活动 Excel" />
         </div>
         <div className="profit-info-bar">管理员默认不加载员工资料库；需要查看时请从员工管理进入。当前验证页所有产品查询都来自数据库。</div>
         {settingsOpen && (
           <>
+            <h2 className="profit-settings-subtitle">保存目录与默认参数</h2>
             <label className="profit-save-root">本地保存目录<input value={String(settings?.save_root || defaultSaveRoot)} onChange={(event) => setSettings({ ...(settings || {}), save_root: event.target.value })} /></label>
             <p className="profit-formula-note">当前编辑{siteLabels[site]}公式：重量kg × 每kg费用 + 固定费；美国、哥伦比亚和厄瓜多尔互不影响，单品预览、入档和活动申报过滤都会使用保存后的当前站点公式。</p>
             <div className="profit-settings-grid">
@@ -364,12 +365,15 @@ export function ProfitActivityTestPage() {
         <label>API Base<input value={apiBase} onChange={(event) => { setApiBase(event.target.value); localStorage.setItem("profitActivityApiBase", event.target.value); }} placeholder="留空同源，例如 http://127.0.0.1:8000" /></label>
         <label>Bearer Token<input value={token} onChange={(event) => { setToken(event.target.value); localStorage.setItem("whLocalApiToken", event.target.value); }} /></label>
         <label>查询范围<select value={scope} onChange={(event) => setScope(event.target.value as Scope)}><option value="default">只查本人/默认权限</option><option value="company">查本公司在档产品</option></select></label>
-        <button onClick={() => queryProducts()} disabled={!!busy}>刷新产品库</button>
       </section>
 
       <section className="profit-business-grid">
         <article className="profit-test-card">
-          <div className="profit-card-title"><span>▦</span><h2>单品利润</h2><SiteTabs site={site} onSite={setSite} /></div>
+          <div className="profit-card-title">
+            <span className="profit-title-icon iconfont icon-calculator-fill" aria-hidden="true" />
+            <h2>单品利润</h2>
+            <SiteTabs site={site} onSite={setSite} />
+          </div>
           <div className="profit-form-grid">
             <label>SKC ID<input value={productForm.skc} onChange={(event) => setProductForm({ ...productForm, skc: event.target.value })} placeholder="必填" /></label>
             <label>售价<input value={productForm.selling_price} onChange={(event) => setProductForm({ ...productForm, selling_price: event.target.value })} /></label>
@@ -391,46 +395,31 @@ export function ProfitActivityTestPage() {
         </article>
 
         <article className="profit-test-card">
-          <div className="profit-card-title"><span>▤</span><h2>活动过滤</h2></div>
+          <div className="profit-card-title">
+            <span className="profit-title-icon iconfont icon-filter-fill" aria-hidden="true" />
+            <h2>活动过滤</h2>
+          </div>
+          <div className="profit-upload-row">
+            <label>产品资料 Excel<input type="file" accept=".xlsx,.xlsm" onChange={(event) => setImportFile(event.target.files?.[0] || null)} /></label>
+            <button onClick={previewImport} disabled={!!busy}>预览入档</button>
+            <button onClick={confirmImport} disabled={!!busy || !importPreview?.import_id}>确认导入</button>
+          </div>
           <div className="profit-upload-row">
             <label>活动 Excel<input type="file" accept=".xlsx,.xlsm" onChange={(event) => setActivityFile(event.target.files?.[0] || null)} /></label>
             <button className="primary-button" onClick={uploadActivityFilter} disabled={!!busy}>⇧ 生成可申报模板</button>
           </div>
           <p className="profit-warn">{activityFile ? `已选择：${activityFile.name}` : "先选择活动 Excel。"}</p>
           <p className="muted">上传活动表后，后端会用数据库产品和当前站点利润设置生成可申报模板。</p>
-          <div className="profit-upload-row">
-            <label>产品资料 Excel<input type="file" accept=".xlsx,.xlsm" onChange={(event) => setImportFile(event.target.files?.[0] || null)} /></label>
-            <button onClick={previewImport} disabled={!!busy}>预览入档</button>
-            <button onClick={confirmImport} disabled={!!busy || !importPreview?.import_id}>确认导入</button>
-          </div>
           <div className="profit-actions">
-            <button onClick={runRecordFilter} disabled={!!busy}>用下方数据库产品跑过滤</button>
+            <button onClick={runRecordFilter} disabled={!!busy}>用数据库产品跑过滤</button>
             <button onClick={() => downloadFilter("filtered")}>下载可申报</button>
             <button onClick={() => downloadFilter("removed")}>下载剔除</button>
           </div>
-          {importPreview && <ResultPanel title="导入预览" data={importPreview} />}
+          {importPreview && <ImportPreviewSummary preview={importPreview} />}
           {filterTask && <ResultPanel title="过滤任务" data={filterTask} />}
         </article>
       </section>
 
-      <section className="profit-test-card">
-        <div className="profit-query-bar">
-          <textarea value={querySkcs} onChange={(event) => setQuerySkcs(event.target.value)} placeholder="输入 SKC，支持换行、空格、逗号批量查询；留空展示数据库里当前权限可见产品" />
-          <div>
-            <button className="primary-button" onClick={() => queryProducts()} disabled={!!busy}>查询产品</button>
-            <button onClick={() => setSelected(new Set(products.map((item) => item.skc)))} disabled={!products.length}>全选结果</button>
-            <button className="danger-button" onClick={deleteSelected} disabled={!selectedSkcs.length || !!busy}>删除已选 {selectedSkcs.length}</button>
-            <button onClick={downloadCatalog} disabled={!!busy}>下载产品档案</button>
-          </div>
-        </div>
-        <p className="muted">产品查询展示的是数据库返回结果；只读资料不能删除，批量删除只处理当前 token 有权限的产品。</p>
-        <ProductTable products={products} selected={selected} onSelected={setSelected} />
-      </section>
-
-      <section className="profit-test-grid">
-        <article className="profit-test-card"><h2>接口状态</h2><p>{busy || message}</p><ul className="profit-log">{log.map((item) => <li key={item}>{item}</li>)}</ul></article>
-        <article className="profit-test-card"><h2>当前设置快照</h2><pre>{settings ? JSON.stringify(settings, null, 2) : "尚未读取 settings"}</pre></article>
-      </section>
     </div>
   );
 }
@@ -473,6 +462,34 @@ function PreviewStrip({ calculation }: { calculation?: Record<string, unknown> }
     ["利润率", typeof calculation?.profit_rate === "number" ? `${(calculation.profit_rate * 100).toFixed(2)}%` : calculation?.profit_rate],
   ];
   return <div className="profit-preview-strip">{items.map(([label, value]) => <div key={label}><span>{label}</span><strong>{formatValue(value)}</strong></div>)}</div>;
+}
+
+function ImportPreviewSummary({ preview }: { preview: ImportPreview }) {
+  const summary = preview.summary || {};
+  const reasons = importBlockerSummary(preview.rows || []);
+  return (
+    <section className="profit-import-summary" aria-label="产品资料导入预览结果">
+      <div className="profit-import-summary-head">
+        <strong>产品资料导入结果</strong>
+        <span>{preview.import_id ? "已生成预览" : "等待预览"}</span>
+      </div>
+      <div className="profit-import-stats">
+        <div><span>共读取</span><strong>{summary.total_rows ?? 0}</strong><em>条</em></div>
+        <div><span>可入库</span><strong>{summary.importable_rows ?? 0}</strong><em>条</em></div>
+        <div><span>被拦截</span><strong>{summary.blocked_rows ?? 0}</strong><em>条</em></div>
+      </div>
+      <div className="profit-import-reasons">
+        <span>主要原因</span>
+        {reasons.length ? (
+          <ul>
+            {reasons.map((item) => <li key={item.reason}>{item.label}：{item.count} 条</li>)}
+          </ul>
+        ) : (
+          <p>暂无拦截原因，可直接确认导入。</p>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function ProductTable({ products, selected, onSelected }: { products: ProductRow[]; selected: Set<string>; onSelected: (value: Set<string>) => void }) {
@@ -519,6 +536,34 @@ function numericProductPayload(form: ProductForm) {
     cost_price: Number(form.cost_price),
     weight_kg: Number(form.weight_kg),
   };
+}
+
+const importBlockerLabels: Record<string, string> = {
+  missing_skc: "SKC 缺失",
+  invalid_selling_price: "售价缺失或无效",
+  invalid_cost_price: "成本缺失或无效",
+  invalid_weight_kg: "重量缺失或无效",
+  duplicate_skc: "SKC 重复",
+  missing_product_image: "商品主图缺失",
+  missing_source_image: "货源图缺失",
+  missing_source_url: "货源链接缺失",
+  missing_note: "备注缺失",
+};
+
+function importBlockerSummary(rows: Array<Record<string, unknown>>) {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const blockers = Array.isArray(row.blockers) ? row.blockers : [];
+    for (const blocker of blockers) {
+      if (typeof blocker === "string" && blocker) {
+        counts.set(blocker, (counts.get(blocker) || 0) + 1);
+      }
+    }
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 5)
+    .map(([reason, count]) => ({ reason, count, label: importBlockerLabels[reason] || reason }));
 }
 
 function ResultPanel({ title, data }: { title: string; data: unknown }) {
