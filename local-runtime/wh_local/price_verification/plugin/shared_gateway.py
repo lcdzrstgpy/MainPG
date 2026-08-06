@@ -69,6 +69,18 @@ class SharedPluginGateway:
 
     def list_sessions(self, actor: PriceVerificationActor) -> tuple[SharedPluginSessionSummary, ...]:
         actor = _actor(actor)
+        sessions = self._queue.list_sessions(
+            actor_id=actor.actor_id,
+            workspace_id=actor.workspace_id,
+        )
+        if not sessions and self._queue.claim_connected_legacy_local_session(
+            actor_id=actor.actor_id,
+            workspace_id=actor.workspace_id,
+        ):
+            sessions = self._queue.list_sessions(
+                actor_id=actor.actor_id,
+                workspace_id=actor.workspace_id,
+            )
         return tuple(
             SharedPluginSessionSummary(
                 session_id=str(row["session_id"]),
@@ -80,10 +92,7 @@ class SharedPluginGateway:
                 created_at=str(row["created_at"]),
                 last_seen_at=str(row["last_seen_at"]),
             )
-            for row in self._queue.list_sessions(
-                actor_id=actor.actor_id,
-                workspace_id=actor.workspace_id,
-            )
+            for row in sessions
         )
 
     def list_commands(
@@ -101,6 +110,16 @@ class SharedPluginGateway:
             limit=limit,
         )
         return tuple(_command_record(actor.workspace_id, "", command) for command in commands)
+
+    def actor_for_session(self, session_token: str) -> PriceVerificationActor:
+        """Authenticate a direct plugin upload against the shared session token."""
+        try:
+            identity = self._queue.identity_for_session(session_token)
+            return PriceVerificationActor(
+                actor_id=str(identity["actor_id"]), workspace_id=str(identity["workspace_id"])
+            )
+        except PermissionError as error:
+            raise PriceVerificationNotFound("resource not found") from error
 
 
 def _command_record(

@@ -131,6 +131,84 @@ class SourcingRunQuoteRecord(_Record):
     created_at: str
 
 
+class QuoteCaptureBatchRecord(_Record):
+    batch_id: str
+    workspace_id: str
+    name: str
+    is_current: bool
+    created_by: str
+    created_at: str
+    updated_at: str
+    chunk_count: int = 0
+    quote_count: int = 0
+    snapshot_count: int = 0
+
+
+class QuoteCaptureChunkRecord(_Record):
+    chunk_id: str
+    workspace_id: str
+    batch_id: str
+    content_sha256: str
+    page_url: str
+    item_count: int
+    capture: Mapping[str, Any] = Field(default_factory=dict)
+    items: tuple[Mapping[str, Any], ...] = ()
+    captured_at: str
+    created_at: str
+
+
+class QuoteCaptureBatchSnapshotRecord(_Record):
+    workspace_id: str
+    batch_id: str
+    revision: int
+    quote_run_id: str
+    created_at: str
+
+
+class BatchSelectionRecord(_Record):
+    id: int
+    workspace_id: str
+    batch_id: str
+    skc_id: str
+    quote_keys: tuple[str, ...] = ()
+    product_title: str = ""
+    main_image_url: str = ""
+    official_link_url: str = ""
+    site: str = ""
+    source_confidence: str = ""
+    authenticity_status: str = ""
+    sku_prices: tuple[Mapping[str, Any], ...] = ()
+    original_min: str | None = None
+    original_max: str | None = None
+    adjusted_min: str | None = None
+    adjusted_max: str | None = None
+    max_candidates: int = 10
+    status: str = "pending"
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class SkcSourceLinkRecord(_Record):
+    """One retained 1688 offer linked to a Temu SKC for dropshipping lookup."""
+
+    id: int
+    workspace_id: str
+    batch_id: str
+    skc_id: str
+    offer_id: str
+    source_url: str
+    source_title: str = ""
+    main_image_url: str = ""
+    price_cny: str | None = None
+    moq: str | None = None
+    domestic_freight_cny: str | None = None
+    source_decision: str = ""
+    note: str = ""
+    status: str = "active"
+    created_at: str = ""
+    updated_at: str = ""
+
+
 class PriceVerificationRepository:
     """Own all price-verification tables without host routing dependencies."""
 
@@ -609,6 +687,253 @@ class PriceVerificationRepository:
                 raise
         return self.get_quote_run(workspace_id=workspace_id, run_id=run_id)
 
+    def create_quote_capture_batch(
+        self,
+        *,
+        workspace_id: str,
+        name: str,
+        created_by: str,
+        make_current: bool = True,
+        batch_id: str | None = None,
+    ) -> QuoteCaptureBatchRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        name = _required_text(name, "name")
+        created_by = _required_text(created_by, "created_by")
+        batch_id = batch_id or _new_id()
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if make_current:
+                    connection.execute(
+                        "UPDATE price_verification_quote_capture_batches SET is_current = 0, updated_at = ? WHERE workspace_id = ?",
+                        (now, workspace_id),
+                    )
+                connection.execute(
+                    """INSERT INTO price_verification_quote_capture_batches
+                    (batch_id, workspace_id, name, is_current, created_by, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (batch_id, workspace_id, name, int(make_current), created_by, now, now),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_quote_capture_batch(workspace_id=workspace_id, batch_id=batch_id)
+
+    def get_quote_capture_batch(
+        self, *, workspace_id: str, batch_id: str
+    ) -> QuoteCaptureBatchRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        with self._connect() as connection:
+            row = self._owned_row_in(
+                connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id
+            )
+            counts = connection.execute(
+                """SELECT
+                    (SELECT COUNT(*) FROM price_verification_quote_capture_chunks
+                     WHERE workspace_id = ? AND batch_id = ?) AS chunk_count,
+                    (SELECT COALESCE(SUM(item_count), 0) FROM price_verification_quote_capture_chunks
+                     WHERE workspace_id = ? AND batch_id = ?) AS quote_count,
+                    (SELECT COUNT(*) FROM price_verification_quote_capture_batch_snapshots
+                     WHERE workspace_id = ? AND batch_id = ?) AS snapshot_count""",
+                (workspace_id, batch_id, workspace_id, batch_id, workspace_id, batch_id),
+            ).fetchone()
+        values = dict(row)
+        values["is_current"] = bool(values["is_current"])
+        values.update(dict(counts))
+        return QuoteCaptureBatchRecord(**values)
+
+    def list_quote_capture_batches(self, *, workspace_id: str) -> tuple[QuoteCaptureBatchRecord, ...]:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT b.*, COUNT(DISTINCT c.chunk_id) AS chunk_count,
+                          (SELECT COALESCE(SUM(chunk.item_count), 0)
+                           FROM price_verification_quote_capture_chunks chunk
+                           WHERE chunk.workspace_id = b.workspace_id AND chunk.batch_id = b.batch_id) AS quote_count,
+                          COUNT(DISTINCT s.revision) AS snapshot_count
+                FROM price_verification_quote_capture_batches b
+                LEFT JOIN price_verification_quote_capture_chunks c
+                    ON c.workspace_id = b.workspace_id AND c.batch_id = b.batch_id
+                LEFT JOIN price_verification_quote_capture_batch_snapshots s
+                    ON s.workspace_id = b.workspace_id AND s.batch_id = b.batch_id
+                WHERE b.workspace_id = ?
+                GROUP BY b.batch_id
+                ORDER BY b.is_current DESC, b.updated_at DESC, b.batch_id DESC""",
+                (workspace_id,),
+            ).fetchall()
+        return tuple(_capture_batch_record(row) for row in rows)
+
+    def get_current_quote_capture_batch(self, *, workspace_id: str) -> QuoteCaptureBatchRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT batch_id FROM price_verification_quote_capture_batches
+                WHERE workspace_id = ? AND is_current = 1""",
+                (workspace_id,),
+            ).fetchone()
+        if row is None:
+            raise PriceVerificationNotFound("current capture batch not found")
+        return self.get_quote_capture_batch(workspace_id=workspace_id, batch_id=str(row["batch_id"]))
+
+    def activate_quote_capture_batch(
+        self, *, workspace_id: str, batch_id: str
+    ) -> QuoteCaptureBatchRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._owned_row_in(
+                    connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id
+                )
+                connection.execute(
+                    "UPDATE price_verification_quote_capture_batches SET is_current = 0, updated_at = ? WHERE workspace_id = ?",
+                    (now, workspace_id),
+                )
+                connection.execute(
+                    """UPDATE price_verification_quote_capture_batches
+                    SET is_current = 1, updated_at = ? WHERE workspace_id = ? AND batch_id = ?""",
+                    (now, workspace_id, batch_id),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_quote_capture_batch(workspace_id=workspace_id, batch_id=batch_id)
+
+    def append_quote_capture_chunk(
+        self,
+        *,
+        workspace_id: str,
+        batch_id: str,
+        content_sha256: str,
+        page_url: str,
+        capture: Mapping[str, Any],
+        items: Sequence[Mapping[str, Any]],
+        captured_at: str,
+    ) -> QuoteCaptureChunkRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        content_sha256 = _digest(content_sha256, "content_sha256")
+        captured_at = _required_text(captured_at, "captured_at")
+        if not isinstance(page_url, str):
+            raise PriceVerificationContractError("page_url must be text")
+        snapshots = _snapshot_rows(items, key_name="quote_key")
+        if not snapshots:
+            raise PriceVerificationContractError("one capture page must contain at least one quote row")
+        if _capture_skc_group_count(snapshots) > 50:
+            raise PriceVerificationContractError("one capture page must contain no more than 50 SKC groups")
+        if len(snapshots) > 5_000:
+            raise PriceVerificationContractError("one capture page contains too many SKU quote rows")
+        if not isinstance(capture, Mapping):
+            raise PriceVerificationContractError("capture must be a mapping")
+        chunk_id = _new_id()
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._owned_row_in(
+                    connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id
+                )
+                existing = connection.execute(
+                    """SELECT chunk_id FROM price_verification_quote_capture_chunks
+                    WHERE workspace_id = ? AND batch_id = ? AND content_sha256 = ?""",
+                    (workspace_id, batch_id, content_sha256),
+                ).fetchone()
+                if existing is None:
+                    connection.execute(
+                        """INSERT INTO price_verification_quote_capture_chunks
+                        (chunk_id, workspace_id, batch_id, content_sha256, page_url, item_count,
+                         capture_json, items_json, captured_at, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            chunk_id, workspace_id, batch_id, content_sha256, page_url.strip(), len(snapshots),
+                            safe_json_dumps(capture), safe_json_dumps([json.loads(value) for _, value in snapshots]),
+                            captured_at, now,
+                        ),
+                    )
+                    connection.execute(
+                        """UPDATE price_verification_quote_capture_batches SET updated_at = ?
+                        WHERE workspace_id = ? AND batch_id = ?""",
+                        (now, workspace_id, batch_id),
+                    )
+                else:
+                    chunk_id = str(existing["chunk_id"])
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_quote_capture_chunk(workspace_id=workspace_id, chunk_id=chunk_id)
+
+    def get_quote_capture_chunk(
+        self, *, workspace_id: str, chunk_id: str
+    ) -> QuoteCaptureChunkRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        chunk_id = _required_text(chunk_id, "chunk_id")
+        with self._connect() as connection:
+            row = self._owned_row_in(
+                connection, "price_verification_quote_capture_chunks", workspace_id, "chunk_id", chunk_id
+            )
+        return _capture_chunk_record(row)
+
+    def list_quote_capture_chunks(
+        self, *, workspace_id: str, batch_id: str
+    ) -> tuple[QuoteCaptureChunkRecord, ...]:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        with self._connect() as connection:
+            self._owned_row_in(
+                connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id
+            )
+            rows = connection.execute(
+                """SELECT * FROM price_verification_quote_capture_chunks
+                WHERE workspace_id = ? AND batch_id = ? ORDER BY created_at ASC, chunk_id ASC""",
+                (workspace_id, batch_id),
+            ).fetchall()
+        return tuple(_capture_chunk_record(row) for row in rows)
+
+    def record_quote_capture_batch_snapshot(
+        self, *, workspace_id: str, batch_id: str, quote_run_id: str
+    ) -> QuoteCaptureBatchSnapshotRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        quote_run_id = _required_text(quote_run_id, "quote_run_id")
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._owned_row_in(
+                    connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id
+                )
+                self._owned_row_in(
+                    connection, "price_verification_quote_runs", workspace_id, "run_id", quote_run_id
+                )
+                row = connection.execute(
+                    """SELECT COALESCE(MAX(revision), 0) AS revision
+                    FROM price_verification_quote_capture_batch_snapshots
+                    WHERE workspace_id = ? AND batch_id = ?""",
+                    (workspace_id, batch_id),
+                ).fetchone()
+                revision = int(row["revision"]) + 1
+                connection.execute(
+                    """INSERT INTO price_verification_quote_capture_batch_snapshots
+                    (workspace_id, batch_id, revision, quote_run_id, created_at)
+                    VALUES (?, ?, ?, ?, ?)""",
+                    (workspace_id, batch_id, revision, quote_run_id, now),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return QuoteCaptureBatchSnapshotRecord(
+            workspace_id=workspace_id, batch_id=batch_id, revision=revision,
+            quote_run_id=quote_run_id, created_at=now,
+        )
+
     def get_quote_run(self, *, workspace_id: str, run_id: str) -> QuoteRunRecord:
         workspace_id = _required_text(workspace_id, "workspace_id")
         run_id = _required_text(run_id, "run_id")
@@ -622,6 +947,353 @@ class PriceVerificationRepository:
                 (workspace_id, run_id),
             ).fetchall()
         return QuoteRunRecord(**dict(row), items=tuple(_load_snapshot(item["snapshot_json"]) for item in items))
+
+    def upsert_batch_selection(
+        self,
+        *,
+        workspace_id: str,
+        batch_id: str,
+        skc_id: str,
+        quote_keys: Sequence[str],
+        product_title: str,
+        main_image_url: str,
+        official_link_url: str,
+        site: str,
+        source_confidence: str,
+        authenticity_status: str,
+        sku_prices: Sequence[Mapping[str, Any]],
+        original_min: str | None,
+        original_max: str | None,
+        adjusted_min: str | None,
+        adjusted_max: str | None,
+        now: str,
+    ) -> BatchSelectionRecord:
+        """Add or refresh one SKC row in the pending review list.
+
+        A first-time (or previously deleted) SKC joins as ``pending``; an
+        existing row keeps its current review status while its content snapshot
+        is refreshed with the latest captured evidence.
+        """
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        skc_id = _required_text(skc_id, "skc_id")
+        values = {
+            "workspace_id": workspace_id,
+            "batch_id": batch_id,
+            "skc_id": skc_id,
+            "quote_keys": tuple(_required_text(key, "quote_key") for key in quote_keys),
+            "product_title": _text(product_title),
+            "main_image_url": _text(main_image_url),
+            "official_link_url": _text(official_link_url),
+            "site": _text(site),
+            "source_confidence": _text(source_confidence),
+            "authenticity_status": _text(authenticity_status),
+            "sku_prices": tuple(_json_safe(item) for item in sku_prices),
+            "original_min": _nullable_text(original_min),
+            "original_max": _nullable_text(original_max),
+            "adjusted_min": _nullable_text(adjusted_min),
+            "adjusted_max": _nullable_text(adjusted_max),
+            "now": now,
+        }
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._owned_row_in(
+                    connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id
+                )
+                row = connection.execute(
+                    """SELECT * FROM price_verification_batch_selections
+                    WHERE workspace_id = ? AND batch_id = ? AND skc_id = ?""",
+                    (workspace_id, batch_id, skc_id),
+                ).fetchone()
+                if row is None:
+                    connection.execute(
+                        """INSERT INTO price_verification_batch_selections
+                        (workspace_id, batch_id, skc_id, quote_keys_json, product_title,
+                         main_image_url, official_link_url, site, source_confidence,
+                         authenticity_status, sku_prices_json, original_min, original_max,
+                         adjusted_min, adjusted_max, status, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                        (
+                            values["workspace_id"], values["batch_id"], values["skc_id"],
+                            json.dumps(values["quote_keys"], ensure_ascii=False),
+                            values["product_title"], values["main_image_url"],
+                            values["official_link_url"], values["site"],
+                            values["source_confidence"], values["authenticity_status"],
+                            json.dumps(values["sku_prices"], ensure_ascii=False),
+                            values["original_min"], values["original_max"],
+                            values["adjusted_min"], values["adjusted_max"],
+                            values["now"], values["now"],
+                        ),
+                    )
+                else:
+                    if row["status"] == "deleted":
+                        status = "pending"
+                    else:
+                        status = row["status"]
+                    connection.execute(
+                        """UPDATE price_verification_batch_selections
+                        SET quote_keys_json = ?, product_title = ?, main_image_url = ?,
+                            official_link_url = ?, site = ?, source_confidence = ?,
+                            authenticity_status = ?, sku_prices_json = ?, original_min = ?,
+                            original_max = ?, adjusted_min = ?, adjusted_max = ?,
+                            status = ?, updated_at = ?
+                        WHERE workspace_id = ? AND batch_id = ? AND skc_id = ?""",
+                        (
+                            json.dumps(values["quote_keys"], ensure_ascii=False),
+                            values["product_title"], values["main_image_url"],
+                            values["official_link_url"], values["site"],
+                            values["source_confidence"], values["authenticity_status"],
+                            json.dumps(values["sku_prices"], ensure_ascii=False),
+                            values["original_min"], values["original_max"],
+                            values["adjusted_min"], values["adjusted_max"],
+                            status, values["now"],
+                            workspace_id, batch_id, skc_id,
+                        ),
+                    )
+                saved = connection.execute(
+                    """SELECT * FROM price_verification_batch_selections
+                    WHERE workspace_id = ? AND batch_id = ? AND skc_id = ?""",
+                    (workspace_id, batch_id, skc_id),
+                ).fetchone()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return _batch_selection_record(saved)
+
+    def list_batch_selections(
+        self, *, workspace_id: str, batch_id: str, include_deleted: bool = False
+    ) -> tuple[BatchSelectionRecord, ...]:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        with self._connect() as connection:
+            self._owned_row_in(
+                connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id
+            )
+            if include_deleted:
+                rows = connection.execute(
+                    """SELECT * FROM price_verification_batch_selections
+                    WHERE workspace_id = ? AND batch_id = ? ORDER BY id ASC""",
+                    (workspace_id, batch_id),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT * FROM price_verification_batch_selections
+                    WHERE workspace_id = ? AND batch_id = ? AND status != 'deleted'
+                    ORDER BY id ASC""",
+                    (workspace_id, batch_id),
+                ).fetchall()
+        return tuple(_batch_selection_record(row) for row in rows)
+
+    def get_batch_selection(self, *, workspace_id: str, selection_id: int) -> BatchSelectionRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        selection_id = int(selection_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM price_verification_batch_selections
+                WHERE workspace_id = ? AND id = ?""",
+                (workspace_id, selection_id),
+            ).fetchone()
+            if row is None:
+                raise PriceVerificationNotFound("resource not found")
+        return _batch_selection_record(row)
+
+    def update_batch_selection_review(
+        self,
+        *,
+        workspace_id: str,
+        selection_id: int,
+        decision: str,
+        max_candidates: int,
+        now: str,
+    ) -> BatchSelectionRecord:
+        """Apply the final human decision on one pending SKC review row."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        selection_id = int(selection_id)
+        if decision not in {"retained", "deleted"}:
+            raise PriceVerificationContractError("decision must be retained or deleted")
+        if isinstance(max_candidates, bool) or not isinstance(max_candidates, int) or not 1 <= max_candidates <= 100:
+            raise PriceVerificationContractError("max_candidates must be an integer between 1 and 100")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    """SELECT * FROM price_verification_batch_selections
+                    WHERE workspace_id = ? AND id = ?""",
+                    (workspace_id, selection_id),
+                ).fetchone()
+                if row is None:
+                    connection.rollback()
+                    raise PriceVerificationNotFound("resource not found")
+                connection.execute(
+                    """UPDATE price_verification_batch_selections
+                    SET status = ?, max_candidates = ?, updated_at = ?
+                    WHERE workspace_id = ? AND id = ?""",
+                    (decision, max_candidates, now, workspace_id, selection_id),
+                )
+                saved = connection.execute(
+                    """SELECT * FROM price_verification_batch_selections
+                    WHERE workspace_id = ? AND id = ?""",
+                    (workspace_id, selection_id),
+                ).fetchone()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return _batch_selection_record(saved)
+
+
+    def get_batch_selection_by_skc(
+        self, *, workspace_id: str, batch_id: str, skc_id: str
+    ) -> BatchSelectionRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        skc_id = _required_text(skc_id, "skc_id")
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM price_verification_batch_selections
+                WHERE workspace_id = ? AND batch_id = ? AND skc_id = ?""",
+                (workspace_id, batch_id, skc_id),
+            ).fetchone()
+            if row is None:
+                raise PriceVerificationNotFound("resource not found")
+        return _batch_selection_record(row)
+
+    def upsert_skc_source_link(
+        self,
+        *,
+        workspace_id: str,
+        batch_id: str,
+        skc_id: str,
+        offer_id: str,
+        source_url: str,
+        source_title: str,
+        main_image_url: str,
+        price_cny: str | None,
+        moq: str | None,
+        domestic_freight_cny: str | None,
+        source_decision: str,
+        note: str,
+        now: str,
+    ) -> SkcSourceLinkRecord:
+        """Link one 1688 offer to an SKC, or revive an existing (possibly removed) link.
+
+        The (workspace_id, skc_id, offer_id) unique constraint makes the write
+        idempotent: a second link of the same offer reactivates the row instead
+        of duplicating it.
+        """
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        skc_id = _required_text(skc_id, "skc_id")
+        offer_id = _required_text(offer_id, "offer_id")
+        source_url = _required_text(source_url, "source_url")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._owned_row_in(
+                    connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id
+                )
+                row = connection.execute(
+                    """SELECT * FROM price_verification_skc_source_links
+                    WHERE workspace_id = ? AND skc_id = ? AND offer_id = ?""",
+                    (workspace_id, skc_id, offer_id),
+                ).fetchone()
+                if row is None:
+                    connection.execute(
+                        """INSERT INTO price_verification_skc_source_links
+                        (workspace_id, batch_id, skc_id, offer_id, source_url, source_title,
+                         main_image_url, price_cny, moq, domestic_freight_cny, source_decision,
+                         note, status, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                        (
+                            workspace_id, batch_id, skc_id, offer_id, source_url,
+                            source_title, main_image_url, price_cny, moq,
+                            domestic_freight_cny, source_decision, note, now, now,
+                        ),
+                    )
+                else:
+                    connection.execute(
+                        """UPDATE price_verification_skc_source_links
+                        SET batch_id = ?, source_url = ?, source_title = ?, main_image_url = ?,
+                            price_cny = ?, moq = ?, domestic_freight_cny = ?,
+                            source_decision = ?, note = ?, status = 'active', updated_at = ?
+                        WHERE id = ?""",
+                        (
+                            batch_id, source_url, source_title, main_image_url, price_cny,
+                            moq, domestic_freight_cny, source_decision, note, now,
+                            row["id"],
+                        ),
+                    )
+                saved = connection.execute(
+                    """SELECT * FROM price_verification_skc_source_links
+                    WHERE workspace_id = ? AND skc_id = ? AND offer_id = ?""",
+                    (workspace_id, skc_id, offer_id),
+                ).fetchone()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return _skc_source_link_record(saved)
+
+    def list_skc_source_links(
+        self, *, workspace_id: str, batch_id: str, skc_id: str | None = None
+    ) -> tuple[SkcSourceLinkRecord, ...]:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        if skc_id is not None:
+            skc_id = _required_text(skc_id, "skc_id")
+        with self._connect() as connection:
+            if skc_id:
+                rows = connection.execute(
+                    """SELECT * FROM price_verification_skc_source_links
+                    WHERE workspace_id = ? AND batch_id = ? AND skc_id = ? AND status = 'active'
+                    ORDER BY created_at""",
+                    (workspace_id, batch_id, skc_id),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT * FROM price_verification_skc_source_links
+                    WHERE workspace_id = ? AND batch_id = ? AND status = 'active'
+                    ORDER BY skc_id, created_at""",
+                    (workspace_id, batch_id),
+                ).fetchall()
+        return tuple(_skc_source_link_record(row) for row in rows)
+
+    def soft_remove_skc_source_link(
+        self, *, workspace_id: str, link_id: int, now: str
+    ) -> SkcSourceLinkRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        link_id = int(link_id)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    """SELECT * FROM price_verification_skc_source_links
+                    WHERE workspace_id = ? AND id = ?""",
+                    (workspace_id, link_id),
+                ).fetchone()
+                if row is None:
+                    connection.rollback()
+                    raise PriceVerificationNotFound("resource not found")
+                if row["status"] != "removed":
+                    connection.execute(
+                        """UPDATE price_verification_skc_source_links
+                        SET status = 'removed', updated_at = ?
+                        WHERE id = ?""",
+                        (now, link_id),
+                    )
+                saved = connection.execute(
+                    """SELECT * FROM price_verification_skc_source_links
+                    WHERE workspace_id = ? AND id = ?""",
+                    (workspace_id, link_id),
+                ).fetchone()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return _skc_source_link_record(saved)
+
 
     def record_quote_decision(
         self,
@@ -906,6 +1578,31 @@ def _required_text(value: object, field_name: str) -> str:
     return value.strip()
 
 
+def _text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _nullable_text(value: object) -> str | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return str(value).strip()
+
+
+def _json_safe(value: object) -> object:
+    """Coerce JSON-unfriendly scalars (Decimal) into strings for persistence."""
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    return str(value)
+
+
 def _digest(value: object, field_name: str) -> str:
     value = _required_text(value, field_name)
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value.casefold()):
@@ -925,6 +1622,19 @@ def _snapshot_rows(items: Sequence[Mapping[str, Any]], *, key_name: str) -> tupl
         seen.add(key)
         rows.append((key, safe_json_dumps(item)))
     return tuple(rows)
+
+
+def _capture_skc_group_count(snapshots: Sequence[tuple[str, str]]) -> int:
+    """Count capture-page groups by SKC, keeping ungrouped rows conservative."""
+    groups: set[str] = set()
+    for quote_key, serialized in snapshots:
+        try:
+            item = json.loads(serialized)
+        except json.JSONDecodeError as error:  # pragma: no cover - guarded by safe_json_dumps
+            raise PriceVerificationContractError("invalid quote snapshot") from error
+        skc_id = str(item.get("skc_id") or "").strip() if isinstance(item, Mapping) else ""
+        groups.add(f"skc:{skc_id}" if skc_id else f"row:{quote_key}")
+    return len(groups)
 
 
 def _source_candidate_rows(candidates: Sequence[Mapping[str, Any]]) -> tuple[tuple[str, str, str], ...]:
@@ -976,6 +1686,44 @@ def _source_quote_rows(
 def _load_snapshot(value: str) -> Mapping[str, Any]:
     parsed = json.loads(value)
     return parsed if isinstance(parsed, Mapping) else {}
+
+
+def _load_snapshot_list(value: str) -> tuple[Mapping[str, Any], ...]:
+    parsed = json.loads(value)
+    if not isinstance(parsed, list):
+        return ()
+    return tuple(item for item in parsed if isinstance(item, Mapping))
+
+
+def _capture_batch_record(row: sqlite3.Row) -> QuoteCaptureBatchRecord:
+    values = dict(row)
+    values["is_current"] = bool(values["is_current"])
+    return QuoteCaptureBatchRecord(**values)
+
+
+def _batch_selection_record(row: sqlite3.Row) -> BatchSelectionRecord:
+    values = dict(row)
+    values["quote_keys"] = _load_json_list(values.pop("quote_keys_json"))
+    values["sku_prices"] = _load_snapshot_list(values.pop("sku_prices_json"))
+    return BatchSelectionRecord(**values)
+
+
+def _skc_source_link_record(row: sqlite3.Row) -> SkcSourceLinkRecord:
+    return SkcSourceLinkRecord(**dict(row))
+
+
+def _load_json_list(value: str) -> tuple[str, ...]:
+    parsed = json.loads(value)
+    if not isinstance(parsed, list):
+        return ()
+    return tuple(str(item) for item in parsed if isinstance(item, str))
+
+
+def _capture_chunk_record(row: sqlite3.Row) -> QuoteCaptureChunkRecord:
+    values = dict(row)
+    values["capture"] = _load_snapshot(values.pop("capture_json"))
+    values["items"] = _load_snapshot_list(values.pop("items_json"))
+    return QuoteCaptureChunkRecord(**values)
 
 
 def _session_record(row: sqlite3.Row) -> PluginSessionRecord:

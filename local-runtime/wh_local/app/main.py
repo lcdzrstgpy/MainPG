@@ -109,7 +109,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     _register_profit_activity(app, db_path)
 
     # 核价及货源模块
-    _register_price_verification(app, db_path, config.data_dir, plugin_queue)
+    _register_price_verification(app, db_path, config.data_dir, plugin_queue, product_processing)
 
     return app
 
@@ -161,6 +161,7 @@ def _register_price_verification(
     db_path: Path,
     data_dir: Path,
     plugin_queue: DataCollectionPluginQueue,
+    product_processing: ProductProcessingService | None = None,
 ) -> None:
     """Register read-only price-verification routes with host-owned adapters."""
     dependencies = PriceVerificationRouteDependencies(
@@ -170,6 +171,11 @@ def _register_price_verification(
         provider_config_resolver=_provider_config,
         provider_factory=_provider_factory,
         plugin_queue=plugin_queue,
+        draft_writer=(
+            lambda payload: product_processing.create_draft(dict(payload))
+            if product_processing is not None
+            else None
+        ),
     )
     register_price_verification_routes(app.router, dependencies)
 

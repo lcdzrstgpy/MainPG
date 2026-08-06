@@ -35,6 +35,10 @@ def evaluate_product_evidence(
             return "compatible", ("overlapping_product_title",)
         if _compact(quote_title) in _compact(source_title) or _compact(source_title) in _compact(quote_title):
             return "compatible", ("containing_product_title",)
+        if not _has_shared_language(quote_title, source_title):
+            # Chinese 1688 titles cannot be compared with English Temu titles;
+            # the absence of overlap is not proof of a different product.
+            return "missing", ("cross_language_title_evidence",)
         return "conflict", ("product_title_mismatch",)
     return "missing", ("missing_compatible_product_evidence",)
 
@@ -105,6 +109,27 @@ def _product_terms(value: str) -> set[str]:
         token for token in re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9]{3,}", compact.casefold())
         if token not in _GENERIC_TOKENS
     }
+
+
+def _has_shared_language(a: str, b: str) -> bool:
+    """Whether two titles share a dominant language before treating a title mismatch as conflict.
+
+    A predominantly Chinese 1688 title and a predominantly English Temu title
+    cannot be compared textually, so their mismatch proves nothing about
+    product identity.  A stray brand token like "ins" in a Chinese title does
+    not make it an English title.
+    """
+    return _dominant_language(a) == _dominant_language(b)
+
+
+def _dominant_language(value: str) -> str:
+    cjk = sum(1 for ch in value if "\u4e00" <= ch <= "\u9fff")
+    ascii_alpha = sum(1 for ch in value if ch.isascii() and ch.isalpha())
+    if cjk > ascii_alpha:
+        return "cjk"
+    if ascii_alpha > 0:
+        return "ascii"
+    return "other"
 
 
 def _colours(value: str) -> set[str]:

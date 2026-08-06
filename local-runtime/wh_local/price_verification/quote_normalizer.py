@@ -234,20 +234,26 @@ def quote_item_from_dom_row(row: Mapping[str, Any], *, popup_confirmed: bool = F
     cells = dom_cell_map(row)
     text = " ".join(filter(None, [clean_text(row.get("text")), *map(clean_text, cells.values())]))
     source = clean_text(row.get("source")) or "dom_table"
+    text_prices = money_values_in_text(text)
     original = money_for(cells, ("原申报价格(CNY)", "原申报价格", "申报价格(CNY)", "申报价格"))
+    if original is None and text_prices:
+        # Some Temu virtual grids do not expose column headers to the DOM.
+        # The visible first currency amount remains the original declared price.
+        original = text_prices[0]
     adjusted = money_for(cells, ("调整后申报价格(CNY)", "调整后申报价格", "建议价格", "建议供货价")) if popup_confirmed else None
     new = money_for(cells, ("新申报价格(CNY)", "新申报价格")) if popup_confirmed else None
-    sku_id = id_from(cells, ("SKU ID", "sku_id", "SKU编号"), text, r"\bSKU(?:\s*ID|\s*编号)?[:：\s]*([A-Za-z0-9_-]{4,})\b")
+    sku_id = id_from(cells, ("SKU ID", "sku_id", "SKU编号", "SKU货号"), text, r"\bSKU(?:\s*(?:ID|编号|货号))?[:：\s]*([A-Za-z0-9_-]{4,})\b")
     goods_id = id_from(cells, ("SPU", "SPU ID", "商品ID", "goods_id"), text, r"\b(?:SPU|Goods)[:：\s]*([A-Za-z0-9_-]{4,})\b")
+    product_title = text_for(cells, ("商品标题", "商品名称", "title")) or title_before_skc(text)
     return QuoteItem(
         skc_id=id_from(cells, ("SKC", "SKC ID", "skc_id"), text, r"\bSKC[:：\s]*([A-Za-z0-9_-]{4,})\b"),
         sku_id=sku_id,
         sku_true_id=sku_id,
         sku_identifier_kind="sku_id" if sku_id else "",
         spu_or_goods_id=goods_id,
-        site=text_for(cells, ("站点", "site")), status=text_for(cells, ("状态", "status")),
+        site=text_for(cells, ("站点", "site")) or site_text(text), status=text_for(cells, ("状态", "status")),
         original_declared_price_cny=original, adjusted_declared_price_cny=adjusted,
-        new_declared_price_cny=new, product_title=text_for(cells, ("商品标题", "商品名称", "title")),
+        new_declared_price_cny=new, product_title=product_title,
         main_image_url=first_url(row), official_link_url=official_temu_link(row, goods_id),
         source_endpoint=source, capture_method=source,
         captured_at=clean_text(row.get("capturedAt")), evidence_sources=source, dom_evidence_count=1,
@@ -477,6 +483,23 @@ def money_for(mapping: Mapping[str, Any], aliases: Iterable[str]) -> Decimal | N
         return amount.quantize(Decimal("0.01"))
     except InvalidOperation:
         return None
+
+
+def money_values_in_text(value: str) -> list[Decimal]:
+    """Read visible currency values from header-less virtual table rows."""
+    amounts: list[Decimal] = []
+    for match in re.finditer(r"[¥￥]\s*(-?\d+(?:\.\d+)?)", value.replace(",", "")):
+        try:
+            amounts.append(Decimal(match.group(1)).quantize(Decimal("0.01")))
+        except InvalidOperation:
+            continue
+    return amounts
+
+
+def title_before_skc(value: str) -> str:
+    """Keep a readable label when a virtual grid omits semantic title cells."""
+    title = re.split(r"\bSKC(?:\s*(?:ID|信息))?[:：\s]", value, maxsplit=1, flags=re.IGNORECASE)[0]
+    return clean_text(title)[:240]
 
 
 def text_for(mapping: Mapping[str, Any], aliases: Iterable[str]) -> str:
