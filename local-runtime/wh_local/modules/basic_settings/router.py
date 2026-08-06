@@ -16,8 +16,7 @@ def create_router(database_path: Path) -> APIRouter:
 
     @router.get("/system-config")
     def get_system_config(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
-        # 返回页面需要展示的配置，同时只暴露密钥“是否已配置”的状态。
-        require_admin(actor)
+        # GET 只返回公开配置 + 密钥是否已配置的状态（不含密钥原文），无需 admin 限制。
         return service.get_config()
 
     @router.put("/system-config")
