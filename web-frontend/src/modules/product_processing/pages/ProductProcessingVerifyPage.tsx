@@ -492,15 +492,7 @@ export function ProductProcessingVerifyPage() {
         </div>
 
         {totalDrafts === 0 && <p className="verify-empty">草稿池为空，请先在每日选品中确认入池。</p>}
-        <div className="verify-draft-table">
-          <div className="verify-draft-thead">
-            <span className="col-check">选择</span>
-            <span className="col-thumb">主图</span>
-            <span className="col-title">标题 / 来源</span>
-            <span className="col-sku">SKU</span>
-            <span className="col-cat">类目</span>
-            <span className="col-act">操作</span>
-          </div>
+        <div className="verify-draft-list">
           {pageDrafts.map((draft) => {
             const raw = draft.raw_payload || {};
             const variants: DraftVariant[] = raw.source_variant_records || [];
@@ -508,89 +500,111 @@ export function ProductProcessingVerifyPage() {
             const isExpanded = expandedId === draft.id;
             const imgUrl = draft.image_url || raw.main_image_url || '';
             const platform = raw.source_platform || raw.platform || 'manual';
-            const category = raw.category || raw.source_category_path || '';
+            const categoryPath = raw.category || raw.source_category_path || raw.category_path || '';
             const sourceUrl = raw.source_url || raw.product_link || '';
-            const imageCount = Array.isArray(raw.source_image_urls) ? raw.source_image_urls.length : 0;
             const displayTitle = edit?.title || draft.title || raw.source_title || '未命名商品';
             const skcText = draft.skc || '-';
             const skuText = draft.sku || '-';
-            const copy = (text: string) => { navigator.clipboard.writeText(text).catch(() => undefined); };
+            const copy = (t: string) => { navigator.clipboard.writeText(t).catch(() => undefined); };
+            const onSelect = () => toggleDraft(draft.id);
+            const isSelected = selectedIds.has(draft.id);
             return (
-              <article key={draft.id} className={`verify-draft-row ${selectedIds.has(draft.id) ? 'selected' : ''}`}>
-                <div className="verify-row-main">
-                  <label className="col-check">
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.has(draft.id)}
-                      onChange={() => toggleDraft(draft.id)}
-                    />
+              <article key={draft.id} className={`pool-card ${isSelected ? 'selected' : ''}`}>
+                <div className="pool-card-body">
+                  {/* 选择 */}
+                  <label className="pool-check">
+                    <input type="checkbox" checked={isSelected} onChange={onSelect} />
                   </label>
-                  <div className="col-thumb">
-                    {imgUrl ? <img src={imgUrl} alt="" referrerPolicy="no-referrer" /> : <span>无图</span>}
+
+                  {/* 主图 */}
+                  <div className="pool-thumb" onClick={onSelect}>
+                    {imgUrl ? (
+                      <img src={imgUrl} alt="" referrerPolicy="no-referrer" />
+                    ) : (
+                      <span>暂无主图</span>
+                    )}
+                    <span className="pool-thumb-overlay">上传/替换主图</span>
                   </div>
-                  <div className="col-title">
-                    <div className="title-line">
+
+                  {/* 信息区 */}
+                  <div className="pool-info">
+                    {/* 标题 + 操作按钮 */}
+                    <div className="pool-title-row">
                       <strong title={displayTitle}>{displayTitle}</strong>
-                      <button className="btn-mini" title="复制标题" onClick={() => copy(displayTitle)}>复制</button>
-                      <button className="btn-mini" title="编辑" onClick={() => beginEdit(draft)}>编辑</button>
+                      <div className="pool-inline-acts">
+                        <button className="btn-mini" onClick={() => copy(displayTitle)}>复制</button>
+                        <button className="btn-mini" onClick={() => beginEdit(draft)}>
+                          {isExpanded ? '收起' : '编辑'}
+                        </button>
+                        <button className="btn-mini danger" onClick={() => {
+                          if (window.confirm('确认删除该草稿？')) deleteSelected();
+                        }}>删除</button>
+                      </div>
                     </div>
-                    <div className="sub-line">
-                      <span className="verify-platform">{platform}</span>
+
+                    {/* 平台 + 来源链接 */}
+                    <div className="pool-meta">
+                      <span className="tag">{platform}</span>
                       {sourceUrl ? (
-                        <a href={sourceUrl} target="_blank" rel="noreferrer" className="source-link">{draft.source_ref || '查看来源'}</a>
+                        <a href={sourceUrl} target="_blank" rel="noreferrer">{draft.source_ref || '查看来源'}</a>
                       ) : (
-                        <span className="source-link muted">{draft.source_ref || '-'}</span>
+                        <span className="muted">{draft.source_ref || '-'}</span>
                       )}
-                      {draft.status === 'attention_required' && <span className="badge attention">需确认</span>}
-                      {draft.status === 'processed' && <span className="badge processed">已处理</span>}
+                      {isExpanded && <button className="btn-mini" onClick={() => copy(sourceUrl || draft.source_ref || '')}>复制链接</button>}
+                    </div>
+
+                    {/* SKU 信息 */}
+                    <div className="pool-sku-info">
+                      <span className="pool-label">SKU</span>
+                      <span className="pool-value">
+                        {variants.length > 0 ? (
+                          variants.map((v, i) => {
+                            const attrs = v.attributes || {};
+                            const vals = Object.values(attrs).filter(Boolean);
+                            const label = vals.length ? vals.join(' / ') : (v.display_name || '-');
+                            return (
+                              <span key={i} className="sku-chip" title={label}>
+                                SKU {i + 1}: {label}
+                              </span>
+                            );
+                          })
+                        ) : (
+                          <span>单规格</span>
+                        )}
+                      </span>
+                      <div className="pool-inline-acts">
+                        <button className="btn-mini" onClick={() => copy(skcText)}>复制SKC</button>
+                        <button className="btn-mini" onClick={() => copy(skuText)}>复制SKU</button>
+                      </div>
+                    </div>
+
+                    {/* 类目 */}
+                    <div className="pool-cat-info">
+                      <span className="pool-label">类目</span>
+                      <span className="pool-value">{categoryPath || '（参考）'}</span>
+                      {categoryPath && <button className="btn-mini" onClick={() => copy(categoryPath)}>复制</button>}
+                    </div>
+
+                    {/* 价格 / 图片数 等补充信息 */}
+                    <div className="pool-extra">
+                      {draft.cost != null && <span>成本 ¥{draft.cost}</span>}
+                      {draft.declared_price != null && <span>申报 ¥{draft.declared_price}</span>}
+                      {variants.length > 0 && <span>{variants.length} 个变种</span>}
+                      {Array.isArray(raw.source_image_urls) && raw.source_image_urls.length > 0 && (
+                        <span>{raw.source_image_urls.length} 张来源图</span>
+                      )}
+                      {draft.status === 'attention_required' && <span className="badge attn">需确认</span>}
+                      {draft.status === 'processed' && <span className="badge ok">已处理</span>}
                       {Array.isArray(raw.risk_tags) && raw.risk_tags.length > 0 && (
                         <span className="badge risk">风险: {raw.risk_tags.join('、')}</span>
                       )}
                     </div>
                   </div>
-                  <div className="col-sku">
-                    <div className="sku-line">
-                      <span title={skcText}>SKC: {skcText}</span>
-                      <button className="btn-mini" title="复制 SKC" onClick={() => copy(skcText)}>复制</button>
-                    </div>
-                    <div className="sku-line">
-                      <span title={skuText}>SKU: {skuText}</span>
-                      <button className="btn-mini" title="复制 SKU" onClick={() => copy(skuText)}>复制</button>
-                    </div>
-                    <div className="sku-meta">
-                      <span>{variants.length} 变种</span>
-                      {imageCount > 0 && <span>{imageCount} 图</span>}
-                      {draft.cost != null && <span>¥{draft.cost}</span>}
-                    </div>
-                    {variants.length > 0 && (
-                      <div className="variant-chips">
-                        {variants.slice(0, 4).map((variant, idx) => {
-                          const attrs = variant.attributes || {};
-                          const chip = Object.values(attrs).filter(Boolean).join('/') || variant.display_name || '-';
-                          return <span key={idx} title={chip}>{chip}</span>;
-                        })}
-                        {variants.length > 4 && <span className="more">+{variants.length - 4}</span>}
-                      </div>
-                    )}
-                  </div>
-                  <div className="col-cat">
-                    <span className="cat-text" title={category || '-'}>{category || '-'}</span>
-                    {category && <button className="btn-mini" title="复制类目" onClick={() => copy(category)}>复制</button>}
-                  </div>
-                  <div className="col-act">
-                    <button className="btn-act" title="展开编辑" onClick={() => beginEdit(draft)}>
-                      {isExpanded ? '收起' : '编辑'}
-                    </button>
-                    <button className="btn-act danger" title="删除草稿" onClick={() => {
-                      if (window.confirm('确认删除该草稿？')) deleteSelected();
-                    }}>
-                      删除
-                    </button>
-                  </div>
                 </div>
 
+                {/* 展开编辑面板 */}
                 {isExpanded && edit && (
-                  <div className="verify-row-edit-panel">
+                  <div className="pool-edit-panel">
                     <div className="verify-editor-grid">
                       <label>商品标题
                         <input value={edit.title} onChange={(e) => setEdits((p) => ({ ...p, [draft.id]: { ...edit, title: e.target.value } }))} />
@@ -607,8 +621,8 @@ export function ProductProcessingVerifyPage() {
                     {variants.length > 0 && (
                       <div className="verify-sku-list">
                         {variants.map((variant, idx) => {
-                          const attributes = variant.attributes || {};
-                          const label = Object.values(attributes).join('/');
+                          const attrs = variant.attributes || {};
+                          const label = Object.values(attrs).join('/');
                           const skuId = String(variant.sku_id || variant.source_sku_id || label || idx);
                           const isDeleted = edit.skuDeletes.includes(skuId) || edit.skuDeletes.includes(label);
                           const value = edit.skuEdits[skuId] ?? edit.skuEdits[label] ?? variant.display_name ?? label;
@@ -636,7 +650,7 @@ export function ProductProcessingVerifyPage() {
                       </div>
                     )}
                     <div className="verify-row-actions">
-                      <button className="primary" onClick={() => saveRow(draft)} disabled={loading}>保存这一行</button>
+                      <button className="primary" onClick={() => saveRow(draft)} disabled={loading}>保存</button>
                     </div>
                   </div>
                 )}
