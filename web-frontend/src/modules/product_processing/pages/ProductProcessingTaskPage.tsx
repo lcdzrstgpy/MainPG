@@ -77,8 +77,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [aiConfig, setAiConfig] = useState<AiConfigSummary | null>(null);
-  const [aiPing, setAiPing] = useState<{ ok: boolean; detail: string } | null>(null);
 
   const failureItems = useMemo(
     () => batch?.items.filter(
@@ -115,9 +113,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
 
   useEffect(() => {
     loadHistory(1);
-    ppRequest<AiConfigSummary>(ctx, `${API_BASE}/ai-config`)
-      .then(setAiConfig)
-      .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -198,14 +193,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
   const download = (kind: string, filename: string) => {
     if (!batch) return;
     ppDownload(ctx, `${API_BASE}/tasks/${batch.task_id}/download?kind=${kind}`, filename).catch(fail);
-  };
-
-  const probeAi = async () => {
-    setAiPing(null);
-    try {
-      const data = await ppRequest<{ ok: boolean; model_count: number; models_sample: string[] }>(ctx, `${API_BASE}/ai/ping`, { body: {} });
-      setAiPing({ ok: true, detail: `连通正常，可用模型 ${data.model_count} 个` });
-    } catch (err) { setAiPing({ ok: false, detail: err instanceof Error ? err.message : String(err) }); }
   };
 
   const historyTotalPages = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
@@ -338,22 +325,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
               </table>
             </section>
           )}
-
-          {aiConfig && (
-            <section className="verify-section">
-              <div className="verify-section-head"><h2>AI 中转配置</h2></div>
-              <div className="verify-ai-config">
-                <div className="verify-ai-item"><span>提供方</span><b>{aiConfig.provider}</b></div>
-                <div className="verify-ai-item"><span>API Key</span><b>{aiConfig.api_key_configured ? aiConfig.api_key_masked : '未配置'}</b></div>
-                <div className="verify-ai-item"><span>文本模型</span><b>{aiConfig.text_model}</b></div>
-                <div className="verify-ai-item"><span>生图模型</span><b>{aiConfig.image_model} / {aiConfig.reference_image_model}</b></div>
-              </div>
-              <div className="verify-actions">
-                <button onClick={probeAi}>探测连通性</button>
-                {aiPing && (<span className={`verify-ai-ping ${aiPing.ok ? 'ok' : 'fail'}`}>{aiPing.detail}</span>)}
-              </div>
-            </section>
-          )}
         </div>
 
         {/* 右侧：历史任务 */}
@@ -395,19 +366,5 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
     </div>
   );
 }
-
-type AiConfigSummary = {
-  provider: string;
-  base_url: string;
-  api_key_masked: string;
-  api_key_configured: boolean;
-  text_model: string;
-  text_model_fallback_order: string[];
-  image_model: string;
-  reference_image_model: string;
-  image_size: string;
-  image_quality: string;
-  enabled: boolean;
-};
 
 export default ProductProcessingTaskPage;
