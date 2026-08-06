@@ -98,6 +98,8 @@ export function ProductProcessingVerifyPage() {
   const [aiConfig, setAiConfig] = useState<AiConfigSummary | null>(null);
   const [aiPing, setAiPing] = useState<{ ok: boolean; detail: string } | null>(null);
   const [page, setPage] = useState(1);
+  const [statusFilter, setStatusFilter] = useState<'all' | 'draft' | 'processed' | 'attention_required'>('all');
+  const [searchTerm, setSearchTerm] = useState('');
 
   const dirtyCount = useMemo(
     () => drafts.filter((d) => draftDirty(d, edits)).length,
@@ -107,12 +109,23 @@ export function ProductProcessingVerifyPage() {
     () => drafts.filter((d) => d.status !== 'deleted'),
     [drafts]
   );
-  const totalDrafts = selectableDrafts.length;
+  const filteredDrafts = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    return selectableDrafts.filter((d) => {
+      if (statusFilter !== 'all' && d.status !== statusFilter) return false;
+      if (!keyword) return true;
+      const raw = d.raw_payload || {};
+      return [d.title, d.product_name, d.skc, d.sku, d.source_ref, raw.source_title]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(keyword));
+    });
+  }, [selectableDrafts, statusFilter, searchTerm]);
+  const totalDrafts = filteredDrafts.length;
   const totalPages = Math.max(1, Math.ceil(totalDrafts / PAGE_SIZE));
   const pageStart = (page - 1) * PAGE_SIZE;
   const pageDrafts = useMemo(
-    () => selectableDrafts.slice(pageStart, pageStart + PAGE_SIZE),
-    [selectableDrafts, pageStart]
+    () => filteredDrafts.slice(pageStart, pageStart + PAGE_SIZE),
+    [filteredDrafts, pageStart]
   );
   const failureItems = useMemo(
     () =>
@@ -444,6 +457,40 @@ export function ProductProcessingVerifyPage() {
           </div>
         </div>
 
+        <div className="verify-pool-toolbar">
+          <div className="verify-pool-stats">
+            <span>待处理 <strong>{selectableDrafts.length}</strong></span>
+            <span>已选 <strong>{selectedIds.size}</strong></span>
+            <span>本页 <strong>{pageDrafts.length}</strong></span>
+            {dirtyCount > 0 && <span className="dirty">未保存修改 <strong>{dirtyCount}</strong></span>}
+          </div>
+          <div className="verify-pool-controls">
+            <select
+              aria-label="按状态筛选"
+              value={statusFilter}
+              onChange={(e) => {
+                setStatusFilter(e.target.value as typeof statusFilter);
+                setPage(1);
+              }}
+            >
+              <option value="all">全部状态</option>
+              <option value="draft">待处理</option>
+              <option value="processed">已处理</option>
+              <option value="attention_required">需确认</option>
+            </select>
+            <input
+              type="search"
+              className="verify-pool-search"
+              placeholder="搜索标题 / SKC / SKU / 来源…"
+              value={searchTerm}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                setPage(1);
+              }}
+            />
+          </div>
+        </div>
+
         {totalDrafts === 0 && <p className="verify-empty">草稿池为空，请先在每日选品中确认入池。</p>}
         <div className="verify-draft-list">
           {pageDrafts.map((draft) => {
@@ -453,6 +500,9 @@ export function ProductProcessingVerifyPage() {
             const isExpanded = expandedId === draft.id;
             const imgUrl = draft.image_url || raw.main_image_url || '';
             const platform = raw.source_platform || raw.platform || 'manual';
+            const category = raw.category || raw.source_category_path || '';
+            const sourceUrl = raw.source_url || raw.product_link || '';
+            const imageCount = Array.isArray(raw.source_image_urls) ? raw.source_image_urls.length : 0;
             return (
               <article key={draft.id} className={`verify-draft-card ${selectedIds.has(draft.id) ? 'selected' : ''}`}>
                 <div className="verify-draft-summary">
@@ -467,14 +517,43 @@ export function ProductProcessingVerifyPage() {
                     {imgUrl ? <img src={imgUrl} alt="" referrerPolicy="no-referrer" /> : <span>缺少主图</span>}
                   </div>
                   <div className="verify-draft-info">
-                    <strong>{edit?.title || draft.title || raw.source_title || '未命名商品'}</strong>
-                    <small>{platform} · {variants.length} SKU</small>
-                  </div>
-                  <div className="verify-flags">
-                    <span className={imgUrl ? 'ok' : 'missing'}>{imgUrl ? '主图已记录' : '缺少主图'}</span>
-                    {draft.status === 'processed' && <span className="processed">已处理</span>}
-                    {Array.isArray(raw.risk_tags) && raw.risk_tags.length > 0 && (
-                      <span className="risk">风险: {raw.risk_tags.join('、')}</span>
+                    <div className="verify-draft-head">
+                      <strong>{edit?.title || draft.title || raw.source_title || '未命名商品'}</strong>
+                      <span className="verify-platform">{platform}</span>
+                    </div>
+                    <div className="verify-flags">
+                      <span className={imgUrl ? 'ok' : 'missing'}>{imgUrl ? '主图已记录' : '缺少主图'}</span>
+                      {draft.status === 'processed' && <span className="processed">已处理</span>}
+                      {draft.status === 'attention_required' && <span className="attention">需确认</span>}
+                      {Array.isArray(raw.risk_tags) && raw.risk_tags.length > 0 && (
+                        <span className="risk">风险: {raw.risk_tags.join('、')}</span>
+                      )}
+                    </div>
+                    <dl className="verify-meta-grid">
+                      <div><dt>SKC</dt><dd>{draft.skc || '-'}</dd></div>
+                      <div><dt>SKU</dt><dd>{draft.sku || '-'}</dd></div>
+                      <div><dt>成本</dt><dd>{draft.cost != null ? `¥${draft.cost}` : (raw.price_cny != null ? `¥${raw.price_cny}` : '-')}</dd></div>
+                      <div><dt>申报价</dt><dd>{draft.declared_price != null ? `¥${draft.declared_price}` : '-'}</dd></div>
+                      <div><dt>类目</dt><dd className="ellipsis">{category || '-'}</dd></div>
+                      <div><dt>素材</dt><dd>{variants.length} 变种 · {imageCount} 图</dd></div>
+                    </dl>
+                    <div className="verify-source-line">
+                      <span>来源</span>
+                      {sourceUrl ? (
+                        <a href={sourceUrl} target="_blank" rel="noreferrer">{draft.source_ref || sourceUrl}</a>
+                      ) : (
+                        <span className="plain">{draft.source_ref || '-'}</span>
+                      )}
+                    </div>
+                    {variants.length > 0 && (
+                      <div className="verify-variant-chips">
+                        {variants.slice(0, 6).map((variant, idx) => {
+                          const attributes = variant.attributes || {};
+                          const label = Object.values(attributes).filter(Boolean).join(' / ') || variant.display_name || `SKU ${idx + 1}`;
+                          return <span key={idx} title={label}>{label}</span>;
+                        })}
+                        {variants.length > 6 && <span className="more">+{variants.length - 6} 更多</span>}
+                      </div>
                     )}
                   </div>
                 </div>

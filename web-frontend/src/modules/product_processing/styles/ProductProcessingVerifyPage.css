@@ -170,7 +170,7 @@
 
 .verify-draft-summary {
   display: grid;
-  grid-template-columns: auto 72px minmax(180px, 1fr) auto;
+  grid-template-columns: auto 72px minmax(0, 1fr);
   align-items: start;
   gap: 12px;
   padding: 12px;
@@ -254,6 +254,183 @@
 .verify-flags span.risk {
   background: #fff4e5;
   color: #b36b00;
+}
+
+.verify-flags span.attention {
+  background: #eef1ff;
+  color: #5a5bd8;
+}
+
+/* 草稿池工具栏：统计 + 筛选 + 搜索 */
+.verify-pool-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid #e2edf5;
+  border-radius: 10px;
+  background: #f8fbfd;
+}
+
+.verify-pool-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 0.8rem;
+  color: #72869a;
+}
+
+.verify-pool-stats strong {
+  color: #18334d;
+  font-size: 0.95rem;
+}
+
+.verify-pool-stats .dirty strong {
+  color: #b36b00;
+}
+
+.verify-pool-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.verify-pool-controls select,
+.verify-pool-search {
+  padding: 7px 10px;
+  border: 1px solid #cfe0eb;
+  border-radius: 9px;
+  background: #fff;
+  color: #18334d;
+  font-size: 0.84rem;
+  outline-color: #13a9f2;
+}
+
+.verify-pool-search {
+  min-width: 220px;
+}
+
+/* 卡片头部：标题 + 平台 */
+.verify-draft-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.verify-draft-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verify-platform {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #eef4f9;
+  color: #526a82;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+/* 信息字段网格：SKC / SKU / 成本 / 申报价 / 类目 / 素材 */
+.verify-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 18px;
+  margin: 8px 0 0;
+}
+
+.verify-meta-grid > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.verify-meta-grid dt {
+  color: #9caaba;
+  font-size: 0.7rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.verify-meta-grid dd {
+  margin: 0;
+  color: #18334d;
+  font-size: 0.8rem;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.verify-meta-grid dd.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 来源链接行 */
+.verify-source-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.verify-source-line > span {
+  flex-shrink: 0;
+  color: #9caaba;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.verify-source-line a,
+.verify-source-line .plain {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0a6ba8;
+  font-size: 0.78rem;
+}
+
+.verify-source-line .plain {
+  color: #72869a;
+}
+
+/* 变种规格预览 chips */
+.verify-variant-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.verify-variant-chips span {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #eef6fb;
+  border: 1px solid #d9ecf7;
+  color: #2d6f96;
+  font-size: 0.72rem;
+  font-weight: 700;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verify-variant-chips span.more {
+  background: #f4f7fa;
+  border-color: #e2edf5;
+  color: #7c91a6;
 }
 
 .verify-badge {
