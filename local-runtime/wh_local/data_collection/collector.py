@@ -202,8 +202,6 @@ class DailySelectionCollector:
         unique = _rank_candidates(_deduplicate(candidates))
         if max_parallel <= 1:
             for index, collected in enumerate(unique):
-                if index >= criteria.detail_count:
-                    break
                 latest_budget = self._reserve(criteria, 1, collection_time)
                 if not latest_budget.reservation_granted:
                     errors.append(_budget_error())
@@ -228,8 +226,8 @@ class DailySelectionCollector:
                         collected.reference_image_url,
                     )
         else:
-            # 并行拉取详情
-            detail_items = unique[: criteria.detail_count]
+            # 并行拉取详情（所有候选，预算自然限制）
+            detail_items = list(unique)
             _reserve_all = True
             for _ in detail_items:
                 latest_budget = self._reserve(criteria, 1, collection_time)
