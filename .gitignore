@@ -5,6 +5,10 @@ __pycache__/
 .venv/
 venv/
 
+# 测试与缓存产物
+.pytest_cache/
+.DS_Store
+
 # IDE
 .vscode/
 .idea/

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -52,6 +53,7 @@ class SourcingService:
         repository: PriceVerificationRepository,
         plugin_gateway: SharedPluginGateway | None = None,
         plugin_bridge: PluginBridgeService | None = None,
+        product_library_service: Any | None = None,
     ) -> None:
         if not isinstance(repository, PriceVerificationRepository):
             raise TypeError("repository must be PriceVerificationRepository")
@@ -62,6 +64,10 @@ class SourcingService:
         self._repository = repository
         self._plugin_gateway = plugin_gateway
         self._plugin_bridge = plugin_bridge
+        # Optional upstream product library (profit_activity service): when
+        # present, every retained SKC that has active 1688 source links is
+        # auto-synced into the product library after link/unlink operations.
+        self._product_library_service = product_library_service
 
     def search_batch_selections_by_image(
         self,
@@ -197,6 +203,7 @@ class SourcingService:
             note=_text(note),
             now=_now_text(),
         )
+        self._sync_skc_to_product_library(actor, batch_id=batch_id, skc_id=skc_id)
         return _source_link_response(record, selection=selection)
 
     def list_skc_source_links(
@@ -232,7 +239,110 @@ class SourcingService:
         record = self._repository.soft_remove_skc_source_link(
             workspace_id=actor.workspace_id, link_id=int(link_id), now=_now_text()
         )
+        self._sync_skc_to_product_library(actor, batch_id=record.batch_id, skc_id=record.skc_id)
         return _source_link_response(record)
+
+    def _sync_skc_to_product_library(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        skc_id: str,
+    ) -> Mapping[str, Any] | None:
+        """Upsert one retained SKC into the product library with its active 1688 links.
+
+        The cost basis is the cheapest active link (source price plus allocated
+        domestic freight over MOQ); every active link is kept in
+        ``source_groups_json`` with its stored (default or user-adjusted)
+        price/freight and per-link profit. Auto-sync failures never raise:
+        linking/unlinking must succeed even if the library is unavailable.
+        """
+        if self._product_library_service is None:
+            return None
+        try:
+            selection = self._repository.get_batch_selection_by_skc(
+                workspace_id=actor.workspace_id, batch_id=batch_id, skc_id=skc_id
+            )
+            if selection is None or selection.status != "retained":
+                return None
+            site = _site_code(selection.site)
+            selling_price = _decimal(selection.adjusted_min)
+            if not site or selling_price is None or selling_price <= 0:
+                return None
+            links = tuple(
+                self._repository.list_skc_source_links(
+                    workspace_id=actor.workspace_id, batch_id=batch_id, skc_id=skc_id
+                )
+            )
+            if not links:
+                return None
+            groups: list[dict[str, Any]] = []
+            computed: list[tuple[Decimal, Mapping[str, Any]]] = []
+            for link in links:
+                profit = build_candidate_profit(
+                    {
+                        "price": link.price_cny,
+                        "promotion_price": None,
+                        "moq": link.moq,
+                        "domestic_freight": link.domestic_freight_cny,
+                    },
+                    site=site,
+                    selling_price=selling_price,
+                    weight_kg=DEFAULT_WEIGHT_KG,
+                )
+                groups.append(
+                    {
+                        "source_url": link.source_url,
+                        "source_title": link.source_title,
+                        "main_image_url": link.main_image_url,
+                        "offer_id": link.offer_id,
+                        "price_cny": link.price_cny,
+                        "moq": link.moq,
+                        "domestic_freight_cny": link.domestic_freight_cny,
+                        "source_decision": link.source_decision,
+                        "note": link.note,
+                        "profit": profit,
+                    }
+                )
+                cost = _decimal(profit.get("cost_price"))
+                if profit.get("available") and cost is not None:
+                    computed.append((cost, profit))
+            if not computed:
+                return None
+            _cost, best = min(computed, key=lambda item: item[0])
+            payload: dict[str, Any] = {
+                "site": site,
+                "skc": selection.skc_id,
+                "selling_price": str(selling_price),
+                "cost_price": str(best["cost_price"]),
+                "weight_kg": str(best["weight_kg"]),
+                "note": f"来自核价及货源 · 批次 {batch_id}",
+                "source_url": str(groups[0].get("source_url") or ""),
+                "source_groups_json": json.dumps(groups, ensure_ascii=False, separators=(",", ":")),
+                "source_type": "price_verification",
+                "visibility": "shared",
+            }
+            return self._product_library_service.upsert_product(payload, actor=actor)
+        except Exception:
+            return None
+
+    def sync_all_to_product_library(self) -> int:
+        """Backfill the product library for every retained SKC with active links.
+
+        Runs once at startup so previously-associated products appear in the
+        product library even though auto-sync is wired to link/unlink events.
+        """
+        if self._product_library_service is None:
+            return 0
+        synced = 0
+        for workspace_id, batch_id, skc_id in self._repository.active_skc_link_targets():
+            actor = PriceVerificationActor(actor_id=workspace_id, workspace_id=workspace_id)
+            if (
+                self._sync_skc_to_product_library(actor, batch_id=batch_id, skc_id=skc_id)
+                is not None
+            ):
+                synced += 1
+        return synced
 
     def queue_browser_search(
         self,
@@ -896,6 +1006,17 @@ def _nullable_decimal_text(value: object) -> str | None:
     if not number.is_finite() or number < 0:
         return None
     return str(number)
+
+
+def _decimal(value: object) -> Decimal | None:
+    """Parse a stored text/float into a finite non-negative Decimal, else None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value).strip().replace("¥", "").replace(",", ""))
+    except (InvalidOperation, ValueError, ArithmeticError):
+        return None
+    return number if number.is_finite() else None
 
 
 def _source_link_response(

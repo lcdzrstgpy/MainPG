@@ -1260,6 +1260,29 @@ class PriceVerificationRepository:
                 ).fetchall()
         return tuple(_skc_source_link_record(row) for row in rows)
 
+    def active_skc_link_targets(
+        self, workspace_id: str | None = None
+    ) -> tuple[tuple[str, str, str], ...]:
+        """Distinct (workspace_id, batch_id, skc_id) triples with active source links.
+
+        Used to backfill the product library for already-associated SKCs.
+        """
+        with self._connect() as connection:
+            if workspace_id:
+                rows = connection.execute(
+                    """SELECT DISTINCT workspace_id, batch_id, skc_id
+                    FROM price_verification_skc_source_links
+                    WHERE workspace_id = ? AND status = 'active'""",
+                    (workspace_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT DISTINCT workspace_id, batch_id, skc_id
+                    FROM price_verification_skc_source_links
+                    WHERE status = 'active'""",
+                ).fetchall()
+        return tuple((str(row[0]), str(row[1]), str(row[2])) for row in rows)
+
     def soft_remove_skc_source_link(
         self, *, workspace_id: str, link_id: int, now: str
     ) -> SkcSourceLinkRecord:

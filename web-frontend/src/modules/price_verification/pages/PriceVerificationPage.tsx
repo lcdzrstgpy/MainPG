@@ -165,12 +165,14 @@ export function PriceVerificationPage() {
       source_decision: candidate.source_decision,
     });
     setSourceLinks((current) => [...current.filter((item) => item.offer_id !== link.offer_id), link]);
+    setNotice(`已关联 1688 货源 ${link.offer_id}，并自动同步至产品库。`);
   };
 
   const unlinkSkcSource = async (linkId: number) => {
     if (!currentBatchId) return;
     await priceVerificationApi.removeSkcSourceLink(currentBatchId, linkId);
     setSourceLinks((current) => current.filter((item) => item.id !== linkId));
+    setNotice("已解除该 1688 货源关联，产品库记录已同步更新。");
   };
 
   return <div className="price-verification-page">

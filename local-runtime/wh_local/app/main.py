@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from collections.abc import Mapping
@@ -10,6 +11,8 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+
+logger = logging.getLogger("wh_local.app")
 
 from ..config import default_config
 from ..customer.auth_service import SQLiteCustomerAuthService
@@ -110,11 +113,14 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     product_processing = _product_processing_service(db_path)
     app.include_router(create_product_processing_router(product_processing))
     _register_data_collection(app, db_path, plugin_queue, product_processing)
-    _register_profit_activity(app, db_path)
+    profit_activity_service = _register_profit_activity(app, db_path)
     app.include_router(create_product_processing_router(product_processing), prefix="/api")
 
     # 核价及货源模块
-    _register_price_verification(app, db_path, config.data_dir, plugin_queue, product_processing)
+    _register_price_verification(
+        app, db_path, config.data_dir, plugin_queue, product_processing,
+        product_library_service=profit_activity_service,
+    )
 
     return app
 
@@ -164,10 +170,11 @@ def _register_data_collection(
     register_daily_selection_routes(app.router, dependencies)
 
 
-def _register_profit_activity(app: FastAPI, db_path: Path) -> None:
+def _register_profit_activity(app: FastAPI, db_path: Path) -> Any:
     """Register profit-activity routes against the shared runtime database."""
     service = create_profit_activity_service(db_path)
     app.include_router(create_profit_activity_router(service, db_path), prefix="/api")
+    return service
 
 
 def _product_processing_service(db_path: Path) -> ProductProcessingService:
@@ -185,6 +192,7 @@ def _register_price_verification(
     data_dir: Path,
     plugin_queue: DataCollectionPluginQueue,
     product_processing: ProductProcessingService | None = None,
+    product_library_service: Any | None = None,
 ) -> None:
     """Register read-only price-verification routes with host-owned adapters."""
     dependencies = PriceVerificationRouteDependencies(
@@ -199,8 +207,38 @@ def _register_price_verification(
             if product_processing is not None
             else None
         ),
+        product_library_service=product_library_service,
     )
     register_price_verification_routes(app.router, dependencies)
+    _backfill_price_verification_to_product_library(db_path, plugin_queue, product_library_service)
+
+
+def _backfill_price_verification_to_product_library(
+    db_path: Path,
+    plugin_queue: DataCollectionPluginQueue | None,
+    product_library_service: Any | None,
+) -> None:
+    """Startup backfill: sync already-associated retained SKCs into the product library."""
+    if product_library_service is None:
+        return
+    try:
+        from ..price_verification.repository import PriceVerificationRepository
+        from ..price_verification.sourcing.service import SourcingService
+        from ..price_verification.plugin.shared_gateway import SharedPluginGateway
+
+        sourcing = SourcingService(
+            repository=PriceVerificationRepository(db_path),
+            plugin_gateway=SharedPluginGateway(
+                plugin_queue or DataCollectionPluginQueue(db_path)
+            ),
+            product_library_service=product_library_service,
+        )
+        synced = sourcing.sync_all_to_product_library()
+        if synced:
+            logger.info("price-verification backfill: %s products synced to library", synced)
+    except Exception:
+        # Backfill is best-effort; runtime link/unlink sync still covers new data.
+        pass
 
 
 

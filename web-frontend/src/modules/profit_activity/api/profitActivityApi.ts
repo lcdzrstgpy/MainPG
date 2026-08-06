@@ -1,6 +1,8 @@
-import type { ProductQueryParams, ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
+import type { ProductQueryParams, ProductSources, ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
 
-// 与 ProfitActivityTestPage 保持一致：直连本地利润活动后端，使用 dev-admin-token。
+// 与 ProfitActivityTestPage 保持一致：直连本地利润活动后端。
+// token 解析优先级：页面手动设置（whLocalApiToken）→ 登录用户会话
+// （wh_demo_token，与核价及货源模块同一工作区）→ 本地开发管理员令牌。
 function resolveEndpoint() {
   return {
     apiBase: localStorage.getItem("profitActivityApiBase") || "http://127.0.0.1:8010",
@@ -8,20 +10,39 @@ function resolveEndpoint() {
   };
 }
 
+// 候选令牌：手动设置 > 登录会话 > 管理员令牌（永不过期，兜底）。
+function candidateTokens(): string[] {
+  const tokens = new Set<string>();
+  const manual = localStorage.getItem("whLocalApiToken");
+  const customer = localStorage.getItem("wh_demo_token");
+  if (manual) tokens.add(manual);
+  if (customer) tokens.add(customer);
+  tokens.add("dev-admin-token");
+  return [...tokens];
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const { apiBase, token } = resolveEndpoint();
-  const headers = new Headers(options.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${apiBase}${path}`, { ...options, headers });
-  const text = await response.text();
-  let data: unknown = text;
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    // 非 JSON 响应时保留原文
+  const { apiBase } = resolveEndpoint();
+  const last401 = new Error("invalid bearer token");
+  for (const token of candidateTokens()) {
+    const headers = new Headers(options.headers);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(`${apiBase}${path}`, { ...options, headers });
+    const text = await response.text();
+    let data: unknown = text;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      // 非 JSON 响应时保留原文
+    }
+    if (response.status === 401) {
+      last401.message = typeof data === "string" ? data : JSON.stringify(data);
+      continue; // 会话失效时回退下一个令牌重试
+    }
+    if (!response.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+    return data as T;
   }
-  if (!response.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
-  return data as T;
+  throw last401;
 }
 
 export async function listProfitActivityProducts(params: ProductQueryParams) {
@@ -32,6 +53,12 @@ export async function listProfitActivityProducts(params: ProductQueryParams) {
   });
   const data = await request<{ products: ProfitActivityProduct[] }>(`/api/profit-activity/products?${query}`);
   return data.products ?? [];
+}
+
+export async function listProductSources({ skc, site }: { skc: string; site: ProfitActivitySite }) {
+  return request<ProductSources>(
+    `/api/profit-activity/products/${encodeURIComponent(skc)}/sources?site=${site}`,
+  );
 }
 
 export async function deleteProfitActivityProducts({
@@ -55,8 +82,9 @@ export async function downloadProfitActivityCatalog({
   site: ProfitActivitySite;
   scope: ProfitActivityScope;
 }) {
-  const { apiBase, token } = resolveEndpoint();
+  const { apiBase } = resolveEndpoint();
   const headers = new Headers();
+  const token = candidateTokens()[0];
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const response = await fetch(`${apiBase}/api/profit-activity/catalog/rebuild?${new URLSearchParams({ site, scope })}`, {
     method: "POST",
