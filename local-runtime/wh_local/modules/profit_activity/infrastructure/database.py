@@ -67,6 +67,7 @@ def _migrate_legacy_tables(engine: Engine) -> None:
         "profit_activity_records": {
             "workspace_id": "TEXT NOT NULL DEFAULT 'default'",
             "visibility": "TEXT NOT NULL DEFAULT 'shared'",
+            "source_type": "TEXT NOT NULL DEFAULT 'manual'",
             "created_by": "TEXT NOT NULL DEFAULT ''",
             "created_by_username": "TEXT NOT NULL DEFAULT 'local'",
             "image_path": "TEXT NOT NULL DEFAULT ''",

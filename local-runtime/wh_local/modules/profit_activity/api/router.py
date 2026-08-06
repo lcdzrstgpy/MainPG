@@ -14,6 +14,8 @@ from ..infrastructure.repository import SettingsSnapshot
 from ..service import ProfitActivityConflict, ProfitActivityNotFound, ProfitActivityService
 from .schemas import ArchiveRequest, FilterRequest, SettingsUpdateRequest
 from ....session import Actor, actor_from_bearer_token, actor_has_permission, require_permission
+from ....config import default_config
+from ....db import connect
 
 
 def create_profit_activity_router(service: ProfitActivityService, database_path: Path | None = None) -> APIRouter:
@@ -94,12 +96,63 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         return _run_response(run, decisions)
 
     @router.get("/products")
-    def list_products(site: Literal["US", "CO", "EC"] | None = None, site_code: Literal["US", "CO", "EC"] | None = None, skcs: str = "", scope: str = "default", owner_user_id: int | None = None, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+    def list_products(site: Literal["US", "CO", "EC"] | None = None, site_code: Literal["US", "CO", "EC"] | None = None, skcs: str = "", scope: str = "default", owner_user_id: int | None = None, source_type: str = "", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.read", database_path)
-        requested = [item.strip() for item in skcs.replace("，", ",").replace("\n", ",").split(",") if item.strip()]
         requested = [item.strip() for item in re.split(r"[\s,，]+", skcs) if item.strip()]
         include_company = _include_company(scope, actor, database_path)
-        return {"products": service.list_products(site=site or site_code, skcs=requested, actor=actor, include_workspace_shared=include_company), "scope": scope, "owner_user_id": owner_user_id}
+        return {"products": service.list_products(site=site or site_code, skcs=requested, source_type=source_type.strip() or None, actor=actor, include_workspace_shared=include_company), "scope": scope, "owner_user_id": owner_user_id}
+
+    @router.get("/products/{skc}/sources")
+    def product_sources(skc: str, site: Literal["US", "CO", "EC"] = "US", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+        """Return the active 1688 source links associated with one product.
+
+        产品库的 source_groups_json 契约只保留 source_url + image_paths，
+        这里在同库联查核价模块的 price_verification_skc_source_links，
+        返回每条 1688 链接的完整明细（价格/起订量/运费/链接 id/batch_id），
+        供产品库右侧货源侧边栏展示、调价重算与解除关联。
+        """
+        require_permission(actor, "profit_activity.read", database_path)
+        db_path = database_path or default_config().database_path
+        try:
+            products = service.list_products(site=site, skcs=[skc], actor=actor)
+        except Exception:
+            products = []
+        product = products[0] if products else None
+        result: dict[str, Any] = {
+            "skc": skc,
+            "site": site,
+            "product_title": (product or {}).get("note") or "",
+            "selling_price": (product or {}).get("selling_price"),
+            "links": [],
+        }
+        if product is None:
+            return result
+        source_urls = [str(group.get("source_url") or "").strip() for group in (product.get("source_groups") or [])]
+        source_urls = [url for url in source_urls if url]
+        if not source_urls:
+            return result
+        try:
+            conn = connect(db_path)
+            try:
+                placeholders = ",".join("?" for _ in source_urls)
+                rows = conn.execute(
+                    f"""
+                    SELECT id, batch_id, skc_id, offer_id, source_url, source_title,
+                           main_image_url, price_cny, moq, domestic_freight_cny,
+                           source_decision, note
+                    FROM price_verification_skc_source_links
+                    WHERE source_url IN ({placeholders}) AND skc_id = ? AND status = 'active'
+                    ORDER BY id ASC
+                    """,
+                    (*source_urls, skc),
+                ).fetchall()
+                result["links"] = [dict(row) for row in rows]
+            finally:
+                conn.close()
+        except Exception:
+            # 核价链接表不存在（独立部署的产品库）或查询失败时保持空列表。
+            result["links"] = []
+        return result
 
     @router.post("/products")
     async def create_product(request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:

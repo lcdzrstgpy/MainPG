@@ -140,7 +140,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
             </div>
           )}
           {activeModuleId === "dashboard" && <WorkspaceHomePage onOpenModule={openModule} />}
-          {activeModuleId === "daily_selection" && <DailySelectionPage onOpenCollection={openCollectionPanel} />}
+          {activeModuleId === "daily_selection" && <DailySelectionPage view="collection" />}
           {activeModuleId === "profit_activity" && <ProfitActivityTestPage />}
           {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
           {activeModuleId === "basic_settings" && <BasicSettingsPage />}

@@ -6,6 +6,7 @@ import {
   listProfitActivityProducts,
 } from "../api/profitActivityApi";
 import type { ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
+import { ProductSourceDrawer } from "../components/ProductSourceDrawer";
 import "../styles/profitActivityProducts.css";
 
 const siteLabels: Record<ProfitActivitySite, string> = { US: "美区", CO: "哥伦比亚", EC: "厄瓜多尔" };
@@ -25,6 +26,7 @@ export function ProfitActivityProductsPage() {
   const [pageSize, setPageSize] = useState<(typeof pageSizeOptions)[number]>(10);
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("输入 SKC 查询；留空展示数据库中当前权限可见产品。");
+  const [activeProduct, setActiveProduct] = useState<ProfitActivityProduct | null>(null);
 
   const totalPages = Math.max(1, Math.ceil(products.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -164,7 +166,7 @@ export function ProfitActivityProductsPage() {
               </label>
             ))}
           </div>
-          <label>查询范围<select value={scope} onChange={(event) => setScope(event.target.value as ProfitActivityScope)}><option value="default">只查本人/默认权限</option><option value="company">查本公司在档产品</option></select></label>
+          <label>查询范围<select value={scope} onChange={(event) => setScope(event.target.value as ProfitActivityScope)}><option value="default">本人 + 核价入库</option><option value="company">查本公司在档产品</option></select></label>
           <label>每页条数<select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value) as typeof pageSize); setPage(1); }}>{pageSizeOptions.map((value) => <option key={value} value={value}>每页 {value} 条</option>)}</select></label>
         </div>
 
@@ -189,7 +191,7 @@ export function ProfitActivityProductsPage() {
                 <tr key={productKey(item)}>
                   <td><input type="checkbox" checked={selected.has(productKey(item))} onChange={(event) => setSelected(toggleSet(selected, productKey(item), event.target.checked))} /></td>
                   <td>{siteLabels[(item.site || item.site_code || "US") as ProfitActivitySite]}</td>
-                  <td>{item.skc}</td>
+                  <td>{item.skc}{item.source_type === "price_verification" && <em className="profit-source-badge" title="来自核价及货源板块自动入库">核价</em>}</td>
                   <td>{item.workspace_name || "-"}</td>
                   <td>{item.created_by_username || item.created_by || "-"}</td>
                   <td>{money(item.selling_price)}</td>
@@ -197,7 +199,7 @@ export function ProfitActivityProductsPage() {
                   <td>{item.weight_kg ?? "-"}</td>
                   <td className={(item.net_profit ?? 0) >= 0 ? "profit-good" : "profit-bad"}>{money(item.net_profit)}</td>
                   <td>{percent(item.profit_rate)}</td>
-                  <td>{item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">打开</a> : "-"}</td>
+                  <td>{item.source_url ? <button className="profit-source-open" onClick={() => setActiveProduct(item)} title="查看该 SKC 已关联的 1688 货源">打开（{(item.source_groups ?? []).filter((group) => group?.source_url).length}）</button> : "-"}</td>
                   <td>{item.image_path ? "主图" : "-"} {item.source_image_path ? "货源图" : ""}</td>
                   <td>{item.is_owner ? "本人" : item.can_edit ? "可编辑" : "只读"}</td>
                 </tr>
@@ -219,6 +221,11 @@ export function ProfitActivityProductsPage() {
           </div>
         </div>
       </section>
+      <ProductSourceDrawer
+        product={activeProduct}
+        onClose={() => setActiveProduct(null)}
+        onChanged={queryProducts}
+      />
     </div>
   );
 }

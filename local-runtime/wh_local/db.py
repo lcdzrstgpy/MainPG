@@ -368,6 +368,17 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                     sql_path.read_text(encoding="utf-8"),
                 )
             )
+    plugin_session_client_identity_sql = (
+        root / "data_collection" / "migrations" / "004_plugin_session_client_identity.sql"
+    )
+    if plugin_session_client_identity_sql.exists():
+        migrations.append(
+            (
+                "data_collection:004_plugin_session_client_identity",
+                "data_collection",
+                plugin_session_client_identity_sql.read_text(encoding="utf-8"),
+            )
+        )
 
     product_processing_sql = root / "modules" / "product_processing" / "migrations" / "001_product_processing.sql"
     if product_processing_sql.exists():
@@ -403,6 +414,17 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 "profit_activity:001_profit_activity",
                 "profit_activity",
                 profit_activity_sql.read_text(encoding="utf-8"),
+            )
+        )
+    profit_activity_source_type_sql = (
+        root / "modules" / "profit_activity" / "migrations" / "002_product_library_source_type.sql"
+    )
+    if profit_activity_source_type_sql.exists():
+        migrations.append(
+            (
+                "profit_activity:002_product_library_source_type",
+                "profit_activity",
+                profit_activity_source_type_sql.read_text(encoding="utf-8"),
             )
         )
     price_verification_sql = root / "price_verification" / "migrations" / "001_price_verification.sql"
@@ -456,6 +478,17 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 "price_verification:005_batch_selections",
                 "price_verification",
                 batch_selections_sql.read_text(encoding="utf-8"),
+            )
+        )
+    skc_source_links_sql = (
+        root / "price_verification" / "migrations" / "006_skc_source_links.sql"
+    )
+    if skc_source_links_sql.exists():
+        migrations.append(
+            (
+                "price_verification:006_skc_source_links",
+                "price_verification",
+                skc_source_links_sql.read_text(encoding="utf-8"),
             )
         )
     return migrations

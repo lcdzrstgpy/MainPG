@@ -126,13 +126,13 @@ class ProfitActivityService:
             raise ProfitActivityConflict("negative_profit_confirmation_required")
         return self._repository.upsert_record(workspace_id=context.workspace_id, created_by=context.actor_id, created_by_username=context.username, skc=skc, note=note, preview=preview, calculation_hash=calculation_hash, settings_revision=settings_revision)
 
-    def list_records(self, site_code: SiteCode | None, offset: int, limit: int, actor: Any | None = None, *, include_workspace_shared: bool = False):
+    def list_records(self, site_code: SiteCode | None, offset: int, limit: int, actor: Any | None = None, *, include_workspace_shared: bool = False, source_type: str | None = None):
         context = _actor_context(actor)
-        return self._repository.list_records(context.workspace_id, site_code, offset, limit, actor_id=context.actor_id, include_workspace_shared=include_workspace_shared or context.is_admin)
+        return self._repository.list_records(context.workspace_id, site_code, offset, limit, actor_id=context.actor_id, include_workspace_shared=include_workspace_shared or context.is_admin, source_type=source_type)
 
-    def list_products(self, *, site: SiteCode | None = None, skcs: list[str] | None = None, actor: Any | None = None, include_workspace_shared: bool = False) -> list[dict[str, Any]]:
+    def list_products(self, *, site: SiteCode | None = None, skcs: list[str] | None = None, source_type: str | None = None, actor: Any | None = None, include_workspace_shared: bool = False) -> list[dict[str, Any]]:
         context = _actor_context(actor)
-        records = self.list_records(site, 0, 10_000, actor, include_workspace_shared=include_workspace_shared)
+        records = self.list_records(site, 0, 10_000, actor, include_workspace_shared=include_workspace_shared, source_type=source_type)
         requested = {item.strip() for item in (skcs or []) if item.strip()}
         if requested:
             records = [record for record in records if record.skc in requested]
@@ -180,7 +180,9 @@ class ProfitActivityService:
             skc=skc, note=note, preview=preview,
             calculation_hash=_calculation_hash(preview, settings.revision), settings_revision=settings.revision,
             refund_rate=settings.settings.ec_refund_rate if site == "EC" else settings.settings.refund_rate,
-            visibility=str(payload.get("visibility") or (current.visibility if current else "shared")), source_url=source_url,
+            visibility=str(payload.get("visibility") or (current.visibility if current else "shared")),
+            source_type=str(payload.get("source_type") or (current.source_type if current else "manual")),
+            source_url=source_url,
             image_path=image_path, source_image_path=source_image_path, source_groups=source_groups,
         )
         return _product_payload(record, context)
@@ -536,7 +538,8 @@ def _product_payload(record, actor: ProfitActivityActorContext) -> dict[str, Any
     is_owner = record.created_by == actor.actor_id
     return {
         "id": record.id, "site": record.site_code, "site_code": record.site_code, "skc": record.skc,
-        "visibility": record.visibility, "created_by": record.created_by, "created_by_username": record.created_by_username,
+        "visibility": record.visibility, "source_type": record.source_type,
+        "created_by": record.created_by, "created_by_username": record.created_by_username,
         "workspace_id": record.workspace_id, "workspace_code": actor.workspace_code, "workspace_name": actor.workspace_name,
         "is_owner": is_owner, "can_edit": is_owner or actor.is_admin,
         "image_path": record.image_path, "source_image_path": record.source_image_path, "source_groups": groups,
