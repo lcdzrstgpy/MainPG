@@ -11,9 +11,11 @@ venv/
 
 # Local runtime artifacts
 local-runtime/outputs/
+outputs/
 
 # Local secrets
 local-runtime/wh_local/onebound.local.json
+local-runtime/wh_local/modules/product_processing/cos.local.json
 
 # Local tooling
 local-runtime/python.exe

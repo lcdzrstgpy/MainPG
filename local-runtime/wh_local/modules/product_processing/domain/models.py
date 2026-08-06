@@ -214,11 +214,4 @@ class DailySelectionHandoffEnvelope(BaseModel):
     created_at: str
 
 
-DEFAULT_PROMPTS: dict[str, str] = {
-    "title": "保留商品核心属性，生成简洁、准确且符合目标站点语言的标题。",
-    "desc": "根据来源事实生成商品描述，不虚构材质、尺寸、认证或功效。",
-    "size": "只依据来源重量和包装信息整理尺寸字段；缺失时明确标记待确认。",
-    "grid_image": "使用来源商品图生成干净的四宫格主图，不改变商品本体。",
-    "detail_image": "根据来源图片和属性生成详情信息图，不添加未经证实的卖点。",
-    "combined_text": "一次性整理标题、描述、规格与合规提示，保持字段之间一致。",
-}
+from .prompts import DEFAULT_PROMPTS  # noqa: E402  (英文工程化提示词，语言契约在调用处注入)
