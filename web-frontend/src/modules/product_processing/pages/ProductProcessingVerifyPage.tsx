@@ -59,8 +59,12 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [jumpPage, setJumpPage] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'draft' | 'processed' | 'attention_required'>('all');
+  const [viewMode, setViewMode] = useState<'all' | 'selected'>('all');
   const [searchTerm, setSearchTerm] = useState('');
+  // SKU 数量筛选：0 = 全部，否则为最少变种数
+  const [skuCountFilter, setSkuCountFilter] = useState(0);
+  // 不看单规格：隐藏无变种 / 仅 1 个变种的草稿
+  const [hideSingleSpec, setHideSingleSpec] = useState(false);
   const draftListRef = useRef<HTMLDivElement>(null);
 
   const dirtyCount = useMemo(
@@ -74,14 +78,20 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
   const filteredDrafts = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
     return selectableDrafts.filter((d) => {
-      if (statusFilter !== 'all' && d.status !== statusFilter) return false;
-      if (!keyword) return true;
+      // 「只看已选」视图下过滤掉未勾选草稿，直接呈现全部所选链接
+      if (viewMode === 'selected' && !selectedIds.has(d.id)) return false;
       const raw = d.raw_payload || {};
+      const variantCount = Array.isArray(raw.source_variant_records) ? raw.source_variant_records.length : 0;
+      // SKU 数量筛选：至少 N 个变种
+      if (skuCountFilter > 1 && variantCount < skuCountFilter) return false;
+      // 不看单规格：隐藏无变种 / 仅 1 个变种的单规格草稿
+      if (hideSingleSpec && variantCount <= 1) return false;
+      if (!keyword) return true;
       return [d.title, d.product_name, d.skc, d.sku, d.source_ref, raw.source_title]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword));
     });
-  }, [selectableDrafts, statusFilter, searchTerm]);
+  }, [selectableDrafts, viewMode, selectedIds, searchTerm, skuCountFilter, hideSingleSpec]);
   const totalDrafts = filteredDrafts.length;
   const totalPages = Math.max(1, Math.ceil(totalDrafts / PAGE_SIZE));
   const pageStart = (page - 1) * PAGE_SIZE;
@@ -206,9 +216,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
           <p>采集先入池，默认只处理勾选草稿；暂停、确认与继续均以本地持久状态为准。</p>
         </div>
         <div className="verify-command-stats">
-          <span><strong>{selectableDrafts.length}</strong>待处理</span>
-          <span><strong>{selectedIds.size}</strong>已勾选</span>
-          <span><strong>{dirtyCount}</strong>未保存</span>
+          <span><i className="iconfont icon-appstore" aria-hidden="true" /><strong>{selectableDrafts.length}</strong><em>待处理</em></span>
+          <span><i className="iconfont icon-check-circle" aria-hidden="true" /><strong>{selectedIds.size}</strong><em>已勾选</em></span>
+          <span><i className="iconfont icon-save" aria-hidden="true" /><strong>{dirtyCount}</strong><em>未保存</em></span>
         </div>
       </header>
 
@@ -218,46 +228,93 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
 
       <section className="verify-section" ref={draftListRef}>
         <div className="verify-section-head">
-          <h2>草稿池</h2>
+          <h2><i className="iconfont icon-database" aria-hidden="true" />草稿池</h2>
           <div className="verify-actions">
-            <button onClick={selectAll}>全选本页</button>
-            <button onClick={clearSelection}>取消选择</button>
-            <button onClick={() => saveDrafts(true)} disabled={loading}>保存已选</button>
-            <button onClick={() => saveDrafts(false)} disabled={loading}>保存全部修改</button>
-            <button onClick={deleteSelected} disabled={!selectedIds.size}>移除已选</button>
-            <button onClick={() => refresh().catch(fail)} disabled={loading}>刷新</button>
+            <button onClick={selectAll}><i className="iconfont icon-select" aria-hidden="true" />全选本页</button>
+            <button onClick={clearSelection}><i className="iconfont icon-close-circle" aria-hidden="true" />取消选择</button>
+            <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
+            <button onClick={() => saveDrafts(false)} disabled={loading}><i className="iconfont icon-save-fill" aria-hidden="true" />保存全部修改</button>
+            <button onClick={deleteSelected} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />移除已选</button>
+            <button onClick={() => refresh().catch(fail)} disabled={loading}><i className="iconfont icon-sync" aria-hidden="true" />刷新</button>
           </div>
         </div>
 
         <div className="verify-pool-toolbar">
           <div className="verify-pool-stats">
-            <span>待处理 <strong>{selectableDrafts.length}</strong></span>
-            <span>已选 <strong>{selectedIds.size}</strong></span>
-            <span>本页 <strong>{pageDrafts.length}</strong></span>
-            {dirtyCount > 0 && <span className="dirty">未保存修改 <strong>{dirtyCount}</strong></span>}
+            <span><i className="iconfont icon-appstore" aria-hidden="true" />待处理 <strong>{selectableDrafts.length}</strong></span>
+            <span><i className="iconfont icon-check-circle" aria-hidden="true" />已选 <strong>{selectedIds.size}</strong></span>
+            <span><i className="iconfont icon-file-text" aria-hidden="true" />本页 <strong>{pageDrafts.length}</strong></span>
+            {(skuCountFilter > 1 || hideSingleSpec || viewMode === 'selected') && (
+              <span><i className="iconfont icon-filter" aria-hidden="true" />筛选后 <strong>{totalDrafts}</strong></span>
+            )}
+            {dirtyCount > 0 && <span className="dirty"><i className="iconfont icon-save" aria-hidden="true" />未保存修改 <strong>{dirtyCount}</strong></span>}
           </div>
           <div className="verify-pool-controls">
-            <select
-              aria-label="按状态筛选"
-              value={statusFilter}
-              onChange={(e) => { setStatusFilter(e.target.value as typeof statusFilter); setPage(1); }}
-            >
-              <option value="all">全部状态</option>
-              <option value="draft">待处理</option>
-              <option value="processed">已处理</option>
-              <option value="attention_required">需确认</option>
-            </select>
-            <input
-              type="search"
-              className="verify-pool-search"
-              placeholder="搜索标题 / SKC / SKU / 来源..."
-              value={searchTerm}
-              onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
-            />
+            <div className="verify-sku-filter">
+              <i className="iconfont icon-filter" aria-hidden="true" />
+              <select
+                className="verify-pool-select"
+                value={skuCountFilter}
+                title="按 SKU（变种）数量筛选"
+                onChange={(e) => { setSkuCountFilter(Number(e.target.value)); setPage(1); }}
+              >
+                <option value={0}>SKU 数量：全部</option>
+                <option value={2}>≥ 2 个</option>
+                <option value={3}>≥ 3 个</option>
+                <option value={5}>≥ 5 个</option>
+                <option value={10}>≥ 10 个</option>
+              </select>
+              <label className="verify-hide-single" title="隐藏无变种 / 仅 1 个变种的单规格草稿">
+                <input
+                  type="checkbox"
+                  checked={hideSingleSpec}
+                  onChange={(e) => { setHideSingleSpec(e.target.checked); setPage(1); }}
+                />
+                不看单规格
+              </label>
+            </div>
+            <div className="verify-view-toggle" role="group" aria-label="草稿视图">
+              <button
+                type="button"
+                className={viewMode === 'all' ? 'is-active' : ''}
+                onClick={() => { setViewMode('all'); setPage(1); }}
+              ><i className="iconfont icon-appstore" aria-hidden="true" />全部草稿</button>
+              <button
+                type="button"
+                className={viewMode === 'selected' ? 'is-active' : ''}
+                onClick={() => { setViewMode('selected'); setPage(1); }}
+              ><i className="iconfont icon-check-circle" aria-hidden="true" />只看已选{selectedIds.size > 0 ? `（${selectedIds.size}）` : ''}</button>
+            </div>
+            <div className="verify-pool-search-wrap">
+              <i className="iconfont icon-search" aria-hidden="true" />
+              <input
+                type="search"
+                className="verify-pool-search"
+                placeholder="搜索标题 / SKC / SKU / 来源..."
+                value={searchTerm}
+                onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
+              />
+            </div>
           </div>
         </div>
 
-        {totalDrafts === 0 && <p className="verify-empty">草稿池为空，请先在每日选品中确认入池。</p>}
+        {viewMode === 'selected' && (
+          <div className="verify-selected-banner">
+            <span>正在核对已勾选草稿，共 <strong>{totalDrafts}</strong> 条（未勾选已过滤）</span>
+            <div className="verify-selected-banner-acts">
+              <button type="button" onClick={() => { setViewMode('all'); setPage(1); }}>查看全部</button>
+              <button type="button" onClick={clearSelection}>清空已选</button>
+            </div>
+          </div>
+        )}
+
+        {totalDrafts === 0 && (
+          <p className="verify-empty">
+            {viewMode === 'selected'
+              ? '还没有勾选草稿。先勾选目标草稿，再切换「只看已选」即可核对全部所选链接。'
+              : '草稿池为空，请先在每日选品中确认入池。'}
+          </p>
+        )}
         <div className="verify-draft-list">
           {pageDrafts.map((draft) => {
             const raw = draft.raw_payload || {};
@@ -292,22 +349,27 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
                   <div className="pool-info">
                     <div className="pool-title-row">
                       <strong title={displayTitle}>{displayTitle}</strong>
+                      {isSelected && <span className="pool-selected-tag"><i className="iconfont icon-check" aria-hidden="true" />已选</span>}
                       <div className="pool-inline-acts">
-                        <button className="btn-mini" onClick={() => copy(displayTitle)}>复制</button>
-                        <button className="btn-mini" onClick={() => beginEdit(draft)}>{isExpanded ? '收起' : '编辑'}</button>
-                        <button className="btn-mini danger" onClick={() => { if (window.confirm('确认删除该草稿？')) deleteSelected(); }}>删除</button>
+                        <button className="btn-mini" onClick={() => copy(displayTitle)}><i className="iconfont icon-file-copy" aria-hidden="true" />复制</button>
+                        <button className="btn-mini" onClick={() => beginEdit(draft)}><i className="iconfont icon-edit" aria-hidden="true" />{isExpanded ? '收起' : '编辑'}</button>
+                        <button className="btn-mini danger" onClick={() => { if (window.confirm('确认删除该草稿？')) deleteSelected(); }}><i className="iconfont icon-delete" aria-hidden="true" />删除</button>
                       </div>
                     </div>
                     <div className="pool-meta">
                       <span className="tag">{platform}</span>
-                      {sourceUrl ? (
-                        <a href={sourceUrl} target="_blank" rel="noreferrer">{draft.source_ref || '查看来源'}</a>
-                      ) : (
-                        <span className="muted">{draft.source_ref || '-'}</span>
-                      )}
+                      <span className="pool-source-link">
+                        <span className="pool-link-label"><i className="iconfont icon-link" aria-hidden="true" />链接</span>
+                        {sourceUrl ? (
+                          <a href={sourceUrl} target="_blank" rel="noreferrer" title={sourceUrl}>{draft.source_ref || sourceUrl}</a>
+                        ) : (
+                          <span className="muted">{draft.source_ref || '-'}</span>
+                        )}
+                        {sourceUrl && <button className="btn-mini" onClick={() => copy(sourceUrl)}><i className="iconfont icon-link" aria-hidden="true" />复制链接</button>}
+                      </span>
                     </div>
                     <div className="pool-sku-info">
-                      <span className="pool-label">SKU</span>
+                      <span className="pool-label"><i className="iconfont icon-barcode" aria-hidden="true" />SKU</span>
                       <span className="pool-value">
                         {variants.length > 0 ? (
                           <>
@@ -322,14 +384,14 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
                         ) : (<span>单规格</span>)}
                       </span>
                       <div className="pool-inline-acts">
-                        <button className="btn-mini" onClick={() => copy(skcText)}>复制SKC</button>
-                        <button className="btn-mini" onClick={() => copy(skuText)}>复制SKU</button>
+                        <button className="btn-mini" onClick={() => copy(skcText)}><i className="iconfont icon-barcode" aria-hidden="true" />复制SKC</button>
+                        <button className="btn-mini" onClick={() => copy(skuText)}><i className="iconfont icon-barcode" aria-hidden="true" />复制SKU</button>
                       </div>
                     </div>
                     <div className="pool-cat-info">
-                      <span className="pool-label">类目</span>
+                      <span className="pool-label"><i className="iconfont icon-tags" aria-hidden="true" />类目</span>
                       <span className="pool-value">{categoryPath || '（参考）'}</span>
-                      {categoryPath && <button className="btn-mini" onClick={() => copy(categoryPath)}>复制</button>}
+                      {categoryPath && <button className="btn-mini" onClick={() => copy(categoryPath)}><i className="iconfont icon-file-copy" aria-hidden="true" />复制</button>}
                     </div>
                     <div className="pool-extra">
                       {draft.cost != null && <span>成本 ¥{draft.cost}</span>}
@@ -429,11 +491,11 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
 
       <section className="verify-quickbar">
         <div className="verify-actions">
-          <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}>开始处理</button>
-          <button onClick={() => handleProcess(true)} disabled={loading || !selectedIds.size}>预检</button>
-          <button onClick={() => saveDrafts(true)} disabled={loading}>保存已选</button>
-          <button onClick={() => saveDrafts(false)} disabled={loading}>保存全部修改</button>
-          <button onClick={deleteSelected} disabled={!selectedIds.size}>移除已选</button>
+          <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
+          <button onClick={() => handleProcess(true)} disabled={loading || !selectedIds.size}><i className="iconfont icon-eye" aria-hidden="true" />预检</button>
+          <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
+          <button onClick={() => saveDrafts(false)} disabled={loading}><i className="iconfont icon-save-fill" aria-hidden="true" />保存全部修改</button>
+          <button onClick={deleteSelected} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />移除已选</button>
         </div>
       </section>
     </div>
