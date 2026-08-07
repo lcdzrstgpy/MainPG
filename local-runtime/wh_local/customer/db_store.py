@@ -79,7 +79,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                     customer.customer_id,
                     customer.username,
                     customer.email,
-                    customer.role or "operator",
+                    "admin",
                     workspace_id,
                     customer.account_status or "active",
                     customer.remote_expires_at,

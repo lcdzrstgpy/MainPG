@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { priceVerificationApi } from "../api/priceVerificationApi";
 import type { SkcSourceLink, SourceCandidate, SourcePreview, SourcePreviewItem, SourcePreviewSkcGroup, SourceTopProfit } from "../types";
 import { SectionHelp } from "./SectionHelp";
+import "../styles/priceVerificationSource.css";
 
 type Props = {
   preview: SourcePreview | null;
@@ -70,6 +71,11 @@ function percentText(value: unknown) {
   const number = toNumber(value);
   if (!Number.isFinite(number)) return "";
   return `${Math.round(number * 100)}%`;
+}
+
+function isNegative(value: unknown) {
+  const number = toNumber(value);
+  return Number.isFinite(number) && number < 0;
 }
 
 function siteLabel(site?: string) {
@@ -211,33 +217,138 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, onLi
   }));
   const candidateCount = preview?.items.reduce((sum, item) => sum + (item.all_candidates?.length ?? item.candidates.length), 0) ?? 0;
   const linkedCount = links.length;
-  return <section className="price-verification-panel price-verification-source-panel"><div className="price-verification-panel-heading"><div><p className="eyebrow">STEP 03 · SOURCE</p><h2>货源匹配<SectionHelp title="对第二板块已保留的 SKC 执行搜索：默认下载商品主图走 OB 1688 图搜（带相似度）；图搜结果不满意时，勾选「包含标题搜索」重跑，商品标题会先自动翻译成中文做关键词搜索，两路结果合并。结果按 SKC 分组，每个 SKC 默认展示前 5 条（通常 3-5 条）；每条候选都按 Temu 调整后申报价核算利润，源价与重量可调（搜索常返回最便宜的引流款，可自行修正后核算）。" /></h2></div><button className="price-verification-primary-button" onClick={() => onStart(rankingMode, keywordSearch)} disabled={busy || (sourceCount ?? 0) === 0} title={(sourceCount ?? 0) === 0 ? "请先在“待审商品最终确认”板块勾选要图搜的 SKC" : undefined}>{busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0} 个 SKC）`}</button></div>
-    <div className="price-verification-source-callout"><span>i</span><p>{preview ? (keywordSearch ? "已用「图搜 + 标题关键词」两路搜索：图搜结果在前（带相似度），带“标题匹配”标记的是中文标题关键词命中，用于补充图搜不到位的场景。" : "当前为纯图搜结果（带相似度）。如果图搜不准确，勾选下方「包含标题搜索」后点“重新图搜”，会用中文标题关键词补充搜索（带“标题匹配”标记）。") : "先在“待审商品最终确认”板块勾选要图搜的 SKC（可跳过已搜过的避免重复），再点“执行图搜”开始匹配货源。排序方式由你决定：按相似度或按价格从低到高。"}每条候选都核算利润（站点 / 调整后申报价 / 候选源价 / 总成本 / 净利润 / 利润率 / 重量），源价和重量可改并立即重算该条；点「关联」把 1688 链接保留到该 SKC，已关联货源在下方第四板块集中展示（已入库，刷新不丢失）。</p></div>
-    <div className="price-verification-source-empty"><div><span>图搜 SKC</span><strong>{preview?.items.length ?? 0}</strong></div><div><span>货源候选</span><strong>{candidateCount}</strong></div><div><span>已关联 1688</span><strong>{linkedCount}</strong></div>
-      <div className="price-verification-source-controls"><span>候选排序</span><button className={rankingMode === "similarity" ? "is-active" : ""} onClick={() => setRankingMode("similarity")} disabled={busy}>按相似度</button><button className={rankingMode === "price" ? "is-active" : ""} onClick={() => setRankingMode("price")} disabled={busy}>按价格低→高</button><small>排序只影响先后顺序，每条候选都有独立利润核算</small><label className="price-verification-keyword-toggle" title="图搜结果不满意时勾选：把商品标题翻译成中文做 1688 关键词搜索，补充图搜不足"><input type="checkbox" checked={keywordSearch} onChange={(event) => setKeywordSearch(event.target.checked)} disabled={busy} /><span>包含标题搜索</span></label></div>
-      {groups?.length ? <div className="price-verification-source-results">{groups.map((group) => {
-        const item = group.items[0];
-        const cap = item?.max_candidates && item.max_candidates > 0 ? item.max_candidates : 10;
-        const all = item?.all_candidates?.length ? item.all_candidates : item?.candidates ?? [];
-        const displayLimit = (item?.keyword_count ?? 0) > 0 ? Math.min(10, cap + (item?.keyword_count ?? 0)) : Math.min(CANDIDATE_LIMIT, cap);
-        const candidates = sortCandidates(all, rankingMode).slice(0, displayLimit);
-        const groupLinks = links.filter((link) => link.skc_id === group.skc_id);
-        const linkedUrls = new Set(groupLinks.map((link) => link.source_url));
-        return <div className="price-verification-source-group" key={group.skc_id}><div className="price-verification-source-group-head"><strong>{group.skc_id} · {item?.product_title || "未命名商品"}</strong><small>图搜 {statusText(item?.source_search_status)}{item?.source_search_error ? `（${sourceErrorText(item.source_search_error)}）` : ""}{item?.keyword_count ? ` · 标题搜索 ${item.keyword_count} 条` : ""} · 展示 {candidates.length}/{all.length} 条（最多 {(item?.keyword_count ?? 0) > 0 ? Math.min(10, cap + (item?.keyword_count ?? 0)) : CANDIDATE_LIMIT} 条）· 已关联 1688 {groupLinks.length} 条（见下方第四板块）</small></div>
-          {candidates.length ? <div className="price-verification-source-candidates">{candidates.map((candidate, index) => {
-            const isLinked = linkedUrls.has(candidate.source_url ?? "");
-            const busyKey = `${group.skc_id}:${candidate.source_url ?? ""}`;
-            const candKey = candidateKeyFor(group.skc_id, candidate);
-            const profit = profitOverrides[candKey] ?? candidate.profit ?? null;
-            const priceText = priceOverrides[candKey] !== undefined ? priceOverrides[candKey] : String(candidate.promotion_price ?? candidate.price ?? "");
-            const weightText = weights[candKey] ?? "0.5";
-            const metaParts = [candidate.similarity_score !== undefined ? `相似度 ${percentText(candidate.similarity_score)}` : "", candidate.sales !== undefined ? `销量 ${candidate.sales}` : ""].filter(Boolean);
-            return <div className="source-candidate-block" key={`${group.skc_id}-${index}`}><div className="source-candidate-row"><a className="source-candidate" href={candidate.source_url} target="_blank" rel="noreferrer"><img src={candidate.main_image_url} alt="" loading="lazy" /><span className="source-candidate-body"><em className={index === 0 ? "is-top" : ""}>{index === 0 ? "第1名" : decisionLabel(candidate.source_decision)}</em>{candidate.source_channel === "keyword" ? <em className="is-keyword">标题匹配</em> : null}<span className="source-candidate-title">{candidate.source_title || "候选商品"}</span>{metaParts.length ? <small className="source-candidate-meta">{metaParts.join(" · ")}</small> : null}</span><b>¥{toNumber(candidate.promotion_price ?? candidate.price)}</b></a><button className={isLinked ? "source-link-button is-linked" : "source-link-button"} onClick={() => (isLinked ? undefined : void linkCandidate(group, candidate))} disabled={busyLink === busyKey || !candidate.source_url} title={candidate.source_url || "该候选无 1688 链接，无法关联"}>{busyLink === busyKey ? "关联中…" : isLinked ? "✓ 已关联" : "关联"}</button></div>
-            {profit?.available ? <div className={profit.qualified ? "source-profit-strip is-qualified" : "source-profit-strip"}><dl className="source-profit-fields"><div><dt>站点</dt><dd>{siteLabel(profit.site)}</dd></div><div><dt>调整后申报价</dt><dd>{moneyText(profit.selling_price)}</dd></div><div className="is-editable"><dt>候选源价（可调）</dt><dd><input type="number" min="0.01" step="0.01" value={priceText} onChange={(event) => changeCandidatePrice(item, candidate, event.target.value)} disabled={profitBusy === candKey} /></dd></div><div><dt>总成本</dt><dd>{moneyText(profit.total_cost)}</dd></div><div><dt>净利润</dt><dd>{moneyText(profit.net_profit)}</dd></div><div><dt>利润率</dt><dd>{percentText(profit.profit_rate)}</dd></div><div className="is-editable is-weight"><dt>重量（可调）</dt><dd><input type="number" min="0.1" max="10" step="0.1" value={weightText} onChange={(event) => changeCandidateWeight(item, candidate, event.target.value)} disabled={profitBusy === candKey} /> kg</dd></div></dl><em className={profit.qualified ? "is-qualified" : ""} title={qualificationText(profit.qualification)}>{profit.qualified ? "达标 ✓" : "未达标"}</em></div> : <div className="source-profit-strip is-empty"><span>利润核算不可用：{profitReasonText(profit?.reason)}</span>{profitBusy === candKey ? <small>核算中…</small> : null}</div>}
-            </div>;
-          })}</div> : <small className="price-verification-source-empty-line">暂无相似品候选</small>}
-        </div>;
-      })}</div> : <p>{preview ? "暂无货源候选" : "等待图搜结果"}</p>}
-    </div>
-  </section>;
+
+  return (
+    <section className="pv-source-panel">
+      {/* 头部：标题 + 教程感叹号 + 执行按钮 */}
+      <div className="pv-source-head">
+        <div>
+          <p className="pv-eyebrow">STEP 03 · SOURCE</p>
+          <h2>货源匹配<SectionHelp title="对第二板块已保留的 SKC 执行搜索：默认下载商品主图走 OB 1688 图搜（带相似度）；图搜结果不满意时，勾选「包含标题搜索」重跑，商品标题会先自动翻译成中文做关键词搜索，两路结果合并。结果按 SKC 分组，每个 SKC 默认展示前 5 条（通常 3-5 条）；每条候选都按 Temu 调整后申报价核算利润，源价与重量可调（搜索常返回最便宜的引流款，可自行修正后核算）。" /></h2>
+        </div>
+        <button className="pv-source-run-button" onClick={() => onStart(rankingMode, keywordSearch)} disabled={busy || (sourceCount ?? 0) === 0} title={(sourceCount ?? 0) === 0 ? "请先在“待审商品最终确认”板块勾选要图搜的 SKC" : undefined}>
+          {busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0} 个 SKC）`}
+        </button>
+      </div>
+
+      {/* 统计 + 排序控件 */}
+      <div className="pv-source-stats">
+        <div className="pv-source-stat"><span>图搜 SKC</span><strong>{preview?.items.length ?? 0}</strong></div>
+        <div className="pv-source-stat"><span>货源候选</span><strong>{candidateCount}</strong></div>
+        <div className="pv-source-stat"><span>已关联 1688</span><strong>{linkedCount}</strong></div>
+        <div className="pv-source-sort">
+          <span className="pv-source-sort-label">候选排序</span>
+          <button className={rankingMode === "similarity" ? "is-active" : ""} onClick={() => setRankingMode("similarity")} disabled={busy}>按相似度</button>
+          <button className={rankingMode === "price" ? "is-active" : ""} onClick={() => setRankingMode("price")} disabled={busy}>按价格低→高</button>
+          <label className="pv-source-keyword" title="图搜结果不满意时勾选：把商品标题翻译成中文做 1688 关键词搜索，补充图搜不足">
+            <input type="checkbox" checked={keywordSearch} onChange={(event) => setKeywordSearch(event.target.checked)} disabled={busy} />
+            <span>包含标题搜索</span>
+          </label>
+        </div>
+      </div>
+
+      {/* SKC 分组候选列表 */}
+      {groups?.length ? (
+        <div className="pv-source-cards">
+          {groups.map((group) => {
+            const item = group.items[0];
+            const cap = item?.max_candidates && item.max_candidates > 0 ? item.max_candidates : 10;
+            const all = item?.all_candidates?.length ? item.all_candidates : item?.candidates ?? [];
+            const displayLimit = (item?.keyword_count ?? 0) > 0 ? Math.min(10, cap + (item?.keyword_count ?? 0)) : Math.min(CANDIDATE_LIMIT, cap);
+            const candidates = sortCandidates(all, rankingMode).slice(0, displayLimit);
+            const groupLinks = links.filter((link) => link.skc_id === group.skc_id);
+            const linkedUrls = new Set(groupLinks.map((link) => link.source_url));
+            const searchFailed = item?.source_search_status === "failed" || item?.source_search_status === "error";
+            return (
+              <div className="pv-source-group" key={group.skc_id}>
+                <div className="pv-source-group-head">
+                  <div className="pv-source-group-title">
+                    <span className="pv-source-skc-badge">{group.skc_id}</span>
+                    <strong>{item?.product_title || "未命名商品"}</strong>
+                  </div>
+                  <div className="pv-source-group-badges">
+                    <em>图搜 {statusText(item?.source_search_status)}</em>
+                    {item?.keyword_count ? <em>标题搜索 {item.keyword_count} 条</em> : null}
+                    <em>展示 {candidates.length}/{all.length} 条</em>
+                    <em>已关联 1688 {groupLinks.length} 条（下方第四板块）</em>
+                    {searchFailed && item?.source_search_error ? <em className="is-error" title={sourceErrorText(item.source_search_error)}>{sourceErrorText(item.source_search_error)}</em> : null}
+                  </div>
+                </div>
+                {candidates.length ? (
+                  <div className="pv-source-cards">
+                    {candidates.map((candidate, index) => {
+                      const isLinked = linkedUrls.has(candidate.source_url ?? "");
+                      const busyKey = `${group.skc_id}:${candidate.source_url ?? ""}`;
+                      const candKey = candidateKeyFor(group.skc_id, candidate);
+                      const profit = profitOverrides[candKey] ?? candidate.profit ?? null;
+                      const priceText = priceOverrides[candKey] !== undefined ? priceOverrides[candKey] : String(candidate.promotion_price ?? candidate.price ?? "");
+                      const weightText = weights[candKey] ?? "0.5";
+                      const metaParts = [candidate.similarity_score !== undefined ? `相似度 ${percentText(candidate.similarity_score)}` : "", candidate.sales !== undefined ? `销量 ${candidate.sales}` : ""].filter(Boolean);
+                      const rankBadge = index === 0 ? { text: "第1名", cls: "is-top" } : { text: decisionLabel(candidate.source_decision), cls: "is-plain" };
+                      return (
+                        <div className="pv-source-card" key={`${group.skc_id}-${index}`}>
+                          <a className="pv-source-card-media" href={candidate.source_url} target="_blank" rel="noreferrer" title={candidate.source_url}>
+                            {candidate.main_image_url ? <img src={candidate.main_image_url} alt="" loading="lazy" /> : null}
+                          </a>
+                          <div className="pv-source-card-main">
+                            <div className="pv-source-card-top">
+                              <div className="pv-source-card-info">
+                                <span className="pv-source-card-title">{candidate.source_title || "候选商品"}</span>
+                                <div className="pv-source-card-meta">
+                                  <em className={rankBadge.cls}>{rankBadge.text}</em>
+                                  {candidate.source_channel === "keyword" ? <em className="is-keyword">标题匹配</em> : null}
+                                  {metaParts.length ? <small>{metaParts.join(" · ")}</small> : null}
+                                </div>
+                              </div>
+                              <div className="pv-source-card-side">
+                                <b className="pv-source-price">{moneyText(candidate.promotion_price ?? candidate.price)}</b>
+                                <button className={isLinked ? "pv-source-link-button is-linked" : "pv-source-link-button"} onClick={() => (isLinked ? undefined : void linkCandidate(group, candidate))} disabled={busyLink === busyKey || !candidate.source_url} title={candidate.source_url || "该候选无 1688 链接，无法关联"}>
+                                  {busyLink === busyKey ? "关联中…" : isLinked ? "✓ 已关联" : "关联"}
+                                </button>
+                              </div>
+                            </div>
+                            {profit?.available ? (
+                              <div className="pv-profit-box">
+                                <dl className="pv-profit-grid">
+                                  <div><dt>站点</dt><dd>{siteLabel(profit.site)}</dd></div>
+                                  <div><dt>调整后申报价</dt><dd>{moneyText(profit.selling_price)}</dd></div>
+                                  <div><dt>总成本</dt><dd>{moneyText(profit.total_cost)}</dd></div>
+                                  <div><dt>净利润</dt><dd className={isNegative(profit.net_profit) ? "is-negative" : "is-positive"}>{moneyText(profit.net_profit)}</dd></div>
+                                  <div><dt>利润率</dt><dd className={isNegative(profit.profit_rate) ? "is-negative" : "is-positive"}>{percentText(profit.profit_rate)}</dd></div>
+                                </dl>
+                                <div className="pv-profit-edit">
+                                  <label className="pv-profit-edit-field">候选源价（可调）
+                                    <input type="number" min="0.01" step="0.01" value={priceText} onChange={(event) => changeCandidatePrice(item, candidate, event.target.value)} disabled={profitBusy === candKey} />
+                                    <small>元</small>
+                                  </label>
+                                  <label className="pv-profit-edit-field">重量（可调）
+                                    <input type="number" min="0.1" max="10" step="0.1" value={weightText} onChange={(event) => changeCandidateWeight(item, candidate, event.target.value)} disabled={profitBusy === candKey} />
+                                    <small>kg</small>
+                                  </label>
+                                  <em className={profit.qualified ? "pv-profit-badge is-qualified" : "pv-profit-badge is-below"} title={qualificationText(profit.qualification)}>{profit.qualified ? "达标 ✓" : "未达标"}</em>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="pv-profit-empty">
+                                <span>利润核算不可用：{profitReasonText(profit?.reason)}</span>
+                                {profitBusy === candKey ? <small>（核算中…）</small> : null}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <small className="pv-source-no-candidate">暂无相似品候选</small>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="pv-profit-empty">{preview ? "暂无货源候选" : "等待图搜结果"}</div>
+      )}
+    </section>
+  );
 }

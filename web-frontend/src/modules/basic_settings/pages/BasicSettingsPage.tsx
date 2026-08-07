@@ -135,45 +135,9 @@ export function BasicSettingsPage() {
         </div>
       </section>
 
-      {/* 当前配置摘要 */}
-      {config && (
-        <section className="settings-summary-bar">
-          <span className={config.summary.ai_configured ? "tag ok" : "tag muted"}>
-            文本 AI: {config.summary.ai_configured ? "已配置" : "未配置"} · {config.ai.model}
-          </span>
-          <span className={config.summary.image_configured ? "tag ok" : "tag muted"}>
-            图片 AI: {config.summary.image_configured ? "已配置" : "未配置"} · {config.image.model} / {config.image.reference_model}
-          </span>
-          {config.backup_image?.base_url && (
-            <span className={config.summary.backup_image_configured ? "tag ok" : "tag muted"}>
-              备图: {config.summary.backup_image_configured ? "已配置" : "未配置"}
-            </span>
-          )}
-          <span className={config.summary.cos_configured ? "tag ok" : "tag muted"}>
-            COS: {config.summary.cos_configured ? config.cos.bucket : "未配置"}
-          </span>
-          <span className="tag">workers: {config.limits.text_workers}/{config.limits.image_workers}</span>
-        </section>
-      )}
-
       <section className="settings-grid" aria-label="AI 提供方配置">
-        {/* 文本模型 */}
+        {/* 文本模型 API Key（仅保留用户填写入口） */}
         <div className="settings-card">
-          <div className="settings-card-head">
-            <h3>文本模型 (Text AI)</h3>
-            <span className="settings-baseurl">base: {config?.ai.base_url || "—"}</span>
-          </div>
-          <div className="settings-row">
-            <label className="settings-field">
-              <span>模型名称</span>
-              <input
-                type="text"
-                placeholder="gpt-5.6-terra"
-                value={form.textModel}
-                onChange={(e) => updateField("textModel", e.target.value)}
-              />
-            </label>
-          </div>
           <ApiKeyPanel
             fieldId="textModelApiKey"
             title="文本模型 API Key"
@@ -188,32 +152,8 @@ export function BasicSettingsPage() {
           />
         </div>
 
-        {/* 图片模型 */}
+        {/* 生图模型 API Key（仅保留用户填写入口） */}
         <div className="settings-card">
-          <div className="settings-card-head">
-            <h3>生图模型 (Image AI)</h3>
-            <span className="settings-baseurl">base: {config?.image.base_url || "—"}</span>
-          </div>
-          <div className="settings-row">
-            <label className="settings-field">
-              <span>生图模型</span>
-              <input
-                type="text"
-                placeholder="gpt-image-2"
-                value={form.imageModel}
-                onChange={(e) => updateField("imageModel", e.target.value)}
-              />
-            </label>
-            <label className="settings-field">
-              <span>参考图模型</span>
-              <input
-                type="text"
-                placeholder="gpt-image-2-1k"
-                value={form.referenceImageModel}
-                onChange={(e) => updateField("referenceImageModel", e.target.value)}
-              />
-            </label>
-          </div>
           <ApiKeyPanel
             fieldId="imageModelApiKey"
             title="生图模型 API Key"
