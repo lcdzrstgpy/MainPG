@@ -2241,9 +2241,20 @@ class ProductProcessingService:
         return "; ".join(parts[:12])
 
     def _ai_client(self) -> AiClient:
-        if self._ai_instance is None:
+        # AiClient 构造时缓存 base_url/api_key；系统配置（BasicSettings）改 key 后必须重建，
+        # 否则单例一直拿旧凭据调用（文本 AI 报 401 而图片正常——图片走 config_provider 每次新解析）。
+        provider = resolve_ai_provider()
+        if (
+            self._ai_instance is None
+            or self._ai_instance.base_url != provider["base_url"]
+            or self._ai_instance.api_key != provider["api_key"]
+        ):
             with self._ai_lock:
-                if self._ai_instance is None:
+                if (
+                    self._ai_instance is None
+                    or self._ai_instance.base_url != provider["base_url"]
+                    or self._ai_instance.api_key != provider["api_key"]
+                ):
                     self._ai_instance = AiClient()
         return self._ai_instance
 
