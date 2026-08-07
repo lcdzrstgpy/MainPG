@@ -13,19 +13,28 @@
 }
 
 .profit-products-head {
-  padding: 24px;
+  min-height: 142px;
+  padding: clamp(24px, 3vw, 34px);
+  border-color: #1b91bd;
+  color: #fff;
+  background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%);
+  box-shadow: 0 14px 34px rgba(12, 91, 139, .18);
+}
+
+.profit-products-head .eyebrow {
+  color: #9de7f3;
 }
 
 .profit-products-head h1 {
   margin: 7px 0;
-  color: #172b44;
-  font-size: clamp(1.65rem, 2.8vw, 2.25rem);
+  color: #fff;
+  font-size: clamp(1.9rem, 3vw, 2.65rem);
   letter-spacing: -.035em;
 }
 
 .profit-products-head p:not(.eyebrow) {
   margin: 0;
-  color: #6d8399;
+  color: #d9f1fb;
   line-height: 1.7;
 }
 
@@ -534,4 +543,3 @@
     flex-wrap: wrap;
   }
 }
-

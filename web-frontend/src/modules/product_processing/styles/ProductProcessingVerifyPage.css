@@ -1,21 +1,24 @@
 .verify-page {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 18px 20px 40px;
+  width: 100%;
+  margin: 0;
+  padding: 0 0 40px;
   color: #20364d;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 .verify-commandbar {
+  min-height: 142px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   flex-wrap: wrap;
   gap: 16px;
-  padding: 18px 20px;
-  border: 1px solid #d8e7f2;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #f4faff, #eef7fd);
+  padding: clamp(24px, 3vw, 34px);
+  border: 1px solid #1b91bd;
+  border-radius: 18px;
+  color: #fff;
+  background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%);
+  box-shadow: 0 14px 34px rgba(12, 91, 139, 0.18);
   margin-bottom: 18px;
 }
 
@@ -23,19 +26,20 @@
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.14em;
-  color: #0a8fca;
+  color: #9de7f3;
 }
 
 .verify-command-title h1 {
   margin: 4px 0 4px;
-  font-size: 1.4rem;
-  color: #0a3a63;
+  font-size: clamp(1.9rem, 3vw, 2.65rem);
+  letter-spacing: -0.045em;
+  color: #fff;
 }
 
 .verify-command-title p {
   margin: 0;
   font-size: 0.84rem;
-  color: #5a738c;
+  color: #d9f1fb;
 }
 
 .verify-command-stats {
@@ -49,15 +53,15 @@
   align-items: center;
   padding: 8px 14px;
   border-radius: 10px;
-  background: #fff;
-  border: 1px solid #dbe9f3;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.32);
   font-size: 0.76rem;
-  color: #5a738c;
+  color: #d9f1fb;
 }
 
 .verify-command-stats strong {
   font-size: 1.15rem;
-  color: #0a3a63;
+  color: #fff;
 }
 
 .verify-message {
