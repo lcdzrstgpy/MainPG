@@ -8,9 +8,9 @@
 .daily-page-heading .preset-entry-button { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid rgba(255,255,255,.45); border-radius: 11px; padding: 10px 16px; color: #fff; background: rgba(255,255,255,.14); font-size: .86rem; font-weight: 800; cursor: pointer; }
 .daily-page-heading .preset-entry-button:hover { background: rgba(255,255,255,.26); box-shadow: 0 8px 18px rgba(7,48,83,.2); }
 .daily-page-heading .preset-entry-button span { color: inherit; font-size: .92rem; letter-spacing: 0; }
-.daily-message { display: flex; align-items: center; gap: 10px; padding: 12px 15px; border: 1px solid; border-radius: 11px; font-size: .87rem; }
+.daily-message { position: fixed; top: 18px; right: 22px; z-index: 1000; display: flex; align-items: center; gap: 10px; max-width: 400px; padding: 12px 16px; border: 1px solid; border-radius: 12px; font-size: .87rem; box-shadow: 0 14px 34px rgba(26, 73, 108, .18); animation: daily-toast-in .28s ease-out; }
+@keyframes daily-toast-in { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 .daily-message > span { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; color: #fff; font-weight: 850; }
-.daily-message button { margin-left: auto; border: 0; color: inherit; background: transparent; font-size: 1.15rem; }
 .daily-message.is-error { color: #a23e49; border-color: #f1c5ca; background: #fff6f6; }.daily-message.is-error > span { background: #db606a; }
 .daily-message.is-success { color: #177758; border-color: #b8e7d3; background: #f3fcf8; }.daily-message.is-success > span { background: #22a777; }
 .daily-panel { min-width: 0; border: 1px solid #d8e5ee; border-radius: 14px; background: rgba(255,255,255,.78); box-shadow: 0 9px 24px rgba(26, 73, 108, .055); }
