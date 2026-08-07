@@ -6,7 +6,8 @@ OCR 是后置验证器，不是第一变换器（§15 确定性验证 → AI 修
 
 开关与配置：
 - ``WH_PRODUCT_OCR_GATE=0`` 关闭质检（测试/演示用）；
-- ``WH_PRODUCT_OCR_MAX_REPAIRS`` 控制最大重绘轮数（默认 2）。
+- ``WH_PRODUCT_OCR_MAX_REPAIRS`` 控制最大重绘轮数（默认 1，对齐原项目 five-stage 的
+  ``max_grid_attempts=1``：检出中文最多定向重绘一轮，避免图像 API 被反复消耗）。
 
 OCR 库未安装或推理失败时返回 ``None``，表示"无法判断"，调用方跳过质检、不阻断流水线。
 """
@@ -33,9 +34,9 @@ def ocr_gate_enabled() -> bool:
 
 def max_repair_rounds() -> int:
     try:
-        value = int(os.environ.get("WH_PRODUCT_OCR_MAX_REPAIRS", "2").strip())
+        value = int(os.environ.get("WH_PRODUCT_OCR_MAX_REPAIRS", "1").strip())
     except (TypeError, ValueError):
-        return 2
+        return 1
     return max(0, min(value, 4))
 
 

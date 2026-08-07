@@ -87,8 +87,20 @@ Matched category terms: {matched_terms}
 Value evidence from source: {value_evidence}
 Verified material evidence for text: {verified_material_evidence}
 
-Return ONLY a JSON object with exactly two keys, no explanation:
-{{"optimized_title": "...", "description": "..."}}"""
+VARIANT OPTION TRANSLATION RULES:
+- If {variant_options} is empty, return an empty "variant_translations" array.
+- Otherwise translate every captured 1688 variant option text into concise {target_language_name} ({language_code}) shopper-readable values for the Dianxiaomi import template.
+- Preserve real meaning such as color, pattern, size, package, capacity, model code, bundle quantity, or material.
+- Preserve meaningful model/style codes, digits and units (cm, pcs, ml, etc.) exactly.
+- Remove Chinese bracket symbols 【 】 and other decorative symbols; use clean readable text.
+- Do not use placeholder labels like Pattern A, Style B, Default, Option, Unknown, Other, or Variant.
+- Each mapping must keep raw_value copied exactly; do not merge or drop any option.
+
+Captured variant options:
+{variant_options}
+
+Return ONLY a JSON object with exactly three keys, no explanation:
+{{"optimized_title": "...", "description": "...", "variant_translations": [{{"raw_value": "exact raw value", "export_value": "translated value"}}]}}"""
 
 
 GRID_IMAGE_PROMPT = """Use the reference image as the non-negotiable source of truth. The product itself must stay the same: same product type, shape, color, material, pattern, quantity, proportions, structure, and visible details. Do not redesign, recolor, simplify, upgrade, replace, or add features to the product.

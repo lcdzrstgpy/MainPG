@@ -34,6 +34,31 @@ from .provider_config import resolve_ai_provider
 
 _MEDIA_TYPES: tuple | None = None
 
+# 来源尺寸/重量确定性提取（对齐原项目 five-stage 的 deterministic_fact_build，0 AI）
+_DIMENSION_TRIPLE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*[xX*×]\s*(\d+(?:\.\d+)?)\s*[xX*×]\s*(\d+(?:\.\d+)?)\s*(mm|cm|毫米|厘米)?",
+    re.IGNORECASE,
+)
+_WEIGHT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(kg|g|千克|公斤|克)", re.IGNORECASE)
+
+# 阶段缓存 key 的易变簿记字段：处理完成时会写入 raw_payload（如 product_processing_receipt），
+# 这些字段不影响提示词内容，必须从指纹中剔除，否则同一商品重跑会 key 变化导致缓存 miss。
+_CACHE_VOLATILE_RAW_KEYS = frozenset(
+    {
+        "product_processing_receipt",
+        "ai_notes",
+        "result",
+        "optimized_title",
+        "carousel_image_paths",
+        "grid_image_summary_path",
+        "detail_image_paths",
+        "processed_at",
+        "task_ids",
+    }
+)
+
+_STAGE_CACHE_VERSION = 2
+
 
 def _ai_enabled() -> bool:
     """外部 AI 总开关：WH_PRODUCT_AI_ENABLED=0 时回退本地透传（测试/离线场景）。"""
@@ -153,7 +178,7 @@ class ProductProcessingService:
             "app_file": str(Path(__file__)),
             "python": sys.executable,
             "worker": "local-synchronous-v1",
-            "message": "本地产品处理引擎已就绪；标题/描述/图片通过 AI 中转生成，失败时自动回退本地透传。",
+            "message": "本地产品处理引擎已就绪（five-stage 对齐：文本合并一次调用 + 尺寸确定性提取 + 四宫格出图 + 详情图本地合成）；失败时自动回退来源透传。",
             "diagnostics": {
                 "config": config,
                 "tenant_ai_capability": {"text": config["ai_configured"], "image": config["image_configured"], "mode": "openai_compatible_relay"},
@@ -798,6 +823,7 @@ class ProductProcessingService:
                     "status": task["status"],
                     "created_at": task["created_at"],
                     "updated_at": task["updated_at"],
+                    "elapsed_seconds": self._elapsed_seconds(task),
                     "date": task["created_at"][:10],
                     "total_count": task["total_count"],
                     "success_count": task["success_count"],
@@ -1171,14 +1197,16 @@ class ProductProcessingService:
             and _as_bool(settings.get("ai_media_opt_in"), default=True)
         )
         vision_subject = ""
+        combined_variant_translations: dict[str, str] = {}
         if not preflight_only:
             # 文本生成与视觉主体识别是两个独立 AI 调用：并行执行省一段串行等待
             # （主体识别提示词仅用原始标题作上下文，不依赖文本结果，可提前发起）。
             from concurrent.futures import ThreadPoolExecutor
 
-            def _run_text() -> tuple[str, str]:
+            def _run_text() -> tuple[str, str, dict[str, str]]:
                 local_title = title
                 local_desc = description
+                translations: dict[str, str] = {}
                 needs_title = "title" in scope and settings.get("title_optimize", True)
                 needs_desc = "details" in scope and not local_desc
                 if needs_title and needs_desc:
@@ -1195,6 +1223,8 @@ class ProductProcessingService:
                             local_title = self._normalized_title(combined["title"])
                         if combined.get("description"):
                             local_desc = combined["description"]
+                        if combined.get("variant_translations"):
+                            translations = combined["variant_translations"]
                         ai_notes.append("text:ai-combined")
                         needs_title = needs_desc = False
                 if needs_title:
@@ -1221,7 +1251,7 @@ class ProductProcessingService:
                     if generated_desc:
                         local_desc = generated_desc
                         ai_notes.append("details:ai")
-                return local_title, local_desc
+                return local_title, local_desc, translations
 
             def _run_subject() -> str:
                 if not ((need_grid or need_detail) and source_image_urls):
@@ -1233,7 +1263,7 @@ class ProductProcessingService:
                 future_subject = executor.submit(_run_subject)
                 # 主体识别先取（图片阶段立即要用）；文本结果随后合并
                 vision_subject = future_subject.result()
-                optimized_title, description = future_text.result()
+                optimized_title, description, combined_variant_translations = future_text.result()
 
         if not description:
             # AI 未启用或生成失败时保留旧模板兜底，避免导入表描述为空
@@ -1260,77 +1290,53 @@ class ProductProcessingService:
                     },
                 }
 
-        # 变种属性值翻译（对齐原型 VARIANT_VALUE_TRANSLATION_PROMPT）：来源中文规格值 → 目标语言可读显示名
+        # 变种属性值翻译（对齐原型 VARIANT_VALUE_TRANSLATION_PROMPT）：来源中文规格值 → 目标语言可读显示名。
+        # combined 文本调用已并入翻译时直接复用（省一次独立 AI 调用）；否则按需单独调用。
         variant_value_translations: dict[str, str] = {}
         if not preflight_only:
-            variant_value_translations = self._translate_variant_values(
-                raw, optimized_title, target_language, target_site, ai_notes
-            )
+            if combined_variant_translations:
+                variant_value_translations = combined_variant_translations
+                ai_notes.append("variant_values:combined")
+            else:
+                variant_value_translations = self._translate_variant_values(
+                    raw, optimized_title, target_language, target_site, ai_notes
+                )
 
         product_dimensions: dict[str, Any] = {}
         if not preflight_only and "product_dimensions" in scope:
             product_dimensions = self._generate_size(raw, optimized_title, category, ai_notes) or {}
-            if product_dimensions:
-                ai_notes.append("product_dimensions:ai")
 
         grid_image_paths: list[str] = []
         grid_summary_path = ""
         detail_image_paths: list[str] = []
-        if need_grid and need_detail:
-            # 四宫格与详情图并行生成（对齐原型 build_grid_images / build_detail_image 双线程并行）
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            def _run_grid() -> tuple[list[str], str]:
-                return self._generate_grid_images(
+        # 图片编排（对齐原项目 five-stage：media_sku_local 一次出图 + 详情图本地合成 0 AI）：
+        # 先出四宫格（1 次图像调用 + OCR 重绘≤1 轮），再拿四宫格分图本地拼详情图；
+        # 四宫格不可用或本地合成含中文时才回退 AI 详情图生成。
+        if need_grid:
+            grid_image_paths, grid_summary_path = self._generate_grid_images(
+                task_id,
+                draft["id"],
+                raw,
+                optimized_title,
+                category,
+                source_image_urls,
+                target_language,
+                target_site,
+                ai_notes,
+                vision_subject,
+            )
+        if need_detail:
+            if grid_image_paths:
+                detail_image_paths = self._generate_detail_images_local(
                     task_id,
                     draft["id"],
-                    raw,
+                    grid_image_paths,
                     optimized_title,
                     category,
-                    source_image_urls,
                     target_language,
-                    target_site,
                     ai_notes,
-                    vision_subject,
                 )
-
-            def _run_detail() -> list[str]:
-                return self._generate_detail_images(
-                    task_id,
-                    draft["id"],
-                    raw,
-                    optimized_title,
-                    category,
-                    source_detail_image_urls or source_image_urls,
-                    target_language,
-                    target_site,
-                    ai_notes,
-                    vision_subject,
-                )
-
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_grid = executor.submit(_run_grid)
-                future_detail = executor.submit(_run_detail)
-                for future in as_completed((future_grid, future_detail)):
-                    if future is future_grid:
-                        grid_image_paths, grid_summary_path = future.result()
-                    else:
-                        detail_image_paths = future.result()
-        else:
-            if need_grid:
-                grid_image_paths, grid_summary_path = self._generate_grid_images(
-                    task_id,
-                    draft["id"],
-                    raw,
-                    optimized_title,
-                    category,
-                    source_image_urls,
-                    target_language,
-                    target_site,
-                    ai_notes,
-                    vision_subject,
-                )
-            if need_detail:
+            if not detail_image_paths:
                 detail_image_paths = self._generate_detail_images(
                     task_id,
                     draft["id"],
@@ -1414,14 +1420,38 @@ class ProductProcessingService:
         target_language: str,
         target_site: str,
         ai_notes: list[str] | None = None,
-    ) -> dict[str, str] | None:
-        """一次调用同时生成标题与描述（交接文档 §9.3）；失败返回 None。"""
+    ) -> dict[str, Any] | None:
+        """一次调用同时生成标题、描述与变种属性值翻译（交接文档 §9.3 + VARIANT_VALUE_TRANSLATION_PROMPT）。
+
+        变种翻译并入 combined 调用（对齐原项目 five-stage 的 combined_generation 一次文本调用
+        产出多份内容），命中阶段级 DB 缓存时 0 次调用。失败返回 None。
+        """
         if not _ai_enabled():
             return None
+        variant_values = self._unique_variant_values(raw)
+        variant_options_text = "\n".join(f"- {value}" for value in variant_values)
+        profile = language_profile(target_language)
         template = self._effective_prompt("combined_text")
         contracted = apply_language_contract_to_prompt(template, "combined_text", target_language, target_site)
         context = listing_prompt_context(raw, title=source_title, category=category)
-        prompt = format_prompt(contracted, title=source_title, **context)
+        prompt = format_prompt(
+            contracted,
+            title=source_title,
+            variant_options=variant_options_text,
+            target_language_name=profile.get("ai_language", target_language),
+            language_code=target_language,
+            **context,
+        )
+        input_data = {
+            "title": source_title,
+            "category": category,
+            "raw": self._stable_raw(raw),
+        }
+        cache_key = self._ai_stage_cache_key("combined_text", prompt=prompt, input_data=input_data)
+        cached = self._load_ai_stage_cache("combined_text", cache_key)
+        if cached is not None:
+            ai_notes.append("text:cache-hit")
+            return cached if isinstance(cached, dict) else None
         try:
             text = self._ai_client().chat([{"role": "user", "content": prompt}])
             data = _extract_json_object(text)
@@ -1430,10 +1460,15 @@ class ProductProcessingService:
                 return None
             ensure_target_language_result("标题", data.get("optimized_title"), target_language)
             ensure_target_language_result("详情", data.get("description"), target_language)
-            return {
+            result = {
                 "title": self._normalized_title(data["optimized_title"]),
                 "description": self._normalized_title(data.get("description") or ""),
+                "variant_translations": self._combined_variant_translations(data, variant_values),
             }
+            self._save_ai_stage_cache(
+                "combined_text", cache_key, output_data=result, prompt=prompt, input_data=input_data
+            )
+            return result
         except (AiProviderError, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "text", _ai_error_reason(exc))
             return None
@@ -1635,6 +1670,191 @@ class ProductProcessingService:
             return []
         return self._publish_media(processor, [media], task_id, draft_id)
 
+    def _generate_detail_images_local(
+        self,
+        task_id: int,
+        draft_id: int,
+        source_values: list[str],
+        optimized_title: str,
+        category: str,
+        target_language: str,
+        ai_notes: list[str] | None = None,
+    ) -> list[str]:
+        """本地合成详情图（0 AI，对齐原项目 detail_image_local_synthesis）。
+
+        用四宫格分图（已是英文干净图）Pillow 拼一张 1024 详情海报；本地合成文字为确定性
+        英文，OCR 质量门正常直接通过。合成失败或合成结果仍含中文时返回 []，由调用方回退
+        AI 详情图生成（含 OCR 修复循环）。
+        """
+        if not source_values:
+            return []
+        media_types = _media_types()
+        if not media_types:
+            return []
+        processor_cls, media_config_error, media_error = media_types
+        try:
+            processor = self._media_processor()
+            content = self._compose_local_detail_image(source_values, optimized_title, category, target_language)
+            if not content:
+                return []
+            chinese = detect_chinese_text(content)
+            if chinese:
+                if ai_notes is not None:
+                    ai_notes.append("detail_images:chinese_unresolved")
+                return []
+            if ai_notes is not None:
+                ai_notes.append("detail_images:local_synthesis")
+                ai_notes.append("detail_images:ocr_passed")
+            from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
+
+            media = GeneratedMedia(
+                stage="detail_image",
+                content=content,
+                content_type="image/jpeg",
+                suffix=".jpg",
+                provider="local-synthesis",
+                model="pillow",
+                reference_count=min(4, len(source_values)),
+            )
+            return self._publish_media(processor, [media], task_id, draft_id)
+        except (media_config_error, media_error, ValueError, OSError) as exc:
+            self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
+            return []
+
+    @staticmethod
+    def _local_source_bytes(value: str) -> bytes | None:
+        """读取本地路径或 http(s) 图片字节（供本地合成详情图用）；失败返回 None。"""
+        if not value:
+            return None
+        if Path(value).is_file():
+            try:
+                return Path(value).read_bytes()
+            except OSError:
+                return None
+        if is_safe_external_url(value):
+            try:
+                image = fetch_public_image(value, max_bytes=8 * 1024 * 1024, timeout_seconds=30)
+            except Exception:
+                return None
+            return getattr(image, "content", None) or b""
+        return None
+
+    @staticmethod
+    def _compose_local_detail_image(
+        source_values: list[str],
+        title: str,
+        category: str,
+        target_language: str,
+    ) -> bytes | None:
+        """用最多 4 张来源图（四宫格分图）本地合成 1024×1024 详情海报（对齐原项目
+        ``_synthesize_local_detail_image`` 的标题栏 + 多图排版思路）。
+
+        文案全部为确定性英文（标题/类目），不产生中文；返回 JPEG 字节，素材不足返回 None。
+        """
+        from io import BytesIO  # noqa: PLC0415
+        from PIL import Image, ImageDraw, ImageFilter, ImageFont  # type: ignore  # noqa: PLC0415
+
+        images: list[Image.Image] = []
+        for value in source_values[:4]:
+            data = ProductProcessingService._local_source_bytes(value)
+            if not data:
+                continue
+            try:
+                with Image.open(BytesIO(data)) as opened:
+                    images.append(opened.convert("RGB"))
+            except Exception:
+                continue
+        if not images:
+            return None
+        while len(images) < 4:
+            images.append(images[len(images) % len(images)])
+
+        target = 1024
+
+        def font(size: int, *, bold: bool = False):
+            candidates = [
+                "C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf",
+                "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+            ]
+            for candidate in candidates:
+                try:
+                    return ImageFont.truetype(candidate, size)
+                except Exception:
+                    continue
+            return ImageFont.load_default()
+
+        def cover(image: Image.Image, box_w: int, box_h: int) -> Image.Image:
+            ratio = max(box_w / image.width, box_h / image.height)
+            resized = image.resize(
+                (max(1, int(image.width * ratio)), max(1, int(image.height * ratio))),
+                Image.Resampling.LANCZOS,
+            )
+            left = max((resized.width - box_w) // 2, 0)
+            top = max((resized.height - box_h) // 2, 0)
+            return resized.crop((left, top, left + box_w, top + box_h))
+
+        def paste_rounded(base: Image.Image, image: Image.Image, box: tuple[int, int, int, int], radius: int = 22) -> None:
+            part = cover(image, box[2] - box[0], box[3] - box[1])
+            mask = Image.new("L", part.size, 0)
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, part.width, part.height), radius=radius, fill=255)
+            base.paste(part, box[:2], mask)
+
+        background = images[0].resize((target, target)).filter(ImageFilter.GaussianBlur(18))
+        canvas = Image.blend(background, Image.new("RGB", (target, target), (248, 248, 245)), 0.72)
+        draw = ImageDraw.Draw(canvas)
+
+        clean_text = re.sub(r"\s+", " ", str(title or "")).strip(" -_|/")
+        title_text = clean_text[:96] or ("Detalle del producto" if target_language == "es" else "Product Detail")
+        category_text = (re.sub(r"\s+", " ", str(category or "")).strip(" -_|/")[:44]) or "Selected Detail"
+
+        # 顶部标题栏（对齐原项目：白底圆角卡 + 两行标题 + 类目小字）
+        draw.rounded_rectangle((44, 40, 980, 152), radius=28, fill=(255, 255, 255), outline=(228, 224, 216), width=2)
+        title_font = font(34, bold=True)
+        subtitle_font = font(19)
+        text_width = draw.textlength
+
+        def wrap(draw_target, text: str, text_font, max_width: int, max_lines: int) -> list[str]:
+            words = text.split()
+            lines: list[str] = []
+            current = ""
+            for word in words:
+                candidate = f"{current} {word}".strip()
+                if current and text_width(candidate, font=text_font) > max_width:
+                    lines.append(current)
+                    current = word
+                    if len(lines) >= max_lines:
+                        break
+                else:
+                    current = candidate
+            if current and len(lines) < max_lines:
+                lines.append(current)
+            return lines or [text[:40]]
+
+        y = 56
+        for line in wrap(draw, title_text, title_font, 820, 2):
+            draw.text((72, y), line, font=title_font, fill=(36, 38, 39))
+            y += 40
+        if y < 124:
+            draw.text((74, 122), category_text, font=subtitle_font, fill=(95, 98, 98))
+
+        # 主体 2×2 分图区（四宫格拆图，0 AI）
+        left, top_gap = 44, 176
+        gap, radius = 16, 22
+        cell_w = (target - 2 * left - gap) // 2
+        cell_h = (target - top_gap - 44 - gap) // 2
+        boxes = (
+            (left, top_gap, left + cell_w, top_gap + cell_h),
+            (left + cell_w + gap, top_gap, left + 2 * cell_w + gap, top_gap + cell_h),
+            (left, top_gap + cell_h + gap, left + cell_w, top_gap + 2 * cell_h + gap),
+            (left + cell_w + gap, top_gap + cell_h + gap, left + 2 * cell_w + gap, top_gap + 2 * cell_h + gap),
+        )
+        for index, box in enumerate(boxes):
+            paste_rounded(canvas, images[index], box, radius)
+
+        buffer = BytesIO()
+        canvas.save(buffer, format="JPEG", quality=92)
+        return buffer.getvalue()
+
     def _repair_until_clean(
         self,
         processor: Any,
@@ -1690,6 +1910,61 @@ class ProductProcessingService:
         custom = self.repository.prompts()
         return str(custom.get(key) or DEFAULT_PROMPTS.get(key) or "")
 
+    @staticmethod
+    def _stable_raw(raw: dict[str, Any]) -> dict[str, Any]:
+        """返回剔除易变簿记字段的来源数据副本，用于阶段缓存 key 的稳定指纹。"""
+        return {key: value for key, value in (raw or {}).items() if key not in _CACHE_VOLATILE_RAW_KEYS}
+
+    def _ai_stage_cache_key(self, stage: str, *, prompt: str = "", input_data: Any = None) -> str:
+        """阶段级 AI 缓存 key：stage + 提示词哈希 + 输入内容哈希（对齐原项目 ai_stage_cache）。"""
+        payload = {
+            "version": _STAGE_CACHE_VERSION,
+            "stage": stage,
+            "prompt": str(prompt or ""),
+            "input": input_data if input_data is not None else {},
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _load_ai_stage_cache(self, stage: str, cache_key: str) -> Any:
+        """读取阶段级 AI 缓存；命中返回输出对象，否则 None。缓存异常不影响主流程。"""
+        if not cache_key:
+            return None
+        try:
+            cached = self.repository.get_ai_stage_cache(cache_key, workspace_id="local")
+        except Exception:
+            return None
+        return cached.get("output") if cached else None
+
+    def _save_ai_stage_cache(
+        self,
+        stage: str,
+        cache_key: str,
+        *,
+        output_data: Any,
+        prompt: str = "",
+        input_data: Any = None,
+    ) -> None:
+        if not cache_key:
+            return
+        try:
+            prompt_hash = hashlib.sha256(str(prompt or "").encode("utf-8")).hexdigest()
+            input_hash = hashlib.sha256(
+                json.dumps(input_data if input_data is not None else {}, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()
+            self.repository.save_ai_stage_cache(
+                cache_key,
+                workspace_id="local",
+                stage=stage,
+                model_signature="",
+                prompt_hash=prompt_hash,
+                input_hash=input_hash,
+                output_data=output_data,
+            )
+        except Exception:
+            # 缓存写失败不影响处理主流程
+            return
+
     def _generate_size(
         self,
         raw: dict[str, Any],
@@ -1697,45 +1972,175 @@ class ProductProcessingService:
         category: str,
         ai_notes: list[str] | None = None,
     ) -> dict[str, Any] | None:
-        """AI 尺寸预估（对齐原型 SIZE_PROMPT）：返回产品物流包装尺寸/重量；失败返回 None。"""
+        """物流尺寸/重量预估（对齐原项目 five-stage 的 deterministic_fact_build + SIZE_PROMPT）。
+
+        优先从来源属性/变种/重量文本确定性提取显式数值（0 AI）；只有提取不完整时才走 AI
+        补缺，并先用阶段级 DB 缓存复用相同输入的结果。失败时返回已提取的确定性部分。
+        """
+        deterministic = self._extract_deterministic_size(raw)
+        has_full = deterministic and all(
+            deterministic.get(key) for key in ("length_cm", "width_cm", "height_cm", "weight_g")
+        )
+        if has_full:
+            if ai_notes is not None:
+                ai_notes.append("product_dimensions:deterministic")
+            return deterministic
         if not _ai_enabled():
-            return None
+            # AI 未启用时至少保留来源显式数值（可能缺字段，导出留空即可）
+            return deterministic
+        known = deterministic or {}
+        input_data = {
+            "title": title,
+            "category": category,
+            "raw": self._stable_raw(raw),
+            "known": known,
+        }
+        cache_key = self._ai_stage_cache_key("size", input_data=input_data)
+        cached = self._load_ai_stage_cache("size", cache_key)
+        if cached is not None:
+            if ai_notes is not None:
+                ai_notes.append("product_dimensions:cache-hit")
+            return cached if isinstance(cached, dict) else None
         template = self._effective_prompt("size")
         context = listing_prompt_context(raw, title=title, category=category)
+        source_data = self._size_source_text(raw, title)
+        if known:
+            known_lines = "、".join(
+                f"{key}={value}"
+                for key, value in (
+                    ("length_cm", known.get("length_cm")),
+                    ("width_cm", known.get("width_cm")),
+                    ("height_cm", known.get("height_cm")),
+                    ("weight_g", known.get("weight_g")),
+                )
+                if value is not None
+            )
+            source_data = f"Known shipping evidence (preserve these exact values, estimate only the missing fields): {known_lines}\n{source_data}"
         prompt = format_prompt(
             template,
             title=title,
             category=context["category"],
             category_path=context["category_path"],
             required_attributes=context["required_attributes"],
-            source_data=self._size_source_text(raw, title),
+            source_data=source_data,
         )
         try:
             text = self._ai_client().chat([{"role": "user", "content": prompt}])
             data = _extract_json_object(text)
             if not isinstance(data, dict):
                 self._note_ai_failure(ai_notes, "product_dimensions", "size 输出未包含 JSON")
-                return None
+                return deterministic or None
             length = self._number(data.get("length_cm"))
             width = self._number(data.get("width_cm"))
             height = self._number(data.get("height_cm"))
             weight = self._number(data.get("weight_g"))
             if not all(value is not None and value > 0 for value in (length, width, height, weight)):
                 self._note_ai_failure(ai_notes, "product_dimensions", "size 输出缺少有效的长/宽/高/重量")
-                return None
-            return {
-                "length_cm": length,
-                "width_cm": width,
-                "height_cm": height,
-                "weight_g": weight,
+                return deterministic or None
+            # 用来源显式数值覆盖 AI 补缺结果，保证确定性证据优先
+            result = {
+                "length_cm": float(length),
+                "width_cm": float(width),
+                "height_cm": float(height),
+                "weight_g": float(weight),
                 "confidence": self._text(data.get("confidence")) or "medium",
                 "package_profile": self._text(data.get("package_profile")),
                 "reason": self._text(data.get("reason")),
                 "source": "ai_estimated",
             }
+            for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
+                if known.get(key) is not None:
+                    result[key] = float(known[key])
+            self._save_ai_stage_cache("size", cache_key, output_data=result, prompt=prompt, input_data=input_data)
+            return result
         except (AiProviderError, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "product_dimensions", _ai_error_reason(exc))
+            return deterministic or None
+
+    @staticmethod
+    def _extract_deterministic_size(raw: dict[str, Any]) -> dict[str, Any] | None:
+        """从来源属性/变种记录/重量/包装文本中确定性提取物流尺寸与重量（0 AI）。
+
+        只信任来源中的显式数值证据（如 ``15*10*4cm``、``180g``）。返回部分提取结果；
+        由调用方判断是否完整，缺字段再走 AI 补缺。
+        """
+        texts: list[str] = []
+        attributes = raw.get("source_attributes") or {}
+        if isinstance(attributes, dict):
+            texts.extend(str(value) for value in attributes.values() if value not in (None, ""))
+        for variant in raw.get("source_variant_records") or []:
+            if not isinstance(variant, dict):
+                continue
+            variant_attrs = variant.get("attributes")
+            if isinstance(variant_attrs, dict):
+                texts.extend(str(value) for value in variant_attrs.values() if value not in (None, ""))
+        for key in ("weight_text", "package_info_text", "title", "product_name"):
+            value = raw.get(key)
+            if value not in (None, ""):
+                texts.append(str(value))
+        joined = " | ".join(texts)
+        dimensions: dict[str, Any] = {}
+        triple = _DIMENSION_TRIPLE.search(joined)
+        if triple:
+            values = [float(triple.group(index)) for index in (1, 2, 3)]
+            unit = (triple.group(4) or "cm").casefold()
+            scale = 0.1 if unit in {"mm", "毫米"} else 1.0
+            if all(value > 0 for value in values):
+                dimensions = {
+                    "length_cm": values[0] * scale,
+                    "width_cm": values[1] * scale,
+                    "height_cm": values[2] * scale,
+                }
+        weight_match = _WEIGHT_PATTERN.search(joined)
+        if weight_match:
+            value = float(weight_match.group(1))
+            unit = weight_match.group(2).casefold()
+            if value > 0:
+                dimensions["weight_g"] = value * 1000 if unit in {"kg", "千克", "公斤"} else value
+        if not dimensions:
             return None
+        dimensions["confidence"] = "high"
+        dimensions["package_profile"] = ""
+        dimensions["reason"] = "提取自来源属性/变种/重量文本的显式数值"
+        dimensions["source"] = "deterministic_source_evidence"
+        return dimensions
+
+    @staticmethod
+    def _unique_variant_values(raw: dict[str, Any]) -> list[str]:
+        """收集来源变种记录中的唯一属性值（保持出现顺序）。"""
+        unique: list[str] = []
+        seen: set[str] = set()
+        for variant in raw.get("source_variant_records") or []:
+            if not isinstance(variant, dict):
+                continue
+            attributes = variant.get("attributes")
+            if not isinstance(attributes, dict):
+                continue
+            for value in attributes.values():
+                text = str(value or "").strip()
+                if text and text not in seen:
+                    seen.add(text)
+                    unique.append(text)
+        return unique
+
+    @staticmethod
+    def _combined_variant_translations(
+        data: dict[str, Any], variant_values: list[str]
+    ) -> dict[str, str]:
+        """从 combined 文本调用输出中解析变种属性值翻译（对齐 VARIANT_VALUE_TRANSLATION_PROMPT）。"""
+        seen = set(variant_values)
+        translations: dict[str, str] = {}
+        mappings = data.get("variant_translations") if isinstance(data, dict) else None
+        if not isinstance(mappings, list):
+            return translations
+        for item in mappings:
+            if not isinstance(item, dict):
+                continue
+            raw_value = str(item.get("raw_value") or "").strip()
+            export_value = str(item.get("export_value") or "").strip()
+            if raw_value and export_value and raw_value in seen:
+                translations[raw_value] = export_value
+        return translations
 
     @staticmethod
     def _size_source_text(raw: dict[str, Any], title: str) -> str:
@@ -1991,6 +2396,35 @@ class ProductProcessingService:
             for part in parts
         ]
 
+    @staticmethod
+    def _iso_datetime(value: str | None) -> Any:
+        """解析 ISO 时间戳（兼容无时区），失败返回 None。"""
+        if not value:
+            return None
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    @staticmethod
+    def _elapsed_seconds(task: dict[str, Any]) -> int:
+        """任务处理耗时：运行中按当前时间计算，已结束按 updated_at - created_at。"""
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        started = ProductProcessingService._iso_datetime(task.get("created_at"))
+        if started is None:
+            return 0
+        if task.get("status") in {"completed", "failed", "partial_failure"}:
+            end = ProductProcessingService._iso_datetime(task.get("updated_at")) or datetime.now(timezone.utc)
+        else:
+            end = datetime.now(timezone.utc)
+        return max(0, int((end - started).total_seconds()))
+
     def _task_response(self, task: dict[str, Any], message: str = "") -> dict[str, Any]:
         items = task["items"]
         attention = sum(item["status"] == "attention_required" for item in items)
@@ -2036,6 +2470,7 @@ class ProductProcessingService:
                 "path": task["video_manifest_file"],
             })
         settings = task["settings"]
+        elapsed_seconds = self._elapsed_seconds(task)
         task_projection = {
             "id": task["id"],
             "task_id": task["id"],
@@ -2047,6 +2482,7 @@ class ProductProcessingService:
             "skipped_count": task["skipped_count"],
             "created_at": task["created_at"],
             "updated_at": task["updated_at"],
+            "elapsed_seconds": elapsed_seconds,
             "metadata": {
                 "module": "product_processing",
                 "engine": "local_sqlalchemy",
@@ -2073,6 +2509,7 @@ class ProductProcessingService:
                 "configuration_blocked": configuration_blocked,
             },
             "created_at": task["created_at"],
+            "elapsed_seconds": elapsed_seconds,
         }
         processed_count = task["success_count"] + task["failed_count"] + task["skipped_count"]
         return {
@@ -2081,6 +2518,7 @@ class ProductProcessingService:
             "success_count": task["success_count"],
             "failed_count": failed,
             "processed_count": processed_count,
+            "elapsed_seconds": elapsed_seconds,
             "not_processed_count": max(0, task["total_count"] - processed_count),
             "attention_required_count": attention,
             "auto_recovery_pending_count": 0,
