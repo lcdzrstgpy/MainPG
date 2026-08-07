@@ -592,7 +592,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
   function selectAllCandidates() {
     if (!activeRun) return;
-    setSelectedCandidates(activeRun.candidates
+    setSelectedCandidates(filteredCandidates
       .filter((candidate) => candidate.status === "candidate")
       .map((candidate) => candidate.candidate_id));
   }
@@ -676,6 +676,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           <div><span className="title-icon iconfont icon-aim" aria-hidden="true" /><strong>采集方向</strong></div>
           <div className="direction-panel-actions">
             <span>关键词为中心 · 每词独立采集</span>
+            {!deleteMode && !editMode && (
+              <button className="add-preset-button" type="button" onClick={openCreatePreset}>
+                ＋ 添加预设
+              </button>
+            )}
             <button className={`toggle-edit-mode-button ${editMode ? "is-active" : ""}`} type="button" onClick={() => { setEditMode((current) => !current); setDeleteMode(false); setPendingDeleteDirection(null); }}>
               {editMode ? "✓ 完成" : "更改预设"}
             </button>
@@ -928,7 +933,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             )}
             {activeRun && <span>批次 {activeRun.run_id.slice(0, 8)} · {activeRun.candidate_count} 条</span>}
             <button type="button" className="history-drawer-trigger" onClick={() => setHistoryDrawerOpen(true)}><span aria-hidden="true">◷</span> 最近批次 <b>{runs.length}</b></button>
-            <button type="button" className="select-all-button" disabled={busy || !activeRun || !activeRun.candidates.some((candidate) => candidate.status === "candidate")} onClick={selectAllCandidates}>选择全部</button>
+            <button type="button" className="select-all-button" disabled={busy || !activeRun || !filteredCandidates.some((candidate) => candidate.status === "candidate")} onClick={selectAllCandidates}>选择全部</button>
             <button type="button" className="confirm-button" disabled={busy || selectedCandidates.length === 0} onClick={() => void confirmSelected()}>确认入池（{selectedCandidates.length}）</button>
           </div>
         </div>
