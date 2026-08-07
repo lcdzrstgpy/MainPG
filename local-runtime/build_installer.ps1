@@ -13,10 +13,11 @@ if ($LASTEXITCODE -ne 0) { throw "前端构建失败" }
 Pop-Location
 
 # 2. 安装/确认 PyInstaller
-python -m pip show pyinstaller *> $null
+python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('PyInstaller') else 1)"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[build] 安装 PyInstaller ..."
     python -m pip install pyinstaller
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller 安装失败" }
 }
 
 # 3. PyInstaller 打包（onedir → dist\MainPG）

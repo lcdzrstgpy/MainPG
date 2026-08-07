@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import sys
 import threading
 from typing import Any
 
@@ -47,12 +48,33 @@ def _get_engine() -> Any:
         with _ENGINE_LOCK:
             if _ENGINE is None and _ENGINE_ERROR is None:
                 try:
+                    _ensure_onnx_dll_searchable()
                     from rapidocr_onnxruntime import RapidOCR  # type: ignore
 
                     _ENGINE = RapidOCR()
                 except Exception as exc:  # 未安装/模型下载失败/依赖缺失
                     _ENGINE_ERROR = f"{exc.__class__.__name__}: {str(exc)[:160]}"
     return _ENGINE
+
+
+def _ensure_onnx_dll_searchable() -> None:
+    """PyInstaller 打包后 onnxruntime 的 DLL 在 _internal\\onnxruntime\\capi 子目录，
+    Python 3.8+ 不再把任意目录加入 DLL 搜索路径，需显式 add_dll_directory，
+    否则 import onnxruntime 报 'DLL load failed while importing onnxruntime_pybind11_state'。
+    源码运行与已可加载场景无需处理（直接跳过）。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("onnxruntime")
+        if spec and spec.submodule_search_locations:
+            capi = Path(next(iter(spec.submodule_search_locations))) / "capi"
+            if capi.is_dir():
+                os.add_dll_directory(str(capi))
+    except Exception:  # 目录不存在或已加载过等，均不阻断
+        pass
 
 
 def detect_chinese_text(content: bytes) -> list[str] | None:
