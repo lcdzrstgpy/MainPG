@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,7 +20,7 @@ class LocalRuntimeConfig:
 
 
 def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
-    root = workspace or Path.cwd()
+    root = _runtime_root(workspace)
     local_secrets = _local_onebound_config()
     # 允许通过环境变量切换数据目录，方便开发、测试和打包后的桌面端各自使用不同库。
     data_dir = Path(os.environ.get("WH_LOCAL_DATA_DIR", "") or root / "outputs" / "wh-local")
@@ -43,6 +44,20 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
             "DAILY_SELECTION_ONEBOUND_ENABLED", str(local_secrets.get("enabled", True))
         ).strip().lower() in {"1", "true", "yes"},
     )
+
+
+def _runtime_root(workspace: Path | None) -> Path:
+    """数据根目录：显式指定 > 打包（PyInstaller）用户可写目录 > 当前工作目录。
+
+    安装包场景下用户双击 exe，cwd 可能是安装目录或系统目录（可能不可写），
+    此时把数据写入 %APPDATA%\\MainPG，保证草稿库/生成图/导出表能正常落盘。
+    """
+    if workspace is not None:
+        return workspace
+    if getattr(sys, "frozen", False):
+        appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+        return appdata / "MainPG"
+    return Path.cwd()
 
 
 def _local_onebound_config() -> dict[str, str | bool]:

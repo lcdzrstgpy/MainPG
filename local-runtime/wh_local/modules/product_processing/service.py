@@ -74,6 +74,21 @@ def _media_public_base_url() -> str:
     return str(os.environ.get("WH_MEDIA_BASE_URL", "")).strip().rstrip("/")
 
 
+def _cos_local_config_paths() -> list[Path]:
+    """cos.local.json 候选位置：源码目录 + 打包资源目录（PyInstaller）。
+
+    安装包构建时把 cos.local.json 放进可执行文件同目录（onedir）或打包资源
+    （onefile 的 _MEIPASS），用户安装后零配置即可把生成图上传 COS 转外链。
+    """
+    candidates = [Path(__file__).resolve().parent / "cos.local.json"]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / "cos.local.json")
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "cos.local.json")
+    return candidates
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     """从 AI 回复中提取 JSON 对象（容忍代码围栏与前后说明文字）。"""
     value = str(text or "").strip()
@@ -2329,20 +2344,22 @@ class ProductProcessingService:
             }
         # COS 图床：gitignored 本地配置 cos.local.json 优先，环境变量 WH_COS_* 可覆盖。
         # 对齐原型出图保存逻辑——生成图上传 COS 转外链后写进导入表，店小秘可直接读取。
+        # 安装包场景：cos.local.json 随程序一起分发（源码/可执行同目录/打包资源），零配置生效。
         cos_config: dict[str, Any] = {}
-        local_cos = Path(__file__).resolve().parent / "cos.local.json"
-        try:
-            if local_cos.is_file():
-                loaded = json.loads(local_cos.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    cos_config = {
-                        "bucket": str(loaded.get("bucket") or "").strip(),
-                        "region": str(loaded.get("region") or "").strip(),
-                        "secret_id": str(loaded.get("secret_id") or "").strip(),
-                        "secret_key": str(loaded.get("secret_key") or "").strip(),
-                    }
-        except (OSError, ValueError):
-            cos_config = {}
+        for local_cos in _cos_local_config_paths():
+            try:
+                if local_cos.is_file():
+                    loaded = json.loads(local_cos.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        cos_config = {
+                            "bucket": str(loaded.get("bucket") or "").strip(),
+                            "region": str(loaded.get("region") or "").strip(),
+                            "secret_id": str(loaded.get("secret_id") or "").strip(),
+                            "secret_key": str(loaded.get("secret_key") or "").strip(),
+                        }
+                        break
+            except (OSError, ValueError):
+                cos_config = {}
         bucket = os.environ.get("WH_COS_BUCKET", "").strip() or cos_config.get("bucket", "")
         region = os.environ.get("WH_COS_REGION", "").strip() or cos_config.get("region", "")
         secret_id = os.environ.get("WH_COS_SECRET_ID", "").strip() or cos_config.get("secret_id", "")
