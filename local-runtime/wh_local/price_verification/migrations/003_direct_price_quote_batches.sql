@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS price_verification_quote_capture_chunks (
     batch_id TEXT NOT NULL,
     content_sha256 TEXT NOT NULL,
     page_url TEXT NOT NULL DEFAULT '',
-    item_count INTEGER NOT NULL CHECK (item_count BETWEEN 1 AND 50),
+    item_count INTEGER NOT NULL CHECK (item_count BETWEEN 1 AND 5000),
     capture_json TEXT NOT NULL,
     items_json TEXT NOT NULL,
     captured_at TEXT NOT NULL,

@@ -1,5 +1,5 @@
 import { httpJson } from "../../../transport/http/client";
-import type { BatchSelection, PluginCommand, PluginSession, QuoteBatchReviewItem, QuoteCaptureBatch, QuoteDecision, QuoteItem, QuoteRun, SkcSourceLink, SourcePreview, SourceTopProfit } from "../types";
+import type { BatchSelection, PluginCommand, PluginSession, PrescreenSettings, QuoteBatchReviewItem, QuoteCaptureBatch, QuoteDecision, QuoteItem, QuoteRun, SkcSourceLink, SourcePreview, SourceTopProfit } from "../types";
 
 const base = "/api/v1/price-verification";
 const key = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
@@ -10,11 +10,13 @@ export const priceVerificationApi = {
     return Array.isArray(payload.sessions) ? payload.sessions : [];
   },
   getCommand: (id: string) => httpJson<PluginCommand>(`/plugin/commands/${encodeURIComponent(id)}`),
+  getPrescreen: async () => httpJson<PrescreenSettings>(`${base}/prescreen`),
+  setPrescreen: (minAdjustedPriceCny: string) => httpJson<PrescreenSettings>(`${base}/prescreen`, { method: "PUT", body: { min_adjusted_price_cny: minAdjustedPriceCny } }),
   listCaptureBatches: async () => (await httpJson<{ batches: QuoteCaptureBatch[] }>(`${base}/capture-batches`)).batches,
   createCaptureBatch: (name: string) => httpJson<QuoteCaptureBatch>(`${base}/capture-batches`, { method: "POST", body: { name, make_current: true } }),
   activateCaptureBatch: (batchId: string) => httpJson<QuoteCaptureBatch>(`${base}/capture-batches/${encodeURIComponent(batchId)}/activate`, { method: "POST" }),
   listCaptureBatchItems: async (batchId: string) => (await httpJson<{ batch_id: string; items: QuoteBatchReviewItem[] }>(`${base}/capture-batches/${encodeURIComponent(batchId)}/items`)).items,
-  stageBatchSelections: async (batchId: string, skcIds: string[]) => (await httpJson<{ batch_id: string; selections: BatchSelection[] }>(`${base}/capture-batches/${encodeURIComponent(batchId)}/selections`, { method: "POST", body: { skc_ids: skcIds } })).selections,
+  stageBatchSelections: async (batchId: string, skcIds: string[], maxCandidates?: number) => (await httpJson<{ batch_id: string; selections: BatchSelection[] }>(`${base}/capture-batches/${encodeURIComponent(batchId)}/selections`, { method: "POST", body: { skc_ids: skcIds, ...(maxCandidates != null ? { max_candidates: maxCandidates } : {}) } })).selections,
   listBatchSelections: async (batchId: string) => (await httpJson<{ batch_id: string; selections: BatchSelection[] }>(`${base}/capture-batches/${encodeURIComponent(batchId)}/selections`)).selections,
   reviewBatchSelection: (batchId: string, selectionId: number, decision: BatchSelection["status"], maxCandidates: number, note?: string) => httpJson<BatchSelection>(`${base}/capture-batches/${encodeURIComponent(batchId)}/selections/${selectionId}/review`, { method: "POST", body: { decision, max_candidates: maxCandidates, note: note ?? "" } }),
   sourceBatchSelections: (batchId: string, rankingMode: "similarity" | "price" = "similarity", skcIds?: string[], keywordSearch = false) => httpJson<SourcePreview>(`${base}/capture-batches/${encodeURIComponent(batchId)}/sourcing`, { method: "POST", body: { idempotency_key: key(), ranking_mode: rankingMode, skc_ids: skcIds ?? [], keyword_search: keywordSearch } }),

@@ -50,7 +50,7 @@ _MONEY_FIELDS = frozenset(
     }
 )
 _QUOTE_FIELDS = frozenset(field.name for field in fields(QuoteItem))
-_MAX_CAPTURE_SKC_GROUPS = 50
+_MAX_CAPTURE_SKC_GROUPS = 500
 _MAX_CAPTURE_QUOTE_ROWS = 5_000
 
 
@@ -200,18 +200,25 @@ class QuoteService:
         if not isinstance(safe_capture, Mapping):
             raise PriceVerificationContractError("capture must be a mapping")
         normalized = normalize_price_quote_discovery(safe_capture)
-        skc_groups = quote_product_count(normalized.quotes)
-        if not normalized.quotes:
+        quotes = normalized.quotes
+        skc_groups = quote_product_count(quotes)
+        if not quotes:
             raise PriceVerificationContractError("one capture page must contain at least one quote row")
         if skc_groups > _MAX_CAPTURE_SKC_GROUPS:
-            raise PriceVerificationContractError("one capture page must contain no more than 50 SKC groups")
-        if len(normalized.quotes) > _MAX_CAPTURE_QUOTE_ROWS:
+            raise PriceVerificationContractError("one capture page must contain no more than 500 SKC groups")
+        if len(quotes) > _MAX_CAPTURE_QUOTE_ROWS:
             raise PriceVerificationContractError("one capture page contains too many SKU quote rows")
         try:
-            batch = self._repository.get_current_quote_capture_batch(workspace_id=actor.workspace_id)
-        except PriceVerificationNotFound as error:
+            batch = self._repository.ensure_current_capture_batch(
+                workspace_id=actor.workspace_id, created_by=actor.actor_id
+            )
+        except PriceVerificationNotFound as error:  # pragma: no cover - defensive
             raise CaptureBatchRequiredError("create or activate a capture batch before collecting") from error
-        snapshots = tuple(_quote_snapshot(item, index=index) for index, item in enumerate(normalized.quotes))
+        # 覆盖式采集：每次新采集替换上一批数据（报价与待审重组），只保留最新一次结果。
+        self._repository.clear_capture_batch_quotes(
+            workspace_id=actor.workspace_id, batch_id=batch.batch_id
+        )
+        snapshots = tuple(_quote_snapshot(item, index=index) for index, item in enumerate(quotes))
         content_sha256 = sha256(safe_json_dumps({"page_url": page_url, "capture": safe_capture}).encode("utf-8")).hexdigest()
         return self._repository.append_quote_capture_chunk(
             workspace_id=actor.workspace_id,
@@ -250,6 +257,47 @@ class QuoteService:
         )
         return run
 
+    def get_prescreen(self, actor: PriceVerificationActor) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        settings = self._repository.get_prescreen_settings(workspace_id=actor.workspace_id)
+        return {
+            "workspace_id": settings.workspace_id,
+            "min_adjusted_price_cny": _decimal_text(settings.min_adjusted_price_cny),
+            "updated_at": settings.updated_at,
+            "updated_by": settings.updated_by,
+        }
+
+    def set_prescreen(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        min_adjusted_price_cny: str | None,
+    ) -> Mapping[str, Any]:
+        """Persist the workbench-wide pre-screen threshold.
+
+        ``min_adjusted_price_cny`` is the minimum adjusted declared price
+        (CNY) a captured SKC must reach to enter STEP 02 confirm; a blank
+        value disables filtering.
+        """
+        actor = _actor(actor)
+        normalized: str | None = None
+        if min_adjusted_price_cny is not None and str(min_adjusted_price_cny).strip():
+            amount = _decimal_or_none(str(min_adjusted_price_cny).strip())
+            if amount is None or amount < 0:
+                raise PriceVerificationContractError("min_adjusted_price_cny must be a non-negative amount")
+            normalized = _decimal_text(amount)
+        settings = self._repository.set_prescreen_settings(
+            workspace_id=actor.workspace_id,
+            min_adjusted_price_cny=normalized,
+            updated_by=actor.actor_id,
+        )
+        return {
+            "workspace_id": settings.workspace_id,
+            "min_adjusted_price_cny": _decimal_text(settings.min_adjusted_price_cny),
+            "updated_at": settings.updated_at,
+            "updated_by": settings.updated_by,
+        }
+
     def list_capture_batch_review_items(
         self,
         actor: PriceVerificationActor,
@@ -276,8 +324,15 @@ class QuoteService:
         for item in merged:
             key = item.skc_id or item.spu_or_goods_id or item.product_title or item.quote_key or "other"
             groups.setdefault(key, []).append(item)
+        prescreen = self._repository.get_prescreen_settings(workspace_id=actor.workspace_id)
+        min_adjusted = _decimal_or_none(prescreen.min_adjusted_price_cny)
         rows: list[Mapping[str, Any]] = []
         for key, members in groups.items():
+            adjusted_min = _min_or_none(item.adjusted_declared_price_cny for item in members)
+            if min_adjusted is not None:
+                # 初筛：调整后申报价缺失或低于阈值时，不进入 STEP 02 人工确认。
+                if adjusted_min is None or adjusted_min < min_adjusted:
+                    continue
             sku_prices: list[Mapping[str, Any]] = []
             for item in members:
                 sku_prices.append(
@@ -374,16 +429,21 @@ class QuoteService:
         batch_id: str,
         *,
         skc_ids: Iterable[str],
+        max_candidates: int | None = None,
     ) -> tuple[Mapping[str, Any], ...]:
         """First-panel confirm: reassemble the checked SKC rows into the pending review list.
 
         Nothing is written to the draft pool here; the final retained decision
         happens in the second panel so humans get a second chance to drop rows.
+        ``max_candidates`` is applied to each staged row as its image-search cap.
         """
         actor = _actor(actor)
         requested = {str(skc).strip() for skc in skc_ids if str(skc).strip()}
         if not requested:
             raise PriceVerificationContractError("at least one SKC must be selected")
+        if max_candidates is None:
+            max_candidates = 10
+        candidate_cap = max(1, min(int(max_candidates), 100))
         rows = self.list_capture_batch_review_items(actor, batch_id)
         selected = [row for row in rows if str(row["skc_id"]).strip() in requested]
         now = _now_text()
@@ -405,6 +465,7 @@ class QuoteService:
                 original_max=_decimal_text(row["original_max"]),
                 adjusted_min=_decimal_text(row["adjusted_min"]),
                 adjusted_max=_decimal_text(row["adjusted_max"]),
+                max_candidates=candidate_cap,
                 now=now,
             )
             staged.append(_selection_response(selection))

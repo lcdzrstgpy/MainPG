@@ -141,7 +141,15 @@ class QuoteCaptureBatchRecord(_Record):
     updated_at: str
     chunk_count: int = 0
     quote_count: int = 0
+    skc_count: int = 0
     snapshot_count: int = 0
+
+
+class PrescreenSettingsRecord(_Record):
+    workspace_id: str
+    min_adjusted_price_cny: str | None = None
+    updated_at: str = ""
+    updated_by: str = ""
 
 
 class QuoteCaptureChunkRecord(_Record):
@@ -207,6 +215,11 @@ class SkcSourceLinkRecord(_Record):
     status: str = "active"
     created_at: str = ""
     updated_at: str = ""
+    # 关联时快照的 Temu 侧上下文：覆盖式重新采集会清空 batch_selections，
+    # 但已关联货源长期保留，STEP 04 展示与利润核算需要这些字段兜底。
+    product_title: str = ""
+    site: str = ""
+    selling_price: str | None = None
 
 
 class PriceVerificationRepository:
@@ -237,6 +250,29 @@ class PriceVerificationRepository:
         with self._connect() as connection:
             for migration in sorted(migrations.glob("*.sql")):
                 connection.executescript(migration.read_text(encoding="utf-8"))
+            # SQLite has no "ADD COLUMN IF NOT EXISTS", so guard column adds here.
+            _ensure_column(connection, "price_verification_skc_source_links", "product_title", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "price_verification_skc_source_links", "site", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "price_verification_skc_source_links", "selling_price", "TEXT")
+            connection.execute(
+                """UPDATE price_verification_skc_source_links AS link
+                SET product_title = COALESCE((
+                        SELECT s.product_title FROM price_verification_batch_selections AS s
+                        WHERE s.workspace_id = link.workspace_id
+                          AND s.batch_id = link.batch_id
+                          AND s.skc_id = link.skc_id), ''),
+                    site = COALESCE((
+                        SELECT s.site FROM price_verification_batch_selections AS s
+                        WHERE s.workspace_id = link.workspace_id
+                          AND s.batch_id = link.batch_id
+                          AND s.skc_id = link.skc_id), ''),
+                    selling_price = COALESCE((
+                        SELECT s.adjusted_min FROM price_verification_batch_selections AS s
+                        WHERE s.workspace_id = link.workspace_id
+                          AND s.batch_id = link.batch_id
+                          AND s.skc_id = link.skc_id), link.selling_price)
+                WHERE link.site = '' OR link.product_title = '' OR link.selling_price IS NULL"""
+            )
 
     def create_pairing_code(
         self,
@@ -737,8 +773,11 @@ class PriceVerificationRepository:
                     (SELECT COALESCE(SUM(item_count), 0) FROM price_verification_quote_capture_chunks
                      WHERE workspace_id = ? AND batch_id = ?) AS quote_count,
                     (SELECT COUNT(*) FROM price_verification_quote_capture_batch_snapshots
-                     WHERE workspace_id = ? AND batch_id = ?) AS snapshot_count""",
-                (workspace_id, batch_id, workspace_id, batch_id, workspace_id, batch_id),
+                     WHERE workspace_id = ? AND batch_id = ?) AS snapshot_count,
+                    (SELECT COUNT(DISTINCT json_extract(je.value, '$.skc_id'))
+                     FROM price_verification_quote_capture_chunks c, json_each(c.items_json) je
+                     WHERE c.workspace_id = ? AND c.batch_id = ?) AS skc_count""",
+                (workspace_id, batch_id, workspace_id, batch_id, workspace_id, batch_id, workspace_id, batch_id),
             ).fetchone()
         values = dict(row)
         values["is_current"] = bool(values["is_current"])
@@ -753,6 +792,9 @@ class PriceVerificationRepository:
                           (SELECT COALESCE(SUM(chunk.item_count), 0)
                            FROM price_verification_quote_capture_chunks chunk
                            WHERE chunk.workspace_id = b.workspace_id AND chunk.batch_id = b.batch_id) AS quote_count,
+                          (SELECT COUNT(DISTINCT json_extract(je.value, '$.skc_id'))
+                           FROM price_verification_quote_capture_chunks c, json_each(c.items_json) je
+                           WHERE c.workspace_id = b.workspace_id AND c.batch_id = b.batch_id) AS skc_count,
                           COUNT(DISTINCT s.revision) AS snapshot_count
                 FROM price_verification_quote_capture_batches b
                 LEFT JOIN price_verification_quote_capture_chunks c
@@ -805,6 +847,106 @@ class PriceVerificationRepository:
                 raise
         return self.get_quote_capture_batch(workspace_id=workspace_id, batch_id=batch_id)
 
+    def ensure_current_capture_batch(
+        self, *, workspace_id: str, created_by: str
+    ) -> QuoteCaptureBatchRecord:
+        """Return the active capture batch, auto-creating one when none exists.
+
+        Batch management is hidden from the workbench UI; a single default
+        batch per workspace is kept alive so plugin captures always land
+        somewhere without a manual "create batch" step.
+        """
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        created_by = _required_text(created_by, "created_by")
+        try:
+            return self.get_current_quote_capture_batch(workspace_id=workspace_id)
+        except PriceVerificationNotFound:
+            return self.create_quote_capture_batch(
+                workspace_id=workspace_id,
+                name="默认核价批次",
+                created_by=created_by,
+                make_current=True,
+            )
+
+    def get_prescreen_settings(
+        self, *, workspace_id: str
+    ) -> PrescreenSettingsRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT workspace_id, min_adjusted_price_cny, updated_at, updated_by
+                FROM price_verification_prescreen_settings
+                WHERE workspace_id = ?""",
+                (workspace_id,),
+            ).fetchone()
+        if row is None:
+            return PrescreenSettingsRecord(workspace_id=workspace_id)
+        return PrescreenSettingsRecord(**dict(row))
+
+    def set_prescreen_settings(
+        self,
+        *,
+        workspace_id: str,
+        min_adjusted_price_cny: str | None,
+        updated_by: str,
+    ) -> PrescreenSettingsRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        updated_by = _required_text(updated_by, "updated_by")
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """INSERT INTO price_verification_prescreen_settings
+                    (workspace_id, min_adjusted_price_cny, updated_at, updated_by)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(workspace_id) DO UPDATE SET
+                        min_adjusted_price_cny = excluded.min_adjusted_price_cny,
+                        updated_at = excluded.updated_at,
+                        updated_by = excluded.updated_by""",
+                    (workspace_id, min_adjusted_price_cny, now, updated_by),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_prescreen_settings(workspace_id=workspace_id)
+
+    def clear_capture_batch_quotes(
+        self, *, workspace_id: str, batch_id: str
+    ) -> None:
+        """Drop all captured quote chunks and staged selections of one batch.
+
+        New plugin captures replace the previous batch content instead of
+        accumulating, so the review panels always show only the latest 50
+        captured rows.
+        """
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """DELETE FROM price_verification_batch_selections
+                    WHERE workspace_id = ? AND batch_id = ?""",
+                    (workspace_id, batch_id),
+                )
+                connection.execute(
+                    """DELETE FROM price_verification_quote_capture_chunks
+                    WHERE workspace_id = ? AND batch_id = ?""",
+                    (workspace_id, batch_id),
+                )
+                connection.execute(
+                    """UPDATE price_verification_quote_capture_batches
+                    SET updated_at = ? WHERE workspace_id = ? AND batch_id = ?""",
+                    (now, workspace_id, batch_id),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
     def append_quote_capture_chunk(
         self,
         *,
@@ -825,8 +967,8 @@ class PriceVerificationRepository:
         snapshots = _snapshot_rows(items, key_name="quote_key")
         if not snapshots:
             raise PriceVerificationContractError("one capture page must contain at least one quote row")
-        if _capture_skc_group_count(snapshots) > 50:
-            raise PriceVerificationContractError("one capture page must contain no more than 50 SKC groups")
+        if _capture_skc_group_count(snapshots) > 500:
+            raise PriceVerificationContractError("one capture page must contain no more than 500 SKC groups")
         if len(snapshots) > 5_000:
             raise PriceVerificationContractError("one capture page contains too many SKU quote rows")
         if not isinstance(capture, Mapping):
@@ -966,6 +1108,7 @@ class PriceVerificationRepository:
         original_max: str | None,
         adjusted_min: str | None,
         adjusted_max: str | None,
+        max_candidates: int = 10,
         now: str,
     ) -> BatchSelectionRecord:
         """Add or refresh one SKC row in the pending review list.
@@ -993,6 +1136,7 @@ class PriceVerificationRepository:
             "original_max": _nullable_text(original_max),
             "adjusted_min": _nullable_text(adjusted_min),
             "adjusted_max": _nullable_text(adjusted_max),
+            "max_candidates": max(1, min(int(max_candidates), 100)),
             "now": now,
         }
         with self._connect() as connection:
@@ -1012,8 +1156,8 @@ class PriceVerificationRepository:
                         (workspace_id, batch_id, skc_id, quote_keys_json, product_title,
                          main_image_url, official_link_url, site, source_confidence,
                          authenticity_status, sku_prices_json, original_min, original_max,
-                         adjusted_min, adjusted_max, status, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                         adjusted_min, adjusted_max, max_candidates, status, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
                         (
                             values["workspace_id"], values["batch_id"], values["skc_id"],
                             json.dumps(values["quote_keys"], ensure_ascii=False),
@@ -1023,6 +1167,7 @@ class PriceVerificationRepository:
                             json.dumps(values["sku_prices"], ensure_ascii=False),
                             values["original_min"], values["original_max"],
                             values["adjusted_min"], values["adjusted_max"],
+                            values["max_candidates"],
                             values["now"], values["now"],
                         ),
                     )
@@ -1037,7 +1182,7 @@ class PriceVerificationRepository:
                             official_link_url = ?, site = ?, source_confidence = ?,
                             authenticity_status = ?, sku_prices_json = ?, original_min = ?,
                             original_max = ?, adjusted_min = ?, adjusted_max = ?,
-                            status = ?, updated_at = ?
+                            max_candidates = ?, status = ?, updated_at = ?
                         WHERE workspace_id = ? AND batch_id = ? AND skc_id = ?""",
                         (
                             json.dumps(values["quote_keys"], ensure_ascii=False),
@@ -1047,6 +1192,7 @@ class PriceVerificationRepository:
                             json.dumps(values["sku_prices"], ensure_ascii=False),
                             values["original_min"], values["original_max"],
                             values["adjusted_min"], values["adjusted_max"],
+                            values["max_candidates"],
                             status, values["now"],
                             workspace_id, batch_id, skc_id,
                         ),
@@ -1176,18 +1322,26 @@ class PriceVerificationRepository:
         source_decision: str,
         note: str,
         now: str,
+        product_title: str = "",
+        site: str = "",
+        selling_price: str | None = None,
     ) -> SkcSourceLinkRecord:
         """Link one 1688 offer to an SKC, or revive an existing (possibly removed) link.
 
         The (workspace_id, skc_id, offer_id) unique constraint makes the write
         idempotent: a second link of the same offer reactivates the row instead
-        of duplicating it.
+        of duplicating it.  ``product_title`` / ``site`` / ``selling_price``
+        snapshot the retained Temu context so STEP 04 keeps rendering site and
+        profit even after an 覆盖式 re-capture clears the batch selections.
         """
         workspace_id = _required_text(workspace_id, "workspace_id")
         batch_id = _required_text(batch_id, "batch_id")
         skc_id = _required_text(skc_id, "skc_id")
         offer_id = _required_text(offer_id, "offer_id")
         source_url = _required_text(source_url, "source_url")
+        product_title = _text(product_title)
+        site = _text(site)
+        selling_price = _nullable_text(selling_price)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -1204,12 +1358,13 @@ class PriceVerificationRepository:
                         """INSERT INTO price_verification_skc_source_links
                         (workspace_id, batch_id, skc_id, offer_id, source_url, source_title,
                          main_image_url, price_cny, moq, domestic_freight_cny, source_decision,
-                         note, status, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                         note, status, created_at, updated_at, product_title, site, selling_price)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
                         (
                             workspace_id, batch_id, skc_id, offer_id, source_url,
                             source_title, main_image_url, price_cny, moq,
                             domestic_freight_cny, source_decision, note, now, now,
+                            product_title, site, selling_price,
                         ),
                     )
                 else:
@@ -1217,11 +1372,13 @@ class PriceVerificationRepository:
                         """UPDATE price_verification_skc_source_links
                         SET batch_id = ?, source_url = ?, source_title = ?, main_image_url = ?,
                             price_cny = ?, moq = ?, domestic_freight_cny = ?,
-                            source_decision = ?, note = ?, status = 'active', updated_at = ?
+                            source_decision = ?, note = ?, status = 'active', updated_at = ?,
+                            product_title = ?, site = ?, selling_price = ?
                         WHERE id = ?""",
                         (
                             batch_id, source_url, source_title, main_image_url, price_cny,
                             moq, domestic_freight_cny, source_decision, note, now,
+                            product_title, site, selling_price,
                             row["id"],
                         ),
                     )
@@ -1589,6 +1746,13 @@ class PriceVerificationRepository:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    """Add a column only when missing; SQLite lacks ``ADD COLUMN IF NOT EXISTS``."""
+    existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _new_id() -> str:

@@ -8973,6 +8973,18 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
       }
       return output;
     };
+    const cellLink = (element) => {
+      // 商品标题/图片在核价弹窗里通常是 <a>，href 携带商品详情页的 goods_id/productId，
+      // 采集下来用于为每条报价补齐官方链接。
+      for (const node of [element, ...Array.from(element?.querySelectorAll?.("a[href]") || [])]) {
+        if (!node?.getAttribute) continue;
+        const href = absUrl(node.getAttribute("href") || "");
+        if (!href) continue;
+        if (/#$/.test(href) || /javascript:/i.test(href)) continue;
+        return href;
+      }
+      return "";
+    };
     const rowImages = (element, scope) => {
       const direct = cellImages(element);
       if (direct.length) return direct.slice(0, 8);
@@ -9037,7 +9049,8 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
           const cells = Array.from(tr.querySelectorAll("td, th")).map((cell, index) => ({
             header: headers[index] || "",
             text: text(cell),
-            images: cellImages(cell)
+            images: cellImages(cell),
+            url: cellLink(cell)
           }));
           if (cells.some((cell) => cell.text || cell.images.length)) {
             const key = rowKey(cells.map((cell) => cell.text).filter(Boolean).join(" | "));
@@ -9048,6 +9061,7 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
               cells,
               images: rowImages(tr, scope),
               text: cells.map((cell) => cell.text).filter(Boolean).join(" | "),
+              link: cells.map((cell) => cell.url).find(Boolean) || "",
               capturedAt: now
             });
           }
@@ -9060,7 +9074,7 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
         if (row.closest("table")) continue;
         const cells = Array.from(row.querySelectorAll("[role='cell'], .ant-table-cell, .semi-table-cell, td, th"))
           .filter(visible)
-          .map((cell) => ({ header: "", text: text(cell), images: cellImages(cell) }));
+          .map((cell) => ({ header: "", text: text(cell), images: cellImages(cell), url: cellLink(cell) }));
         if (cells.length && cells.some((cell) => /skc|sku|申报|价格|核价|¥|￥|\d{5,}/i.test(cell.text) || cell.images.length)) {
           const key = rowKey(cells.map((cell) => cell.text).filter(Boolean).join(" | "));
           if (seenRows.has(key)) continue;
@@ -9070,6 +9084,7 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
             cells,
             images: rowImages(row, scope),
             text: cells.map((cell) => cell.text).filter(Boolean).join(" | "),
+            link: cells.map((cell) => cell.url).find(Boolean) || "",
             capturedAt: now
           });
         }
@@ -9094,7 +9109,8 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
         const cells = cellNodes.map((cell) => ({
           header: "",
           text: text(cell),
-          images: cellImages(cell)
+          images: cellImages(cell),
+          url: cellLink(cell)
         })).filter((cell) => cell.text || cell.images.length);
         if (!cells.length) continue;
         const rowText = cells.map((cell) => cell.text).filter(Boolean).join(" | ");
@@ -9106,6 +9122,7 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
           cells,
           images: rowImages(row, scope),
           text: rowText,
+          link: cells.map((cell) => cell.url).find(Boolean) || "",
           capturedAt: now
         });
       }

@@ -202,6 +202,10 @@ class SourcingService:
             source_decision=_text(source_decision),
             note=_text(note),
             now=_now_text(),
+            # 快照 Temu 侧上下文：覆盖式重新采集清空 selections 后，STEP 04 仍能展示站点与利润。
+            product_title=_text(selection.product_title),
+            site=_text(selection.site),
+            selling_price=_nullable_decimal_text(selection.adjusted_min),
         )
         self._sync_skc_to_product_library(actor, batch_id=batch_id, skc_id=skc_id)
         return _source_link_response(record, selection=selection)
@@ -1042,9 +1046,17 @@ def _source_link_response(
         "created_at": record.created_at,
         "updated_at": record.updated_at,
     }
-    site = _site_code(selection.site) if selection is not None else ""
-    selling_price = _text(selection.adjusted_min) if selection is not None else ""
-    response["product_title"] = selection.product_title if selection is not None else ""
+    site = _site_code(selection.site) if selection is not None else _site_code(record.site)
+    selling_price = (
+        _text(selection.adjusted_min)
+        if selection is not None
+        else _text(record.selling_price)
+    )
+    response["product_title"] = (
+        _text(selection.product_title)
+        if selection is not None
+        else _text(record.product_title)
+    )
     response["site"] = site
     response["selling_price"] = selling_price
     response["profit"] = _link_profit(record, site, selling_price)

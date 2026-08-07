@@ -3,16 +3,18 @@ export type PriceVerificationStage = "collect" | "review" | "source";
 export type StageDefinition = { id: PriceVerificationStage; number: string; title: string; description: string };
 
 export const priceVerificationStages: StageDefinition[] = [
-  { id: "collect", number: "01", title: "批次管理", description: "新建或切换核价批次，数据由插件采集写入" },
+  { id: "collect", number: "01", title: "数据初筛", description: "设置申报价门槛，插件采集本页数据先初筛" },
   { id: "review", number: "02", title: "人工确认", description: "逐条保留或拒绝报价，再进入图搜" },
   { id: "source", number: "03", title: "货源匹配", description: "只为已保留的报价匹配货源候选" },
 ];
+
+export type PrescreenSettings = { workspace_id: string; min_adjusted_price_cny?: string | number | null; updated_at?: string; updated_by?: string };
 
 export type PluginBrowserTab = { title: string; host: string; active: boolean };
 export type PluginSession = { id: string; browser: string; plugin_version: string; capabilities: Record<string, unknown>; status: string; last_seen_at: string; tab_title?: string; tab_host?: string; tab_count?: number; tabs?: PluginBrowserTab[] };
 export type PluginCommand = { command_id: string; session_id: string; command_type: string; status: string; created_at: string; updated_at: string; payload?: Record<string, unknown>; result?: Record<string, unknown> };
 export type QuoteRun = { run_id: string; command_id: string; status: string; item_count: number; captured_at: string };
-export type QuoteCaptureBatch = { batch_id: string; name: string; is_current: boolean; chunk_count: number; quote_count: number; snapshot_count: number; updated_at: string };
+export type QuoteCaptureBatch = { batch_id: string; name: string; is_current: boolean; chunk_count: number; quote_count: number; skc_count?: number; snapshot_count: number; updated_at: string };
 export type QuoteBatchSkuPrice = { sku_id: string; sku_attribute_text?: string; original_declared_price_cny?: string | number | null; adjusted_declared_price_cny?: string | number | null; new_declared_price_cny?: string | number | null };
 export type QuoteBatchReviewItem = { skc_id: string; quote_keys: string[]; product_title: string; main_image_url: string; official_link_url: string; site: string; source_confidence: string; authenticity_status: string; sku_count: number; sku_prices: QuoteBatchSkuPrice[]; original_min?: string | number | null; original_max?: string | number | null; adjusted_min?: string | number | null; adjusted_max?: string | number | null };
 export type BatchSelection = { id: number; batch_id: string; skc_id: string; quote_keys: string[]; product_title: string; main_image_url: string; official_link_url: string; site: string; source_confidence: string; authenticity_status: string; sku_prices: QuoteBatchSkuPrice[]; original_min?: string | number | null; original_max?: string | number | null; adjusted_min?: string | number | null; adjusted_max?: string | number | null; max_candidates: number; status: "pending" | "retained" | "deleted"; draft_id?: number | null; draft_created?: boolean; created_at?: string; updated_at?: string };
