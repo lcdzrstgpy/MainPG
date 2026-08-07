@@ -1,13 +1,5 @@
-const DEFAULT_BASE_URL = "https://workbench.haocoming.top";
-const LEGACY_DEFAULT_BASE_URLS = new Set([
-  "http://127.0.0.1:8001",
-  "http://127.0.0.1:8002",
-  "http://localhost:8001",
-  "http://localhost:8002"
-]);
-const FALLBACK_BASE_URLS = ["http://127.0.0.1:8001", "http://127.0.0.1:8002", "http://localhost:8001", "http://localhost:8002"];
-const ALLOWED_HTTPS_WORKBENCH_HOSTS = new Set(["workbench.haocoming.top"]);
-const ALLOWED_HTTP_WORKBENCH_HOSTS = new Set(["localhost", "127.0.0.1"]);
+const DEFAULT_BASE_URL = "http://127.0.0.1:8010";
+const FALLBACK_BASE_URLS = ["http://127.0.0.1:8010", "http://localhost:8010"];
 const tenantContext = globalThis.WorkbenchTenantContext;
 
 const baseUrlInput = document.getElementById("baseUrl");
@@ -25,12 +17,7 @@ function normalizeBaseUrl(value) {
 
 function isAllowedWorkbenchUrl(value) {
   try {
-    const canonical = tenantContext.canonicalEntryBaseUrl(value);
-    const url = new URL(canonical.httpBase);
-    const host = url.hostname.toLowerCase();
-    if (url.protocol === "https:") return ALLOWED_HTTPS_WORKBENCH_HOSTS.has(host);
-    if (url.protocol === "http:") return ALLOWED_HTTP_WORKBENCH_HOSTS.has(host);
-    return false;
+    return tenantContext.normalizeEntryBaseUrl(value) === DEFAULT_BASE_URL;
   } catch (_error) {
     return false;
   }
@@ -44,15 +31,6 @@ function candidateBaseUrls(preferred, allowLoopbackFallback = false) {
       { allowLoopbackFallback }
     )
     .filter(isAllowedWorkbenchUrl);
-}
-
-async function detectActiveTenantBaseUrl() {
-  try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    return tenantContext.deriveTenantEntryBaseUrl(tabs?.[0]?.url, DEFAULT_BASE_URL);
-  } catch (_error) {
-    return null;
-  }
 }
 
 function showCompany(companyCode, connected = false) {
@@ -90,22 +68,8 @@ async function loadSettings() {
     }
   }
 
-  const detectedTenantBaseUrl = await detectActiveTenantBaseUrl();
-  if (detectedTenantBaseUrl) {
-    baseUrlInput.value = detectedTenantBaseUrl;
-    await chrome.storage.local.set({
-      baseUrl: detectedTenantBaseUrl,
-      baseUrlMode: "detected"
-    });
-    showCompany(tenantContext.canonicalEntryBaseUrl(detectedTenantBaseUrl).companyCode, false);
-    statusEl.textContent = "已从当前工作台页面识别公司入口，请填写连接码";
-    return;
-  }
-
-  const staleLegacyLocal = LEGACY_DEFAULT_BASE_URLS.has(storedBaseUrl)
-    && data.baseUrlMode !== "explicit";
-  baseUrlInput.value = storedBaseUrl && !staleLegacyLocal ? storedBaseUrl : DEFAULT_BASE_URL;
-  if (staleLegacyLocal || !storedBaseUrl) {
+  baseUrlInput.value = DEFAULT_BASE_URL;
+  if (storedBaseUrl !== DEFAULT_BASE_URL) {
     await chrome.storage.local.set({ baseUrl: DEFAULT_BASE_URL, baseUrlMode: "default" });
   }
   showCompany("", false);
@@ -117,7 +81,7 @@ async function loadSettings() {
 async function saveSettings() {
   const baseUrl = normalizeBaseUrl(baseUrlInput.value);
   if (!isAllowedWorkbenchUrl(baseUrl)) {
-    statusEl.textContent = "工作台地址仅支持 W-H 线上 HTTPS 或本机开发 HTTP 地址；企业入口格式为 /t/三位公司编号";
+    statusEl.textContent = "工作台地址仅支持本机 http://127.0.0.1:8010";
     return false;
   }
   const current = await chrome.storage.local.get(["connectionContext"]);
