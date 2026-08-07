@@ -7,7 +7,7 @@ import type {
 } from "../types/systemConfig";
 
 const SYSTEM_CONFIG_PATH = "/desktop/basic-settings/system-config";
-const PRIMARY_AI_BASE_URL = "https://station-88.aicoming.top";
+const PRIMARY_AI_BASE_URL = "https://api.aicoming.top/v1";
 
 const fallbackConfig: SystemConfigResponse = {
   ok: true,

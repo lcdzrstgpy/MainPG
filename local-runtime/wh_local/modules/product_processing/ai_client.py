@@ -17,6 +17,10 @@ from .provider_config import DEFAULT_AI_TIMEOUT_SECONDS, resolve_ai_provider
 class AiProviderError(RuntimeError):
     """AI 中转调用失败。"""
 
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class AiClient:
     def __init__(self) -> None:
@@ -31,12 +35,15 @@ class AiClient:
         self.image_size = provider["image_size"]
         self.image_quality = provider["image_quality"]
         self.timeout_seconds = float(provider.get("timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS))
+        # 差异化超时：文本 25s 快速失败落降级链；图片 90s 留足生成时间。
+        self.text_timeout_seconds = float(provider.get("text_timeout_seconds", 25.0))
+        self.image_timeout_seconds = float(provider.get("image_timeout_seconds", 90.0))
 
     def chat(self, messages: list[dict[str, Any]], *, model: str | None = None) -> str:
         """调用 chat/completions，返回首个 assistant 文本。
 
-        按 ``text_model_fallback_order`` 自动降级：主模型调用失败（超时/4xx/5xx）时
-        依次尝试后续模型，全部失败才抛最后一个错误。
+        按 ``text_model_fallback_order`` 自动降级：仅连接类失败（超时/网络错误/5xx/429）
+        才依次尝试后续模型，业务 4xx 直接失败，避免无意义的等待与调用。
         """
         last_error: AiProviderError | None = None
         for candidate in self._text_model_chain(model):
@@ -46,12 +53,15 @@ class AiClient:
                 "temperature": 0.7,
             }
             try:
-                data = self._post("/chat/completions", payload)
+                data = self._post("/chat/completions", payload, timeout=self.text_timeout_seconds)
                 return str(data["choices"][0]["message"]["content"] or "").strip()
             except (KeyError, IndexError, TypeError) as exc:
                 raise AiProviderError(f"unexpected chat response: {data}") from exc
             except AiProviderError as exc:
                 last_error = exc
+                status = getattr(exc, "status_code", None)
+                if status is not None and 400 <= status < 500 and status != 429:
+                    raise  # 业务级 4xx（参数/鉴权错误）重试其他模型也无意义，直接失败
                 continue
         raise last_error or AiProviderError("no text model candidate available")
 
@@ -72,7 +82,7 @@ class AiClient:
             "n": 1,
             "quality": self.image_quality,
         }
-        data = self._post("/images/generations", payload)
+        data = self._post("/images/generations", payload, timeout=self.image_timeout_seconds)
         try:
             item = data["data"][0]
         except (KeyError, IndexError, TypeError) as exc:
@@ -90,7 +100,7 @@ class AiClient:
             "models_sample": names[:10],
         }
 
-    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post(self, path: str, payload: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
         request = urllib.request.Request(
             f"{self.base_url}{path}",
             data=json.dumps(payload).encode("utf-8"),
@@ -100,7 +110,7 @@ class AiClient:
             },
             method="POST",
         )
-        return self._send(request)
+        return self._send(request, timeout=timeout)
 
     def _get(self, path: str) -> dict[str, Any]:
         request = urllib.request.Request(
@@ -110,13 +120,14 @@ class AiClient:
         )
         return self._send(request)
 
-    def _send(self, request: urllib.request.Request) -> dict[str, Any]:
+    def _send(self, request: urllib.request.Request, *, timeout: float | None = None) -> dict[str, Any]:
+        effective_timeout = timeout if timeout is not None else self.timeout_seconds
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with urllib.request.urlopen(request, timeout=effective_timeout) as response:
                 body = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:300]
-            raise AiProviderError(f"AI provider HTTP {exc.code}: {detail}") from exc
+            raise AiProviderError(f"AI provider HTTP {exc.code}: {detail}", status_code=exc.code) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise AiProviderError(f"AI provider unreachable: {exc}") from exc
         try:

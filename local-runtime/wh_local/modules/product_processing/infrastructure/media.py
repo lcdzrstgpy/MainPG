@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import mimetypes
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +23,20 @@ from urllib.parse import urlsplit
 import requests
 
 from ..domain.policy import is_safe_external_url
+
+# 模块级连接池：复用 TCP/TLS 握手与 HTTP 连接，避免每个请求新建连接（图片生成/参考图下载高频调用）。
+_SESSION = requests.Session()
+_HTTP_ADAPTER = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=32, max_retries=0)
+_SESSION.mount("https://", _HTTP_ADAPTER)
+_SESSION.mount("http://", _HTTP_ADAPTER)
+_SESSION.headers.update(
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+        )
+    }
+)
 
 # 对齐原项目 native_product_engine.DXM_IMAGE_TARGET_SIZE = 800
 # 店小秘导入要求图片不小于 800×800，拆分后每格缩放到该尺寸。
@@ -40,7 +55,11 @@ class MediaConfigurationError(RuntimeError):
 
 
 class MediaProcessingError(RuntimeError):
-    pass
+    """图片处理失败；``status_code`` 携带中转返回的 HTTP 状态码（429 时用于退避重试）。"""
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -136,6 +155,9 @@ class ProductImageProcessor:
                     )
                 except (requests.RequestException, TimeoutError, ValueError, MediaProcessingError) as exc:
                     errors.append(f"{provider['name']} attempt {attempt}: {_safe_error(exc)}")
+                    # 429 限流：指数退避后重试，避免立即重撞限流阈值
+                    if getattr(exc, "status_code", None) == 429:
+                        time.sleep(min(2 ** attempt, 10))
         raise MediaProcessingError("; ".join(errors) or "image provider request failed")
 
     def repair_generated(
@@ -392,7 +414,7 @@ class ProductImageProcessor:
                 ("image[]", (filename, BytesIO(content), content_type))
                 for content, filename, content_type in references
             ]
-        response = requests.post(
+        response = _SESSION.post(
             f"{provider['base_url']}/images/edits",
             headers={"Authorization": f"Bearer {provider['api_key']}"},
             data={
@@ -402,11 +424,14 @@ class ProductImageProcessor:
                 "size": "1024x1024",
             },
             files=files,
-            timeout=150,
+            timeout=120,
         )
         try:
             if not response.ok:
-                raise MediaProcessingError(f"provider returned HTTP {response.status_code}")
+                raise MediaProcessingError(
+                    f"provider returned HTTP {response.status_code}",
+                    status_code=response.status_code,
+                )
             payload = response.json()
         finally:
             response.close()
@@ -421,7 +446,7 @@ class ProductImageProcessor:
         url = str(item.get("url") or "").strip()
         if not url or not is_safe_external_url(url):
             raise MediaProcessingError("provider response does not contain a safe image result")
-        downloaded = requests.get(url, timeout=60, allow_redirects=False)
+        downloaded = _SESSION.get(url, timeout=60, allow_redirects=False)
         try:
             downloaded.raise_for_status()
             content = bytes(downloaded.content)
@@ -489,7 +514,7 @@ def _download_reference_image(url: str) -> tuple[bytes, str]:
     variants = [url]
     parsed = urlsplit(url)
     if "__r__" not in parsed.query:
-        ts = str(int(__import__("time").time() * 1000))
+        ts = str(int(time.time() * 1000))
         separator = "&" if parsed.query else "?"
         variants.append(f"{url}{separator}__r__={ts}")
     if parsed.scheme == "https":
@@ -498,7 +523,7 @@ def _download_reference_image(url: str) -> tuple[bytes, str]:
     for variant in variants:
         response = None
         try:
-            response = requests.get(variant, timeout=30, allow_redirects=False, headers=headers)
+            response = _SESSION.get(variant, timeout=30, allow_redirects=False, headers=headers)
             response.raise_for_status()
             content = bytes(response.content)
             content_type = str(response.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]

@@ -113,7 +113,11 @@ class ProductProcessingService:
         self.assets = assets
         self._public_image_fetcher = public_image_fetcher
         self._ai_instance: AiClient | None = None
+        self._ai_lock = threading.Lock()  # 保护 AiClient 懒加载（多线程并行处理时避免重复创建）
         self._media_instance = None  # ProductImageProcessor (懒加载，可选依赖)
+        # 主体识别结果缓存：同一来源主图只识别一次（批量任务大量重复商品时省 N 次 AI 调用）
+        self._subject_cache: dict[str, str] = {}
+        self._subject_cache_lock = threading.Lock()
 
     def engine_status(self) -> dict[str, Any]:
         dependency_status = {
@@ -747,6 +751,9 @@ class ProductProcessingService:
 
         def _run() -> None:
             try:
+                # 预热 OCR 引擎（首次加载 2-5s），避免首个草稿在图片质检时等待模型加载
+                if ocr_gate_enabled():
+                    ocr_diagnostics()
                 self._execute_task(task_id, workspace_id)
             except Exception:
                 # 兜底：任务执行异常时标记失败，避免任务卡在 running 状态
@@ -1153,49 +1160,80 @@ class ProductProcessingService:
         ai_notes: list[str] = []
         optimized_title = title
         description = self._text(draft.get("description") or raw.get("description"))
+        need_grid = (
+            not preflight_only
+            and "four_grid" in scope
+            and _as_bool(settings.get("ai_media_opt_in"), default=True)
+        )
+        need_detail = (
+            not preflight_only
+            and "detail_images" in scope
+            and _as_bool(settings.get("ai_media_opt_in"), default=True)
+        )
+        vision_subject = ""
         if not preflight_only:
-            needs_title = "title" in scope and settings.get("title_optimize", True)
-            needs_desc = "details" in scope and not description
-            if needs_title and needs_desc:
-                combined = self._generate_combined_text(
-                    title,
-                    category,
-                    raw,
-                    target_language,
-                    target_site,
-                    ai_notes,
-                )
-                if combined:
-                    if combined.get("title"):
-                        optimized_title = self._normalized_title(combined["title"])
-                    if combined.get("description"):
-                        description = combined["description"]
-                    ai_notes.append("text:ai-combined")
-                    needs_title = needs_desc = False
-            if needs_title:
-                generated_title = self._generate_title(
-                    title,
-                    category,
-                    raw,
-                    target_language,
-                    target_site,
-                    ai_notes,
-                )
-                if generated_title:
-                    optimized_title = generated_title
-                    ai_notes.append("title:ai")
-            if needs_desc:
-                generated_desc = self._generate_description(
-                    optimized_title,
-                    category,
-                    raw,
-                    target_language,
-                    target_site,
-                    ai_notes,
-                )
-                if generated_desc:
-                    description = generated_desc
-                    ai_notes.append("details:ai")
+            # 文本生成与视觉主体识别是两个独立 AI 调用：并行执行省一段串行等待
+            # （主体识别提示词仅用原始标题作上下文，不依赖文本结果，可提前发起）。
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _run_text() -> tuple[str, str]:
+                local_title = title
+                local_desc = description
+                needs_title = "title" in scope and settings.get("title_optimize", True)
+                needs_desc = "details" in scope and not local_desc
+                if needs_title and needs_desc:
+                    combined = self._generate_combined_text(
+                        title,
+                        category,
+                        raw,
+                        target_language,
+                        target_site,
+                        ai_notes,
+                    )
+                    if combined:
+                        if combined.get("title"):
+                            local_title = self._normalized_title(combined["title"])
+                        if combined.get("description"):
+                            local_desc = combined["description"]
+                        ai_notes.append("text:ai-combined")
+                        needs_title = needs_desc = False
+                if needs_title:
+                    generated_title = self._generate_title(
+                        title,
+                        category,
+                        raw,
+                        target_language,
+                        target_site,
+                        ai_notes,
+                    )
+                    if generated_title:
+                        local_title = generated_title
+                        ai_notes.append("title:ai")
+                if needs_desc:
+                    generated_desc = self._generate_description(
+                        local_title,
+                        category,
+                        raw,
+                        target_language,
+                        target_site,
+                        ai_notes,
+                    )
+                    if generated_desc:
+                        local_desc = generated_desc
+                        ai_notes.append("details:ai")
+                return local_title, local_desc
+
+            def _run_subject() -> str:
+                if not ((need_grid or need_detail) and source_image_urls):
+                    return ""
+                return self._identify_subject(source_image_urls[0], title, category, ai_notes)
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_text = executor.submit(_run_text)
+                future_subject = executor.submit(_run_subject)
+                # 主体识别先取（图片阶段立即要用）；文本结果随后合并
+                vision_subject = future_subject.result()
+                optimized_title, description = future_text.result()
 
         if not description:
             # AI 未启用或生成失败时保留旧模板兜底，避免导入表描述为空
@@ -1238,20 +1276,6 @@ class ProductProcessingService:
         grid_image_paths: list[str] = []
         grid_summary_path = ""
         detail_image_paths: list[str] = []
-        need_grid = (
-            not preflight_only
-            and "four_grid" in scope
-            and _as_bool(settings.get("ai_media_opt_in"), default=True)
-        )
-        need_detail = (
-            not preflight_only
-            and "detail_images" in scope
-            and _as_bool(settings.get("ai_media_opt_in"), default=True)
-        )
-        # 商品主体视觉识别：用主图确认可售主体，替换生图提示词 Product: 行的标题猜测（减少主体误判）
-        vision_subject = ""
-        if (need_grid or need_detail) and source_image_urls:
-            vision_subject = self._identify_subject(source_image_urls[0], optimized_title, category, ai_notes)
         if need_grid and need_detail:
             # 四宫格与详情图并行生成（对齐原型 build_grid_images / build_detail_image 双线程并行）
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1772,7 +1796,9 @@ class ProductProcessingService:
 
     def _ai_client(self) -> AiClient:
         if self._ai_instance is None:
-            self._ai_instance = AiClient()
+            with self._ai_lock:
+                if self._ai_instance is None:
+                    self._ai_instance = AiClient()
         return self._ai_instance
 
     def _image_to_data_url(self, image_url: str) -> str:
@@ -1803,6 +1829,11 @@ class ProductProcessingService:
         """
         if not _ai_enabled() or not image_url:
             return ""
+        # 缓存：同一来源主图只识别一次（批量任务重复商品省 N 次多模态调用）
+        with self._subject_cache_lock:
+            cached = self._subject_cache.get(image_url)
+        if cached:
+            return cached
         data_url = self._image_to_data_url(image_url)
         if not data_url:
             return ""
@@ -1835,7 +1866,10 @@ class ProductProcessingService:
             if not subject:
                 return ""
             ai_notes.append("subject_identity:ai")
-            return str(subject).strip()[:160]
+            result = str(subject).strip()[:160]
+            with self._subject_cache_lock:
+                self._subject_cache[image_url] = result
+            return result
         except (AiProviderError, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "subject_identity", _ai_error_reason(exc))
             return ""
@@ -1935,7 +1969,19 @@ class ProductProcessingService:
         任一上传失败或未配置 COS 时，整组回退本地保存（导出表再回退来源 http 图片）。"""
         urls: list[str] = []
         try:
-            urls = [processor.upload_to_cos(part, task_id=task_id, draft_id=draft_id) for part in parts]
+            if len(parts) <= 1:
+                urls = [processor.upload_to_cos(part, task_id=task_id, draft_id=draft_id) for part in parts]
+            else:
+                # 多张图（四宫格 5 张）并行上传 COS，整组成功才返回；任一失败由外层统一回退本地
+                from concurrent.futures import ThreadPoolExecutor
+
+                with ThreadPoolExecutor(max_workers=min(6, len(parts))) as executor:
+                    urls = list(
+                        executor.map(
+                            lambda part: processor.upload_to_cos(part, task_id=task_id, draft_id=draft_id),
+                            parts,
+                        )
+                    )
         except Exception:
             urls = []
         if urls:

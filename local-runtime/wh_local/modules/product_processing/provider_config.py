@@ -30,6 +30,10 @@ IMAGE_SIZE = "1024x1024"
 IMAGE_QUALITY = "medium"
 
 DEFAULT_AI_TIMEOUT_SECONDS = 60.0
+# 差异化超时：文本生成快，缩短等待让失败快速落回降级链；图片编辑耗时长，保留充足时间。
+# 避免慢模型/挂起请求把整批任务拖成 4×60s。
+TEXT_AI_TIMEOUT_SECONDS = 25.0
+IMAGE_AI_TIMEOUT_SECONDS = 90.0
 
 # 应用组合根（create_app 中注入），指向 BasicSettings 使用的 SQLite 数据库。
 _system_config_db_path: str | None = None
@@ -109,6 +113,8 @@ def resolve_ai_provider() -> dict[str, Any]:
         "image_size": os.environ.get("WH_AI_IMAGE_SIZE", IMAGE_SIZE).strip(),
         "image_quality": os.environ.get("WH_AI_IMAGE_QUALITY", IMAGE_QUALITY).strip(),
         "timeout_seconds": DEFAULT_AI_TIMEOUT_SECONDS,
+        "text_timeout_seconds": TEXT_AI_TIMEOUT_SECONDS,
+        "image_timeout_seconds": IMAGE_AI_TIMEOUT_SECONDS,
         # 系统配置附加信息（供 _media_config_provider 使用）
         "_sys_image_ai": (
             {

@@ -49,7 +49,7 @@ const DEFAULT_OPTIONS: ProductProcessingOptions = {
   includeProductVideo: false,
   skipDuplicates: false,
   ipCheck: true,
-  maxParallelDrafts: 5,
+  maxParallelDrafts: 8,
 };
 
 function getApiContext(): ApiContext {
