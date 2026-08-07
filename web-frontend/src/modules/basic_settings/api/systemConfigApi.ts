@@ -58,13 +58,13 @@ export function createSystemConfigUpdatePayload(
   return {
     ai: {
       base_url: PRIMARY_AI_BASE_URL,
-      model: base.ai.model,
+      model: form.textModel.trim() || base.ai.model,
       ...(payload.textModelApiKey ? { api_key: payload.textModelApiKey } : {}),
     },
     image: {
       base_url: PRIMARY_AI_BASE_URL,
-      model: base.image.model,
-      reference_model: base.image.reference_model,
+      model: form.imageModel.trim() || base.image.model,
+      reference_model: form.referenceImageModel.trim() || base.image.reference_model,
       ...(payload.imageModelApiKey ? { api_key: payload.imageModelApiKey } : {}),
     },
     backup_image: {

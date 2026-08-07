@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ppDownload,
   ppRequest,
@@ -81,12 +81,19 @@ export function ProductProcessingTestPage() {
 
   const [options, setOptions] = useState<ProductProcessingOptions>(DEFAULT_OPTIONS);
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [page, setPage] = useState(1);
+  const [totalDrafts, setTotalDrafts] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const PAGE_SIZE = 10;
+  // 全局选中集 — 翻页不丢失
+  const globalSelectedRef = useRef<Set<number>>(new Set());
+  const [selectedCount, setSelectedCount] = useState(0);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [editTitleMap, setEditTitleMap] = useState<Record<number, string>>({});
   const [editImageUrlMap, setEditImageUrlMap] = useState<Record<number, string>>({});
   const [editSkuNameMap, setEditSkuNameMap] = useState<Record<string, string>>({});
   const [editSkuDeletes, setEditSkuDeletes] = useState<Set<string>>(new Set());
+  const [uploadingImageId, setUploadingImageId] = useState<number>();
 
   const [tasks, setTasks] = useState<TaskHistoryItem[]>([]);
   const [currentTask, setCurrentTask] = useState<TaskOutputsResponse | null>(null);
@@ -98,19 +105,40 @@ export function ProductProcessingTestPage() {
   const [manualImageUrl, setManualImageUrl] = useState('');
   const [manualCategory, setManualCategory] = useState('');
 
+  const totalPages = Math.max(1, Math.ceil(totalDrafts / PAGE_SIZE));
+
+  const selectedIds = globalSelectedRef.current;
+  const isSelected = (id: number) => selectedIds.has(id);
+
   const selectedDrafts = useMemo(
     () => drafts.filter((d) => selectedIds.has(d.id)),
-    [drafts, selectedIds]
+    [drafts, selectedCount]
   );
 
   const fetchDrafts = async () => {
     try {
-      const data = await ppRequest<{ drafts: DraftSummary[] }>(api, `${API_BASE}/drafts`);
+      const offset = (page - 1) * PAGE_SIZE;
+      const data = await ppRequest<{ drafts: DraftSummary[]; pagination: { returned: number; has_more: boolean; view: string } }>(
+        api,
+        `${API_BASE}/drafts?limit=${PAGE_SIZE}&offset=${offset}`
+      );
       setDrafts(data.drafts || []);
+      setTotalDrafts(data.pagination?.returned ?? data.drafts?.length ?? 0);
+      setHasMore(data.pagination?.has_more ?? false);
     } catch (err) {
       setError(err instanceof Error ? err.message : '拉取草稿池失败');
     }
   };
+
+  const goToPage = useCallback((p: number) => {
+    setPage(Math.max(1, Math.min(p, totalPages || 1)));
+  }, [totalPages]);
+
+  useEffect(() => { void fetchDrafts(); }, [page]);
+
+  useEffect(() => {
+    fetchTasks();
+  }, []);
 
   const fetchTasks = async () => {
     try {
@@ -167,31 +195,51 @@ export function ProductProcessingTestPage() {
   };
 
   const toggleDraft = (id: number) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else if (next.size < 100) next.add(id);
-      return next;
-    });
+    const next = new Set(globalSelectedRef.current);
+    if (next.has(id)) next.delete(id);
+    else if (next.size < 500) next.add(id);
+    globalSelectedRef.current = next;
+    setSelectedCount(next.size);
   };
 
   const selectAll = () => {
-    const selectable = drafts.filter((d) => d.status !== 'deleted').slice(0, 100).map((d) => d.id);
-    setSelectedIds(new Set(selectable));
+    const next = new Set(globalSelectedRef.current);
+    drafts.filter((d) => d.status !== 'deleted').slice(0, PAGE_SIZE).forEach((d) => next.add(d.id));
+    globalSelectedRef.current = next;
+    setSelectedCount(next.size);
   };
 
-  const clearSelection = () => setSelectedIds(new Set());
+  const selectAllGlobal = async () => {
+    try {
+      const data = await ppRequest<{ drafts: DraftSummary[] }>(api, `${API_BASE}/drafts?limit=500&view=compact`);
+      const all = data.drafts || [];
+      const next = new Set<number>();
+      all.filter((d) => (d as any).status !== 'deleted').slice(0, 500).forEach((d) => next.add(d.id));
+      globalSelectedRef.current = next;
+      setSelectedCount(next.size);
+      setMessage(`已全选 ${next.size} 条草稿`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '全选失败');
+    }
+  };
+
+  const clearSelection = () => {
+    globalSelectedRef.current = new Set();
+    setSelectedCount(0);
+  };
 
   const deleteSelected = async () => {
     if (!selectedIds.size) return;
     setLoading(true);
     try {
+      const count = selectedIds.size;
       await ppRequest(api, `${API_BASE}/drafts/delete`, {
         body: { draft_ids: Array.from(selectedIds), delete_all: false },
       });
-      setSelectedIds(new Set());
+      globalSelectedRef.current = new Set();
+      setSelectedCount(0);
       await fetchDrafts();
-      setMessage(`已删除 ${selectedIds.size} 条草稿`);
+      setMessage(`已删除 ${count} 条草稿`);
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除失败');
     } finally {
@@ -234,6 +282,21 @@ export function ProductProcessingTestPage() {
       setMessage('草稿已保存');
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存失败');
+    }
+  };
+
+  const uploadDraftImage = async (draftId: number, file: File) => {
+    setUploadingImageId(draftId);
+    try {
+      const formData = new FormData();
+      formData.append('image_file', file);
+      await ppUpload(api, `${API_BASE}/drafts/${draftId}/image`, formData);
+      setMessage('主图已上传');
+      await fetchDrafts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '图片上传失败');
+    } finally {
+      setUploadingImageId(undefined);
     }
   };
 
@@ -550,9 +613,10 @@ export function ProductProcessingTestPage() {
           <h2>草稿池</h2>
           <div className="draft-actions">
             <span className="count-badge">
-              待处理 {drafts.filter((d) => d.status !== 'deleted').length} / 已选 {selectedIds.size}
+              本页 {drafts.length} / 已选 {selectedIds.size}
             </span>
-            <button onClick={selectAll}>全选（最多 100）</button>
+            <button onClick={selectAll}>全选本页</button>
+            <button onClick={selectAllGlobal}>全选全部（最大500）</button>
             <button onClick={clearSelection}>取消选择</button>
             <button onClick={deleteSelected} disabled={!selectedIds.size}>
               删除已选
@@ -568,17 +632,22 @@ export function ProductProcessingTestPage() {
             const isExpanded = expandedId === draft.id;
             const platform = raw.source_platform || raw.platform || 'manual';
             const variants: DraftVariant[] = raw.source_variant_records || [];
-            const skuCount = variants.length || 1;
+            const variantCount = variants.length;
+            const skuLabel = variantCount > 0 ? `${variantCount}变体` : '单规格';
+            const selectionCriteria = raw.selection_criteria || {};
+            const category = selectionCriteria.category || raw.category || '';
             const imgStatus = imageUrlStatus(draft.image_url || raw.main_image_url || '');
-            const isSelected = selectedIds.has(draft.id);
+            const checked = isSelected(draft.id);
             return (
-              <div key={draft.id} className={`draft-card ${isSelected ? 'selected' : ''} ${draft.status === 'deleted' ? 'deleted' : ''}`}>
-                <div className="draft-card-main">
+              <div key={draft.id} className={`draft-card ${checked ? 'selected' : ''} ${draft.status === 'deleted' ? 'deleted' : ''}`}>
+                <div className="draft-card-main" onClick={() => draft.status !== 'deleted' && toggleDraft(draft.id)} style={{ cursor: 'pointer' }}>
                   <input
                     type="checkbox"
-                    checked={isSelected}
+                    checked={checked}
                     onChange={() => toggleDraft(draft.id)}
+                    onClick={(e) => e.stopPropagation()}
                     disabled={draft.status === 'deleted'}
+                    style={{ pointerEvents: 'auto' }}
                   />
                   <div className="thumb">
                     {(draft.image_url || raw.main_image_url) ? (
@@ -591,7 +660,8 @@ export function ProductProcessingTestPage() {
                     <div className="title-line">
                       <strong>{draft.title || raw.source_title || '(无标题)'}</strong>
                       <span className="badge">{platform}</span>
-                      <span className="badge">SKU {skuCount}</span>
+                      <span className="badge">{skuLabel}</span>
+                      {category && <span className="badge category-badge" title={category}>{category}</span>}
                       <span className="badge">rev 1</span>
                       <span className={`badge status-${imgStatus}`}>
                         主图 {imgStatus === 'ok' ? '可用' : imgStatus === 'missing' ? '缺失' : '不安全'}
@@ -603,7 +673,7 @@ export function ProductProcessingTestPage() {
                     </div>
                   </div>
                   <div className="draft-actions">
-                    <button onClick={() => setExpandedId(isExpanded ? null : draft.id)}>
+                    <button onClick={(e) => { e.stopPropagation(); setExpandedId(isExpanded ? null : draft.id); }}>
                       {isExpanded ? '收起' : '编辑'}
                     </button>
                   </div>
@@ -627,6 +697,23 @@ export function ProductProcessingTestPage() {
                           defaultValue={draft.image_url || raw.main_image_url || ''}
                           onChange={(e) => setEditImageUrlMap((m) => ({ ...m, [draft.id]: e.target.value }))}
                         />
+                      </label>
+                    </div>
+                    <div className="form-row">
+                      <label className="upload-image-label">
+                        上传/替换主图文件
+                        <span className="upload-row">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            id={`image-upload-${draft.id}`}
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) uploadDraftImage(draft.id, file);
+                            }}
+                          />
+                          {uploadingImageId === draft.id && <span className="uploading-hint">正在上传...</span>}
+                        </span>
                       </label>
                     </div>
                     {variants.length > 0 && (
@@ -673,6 +760,35 @@ export function ProductProcessingTestPage() {
             );
           })}
         </div>
+
+        {totalPages > 1 && (
+          <div className="draft-pagination">
+            <button onClick={() => { goToPage(1); window.scrollTo({ top: 0, behavior: 'smooth' }); }} disabled={page <= 1}>首页</button>
+            <button onClick={() => { goToPage(page - 1); window.scrollTo({ top: 0, behavior: 'smooth' }); }} disabled={page <= 1}>上一页</button>
+            <span className="page-indicator">
+              {Array.from({ length: Math.min(7, totalPages) }, (_, i) => {
+                const p = i < 5 ? Math.max(1, page - 2 + i) : totalPages - (Math.min(7, totalPages) - 1 - i);
+                if (p < 1 || p > totalPages) return null;
+                return (
+                  <button key={p} className={p === page ? 'current' : ''} onClick={() => { goToPage(p); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+                    {p}
+                  </button>
+                );
+              })}
+            </span>
+            <button onClick={() => { goToPage(page + 1); window.scrollTo({ top: 0, behavior: 'smooth' }); }} disabled={page >= totalPages}>下一页</button>
+            <button onClick={() => { goToPage(totalPages); window.scrollTo({ top: 0, behavior: 'smooth' }); }} disabled={page >= totalPages}>末页</button>
+            <span className="jump-input">
+              跳至 <input type="number" min={1} max={totalPages} defaultValue={page} style={{ width: 60 }} onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const p = Number((e.target as HTMLInputElement).value) || 1;
+                  goToPage(p);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }} /> 页
+            </span>
+          </div>
+        )}
       </section>
 
       <section className="section control-section">

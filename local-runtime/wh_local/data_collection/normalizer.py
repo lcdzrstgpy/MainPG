@@ -363,20 +363,22 @@ def _variants_from(source: Mapping[str, Any]) -> tuple[SourceVariantRecord, ...]
         sku_id = _text_value(entry, ("sku_id", "skuId", "id", "spec_id"))
         if sku_id is None:
             continue
+        spec_text = _text_value(entry, ("properties_name", "property_alias", "spec_text", "sku_attr"))
         attributes = _mapping_value(entry, ("attributes", "props", "properties", "spec"))
         if not attributes:
             # OneBound 1688 item_get returns per-SKU specs as string fields,
             # e.g. ``properties_name: "0:0:颜色:粉色"`` or ``"颜色:粉色;尺寸:L"``.
-            attributes = _string_spec_attributes(
-                _text_value(entry, ("properties_name", "property_alias"))
-            )
+            attributes = _string_spec_attributes(spec_text)
         records.append(
             SourceVariantRecord(
                 sku_id=sku_id,
                 attributes=attributes or {},
+                spec_text=spec_text,
                 image_url=_url_value(entry, ("image_url", "pic_url", "image", "sku_image")),
                 price_cny=_number_value(entry, ("price", "price_cny", "promotion_price")),
                 min_order_quantity=_integer_value(entry, ("moq", "min_order_quantity", "begin_num")),
+                quantity=_integer_value(entry, ("quantity", "stock", "inventory", "num")),
+                sales=_integer_value(entry, ("sales", "sold", "volume")),
             )
         )
     return tuple(records)

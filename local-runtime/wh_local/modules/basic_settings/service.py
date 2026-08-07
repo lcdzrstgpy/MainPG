@@ -14,7 +14,7 @@ from .schemas import SystemConfigUpdate
 
 
 CONFIG_KEY = "system_config"
-PRIMARY_AI_BASE_URL = "https://station-88.aicoming.top"
+PRIMARY_AI_BASE_URL = "https://api.aicoming.top/v1"
 
 # 这些字段不进入普通配置 JSON，避免 GET 接口把密钥明文返回给前端。
 SECRET_FIELDS: tuple[tuple[str, str], ...] = (
@@ -75,6 +75,8 @@ def default_system_config() -> dict[str, Any]:
             "image_provider_strategy": "balanced",
             "provider_backup_share_percent": 0,
             "image_stop_after_billable_failure": True,
+            "max_parallel_drafts": 5,
+            "max_parallel_drafts_limit": 20,
         },
         "updates": {"cos_prefix": "temu-y2-control", "public_base_url": ""},
     }

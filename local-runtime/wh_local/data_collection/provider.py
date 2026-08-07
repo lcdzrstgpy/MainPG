@@ -32,6 +32,12 @@ from .public_image_fetch import (
     fetch_public_image,
 )
 
+import time
+
+
+_RATE_LIMIT_RETRIES = 1
+_RATE_LIMIT_BACKOFF_BASE_SECONDS = 1.5
+
 
 @dataclass(frozen=True)
 class HttpResponse:
@@ -382,53 +388,70 @@ class OneBound1688Provider:
         if not self._enabled:
             return self._result_with_error(prior_audits, operation, "provider_disabled", "provider is disabled")
         request_summary = {"http_method": http_method, "operation": operation, **request_metadata}
-        try:
-            upstream = self._transport.request(
-                http_method,
-                self._endpoint(operation),
-                params={"key": self._api_key, "secret": self._api_secret, **parameters},
-                body=body,
-                headers=dict(headers) if headers is not None else None,
-                timeout=self._timeout_seconds,
-            )
-        except (TimeoutError, socket.timeout):
-            audit = self._audit(operation, "timeout", request_summary=request_summary)
-            return ProviderCallResult({}, prior_audits + (audit,), self._error("timeout", "OneBound request timed out"))
-        except Exception:
-            audit = self._audit(operation, "upstream_failed", request_summary=request_summary)
-            return ProviderCallResult({}, prior_audits + (audit,), self._error("upstream_failed", "OneBound request failed"))
+        last_error: ProviderCallResult | None = None
+        for attempt in range(1 + _RATE_LIMIT_RETRIES):
+            try:
+                upstream = self._transport.request(
+                    http_method,
+                    self._endpoint(operation),
+                    params={"key": self._api_key, "secret": self._api_secret, **parameters},
+                    body=body,
+                    headers=dict(headers) if headers is not None else None,
+                    timeout=self._timeout_seconds,
+                )
+            except (TimeoutError, socket.timeout):
+                audit = self._audit(operation, "timeout", request_summary=request_summary)
+                return ProviderCallResult({}, prior_audits + (audit,), self._error("timeout", "OneBound request timed out"))
+            except Exception:
+                audit = self._audit(operation, "upstream_failed", request_summary=request_summary)
+                return ProviderCallResult({}, prior_audits + (audit,), self._error("upstream_failed", "OneBound request failed"))
 
-        payload = self._json_mapping(upstream.body)
-        outcome = self._outcome_for_status(upstream.status, payload)
-        response_summary: dict[str, Any] = {
-            "http_status": upstream.status,
-            "outcome": outcome,
-        }
-        code = payload.get("code")
-        if isinstance(code, (str, int, float)):
-            response_summary["upstream_code"] = code
-        request_id = payload.get("request_id")
-        if isinstance(request_id, str):
-            response_summary["request_id"] = request_id
-        item_count = self._item_count(payload)
-        if item_count is not None:
-            response_summary["item_count"] = item_count
-        if extra_response_summary:
-            response_summary.update(extra_response_summary)
-        audit = self._audit(
-            operation,
-            outcome,
-            request_summary=request_summary,
-            response_summary=response_summary,
-            request_id=request_id if isinstance(request_id, str) else None,
-        )
-        sanitized = self._sanitize(payload)
-        if outcome in {"success", "no_results"}:
-            return ProviderCallResult(sanitized, prior_audits + (audit,))
-        return ProviderCallResult(
-            sanitized,
-            prior_audits + (audit,),
-            self._error(outcome, "OneBound returned an unsuccessful response", upstream.status, request_id),
+            payload = self._json_mapping(upstream.body)
+            outcome = self._outcome_for_status(upstream.status, payload)
+            response_summary: dict[str, Any] = {
+                "http_status": upstream.status,
+                "outcome": outcome,
+            }
+            code = payload.get("code")
+            if isinstance(code, (str, int, float)):
+                response_summary["upstream_code"] = code
+            request_id = payload.get("request_id")
+            if isinstance(request_id, str):
+                response_summary["request_id"] = request_id
+            item_count = self._item_count(payload)
+            if item_count is not None:
+                response_summary["item_count"] = item_count
+            if extra_response_summary:
+                response_summary.update(extra_response_summary)
+            audit = self._audit(
+                operation,
+                outcome,
+                request_summary=request_summary,
+                response_summary=response_summary,
+                request_id=request_id if isinstance(request_id, str) else None,
+            )
+            sanitized = self._sanitize(payload)
+            if outcome == "rate_limited" and attempt < _RATE_LIMIT_RETRIES:
+                wait = _RATE_LIMIT_BACKOFF_BASE_SECONDS * (2 ** attempt)
+                time.sleep(wait)
+                last_error = ProviderCallResult(
+                    sanitized,
+                    prior_audits + (audit,),
+                    self._error(outcome, f"rate-limited, retry {attempt + 1}/{_RATE_LIMIT_RETRIES} in {wait:.1f}s", upstream.status, request_id),
+                )
+                continue
+            if outcome in {"success", "no_results"}:
+                return ProviderCallResult(sanitized, prior_audits + (audit,))
+            return ProviderCallResult(
+                sanitized,
+                prior_audits + (audit,),
+                self._error(outcome, "OneBound returned an unsuccessful response", upstream.status, request_id),
+            )
+        # 所有重试均被限流
+        return last_error or ProviderCallResult(
+            {},
+            prior_audits,
+            self._error("rate_limited", "OneBound rate limit exceeded after retries"),
         )
 
     def _local_error(self, operation: str, code: str, message: str) -> ProviderCallResult:

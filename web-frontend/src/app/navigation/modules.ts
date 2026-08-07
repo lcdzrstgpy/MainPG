@@ -3,6 +3,7 @@ export type WorkspaceModuleId =
   | "daily_selection"
   | "daily_selection_collection"
   | "product_processing"
+  | "product_processing_tasks"
   | "profit_activity"
   | "profit_activity_products"
   | "price_verification"
@@ -23,6 +24,7 @@ export const workspaceModules: WorkspaceModule[] = [
   { id: "daily_selection", label: "每日选品", icon: "", iconClass: "iconfont icon-compass", description: "采集候选商品并确认入池" },
   { id: "daily_selection_collection", label: "采集面板", icon: "", iconClass: "iconfont icon-scan", description: "OneBound 采集、候选商品和历史批次", hiddenFromSidebar: true },
   { id: "product_processing", label: "产品处理", icon: "", iconClass: "iconfont icon-build", description: "管理草稿池、处理设置与任务进度" },
+  { id: "product_processing_tasks", label: "处理任务", icon: "", iconClass: "iconfont icon-build", description: "处理设置、任务进度与历史记录", hiddenFromSidebar: true },
   {
     id: "profit_activity",
     label: "利润活动",

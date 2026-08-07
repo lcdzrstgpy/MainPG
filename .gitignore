@@ -25,3 +25,4 @@ local-runtime/wh_local/modules/product_processing/cos.local.json
 # Local tooling
 local-runtime/python.exe
 .trae/
+product_processing.db

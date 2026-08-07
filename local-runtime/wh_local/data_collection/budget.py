@@ -6,7 +6,6 @@ import hashlib
 import json
 import re
 import sqlite3
-from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -222,16 +221,18 @@ class SQLiteDailyApiBudget:
 class TaskApiBudget:
     """In-memory API-call guard scoped to one collection request.
 
-    It deliberately has no SQLite ledger: provider quotas are owned by the
-    provider, while ``max_api_calls`` only caps one local collection task.
-    Context variables keep concurrent FastAPI requests isolated.
+    Uses a lock-protected counter so worker threads within the same collection
+    run share a single reservation ledger.  Each FastAPI request owns its own
+    ``TaskApiBudget`` instance, naturally isolating concurrent requests.
     """
 
     def __init__(self) -> None:
-        self._used: ContextVar[int] = ContextVar("data_collection_task_api_calls_used", default=0)
+        self._used: int = 0
+        self._lock = __import__("threading").Lock()
 
     def start(self) -> None:
-        self._used.set(0)
+        with self._lock:
+            self._used = 0
 
     def reserve(
         self,
@@ -244,11 +245,12 @@ class TaskApiBudget:
     ) -> BudgetState:
         _positive_int(max_api_calls, "max_api_calls")
         _positive_int(api_calls, "api_calls")
-        used = self._used.get()
-        granted = used + api_calls <= max_api_calls
-        if granted:
-            used += api_calls
-            self._used.set(used)
+        with self._lock:
+            used = self._used
+            granted = used + api_calls <= max_api_calls
+            if granted:
+                used += api_calls
+                self._used = used
         return self._state(workspace_id, provider_fingerprint, max_api_calls, used, granted, now)
 
     def state(
@@ -260,7 +262,9 @@ class TaskApiBudget:
         now: datetime | None = None,
     ) -> BudgetState:
         _positive_int(max_api_calls, "max_api_calls")
-        return self._state(workspace_id, provider_fingerprint, max_api_calls, self._used.get(), True, now)
+        with self._lock:
+            used = self._used
+        return self._state(workspace_id, provider_fingerprint, max_api_calls, used, True, now)
 
     def release(
         self,
@@ -272,8 +276,9 @@ class TaskApiBudget:
         now: datetime | None = None,
     ) -> BudgetState:
         _positive_int(api_calls, "api_calls")
-        used = max(self._used.get() - api_calls, 0)
-        self._used.set(used)
+        with self._lock:
+            used = max(self._used - api_calls, 0)
+            self._used = used
         return self._state(workspace_id, provider_fingerprint, max_api_calls, used, True, now)
 
     @staticmethod
