@@ -22,7 +22,7 @@ class CustomerAuthResult:
     account_status: str = "active"
     remote_token: str = ""
     remote_expires_at: str = ""
-    role: str = "operator"
+    role: str = "admin"
     workspace_code: str = ""
     workspace_name: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
@@ -45,7 +45,7 @@ class LocalSession:
     token: str
     expires_at: str
     username: str
-    role: str = "operator"
+    role: str = "admin"
     workspace_id: str = "default"
     workspace_code: str = ""
     workspace_name: str = ""

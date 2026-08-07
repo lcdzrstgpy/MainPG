@@ -1,4 +1,15 @@
+import { useEffect, useState } from "react";
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
+import { DashboardStats } from "../components/DashboardStats";
+
+function getGreeting(): string {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Shanghai", hour: "numeric", hour12: false }).format(new Date())
+  );
+  if (hour >= 5 && hour < 12) return "早上好";
+  if (hour >= 12 && hour < 18) return "下午好";
+  return "晚上好";
+}
 
 type WorkspaceHomePageProps = { onOpenModule: (id: WorkspaceModuleId) => void };
 
@@ -9,12 +20,39 @@ const shortcuts: Array<{ id: WorkspaceModuleId; label: string; text: string }> =
 ];
 
 export function WorkspaceHomePage({ onOpenModule }: WorkspaceHomePageProps) {
-  return <div className="page-stack dashboard-page">
-    <span className="dashboard-meteor" aria-hidden="true" />
-    <span className="dashboard-meteor is-two" aria-hidden="true" />
-    <span className="dashboard-meteor is-three" aria-hidden="true" />
-    <section className="page-hero-card"><p className="eyebrow">LOCAL WORKSPACE</p><h1>早上好，准备开始今天的工作。</h1><p>这是主界面框架。后续将在这里接入任务概览、运行状态和跨模块待办。</p></section>
-    <section><div className="section-heading"><div><p className="eyebrow">QUICK START</p><h2>快捷入口</h2></div><span className="muted">演示框架</span></div><div className="shortcut-grid">{shortcuts.map((item) => <button className="shortcut-card" key={item.id} onClick={() => onOpenModule(item.id)}><strong>{item.label}</strong><span>{item.text}</span><b>打开 →</b></button>)}</div></section>
-    <section className="empty-dashboard-card"><span>◌</span><div><h3>今日任务区域已预留</h3><p>待后端接口确定后，在对应模块中加载真实数据。</p></div></section>
-  </div>;
+  const [greeting, setGreeting] = useState(() => getGreeting());
+
+  useEffect(() => {
+    setGreeting(getGreeting());
+  }, []);
+
+  return (
+    <div className="page-stack dashboard-page">
+      <span className="dashboard-meteor" aria-hidden="true" />
+      <span className="dashboard-meteor is-two" aria-hidden="true" />
+      <span className="dashboard-meteor is-three" aria-hidden="true" />
+      <section className="page-hero-card">
+        <p className="eyebrow">LOCAL WORKSPACE</p>
+        <h1>{greeting}，准备开始今天的工作。</h1>
+      </section>
+      <section>
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">QUICK START</p>
+            <h2>快捷入口</h2>
+          </div>
+        </div>
+        <div className="shortcut-grid">
+          {shortcuts.map((item) => (
+            <button className="shortcut-card" key={item.id} onClick={() => onOpenModule(item.id)}>
+              <strong>{item.label}</strong>
+              <span>{item.text}</span>
+              <b>打开 →</b>
+            </button>
+          ))}
+        </div>
+      </section>
+      <DashboardStats onOpenModule={onOpenModule} />
+    </div>
+  );
 }

@@ -76,7 +76,7 @@ export function TopNavigation({ sidebarPinned, topbarPinned, activeKey, tabs, on
         <div id="workspace-topbar-status" className="topbar-status-slot" />
         <div className="topbar-actions">
           <details className="user-menu">
-            <summary><span className="avatar">U</span><span>本地演示用户</span><span className="caret">⌄</span></summary>
+            <summary><span className="avatar">U</span><span>本地用户</span><span className="caret">⌄</span></summary>
             <div className="user-popover">
               <strong>个人中心</strong>
               <span>管理当前员工账号和个人使用偏好</span>

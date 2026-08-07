@@ -138,7 +138,7 @@ def _account_payload(customer: CustomerAuthResult) -> dict[str, Any]:
         "email": customer.email,
         "display_name": customer.username,
         "account_status": customer.account_status or "active",
-        "role": customer.role or "operator",
+        "role": customer.role or "admin",
         "workspace_code": customer.workspace_code,
         "workspace_name": customer.workspace_name,
         "workspace": {"code": customer.workspace_code, "name": customer.workspace_name},
