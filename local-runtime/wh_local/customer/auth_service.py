@@ -121,9 +121,9 @@ class SQLiteCustomerAuthService:
         if not password or len(password) < 6:
             raise ValueError("password must be at least 6 characters")
 
-        # Public self-registration must never grant admin/owner privileges.
-        # Higher roles should be assigned later by owner/admin invitation flows.
-        role = "operator"
+        # 初版阶段所有自注册用户统一授予 admin，方便本地工作台直接操作系统配置。
+        # 后续如需权限分级，再改回 operator 并通过邀请/分配流程授予角色。
+        role = "admin"
         workspace_code = _text(payload, "workspace_code") or DEFAULT_WORKSPACE_CODE
         workspace_name = _text(payload, "workspace_name") or DEFAULT_WORKSPACE_NAME
         account_id = _account_id(username, email)
@@ -175,7 +175,7 @@ class SQLiteCustomerAuthService:
                     INSERT OR IGNORE INTO user_roles (
                         account_id, workspace_id, role, assigned_by, assigned_at
                     )
-                    VALUES (?, ?, 'operator', 'self_register', ?)
+                    VALUES (?, ?, 'admin', 'self_register', ?)
                     """,
                     (account_id, workspace_id, now),
                 )
@@ -485,9 +485,9 @@ def _account_id(username: str, email: str) -> str:
 
 def _normalize_role(value: str) -> str:
     text = str(value or "").strip().lower()
-    if text in {"admin", "administrator", "owner", "super_admin"}:
-        return "admin"
-    return "operator"
+    if text in {"operator", "viewer", "editor"}:
+        return "operator"
+    return "admin"
 
 
 def _text(payload: dict[str, Any], key: str) -> str:

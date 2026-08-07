@@ -145,6 +145,6 @@ def _first_text(payload: dict[str, Any], *keys: str) -> str:
 
 def _normalize_role(value: str) -> str:
     text = str(value or "").strip().lower()
-    if text in {"admin", "administrator", "owner", "super_admin"}:
-        return "admin"
-    return "operator"
+    if text in {"operator", "viewer", "editor"}:
+        return "operator"
+    return "admin"

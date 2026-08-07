@@ -21,6 +21,8 @@ export type ProfitActivityProduct = {
   note?: string;
   image_path?: string;
   source_image_path?: string;
+  created_at?: string;
+  updated_at?: string;
   is_owner?: boolean;
   can_edit?: boolean;
 };
