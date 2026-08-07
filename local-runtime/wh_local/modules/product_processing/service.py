@@ -733,8 +733,30 @@ class ProductProcessingService:
             idempotency_key=idempotency_key,
             workspace_id=workspace_id,
         )
+        if bool(payload.get("async_mode", True)):
+            self._launch_background_execute(task["id"], workspace_id)
+            return {**self._task_response(task, "任务已提交，正在后台处理"), "async_mode": True}
         completed = self._execute_task(task["id"], workspace_id)
         return self._task_response(completed, "草稿池预检已完成" if preflight_only else "产品处理任务已完成")
+
+    def _launch_background_execute(self, task_id: int, workspace_id: str) -> None:
+        """后台线程执行任务，立即返回让前端轮询实时进度。"""
+
+        def _run() -> None:
+            try:
+                self._execute_task(task_id, workspace_id)
+            except Exception:
+                # 兜底：任务执行异常时标记失败，避免任务卡在 running 状态
+                try:
+                    self.repository.set_task_status(task_id, "failed", workspace_id)
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=_run,
+            daemon=True,
+            name=f"pp-task-{task_id}",
+        ).start()
 
     def task_outputs(
         self, task_id: int, *, summary_only: bool = False, workspace_id: str = "local"
@@ -795,6 +817,10 @@ class ProductProcessingService:
         if task["status"] in {"completed", "failed", "partial_failure"}:
             return {**self._task_response(task), "message": "任务已结束，返回现有结果"}
         self.repository.set_task_status(task_id, "queued", workspace_id)
+        task = self._require_task(task_id, workspace_id)
+        if bool(task["settings"].get("async_mode", True)):
+            self._launch_background_execute(task_id, workspace_id)
+            return {**self._task_response(task, "产品处理任务已继续，正在后台处理"), "async_mode": True}
         return self._task_response(self._execute_task(task_id, workspace_id), "产品处理任务已继续并完成")
 
     def retry_attention(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
@@ -802,6 +828,10 @@ class ProductProcessingService:
         if not any(item["status"] in {"failed", "attention_required"} for item in task["items"]):
             return {**self._task_response(task), "message": "当前任务没有可重试的失败商品"}
         self.repository.reset_failed_items(task_id, workspace_id)
+        task = self._require_task(task_id, workspace_id)
+        if bool(task["settings"].get("async_mode", True)):
+            self._launch_background_execute(task_id, workspace_id)
+            return {**self._task_response(task, "失败商品已重新处理，正在后台执行"), "async_mode": True}
         return self._task_response(self._execute_task(task_id, workspace_id), "失败商品已重新处理")
 
     def clear_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
@@ -812,6 +842,10 @@ class ProductProcessingService:
 
     def download_path(self, task_id: int, kind: str, workspace_id: str = "local") -> Path:
         task = self._require_task(task_id, workspace_id)
+        if task["status"] not in {"completed", "failed", "partial_failure"}:
+            raise ProductProcessingConflict(
+                f"任务尚未完成（当前状态：{task['status']}），输出文件将在处理后生成"
+            )
         normalized = self._text(kind).lower()
         field = {
             "dxm": "output_file",
@@ -911,11 +945,34 @@ class ProductProcessingService:
             draft = drafts.get(item["product_draft_id"])
             return self._process_one(item, draft, settings, preflight_only, task_id=task_id)
 
+        def _persist_progress(processed: dict[str, Any]) -> None:
+            """逐项写入处理结果并实时刷新任务计数，供前端进度轮询读取。"""
+            item_id = processed.get("item_id")
+            if item_id is None:
+                return
+            try:
+                self.repository.update_item_progress(
+                    task_id,
+                    int(item_id),
+                    status=str(processed.get("status") or "failed"),
+                    reason=str(processed.get("reason") or ""),
+                    skc=processed.get("skc"),
+                    spu=processed.get("spu"),
+                    title=processed.get("title"),
+                    image_url=processed.get("image_url"),
+                    result=processed.get("result") or {},
+                    workspace_id=workspace_id,
+                )
+            except LookupError:
+                # 任务已被清理时忽略进度写入，不阻塞整体流程
+                pass
+
         if max_workers <= 1:
             # 串行模式：保持原有行为，便于调试和问题排查
             for item in task["items"]:
                 processed = _process(item)
                 item_results.append(processed)
+                _persist_progress(processed)
                 if processed["status"] == "completed":
                     result = processed["result"]
                     successes.append(result)
@@ -936,6 +993,7 @@ class ProductProcessingService:
                         processed = future.result()
                     except Exception as exc:
                         processed = {
+                            "item_id": item["item_id"],
                             "product_draft_id": item["product_draft_id"],
                             "status": "failed",
                             "result": {
@@ -946,6 +1004,7 @@ class ProductProcessingService:
                         }
                     with lock:
                         item_results.append(processed)
+                        _persist_progress(processed)
                         if processed["status"] == "completed":
                             result = processed["result"]
                             successes.append(result)
@@ -1782,12 +1841,14 @@ class ProductProcessingService:
             },
             "created_at": task["created_at"],
         }
+        processed_count = task["success_count"] + task["failed_count"] + task["skipped_count"]
         return {
             "task_id": task["id"],
             "total_count": task["total_count"],
             "success_count": task["success_count"],
             "failed_count": failed,
-            "not_processed_count": task["skipped_count"],
+            "processed_count": processed_count,
+            "not_processed_count": max(0, task["total_count"] - processed_count),
             "attention_required_count": attention,
             "auto_recovery_pending_count": 0,
             "identity_review_required_count": identity_review,
@@ -1838,6 +1899,7 @@ class ProductProcessingService:
                 "source_url": raw.get("source_url") or "",
                 "image_path": raw.get("image_path") or draft.get("image_path") or "",
                 "category": raw.get("category") or "",
+                "selection_criteria": raw.get("selection_criteria") or {},
                 "variant_complexity": raw.get("variant_complexity") or {},
                 "captured_fields": raw.get("captured_fields") or {},
                 "source_variant_records": raw.get("source_variant_records") or [],

@@ -131,7 +131,7 @@ Temu 链接不会交给 OneBound：它只允许受控浏览器插件在已登录
 
 插件应先回传 `running`，完成后回传 `succeeded` 或 `failed`。成功结果至少包含 `source_url`、`title`、`main_image_url`、`price`、`currency`、`variants`、`captured_at`；失败结果至少包含安全的 `error_code` 与 `message`。不得回传登录 Cookie、Authorization、页面完整 HTML、图片二进制或任意密钥。
 
-关键词预览至少提供 1 个、最多 5 个 `keywords`。`target_count` 为 1–100，`detail_count` 为 1–50，且必须落在本次 `max_api_calls`（最大 60）的可用预算内。参考图预览设置 `collection_mode: "image"` 和一个 HTTP(S) `reference_image_url`；图片模式中的 `keywords` 只是描述标签，不会触发第二次关键词搜索。`upload_img` 只为图搜取得图片 ID，不发布商品，也不向 1688 写入商品数据。
+关键词预览至少提供 1 个、最多 5 个 `keywords`。`target_count` 为 1–100，`detail_count` 为 1–50，且必须落在本次 `max_api_calls`（默认 200，最大 300）的可用预算内。参考图预览设置 `collection_mode: "image"` 和一个 HTTP(S) `reference_image_url`；图片模式中的 `keywords` 只是描述标签，不会触发第二次关键词搜索。`upload_img` 只为图搜取得图片 ID，不发布商品，也不向 1688 写入商品数据。
 
 ## 图片 URL 语义
 

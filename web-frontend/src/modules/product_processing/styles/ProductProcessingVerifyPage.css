@@ -144,6 +144,12 @@
   color: #fff;
 }
 
+.verify-download-hint {
+  margin: 8px 0 0;
+  color: #7d94aa;
+  font-size: 0.75rem;
+}
+
 .verify-empty {
   padding: 20px;
   text-align: center;
@@ -785,6 +791,81 @@
 
 .verify-count.failed b {
   color: #db5960;
+}
+
+/* ── 处理进度（环形，参考产品采集进度条） ── */
+.verify-progress-area {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid #d8e7f2;
+  border-radius: 12px;
+  background: #f4faff;
+}
+
+.verify-progress {
+  position: relative;
+  flex: 0 0 46px;
+  width: 46px;
+  height: 46px;
+  filter: drop-shadow(0 5px 9px rgba(8, 145, 189, 0.14));
+}
+.verify-progress svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+.verify-progress circle {
+  fill: none;
+  stroke-width: 4;
+}
+.verify-progress-track {
+  stroke: #dcecf3;
+}
+.verify-progress-value {
+  stroke: #0baec0;
+  stroke-linecap: round;
+  stroke-dasharray: 100;
+  transition: stroke-dashoffset 0.36s ease;
+}
+.verify-progress.is-live .verify-progress-value {
+  animation: verify-progress-glow 1.35s ease-in-out infinite;
+}
+.verify-progress strong {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #147a9b;
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes verify-progress-glow {
+  0%, 100% { filter: drop-shadow(0 0 1px rgba(9, 174, 192, 0.2)); }
+  50% { filter: drop-shadow(0 0 4px rgba(9, 174, 192, 0.55)); }
+}
+
+.verify-progress-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.verify-progress-meta > strong {
+  color: #0a3a63;
+  font-size: 0.92rem;
+}
+.verify-progress-meta > span {
+  color: #5a738c;
+  font-size: 0.78rem;
+}
+.verify-progress-meta b {
+  color: #0a8fca;
+  font-variant-numeric: tabular-nums;
 }
 
 .verify-table {

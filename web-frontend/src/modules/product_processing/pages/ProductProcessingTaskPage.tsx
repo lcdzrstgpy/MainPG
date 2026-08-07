@@ -86,6 +86,15 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
     [batch]
   );
 
+  // 实时处理进度：processed_count / total_count，与后端轮询结果同步刷新
+  const processingStatuses = ['queued', 'running', 'paused'];
+  const batchProcessing = batch ? processingStatuses.includes(batch.task.status) : false;
+  const batchTotal = batch?.total_count || 0;
+  const batchProcessed = batch?.processed_count ?? 0;
+  const progress = batchTotal > 0
+    ? Math.min(100, Math.max(0, Math.round((batchProcessed / batchTotal) * 100)))
+    : 0;
+
   const notify = (ok: string) => { setMessage(ok); setError(''); };
   const fail = (err: unknown) => { setError(err instanceof Error ? err.message : String(err)); setMessage(''); };
 
@@ -290,6 +299,30 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
             </div>
             {batch && (
               <>
+                {batch.total_count > 0 && (
+                  <div className="verify-progress-area">
+                    <div
+                      className={`verify-progress ${batchProcessing ? 'is-live' : 'is-done'}`}
+                      role="progressbar"
+                      aria-label="处理进度"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={progress}
+                    >
+                      <svg viewBox="0 0 46 46" aria-hidden="true">
+                        <circle className="verify-progress-track" cx="23" cy="23" r="18" pathLength="100" />
+                        <circle className="verify-progress-value" cx="23" cy="23" r="18" pathLength="100" strokeDashoffset={100 - progress} />
+                      </svg>
+                      <strong>{progress}%</strong>
+                    </div>
+                    <div className="verify-progress-meta">
+                      <strong>{batchProcessing ? '正在处理…' : taskStatusLabel(batch.task.status)}</strong>
+                      <span>
+                        已处理 <b>{batchProcessed}</b> / {batchTotal} 条 · 成功 {batch.success_count} · 失败 {batch.failed_count}
+                      </span>
+                    </div>
+                  </div>
+                )}
                 <div className="verify-summary">
                   <div className="verify-count">总数 <b>{batch.total_count}</b></div>
                   <div className="verify-count success">成功 <b>{batch.success_count}</b></div>
@@ -300,10 +333,25 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
                   <div className="verify-count">配置阻断 <b>{batch.configuration_blocked_count}</b></div>
                 </div>
                 <div className="verify-actions">
-                  <button onClick={() => download('dxm', `dxm_import_task_${batch.task_id}.xlsx`)}>下载店小秘导入表</button>
-                  <button onClick={() => download('errors', `error_report_task_${batch.task_id}.csv`)}>下载失败原因表</button>
-                  <button onClick={() => download('video_manifest', `product_video_manifest_task_${batch.task_id}.csv`)}>下载视频清单</button>
+                  <button
+                    disabled={batchProcessing}
+                    onClick={() => download('dxm', `dxm_import_task_${batch.task_id}.xlsx`)}
+                    title={batchProcessing ? '处理完成后可下载' : undefined}
+                  >下载店小秘导入表</button>
+                  <button
+                    disabled={batchProcessing}
+                    onClick={() => download('errors', `error_report_task_${batch.task_id}.csv`)}
+                    title={batchProcessing ? '处理完成后可下载' : undefined}
+                  >下载失败原因表</button>
+                  <button
+                    disabled={batchProcessing}
+                    onClick={() => download('video_manifest', `product_video_manifest_task_${batch.task_id}.csv`)}
+                    title={batchProcessing ? '处理完成后可下载' : undefined}
+                  >下载视频清单</button>
                 </div>
+                {batchProcessing && (
+                  <p className="verify-download-hint">输出文件将在处理完成后生成，请稍候。</p>
+                )}
               </>
             )}
             {!batch && <p className="verify-empty">尚未提交处理批次。请配置参数后点击"开始处理"。</p>}

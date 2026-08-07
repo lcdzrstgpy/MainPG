@@ -35,7 +35,7 @@ from .public_image_fetch import (
 import time
 
 
-_RATE_LIMIT_RETRIES = 3
+_RATE_LIMIT_RETRIES = 1
 _RATE_LIMIT_BACKOFF_BASE_SECONDS = 1.5
 
 

@@ -200,8 +200,21 @@ class DailySelectionCollector:
                         errors.append(response.error)
 
         unique = _rank_candidates(_deduplicate(candidates))
+        # 详情拉取量控制：设置了 SKU 筛选时需要全量候选的 SKU 数据才能判定，
+        # 否则只拉排名靠前的 detail_count 个，避免为每个候选串行等待上游。
+        has_sku_filter = (
+            criteria.min_sku_count is not None
+            or criteria.max_sku_count is not None
+            or criteria.min_sku_price is not None
+            or criteria.max_sku_price is not None
+            or criteria.min_sku_stock is not None
+            or criteria.max_sku_stock is not None
+        )
+        detail_targets = list(enumerate(unique))
+        if not has_sku_filter:
+            detail_targets = detail_targets[: criteria.detail_count]
         if max_parallel <= 1:
-            for index, collected in enumerate(unique):
+            for index, collected in detail_targets:
                 latest_budget = self._reserve(criteria, 1, collection_time)
                 if not latest_budget.reservation_granted:
                     errors.append(_budget_error())
@@ -226,51 +239,67 @@ class DailySelectionCollector:
                         collected.reference_image_url,
                     )
         else:
-            # 并行拉取详情（所有候选，预算自然限制）
-            detail_items = list(unique)
-            _reserve_all = True
-            for _ in detail_items:
+            # 并行拉取详情：按候选顺序逐个预占预算，预算不足时只处理已预占的候选
+            budgeted_items: list[tuple[int, CollectedCandidate]] = []
+            for idx, collected in detail_targets:
                 latest_budget = self._reserve(criteria, 1, collection_time)
                 if not latest_budget.reservation_granted:
                     errors.append(_budget_error())
-                    _reserve_all = False
                     break
-            if _reserve_all and detail_items:
+                budgeted_items.append((idx, collected))
+            if budgeted_items:
                 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-                detail_results: dict[str, ProviderCallResult] = {}
+                detail_results: dict[int, ProviderCallResult] = {}
 
-                def _fetch_detail(idx: int, offer_id: str) -> tuple[int, str, ProviderCallResult]:
-                    return idx, offer_id, self._provider.get_item_detail(offer_id)
+                def _fetch_detail(offer_id: str) -> ProviderCallResult:
+                    return self._provider.get_item_detail(offer_id)
 
+                # 分批发起详情调用：每次至多放行 max_parallel 个并发请求，
+                # 有结果返回再补充新任务，避免一次性堆满未来任务占住线程池队列。
                 with ThreadPoolExecutor(max_workers=max_parallel) as executor:
-                    future_map = {
-                        executor.submit(_fetch_detail, idx, item.offer_id): (idx, item.offer_id)
-                        for idx, item in enumerate(detail_items)
-                    }
-                    for future in as_completed(future_map):
-                        idx, offer_id, response = future.result()
-                        detail_results[offer_id] = response
-                        detail_calls += 1
-                        api_calls += len(response.audits)
-                        collected = detail_items[idx]
-                        if response.error is not None:
-                            errors.append(response.error)
-                            detail_errors[offer_id] = response.error
-                            unique[idx] = CollectedCandidate(
-                                collected.candidate.model_copy(
-                                    update={"evidence": collected.candidate.evidence + response.audits}
-                                ),
-                                collected.reference_image_url,
-                                response.error,
-                            )
-                        else:
-                            unique[idx] = CollectedCandidate(
-                                enrich_candidate_with_detail(collected.candidate, response.response, evidence=response.audit),
-                                collected.reference_image_url,
-                            )
-                total_audits = sum(len(r.audits) for r in detail_results.values())
-                latest_budget = self._settle(criteria, len(detail_items), total_audits, collection_time)
+                    pending: dict[Any, tuple[int, str]] = {}
+                    it = iter(budgeted_items)
+                    for _ in range(min(max_parallel, len(budgeted_items))):
+                        try:
+                            idx, item = next(it)
+                        except StopIteration:
+                            break
+                        pending[executor.submit(_fetch_detail, item.offer_id)] = (idx, item.offer_id)
+                    while pending:
+                        # 对当前批次快照等待完成；期间补充的新任务会在下一轮
+                        # while 循环被重新快照，保持并发窗口稳定。
+                        for future in as_completed(list(pending)):
+                            idx, offer_id = pending.pop(future)
+                            response = future.result()
+                            detail_results[idx] = response
+                            detail_calls += 1
+                            api_calls += len(response.audits)
+                            collected = unique[idx]
+                            if response.error is not None:
+                                errors.append(response.error)
+                                detail_errors[offer_id] = response.error
+                                unique[idx] = CollectedCandidate(
+                                    collected.candidate.model_copy(
+                                        update={"evidence": collected.candidate.evidence + response.audits}
+                                    ),
+                                    collected.reference_image_url,
+                                    response.error,
+                                )
+                            else:
+                                unique[idx] = CollectedCandidate(
+                                    enrich_candidate_with_detail(collected.candidate, response.response, evidence=response.audit),
+                                    collected.reference_image_url,
+                                )
+                            # 补充一个新任务，保持并发窗口稳定
+                            try:
+                                nidx, nitem = next(it)
+                            except StopIteration:
+                                continue
+                            pending[executor.submit(_fetch_detail, nitem.offer_id)] = (nidx, nitem.offer_id)
+                # 逐个结算实际调用并释放未用额度
+                for idx, response in detail_results.items():
+                    latest_budget = self._settle(criteria, 1, len(response.audits), collection_time)
 
         derived_terms = _titles(unique) if criteria.collection_mode == "image" and criteria.selection_scope == "divergent" else ()
         status = _status(unique, errors)

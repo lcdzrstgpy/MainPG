@@ -201,6 +201,7 @@ export interface TaskOutputsResponse {
   total_count: number;
   success_count: number;
   failed_count: number;
+  processed_count: number;
   not_processed_count: number;
   attention_required_count: number;
   auto_recovery_pending_count: number;
