@@ -168,7 +168,7 @@ export function BasicSettingsPage() {
               <span>模型名称</span>
               <input
                 type="text"
-                placeholder="gpt-5.4-mini"
+                placeholder="gpt-5.6-terra"
                 value={form.textModel}
                 onChange={(e) => updateField("textModel", e.target.value)}
               />

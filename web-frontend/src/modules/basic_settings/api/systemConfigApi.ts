@@ -11,7 +11,7 @@ const PRIMARY_AI_BASE_URL = "https://station-88.aicoming.top";
 
 const fallbackConfig: SystemConfigResponse = {
   ok: true,
-  ai: { base_url: PRIMARY_AI_BASE_URL, model: "gpt-5.4-mini" },
+  ai: { base_url: PRIMARY_AI_BASE_URL, model: "gpt-5.6-terra" },
   image: {
     base_url: PRIMARY_AI_BASE_URL,
     model: "gpt-image-2",

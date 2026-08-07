@@ -57,11 +57,12 @@ def utc_now() -> str:
 
 def default_system_config() -> dict[str, Any]:
     # 默认值来自旧工作台系统配置页和开发文档里的本地演示配置。
+    # 文本/图片统一走低价档模型，控制 token 成本（见 provider_config 注释）。
     return {
-        "ai": {"base_url": PRIMARY_AI_BASE_URL, "model": "gpt-5.4-mini"},
+        "ai": {"base_url": PRIMARY_AI_BASE_URL, "model": "gpt-5.6-terra"},
         "image": {
             "base_url": PRIMARY_AI_BASE_URL,
-            "model": "gpt-image-2",
+            "model": "gpt-image-2-1k",
             "reference_model": "gpt-image-2-1k",
         },
         "backup_image": {"base_url": "", "model": "", "reference_model": ""},

@@ -32,18 +32,36 @@ class AiClient:
         self.image_quality = provider["image_quality"]
         self.timeout_seconds = float(provider.get("timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS))
 
-    def chat(self, messages: list[dict[str, str]], *, model: str | None = None) -> str:
-        """调用 chat/completions，返回首个 assistant 文本。"""
-        payload = {
-            "model": model or self.text_model,
-            "messages": messages,
-            "temperature": 0.7,
-        }
-        data = self._post("/chat/completions", payload)
-        try:
-            return str(data["choices"][0]["message"]["content"] or "").strip()
-        except (KeyError, IndexError, TypeError) as exc:
-            raise AiProviderError(f"unexpected chat response: {data}") from exc
+    def chat(self, messages: list[dict[str, Any]], *, model: str | None = None) -> str:
+        """调用 chat/completions，返回首个 assistant 文本。
+
+        按 ``text_model_fallback_order`` 自动降级：主模型调用失败（超时/4xx/5xx）时
+        依次尝试后续模型，全部失败才抛最后一个错误。
+        """
+        last_error: AiProviderError | None = None
+        for candidate in self._text_model_chain(model):
+            payload = {
+                "model": candidate,
+                "messages": messages,
+                "temperature": 0.7,
+            }
+            try:
+                data = self._post("/chat/completions", payload)
+                return str(data["choices"][0]["message"]["content"] or "").strip()
+            except (KeyError, IndexError, TypeError) as exc:
+                raise AiProviderError(f"unexpected chat response: {data}") from exc
+            except AiProviderError as exc:
+                last_error = exc
+                continue
+        raise last_error or AiProviderError("no text model candidate available")
+
+    def _text_model_chain(self, model: str | None) -> list[str]:
+        """主模型（显式指定 > 配置文本模型）加 fallback 链，去重保序。"""
+        chain: list[str] = []
+        for candidate in (model, self.text_model, *self.text_model_fallback_order):
+            if candidate and candidate not in chain:
+                chain.append(candidate)
+        return chain
 
     def generate_image(self, prompt: str, *, model: str | None = None, size: str | None = None) -> str:
         """调用 images/generations，返回生成的图片 URL 或 b64 json。"""

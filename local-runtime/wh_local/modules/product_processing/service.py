@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import hashlib
 import json
@@ -27,6 +28,7 @@ from .domain.prompts import format_prompt
 from .domain.visual_planner import listing_prompt_context
 from .domain.workbooks import read_product_workbook
 from .infrastructure.assets import ProductProcessingAssets
+from .infrastructure.ocr_gate import detect_chinese_text, max_repair_rounds, ocr_diagnostics, ocr_gate_enabled
 from .infrastructure.repository import ProductProcessingRepository
 from .provider_config import resolve_ai_provider
 
@@ -152,6 +154,7 @@ class ProductProcessingService:
                 "config": config,
                 "tenant_ai_capability": {"text": config["ai_configured"], "image": config["image_configured"], "mode": "openai_compatible_relay"},
                 "dependencies": dependency_status,
+                "ocr_gate": ocr_diagnostics(),
                 "storage_root": str(self.assets.root),
             },
         }
@@ -1234,36 +1237,92 @@ class ProductProcessingService:
 
         grid_image_paths: list[str] = []
         grid_summary_path = ""
-        if not preflight_only and "four_grid" in scope and _as_bool(settings.get("ai_media_opt_in"), default=True):
-            grid_image_paths, grid_summary_path = self._generate_grid_images(
-                task_id,
-                draft["id"],
-                raw,
-                optimized_title,
-                category,
-                source_image_urls,
-                target_language,
-                target_site,
-                ai_notes,
-            )
-            if grid_image_paths:
-                ai_notes.append("four_grid:ai")
-
         detail_image_paths: list[str] = []
-        if not preflight_only and "detail_images" in scope and _as_bool(settings.get("ai_media_opt_in"), default=True):
-            detail_image_paths = self._generate_detail_images(
-                task_id,
-                draft["id"],
-                raw,
-                optimized_title,
-                category,
-                source_detail_image_urls or source_image_urls,
-                target_language,
-                target_site,
-                ai_notes,
-            )
-            if detail_image_paths:
-                ai_notes.append("detail_images:ai")
+        need_grid = (
+            not preflight_only
+            and "four_grid" in scope
+            and _as_bool(settings.get("ai_media_opt_in"), default=True)
+        )
+        need_detail = (
+            not preflight_only
+            and "detail_images" in scope
+            and _as_bool(settings.get("ai_media_opt_in"), default=True)
+        )
+        # 商品主体视觉识别：用主图确认可售主体，替换生图提示词 Product: 行的标题猜测（减少主体误判）
+        vision_subject = ""
+        if (need_grid or need_detail) and source_image_urls:
+            vision_subject = self._identify_subject(source_image_urls[0], optimized_title, category, ai_notes)
+        if need_grid and need_detail:
+            # 四宫格与详情图并行生成（对齐原型 build_grid_images / build_detail_image 双线程并行）
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def _run_grid() -> tuple[list[str], str]:
+                return self._generate_grid_images(
+                    task_id,
+                    draft["id"],
+                    raw,
+                    optimized_title,
+                    category,
+                    source_image_urls,
+                    target_language,
+                    target_site,
+                    ai_notes,
+                    vision_subject,
+                )
+
+            def _run_detail() -> list[str]:
+                return self._generate_detail_images(
+                    task_id,
+                    draft["id"],
+                    raw,
+                    optimized_title,
+                    category,
+                    source_detail_image_urls or source_image_urls,
+                    target_language,
+                    target_site,
+                    ai_notes,
+                    vision_subject,
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_grid = executor.submit(_run_grid)
+                future_detail = executor.submit(_run_detail)
+                for future in as_completed((future_grid, future_detail)):
+                    if future is future_grid:
+                        grid_image_paths, grid_summary_path = future.result()
+                    else:
+                        detail_image_paths = future.result()
+        else:
+            if need_grid:
+                grid_image_paths, grid_summary_path = self._generate_grid_images(
+                    task_id,
+                    draft["id"],
+                    raw,
+                    optimized_title,
+                    category,
+                    source_image_urls,
+                    target_language,
+                    target_site,
+                    ai_notes,
+                    vision_subject,
+                )
+            if need_detail:
+                detail_image_paths = self._generate_detail_images(
+                    task_id,
+                    draft["id"],
+                    raw,
+                    optimized_title,
+                    category,
+                    source_detail_image_urls or source_image_urls,
+                    target_language,
+                    target_site,
+                    ai_notes,
+                    vision_subject,
+                )
+        if grid_image_paths:
+            ai_notes.append("four_grid:ai")
+        if detail_image_paths:
+            ai_notes.append("detail_images:ai")
 
         result = {
             "product_draft_id": draft["id"],
@@ -1483,6 +1542,7 @@ class ProductProcessingService:
         target_language: str,
         target_site: str,
         ai_notes: list[str] | None = None,
+        vision_subject: str = "",
     ) -> tuple[list[str], str]:
         """按原型逻辑生成 2x2 四宫格并本地拆分为 4 张轮播图 + 1 张汇总图。"""
         if not _ai_enabled() or not reference_urls:
@@ -1496,8 +1556,12 @@ class ProductProcessingService:
             template = self._effective_prompt("grid_image")
             contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)
             context = listing_prompt_context(raw, title=optimized_title, category=category)
+            if vision_subject:
+                context["product_visual_identity"] = vision_subject
             prompt = format_prompt(contracted, title=optimized_title, **context)
             media = processor.generate(stage="grid_image", prompt=prompt, reference_values=reference_urls)
+            # OCR 质量门：检出中文 → 定向重绘为英文（本地 OCR 后置验证器，对齐原型）
+            media = self._repair_until_clean(processor, "grid_image", "four_grid", media, reference_urls, ai_notes)
             parts = processor.split_four_grid(media)
         except (media_config_error, media_error, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "four_grid", _ai_error_reason(exc))
@@ -1523,6 +1587,7 @@ class ProductProcessingService:
         target_language: str,
         target_site: str,
         ai_notes: list[str] | None = None,
+        vision_subject: str = "",
     ) -> list[str]:
         if not _ai_enabled() or not reference_urls:
             return []
@@ -1535,12 +1600,67 @@ class ProductProcessingService:
             template = self._effective_prompt("detail_image")
             contracted = apply_language_contract_to_prompt(template, "detail_image", target_language, target_site)
             context = listing_prompt_context(raw, title=optimized_title, category=category)
+            if vision_subject:
+                context["product_visual_identity"] = vision_subject
             prompt = format_prompt(contracted, title=optimized_title, **context)
             media = processor.generate(stage="detail_image", prompt=prompt, reference_values=reference_urls)
+            # OCR 质量门：检出中文 → 定向重绘为英文（本地 OCR 后置验证器，对齐原型）
+            media = self._repair_until_clean(processor, "detail_image", "detail_images", media, reference_urls, ai_notes)
         except (media_config_error, media_error, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
             return []
         return self._publish_media(processor, [media], task_id, draft_id)
+
+    def _repair_until_clean(
+        self,
+        processor: Any,
+        stage: str,
+        note_key: str,
+        media: Any,
+        reference_urls: list[str],
+        ai_notes: list[str] | None = None,
+    ) -> Any:
+        """OCR 质量门：生成后本地检出中文 → 把该图回传模型定向重绘（中文换成英文），最多 N 轮。
+
+        对齐交接文档 §11.4/§15：OCR 是后置验证器，走「确定性验证 → AI 修复 → 确定性复验」。
+        检出中文后保留商品与构图，仅把文字替换为英文；重绘失败或仍含中文时保留最后一次
+        生成图并记 ai_note，不回退来源图（来源图必带中文促销文案，更差）。
+        """
+        if not ocr_gate_enabled():
+            return media
+        chinese = detect_chinese_text(media.content)
+        if chinese is None:
+            return media
+        if not chinese:
+            if ai_notes is not None:
+                ai_notes.append(f"{note_key}:ocr_passed")
+            return media
+        media_types = _media_types()
+        if not media_types:
+            return media
+        _, media_config_error, media_error = media_types
+        rounds = 0
+        while chinese and rounds < max_repair_rounds():
+            rounds += 1
+            try:
+                media = processor.repair_generated(
+                    stage=stage,
+                    prompt=self._effective_prompt("image_repair_chinese"),
+                    prior_content=media.content,
+                    prior_content_type=media.content_type,
+                    reference_values=reference_urls,
+                )
+            except (media_config_error, media_error, ValueError, OSError) as exc:
+                if ai_notes is not None:
+                    ai_notes.append(f"{note_key}:chinese_repair_failed")
+                return media
+            chinese = detect_chinese_text(media.content)
+        if ai_notes is not None:
+            if chinese:
+                ai_notes.append(f"{note_key}:chinese_unresolved")
+            else:
+                ai_notes.append(f"{note_key}:chinese_repaired")
+        return media
 
     def _effective_prompt(self, key: str) -> str:
         custom = self.repository.prompts()
@@ -1655,6 +1775,71 @@ class ProductProcessingService:
             self._ai_instance = AiClient()
         return self._ai_instance
 
+    def _image_to_data_url(self, image_url: str) -> str:
+        """安全下载图片并转 base64 data URL（供多模态视觉识别，隔离下载/限字节）。"""
+        if not is_safe_external_url(image_url):
+            return ""
+        try:
+            image = fetch_public_image(image_url, max_bytes=8 * 1024 * 1024, timeout_seconds=30)
+        except Exception:
+            return ""
+        content = getattr(image, "content", None) or b""
+        if not content:
+            return ""
+        content_type = str(getattr(image, "content_type", None) or "image/jpeg").split(";", 1)[0].strip()
+        return f"data:{content_type or 'image/jpeg'};base64,{base64.b64encode(content).decode('ascii')}"
+
+    def _identify_subject(
+        self,
+        image_url: str,
+        title: str,
+        category: str,
+        ai_notes: list[str] | None = None,
+    ) -> str:
+        """多模态识别主图中的可售主体（对齐原型 NativeVisualModelClient.judge）。
+
+        返回英文主体描述，用于替换生图提示词 ``Product:`` 行的标题猜测，减少主体误判；
+        任何失败返回空串，调用方回退原标题描述。
+        """
+        if not _ai_enabled() or not image_url:
+            return ""
+        data_url = self._image_to_data_url(image_url)
+        if not data_url:
+            return ""
+        prompt = (
+            "Identify the actual sellable product shown in the main image. "
+            "The foreground sellable subject is the product to sell; ignore houses, rooms, tables, "
+            "people, props, and background scenes. Reply with strict JSON only: "
+            '{"sellable_subject": "<one short English noun phrase describing the sellable product, '
+            'e.g. a round acrylic keychain with letter charms>", '
+            '"material_evidence": "<visible material and structure details>", '
+            '"background_scene": "<what the background shows>"}'
+        )
+        try:
+            # 视觉识别与文本统一走便宜优先链：gpt-5.6-terra 打头（低价档+支持图像输入），
+            # chat 降级链自动落 gpt-5.6-luna / gpt-5.4-mini
+            text = self._ai_client().chat(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                        ],
+                    }
+                ],
+                model="gpt-5.6-terra",
+            )
+            data = _extract_json_object(text)
+            subject = self._text((data or {}).get("sellable_subject"))
+            if not subject:
+                return ""
+            ai_notes.append("subject_identity:ai")
+            return str(subject).strip()[:160]
+        except (AiProviderError, ValueError, OSError) as exc:
+            self._note_ai_failure(ai_notes, "subject_identity", _ai_error_reason(exc))
+            return ""
+
     def _media_processor(self) -> Any:
         if self._media_instance is None:
             media_types = _media_types()
@@ -1674,6 +1859,8 @@ class ProductProcessingService:
                 "api_key": provider.get("api_key") or "",
                 "model": provider.get("image_model") or "",
                 "reference_model": provider.get("reference_image_model") or "",
+                # 图片模型池：同中转多模型轮巡（对齐原型 _provider_order 游标轮巡）
+                "image_models": list(provider.get("image_models") or ()),
             }
         # COS 图床：gitignored 本地配置 cos.local.json 优先，环境变量 WH_COS_* 可覆盖。
         # 对齐原型出图保存逻辑——生成图上传 COS 转外链后写进导入表，店小秘可直接读取。
