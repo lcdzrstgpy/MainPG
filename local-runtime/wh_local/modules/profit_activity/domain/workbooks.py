@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import html
 import re
+import zipfile
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -29,7 +32,7 @@ _HEADER_ALIASES = {
         "货源", "货源链接", "采购链接", "source", "source url",
         "1688产品对应链接", "1688产品链接", "1688链接", "1688货源链接", "产品对应链接",
     },
-    "product_image": {"商品主图", "主图", "产品图片", "product image", "main image"},
+    "product_image": {"商品主图", "主图", "产品图片", "product image", "main image", "skc对应图"},
     "source_image": {"货源图", "采购截图", "source image"},
     "activity_price": {"活动申报价", "活动申报价格", "活动报价", "最低活动价", "activity price", "campaign price"},
     "activity_name": {"活动类型(活动主题)", "活动类型", "活动主题", "activity", "activity name"},
@@ -43,6 +46,11 @@ _COST_COMPONENT_HEADERS = {"单价", "运输损耗", "耗材", "运输头程"}
 # 仅在首行找不到重量列时，回退扫描第二行子表头（例如 WPS 审核表的“实重量KG”）。
 _SECOND_ROW_WEIGHT_HEADERS = {"实重量kg", "实重量 kg", "实重kg", "实重", "实际重量", "实际重量kg"}
 
+# 标准审核表的多货源列：1688产品对应链接/2/3、截图1/2/3、成本2/3，按序号两两配对成货源组。
+_SOURCE_URL_NUMBERED_RE = re.compile(r"^1688产品对应链接(\d*)$")
+_SOURCE_IMAGE_NUMBERED_RE = re.compile(r"^截图(\d+)$")
+_LINK_COST_NUMBERED_RE = re.compile(r"^成本(\d+)$")
+
 
 def parse_product_workbook(workbook_bytes: bytes, site: str, duplicate_keys: set[tuple[str, str]]) -> list[dict[str, Any]]:
     workbook = _load_workbook(workbook_bytes)
@@ -50,9 +58,10 @@ def parse_product_workbook(workbook_bytes: bytes, site: str, duplicate_keys: set
         rows: list[dict[str, Any]] = []
         for worksheet in workbook.worksheets:
             header_map = _headers(worksheet)
+            sheet_site = _worksheet_site(worksheet, header_map, site)
             cost_components = _cost_component_indices(worksheet) if header_map.get("cost_price") is not None else []
             for row_number, cells in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
-                values = {field: _cell(cells, index) for field, index in header_map.items()}
+                values = {field: _cell(cells, index) for field, index in header_map.items() if isinstance(index, int)}
                 if not any(str(value or "").strip() for value in values.values()):
                     continue
                 skc = str(values.get("skc") or "").strip()
@@ -69,19 +78,22 @@ def parse_product_workbook(workbook_bytes: bytes, site: str, duplicate_keys: set
                 for name, value in numeric.items():
                     if value is None or value <= 0:
                         blockers.append(f"invalid_{name}")
-                is_duplicate = (site, skc) in duplicate_keys if skc else False
+                is_duplicate = (sheet_site, skc) in duplicate_keys if skc else False
                 if is_duplicate:
                     warnings.append("duplicate_skc")
+                source_groups = _row_source_groups(cells, header_map)
+                source_url = str(values.get("source_url") or (source_groups[0]["source_url"] if source_groups else "") or "").strip()
                 rows.append({
                     "row_id": f"{worksheet.title}:{row_number}", "worksheet": worksheet.title,
                     "row_number": row_number, "status": "blocked" if blockers else "ready",
-                    "warnings": warnings, "blockers": blockers, "site": site, "skc": skc,
+                    "warnings": warnings, "blockers": blockers, "site": sheet_site, "skc": skc,
                     "product_id": skc, "product_id_type": "skc", "product_id_label": "SKC",
                     "selling_price": _number(numeric["selling_price"]), "cost_price": _number(numeric["cost_price"]),
                     "weight_kg": _number(numeric["weight_kg"]), "domestic_fee": None,
                     "note": str(values.get("note") or "").strip(),
-                    "source_text": str(values.get("source_url") or "").strip(),
-                    "source_url": str(values.get("source_url") or "").strip(),
+                    "source_text": source_url,
+                    "source_url": source_url,
+                    "source_groups": source_groups,
                     "table_profit": None, "table_profit_rate": None,
                     "has_product_image": False, "has_source_image": False,
                     "product_image_path": "", "source_image_path": "", "is_duplicate": is_duplicate,
@@ -99,14 +111,19 @@ def extract_product_workbook_images(workbook_bytes: bytes) -> dict[str, dict[str
     the first image in a row is treated as the main image and following images
     as source images.  Broken image records are ignored rather than blocking
     the remaining rows.
+
+    WPS 生成的审核表把图片以 DISPIMG 公式嵌入单元格，openpyxl 读不到，
+    这里额外解析 xlsx 内部结构补齐这些图片，保证导入后主图/货源图可用。
     """
     workbook = _load_workbook(workbook_bytes)
+    dispimg = _dispimg_cell_images(workbook_bytes)
     try:
         result: dict[str, dict[str, list[tuple[str, bytes]]]] = {}
         for worksheet in workbook.worksheets:
             headers = _headers(worksheet)
             product_col = headers.get("product_image")
             source_col = headers.get("source_image")
+            source_image_cols = {column: group for group, column in (headers.get("source_images") or {}).items()}
             for image_index, image in enumerate(getattr(worksheet, "_images", []), start=1):
                 anchor = getattr(image, "anchor", None)
                 origin = getattr(anchor, "_from", None)
@@ -126,15 +143,159 @@ def extract_product_workbook_images(workbook_bytes: bytes) -> dict[str, dict[str
                 group = result.setdefault(row_id, {"product": [], "source": []})
                 if product_col is not None and column == product_col:
                     kind = "product"
+                elif column in source_image_cols:
+                    kind = f"source_{source_image_cols[column]}"
                 elif source_col is not None and column == source_col:
                     kind = "source"
                 else:
                     kind = "product" if not group["product"] else "source"
                 extension = getattr(image, "format", "png") or "png"
-                group[kind].append((f"excel_{row_number}_{image_index}.{str(extension).lower()}", content))
+                group.setdefault(kind, []).append((f"excel_{row_number}_{image_index}.{str(extension).lower()}", content))
+            # 合并 WPS DISPIMG 公式嵌入的图片（openpyxl 读取不到）
+            for row_number, row_images in (dispimg.get(worksheet.title) or {}).items():
+                for column, files in row_images.items():
+                    row_id = f"{worksheet.title}:{row_number}"
+                    group = result.setdefault(row_id, {"product": [], "source": []})
+                    if product_col is not None and column == product_col:
+                        kind = "product"
+                    elif column in source_image_cols:
+                        kind = f"source_{source_image_cols[column]}"
+                    elif source_col is not None and column == source_col:
+                        kind = "source"
+                    else:
+                        kind = "product" if not group["product"] else "source"
+                    group.setdefault(kind, []).extend(files)
         return result
     finally:
         workbook.close()
+
+
+def _dispimg_cell_images(workbook_bytes: bytes) -> dict[str, dict[int, dict[int, list[tuple[str, bytes]]]]]:
+    """解析 WPS DISPIMG 公式嵌入的图片。
+
+    返回 {sheet_title: {row_number: {column: [(filename, bytes)]}}}，行/列均与
+    openpyxl 一致（行从 1 开始，列为 0-based）。解析失败时返回空字典，不影响
+    openpyxl 常规嵌入图片的读取。
+    """
+    try:
+        zf = zipfile.ZipFile(BytesIO(workbook_bytes))
+    except Exception:
+        return {}
+    try:
+        shared = _shared_strings(zf)
+        id_to_media = _dispimg_id_to_media(zf)
+        if not id_to_media:
+            return {}
+        try:
+            workbook_xml = zf.read("xl/workbook.xml").decode("utf-8", errors="replace")
+            workbook_rels = zf.read("xl/_rels/workbook.xml.rels").decode("utf-8", errors="replace")
+        except KeyError:
+            return {}
+        rid_to_sheet = dict(re.findall(r'Id="(rId\d+)"[^>]*Target="(worksheets/[^"]+\.xml)"', workbook_rels))
+        sheet_names = re.findall(r'<sheet[^>]*name="([^"]+)"[^>]*r:id="(rId\d+)"', workbook_xml)
+        result: dict[str, dict[int, dict[int, list[tuple[str, bytes]]]]] = {}
+        for title, rid in sheet_names:
+            sheet_path = rid_to_sheet.get(rid)
+            if not sheet_path:
+                continue
+            try:
+                xml = zf.read(f"xl/{sheet_path}").decode("utf-8", errors="replace")
+            except KeyError:
+                continue
+            for row_number, row_cells in _sheet_cells(xml, shared).items():
+                for column, value in row_cells.items():
+                    if not (isinstance(value, tuple) and value and value[0] == "__DISPIMG__"):
+                        continue
+                    media = id_to_media.get(value[1])
+                    if not media:
+                        continue
+                    try:
+                        content = zf.read(media)
+                    except KeyError:
+                        continue
+                    if not content:
+                        continue
+                    extension = Path(media).suffix or ".png"
+                    result.setdefault(title, {}).setdefault(row_number, {}).setdefault(column, []).append(
+                        (f"dispimg_{row_number}_{column}{extension}", content)
+                    )
+        return result
+    except Exception:
+        return {}
+    finally:
+        zf.close()
+
+
+def _shared_strings(zf: zipfile.ZipFile) -> list[str]:
+    try:
+        xml = zf.read("xl/sharedStrings.xml").decode("utf-8", errors="replace")
+    except KeyError:
+        return []
+    result: list[str] = []
+    for si in re.findall(r"<si>(.*?)</si>", xml, re.S):
+        parts = re.findall(r"<t[^>]*>(.*?)</t>", si, re.S)
+        result.append(html.unescape("".join(parts)))
+    return result
+
+
+def _dispimg_id_to_media(zf: zipfile.ZipFile) -> dict[str, str]:
+    """DISPIMG 图片 ID -> zip 内 media 路径（xl/...）。"""
+    rid_to_target: dict[str, str] = {}
+    try:
+        rels = zf.read("xl/_rels/cellimages.xml.rels").decode("utf-8", errors="replace")
+    except KeyError:
+        return {}
+    for rid, target in re.findall(r'<Relationship Id="(rId\d+)"[^>]*Target="([^"]+)"', rels):
+        rid_to_target[rid] = target
+
+    id_to_media: dict[str, str] = {}
+    try:
+        xml = zf.read("xl/cellimages.xml").decode("utf-8", errors="replace")
+    except KeyError:
+        return id_to_media
+    for block in re.findall(r"<etc:cellImage>(.*?)</etc:cellImage>", xml, re.S):
+        name_m = re.search(r'<xdr:cNvPr[^>]*name="(ID_[A-Za-z0-9]+)"', block)
+        embed_m = re.search(r'<a:blip[^>]*r:embed="(rId\d+)"', block)
+        if name_m and embed_m:
+            target = rid_to_target.get(embed_m.group(1))
+            if target:
+                id_to_media[name_m.group(1)] = f"xl/{target}"
+    return id_to_media
+
+
+def _sheet_cells(xml: str, shared: list[str]) -> dict[int, dict[int, object]]:
+    """解析工作表 XML，返回 {行号(1-based): {列下标(0-based): 值}}。
+
+    DISPIMG 公式单元格的值为 ("__DISPIMG__", 图片ID)，其余为字符串/数字缓存值。
+    """
+    cells_by_row: dict[int, dict[int, object]] = {}
+    for rownum, body in re.findall(r'<row r="(\d+)"[^>]*>(.*?)</row>', xml, re.S):
+        row_cells: dict[int, object] = {}
+        for cm in re.finditer(r'<c r="([A-Z]+)\d+"([^>]*?)(?:/>|>(.*?)</c>)', body, re.S):
+            col_letters, attrs, content = cm.group(1), cm.group(2), cm.group(3) or ""
+            if "t=\"s\"" in attrs:
+                m = re.search(r"<v>(\d+)</v>", content)
+                row_cells[_column_index(col_letters)] = shared[int(m.group(1))] if m and int(m.group(1)) < len(shared) else None
+            elif "t=\"str\"" in attrs:
+                img = re.search(r'_xlfn\.DISPIMG\(&quot;(ID_[A-Za-z0-9]+)&quot;,1\)', content)
+                if img:
+                    row_cells[_column_index(col_letters)] = ("__DISPIMG__", img.group(1))
+                else:
+                    m = re.search(r"<v>(.*?)</v>", content)
+                    row_cells[_column_index(col_letters)] = m.group(1) if m else None
+            else:
+                m = re.search(r"<v>(.*?)</v>", content)
+                row_cells[_column_index(col_letters)] = m.group(1) if m else None
+        cells_by_row[int(rownum)] = row_cells
+    return cells_by_row
+
+
+def _column_index(letters: str) -> int:
+    """A -> 0, B -> 1 ..."""
+    n = 0
+    for ch in letters:
+        n = n * 26 + (ord(ch.upper()) - ord("A") + 1)
+    return n - 1
 
 
 def _normalize_site_value(value: str) -> str:
@@ -153,6 +314,26 @@ def _normalize_site_value(value: str) -> str:
         if name.upper() in site or site in name.upper():
             return code
     return site
+
+
+_SITE_CODES = {"US", "CO", "EC", "MX", "BR", "CA"}
+
+
+def _worksheet_site(worksheet, header_map: dict[str, int], fallback: str) -> str:
+    """自动识别工作表对应的站点，优先级：sheet 标题 → “站点”列首个非空值 → 兜底默认站点。"""
+    title_site = _normalize_site_value(worksheet.title)
+    if title_site in _SITE_CODES:
+        return title_site
+    site_index = header_map.get("site")
+    if site_index is not None:
+        for cells in worksheet.iter_rows(min_row=2, values_only=True):
+            value = _cell(cells, site_index)
+            if value is not None and str(value).strip():
+                column_site = _normalize_site_value(str(value))
+                if column_site in _SITE_CODES:
+                    return column_site
+                break
+    return str(fallback or "US").upper()
 
 
 def filter_activity_workbook(
@@ -317,14 +498,17 @@ def _activity_price_sheet(workbook):
     return next((sheet for has_price, sheet in candidates if has_price), candidates[0][1])
 
 
-def _headers(worksheet) -> dict[str, int]:
+def _headers(worksheet) -> dict[str, Any]:
     first_row = next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
-    result: dict[str, int] = {}
+    result: dict[str, Any] = {}
     for index, raw in enumerate(first_row):
         key = _normalize_header(raw)
         for field, aliases in _HEADER_ALIASES.items():
             if key in aliases and field not in result:
                 result[field] = index
+    numbered = _numbered_header_columns(first_row)
+    if numbered:
+        result.update(numbered)
     if result.get("weight_kg") is None:
         # WPS 审核表的“实重量KG”位于第二行子表头，兜底扫描一次。
         second_row = next(worksheet.iter_rows(min_row=2, max_row=2, values_only=True), ())
@@ -332,6 +516,43 @@ def _headers(worksheet) -> dict[str, int]:
             if _normalize_header(raw) in _SECOND_ROW_WEIGHT_HEADERS:
                 result["weight_kg"] = index
                 break
+    return result
+
+
+def _numbered_header_columns(first_row: tuple[object, ...]) -> dict[str, dict[int, int]]:
+    """扫描标准审核表按序号命名的多货源列，返回按货源组序号索引的列下标映射。
+
+    - source_urls:  {0: 列, 1: 列, ...}  “1688产品对应链接 / 1688产品对应链接2 / …”
+    - source_images: {0: 列, 1: 列, ...}  “截图1 / 截图2 / …”
+    - link_costs:    {1: 列, 2: 列, ...}  “成本2 / 成本3 / …”（与链接2/3 对应）
+    """
+    source_urls: dict[int, int] = {}
+    source_images: dict[int, int] = {}
+    link_costs: dict[int, int] = {}
+    for index, raw in enumerate(first_row):
+        key = _normalize_header(raw)
+        url_match = _SOURCE_URL_NUMBERED_RE.match(key)
+        if url_match:
+            group = int(url_match.group(1) or "0")
+            source_urls.setdefault(group, index)
+            continue
+        image_match = _SOURCE_IMAGE_NUMBERED_RE.match(key)
+        if image_match:
+            group = int(image_match.group(1)) - 1
+            source_images.setdefault(group, index)
+            continue
+        cost_match = _LINK_COST_NUMBERED_RE.match(key)
+        if cost_match:
+            group = int(cost_match.group(1)) - 1
+            if group >= 1:  # “成本2/成本3…” 属于链接2/3 的货源成本，成本1 即“国内成本”
+                link_costs.setdefault(group, index)
+    result: dict[str, dict[int, int]] = {}
+    if source_urls:
+        result["source_urls"] = source_urls
+    if source_images:
+        result["source_images"] = source_images
+    if link_costs:
+        result["link_costs"] = link_costs
     return result
 
 
@@ -353,6 +574,24 @@ def _sum_decimal(values: Any) -> Decimal | None:
             continue
         total = parsed if total is None else total + parsed
     return total
+
+
+def _row_source_groups(cells: tuple[object, ...], header_map: dict[str, Any]) -> list[dict[str, Any]]:
+    """按货源组序号聚合“1688产品对应链接N + 成本N”，生成 [{source_url, cost}] 列表。
+
+    只保留“有链接”或“有非零成本”的组：标准审核表的成本2/3 列常整列为空或 0，
+    空组会污染货源组索引（前端按组号加载截图），因此直接丢弃。
+    """
+    url_cols = header_map.get("source_urls") or {}
+    cost_cols = header_map.get("link_costs") or {}
+    groups: list[dict[str, Any]] = []
+    for group_index in sorted(set(url_cols) | set(cost_cols)):
+        url = str(_cell(cells, url_cols.get(group_index)) or "").strip() if group_index in url_cols else ""
+        cost = _decimal(_cell(cells, cost_cols.get(group_index))) if group_index in cost_cols else None
+        if not url and (cost is None or cost == 0):
+            continue
+        groups.append({"source_url": url, "cost": _number(cost) if cost is not None else None})
+    return groups
 
 
 def _normalize_header(value: object) -> str:

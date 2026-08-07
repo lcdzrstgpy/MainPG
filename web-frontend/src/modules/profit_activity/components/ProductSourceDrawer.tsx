@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { listProductSources } from "../api/profitActivityApi";
+import { listProductSources, loadProductImage } from "../api/profitActivityApi";
 import type { ProfitActivityProduct, ProductSourceLink, ProductSources } from "../types/products";
 import { priceVerificationApi } from "../../price_verification/api/priceVerificationApi";
 import type { SourceTopProfit } from "../../price_verification/types";
@@ -35,6 +35,38 @@ function percentText(value: unknown) {
   const number = toNumber(value);
   if (!Number.isFinite(number)) return "";
   return `${Math.round(number * 100)}%`;
+}
+
+/** 货源单图：一条链接对应一张图。优先标准审核表截图，回退 1688 主图。 */
+function SourceCardImage({ skc, site, group, imagePaths, fallbackUrl }: { skc: string; site: string; group?: number; imagePaths: string[]; fallbackUrl?: string }) {
+  const [url, setUrl] = useState("");
+  const first = imagePaths[0] ?? "";
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = "";
+    if (first) {
+      loadProductImage({ skc, site: (site || "US") as "US" | "CO" | "EC", kind: "source", group: group ?? 0, index: 0 })
+        .then((loaded) => {
+          if (cancelled) {
+            URL.revokeObjectURL(loaded);
+            return;
+          }
+          objectUrl = loaded;
+          setUrl(loaded);
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skc, site, group, first]);
+
+  if (url) return <img className="profit-source-card-shot" src={url} alt="货源截图" loading="lazy" />;
+  if (fallbackUrl) return <img className="profit-source-card-shot" src={fallbackUrl} alt="1688 商品图" loading="lazy" />;
+  return <span className="profit-source-card-img-fallback">无图</span>;
 }
 
 function qualificationText(value?: string) {
@@ -213,7 +245,13 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
               <div className="profit-source-card" key={link.id}>
                 <div className="profit-source-card-row">
                   <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
-                    {link.main_image_url ? <img src={link.main_image_url} alt="" loading="lazy" /> : <span className="profit-source-card-img-fallback">1688</span>}
+                    <SourceCardImage
+                      skc={product.skc}
+                      site={sources?.site || product.site || product.site_code || "US"}
+                      group={link.group}
+                      imagePaths={link.image_paths ?? []}
+                      fallbackUrl={link.main_image_url}
+                    />
                     <span className="profit-source-card-body">
                       <span className="profit-source-card-title">{link.source_title || "候选商品"}</span>
                       <small className="profit-source-card-meta">

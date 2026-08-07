@@ -17,7 +17,7 @@ export type ProfitActivityProduct = {
   net_profit?: number;
   profit_rate?: number;
   source_url?: string;
-  source_groups?: Array<{ source_url?: string; image_paths?: string[] }>;
+  source_groups?: Array<{ source_url?: string; image_paths?: string[]; cost?: number | null }>;
   note?: string;
   image_path?: string;
   source_image_path?: string;
@@ -41,6 +41,8 @@ export type ProductSourceLink = {
   source_url: string;
   source_title: string;
   main_image_url: string;
+  image_paths?: string[];
+  group?: number;
   price_cny?: string | number | null;
   moq?: string | number | null;
   domestic_freight_cny?: string | number | null;
