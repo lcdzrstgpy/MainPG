@@ -13,19 +13,29 @@ export type DailySelectionCriteria = {
   min_price?: number;
   max_price?: number;
   min_moq?: number;
+  min_sku_count?: number;
+  max_sku_count?: number;
+  min_sku_price?: number;
+  max_sku_price?: number;
+  min_sku_stock?: number;
+  max_sku_stock?: number;
   target_count: number;
   max_api_calls: number;
   detail_count: number;
   exclude_risks: boolean;
   site: TargetSite;
+  max_parallel_collect?: number;
 };
 
 export type SourceVariantRecord = {
   sku_id: string;
   attributes: Record<string, unknown>;
+  spec_text: string | null;
   image_url: string | null;
   price_cny: number | string | null;
   min_order_quantity: number | null;
+  quantity: number | null;
+  sales: number | null;
 };
 
 export type DailySelectionCandidate = {

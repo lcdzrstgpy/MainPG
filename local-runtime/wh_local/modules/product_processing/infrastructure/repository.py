@@ -277,6 +277,69 @@ class ProductProcessingRepository:
             raise LookupError("product processing task not found")
         return task_result
 
+    def update_item_progress(
+        self,
+        task_id: int,
+        item_id: int,
+        *,
+        status: str,
+        reason: str = "",
+        skc: str | None = None,
+        spu: str | None = None,
+        title: str | None = None,
+        image_url: str | None = None,
+        result: dict[str, Any] | None = None,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """持久化单个任务项的处理结果并实时刷新任务计数，供进度轮询读取。
+
+        计数按终态分桶：completed→success，skipped→skipped，其余非 pending→failed；
+        用新旧分桶差值做 O(1) 增量迁移，避免每次全表重算。
+        """
+        with self.database.sessions.begin() as session:
+            task = session.get(ProcessingTaskRow, task_id)
+            if task is None or task.workspace_id != workspace_id:
+                raise LookupError("product processing task not found")
+            item = session.get(ProcessingTaskItemRow, item_id)
+            if item is None or item.task_id != task_id:
+                raise LookupError("product processing task item not found")
+
+            def bucket(current: str | None) -> str | None:
+                if current == "completed":
+                    return "success"
+                if current == "skipped":
+                    return "skipped"
+                if current in (None, "", "pending"):
+                    return None
+                return "failed"
+
+            old_bucket = bucket(item.status)
+            item.status = str(status)
+            item.reason = str(reason)
+            if skc is not None:
+                item.skc = str(skc)
+            if spu is not None:
+                item.spu = str(spu)
+            if title is not None:
+                item.title = str(title)
+            if image_url is not None:
+                item.image_url = str(image_url)
+            if result is not None:
+                item.result_json = dumps(result)
+            item.updated_at = utc_now()
+            new_bucket = bucket(item.status)
+            if old_bucket != new_bucket:
+                adjustment = {"success": 0, "failed": 0, "skipped": 0}
+                if old_bucket is not None:
+                    adjustment[old_bucket] -= 1
+                if new_bucket is not None:
+                    adjustment[new_bucket] += 1
+                task.success_count = max(0, task.success_count + adjustment["success"])
+                task.failed_count = max(0, task.failed_count + adjustment["failed"])
+                task.skipped_count = max(0, task.skipped_count + adjustment["skipped"])
+            task.updated_at = utc_now()
+        return self.get_task(task_id, workspace_id)
+
     def reset_failed_items(self, task_id: int, workspace_id: str = "local") -> bool:
         with self.database.sessions.begin() as session:
             task = session.get(ProcessingTaskRow, task_id)

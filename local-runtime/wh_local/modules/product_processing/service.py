@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -732,8 +733,30 @@ class ProductProcessingService:
             idempotency_key=idempotency_key,
             workspace_id=workspace_id,
         )
+        if bool(payload.get("async_mode", True)):
+            self._launch_background_execute(task["id"], workspace_id)
+            return {**self._task_response(task, "任务已提交，正在后台处理"), "async_mode": True}
         completed = self._execute_task(task["id"], workspace_id)
         return self._task_response(completed, "草稿池预检已完成" if preflight_only else "产品处理任务已完成")
+
+    def _launch_background_execute(self, task_id: int, workspace_id: str) -> None:
+        """后台线程执行任务，立即返回让前端轮询实时进度。"""
+
+        def _run() -> None:
+            try:
+                self._execute_task(task_id, workspace_id)
+            except Exception:
+                # 兜底：任务执行异常时标记失败，避免任务卡在 running 状态
+                try:
+                    self.repository.set_task_status(task_id, "failed", workspace_id)
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=_run,
+            daemon=True,
+            name=f"pp-task-{task_id}",
+        ).start()
 
     def task_outputs(
         self, task_id: int, *, summary_only: bool = False, workspace_id: str = "local"
@@ -794,6 +817,10 @@ class ProductProcessingService:
         if task["status"] in {"completed", "failed", "partial_failure"}:
             return {**self._task_response(task), "message": "任务已结束，返回现有结果"}
         self.repository.set_task_status(task_id, "queued", workspace_id)
+        task = self._require_task(task_id, workspace_id)
+        if bool(task["settings"].get("async_mode", True)):
+            self._launch_background_execute(task_id, workspace_id)
+            return {**self._task_response(task, "产品处理任务已继续，正在后台处理"), "async_mode": True}
         return self._task_response(self._execute_task(task_id, workspace_id), "产品处理任务已继续并完成")
 
     def retry_attention(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
@@ -801,6 +828,10 @@ class ProductProcessingService:
         if not any(item["status"] in {"failed", "attention_required"} for item in task["items"]):
             return {**self._task_response(task), "message": "当前任务没有可重试的失败商品"}
         self.repository.reset_failed_items(task_id, workspace_id)
+        task = self._require_task(task_id, workspace_id)
+        if bool(task["settings"].get("async_mode", True)):
+            self._launch_background_execute(task_id, workspace_id)
+            return {**self._task_response(task, "失败商品已重新处理，正在后台执行"), "async_mode": True}
         return self._task_response(self._execute_task(task_id, workspace_id), "失败商品已重新处理")
 
     def clear_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
@@ -811,6 +842,10 @@ class ProductProcessingService:
 
     def download_path(self, task_id: int, kind: str, workspace_id: str = "local") -> Path:
         task = self._require_task(task_id, workspace_id)
+        if task["status"] not in {"completed", "failed", "partial_failure"}:
+            raise ProductProcessingConflict(
+                f"任务尚未完成（当前状态：{task['status']}），输出文件将在处理后生成"
+            )
         normalized = self._text(kind).lower()
         field = {
             "dxm": "output_file",
@@ -888,6 +923,7 @@ class ProductProcessingService:
         self.repository.set_task_status(task_id, "running", workspace_id)
         settings = task["settings"]
         preflight_only = bool(task["preflight_only"])
+        max_workers = max(1, min(20, int(settings.get("max_parallel_drafts", 1))))
         draft_ids = [item["product_draft_id"] for item in task["items"] if item["product_draft_id"]]
         drafts = {
             draft["id"]: draft
@@ -901,30 +937,83 @@ class ProductProcessingService:
         successes: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         source_images: list[str] = []
-        for item in task["items"]:
+        lock = threading.Lock()
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _process(item: dict[str, Any]) -> dict[str, Any]:
             draft = drafts.get(item["product_draft_id"])
-            processed = self._process_one(item, draft, settings, preflight_only, task_id=task_id)
-            item_results.append(processed)
-            if processed["status"] == "completed":
-                result = processed["result"]
-                successes.append(result)
-                source_images.extend(result.get("source_image_urls") or [])
-                if draft and not preflight_only:
-                    raw = dict(draft["raw_payload"])
-                    raw["product_processing_receipt"] = {
-                        "task_id": task_id,
-                        "status": "completed",
-                        "target_site": settings.get("target_site", "US"),
-                        "target_language": settings.get("target_language", "en"),
-                    }
-                    self.repository.update_draft(
-                        draft["id"],
-                        {"status": "processed"},
-                        raw,
-                        workspace_id=workspace_id,
-                    )
-            else:
-                failures.append(processed)
+            return self._process_one(item, draft, settings, preflight_only, task_id=task_id)
+
+        def _persist_progress(processed: dict[str, Any]) -> None:
+            """逐项写入处理结果并实时刷新任务计数，供前端进度轮询读取。"""
+            item_id = processed.get("item_id")
+            if item_id is None:
+                return
+            try:
+                self.repository.update_item_progress(
+                    task_id,
+                    int(item_id),
+                    status=str(processed.get("status") or "failed"),
+                    reason=str(processed.get("reason") or ""),
+                    skc=processed.get("skc"),
+                    spu=processed.get("spu"),
+                    title=processed.get("title"),
+                    image_url=processed.get("image_url"),
+                    result=processed.get("result") or {},
+                    workspace_id=workspace_id,
+                )
+            except LookupError:
+                # 任务已被清理时忽略进度写入，不阻塞整体流程
+                pass
+
+        if max_workers <= 1:
+            # 串行模式：保持原有行为，便于调试和问题排查
+            for item in task["items"]:
+                processed = _process(item)
+                item_results.append(processed)
+                _persist_progress(processed)
+                if processed["status"] == "completed":
+                    result = processed["result"]
+                    successes.append(result)
+                    source_images.extend(result.get("source_image_urls") or [])
+                    if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
+                        self._mark_draft_processed(draft, task_id, settings, workspace_id)
+                else:
+                    failures.append(processed)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures_map = {
+                    executor.submit(_process, item): item
+                    for item in task["items"]
+                }
+                for future in as_completed(futures_map):
+                    item = futures_map[future]
+                    try:
+                        processed = future.result()
+                    except Exception as exc:
+                        processed = {
+                            "item_id": item["item_id"],
+                            "product_draft_id": item["product_draft_id"],
+                            "status": "failed",
+                            "result": {
+                                "failure_class": "technical_retryable",
+                                "reason": f"并行处理异常: {_ai_error_reason(exc)}",
+                                "retryable": True,
+                            },
+                        }
+                    with lock:
+                        item_results.append(processed)
+                        _persist_progress(processed)
+                        if processed["status"] == "completed":
+                            result = processed["result"]
+                            successes.append(result)
+                            source_images.extend(result.get("source_image_urls") or [])
+                            if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
+                                self._mark_draft_processed(draft, task_id, settings, workspace_id)
+                        else:
+                            failures.append(processed)
+
         preserve = settings.get("source_image_to_library")
         if preserve is None:
             preserve = settings.get("preserve_source_images", True)
@@ -951,6 +1040,24 @@ class ProductProcessingService:
             output_file=str(paths.workbook),
             error_report_file=str(paths.errors),
             video_manifest_file=str(paths.video_manifest) if paths.video_manifest else "",
+            workspace_id=workspace_id,
+        )
+
+    def _mark_draft_processed(
+        self, draft: dict[str, Any], task_id: int, settings: dict[str, Any], workspace_id: str
+    ) -> None:
+        """标记草稿为已处理（线程安全，由锁保护的外部调用保证）。"""
+        raw = dict(draft["raw_payload"])
+        raw["product_processing_receipt"] = {
+            "task_id": task_id,
+            "status": "completed",
+            "target_site": settings.get("target_site", "US"),
+            "target_language": settings.get("target_language", "en"),
+        }
+        self.repository.update_draft(
+            draft["id"],
+            {"status": "processed"},
+            raw,
             workspace_id=workspace_id,
         )
 
@@ -1591,16 +1698,43 @@ class ProductProcessingService:
         cos_config = {}
         if bucket and region and secret_id and secret_key:
             cos_config = {"bucket": bucket, "region": region, "secret_id": secret_id, "secret_key": secret_key}
+        # 系统配置优先于 cos.local.json（通过 BasicSettings Web UI 管理）
+        sys_cos = provider.get("_sys_cos")
+        if sys_cos and sys_cos.get("bucket") and sys_cos.get("region"):
+            sys_cos_secret = {}  # COS 密钥在 basic_settings 的 secret_values 中，_media_config_provider 暂不读取
+            if bucket and region and secret_id and secret_key:
+                sys_cos_secret = cos_config  # 优先用 cos.local.json/env 的密钥
+            cos_config = {
+                "bucket": sys_cos["bucket"],
+                "region": sys_cos["region"],
+                **sys_cos_secret,
+            }
+        sys_backup = provider.get("_sys_backup_image_ai")
+        backup_image = (
+            {
+                "base_url": sys_backup.get("base_url", ""),
+                "api_key": sys_backup.get("api_key", ""),
+                "model": sys_backup.get("model", ""),
+                "reference_model": sys_backup.get("reference_model", ""),
+            }
+            if sys_backup and sys_backup.get("base_url") and sys_backup.get("api_key")
+            else {}
+        )
+        sys_limits = provider.get("_sys_limits") or {}
+        limits = {
+            "image_retry_attempts": sys_limits.get("image_retry_attempts", 2),
+            "grid_image_reference_max_count": 4,
+            "detail_image_reference_max_count": 2,
+            "image_provider_strategy": sys_limits.get("image_provider_strategy", "balanced"),
+        }
+        sys_updates = provider.get("_sys_updates") or {}
+        if sys_updates.get("cos_prefix"):
+            limits["cos_prefix"] = sys_updates["cos_prefix"]
         return {
             "image": image_section,
-            "backup_image": {},
+            "backup_image": backup_image,
             "cos": cos_config,
-            "limits": {
-                "image_retry_attempts": 2,
-                "grid_image_reference_max_count": 4,
-                "detail_image_reference_max_count": 2,
-                "image_provider_strategy": "balanced",
-            },
+            "limits": limits,
         }
 
     def _publish_media(
@@ -1707,12 +1841,14 @@ class ProductProcessingService:
             },
             "created_at": task["created_at"],
         }
+        processed_count = task["success_count"] + task["failed_count"] + task["skipped_count"]
         return {
             "task_id": task["id"],
             "total_count": task["total_count"],
             "success_count": task["success_count"],
             "failed_count": failed,
-            "not_processed_count": task["skipped_count"],
+            "processed_count": processed_count,
+            "not_processed_count": max(0, task["total_count"] - processed_count),
             "attention_required_count": attention,
             "auto_recovery_pending_count": 0,
             "identity_review_required_count": identity_review,
@@ -1763,6 +1899,7 @@ class ProductProcessingService:
                 "source_url": raw.get("source_url") or "",
                 "image_path": raw.get("image_path") or draft.get("image_path") or "",
                 "category": raw.get("category") or "",
+                "selection_criteria": raw.get("selection_criteria") or {},
                 "variant_complexity": raw.get("variant_complexity") or {},
                 "captured_fields": raw.get("captured_fields") or {},
                 "source_variant_records": raw.get("source_variant_records") or [],

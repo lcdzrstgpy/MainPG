@@ -1,6 +1,12 @@
 export type ApiKeyField = "textModelApiKey" | "imageModelApiKey";
 
-export type BasicSettingsForm = Record<ApiKeyField, string>;
+export type BasicSettingsForm = {
+  textModelApiKey: string;
+  imageModelApiKey: string;
+  textModel: string;
+  imageModel: string;
+  referenceImageModel: string;
+};
 
 export type BasicSettingsFieldErrors = Partial<Record<ApiKeyField, string>>;
 

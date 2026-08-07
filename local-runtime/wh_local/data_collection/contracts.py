@@ -165,9 +165,12 @@ class SourceVariantRecord(_ContractModel):
 
     sku_id: str
     attributes: Mapping[str, Any] = Field(default_factory=dict)
+    spec_text: str | None = None
     image_url: str | None = None
     price_cny: Decimal | None = None
     min_order_quantity: int | None = None
+    quantity: int | None = None
+    sales: int | None = None
 
     @field_validator("sku_id", mode="before")
     @classmethod
@@ -181,6 +184,15 @@ class SourceVariantRecord(_ContractModel):
     def _safe_attributes(cls, value: object) -> Any:
         if not isinstance(value, Mapping):
             raise DailySelectionContractError("attributes must be a mapping")
+        return _safe_value(value)
+
+    @field_validator("spec_text", mode="before")
+    @classmethod
+    def _optional_spec_text(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise DailySelectionContractError("spec_text must be a string")
         return _safe_value(value)
 
     @field_validator("image_url", mode="before")
@@ -198,6 +210,13 @@ class SourceVariantRecord(_ContractModel):
     def _positive_moq(cls, value: object) -> object:
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
             raise DailySelectionContractError("min_order_quantity must be a positive integer")
+        return value
+
+    @field_validator("quantity", "sales", mode="before")
+    @classmethod
+    def _non_negative_counts(cls, value: object, info: Any) -> object:
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            raise DailySelectionContractError(f"{info.field_name} must be a non-negative integer")
         return value
 
 

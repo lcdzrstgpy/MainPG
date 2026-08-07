@@ -52,6 +52,10 @@ def filter_candidates(
         if risk_reasons:
             filtered.append(_filtered(candidate, risk_reasons, risks))
             continue
+        sku_reason = _sku_filter_reason(candidate, criteria)
+        if sku_reason is not None:
+            filtered.append(_filtered(candidate, (sku_reason, *risk_reasons), risks))
+            continue
         # 对齐参考版本：价格/起订量/主图缺失等只是软性提示，不硬过滤，
         # 由用户在人工复核时决定保留或排除。
         accepted.append(_with_risks(_with_filter_notes(candidate, criteria), risks))
@@ -125,6 +129,49 @@ def _canonical_url_or_none(value: str) -> str | None:
     if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
         return None
     return canonical_source_url(value)
+
+
+def _sku_filter_reason(
+    candidate: DailySelectionCandidate, criteria: DailySelectionCriteria
+) -> str | None:
+    """Return a machine-readable reason when a candidate fails SKU filtering.
+
+    SKU filters are hard filters: when any of min/max SKU count, SKU price, or
+    SKU stock is configured, candidates that cannot satisfy it (including those
+    without SKU data) are rejected instead of being softly noted.
+    """
+    variants = candidate.source_variant_records
+    if criteria.min_sku_count is not None or criteria.max_sku_count is not None:
+        count = len(variants)
+        if criteria.min_sku_count is not None and count < criteria.min_sku_count:
+            return "sku_count_below_min"
+        if criteria.max_sku_count is not None and count > criteria.max_sku_count:
+            return "sku_count_above_max"
+    need_sku = (
+        criteria.min_sku_price is not None
+        or criteria.max_sku_price is not None
+        or criteria.min_sku_stock is not None
+        or criteria.max_sku_stock is not None
+    )
+    if need_sku and not variants:
+        return "missing_sku"
+    if criteria.min_sku_price is not None or criteria.max_sku_price is not None:
+        prices = [variant.price_cny for variant in variants if variant.price_cny is not None]
+        if not prices:
+            return "missing_sku_price"
+        if criteria.min_sku_price is not None and min(prices) < criteria.min_sku_price:
+            return "sku_price_below_min"
+        if criteria.max_sku_price is not None and max(prices) > criteria.max_sku_price:
+            return "sku_price_above_max"
+    if criteria.min_sku_stock is not None or criteria.max_sku_stock is not None:
+        stocks = [variant.quantity for variant in variants if variant.quantity is not None]
+        if not stocks:
+            return "missing_sku_stock"
+        if criteria.min_sku_stock is not None and min(stocks) < criteria.min_sku_stock:
+            return "sku_stock_below_min"
+        if criteria.max_sku_stock is not None and max(stocks) > criteria.max_sku_stock:
+            return "sku_stock_above_max"
+    return None
 
 
 def _with_filter_notes(

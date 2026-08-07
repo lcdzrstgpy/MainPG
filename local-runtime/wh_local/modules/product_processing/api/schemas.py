@@ -95,6 +95,7 @@ class DraftProcessRequest(BaseModel):
     # 新版原型风格选项
     processing_scope: list[str] = Field(default_factory=list)
     include_product_video: bool = False
+    max_parallel_drafts: int = Field(default=1, ge=1, le=20, description="最大并行处理数，1=串行，上限20")
 
     @field_validator("draft_ids")
     @classmethod

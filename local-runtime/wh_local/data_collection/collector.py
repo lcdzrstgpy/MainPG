@@ -91,6 +91,7 @@ class DailySelectionCollector:
         self._provider_fingerprint = fingerprint.casefold()
 
     def collect(self, criteria: DailySelectionCriteria) -> CollectionResult:
+        max_parallel = max(1, min(10, int(criteria.max_parallel_collect)))
         errors: list[DailySelectionError] = []
         attempts: list[QueryAttempt] = []
         candidates: list[CollectedCandidate] = []
@@ -123,57 +124,182 @@ class DailySelectionCollector:
                 if response.error is not None:
                     errors.append(response.error)
         else:
-            for query, expanded in _queries(criteria):
+            queries = _queries(criteria)
+            if max_parallel <= 1:
+                # 串行模式：保持原有行为
+                for query, expanded in queries:
+                    latest_budget = self._reserve(criteria, 1, collection_time)
+                    if not latest_budget.reservation_granted:
+                        errors.append(_budget_error())
+                        break
+                    per_query = DailySelectionCriteria(
+                        **{**criteria.model_dump(mode="python"), "keywords": (query,)},
+                    )
+                    response = self._provider.search_keyword(per_query)
+                    latest_budget = self._settle(criteria, 1, len(response.audits), collection_time)
+                    search_calls += 1
+                    api_calls += len(response.audits)
+                    attempts.append(
+                        QueryAttempt(
+                            query,
+                            expanded,
+                            LOCAL_EXPANSION_RULESET_VERSION if criteria.selection_scope == "divergent" else None,
+                            response.audits,
+                        )
+                    )
+                    candidates.extend(_tagged_candidates(response, query, expanded=expanded))
+                    if response.error is not None:
+                        errors.append(response.error)
+            else:
+                # 并行关键词搜索
+                response_by_keyword: dict[str, ProviderCallResult] = {}
+                ordered_queries: list[tuple[str, bool]] = list(queries)
+                _reserve_all = True
+                for _ in ordered_queries:
+                    latest_budget = self._reserve(criteria, 1, collection_time)
+                    if not latest_budget.reservation_granted:
+                        errors.append(_budget_error())
+                        _reserve_all = False
+                        break
+                if _reserve_all:
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                    def _search(kw: str) -> tuple[str, ProviderCallResult]:
+                        per_query = DailySelectionCriteria(
+                            **{**criteria.model_dump(mode="python"), "keywords": (kw,)},
+                        )
+                        return kw, self._provider.search_keyword(per_query)
+
+                    with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+                        future_map = {
+                            executor.submit(_search, query): query
+                            for query, _ in ordered_queries
+                        }
+                        for future in as_completed(future_map):
+                            kw, response = future.result()
+                            response_by_keyword[kw] = response
+                    # Settle（超额 audit 释放差值）
+                    total_audits = sum(len(r.audits) for r in response_by_keyword.values())
+                    latest_budget = self._settle(criteria, len(ordered_queries), total_audits, collection_time)
+                for query, expanded in ordered_queries:
+                    response = response_by_keyword.get(query)
+                    if response is None:
+                        continue
+                    search_calls += 1
+                    api_calls += len(response.audits)
+                    attempts.append(
+                        QueryAttempt(
+                            query,
+                            expanded,
+                            LOCAL_EXPANSION_RULESET_VERSION if criteria.selection_scope == "divergent" else None,
+                            response.audits,
+                        )
+                    )
+                    candidates.extend(_tagged_candidates(response, query, expanded=expanded))
+                    if response.error is not None:
+                        errors.append(response.error)
+
+        unique = _rank_candidates(_deduplicate(candidates))
+        # 详情拉取量控制：设置了 SKU 筛选时需要全量候选的 SKU 数据才能判定，
+        # 否则只拉排名靠前的 detail_count 个，避免为每个候选串行等待上游。
+        has_sku_filter = (
+            criteria.min_sku_count is not None
+            or criteria.max_sku_count is not None
+            or criteria.min_sku_price is not None
+            or criteria.max_sku_price is not None
+            or criteria.min_sku_stock is not None
+            or criteria.max_sku_stock is not None
+        )
+        detail_targets = list(enumerate(unique))
+        if not has_sku_filter:
+            detail_targets = detail_targets[: criteria.detail_count]
+        if max_parallel <= 1:
+            for index, collected in detail_targets:
                 latest_budget = self._reserve(criteria, 1, collection_time)
                 if not latest_budget.reservation_granted:
                     errors.append(_budget_error())
                     break
-                per_query = DailySelectionCriteria(
-                    **{**criteria.model_dump(mode="python"), "keywords": (query,)},
-                )
-                response = self._provider.search_keyword(per_query)
+                response = self._provider.get_item_detail(collected.offer_id)
                 latest_budget = self._settle(criteria, 1, len(response.audits), collection_time)
-                search_calls += 1
+                detail_calls += 1
                 api_calls += len(response.audits)
-                attempts.append(
-                    QueryAttempt(
-                        query,
-                        expanded,
-                        LOCAL_EXPANSION_RULESET_VERSION if criteria.selection_scope == "divergent" else None,
-                        response.audits,
-                    )
-                )
-                candidates.extend(_tagged_candidates(response, query, expanded=expanded))
                 if response.error is not None:
                     errors.append(response.error)
+                    detail_errors[collected.offer_id] = response.error
+                    unique[index] = CollectedCandidate(
+                        collected.candidate.model_copy(
+                            update={"evidence": collected.candidate.evidence + response.audits}
+                        ),
+                        collected.reference_image_url,
+                        response.error,
+                    )
+                else:
+                    unique[index] = CollectedCandidate(
+                        enrich_candidate_with_detail(collected.candidate, response.response, evidence=response.audit),
+                        collected.reference_image_url,
+                    )
+        else:
+            # 并行拉取详情：按候选顺序逐个预占预算，预算不足时只处理已预占的候选
+            budgeted_items: list[tuple[int, CollectedCandidate]] = []
+            for idx, collected in detail_targets:
+                latest_budget = self._reserve(criteria, 1, collection_time)
+                if not latest_budget.reservation_granted:
+                    errors.append(_budget_error())
+                    break
+                budgeted_items.append((idx, collected))
+            if budgeted_items:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        unique = _rank_candidates(_deduplicate(candidates))
-        for index, collected in enumerate(unique):
-            if index >= criteria.detail_count:
-                break
-            latest_budget = self._reserve(criteria, 1, collection_time)
-            if not latest_budget.reservation_granted:
-                errors.append(_budget_error())
-                break
-            response = self._provider.get_item_detail(collected.offer_id)
-            latest_budget = self._settle(criteria, 1, len(response.audits), collection_time)
-            detail_calls += 1
-            api_calls += len(response.audits)
-            if response.error is not None:
-                errors.append(response.error)
-                detail_errors[collected.offer_id] = response.error
-                unique[index] = CollectedCandidate(
-                    collected.candidate.model_copy(
-                        update={"evidence": collected.candidate.evidence + response.audits}
-                    ),
-                    collected.reference_image_url,
-                    response.error,
-                )
-            else:
-                unique[index] = CollectedCandidate(
-                    enrich_candidate_with_detail(collected.candidate, response.response, evidence=response.audit),
-                    collected.reference_image_url,
-                )
+                detail_results: dict[int, ProviderCallResult] = {}
+
+                def _fetch_detail(offer_id: str) -> ProviderCallResult:
+                    return self._provider.get_item_detail(offer_id)
+
+                # 分批发起详情调用：每次至多放行 max_parallel 个并发请求，
+                # 有结果返回再补充新任务，避免一次性堆满未来任务占住线程池队列。
+                with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+                    pending: dict[Any, tuple[int, str]] = {}
+                    it = iter(budgeted_items)
+                    for _ in range(min(max_parallel, len(budgeted_items))):
+                        try:
+                            idx, item = next(it)
+                        except StopIteration:
+                            break
+                        pending[executor.submit(_fetch_detail, item.offer_id)] = (idx, item.offer_id)
+                    while pending:
+                        # 对当前批次快照等待完成；期间补充的新任务会在下一轮
+                        # while 循环被重新快照，保持并发窗口稳定。
+                        for future in as_completed(list(pending)):
+                            idx, offer_id = pending.pop(future)
+                            response = future.result()
+                            detail_results[idx] = response
+                            detail_calls += 1
+                            api_calls += len(response.audits)
+                            collected = unique[idx]
+                            if response.error is not None:
+                                errors.append(response.error)
+                                detail_errors[offer_id] = response.error
+                                unique[idx] = CollectedCandidate(
+                                    collected.candidate.model_copy(
+                                        update={"evidence": collected.candidate.evidence + response.audits}
+                                    ),
+                                    collected.reference_image_url,
+                                    response.error,
+                                )
+                            else:
+                                unique[idx] = CollectedCandidate(
+                                    enrich_candidate_with_detail(collected.candidate, response.response, evidence=response.audit),
+                                    collected.reference_image_url,
+                                )
+                            # 补充一个新任务，保持并发窗口稳定
+                            try:
+                                nidx, nitem = next(it)
+                            except StopIteration:
+                                continue
+                            pending[executor.submit(_fetch_detail, nitem.offer_id)] = (nidx, nitem.offer_id)
+                # 逐个结算实际调用并释放未用额度
+                for idx, response in detail_results.items():
+                    latest_budget = self._settle(criteria, 1, len(response.audits), collection_time)
 
         derived_terms = _titles(unique) if criteria.collection_mode == "image" and criteria.selection_scope == "divergent" else ()
         status = _status(unique, errors)

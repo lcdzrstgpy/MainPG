@@ -36,6 +36,7 @@ from ..modules.product_processing.domain.models import DailySelectionHandoffEnve
 from ..modules.product_processing.infrastructure.assets import ProductProcessingAssets
 from ..modules.product_processing.infrastructure.database import create_database
 from ..modules.product_processing.infrastructure.repository import ProductProcessingRepository
+from ..modules.product_processing.provider_config import register_system_config_db_path
 from ..modules.product_processing.service import ProductProcessingService
 from ..price_verification import (
     PriceVerificationRouteDependencies,
@@ -76,6 +77,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     config = default_config()
     db_path = database_path or config.database_path
     init_db(db_path)
+    register_system_config_db_path(db_path)
 
     app = FastAPI(title="H Smart Ecommerce Local Runtime", version="0.1.0")
     app.add_middleware(

@@ -225,8 +225,15 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [minPrice, setMinPrice] = useState(String(selectedDirection.price[0]));
   const [maxPrice, setMaxPrice] = useState(String(selectedDirection.price[1]));
   const [minMoq, setMinMoq] = useState("2");
+  const [minSkuCount, setMinSkuCount] = useState("");
+  const [maxSkuCount, setMaxSkuCount] = useState("");
+  const [minSkuPrice, setMinSkuPrice] = useState("");
+  const [maxSkuPrice, setMaxSkuPrice] = useState("");
+  const [minSkuStock, setMinSkuStock] = useState("");
+  const [maxSkuStock, setMaxSkuStock] = useState("");
   const [targetCount, setTargetCount] = useState(String(selectedDirection.target));
   const [excludeRisks, setExcludeRisks] = useState(true);
+  const [maxParallelCollect, setMaxParallelCollect] = useState(6);
   const [runs, setRuns] = useState<DailySelectionRunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<DailySelectionRun | null>(null);
   const [selectedCandidates, setSelectedCandidates] = useState<string[]>([]);
@@ -457,17 +464,30 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       selection_scope: scope,
       category: selectedDirection.name,
       target_count: numberOrUndefined(targetCount) ?? selectedDirection.target,
-      max_api_calls: 50,
+      max_api_calls: 200,
       detail_count: 10,
       exclude_risks: excludeRisks,
       site,
+      max_parallel_collect: maxParallelCollect,
     };
     const parsedMinPrice = numberOrUndefined(minPrice);
     const parsedMaxPrice = numberOrUndefined(maxPrice);
     const parsedMinMoq = numberOrUndefined(minMoq);
+    const parsedMinSkuCount = numberOrUndefined(minSkuCount);
+    const parsedMaxSkuCount = numberOrUndefined(maxSkuCount);
+    const parsedMinSkuPrice = numberOrUndefined(minSkuPrice);
+    const parsedMaxSkuPrice = numberOrUndefined(maxSkuPrice);
+    const parsedMinSkuStock = numberOrUndefined(minSkuStock);
+    const parsedMaxSkuStock = numberOrUndefined(maxSkuStock);
     if (parsedMinPrice !== undefined) criteria.min_price = parsedMinPrice;
     if (parsedMaxPrice !== undefined) criteria.max_price = parsedMaxPrice;
     if (parsedMinMoq !== undefined) criteria.min_moq = parsedMinMoq;
+    if (parsedMinSkuCount !== undefined) criteria.min_sku_count = parsedMinSkuCount;
+    if (parsedMaxSkuCount !== undefined) criteria.max_sku_count = parsedMaxSkuCount;
+    if (parsedMinSkuPrice !== undefined) criteria.min_sku_price = parsedMinSkuPrice;
+    if (parsedMaxSkuPrice !== undefined) criteria.max_sku_price = parsedMaxSkuPrice;
+    if (parsedMinSkuStock !== undefined) criteria.min_sku_stock = parsedMinSkuStock;
+    if (parsedMaxSkuStock !== undefined) criteria.max_sku_stock = parsedMaxSkuStock;
 
     criteria.collection_mode = mode;
     criteria.collection_platform = "1688";
@@ -788,6 +808,17 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             <label><span>最低价格（元）</span><input type="number" min="0" step="0.01" value={minPrice} onChange={(event) => setMinPrice(event.target.value)} /></label>
             <label><span>最高价格（元）</span><input type="number" min="0" step="0.01" value={maxPrice} onChange={(event) => setMaxPrice(event.target.value)} /></label>
             <label><span>起订量上限（件）</span><input type="number" min="1" value={minMoq} onChange={(event) => setMinMoq(event.target.value)} /></label>
+            <label><span>SKU 规格数 ≥</span><input type="number" min="1" value={minSkuCount} onChange={(event) => setMinSkuCount(event.target.value)} placeholder="如 2" title="商品 SKU（规格）数量大于或等于该值" /></label>
+            <label><span>SKU 规格数 ≤</span><input type="number" min="1" value={maxSkuCount} onChange={(event) => setMaxSkuCount(event.target.value)} placeholder="如 20" title="商品 SKU（规格）数量小于或等于该值" /></label>
+            <label><span>SKU 最低价（元）≥</span><input type="number" min="0" step="0.01" value={minSkuPrice} onChange={(event) => setMinSkuPrice(event.target.value)} placeholder="如 0.5" title="所有 SKU 价格均不低于该值" /></label>
+            <label><span>SKU 最高价（元）≤</span><input type="number" min="0" step="0.01" value={maxSkuPrice} onChange={(event) => setMaxSkuPrice(event.target.value)} placeholder="如 50" title="所有 SKU 价格均不高于该值" /></label>
+            <label><span>SKU 库存 ≥</span><input type="number" min="1" value={minSkuStock} onChange={(event) => setMinSkuStock(event.target.value)} placeholder="如 1000" title="每个 SKU 的库存均不低于该值" /></label>
+            <label><span>SKU 库存 ≤</span><input type="number" min="1" value={maxSkuStock} onChange={(event) => setMaxSkuStock(event.target.value)} placeholder="如 50000" title="每个 SKU 的库存均不高于该值" /></label>
+            <label className="field-slider">
+              <span>采集并行数</span>
+              <input type="range" min={1} max={10} step={1} value={maxParallelCollect} onChange={(event) => setMaxParallelCollect(Number(event.target.value) || 1)} />
+              <em>{maxParallelCollect} 线程{maxParallelCollect <= 1 ? '（串行）' : ''}</em>
+            </label>
           </div>
 
           {platform !== "1688" && (
@@ -865,6 +896,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                       <span><b>{formatMoney(candidate.price_cny)}</b><em>价格</em></span>
                       <span title={candidate.listed_at ?? ""}><b>{formatListedAt(candidate.listed_at)}</b><em>上架时间</em></span>
                       <span><b>{candidate.min_order_quantity ?? "未知"}</b><em>起订</em></span>
+                      <span title={`${candidate.source_variant_records.length} 个 SKU 规格`}><b>{candidate.source_variant_records.length || "未知"}</b><em>SKU</em></span>
                     </div>
                     <div className="candidate-meta"><span>{candidate.shop_name || "店铺待补齐"}</span><span>{candidate.location || "产地待补齐"}</span></div>
                     <div className="candidate-score"><span>选品分</span><b>{Number(candidate.selection_score).toFixed(1)}</b></div>
