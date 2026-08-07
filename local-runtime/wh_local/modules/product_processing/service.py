@@ -65,6 +65,15 @@ def _ai_enabled() -> bool:
     return str(os.environ.get("WH_PRODUCT_AI_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _media_public_base_url() -> str:
+    """后端静态图床对外地址：WH_MEDIA_BASE_URL（如 https://media.example.com 或 http://公网IP:8010）。
+
+    生成图本地保存于 assets/outputs，后端通过 /pp-media 静态挂载对外提供；
+    设置该地址后，即使未配置 COS，导出表也能写入可访问的生成图 URL（出图效果不再回退来源图）。
+    """
+    return str(os.environ.get("WH_MEDIA_BASE_URL", "")).strip().rstrip("/")
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     """从 AI 回复中提取 JSON 对象（容忍代码围栏与前后说明文字）。"""
     value = str(text or "").strip()
@@ -169,6 +178,8 @@ class ProductProcessingService:
             "image_configured": media.get("image_configured", False),
             "backup_image_configured": media.get("backup_image_configured", False),
             "cos_configured": media.get("cos_configured", False),
+            "media_base_url_configured": bool(_media_public_base_url()),
+            "media_publish_configured": bool(media.get("cos_configured", False)) or bool(_media_public_base_url()),
             "cos_upload_prefix": "product-processing",
         }
         return {
@@ -1412,6 +1423,13 @@ class ProductProcessingService:
         if ai_notes is not None:
             ai_notes.append(f"{stage}:ai-failed: {reason}")
 
+    @staticmethod
+    def _note_media_unconfigured(ai_notes: list[str] | None, stage: str) -> None:
+        """生成成功但未拿到任何可对外访问的 http(s) URL：COS 未配置且未设 WH_MEDIA_BASE_URL，
+        导出表会静默回退来源图——显式标记，避免“看起来没处理”的误判。"""
+        if ai_notes is not None:
+            ai_notes.append(f"{stage}:media-unconfigured（COS未配置且未设WH_MEDIA_BASE_URL，导出将回退来源图）")
+
     def _generate_combined_text(
         self,
         source_title: str,
@@ -1628,6 +1646,8 @@ class ProductProcessingService:
         carousel: list[str] = []
         summary_path = ""
         published = self._publish_media(processor, parts, task_id, draft_id)
+        if not any(str(value).startswith(("http://", "https://")) for value in published):
+            self._note_media_unconfigured(ai_notes, "four_grid")
         for part, value in zip(parts, published):
             if part.stage.startswith("grid_image_summary"):
                 summary_path = str(value)
@@ -1668,7 +1688,10 @@ class ProductProcessingService:
         except (media_config_error, media_error, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
             return []
-        return self._publish_media(processor, [media], task_id, draft_id)
+        published = self._publish_media(processor, [media], task_id, draft_id)
+        if not any(str(value).startswith(("http://", "https://")) for value in published):
+            self._note_media_unconfigured(ai_notes, "detail_images")
+        return published
 
     def _generate_detail_images_local(
         self,
@@ -1716,7 +1739,10 @@ class ProductProcessingService:
                 model="pillow",
                 reference_count=min(4, len(source_values)),
             )
-            return self._publish_media(processor, [media], task_id, draft_id)
+            published = self._publish_media(processor, [media], task_id, draft_id)
+            if not any(str(value).startswith(("http://", "https://")) for value in published):
+                self._note_media_unconfigured(ai_notes, "detail_images")
+            return published
         except (media_config_error, media_error, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
             return []
@@ -2371,7 +2397,8 @@ class ProductProcessingService:
         draft_id: int,
     ) -> list[str]:
         """对齐原型出图保存逻辑：生成图优先整组上传 COS 取得外链，店小秘可直接读取；
-        任一上传失败或未配置 COS 时，整组回退本地保存（导出表再回退来源 http 图片）。"""
+        任一上传失败或未配置 COS 时，回退后端静态图床（WH_MEDIA_BASE_URL + /pp-media）转对外 URL；
+        静态图床也未配置时保留本地路径（导出表会进一步回退来源 http 图片）。"""
         urls: list[str] = []
         try:
             if len(parts) <= 1:
@@ -2391,10 +2418,18 @@ class ProductProcessingService:
             urls = []
         if urls:
             return urls
-        return [
-            str(self.assets.save_generated_image(task_id, draft_id, part.stage, part.content, part.suffix))
+        local_paths = [
+            self.assets.save_generated_image(task_id, draft_id, part.stage, part.content, part.suffix)
             for part in parts
         ]
+        # 后端静态图床：本地保存 + WH_MEDIA_BASE_URL 时转成对外可访问 URL（/pp-media 静态挂载）
+        base = _media_public_base_url()
+        if base:
+            return [
+                f"{base}/pp-media/{path.relative_to(self.assets.output_root).as_posix()}"
+                for path in local_paths
+            ]
+        return [str(path) for path in local_paths]
 
     @staticmethod
     def _iso_datetime(value: str | None) -> Any:

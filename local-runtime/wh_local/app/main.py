@@ -112,6 +112,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     plugin_queue = DataCollectionPluginQueue(db_path)
     product_processing = _product_processing_service(db_path)
     app.include_router(create_product_processing_router(product_processing))
+    # 后端静态图床：生成图目录对外挂载（assets/outputs → /pp-media）。
+    # 配合 WH_MEDIA_BASE_URL 可把生成图转成公开 URL 写进导入表，无需 COS 凭据。
+    app.mount("/pp-media", StaticFiles(directory=product_processing.assets.output_root), name="pp-media")
     _register_data_collection(app, db_path, plugin_queue, product_processing)
     profit_activity_service = _register_profit_activity(app, db_path)
     app.include_router(create_product_processing_router(product_processing), prefix="/api")
