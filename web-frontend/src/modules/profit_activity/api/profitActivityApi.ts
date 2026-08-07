@@ -62,6 +62,112 @@ export async function listProductSources({ skc, site }: { skc: string; site: Pro
   );
 }
 
+export type ProductImageKind = "product" | "source";
+
+/**
+ * 加载产品/货源图片。接口需要 Bearer 鉴权，不能直接用 <img src>，
+ * 这里带 token 拉取后转成 object URL 供前端展示。
+ */
+export async function loadProductImage({
+  skc,
+  site,
+  kind,
+  group = 0,
+  index = 0,
+}: {
+  skc: string;
+  site: ProfitActivitySite;
+  kind: ProductImageKind;
+  group?: number;
+  index?: number;
+}): Promise<string> {
+  const { apiBase } = resolveEndpoint();
+  const token = candidateTokens()[0];
+  const query = new URLSearchParams({ site, kind, group: String(group), index: String(index) });
+  const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/image?${query}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return URL.createObjectURL(await response.blob());
+}
+
+/**
+ * 手动上传/替换产品的 SKC 对应图（主图）。
+ * 走 multipart form，携带产品现有数值字段，仅替换 image。
+ */
+export async function updateProductImage({
+  site,
+  skc,
+  image,
+  selling_price,
+  cost_price,
+  weight_kg,
+  note,
+  source_url,
+  source_groups,
+}: {
+  site: ProfitActivitySite;
+  skc: string;
+  image: File;
+  selling_price?: number | null;
+  cost_price?: number | null;
+  weight_kg?: number | null;
+  note?: string | null;
+  source_url?: string | null;
+  source_groups?: Array<{ source_url?: string; image_paths?: string[]; cost?: number | null }>;
+}) {
+  const { apiBase } = resolveEndpoint();
+  const token = candidateTokens()[0];
+  const form = new FormData();
+  form.set("site", site);
+  form.set("skc", skc);
+  if (selling_price != null) form.set("selling_price", String(selling_price));
+  if (cost_price != null) form.set("cost_price", String(cost_price));
+  if (weight_kg != null) form.set("weight_kg", String(weight_kg));
+  if (note) form.set("note", note);
+  if (source_url) form.set("source_url", source_url);
+  if (source_groups?.length) form.set("source_groups_json", JSON.stringify(source_groups));
+  form.set("image", image);
+  const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  const text = await response.text();
+  let data: unknown = text;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    // 非 JSON 响应时保留原文
+  }
+  if (!response.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+  return data as { product: ProfitActivityProduct };
+}
+
+export async function updateProfitActivityProduct({
+  site,
+  skc,
+  selling_price,
+  cost_price,
+  weight_kg,
+}: {
+  site: ProfitActivitySite;
+  skc: string;
+  selling_price?: string;
+  cost_price?: string;
+  weight_kg?: string;
+}) {
+  const body: Record<string, unknown> = { site };
+  if (selling_price !== undefined && selling_price !== "") body.selling_price = selling_price;
+  if (cost_price !== undefined && cost_price !== "") body.cost_price = cost_price;
+  if (weight_kg !== undefined && weight_kg !== "") body.weight_kg = weight_kg;
+  return request<{ product: ProfitActivityProduct }>(`/api/profit-activity/products/${encodeURIComponent(skc)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export async function deleteProfitActivityProducts({
   site,
   skcs,

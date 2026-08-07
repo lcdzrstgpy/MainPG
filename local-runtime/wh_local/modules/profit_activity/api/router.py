@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 
 from ..domain.models import ProfitSettings
 from ..infrastructure.repository import SettingsSnapshot
-from ..service import ProfitActivityConflict, ProfitActivityNotFound, ProfitActivityService
+from ..service import ProfitActivityConflict, ProfitActivityNotFound, ProfitActivityService, _local_iso
 from .schemas import ArchiveRequest, FilterRequest, SettingsUpdateRequest
 from ....session import Actor, actor_from_bearer_token, actor_has_permission, require_permission
 from ....config import default_config
@@ -95,6 +95,15 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         return _run_response(run, decisions)
 
+    @router.get("/filter-runs/{run_id}/download")
+    def filter_run_download(run_id: int, kind: Literal["eligible", "excluded"] = "eligible", actor: Actor = Depends(profit_activity_actor)):
+        require_permission(actor, "profit_activity.export", database_path)
+        try:
+            path = service.export_filter_run(run_id, kind, actor)
+        except (ProfitActivityNotFound, ValueError) as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
     @router.get("/products")
     def list_products(site: Literal["US", "CO", "EC"] | None = None, site_code: Literal["US", "CO", "EC"] | None = None, skcs: str = "", scope: str = "default", owner_user_id: int | None = None, source_type: str = "", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.read", database_path)
@@ -129,6 +138,9 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
             return result
         source_urls = [str(group.get("source_url") or "").strip() for group in (product.get("source_groups") or [])]
         source_urls = [url for url in source_urls if url]
+        legacy_url = str((product or {}).get("source_url") or "").strip()
+        if legacy_url and legacy_url not in source_urls:
+            source_urls.append(legacy_url)
         if not source_urls:
             return result
         try:
@@ -147,11 +159,18 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
                     (*source_urls, skc),
                 ).fetchall()
                 result["links"] = [dict(row) for row in rows]
+                if not result["links"]:
+                    # 该 SKC 未做过核价（例如 Excel 导入的产品）：回退展示产品自身
+                    # 货源组中的链接，保证货源侧边栏能看到这些导入链接。
+                    result["links"] = _product_source_fallbacks(product, source_urls)
             finally:
                 conn.close()
         except Exception:
-            # 核价链接表不存在（独立部署的产品库）或查询失败时保持空列表。
-            result["links"] = []
+            # 核价链接表不存在（独立部署的产品库）或查询失败时，回退展示自身货源组链接。
+            result["links"] = _product_source_fallbacks(product, source_urls)
+        # 核价链接本身不保存截图；按 source_url 从产品货源组匹配截图与组号，
+        # 保证货源侧边栏每条链接都能显示对应的货源图。
+        result["links"] = _attach_source_group_images(result["links"], product)
         return result
 
     @router.post("/products")
@@ -165,11 +184,16 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
 
     @router.post("/products/{skc}/update")
     async def update_product_form(skc: str, request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+        """更新产品（例如上传/替换 SKC 对应图）。
+
+        与 PATCH 保存售价/成本/重量一致，不要求产品资料完整（老数据可能缺
+        货源图/备注），只更新提交的字段与图片，其余沿用当前记录。
+        """
         require_permission(actor, "profit_activity.write", database_path)
         try:
             payload, image, source_image, source_group_images = await _product_form(request)
             payload["skc"] = skc
-            return {"product": service.upsert_product(payload, actor=actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path), require_complete_profile=True, image=image, source_image=source_image, source_group_images=source_group_images)}
+            return {"product": service.upsert_product(payload, actor=actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path), require_complete_profile=False, image=image, source_image=source_image, source_group_images=source_group_images)}
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
@@ -364,6 +388,69 @@ async def _uploaded_file(value: Any) -> tuple[str, bytes] | None:
     return (str(getattr(value, "filename", "upload.bin") or "upload.bin"), content) if content else None
 
 
+def _attach_source_group_images(links: list[dict[str, Any]], product: dict[str, Any]) -> list[dict[str, Any]]:
+    """把产品货源组里的截图（标准审核表截图1/2/3）按 source_url 匹配到每条链接。
+
+    核价链接（price_verification_skc_source_links）只保存 1688 主图 URL，
+    不保存审核表截图；这里从产品自身 source_groups 中按链接地址补齐
+    group（真实组号）与 image_paths，供货源侧边栏展示对应货源图。
+    """
+    groups = product.get("source_groups") or []
+    group_by_url: dict[str, tuple[int, list[str]]] = {}
+    for group_index, group in enumerate(groups):
+        url = str(group.get("source_url") or "").strip()
+        if url and url not in group_by_url:
+            images = [path for path in group.get("image_paths", []) if str(path)]
+            group_by_url[url] = (group_index, images)
+    for link in links:
+        url = str(link.get("source_url") or "").strip()
+        if url and url in group_by_url and not link.get("image_paths"):
+            group_index, images = group_by_url[url]
+            link["group"] = group_index
+            link["image_paths"] = images
+    return links
+
+
+def _product_source_fallbacks(product: dict[str, Any], source_urls: list[str]) -> list[dict[str, Any]]:
+    """核价表无该 SKC 的货源明细时，用产品自身货源组生成基础链接卡片。
+
+    链接的“成本”来自货源组的 cost 字段（标准审核表“成本2/成本3”等列），
+    图片来自货源组 image_paths 的缩略展示（前端经 /image 接口按组加载）。
+    """
+    groups = product.get("source_groups") or []
+    group_by_url: dict[str, tuple[int, dict[str, Any]]] = {}
+    for group_index, group in enumerate(groups):
+        url = str(group.get("source_url") or "").strip()
+        if url and url not in group_by_url:
+            group_by_url[url] = (group_index, group)
+    links: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for url in source_urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        group_index, group = group_by_url.get(url, (0, {"source_url": url, "image_paths": [], "cost": None}))
+        images = [path for path in group.get("image_paths", []) if str(path)]
+        links.append({
+            "id": -(len(links) + 1),
+            "batch_id": "",
+            "skc_id": product.get("skc") or "",
+            "offer_id": "",
+            "source_url": url,
+            "source_title": "导入货源链接",
+            "main_image_url": "",
+            "image_paths": images,
+            "group": group_index,
+            "price_cny": group.get("cost"),
+            "moq": None,
+            "domestic_freight_cny": None,
+            "source_decision": "manual",
+            "note": "",
+            "status": "active",
+        })
+    return links
+
+
 def _settings_response(snapshot: SettingsSnapshot) -> dict[str, Any]:
     return {"revision": snapshot.revision, "settings": asdict(snapshot.settings)}
 
@@ -373,7 +460,8 @@ def _record_response(row) -> dict[str, Any]:
 
 
 def _run_response(run, decisions=None) -> dict[str, Any]:
-    result = {key: getattr(run, key) for key in ("id", "site_code", "rule_version", "minimum_net_profit", "minimum_profit_rate", "retained_count", "excluded_count", "created_at")}
+    result = {key: getattr(run, key) for key in ("id", "site_code", "rule_version", "minimum_net_profit", "minimum_profit_rate", "retained_count", "excluded_count")}
+    result["created_at"] = _local_iso(run.created_at)
     if decisions is not None:
         result["decisions"] = [
             {
