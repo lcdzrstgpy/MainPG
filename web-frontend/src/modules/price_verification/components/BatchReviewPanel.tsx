@@ -6,7 +6,7 @@ type Props = {
   batchId: string;
   items: QuoteBatchReviewItem[];
   busy: boolean;
-  onConfirm: (batchId: string, skcIds: string[]) => Promise<void>;
+  onConfirm: (batchId: string, skcIds: string[], maxCandidates: number) => Promise<void>;
 };
 
 function money(value?: string | number | null) {
@@ -22,12 +22,15 @@ function priceRange(min?: string | number | null, max?: string | number | null) 
 export function BatchReviewPanel({ batchId, items, busy, onConfirm }: Props) {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [confirming, setConfirming] = useState(false);
+  const [maxCandidates, setMaxCandidates] = useState(5);
   const selectedSkcIds = useMemo(
     () => items.filter((item) => selected[item.skc_id]).map((item) => item.skc_id),
     [items, selected],
   );
   const selectedCount = useMemo(() => Object.values(selected).filter(Boolean).length, [selected]);
   const allSelected = items.length > 0 && items.every((item) => selected[item.skc_id]);
+
+  const clamp = (value: number) => Math.min(100, Math.max(1, Number.isFinite(value) ? value : 5));
 
   const toggle = (skcId: string, checked: boolean) => {
     setSelected((current) => ({ ...current, [skcId]: checked }));
@@ -41,7 +44,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm }: Props) {
     if (!selectedSkcIds.length) return;
     setConfirming(true);
     try {
-      await onConfirm(batchId, selectedSkcIds);
+      await onConfirm(batchId, selectedSkcIds, clamp(maxCandidates));
       setSelected({});
     } finally {
       setConfirming(false);
@@ -53,9 +56,20 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm }: Props) {
       <div className="price-verification-panel-heading">
         <div>
           <p className="eyebrow">STEP 02 · CONFIRM</p>
-          <h2>批次报价审核<SectionHelp title="插件采集入库后即时展示。每个 SKC 一行，原申报价与调整后申报价并排对比；勾选需要保留的商品，确认后重组进入下方“待审商品最终确认”。" /></h2>
+          <h2>批次报价审核<SectionHelp title="插件采集的 Temu 本页报价（每页最多 50 个 SKC，各 SKC 可含多条 SKU 报价）经 STEP 01 初筛后展示在此。每个 SKC 一行，原申报价与调整后申报价并排对比；勾选需要保留的商品，确认后重组进入下方“待审商品最终确认”。" /></h2>
         </div>
         <div className="price-verification-heading-actions">
+          <label className="price-verification-count-field is-inline">
+            <span>图搜相似品数量</span>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={maxCandidates}
+              disabled={busy || confirming}
+              onChange={(event) => setMaxCandidates(clamp(Number(event.target.value)))}
+            />
+          </label>
           <button className="price-verification-secondary-button" onClick={() => toggleAll(!allSelected)} disabled={!items.length || busy}>
             {allSelected ? "取消全选" : "全选"}
           </button>
@@ -84,7 +98,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm }: Props) {
                   <td className="batch-review-check-cell"><input type="checkbox" checked={Boolean(selected[item.skc_id])} onChange={(event) => toggle(item.skc_id, event.target.checked)} disabled={busy} /></td>
                   <td className="batch-review-sku-info-cell">
                     <div className="batch-review-sku-info">
-                      {item.main_image_url ? <img src={item.main_image_url} alt="" /> : <div className="batch-review-no-image">无图</div>}
+                      {item.main_image_url ? <img src={item.main_image_url} alt="" referrerPolicy="no-referrer" /> : <div className="batch-review-no-image">无图</div>}
                       <div>
                         <strong title={item.product_title}>{item.product_title || "未命名商品"}</strong>
                         <small>SKC：{item.skc_id}</small>

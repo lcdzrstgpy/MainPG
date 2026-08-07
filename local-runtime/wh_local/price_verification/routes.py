@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -127,6 +128,30 @@ def register_price_verification_routes(
         del actor
         return _plugin_package_response()
 
+    @router.get("/api/v1/price-verification/prescreen")
+    def get_prescreen(
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return quote_service.get_prescreen(actor)
+        except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
+            _raise_http(error)
+
+    @router.put("/api/v1/price-verification/prescreen")
+    def set_prescreen(
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return quote_service.set_prescreen(
+                actor,
+                min_adjusted_price_cny=_text(request.get("min_adjusted_price_cny")),
+            )
+        except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
+            _raise_http(error)
+
     @router.post("/api/v1/price-verification/capture-batches")
     def create_capture_batch(
         request: Mapping[str, Any] = Body(...),
@@ -140,6 +165,7 @@ def register_price_verification_routes(
             )
             return _capture_batch_response(batch)
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.get("/api/v1/price-verification/capture-batches")
@@ -149,6 +175,7 @@ def register_price_verification_routes(
         try:
             return {"batches": [_capture_batch_response(item) for item in quote_service.list_capture_batches(actor)]}
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.get("/api/v1/price-verification/capture-batches/{batch_id}")
@@ -165,6 +192,7 @@ def register_price_verification_routes(
                 "chunks": [_capture_chunk_response(chunk) for chunk in chunks],
             }
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/activate")
@@ -174,6 +202,7 @@ def register_price_verification_routes(
         try:
             return _capture_batch_response(quote_service.activate_capture_batch(actor, batch_id))
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/snapshots")
@@ -183,6 +212,7 @@ def register_price_verification_routes(
         try:
             return _quote_run_response(quote_service.save_capture_batch_snapshot(actor, batch_id))
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.get("/api/v1/price-verification/capture-batches/{batch_id}/items")
@@ -195,6 +225,7 @@ def register_price_verification_routes(
                 "items": list(quote_service.list_capture_batch_review_items(actor, batch_id)),
             }
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/drafts")
@@ -215,6 +246,7 @@ def register_price_verification_routes(
                 note=_text(request.get("note")),
             )
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/selections")
@@ -231,10 +263,18 @@ def register_price_verification_routes(
             return {
                 "batch_id": batch_id,
                 "selections": list(
-                    quote_service.stage_batch_selections(actor, batch_id, skc_ids=[str(item) for item in skc_ids])
+                    quote_service.stage_batch_selections(
+                        actor,
+                        batch_id,
+                        skc_ids=[str(item) for item in skc_ids],
+                        max_candidates=_positive_int(request.get("max_candidates"), "max_candidates")
+                        if request.get("max_candidates") not in (None, "")
+                        else None,
+                    )
                 ),
             }
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.get("/api/v1/price-verification/capture-batches/{batch_id}/selections")
@@ -247,6 +287,7 @@ def register_price_verification_routes(
                 "selections": list(quote_service.list_batch_selections(actor, batch_id)),
             }
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/selections/{selection_id}/review")
@@ -268,6 +309,7 @@ def register_price_verification_routes(
                 note=_text(request.get("note")),
             )
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/sourcing")
@@ -298,6 +340,7 @@ def register_price_verification_routes(
         except HTTPException:
             raise
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/source-profit-preview")
@@ -319,6 +362,7 @@ def register_price_verification_routes(
                 )
             )
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/skc-source-links")
@@ -344,6 +388,7 @@ def register_price_verification_routes(
                 note=_text(request.get("note")),
             )
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.get("/api/v1/price-verification/capture-batches/{batch_id}/skc-source-links")
@@ -362,6 +407,7 @@ def register_price_verification_routes(
                 ]
             }
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.delete("/api/v1/price-verification/capture-batches/{batch_id}/skc-source-links/{link_id}")
@@ -374,6 +420,7 @@ def register_price_verification_routes(
         try:
             return dict(sourcing_service.remove_skc_source_link(actor, link_id=link_id))
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/plugin/price-verification/capture-batches/current/chunks")
@@ -397,6 +444,7 @@ def register_price_verification_routes(
                 "message": f"核价本页已入库：{chunk.item_count} 条",
             }
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/quote-runs")
@@ -420,6 +468,7 @@ def register_price_verification_routes(
             )
             return _command_response(command)
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.get("/api/v1/price-verification/quote-runs/{run_id}")
@@ -429,6 +478,7 @@ def register_price_verification_routes(
         try:
             return _quote_run_response(repository.get_quote_run(workspace_id=actor.workspace_id, run_id=run_id))
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.get("/api/v1/price-verification/quote-runs/{run_id}/items")
@@ -439,6 +489,7 @@ def register_price_verification_routes(
             preview = quote_service.get_preview(actor, run_id)
             return _quote_preview_response(run_id, preview)
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/quote-runs/{run_id}/decisions")
@@ -456,6 +507,7 @@ def register_price_verification_routes(
                 _text(request.get("note")),
             ).model_dump(mode="json")
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.get("/api/v1/price-verification/quote-runs/{run_id}/decisions")
@@ -472,6 +524,7 @@ def register_price_verification_routes(
                 ],
             }
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/quote-runs/{run_id}/exports")
@@ -481,6 +534,7 @@ def register_price_verification_routes(
         try:
             return _export_response(quote_service.export_run(actor, run_id))
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/sourcing-runs")
@@ -498,6 +552,7 @@ def register_price_verification_routes(
             )
             return _command_response(command)
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.get("/api/v1/price-verification/sourcing-runs/{run_id}")
@@ -508,6 +563,7 @@ def register_price_verification_routes(
             run = repository.get_sourcing_run(workspace_id=actor.workspace_id, run_id=run_id)
             return {**_sourcing_run_response(run), "preview": sourcing_service.preview(actor, run_id)}
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/api/v1/price-verification/sourcing-runs/{run_id}/retry")
@@ -527,6 +583,7 @@ def register_price_verification_routes(
                 )
             )
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/plugin/sessions/{session_id}/commands")
@@ -556,6 +613,7 @@ def register_price_verification_routes(
                 raise PriceVerificationContractError("unsupported plugin command type")
             return _command_response(command)
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.get("/plugin/commands/{command_id}")
@@ -565,6 +623,7 @@ def register_price_verification_routes(
         try:
             return _command_response(gateway.get_command(actor, command_id))
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.get("/plugin/latest-command")
@@ -592,6 +651,7 @@ def register_price_verification_routes(
             run_id = _quote_run_id_for_request(actor, request, repository, gateway, quote_service)
             return _quote_preview_response(run_id, quote_service.get_preview(actor, run_id))
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/local/price-quote-discovery/export")
@@ -603,6 +663,7 @@ def register_price_verification_routes(
             run_id = _quote_run_id_for_request(actor, request, repository, gateway, quote_service)
             return _export_response(quote_service.export_run(actor, run_id))
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/local/source-discovery/browser-search/payload")
@@ -622,6 +683,7 @@ def register_price_verification_routes(
             )
             return _command_response(command)
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/local/source-discovery/browser-search/preview")
@@ -633,6 +695,7 @@ def register_price_verification_routes(
             run_id = _sourcing_run_id_for_request(actor, request, repository, gateway, sourcing_service)
             return sourcing_service.preview(actor, run_id)
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
     @router.post("/local/source-discovery/onebound-search/preview")
@@ -657,6 +720,7 @@ def register_price_verification_routes(
         except HTTPException:
             raise
         except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
 

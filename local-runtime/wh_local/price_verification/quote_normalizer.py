@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import json
 import re
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, urlencode, urlparse, urlunsplit
 
 from .contracts import PriceVerificationContractError, redact_sensitive, safe_json_value
@@ -140,11 +141,13 @@ def normalize_price_quote_discovery(payload: Mapping[str, Any]) -> QuotePreview:
     popup_rejected = primary and popup_was_not_confirmed(safe_payload)
     selected_rows = [] if popup_rejected else raw_rows
 
-    items = [item for record in selected for item in quote_items_from_network_record(record)]
+    network_items = [item for record in selected for item in quote_items_from_network_record(record)]
+    dom_items: list[QuoteItem] = []
     for row in selected_rows:
         item = quote_item_from_dom_row(row, popup_confirmed=popup_confirmed)
         if has_quote_signal(item):
-            items.append(item)
+            dom_items.append(item)
+    items = [*align_network_to_dom_page(network_items, dom_items), *dom_items]
     quotes = dedupe_quotes(items)
     complete = [item for item in quotes if is_complete_quote(item)]
     return QuotePreview(
@@ -208,6 +211,42 @@ def select_current_price_records(records: list[dict[str, Any]]) -> list[dict[str
     return [ranked[-1]]
 
 
+_STALE_NETWORK_AGE_SECONDS = 300
+
+
+def align_network_to_dom_page(
+    network_items: Sequence[QuoteItem], dom_items: Sequence[QuoteItem]
+) -> list[QuoteItem]:
+    """Drop network quotes captured on an older page state.
+
+    The DOM snapshot is always taken at capture time, so it describes the
+    current page.  A network record can be much older (e.g. the batch dialog
+    was opened minutes before the capture click); merging it unchanged would
+    reintroduce products that are no longer visible ("旧数据没被覆盖").  When
+    the network capture is clearly older than the DOM rows, keep only network
+    quotes whose SKC still appears on the current page.
+    """
+    if not network_items or not dom_items:
+        return list(network_items)
+    dom_skcs = {item.skc_id for item in dom_items if item.skc_id}
+    if not dom_skcs:
+        return list(network_items)
+    dom_times = [timestamp for item in dom_items if (timestamp := _parse_iso(item.captured_at))]
+    net_times = [timestamp for item in network_items if (timestamp := _parse_iso(item.captured_at))]
+    if not dom_times or not net_times:
+        return list(network_items)
+    if (min(dom_times) - max(net_times)).total_seconds() <= _STALE_NETWORK_AGE_SECONDS:
+        return list(network_items)
+    return [item for item in network_items if item.skc_id in dom_skcs]
+
+
+def _parse_iso(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
 def quote_items_from_network_record(record: Mapping[str, Any]) -> list[QuoteItem]:
     response = response_json(record)
     if not isinstance(response, (dict, list)):
@@ -241,9 +280,19 @@ def quote_item_from_dom_row(row: Mapping[str, Any], *, popup_confirmed: bool = F
         # The visible first currency amount remains the original declared price.
         original = text_prices[0]
     adjusted = money_for(cells, ("调整后申报价格(CNY)", "调整后申报价格", "建议价格", "建议供货价")) if popup_confirmed else None
+    if adjusted is None and original is not None and len(text_prices) >= 2:
+        # Header-less virtual grids: the second visible currency amount is the
+        # adjusted (recommended) declared price on the Temu price confirmation
+        # page, so capture it even when the popup confirmation was not used.
+        adjusted = text_prices[1]
     new = money_for(cells, ("新申报价格(CNY)", "新申报价格")) if popup_confirmed else None
     sku_id = id_from(cells, ("SKU ID", "sku_id", "SKU编号", "SKU货号"), text, r"\bSKU(?:\s*(?:ID|编号|货号))?[:：\s]*([A-Za-z0-9_-]{4,})\b")
     goods_id = id_from(cells, ("SPU", "SPU ID", "商品ID", "goods_id"), text, r"\b(?:SPU|Goods)[:：\s]*([A-Za-z0-9_-]{4,})\b")
+    row_links = dom_row_links(row)
+    link = row_links[0] if row_links else ""
+    if not goods_id and link:
+        query_goods = parse_qs(urlparse(link).query).get("goods_id", [""])[0]
+        goods_id = stringify_id(query_goods)
     product_title = text_for(cells, ("商品标题", "商品名称", "title")) or title_before_skc(text)
     return QuoteItem(
         skc_id=id_from(cells, ("SKC", "SKC ID", "skc_id"), text, r"\bSKC[:：\s]*([A-Za-z0-9_-]{4,})\b"),
@@ -254,10 +303,26 @@ def quote_item_from_dom_row(row: Mapping[str, Any], *, popup_confirmed: bool = F
         site=text_for(cells, ("站点", "site")) or site_text(text), status=text_for(cells, ("状态", "status")),
         original_declared_price_cny=original, adjusted_declared_price_cny=adjusted,
         new_declared_price_cny=new, product_title=product_title,
-        main_image_url=first_url(row), official_link_url=official_temu_link(row, goods_id),
+        main_image_url=first_url(row), official_link_url=official_temu_link({**row, "href": link} if link else row, goods_id),
         source_endpoint=source, capture_method=source,
         captured_at=clean_text(row.get("capturedAt")), evidence_sources=source, dom_evidence_count=1,
     )
+
+
+def dom_row_links(row: Mapping[str, Any]) -> list[str]:
+    """Collect product links from a DOM row (row-level ``link`` plus cell URLs)."""
+    links: list[str] = []
+    for key in ("link", "href", "url"):
+        value = clean_text(row.get(key))
+        if value and value not in links:
+            links.append(value)
+    for cell in row.get("cells") or []:
+        if not isinstance(cell, Mapping):
+            continue
+        value = clean_text(cell.get("url") or cell.get("href") or cell.get("link"))
+        if value and value not in links:
+            links.append(value)
+    return links
 
 
 def dedupe_quotes(items: Iterable[QuoteItem]) -> list[QuoteItem]:
@@ -283,17 +348,38 @@ def dedupe_quotes(items: Iterable[QuoteItem]) -> list[QuoteItem]:
 def compatible_dedupe_key(
     item: QuoteItem, merged: Mapping[tuple[str, str, str, str], QuoteItem]
 ) -> tuple[str, str, str, str] | None:
-    """Join a popup supplement with its network quote when the popup omits site."""
-    if not (item.skc_id and item.sku_id):
+    """Join a network quote with its DOM snapshot row for the same SKC.
+
+    One batch page is captured twice in a single pass: the network JSON
+    (authoritative, carries the official link) and the visible DOM rows
+    (carries the on-page prices).  They rarely share SKU identifiers, so a
+    plain key match misses them and the review panel shows the same SKC
+    twice with inconsistent columns.  Merge when the SKC matches and one
+    capture is network JSON while the other is a DOM row.
+    """
+    if not item.skc_id:
         return None
     for key, existing in merged.items():
+        if existing.skc_id != item.skc_id:
+            continue
         if (
-            existing.skc_id == item.skc_id
+            existing.sku_id
             and existing.sku_id == item.sku_id
             and (not existing.site or not item.site)
         ):
             return key
+        if _network_dom_pair(existing, item):
+            return key
     return None
+
+
+def _network_dom_pair(left: QuoteItem, right: QuoteItem) -> bool:
+    """Whether two captures describe the same SKC from the two evidence paths."""
+    return (
+        left.capture_method == "network_json" and right.capture_method.startswith("dom_")
+    ) or (
+        right.capture_method == "network_json" and left.capture_method.startswith("dom_")
+    )
 
 
 def annotate_quote_integrity(item: QuoteItem) -> QuoteItem:
@@ -328,7 +414,7 @@ def quote_from_mapping(mapping: Mapping[str, Any], endpoint: str, captured_at: s
         skc_attribute_text=clean_text(first_value(mapping, ("skcAttributeText", "skcAttributes", "productAttributesText"))),
         product_attribute_summary=attribute_summary(first_value(mapping, ("productPropertyList", "productAttributeList", "attributes"))),
         spu_or_goods_id=goods_id,
-        site=site_text(first_value(mapping, ("siteName", "siteNameCn", "site", "站点"))),
+        site=site_from_mapping(mapping),
         status=clean_text(first_value(mapping, ("orderStatus", "priceStatus", "reviewStatus", "status", "状态"))),
         original_declared_price_cny=money_for(mapping, _MONEY_KEYS["original"]),
         adjusted_declared_price_cny=money_for(mapping, _MONEY_KEYS["adjusted"]),
@@ -526,6 +612,27 @@ def site_text(value: Any) -> str:
     text = clean_text(value)
     match = re.search(r"[\u4e00-\u9fffA-Za-z]+站", text)
     return match.group(0) if match else text
+
+
+def site_from_mapping(mapping: Mapping[str, Any]) -> str:
+    """Extract the bound Temu site from a price-review network mapping.
+
+    Temu's batch price-review JSON binds the site as a list per SKC rather
+    than a plain scalar, e.g. ``semiHostedBindSiteNameList: ["美国站"]`` or
+    ``semiHostedBindSiteList: [{"siteId": 100, "siteName": "美国站"}]``, so
+    plain alias lookups silently miss it.
+    """
+    for key in ("semiHostedBindSiteNameList", "semiHostedBindSiteName", "bindSiteName"):
+        text = clean_text(mapping.get(key))
+        if text and site_text(text):
+            return site_text(text)
+    for key in ("semiHostedBindSiteList", "bindSiteList"):
+        for item in walk_mappings(mapping.get(key) or []):
+            if isinstance(item, Mapping):
+                site = site_text(first_value(item, ("siteName", "siteNameCn", "站点")))
+                if site:
+                    return site
+    return site_text(first_value(mapping, ("siteName", "siteNameCn", "site", "站点")))
 
 
 def dom_cell_map(row: Mapping[str, Any]) -> dict[str, Any]:

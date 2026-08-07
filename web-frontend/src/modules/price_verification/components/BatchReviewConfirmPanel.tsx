@@ -68,12 +68,12 @@ export function BatchReviewConfirmPanel({ batchId, selections, busy, sourceSkcId
 
   const renderRow = (selection: BatchSelection) => (
     <article className="price-verification-quote-card is-confirm-review" key={selection.id}>
-      <label className="price-verification-source-check" title={selection.status === "retained" ? "勾选后本次图搜会搜索该 SKC；取消勾选可跳过，避免重复图搜" : "保留后该 SKC 才会参与图搜"}>
-        <input type="checkbox" checked={sourceSkcIds.includes(selection.skc_id)} onChange={(event) => toggleSource(selection.skc_id, event.target.checked)} disabled={busyId !== null} />
+      <label className="price-verification-source-check" title={selection.status === "retained" ? "勾选后本次图搜会搜索该 SKC；取消勾选可跳过，避免重复图搜" : "请先点击“保留 · 入草稿池”，保留后才能勾选图搜"}>
+        <input type="checkbox" checked={selection.status === "retained" && sourceSkcIds.includes(selection.skc_id)} onChange={(event) => toggleSource(selection.skc_id, event.target.checked)} disabled={busyId !== null || selection.status !== "retained"} />
         <span>图搜</span>
       </label>
       <div className="price-verification-quote-image">
-        {selection.main_image_url ? <img src={selection.main_image_url} alt="" /> : "无图"}
+        {selection.main_image_url ? <img src={selection.main_image_url} alt="" referrerPolicy="no-referrer" /> : "无图"}
       </div>
       <div className="price-verification-quote-body">
         <strong>{selection.product_title || "未命名商品"}</strong>
@@ -139,7 +139,7 @@ export function BatchReviewConfirmPanel({ batchId, selections, busy, sourceSkcId
       <div className="price-verification-panel-heading">
         <div>
           <p className="eyebrow">STEP 02 · FINAL REVIEW</p>
-          <h2>待审商品最终确认<SectionHelp title="第一板块勾选确认的商品已重组成此待审列表，这里是最终裁决：点“保留 · 入草稿池”才写入草稿池，点“删除”即放弃；同时可为每个 SKC 指定图搜相似品数量。每行左侧可勾选是否参与图搜（默认勾选已保留的 SKC），取消勾选可跳过，避免每次全量图搜产生重复。" /></h2>
+          <h2>待审商品最终确认<SectionHelp title="第一板块勾选确认的商品已重组成此待审列表，这里是最终裁决：点“保留 · 入草稿池”才写入草稿池，点“删除”即放弃；同时可为每个 SKC 指定图搜相似品数量。每行左侧可勾选是否参与图搜（默认不勾选，需先保留后才能勾选），只图搜勾选的 SKC，避免每次全量图搜产生重复。" /></h2>
         </div>
         <div className="price-verification-heading-actions">
           <label className="price-verification-count-field is-inline">
