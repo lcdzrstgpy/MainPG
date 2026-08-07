@@ -9,6 +9,7 @@ import { SourcingPanel } from "../components/SourcingPanel";
 import { WorkflowSteps } from "../components/WorkflowSteps";
 import type { BatchSelection, PriceVerificationStage, PrescreenSettings, QuoteBatchReviewItem, QuoteCaptureBatch, SkcSourceLink, SourceCandidate, SourcePreview } from "../types";
 import "../styles/priceVerification.css";
+import "../styles/priceVerificationHero.css";
 import "../styles/priceVerificationApi.css";
 
 function errorMessage(error: unknown) {

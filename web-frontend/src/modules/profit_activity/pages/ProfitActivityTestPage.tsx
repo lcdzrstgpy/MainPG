@@ -1,4 +1,5 @@
 import { type ClipboardEvent, type DragEvent, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import "../styles/profitActivityTest.css";
 
 type Site = "US" | "CO" | "EC";
 type Scope = "default" | "company";
@@ -448,6 +449,28 @@ export function ProfitActivityTestPage() {
           {settingsOpen ? "⌃ 收起设置" : "⌄ 展开设置"}
         </button>
       </section>
+
+      <div className={`profit-settings-collapse ${settingsOpen ? "is-open" : ""}`} aria-hidden={!settingsOpen}>
+        <div className="profit-settings-collapse-inner">
+          <section className="profit-settings-panel">
+            <div className="profit-settings-heading">
+              <span className="profit-title-icon iconfont icon-setting" aria-hidden="true" />
+              <div>
+                <h2>保存目录与默认参数</h2>
+                <p>按站点维护利润公式，保存后用于单品预览、产品入档和活动申报过滤。</p>
+              </div>
+            </div>
+            <label className="profit-save-root">本地保存目录<input value={String(settings?.save_root || defaultSaveRoot)} onChange={(event) => setSettings({ ...(settings || {}), save_root: event.target.value })} /></label>
+            <p className="profit-formula-note">当前编辑{siteLabels[site]}公式：重量kg × 每kg费用 + 固定费；美国、哥伦比亚和厄瓜多尔互不影响，单品预览、入档和活动申报过滤都会使用保存后的当前站点公式。</p>
+            <div className="profit-settings-grid">
+              {siteSettingFields[site].map((field) => (
+                <label key={field.key}>{field.label}<input type="number" value={siteSettings[field.key] || ""} onChange={(event) => setSiteSettings((current) => ({ ...current, [field.key]: event.target.value }))} /></label>
+              ))}
+              <button onClick={saveSiteSettings} disabled={!!busy}>保存设置</button>
+            </div>
+          </section>
+        </div>
+      </div>
 
       <section className="profit-test-toolbar">
         <label>API Base<input value={apiBase} onChange={(event) => { setApiBase(event.target.value); localStorage.setItem("profitActivityApiBase", event.target.value); }} placeholder="留空同源，例如 http://127.0.0.1:8000" /></label>
