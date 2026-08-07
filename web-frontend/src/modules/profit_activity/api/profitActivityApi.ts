@@ -1,22 +1,24 @@
 import type { ProductQueryParams, ProductSources, ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
 
-// 与 ProfitActivityTestPage 保持一致：直连本地利润活动后端。
+// 与 ProfitActivityTestPage 保持一致：默认同源请求（后端由当前站点服务，
+// 如 8000 的 wh_local；可通过 localStorage profitActivityApiBase 覆盖）。
 // token 解析优先级：页面手动设置（whLocalApiToken）→ 登录用户会话
 // （wh_demo_token，与核价及货源模块同一工作区）→ 本地开发管理员令牌。
 function resolveEndpoint() {
   return {
-    apiBase: localStorage.getItem("profitActivityApiBase") || "http://127.0.0.1:8000",
+    apiBase: localStorage.getItem("profitActivityApiBase") || "",
+    token: localStorage.getItem("whLocalApiToken") || "dev-admin-token",
   };
 }
 
-// 候选令牌：手动设置 > 登录会话 > 管理员令牌（永不过期，兜底）。
+// 候选令牌：dev-admin-token 优先（本地开发管理员，永不过期兜底）。
 function candidateTokens(): string[] {
   const tokens = new Set<string>();
+  tokens.add("dev-admin-token");  // 优先：本地开发管理员
   const manual = localStorage.getItem("whLocalApiToken");
   const customer = localStorage.getItem("wh_demo_token");
   if (manual) tokens.add(manual);
   if (customer) tokens.add(customer);
-  tokens.add("dev-admin-token");
   return [...tokens];
 }
 

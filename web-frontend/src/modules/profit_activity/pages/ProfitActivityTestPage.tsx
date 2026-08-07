@@ -127,7 +127,7 @@ const siteSettingFields: Record<Site, SiteSettingField[]> = {
 };
 
 export function ProfitActivityTestPage() {
-  const [apiBase, setApiBase] = useState(localStorage.getItem("profitActivityApiBase") || "http://127.0.0.1:8000");
+  const [apiBase, setApiBase] = useState(localStorage.getItem("profitActivityApiBase") || "");
   const [token, setToken] = useState(defaultToken);
   const [site, setSite] = useState<Site>("US");
   const [scope, setScope] = useState<Scope>("default");
