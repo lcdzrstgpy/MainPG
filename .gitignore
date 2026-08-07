@@ -18,6 +18,10 @@ local-runtime/outputs/
 local-runtime/.runtime-packages/
 outputs/
 
+# PyInstaller 打包产物
+local-runtime/dist/
+local-runtime/build/
+
 # Local secrets
 local-runtime/wh_local/onebound.local.json
 local-runtime/wh_local/modules/product_processing/cos.local.json

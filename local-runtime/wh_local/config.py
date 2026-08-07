@@ -62,18 +62,34 @@ def _runtime_root(workspace: Path | None) -> Path:
 
 def _local_onebound_config() -> dict[str, str | bool]:
     """Read project-local credentials from the Git-ignored configuration file."""
-    path = Path(__file__).with_name("onebound.local.json")
-    if not path.exists():
-        return {}
-    try:
-        values = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError("invalid local OneBound configuration") from error
-    if not isinstance(values, dict):
-        raise RuntimeError("local OneBound configuration must be an object")
-    return {
-        key: value
-        for key, value in values.items()
-        if key in {"api_key", "api_secret", "base_url", "enabled"}
-        and isinstance(value, (str, bool))
-    }
+    for path in _local_onebound_config_paths():
+        if not path.is_file():
+            continue
+        try:
+            values = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError("invalid local OneBound configuration") from error
+        if not isinstance(values, dict):
+            raise RuntimeError("local OneBound configuration must be an object")
+        return {
+            key: value
+            for key, value in values.items()
+            if key in {"api_key", "api_secret", "base_url", "enabled"}
+            and isinstance(value, (str, bool))
+        }
+    return {}
+
+
+def _local_onebound_config_paths() -> list[Path]:
+    """onebound.local.json 候选位置：源码目录 + 打包资源目录（PyInstaller）。
+
+    安装包构建时把 onebound.local.json 放进可执行文件同目录（onedir）或打包资源
+    （onefile 的 _MEIPASS），用户安装后零配置即可使用每日选品采集 API（运营方写死凭据）。
+    """
+    candidates = [Path(__file__).with_name("onebound.local.json")]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / "onebound.local.json")
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "onebound.local.json")
+    return candidates

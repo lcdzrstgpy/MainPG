@@ -14,8 +14,12 @@ from pathlib import Path
 from typing import Any
 
 AI_PROVIDER = "aicoming"
-AI_BASE_URL = "https://api.aicoming.top/v1"
-AI_API_KEY = "sk-980fea67bd0f1ffe46802653d114be5463e27f2e358267e3"  # 硬编码兜底
+# 默认中转站：用户通过 https://station-88.aicoming.top/ 购买 key（运营转售模式）。
+# 若用户在"系统配置"里填了 base_url 或设置 WH_AI_BASE_URL，则以用户配置为准。
+AI_BASE_URL = "https://station-88.aicoming.top/v1"
+# 不再内置共享密钥：产品处理 AI 为转售模式，每个用户使用自己在系统配置中填写的 key；
+# 未配置时 engine/status 明确显示 ai_configured=false，任务对 AI 环节给出可读报错，不静默透传。
+AI_API_KEY = ""
 
 TEXT_MODEL = "gpt-5.6-terra"
 # 文本统一走低价档模型，且优先选择支持提示词缓存（⚡缓存）的模型以降低重复前缀成本；

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -128,9 +129,28 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     return app
 
 
+def _frontend_dist_dir() -> Path:
+    """前端构建产物目录：源码运行定位 web-frontend/dist；打包后随程序分发。
+
+    PyInstaller 打包后 ``__file__`` 位于打包资源（_MEIPASS）内，parents[3] 会解析错位，
+    因此按优先级尝试：打包资源 web-frontend/dist（spec datas 打进 _internal）>
+    可执行文件同目录 web-frontend/dist（onedir 分发包）> 源码 parents[3]。
+    """
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            bundled = Path(meipass) / "web-frontend" / "dist"
+            if bundled.is_dir():
+                return bundled
+        beside_exe = Path(sys.executable).resolve().parent / "web-frontend" / "dist"
+        if beside_exe.is_dir():
+            return beside_exe
+    return Path(__file__).resolve().parents[3] / "web-frontend" / "dist"
+
+
 def _register_frontend_shell(app: FastAPI) -> None:
     """Expose the built workbench at the same local origin as the plugin API."""
-    frontend_dist = Path(__file__).resolve().parents[3] / "web-frontend" / "dist"
+    frontend_dist = _frontend_dist_dir()
     assets = frontend_dist / "assets"
     index = frontend_dist / "index.html"
     if assets.is_dir():

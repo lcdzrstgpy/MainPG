@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import sys
 import uuid
 from dataclasses import dataclass
 from dataclasses import asdict
@@ -450,7 +451,12 @@ class ProfitActivityService:
         return ensure_writable_directory(Path(settings.save_root) if settings.save_root else self._output_root())
 
     def _output_root(self) -> Path:
-        root = Path(os.getenv("PROFIT_ACTIVITY_OUTPUT_DIR") or Path(__file__).resolve().parents[4] / "real-workbench" / "employee_workbench" / "outputs" / "profit_activity")
+        # 打包场景：安装目录可能只读（如 Program Files），回退到 %APPDATA%\MainPG 可写目录
+        if getattr(sys, "frozen", False):
+            appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+            root = appdata / "MainPG" / "outputs" / "profit_activity"
+        else:
+            root = Path(os.getenv("PROFIT_ACTIVITY_OUTPUT_DIR") or Path(__file__).resolve().parents[4] / "real-workbench" / "employee_workbench" / "outputs" / "profit_activity")
         root.mkdir(parents=True, exist_ok=True)
         return root
 

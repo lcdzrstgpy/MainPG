@@ -7,7 +7,9 @@ import type {
 } from "../types/systemConfig";
 
 const SYSTEM_CONFIG_PATH = "/desktop/basic-settings/system-config";
-const PRIMARY_AI_BASE_URL = "https://api.aicoming.top/v1";
+// 产品处理 AI 为运营转售模式：用户通过 https://station-88.aicoming.top/ 购买 key。
+// 仅作为"后端未配置 base_url"时的展示/兜底默认值，保存时不强制覆盖后端已有 base_url。
+const PRIMARY_AI_BASE_URL = "https://station-88.aicoming.top/v1";
 
 const fallbackConfig: SystemConfigResponse = {
   ok: true,
@@ -57,12 +59,13 @@ export function createSystemConfigUpdatePayload(
 
   return {
     ai: {
-      base_url: PRIMARY_AI_BASE_URL,
+      // 保留后端已有 base_url（系统配置/环境变量优先），避免覆盖成前端写死的默认值
+      base_url: base.ai?.base_url || PRIMARY_AI_BASE_URL,
       model: form.textModel.trim() || base.ai.model,
       ...(payload.textModelApiKey ? { api_key: payload.textModelApiKey } : {}),
     },
     image: {
-      base_url: PRIMARY_AI_BASE_URL,
+      base_url: base.image?.base_url || PRIMARY_AI_BASE_URL,
       model: form.imageModel.trim() || base.image.model,
       reference_model: form.referenceImageModel.trim() || base.image.reference_model,
       ...(payload.imageModelApiKey ? { api_key: payload.imageModelApiKey } : {}),
