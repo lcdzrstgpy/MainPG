@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,11 +24,30 @@ import requests
 
 from ..domain.policy import is_safe_external_url
 
+# 模块级连接池：复用 TCP/TLS 握手与 HTTP 连接，避免每个请求新建连接（图片生成/参考图下载高频调用）。
+_SESSION = requests.Session()
+_HTTP_ADAPTER = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=32, max_retries=0)
+_SESSION.mount("https://", _HTTP_ADAPTER)
+_SESSION.mount("http://", _HTTP_ADAPTER)
+_SESSION.headers.update(
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+        )
+    }
+)
+
 # 对齐原项目 native_product_engine.DXM_IMAGE_TARGET_SIZE = 800
 # 店小秘导入要求图片不小于 800×800，拆分后每格缩放到该尺寸。
 DXM_IMAGE_TARGET_SIZE = 800
 # 对齐原项目 native_product_engine.IMAGE_JPEG_QUALITY = 90
 DXM_IMAGE_JPEG_QUALITY = 90
+
+# 图片 provider 轮巡游标（对齐原项目 native_product_engine._PROVIDER_CURSORS）：
+# 进程内全局共享、线程锁保护，按"每次图片请求"取模轮转起始 provider，实现负载均衡。
+_PROVIDER_CURSOR_LOCK = threading.Lock()
+_PROVIDER_CURSORS: dict[str, int] = {}
 
 
 class MediaConfigurationError(RuntimeError):
@@ -34,7 +55,11 @@ class MediaConfigurationError(RuntimeError):
 
 
 class MediaProcessingError(RuntimeError):
-    pass
+    """图片处理失败；``status_code`` 携带中转返回的 HTTP 状态码（429 时用于退避重试）。"""
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -58,6 +83,11 @@ class ProductImageProcessor:
 
     def __init__(self, config_provider: Callable[[], dict[str, Any]] | None = None):
         self._config_provider = config_provider or (lambda: {})
+        # 图片并发限流信号量（对齐原项目 global_image_request_limit / image_workers）：
+        # 批次内多商品并行时限制同时在途的图片生成请求数，避免打爆中转 429。
+        config = self._config()
+        image_workers = max(1, min(int((config.get("limits") or {}).get("image_workers") or 15), 50))
+        self._image_semaphore = threading.Semaphore(image_workers)
 
     def status(self) -> dict[str, Any]:
         config = self._config()
@@ -83,6 +113,18 @@ class ProductImageProcessor:
         providers = self._providers(config)
         if not providers:
             raise MediaConfigurationError("image provider is not configured")
+        with self._image_semaphore:
+            return self._generate_with_limits(stage, prompt, reference_values, providers, config)
+
+    def _generate_with_limits(
+        self,
+        stage: str,
+        prompt: str,
+        reference_values: Iterable[str],
+        providers: list[dict[str, str]],
+        config: dict[str, Any],
+        extra_references: list[tuple[bytes, str, str]] | None = None,
+    ) -> GeneratedMedia:
         default_limit = 1 if stage == "grid_image" else 2
         reference_limit = max(
             1,
@@ -91,7 +133,8 @@ class ProductImageProcessor:
                 4,
             ),
         )
-        references = self._load_references(reference_values, limit=reference_limit)
+        references = list(extra_references or [])
+        references.extend(self._load_references(reference_values, limit=reference_limit))
         if not references:
             raise MediaProcessingError("a confirmed source image is required for image processing")
         retries = max(1, min(int((config.get("limits") or {}).get("image_retry_attempts") or 3), 5))
@@ -112,7 +155,39 @@ class ProductImageProcessor:
                     )
                 except (requests.RequestException, TimeoutError, ValueError, MediaProcessingError) as exc:
                     errors.append(f"{provider['name']} attempt {attempt}: {_safe_error(exc)}")
+                    # 429 限流：指数退避后重试，避免立即重撞限流阈值
+                    if getattr(exc, "status_code", None) == 429:
+                        time.sleep(min(2 ** attempt, 10))
         raise MediaProcessingError("; ".join(errors) or "image provider request failed")
+
+    def repair_generated(
+        self,
+        *,
+        stage: str,
+        prompt: str,
+        prior_content: bytes,
+        prior_content_type: str,
+        reference_values: Iterable[str],
+    ) -> GeneratedMedia:
+        """定向重绘：把上一轮生成图作为第一参考回传给模型，仅修文字不换商品。
+
+        OCR 质量门检出中文后调用（对齐原项目 AI 修复语义）：附加的上一轮生成图优先，
+        再叠加最多 limit 张来源图保证商品身份一致。
+        """
+        config = self._config()
+        providers = self._providers(config)
+        if not providers:
+            raise MediaConfigurationError("image provider is not configured")
+        prior = (prior_content, "generated_previous.png", prior_content_type or "image/png")
+        with self._image_semaphore:
+            return self._generate_with_limits(
+                stage,
+                prompt,
+                reference_values,
+                providers,
+                config,
+                extra_references=[prior],
+            )
 
     def split_four_grid(self, media: GeneratedMedia) -> list[GeneratedMedia]:
         """Split a generated 2x2 grid into four listing images plus its summary.
@@ -228,31 +303,57 @@ class ProductImageProcessor:
 
     @staticmethod
     def _providers(config: dict[str, Any]) -> list[dict[str, str]]:
+        """构造 provider 池：每个图片模型一个条目。
+
+        同一中转的多个图片模型（``image_models`` 池）各自成条，轮巡时在池内取模；
+        未配置模型池时退化为单模型条目。primary/backup 两段可各自携带模型池。
+        """
         providers: list[dict[str, str]] = []
         for name, section_name in (("primary", "image"), ("backup", "backup_image")):
             section = dict(config.get(section_name) or {})
             base_url = str(section.get("base_url") or "").strip().rstrip("/")
             api_key = str(section.get("api_key") or "").strip()
-            model = str(section.get("model") or "").strip()
-            if not (base_url and api_key and model):
+            if not (base_url and api_key):
                 continue
             parsed = urlsplit(base_url)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 continue
-            providers.append(
-                {
-                    "name": name,
-                    "base_url": base_url,
-                    "api_key": api_key,
-                    "model": model,
-                    "reference_model": str(section.get("reference_model") or "").strip(),
-                }
-            )
+            models = [
+                str(model).strip()
+                for model in (section.get("image_models") or ())
+                if isinstance(model, str) and str(model).strip()
+            ]
+            if not models:
+                single = str(section.get("model") or "").strip()
+                if single:
+                    models = [single]
+            reference_model = str(section.get("reference_model") or "").strip()
+            for model in models:
+                providers.append(
+                    {
+                        "name": f"{name}:{model}",
+                        "base_url": base_url,
+                        "api_key": api_key,
+                        "model": model,
+                        "reference_model": reference_model or model,
+                    }
+                )
         return providers
 
     @staticmethod
     def _provider_order(providers: list[dict[str, str]], config: dict[str, Any]) -> list[dict[str, str]]:
-        strategy = str((config.get("limits") or {}).get("image_provider_strategy") or "balanced").strip()
+        """按策略决定本轮 provider 起始顺序。
+
+        balanced / round_robin / load_balance：进程内游标取模轮转起始 provider（对齐原项目）；
+        backup_first：backup 段整体前移（failover 偏好）；其余保持配置顺序。
+        """
+        strategy = str((config.get("limits") or {}).get("image_provider_strategy") or "balanced").strip().lower().replace("-", "_")
+        if strategy in {"balanced", "round_robin", "load_balance"} and len(providers) > 1:
+            key = "|".join(f"{item['base_url']}:{item['model']}" for item in providers)
+            with _PROVIDER_CURSOR_LOCK:
+                index = _PROVIDER_CURSORS.get(key, 0) % len(providers)
+                _PROVIDER_CURSORS[key] = index + 1
+            return providers[index:] + providers[:index]
         if strategy == "backup_first" and len(providers) > 1:
             return [*providers[1:], providers[0]]
         return providers
@@ -260,7 +361,10 @@ class ProductImageProcessor:
     def _load_references(self, values: Iterable[str], *, limit: int) -> list[tuple[bytes, str, str]]:
         references: list[tuple[bytes, str, str]] = []
         seen: set[str] = set()
+        errors: list[str] = []
         for raw in values:
+            if len(references) >= limit:
+                break
             value = str(raw or "").strip()
             if not value or value in seen:
                 continue
@@ -270,30 +374,29 @@ class ProductImageProcessor:
                     header, payload = value.split(",", 1)
                     content = base64.b64decode(payload)
                 except Exception as exc:
-                    raise MediaProcessingError("reference data image is invalid") from exc
+                    errors.append(f"data image invalid: {_safe_error(exc)}")
+                    continue
                 references.append((content, "reference.png", _data_url_content_type(header)))
             elif Path(value).is_file():
                 path = Path(value)
                 references.append((path.read_bytes(), path.name, mimetypes.guess_type(path.name)[0] or "image/jpeg"))
             else:
                 if not is_safe_external_url(value):
-                    raise MediaProcessingError("reference image URL is not a safe public HTTP(S) URL")
-                response = None
+                    errors.append("reference URL is not a safe public HTTP(S) URL")
+                    continue
                 try:
-                    response = requests.get(value, timeout=30, allow_redirects=False)
-                    response.raise_for_status()
-                    content = bytes(response.content)
-                    content_type = str(response.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
+                    content, content_type = _download_reference_image(value)
                 except requests.RequestException as exc:
-                    raise MediaProcessingError("reference image download failed") from exc
-                finally:
-                    if response is not None:
-                        response.close()
+                    # 1688 来源图偶发防盗链（cbu01.alicdn.com 420）：跳过失败 URL，继续尝试后续来源图
+                    errors.append(f"download failed: {_safe_error(exc)}")
+                    continue
                 if not content or not content_type.startswith("image/"):
-                    raise MediaProcessingError("reference URL did not return an image")
+                    errors.append("reference URL did not return an image")
+                    continue
                 references.append((content, _filename_for_url(value), content_type))
-            if len(references) >= limit:
-                break
+        if not references:
+            detail = f" ({errors[0]})" if errors else ""
+            raise MediaProcessingError(f"reference image download failed{detail}")
         return references
 
     @staticmethod
@@ -311,7 +414,7 @@ class ProductImageProcessor:
                 ("image[]", (filename, BytesIO(content), content_type))
                 for content, filename, content_type in references
             ]
-        response = requests.post(
+        response = _SESSION.post(
             f"{provider['base_url']}/images/edits",
             headers={"Authorization": f"Bearer {provider['api_key']}"},
             data={
@@ -321,11 +424,14 @@ class ProductImageProcessor:
                 "size": "1024x1024",
             },
             files=files,
-            timeout=150,
+            timeout=120,
         )
         try:
             if not response.ok:
-                raise MediaProcessingError(f"provider returned HTTP {response.status_code}")
+                raise MediaProcessingError(
+                    f"provider returned HTTP {response.status_code}",
+                    status_code=response.status_code,
+                )
             payload = response.json()
         finally:
             response.close()
@@ -340,7 +446,7 @@ class ProductImageProcessor:
         url = str(item.get("url") or "").strip()
         if not url or not is_safe_external_url(url):
             raise MediaProcessingError("provider response does not contain a safe image result")
-        downloaded = requests.get(url, timeout=60, allow_redirects=False)
+        downloaded = _SESSION.get(url, timeout=60, allow_redirects=False)
         try:
             downloaded.raise_for_status()
             content = bytes(downloaded.content)
@@ -395,3 +501,37 @@ def _data_url_content_type(header: str) -> str:
 def _filename_for_url(value: str) -> str:
     name = Path(urlsplit(value).path).name
     return name or "reference.jpg"
+
+
+def _download_reference_image(url: str) -> tuple[bytes, str]:
+    """下载来源参考图，带 UA 头并做防盗链容错。
+
+    1688 来源图（cbu01.alicdn.com 等）偶发 420 防盗链：裸 requests.get 无 UA 易被拦。
+    策略：1) 带浏览器 UA 直下；2) 失败追加 ``?__r__=<毫秒时间戳>`` 缓存爆破参数重试；
+    3) 仍失败换 ``http`` 再试一次。全部失败抛 requests.RequestException 由调用方转错误。
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
+    variants = [url]
+    parsed = urlsplit(url)
+    if "__r__" not in parsed.query:
+        ts = str(int(time.time() * 1000))
+        separator = "&" if parsed.query else "?"
+        variants.append(f"{url}{separator}__r__={ts}")
+    if parsed.scheme == "https":
+        variants.append(f"http://{parsed.netloc}{parsed.path}" + (f"?{parsed.query}" if parsed.query else ""))
+    last_error: requests.RequestException | None = None
+    for variant in variants:
+        response = None
+        try:
+            response = _SESSION.get(variant, timeout=30, allow_redirects=False, headers=headers)
+            response.raise_for_status()
+            content = bytes(response.content)
+            content_type = str(response.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
+            if content and content_type.startswith("image/"):
+                return content, content_type
+        except requests.RequestException as exc:
+            last_error = exc
+        finally:
+            if response is not None:
+                response.close()
+    raise last_error or requests.RequestException("reference image download failed")

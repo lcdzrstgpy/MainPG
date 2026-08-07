@@ -115,7 +115,7 @@ Video-ready four-panel material plan:
 Each panel must work both as a standalone marketplace carousel image and as a clean short-video frame.
 Keep an exact four-panel 2x2 grid with clean straight dividers. Do not change the four-grid structure, divider layout, or split logic.
 Official authenticity rules: the sellable product must be complete, sharp, prominent, and unobstructed in every panel. Do not show only a packaging bag unless the product being sold is packaging bags. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
-Strict rules: Differentiate only through style, lighting, background, scene, and composition. Each quadrant must be a different composition/angle/scene; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. No added text overlays, labels, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
+Strict rules: Differentiate only through style, lighting, background, scene, and composition. Each quadrant must be a different composition/angle/scene; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. No added text overlays, labels, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design. Text rule: any visible text in the generated image must be English only. If the source product or packaging shows Chinese characters or other non-English text, replace it with the equivalent English text or remove it entirely; never reproduce Chinese characters or other non-English text in the generated panels. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
 
 
 DETAIL_IMAGE_PROMPT = """Use the reference image as the non-negotiable source of truth. Preserve the same product type, shape, color, material, pattern, quantity, proportions, structure, and visible details. Do not redesign or change the product itself.
@@ -140,7 +140,18 @@ Poster layout: one unified e-commerce poster composition, not a carousel image. 
 Do not create a four-panel grid, 2x2 grid, quadrant layout, split-panel layout, collage grid, row/column card layout, or image intended for carousel splitting.
 Callout text rules: exactly 3 factual labels, 1-4 words each, no sentence captions, slogans, unsupported claims, or invented dimensions.
 Official authenticity rules: product complete, sharp, dominant, unobstructed; no packaging-only image unless selling packaging bags; no tiny product, unrelated background, blocked key attribute, or deceptive edits.
-Strict copy rules: no logo, watermark, price, certification badge, medical claim, or promotional copy anywhere in visible text. English only for added labels. Realistic, bright, clean US/EU marketplace style."""
+Strict copy rules: no logo, watermark, price, certification badge, medical claim, or promotional copy anywhere in visible text. Text rule: any visible text in the generated image must be English only. If the source product or packaging shows Chinese characters or other non-English text, replace it with the equivalent English text or remove it entirely; never reproduce Chinese characters or other non-English text in the generated poster. English only for added labels. Realistic, bright, clean US/EU marketplace style."""
+
+
+# 图片中文重绘提示词（OCR 质量门检出中文后，把上一轮生成图回传给模型定向修复）
+IMAGE_REPAIR_CHINESE_PROMPT = """The attached image is a product photo generated for an e-commerce listing, but it still contains Chinese characters. Fix only the text inside the image:
+
+- Replace every Chinese character or word with its equivalent English text, or remove it entirely when no sensible English equivalent exists.
+- Keep the product, its color, material, structure, quantity, composition, layout, style, background, and any existing English labels or decorative design exactly the same.
+- Do not add new elements, change the composition, or redesign the product.
+- The corrected image must contain zero Chinese characters.
+
+Output only the corrected image."""
 
 
 SIZE_PROMPT = """Estimate realistic shipping package dimensions and weight for this TEMU product from structured text evidence.
@@ -191,6 +202,7 @@ DEFAULT_PROMPTS: dict[str, str] = {
     "size": SIZE_PROMPT,
     "grid_image": GRID_IMAGE_PROMPT,
     "detail_image": DETAIL_IMAGE_PROMPT,
+    "image_repair_chinese": IMAGE_REPAIR_CHINESE_PROMPT,
     "combined_text": COMBINED_TEXT_PROMPT,
     "variant_values": VARIANT_VALUE_TRANSLATION_PROMPT,
 }

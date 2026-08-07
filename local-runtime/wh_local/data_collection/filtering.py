@@ -18,6 +18,43 @@ _RISK_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("ip", ("trademark", "copyright", "replica", "侵权", "仿牌", "盗版", "迪士尼", "漫威", "宝可梦", "皮卡丘")),
 )
 
+# 仅在“产品本身是风险品”时才硬过滤；卖食品/药品/婴儿用品的**包装与容器**
+# （袋/盒/箱/瓶/罐/收纳架等）不是风险品本身，不应因标题带“食品/药品/儿童”字样被过滤。
+# 该豁免只作用于消费类风险（food/medical/infant），危险品与 IP 不受影响。
+_CONSUMER_RISK_TAGS: frozenset[str] = frozenset({"food", "medical", "infant"})
+
+# 材质/等级限定词：如“食品级硅胶”“医用级不锈钢”只是材料等级，不代表商品是食品/药品。
+_GRADE_QUALIFIERS: tuple[str, ...] = (
+    "食品级", "食用级", "医用级", "医疗级", "药用级", "药品级", "婴儿级",
+    "food-grade", "food grade", "medical-grade", "medical grade",
+)
+
+# 售卖状态词：描述“风险品本身的包装形态”（罐装奶粉/盒装零食/瓶装饮料），
+# 不代表卖家卖的是容器。判定容器语境前先剔除，避免“婴儿奶粉罐装”被误豁免。
+_STATE_SUFFIXES: tuple[str, ...] = (
+    "罐装", "盒装", "袋装", "瓶装", "桶装", "箱装", "包装", "打包",
+)
+
+# 容器/包装/收纳语境词：命中即认为商品是“盒子/袋子/架子/收纳”类载体而非风险品本身。
+# 保留单字（袋/盒/箱…）以覆盖“药品盒”“食品袋”等复合词未收录的写法。
+_PACKAGING_CONTEXT: tuple[str, ...] = (
+    "包装", "打包", "袋子", "盒子", "纸箱", "箱子", "彩盒", "礼盒", "卡盒",
+    "飞机盒", "瓦楞盒", "药盒", "收纳盒", "储物盒", "保鲜盒", "分装盒",
+    "礼品袋", "手提袋", "购物袋", "外卖袋", "自封袋", "密封袋", "真空袋",
+    "快递袋", "打包袋", "背心袋", "马甲袋", "马夹袋", "密实袋", "保鲜袋",
+    "分装袋", "收纳袋", "封口袋", "垃圾袋", "食品袋", "铝箔袋", "保温袋",
+    "纸袋", "帆布袋", "收纳箱", "储物箱", "周转箱", "整理箱",
+    "托盘", "吸塑", "泡壳", "内托", "瓶盖", "封口", "贴纸", "标签",
+    "收纳", "储物", "架子", "收纳架", "置物架", "展示架", "货架", "帽架",
+    "挂架", "支架", "书架", "层架", "收纳柜", "储物柜", "展示柜", "矮柜",
+    "收纳篮", "收纳筐", "储物篮", "密封罐", "储物罐", "收纳罐", "玻璃罐",
+    "密封瓶", "收纳瓶", "分装瓶", "喷瓶", "瓶子",
+    "袋", "盒", "箱", "瓶", "罐", "桶", "架", "柜", "篮", "篓", "筐",
+    "packaging", "package", "packing", "wrapper", "box", "bag", "bottle",
+    "container", "jar", "tube", "carton", "case", "foil", "storage", "rack",
+    "tray", "dispenser",
+)
+
 
 @dataclass(frozen=True)
 class FilteringResult:
@@ -213,11 +250,38 @@ def _with_filter_notes(
 def _risk_tags(candidate: DailySelectionCandidate) -> tuple[str, ...]:
     # 对齐模板：风险词只扫描标题/链接/店铺，避免属性里的否定语境
     # （如“不适宜人群：少年儿童”“本品不能代替药物”）被误判为风险。
-    text = " ".join(
-        value for value in (candidate.source_title, candidate.source_url, candidate.shop_name) if value
-    ).casefold()
-    detected = [tag for tag, terms in _RISK_TERMS if any(term in text for term in terms)]
+    # 按字段逐个判断：只有同一字段同时出现“风险词 + 容器/包装语境”才豁免，
+    # 避免店铺名含“包装”而标题是“婴儿奶粉”时被误豁免。
+    detected: list[str] = []
+    for field in (candidate.source_title, candidate.source_url, candidate.shop_name):
+        if not field:
+            continue
+        for tag in _risk_tags_in_text(field):
+            if tag not in detected:
+                detected.append(tag)
     return _unique((*candidate.risk_tags, *detected))
+
+
+def _risk_tags_in_text(text: str) -> tuple[str, ...]:
+    """Return risk tags detected in a single field, applying packaging exemptions.
+
+    - 等级限定词（食品级/医用级…）只描述材料等级，先移除再匹配。
+    - food/medical/infant 若与容器/包装语境词同现，说明商品是包装/容器
+      （如“食品包装袋”“药品包装盒”“儿童置物架”），不是风险品本身，豁免。
+    - dangerous_goods / ip 不豁免。
+    """
+    scanned = text.casefold()
+    for token in (*_GRADE_QUALIFIERS, *_STATE_SUFFIXES):
+        scanned = scanned.replace(token, "")
+    has_packaging_context = any(term in scanned for term in _PACKAGING_CONTEXT)
+    detected: list[str] = []
+    for tag, terms in _RISK_TERMS:
+        if not any(term in scanned for term in terms):
+            continue
+        if tag in _CONSUMER_RISK_TAGS and has_packaging_context:
+            continue
+        detected.append(tag)
+    return tuple(detected)
 
 
 def _with_risks(candidate: DailySelectionCandidate, risks: Sequence[str]) -> DailySelectionCandidate:

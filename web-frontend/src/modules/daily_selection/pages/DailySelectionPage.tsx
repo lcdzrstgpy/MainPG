@@ -145,9 +145,10 @@ function formatMoney(value: number | string | null): string {
 }
 
 function formatListedAt(value: string | null): string {
-  if (!value) return "上架时间未知";
+  // OneBound 1688 接口不返回上架时间，空值不再显示“未知”误导，统一显示占位符。
+  if (!value) return "—";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "上架时间未知";
+  if (Number.isNaN(date.getTime())) return "—";
   return date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
 }
 
@@ -501,7 +502,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       category: selectedDirection.name,
       target_count: numberOrUndefined(targetCount) ?? selectedDirection.target,
       max_api_calls: 200,
-      detail_count: 10,
+      detail_count: 50,
       exclude_risks: excludeRisks,
       site,
       max_parallel_collect: maxParallelCollect,
@@ -878,7 +879,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             自动排除高风险候选
           </label>
           <div className="collection-actions">
-            <span>{platform === "1688" ? "1688 每批最多调用 50 次 API，并拉取 10 条详情补充。" : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
+            <span>{platform === "1688" ? "1688 每批最多调用 200 次 API，并在预算内尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。" : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
             <div className="collection-submit-area">
               <button className="collect-button" type="submit" disabled={busy}>{collecting ? "正在采集…" : "开始采集"}</button>
             </div>

@@ -17,15 +17,23 @@ AI_PROVIDER = "aicoming"
 AI_BASE_URL = "https://api.aicoming.top/v1"
 AI_API_KEY = "sk-980fea67bd0f1ffe46802653d114be5463e27f2e358267e3"  # 硬编码兜底
 
-TEXT_MODEL = "gpt-5.4-mini"
-TEXT_MODEL_FALLBACK_ORDER = ("gpt-5.4-mini", "gpt-5.4", "deepseek-v4-pro")
+TEXT_MODEL = "gpt-5.6-terra"
+# 文本统一走低价档模型，且优先选择支持提示词缓存（⚡缓存）的模型以降低重复前缀成本；
+# 禁止降级到高价模型（如 gpt-5.4、deepseek-v4-pro）。
+TEXT_MODEL_FALLBACK_ORDER = ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "gemini-3.1-flash-lite-antigravity")
 
-IMAGE_MODEL = "gpt-image-2"
+IMAGE_MODEL = "gpt-image-2-1k"
 REFERENCE_IMAGE_MODEL = "gpt-image-2-1k"
+# 图片模型池：同中转多模型之间按请求轮巡（balanced/round_robin），单模型挂掉自动切换。
+IMAGE_MODEL_POOL = ("gpt-image-2-1k", "gpt-image-2-2k")
 IMAGE_SIZE = "1024x1024"
 IMAGE_QUALITY = "medium"
 
 DEFAULT_AI_TIMEOUT_SECONDS = 60.0
+# 差异化超时：文本生成快，缩短等待让失败快速落回降级链；图片编辑耗时长，保留充足时间。
+# 避免慢模型/挂起请求把整批任务拖成 4×60s。
+TEXT_AI_TIMEOUT_SECONDS = 25.0
+IMAGE_AI_TIMEOUT_SECONDS = 90.0
 
 # 应用组合根（create_app 中注入），指向 BasicSettings 使用的 SQLite 数据库。
 _system_config_db_path: str | None = None
@@ -57,10 +65,16 @@ def _try_system_runtime_config() -> Any | None:
 
 
 def resolve_ai_provider() -> dict[str, Any]:
-    """返回 AI 中转提供方配置（系统配置 > 环境变量 > 硬编码默认值）。"""
+    """返回 AI 中转提供方配置。
+
+    模型名一律写死（控制成本，防止被系统配置/环境变量切到贵模型）：
+    text_model / image_model / reference_image_model / 降级链 / 图片模型池
+    均取本模块常量。仅 base_url / api_key 允许被系统配置 > 环境变量覆盖
+    （换中转站或换 key 需要）。image_size / image_quality 保留环境变量覆盖。
+    """
     sys_cfg = _try_system_runtime_config()
 
-    # 文本 AI
+    # 文本 AI（仅 base_url/api_key 可覆盖，模型写死）
     text_base_url = _first_truthy(
         (sys_cfg and sys_cfg.text_ai.base_url),
         os.environ.get("WH_AI_BASE_URL"),
@@ -71,32 +85,18 @@ def resolve_ai_provider() -> dict[str, Any]:
         os.environ.get("WH_AI_API_KEY"),
         AI_API_KEY,
     ).strip()
-    text_model = _first_truthy(
-        (sys_cfg and sys_cfg.text_ai.model),
-        os.environ.get("WH_AI_TEXT_MODEL"),
-        TEXT_MODEL,
-    ).strip()
+    text_model = TEXT_MODEL
 
-    # 图片 AI
+    # 图片 AI（仅 api_key 可覆盖，模型写死）
     image_api_key = _first_truthy(
         (sys_cfg and sys_cfg.image_ai.api_key),
         os.environ.get("WH_AI_API_KEY"),
         AI_API_KEY,
     ).strip()
-    image_model = _first_truthy(
-        (sys_cfg and sys_cfg.image_ai.model),
-        os.environ.get("WH_AI_IMAGE_MODEL"),
-        IMAGE_MODEL,
-    ).strip()
-    reference_image_model = _first_truthy(
-        (sys_cfg and sys_cfg.image_ai.reference_model),
-        os.environ.get("WH_AI_REFERENCE_IMAGE_MODEL"),
-        REFERENCE_IMAGE_MODEL,
-    ).strip()
+    image_model = IMAGE_MODEL
+    reference_image_model = REFERENCE_IMAGE_MODEL
 
-    fallback = [
-        m.strip() for m in os.environ.get("WH_AI_TEXT_MODEL_FALLBACK", ",".join(TEXT_MODEL_FALLBACK_ORDER)).split(",") if m.strip()
-    ]
+    fallback = list(TEXT_MODEL_FALLBACK_ORDER)
 
     # 读取 COS 系统配置公开字段（bucket/region），密钥由 _media_config_provider 处理
     sys_cos: dict[str, str] = _try_system_cos_public()
@@ -109,9 +109,12 @@ def resolve_ai_provider() -> dict[str, Any]:
         "text_model_fallback_order": fallback,
         "image_model": image_model,
         "reference_image_model": reference_image_model,
+        "image_models": list(IMAGE_MODEL_POOL),
         "image_size": os.environ.get("WH_AI_IMAGE_SIZE", IMAGE_SIZE).strip(),
         "image_quality": os.environ.get("WH_AI_IMAGE_QUALITY", IMAGE_QUALITY).strip(),
         "timeout_seconds": DEFAULT_AI_TIMEOUT_SECONDS,
+        "text_timeout_seconds": TEXT_AI_TIMEOUT_SECONDS,
+        "image_timeout_seconds": IMAGE_AI_TIMEOUT_SECONDS,
         # 系统配置附加信息（供 _media_config_provider 使用）
         "_sys_image_ai": (
             {

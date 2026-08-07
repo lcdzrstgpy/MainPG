@@ -66,7 +66,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
       includeProductVideo: false,
       skipDuplicates: false,
       ipCheck: true,
-      maxParallelDrafts: 5,
+      maxParallelDrafts: 8,
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);

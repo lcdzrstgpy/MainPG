@@ -151,12 +151,27 @@ def create_result_workbook(rows: list[dict[str, Any]], destination: Path) -> Non
 
 
 def _dxm_export_rows(row: dict[str, Any]) -> list[list[Any]]:
-    """店小秘模板按 SKU 逐行输出：每个来源变种一行，无变种时输出单行。"""
+    """店小秘模板按 SKU 逐行输出：每个来源变种一行，无变种时输出单行。
+
+    店小秘以「变种属性名称+值组合」识别 SKU：来源 1688 数据里同一规格组合可能对应多个
+    SKU 货号（价格/库存不同），逐行全量导出会被判定为重复行导致整行拒绝
+    （对齐交接文档 §8.4“每个导出规格组合唯一”）。因此按导出的属性组合去重，仅保留首行。
+    """
     variant_records = row.get("source_variant_records") or []
     records = [item for item in variant_records if isinstance(item, dict)]
     if not records:
         return [_dxm_single_export_row(row, None)]
-    return [_dxm_single_export_row(row, record) for record in records]
+    exported: list[list[Any]] = []
+    seen: set[tuple[Any, Any, Any, Any]] = set()
+    for record in records:
+        values = _dxm_single_export_row(row, record)
+        # 变种属性名一/值一 + 属性名二/值二（export 行第 4~7 列）
+        variant_key = (values[4], values[5], values[6], values[7])
+        if variant_key in seen:
+            continue
+        seen.add(variant_key)
+        exported.append(values)
+    return exported if exported else [_dxm_single_export_row(row, None)]
 
 
 def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) -> list[Any]:

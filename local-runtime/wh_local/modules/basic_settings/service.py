@@ -14,7 +14,7 @@ from .schemas import SystemConfigUpdate
 
 
 CONFIG_KEY = "system_config"
-PRIMARY_AI_BASE_URL = "https://station-88.aicoming.top"
+PRIMARY_AI_BASE_URL = "https://api.aicoming.top/v1"
 
 # 这些字段不进入普通配置 JSON，避免 GET 接口把密钥明文返回给前端。
 SECRET_FIELDS: tuple[tuple[str, str], ...] = (
@@ -57,11 +57,12 @@ def utc_now() -> str:
 
 def default_system_config() -> dict[str, Any]:
     # 默认值来自旧工作台系统配置页和开发文档里的本地演示配置。
+    # 文本/图片统一走低价档模型，控制 token 成本（见 provider_config 注释）。
     return {
-        "ai": {"base_url": PRIMARY_AI_BASE_URL, "model": "gpt-5.4-mini"},
+        "ai": {"base_url": PRIMARY_AI_BASE_URL, "model": "gpt-5.6-terra"},
         "image": {
             "base_url": PRIMARY_AI_BASE_URL,
-            "model": "gpt-image-2",
+            "model": "gpt-image-2-1k",
             "reference_model": "gpt-image-2-1k",
         },
         "backup_image": {"base_url": "", "model": "", "reference_model": ""},

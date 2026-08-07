@@ -112,6 +112,8 @@ def enrich_candidate_with_detail(
             "package_info_text": package_info,
             "weight_text": weight,
             "freight_cny": freight,
+            "shop_name": shop_name,
+            "location": location,
         },
     )
     return DailySelectionCandidate(
@@ -394,15 +396,17 @@ def _string_spec_attributes(value: Any) -> dict[str, str]:
     if not isinstance(value, str):
         return {}
     result: dict[str, str] = {}
-    for segment in value.split(";"):
+    for segment in re.split(r"[;；]", value):
         segment = segment.strip()
         if not segment:
             continue
         parts = [part.strip() for part in segment.split(":") if part.strip()]
+        # ``pid:vid:name:value`` 前缀；属性值本身可能含冒号（如"颜色:按需定制"）。
+        # 去掉 pid:vid 后 name 取首段，value 拼接剩余段，避免属性名错位。
         if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
             parts = parts[2:]
         if len(parts) >= 2:
-            result[parts[0]] = parts[1]
+            result[parts[0]] = ":".join(parts[1:])
         elif len(parts) == 1:
             # No attribute name exposed; keep the value under a generic key.
             result.setdefault("规格", parts[0])
