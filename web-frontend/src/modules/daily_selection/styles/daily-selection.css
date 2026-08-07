@@ -70,6 +70,8 @@
 .direction-panel-actions > button.toggle-edit-mode-button.is-active { border-color: #168fc7; color: #fff; background: #168fc7; }
 .direction-panel-actions > button.toggle-delete-mode-button { border: 1px solid #ebd1d4; color: #a95b62; background: #fff7f8; box-shadow: none; }
 .direction-panel-actions > button.toggle-delete-mode-button.is-active { border-color: #d9959b; color: #fff; background: #d75c67; }
+.direction-panel-actions > button.add-preset-button { border: 1px solid #e8dcb0; color: #8a7a2a; background: #fffbe6; box-shadow: none; }
+.direction-panel-actions > button.add-preset-button:hover { border-color: #d8cc98; background: #fff8d8; }
 .daily-collection-workspace { min-height: 0; display: grid; gap: 18px; }
 .daily-collection-surface { display: grid; overflow: hidden; border: 1px solid #d8e5ee; border-radius: 16px; background: #f4f9fc; box-shadow: 0 12px 30px rgba(23, 67, 99, .08); }
 .daily-drawer-header { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 18px; border-bottom: 1px solid #1b91bd; color: #fff; background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%); }

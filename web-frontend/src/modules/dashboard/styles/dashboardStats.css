@@ -37,7 +37,9 @@
   height: 38px;
   border-radius: 11px;
   background: linear-gradient(145deg, #e3f5ff, #e6fbf6);
-  font-size: 1.15rem;
+  color: #0d7fba;
+  font-size: 1.25rem;
+  line-height: 1;
 }
 
 .stats-label {
