@@ -201,7 +201,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
     <div className="verify-page">
       <header className="verify-commandbar">
         <div className="verify-command-title">
-          <span className="verify-eyebrow">PRODUCT PROCESSING · 产品处理</span>
+          <span className="verify-eyebrow">PRODUCT PROCESSING</span>
           <h1>产品处理草稿池</h1>
           <p>采集先入池，默认只处理勾选草稿；暂停、确认与继续均以本地持久状态为准。</p>
         </div>

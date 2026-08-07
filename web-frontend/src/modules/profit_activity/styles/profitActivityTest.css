@@ -1,0 +1,186 @@
+.profit-activity-hero {
+  min-height: 95px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: clamp(16px, 2vw, 24px);
+  overflow: hidden;
+  border: 1px solid #1b91bd;
+  border-radius: 18px;
+  color: #fff;
+  background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%);
+  box-shadow: 0 14px 34px rgba(12, 91, 139, .18);
+}
+
+.profit-activity-hero .eyebrow {
+  margin: 0;
+  color: #9de7f3;
+}
+
+.profit-activity-hero h1 {
+  margin: 3px 0 5px;
+  color: #fff;
+  font-size: clamp(1.7rem, 2.7vw, 2.4rem);
+  letter-spacing: -.045em;
+}
+
+.profit-activity-hero p:not(.eyebrow) {
+  margin: 0;
+  color: #d9f1fb;
+  line-height: 1.55;
+}
+
+.profit-hero-main {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.profit-hero-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.profit-hero-steps .profit-step-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, .28);
+  border-radius: 10px;
+  color: #fff;
+  background: rgba(255, 255, 255, .12);
+  backdrop-filter: blur(4px);
+}
+
+.profit-hero-steps .profit-step-card b {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: #0a5a8a;
+  background: rgba(255, 255, 255, .86);
+  font-size: .8rem;
+}
+
+.profit-hero-steps .profit-step-card div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.profit-hero-steps .profit-step-card strong {
+  color: #fff;
+  font-size: .9rem;
+}
+
+.profit-hero-steps .profit-step-card span {
+  color: rgba(229, 245, 255, .9);
+  font-size: .75rem;
+}
+
+.profit-hero-info {
+  padding: 8px 12px;
+  border: 1px solid rgba(159, 223, 255, .45);
+  border-radius: 8px;
+  color: rgba(230, 247, 255, .96);
+  background: rgba(8, 60, 100, .28);
+  font-size: .8rem;
+  line-height: 1.5;
+}
+
+.profit-test-page .profit-settings-toggle {
+  flex: 0 0 auto;
+  border-color: rgba(255, 255, 255, .4);
+  color: #fff;
+  background: rgba(255, 255, 255, .14);
+  box-shadow: 0 8px 18px rgba(7, 48, 83, .16);
+}
+
+.profit-test-page .profit-settings-toggle:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, .7);
+  background: rgba(255, 255, 255, .23);
+  box-shadow: 0 10px 22px rgba(7, 48, 83, .22);
+}
+
+.profit-settings-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-bottom: -18px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px);
+  transition: grid-template-rows .28s ease, margin-bottom .28s ease, opacity .2s ease, transform .28s ease, visibility 0s linear .28s;
+}
+
+.profit-settings-collapse.is-open {
+  grid-template-rows: 1fr;
+  margin-bottom: 0;
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+
+.profit-settings-collapse-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.profit-settings-panel {
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+  border: 1px solid #d8e7f2;
+  border-radius: 18px;
+  background: #fbfdff;
+  box-shadow: 0 12px 30px rgba(38, 93, 138, .06);
+}
+
+.profit-settings-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profit-settings-heading h2,
+.profit-workflow-title h2 {
+  margin: 0;
+  color: #172b44;
+  font-size: 1.08rem;
+}
+
+.profit-settings-heading p {
+  margin: 4px 0 0;
+  color: #71879d;
+  font-size: .82rem;
+  line-height: 1.5;
+}
+
+.profit-settings-panel .profit-save-root,
+.profit-settings-panel .profit-formula-note {
+  margin-top: 0;
+}
+
+@media (max-width: 900px) {
+  .profit-hero-steps {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .profit-activity-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .profit-test-page .profit-settings-toggle {
+    width: 100%;
+  }
+}
