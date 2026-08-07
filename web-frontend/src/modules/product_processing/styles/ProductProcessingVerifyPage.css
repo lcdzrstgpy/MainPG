@@ -793,6 +793,99 @@
   color: #db5960;
 }
 
+/* ── 顶部处理进度条（复刻每日选品采集进度 topbar，位置一致） ── */
+.daily-topbar-status {
+  position: fixed;
+  z-index: 100;
+  top: 0;
+  left: 50%;
+  width: min(760px, calc(100vw - 32px));
+  min-width: 220px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 14px 11px;
+  border: 1px solid;
+  border-top: 0;
+  border-radius: 0 0 14px 14px;
+  font-size: 0.8rem;
+  overflow: hidden;
+  box-sizing: border-box;
+  box-shadow: 0 12px 30px rgba(29, 79, 112, 0.15);
+  animation: daily-topbar-status-enter 0.42s cubic-bezier(0.2, 0.85, 0.3, 1.12) both;
+}
+.daily-topbar-status strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.daily-topbar-status > b {
+  min-width: 34px;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.daily-topbar-status-icon {
+  flex: 0 0 25px;
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 850;
+}
+.daily-topbar-status.is-progress {
+  color: #147a9b;
+  border-color: #b9deea;
+  background: #f3fbfe;
+}
+.daily-topbar-status.is-progress .daily-topbar-status-icon {
+  background: #0baec0;
+  animation: daily-topbar-spin 1.1s linear infinite;
+}
+.topbar-collection-progress {
+  min-width: 90px;
+  height: 7px;
+  flex: 1;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dcecf3;
+}
+.topbar-collection-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0786ec, #0dbdc0);
+  box-shadow: 0 0 7px rgba(9, 174, 192, 0.36);
+  transition: width 0.36s ease;
+}
+.daily-topbar-status.is-progress > strong {
+  white-space: nowrap;
+}
+@keyframes daily-topbar-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes daily-topbar-status-enter {
+  0% { opacity: 0; transform: translate(-50%, -110%) scale(0.98); }
+  72% { opacity: 1; transform: translate(-50%, 3px) scale(1); }
+  100% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
+/* 处理结果区：已用时统计 */
+.verify-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.verify-elapsed::before {
+  content: "⏱";
+  font-size: 0.85rem;
+}
+
 /* ── 处理进度（环形，参考产品采集进度条） ── */
 .verify-progress-area {
   display: flex;
@@ -950,6 +1043,18 @@
 
 .verify-history-counts {
   color: #72869a;
+}
+
+.verify-history-elapsed {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eaf8ff;
+  border: 1px solid #bce6f6;
+  color: #0a6ba8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .verify-history-date {

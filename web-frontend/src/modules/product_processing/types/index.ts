@@ -193,6 +193,7 @@ export interface TaskProjection {
   skipped_count: number;
   created_at: string;
   updated_at: string;
+  elapsed_seconds?: number;
   metadata: Record<string, any>;
 }
 
@@ -202,6 +203,7 @@ export interface TaskOutputsResponse {
   success_count: number;
   failed_count: number;
   processed_count: number;
+  elapsed_seconds?: number;
   not_processed_count: number;
   attention_required_count: number;
   auto_recovery_pending_count: number;
@@ -237,6 +239,7 @@ export type TaskHistoryItem = {
   status: TaskStatus;
   created_at: string;
   updated_at: string;
+  elapsed_seconds?: number;
   date: string;
   total_count: number;
   success_count: number;

@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from .database import ProductProcessingDatabase
 from .orm import (
+    AiStageCacheRow,
     DailySelectionHandoffReceiptRow,
     DailySelectionIntakeRow,
     EnginePromptRow,
@@ -429,6 +430,54 @@ class ProductProcessingRepository:
         with self.database.sessions.begin() as session:
             for row in session.scalars(select(EnginePromptRow)).all():
                 session.delete(row)
+
+    def get_ai_stage_cache(
+        self, cache_key: str, *, workspace_id: str = "local"
+    ) -> dict[str, Any] | None:
+        """读取阶段级 AI 调用缓存（对齐原项目 ai_stage_cache）。命中即计一次 hit_count。"""
+        if not cache_key:
+            return None
+        with self.database.sessions.begin() as session:
+            row = session.get(AiStageCacheRow, (workspace_id, cache_key))
+            if row is None:
+                return None
+            row.hit_count = (row.hit_count or 0) + 1
+            row.last_used_at = utc_now()
+            return {
+                "output": loads(row.output_json, None),
+                "stage": row.stage,
+                "created_at": row.created_at,
+                "hit_count": row.hit_count,
+                "model_signature": row.model_signature,
+            }
+
+    def save_ai_stage_cache(
+        self,
+        cache_key: str,
+        *,
+        workspace_id: str = "local",
+        stage: str = "",
+        model_signature: str = "",
+        prompt_hash: str = "",
+        input_hash: str = "",
+        output_data: Any,
+    ) -> None:
+        """写入阶段级 AI 调用缓存；同 key 已存在时保留首次结果（幂等）。"""
+        if not cache_key:
+            return
+        with self.database.sessions.begin() as session:
+            row = session.get(AiStageCacheRow, (workspace_id, cache_key))
+            if row is None:
+                row = AiStageCacheRow(
+                    workspace_id=workspace_id,
+                    cache_key=cache_key,
+                    stage=stage,
+                    model_signature=model_signature,
+                    prompt_hash=prompt_hash,
+                    input_hash=input_hash,
+                    output_json=dumps(output_data),
+                )
+                session.add(row)
 
     def preserve_source_images(
         self,

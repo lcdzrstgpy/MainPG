@@ -54,6 +54,16 @@ function taskStatusLabel(status: string): string {
   })[status] || status;
 }
 
+function formatDuration(seconds?: number): string {
+  const total = Math.max(0, Math.floor(seconds || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}小时${minutes}分`;
+  if (minutes > 0) return `${minutes}分${secs}秒`;
+  return `${secs}秒`;
+}
+
 export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: Props) {
   const ctx = api();
   const [options, setOptions] = useState<ProductProcessingOptions>(
@@ -210,11 +220,21 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
 
   return (
     <div className="verify-page">
+      {batchProcessing && (
+        <div className="daily-topbar-status is-progress" role="status" aria-label="处理进度">
+          <span className="daily-topbar-status-icon" aria-hidden="true">↻</span>
+          <strong>正在处理</strong>
+          <div className="topbar-collection-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+            <span style={{ width: `${progress}%` }} />
+          </div>
+          <b>{progress}%</b>
+        </div>
+      )}
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <span className="verify-eyebrow">PRODUCT PROCESSING · 处理任务</span>
           <h1>处理设置与进度</h1>
-          <p>配置处理参数后开始，结果实时轮询；右侧查看历史任务记录。</p>
+          <p>配置处理参数后开始，结果实时轮询；已对齐 five-stage 流水线（文本合并一次调用 + 尺寸确定性提取 + 详情图本地合成 + AI 阶段缓存），典型单商品 AI 调用 2~3 次；右侧查看历史任务记录。</p>
         </div>
       </header>
 
@@ -320,6 +340,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
                       <span>
                         已处理 <b>{batchProcessed}</b> / {batchTotal} 条 · 成功 {batch.success_count} · 失败 {batch.failed_count}
                       </span>
+                      <span className="verify-elapsed">已用时 {formatDuration(batch.elapsed_seconds ?? batch.task.elapsed_seconds)}</span>
                     </div>
                   </div>
                 )}
@@ -404,6 +425,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
                 <span className="verify-history-title">{task.title}</span>
                 <span className="verify-badge">{taskStatusLabel(task.status)}</span>
                 <span className="verify-history-counts">{task.total_count}/{task.success_count}/{task.failed_count}</span>
+                {task.elapsed_seconds !== undefined && <span className="verify-history-elapsed">耗时 {formatDuration(task.elapsed_seconds)}</span>}
                 <span className="verify-history-date">{new Date(task.created_at).toLocaleString('zh-CN')}</span>
                 <button onClick={() => loadTask(task.task_id)}>查看</button>
               </li>

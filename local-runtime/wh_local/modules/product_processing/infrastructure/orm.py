@@ -158,3 +158,24 @@ class DailySelectionHandoffReceiptRow(Base):
     consumer_status: Mapped[str] = mapped_column(String(32), default="consumed")
     payload_sha256: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
+
+
+class AiStageCacheRow(Base):
+    """阶段级 AI 调用结果缓存（对齐原项目 ai_stage_cache）。
+
+    按 ``(workspace_id, cache_key)`` 唯一；cache_key = stage + prompt 哈希 + 输入哈希 +
+    站点/语言契约的稳定摘要。命中时原样复用输出，避免同款商品/同语言重复消费 AI 调用。
+    """
+
+    __tablename__ = "product_processing_ai_stage_cache"
+
+    workspace_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    stage: Mapped[str] = mapped_column(String(64), default="", index=True)
+    model_signature: Mapped[str] = mapped_column(String(255), default="")
+    prompt_hash: Mapped[str] = mapped_column(String(64), default="")
+    input_hash: Mapped[str] = mapped_column(String(64), default="")
+    output_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
+    last_used_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
