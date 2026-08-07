@@ -239,6 +239,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [runs, setRuns] = useState<DailySelectionRunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<DailySelectionRun | null>(null);
   const [selectedCandidates, setSelectedCandidates] = useState<string[]>([]);
+  const [skuFilterMin, setSkuFilterMin] = useState("");
+  const [skuFilterMax, setSkuFilterMax] = useState("");
+  const [appliedSkuFilter, setAppliedSkuFilter] = useState<{ min: number | null; max: number | null }>({ min: null, max: null });
   const [busy, setBusy] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const [collectionProgress, setCollectionProgress] = useState(0);
@@ -262,6 +265,16 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [editMode, setEditMode] = useState(false);
   const [deleteMode, setDeleteMode] = useState(false);
   const [pendingDeleteDirection, setPendingDeleteDirection] = useState<Direction | null>(null);
+
+  const filteredCandidates = useMemo(() => {
+    if (!activeRun) return [];
+    return activeRun.candidates.filter((candidate) => {
+      const skuCount = candidate.source_variant_records.length;
+      if (appliedSkuFilter.min !== null && skuCount < appliedSkuFilter.min) return false;
+      if (appliedSkuFilter.max !== null && skuCount > appliedSkuFilter.max) return false;
+      return true;
+    });
+  }, [activeRun, appliedSkuFilter]);
 
   useEffect(() => {
     void refreshRuns();
@@ -877,7 +890,41 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       <section className="daily-panel daily-results">
         <div className="daily-panel-title results-title">
           <div><span className="title-icon">◇</span><strong>候选商品</strong></div>
-          <div>
+          <div className="results-actions">
+            {activeRun && (
+              <div className="sku-filter">
+                <span className="sku-filter-label">SKU筛选</span>
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="最小"
+                  value={skuFilterMin}
+                  onChange={(event) => setSkuFilterMin(event.target.value)}
+                  disabled={!activeRun}
+                />
+                <span className="sku-filter-separator">-</span>
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="最大"
+                  value={skuFilterMax}
+                  onChange={(event) => setSkuFilterMax(event.target.value)}
+                  disabled={!activeRun}
+                />
+                <button
+                  type="button"
+                  className="sku-filter-button"
+                  disabled={!activeRun}
+                  onClick={() => {
+                    const min = skuFilterMin.trim() === "" ? null : Number(skuFilterMin);
+                    const max = skuFilterMax.trim() === "" ? null : Number(skuFilterMax);
+                    setAppliedSkuFilter({ min: Number.isFinite(min) ? min : null, max: Number.isFinite(max) ? max : null });
+                  }}
+                >
+                  筛选
+                </button>
+              </div>
+            )}
             {activeRun && <span>批次 {activeRun.run_id.slice(0, 8)} · {activeRun.candidate_count} 条</span>}
             <button type="button" className="history-drawer-trigger" onClick={() => setHistoryDrawerOpen(true)}><span aria-hidden="true">◷</span> 最近批次 <b>{runs.length}</b></button>
             <button type="button" className="select-all-button" disabled={busy || !activeRun || !activeRun.candidates.some((candidate) => candidate.status === "candidate")} onClick={selectAllCandidates}>选择全部</button>
@@ -886,9 +933,12 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         </div>
         {!activeRun && <div className="result-empty"><span>⌕</span><strong>等待采集结果</strong><p>选择采集方向并提交条件，候选商品将在这里展示。</p></div>}
         {activeRun && activeRun.candidates.length === 0 && <div className="result-empty"><span>○</span><strong>本批次没有候选</strong><p>可以调整关键词、价格范围或关闭风险排除后重试。</p></div>}
-        {activeRun && activeRun.candidates.length > 0 && (
+        {activeRun && activeRun.candidates.length > 0 && filteredCandidates.length === 0 && (
+          <div className="result-empty"><span>○</span><strong>没有符合 SKU 筛选条件的候选商品</strong><p>请调整最小/最大 SKU 数量后重新筛选。</p></div>
+        )}
+        {activeRun && filteredCandidates.length > 0 && (
           <div className="candidate-grid">
-            {activeRun.candidates.map((candidate) => {
+            {filteredCandidates.map((candidate) => {
               const selectable = candidate.status === "candidate";
               const checked = selectedCandidates.includes(candidate.candidate_id);
               const statusText = STATUS_LABELS[candidate.status] ?? candidate.status;
@@ -901,7 +951,21 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                     <input type="checkbox" checked={checked} disabled={!selectable} onChange={() => toggleCandidate(candidate.candidate_id)} />
                     <span>{!selectable ? statusText : checked ? "保留" : "已剔除"}</span>
                   </label>
-                  <div className="candidate-image">
+                  <div
+                    className={`candidate-image ${selectable ? "is-clickable" : ""}`}
+                    onClick={() => {
+                      if (selectable) toggleCandidate(candidate.candidate_id);
+                    }}
+                    role={selectable ? "button" : undefined}
+                    tabIndex={selectable ? 0 : undefined}
+                    aria-label={selectable ? (checked ? "点击剔除" : "点击保留") : undefined}
+                    onKeyDown={(event) => {
+                      if (selectable && (event.key === "Enter" || event.key === " ")) {
+                        event.preventDefault();
+                        toggleCandidate(candidate.candidate_id);
+                      }
+                    }}
+                  >
                     {candidate.main_image_url
                       ? <DailySelectionImage runId={activeRun.run_id} url={candidate.main_image_url} />
                       : <span>无有效图片</span>}

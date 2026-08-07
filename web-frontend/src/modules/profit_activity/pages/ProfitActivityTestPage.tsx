@@ -430,31 +430,23 @@ export function ProfitActivityTestPage() {
 
   return (
     <div className="profit-test-page">
-      <section className="profit-workflow-card">
-        <div className="profit-section-title">
-          <span className="profit-title-icon iconfont icon-moneycollect-fill" aria-hidden="true" />
-          <h1>利润活动</h1>
-          <button onClick={() => setSettingsOpen((value) => !value)}>{settingsOpen ? "⌃ 收起设置" : "⌄ 展开设置"}</button>
+      <section className="profit-activity-hero">
+        <div className="profit-hero-main">
+          <div>
+            <p className="eyebrow">PROFIT ACTIVITY</p>
+            <h1>利润活动</h1>
+            <p>核算单品利润、保存产品资料，并生成活动申报与剔除结果。</p>
+          </div>
+          <div className="profit-hero-steps">
+            <StepCard step="1" title="填单品" text="SKC、售价、成本、重量" />
+            <StepCard step="2" title="入产品库" text="保存后可查询" />
+            <StepCard step="3" title="导活动表" text="上传活动 Excel" />
+          </div>
+          <div className="profit-hero-info">管理员默认不加载员工资料库；需要查看时请从员工管理进入。当前验证页所有产品查询都来自数据库。</div>
         </div>
-        <div className="profit-step-row">
-          <StepCard step="1" title="填单品" text="SKC、售价、成本、重量" />
-          <StepCard step="2" title="入产品库" text="保存后可查询" />
-          <StepCard step="3" title="导活动表" text="上传活动 Excel" />
-        </div>
-        <div className="profit-info-bar">管理员默认不加载员工资料库；需要查看时请从员工管理进入。当前验证页所有产品查询都来自数据库。</div>
-        {settingsOpen && (
-          <>
-            <h2 className="profit-settings-subtitle">保存目录与默认参数</h2>
-            <label className="profit-save-root">本地保存目录<input value={String(settings?.save_root || defaultSaveRoot)} onChange={(event) => setSettings({ ...(settings || {}), save_root: event.target.value })} /></label>
-            <p className="profit-formula-note">当前编辑{siteLabels[site]}公式：重量kg × 每kg费用 + 固定费；美国、哥伦比亚和厄瓜多尔互不影响，单品预览、入档和活动申报过滤都会使用保存后的当前站点公式。</p>
-            <div className="profit-settings-grid">
-              {siteSettingFields[site].map((field) => (
-                <label key={field.key}>{field.label}<input type="number" value={siteSettings[field.key] || ""} onChange={(event) => setSiteSettings((current) => ({ ...current, [field.key]: event.target.value }))} /></label>
-              ))}
-              <button onClick={saveSiteSettings} disabled={!!busy}>保存设置</button>
-            </div>
-          </>
-        )}
+        <button className="profit-settings-toggle" type="button" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((value) => !value)}>
+          {settingsOpen ? "⌃ 收起设置" : "⌄ 展开设置"}
+        </button>
       </section>
 
       <section className="profit-test-toolbar">
