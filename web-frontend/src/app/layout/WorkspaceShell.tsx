@@ -47,20 +47,19 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
 
     const updateVisibility = () => {
       const documentHeight = document.documentElement.scrollHeight;
-      const windowDistanceToBottom = documentHeight - window.scrollY - window.innerHeight;
-      const windowNearBottom = documentHeight > window.innerHeight + 80
-        && window.scrollY > 240
-        && windowDistanceToBottom < 320;
+      const windowScrollableDistance = Math.max(documentHeight - window.innerHeight, 0);
+      const windowScrollProgress = windowScrollableDistance > 0
+        ? window.scrollY / windowScrollableDistance
+        : 0;
 
-      const contentDistanceToBottom = content
-        ? content.scrollHeight - content.scrollTop - content.clientHeight
-        : Number.POSITIVE_INFINITY;
-      const contentNearBottom = Boolean(content
-        && content.scrollHeight > content.clientHeight + 80
-        && content.scrollTop > 180
-        && contentDistanceToBottom < 260);
+      const contentScrollableDistance = content
+        ? Math.max(content.scrollHeight - content.clientHeight, 0)
+        : 0;
+      const contentScrollProgress = content && contentScrollableDistance > 0
+        ? content.scrollTop / contentScrollableDistance
+        : 0;
 
-      setShowScrollTop(windowNearBottom || contentNearBottom);
+      setShowScrollTop(windowScrollProgress >= 0.25 || contentScrollProgress >= 0.25);
     };
 
     window.addEventListener("scroll", updateVisibility, { passive: true });
@@ -165,7 +164,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
             </div>
           )}
           {activeModuleId === "dashboard" && <WorkspaceHomePage onOpenModule={openModule} />}
-          {activeModuleId === "daily_selection" && <DailySelectionPage view="collection" />}
+          {activeModuleId === "daily_selection" && <DailySelectionPage view="collection" topbarStatusVisible />}
           {activeModuleId === "profit_activity" && <ProfitActivityTestPage />}
           {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
           {activeModuleId === "basic_settings" && <BasicSettingsPage />}
@@ -173,7 +172,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
           {activeModuleId === "product_processing" && <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} />}
           {collectionTabs.map((tab) => (
             <div key={tab.key} hidden={activeTabKey !== tab.key}>
-              <DailySelectionPage view="collection" initialDirectionId={tab.directionId} />
+              <DailySelectionPage view="collection" initialDirectionId={tab.directionId} topbarStatusVisible={activeTabKey === tab.key} />
             </div>
           ))}
           {tabs.filter((tab) => tab.moduleId === "product_processing_tasks").map((tab) => (

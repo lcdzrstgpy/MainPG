@@ -73,6 +73,7 @@ export function TopNavigation({ sidebarPinned, topbarPinned, activeKey, tabs, on
           ☰
         </button>
         <div className="breadcrumb"><span>工作台</span><span>/</span><strong>{tabs.find((tab) => tab.key === activeKey)?.label}</strong></div>
+        <div id="workspace-topbar-status" className="topbar-status-slot" />
         <div className="topbar-actions">
           <details className="user-menu">
             <summary><span className="avatar">U</span><span>本地演示用户</span><span className="caret">⌄</span></summary>

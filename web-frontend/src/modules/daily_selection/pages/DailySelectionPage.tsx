@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   collectByCriteria,
@@ -193,9 +194,10 @@ type DailySelectionPageProps = {
   view?: "directions" | "collection";
   initialDirectionId?: string;
   onOpenCollection?: (directionId: string, directionName: string) => void;
+  topbarStatusVisible?: boolean;
 };
 
-export function DailySelectionPage({ view = "directions", initialDirectionId, onOpenCollection }: DailySelectionPageProps) {
+export function DailySelectionPage({ view = "directions", initialDirectionId, onOpenCollection, topbarStatusVisible = true }: DailySelectionPageProps) {
   // 视图支持内部轮转：主模块默认直接进采集视图，点「模板预设」切到预设页，
   // 在预设页点方向卡再回到采集视图，而不再新开独立面板。
   const [internalView, setInternalView] = useState<"directions" | "collection">(view);
@@ -244,6 +246,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [noticeLeaving, setNoticeLeaving] = useState(false);
+  const [topbarStatusTarget, setTopbarStatusTarget] = useState<HTMLElement | null>(null);
   const [presetDialogOpen, setPresetDialogOpen] = useState(false);
   const [presetName, setPresetName] = useState("");
   const [presetKeywords, setPresetKeywords] = useState("");
@@ -272,6 +276,25 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     }, error ? 3000 : 2000);
     return () => window.clearTimeout(timer);
   }, [notice, error]);
+
+  useEffect(() => {
+    setTopbarStatusTarget(document.getElementById("workspace-topbar-status"));
+  }, []);
+
+  useEffect(() => {
+    if (!notice) {
+      setNoticeLeaving(false);
+      return;
+    }
+
+    setNoticeLeaving(false);
+    const leaveTimer = window.setTimeout(() => setNoticeLeaving(true), 4000);
+    const clearTimer = window.setTimeout(() => setNotice(""), 4480);
+    return () => {
+      window.clearTimeout(leaveTimer);
+      window.clearTimeout(clearTimer);
+    };
+  }, [notice]);
 
   useEffect(() => {
     if (!collecting) return;
@@ -521,7 +544,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       const run = await collectByCriteria(criteria);
       setCollectionProgress(100);
       setActiveRun(run);
-      setSelectedCandidates(defaultSelectedIds(run));
+      setSelectedCandidates([]);
       const intake = run.metadata.api_draft_intake;
       const intakeNotice = intake?.status === "partial"
         ? `；其中 ${intake.errors.length} 个候选未进入 API 草稿视图`
@@ -544,7 +567,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     try {
       const run = await getSelectionRun(runId);
       setActiveRun(run);
-      setSelectedCandidates(defaultSelectedIds(run));
+      setSelectedCandidates([]);
       document.querySelector(".daily-results")?.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "批次读取失败");
@@ -553,11 +576,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     }
   }
 
-  /** 对齐参考版：批次内所有处于 candidate 状态的候选默认保留（勾选）。 */
-  function defaultSelectedIds(run: DailySelectionRun): string[] {
-    return run.candidates
+  function selectAllCandidates() {
+    if (!activeRun) return;
+    setSelectedCandidates(activeRun.candidates
       .filter((candidate) => candidate.status === "candidate")
-      .map((candidate) => candidate.candidate_id);
+      .map((candidate) => candidate.candidate_id));
   }
 
   function toggleCandidate(candidateId: string) {
@@ -600,6 +623,25 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
   return (
     <div className={`daily-selection-page ${collectionView ? "is-collection-view" : ""}`}>
+      {topbarStatusVisible && topbarStatusTarget && (error || notice || collecting) && createPortal(
+        collecting ? (
+          <div className="daily-topbar-status is-progress" role="status">
+            <span className="daily-topbar-status-icon" aria-hidden="true">↻</span>
+            <strong>正在采集</strong>
+            <div className="topbar-collection-progress" role="progressbar" aria-label="采集进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={collectionProgress}>
+              <span style={{ width: `${collectionProgress}%` }} />
+            </div>
+            <b>{collectionProgress}%</b>
+          </div>
+        ) : (
+          <div className={`daily-topbar-status ${error ? "is-error" : "is-success"} ${noticeLeaving && !error ? "is-leaving" : ""}`} role="status">
+            <span className="daily-topbar-status-icon" aria-hidden="true">{error ? "!" : "✓"}</span>
+            <strong>{error || notice}</strong>
+            <button type="button" onClick={() => { setError(""); setNotice(""); }} aria-label="关闭提示">×</button>
+          </div>
+        ),
+        topbarStatusTarget,
+      )}
       {!collectionView && (
         <>
       <section className="daily-page-heading">
@@ -614,12 +656,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           </button>
         )}
       </section>
-
-      {(error || notice) && (
-        <div className={`daily-message ${error ? "is-error" : "is-success"}`} role="status">
-          <span>{error ? "!" : "✓"}</span>{error || notice}
-        </div>
-      )}
 
       <section className="daily-panel direction-panel">
         <div className="daily-panel-title">
@@ -760,11 +796,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               <span className="collection-workspace-context">来源：每日选品</span>
             </header>
             <div className="daily-drawer-body">
-              {(error || notice) && (
-                <div className={`daily-message ${error ? "is-error" : "is-success"}`} role="status">
-                  <span>{error ? "!" : "✓"}</span>{error || notice}
-                </div>
-              )}
               <div className="daily-work-grid">
         <form className="daily-panel collection-panel" onSubmit={submitCollection}>
           <div className="daily-panel-title">
@@ -836,15 +867,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           <div className="collection-actions">
             <span>{platform === "1688" ? "1688 每批最多调用 50 次 API，并拉取 10 条详情补充。" : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
             <div className="collection-submit-area">
-              {collecting && (
-                <div className="collection-progress" role="progressbar" aria-label="采集进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={collectionProgress}>
-                  <svg viewBox="0 0 46 46" aria-hidden="true">
-                    <circle className="collection-progress-track" cx="23" cy="23" r="18" pathLength="100" />
-                    <circle className="collection-progress-value" cx="23" cy="23" r="18" pathLength="100" strokeDashoffset={100 - collectionProgress} />
-                  </svg>
-                  <strong>{collectionProgress}%</strong>
-                </div>
-              )}
               <button className="collect-button" type="submit" disabled={busy}>{collecting ? "正在采集…" : "开始采集"}</button>
             </div>
           </div>
@@ -858,6 +880,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           <div>
             {activeRun && <span>批次 {activeRun.run_id.slice(0, 8)} · {activeRun.candidate_count} 条</span>}
             <button type="button" className="history-drawer-trigger" onClick={() => setHistoryDrawerOpen(true)}><span aria-hidden="true">◷</span> 最近批次 <b>{runs.length}</b></button>
+            <button type="button" className="select-all-button" disabled={busy || !activeRun || !activeRun.candidates.some((candidate) => candidate.status === "candidate")} onClick={selectAllCandidates}>选择全部</button>
             <button type="button" className="confirm-button" disabled={busy || selectedCandidates.length === 0} onClick={() => void confirmSelected()}>确认入池（{selectedCandidates.length}）</button>
           </div>
         </div>
