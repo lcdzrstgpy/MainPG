@@ -1,0 +1,29 @@
+.price-verification-hero {
+  min-height: 142px;
+  align-items: center;
+  padding: clamp(24px, 3vw, 34px);
+  border-color: #1b91bd;
+  border-radius: 18px;
+  color: #fff;
+  background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%);
+  box-shadow: 0 14px 34px rgba(12, 91, 139, .18);
+}
+
+.price-verification-hero .eyebrow {
+  color: #9de7f3;
+}
+
+.price-verification-hero h1 {
+  color: #fff;
+  font-size: clamp(1.9rem, 3vw, 2.65rem);
+}
+
+.price-verification-hero p:not(.eyebrow) {
+  color: #d9f1fb;
+}
+
+.price-verification-hero-status {
+  border-color: rgba(255, 255, 255, .32);
+  color: #e6f8ff;
+  background: rgba(255, 255, 255, .14);
+}

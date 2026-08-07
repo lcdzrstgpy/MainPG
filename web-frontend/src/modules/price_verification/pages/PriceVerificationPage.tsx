@@ -4,11 +4,12 @@ import { priceVerificationApi } from "../api/priceVerificationApi";
 import { BatchReviewConfirmPanel } from "../components/BatchReviewConfirmPanel";
 import { BatchReviewPanel } from "../components/BatchReviewPanel";
 import { LinkedSourcePanel } from "../components/LinkedSourcePanel";
-import { PluginSessionPanel } from "../components/PluginSessionPanel";
+import { PrescreenPanel } from "../components/PrescreenPanel";
 import { SourcingPanel } from "../components/SourcingPanel";
 import { WorkflowSteps } from "../components/WorkflowSteps";
-import type { BatchSelection, PriceVerificationStage, QuoteBatchReviewItem, QuoteCaptureBatch, SkcSourceLink, SourceCandidate, SourcePreview } from "../types";
+import type { BatchSelection, PriceVerificationStage, PrescreenSettings, QuoteBatchReviewItem, QuoteCaptureBatch, SkcSourceLink, SourceCandidate, SourcePreview } from "../types";
 import "../styles/priceVerification.css";
+import "../styles/priceVerificationHero.css";
 import "../styles/priceVerificationApi.css";
 
 function errorMessage(error: unknown) {
@@ -22,6 +23,7 @@ export function PriceVerificationPage() {
   const [captureBatches, setCaptureBatches] = useState<QuoteCaptureBatch[]>([]);
   const [batchItems, setBatchItems] = useState<QuoteBatchReviewItem[]>([]);
   const [batchSelections, setBatchSelections] = useState<BatchSelection[]>([]);
+  const [prescreen, setPrescreen] = useState<PrescreenSettings | null>(null);
   const [sourceSkcIds, setSourceSkcIds] = useState<string[]>([]);
   const [sourcePreview, setSourcePreview] = useState<SourcePreview | null>(null);
   const [sourceLinks, setSourceLinks] = useState<SkcSourceLink[]>([]);
@@ -38,7 +40,7 @@ export function PriceVerificationPage() {
       setBatchSelections(selections);
       if (sourceSkcBatchRef.current !== batchId) {
         sourceSkcBatchRef.current = batchId;
-        setSourceSkcIds(selections.filter((item) => item.status === "retained").map((item) => item.skc_id));
+        setSourceSkcIds([]);
       }
     } catch {
       setBatchSelections([]);
@@ -60,7 +62,10 @@ export function PriceVerificationPage() {
       const nextBatches = await priceVerificationApi.listCaptureBatches();
       setCaptureBatches(nextBatches);
       const currentBatch = nextBatches.find((batch) => batch.is_current);
-      if (currentBatch?.quote_count) {
+      try {
+        setPrescreen(await priceVerificationApi.getPrescreen());
+      } catch { setPrescreen(null); }
+      if (currentBatch) {
         try {
           setBatchItems(await priceVerificationApi.listCaptureBatchItems(currentBatch.batch_id));
         } catch { setBatchItems([]); }
@@ -72,9 +77,11 @@ export function PriceVerificationPage() {
         setSourceLinks([]);
       }
       if (!quiet) {
-        const batchMessage = currentBatch?.quote_count
-          ? `当前批次已入库 ${currentBatch.quote_count} 条报价；勾选保留的商品确认后会进入待审列表。`
-          : currentBatch ? "当前批次暂无报价，可在 Temu 页面用插件采集后回此页刷新。" : "请先新建核价批次。";
+        const batchMessage = currentBatch
+          ? currentBatch.quote_count
+            ? `当前批次已入库 ${currentBatch.quote_count} 条报价，初筛后 ${batchItems.length} 条进入确认；勾选保留的商品确认后会进入待审列表。`
+            : "当前批次暂无报价，可在 Temu 页面用插件采集本页数据后回此页刷新。"
+          : "等待插件采集：在 Temu“批量查看并确认申报价”页点“采集核价本页”即可入库。";
         setNotice(batchMessage);
       }
     } catch (error) {
@@ -86,30 +93,20 @@ export function PriceVerificationPage() {
 
   useEffect(() => { void refresh(false); }, []);
 
-  const createCaptureBatch = async () => {
-    const name = window.prompt("请输入核价批次名称（例如：店铺 A 第 1 批）")?.trim();
-    if (!name) return;
-    setLoading(true);
+  const savePrescreen = async (minAdjustedPriceCny: string) => {
     try {
-      const batch = await priceVerificationApi.createCaptureBatch(name);
+      const settings = await priceVerificationApi.setPrescreen(minAdjustedPriceCny);
+      setPrescreen(settings);
+      setNotice(settings.min_adjusted_price_cny != null && settings.min_adjusted_price_cny !== ""
+        ? `初筛条件已保存：调整后申报价（CNY）需大于 ${settings.min_adjusted_price_cny}，STEP 02 将只显示通过初筛的商品。`
+        : "初筛条件已清除，采集数据将全部进入 STEP 02。");
       await refresh(true);
-      setNotice(`已启用核价批次“${batch.name}”。可在 Temu 页面用插件采集数据，完成后回此页刷新。`);
-    } catch (error) { setNotice(`新建核价批次失败：${errorMessage(error)}`); } finally { setLoading(false); }
+    } catch (error) { setNotice(`保存初筛条件失败：${errorMessage(error)}`); }
   };
 
-  const activateCaptureBatch = async (batchId: string) => {
-    if (!batchId) return;
-    setLoading(true);
+  const stageBatchToReview = async (batchId: string, skcIds: string[], maxCandidates: number) => {
     try {
-      const batch = await priceVerificationApi.activateCaptureBatch(batchId);
-      await refresh(true);
-      setNotice(`已切换到核价批次“${batch.name}”，可继续在 Temu 页面用插件采集。`);
-    } catch (error) { setNotice(`切换核价批次失败：${errorMessage(error)}`); } finally { setLoading(false); }
-  };
-
-  const stageBatchToReview = async (batchId: string, skcIds: string[]) => {
-    try {
-      const selections = await priceVerificationApi.stageBatchSelections(batchId, skcIds);
+      const selections = await priceVerificationApi.stageBatchSelections(batchId, skcIds, maxCandidates);
       setBatchSelections((current) => {
         const next = [...current];
         for (const selection of selections) {
@@ -119,7 +116,7 @@ export function PriceVerificationPage() {
         return next;
       });
       setActiveStage("review");
-      setNotice(`已将 ${selections.length} 个 SKC 加入待审列表，请在下方“待审商品最终确认”中逐条保留或删除。`);
+      setNotice(`已将 ${selections.length} 个 SKC 加入待审列表（图搜相似品数量 ${maxCandidates}），请在下方“待审商品最终确认”中逐条保留或删除。`);
     } catch (error) { setNotice(`加入待审列表失败：${errorMessage(error)}`); }
   };
 
@@ -130,9 +127,9 @@ export function PriceVerificationPage() {
       setBatchSelections((current) => decision === "deleted"
         ? current.filter((item) => item.id !== selectionId)
         : current.map((item) => item.id === selectionId ? updated : item));
-      setSourceSkcIds((current) => decision === "retained"
-        ? (current.includes(updated.skc_id) ? current : [...current, updated.skc_id])
-        : current.filter((id) => id !== updated.skc_id));
+      if (decision === "deleted") {
+        setSourceSkcIds((current) => current.filter((id) => id !== updated.skc_id));
+      }
       setNotice(decision === "retained"
         ? `已保留 SKC ${updated.skc_id}，并写入草稿池${updated.draft_created ? "" : "（该商品已在草稿池中）"}。`
         : `已删除 SKC ${updated.skc_id}，不再参与货源匹配。`);
@@ -176,9 +173,9 @@ export function PriceVerificationPage() {
   };
 
   return <div className="price-verification-page">
-    <section className="price-verification-hero"><div><p className="eyebrow">PRICE VERIFICATION · LOCAL WORKSPACE</p><h1>核价及货源</h1><p>核验平台报价，勾选确认后重组待审，最终保留的商品写入草稿池并匹配至可追溯货源。</p></div><div className="price-verification-hero-status"><span className="status-dot" />{currentBatchId ? "当前批次已就绪" : "未创建核价批次"}</div></section>
+    <section className="price-verification-hero"><div><p className="eyebrow">PRICE VERIFICATION · LOCAL WORKSPACE</p><h1>核价及货源</h1><p>插件采集 Temu 本页报价（每页最多 50 个 SKC），新采集覆盖旧数据，后台按申报价初筛，人工确认后写入草稿池并匹配至可追溯货源。</p></div><div className="price-verification-hero-status"><span className="status-dot" />{currentBatchId ? "当前批次已就绪" : "等待插件采集"}</div></section>
     <section className="price-verification-workflow-card"><div className="price-verification-workflow-heading"><span>◇</span><strong>核价及货源工作流</strong><small>按顺序完成，数据全程保留关联关系</small></div><WorkflowSteps activeStage={activeStage} /></section>
     <p className="price-verification-notice" role="status" aria-live="polite">{notice}</p>
-    <div className="price-verification-content-grid"><div className="price-verification-main-column"><PluginSessionPanel isChecking={loading} batches={captureBatches} onRefresh={() => void refresh()} onCreateBatch={() => void createCaptureBatch()} onActivateBatch={(batchId) => void activateCaptureBatch(batchId)} /><BatchReviewPanel batchId={currentBatchId} items={batchItems} busy={loading} onConfirm={(batchId, skcIds) => stageBatchToReview(batchId, skcIds)} /><BatchReviewConfirmPanel batchId={currentBatchId} selections={batchSelections} busy={busyKey === "source" || loading} sourceSkcIds={sourceSkcIds} onSourceSelectionChange={setSourceSkcIds} onReview={(batchId, selectionId, decision, maxCandidates) => reviewBatchSelection(batchId, selectionId, decision, maxCandidates)} /><SourcingPanel preview={sourcePreview} batchId={currentBatchId} busy={busyKey === "source" || loading} sourceCount={batchSelections.filter((item) => item.status === "retained" && sourceSkcIds.includes(item.skc_id)).length} links={sourceLinks} onLink={(skcId, offerId, candidate, priceOverride) => linkSkcSource(skcId, offerId, candidate, priceOverride)} onStart={(mode) => void startBatchSourcing(mode)} /><LinkedSourcePanel links={sourceLinks} onUnlink={(linkId) => unlinkSkcSource(linkId)} /></div></div>
+    <div className="price-verification-content-grid"><div className="price-verification-main-column"><PrescreenPanel isChecking={loading} totalItems={captureBatches.find((batch) => batch.is_current)?.quote_count ?? 0} totalSkc={captureBatches.find((batch) => batch.is_current)?.skc_count ?? 0} passedItems={batchItems.length} prescreen={prescreen} onPrescreenChange={(value) => savePrescreen(value)} onRefresh={() => void refresh()} /><BatchReviewPanel batchId={currentBatchId} items={batchItems} busy={loading} onConfirm={(batchId, skcIds, maxCandidates) => stageBatchToReview(batchId, skcIds, maxCandidates)} /><BatchReviewConfirmPanel batchId={currentBatchId} selections={batchSelections} busy={busyKey === "source" || loading} sourceSkcIds={sourceSkcIds} onSourceSelectionChange={setSourceSkcIds} onReview={(batchId, selectionId, decision, maxCandidates) => reviewBatchSelection(batchId, selectionId, decision, maxCandidates)} /><SourcingPanel preview={sourcePreview} batchId={currentBatchId} busy={busyKey === "source" || loading} sourceCount={batchSelections.filter((item) => item.status === "retained" && sourceSkcIds.includes(item.skc_id)).length} links={sourceLinks} onLink={(skcId, offerId, candidate, priceOverride) => linkSkcSource(skcId, offerId, candidate, priceOverride)} onStart={(mode) => void startBatchSourcing(mode)} /><LinkedSourcePanel links={sourceLinks} onUnlink={(linkId) => unlinkSkcSource(linkId)} /></div></div>
   </div>;
 }

@@ -13,19 +13,28 @@
 }
 
 .profit-products-head {
-  padding: 24px;
+  min-height: 142px;
+  padding: clamp(24px, 3vw, 34px);
+  border-color: #1b91bd;
+  color: #fff;
+  background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%);
+  box-shadow: 0 14px 34px rgba(12, 91, 139, .18);
+}
+
+.profit-products-head .eyebrow {
+  color: #9de7f3;
 }
 
 .profit-products-head h1 {
   margin: 7px 0;
-  color: #172b44;
-  font-size: clamp(1.65rem, 2.8vw, 2.25rem);
+  color: #fff;
+  font-size: clamp(1.9rem, 3vw, 2.65rem);
   letter-spacing: -.035em;
 }
 
 .profit-products-head p:not(.eyebrow) {
   margin: 0;
-  color: #6d8399;
+  color: #d9f1fb;
   line-height: 1.7;
 }
 
@@ -174,6 +183,21 @@
 .profit-products-pagination input {
   width: 64px;
   text-align: center;
+}
+
+/* 页码跳转输入框：第 [页] 跳转 */
+.profit-products-pagination .profit-page-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #667d93;
+  font-size: .86rem;
+  font-weight: 750;
+}
+
+.profit-products-pagination .profit-page-jump input {
+  width: 56px;
 }
 
 .profit-source-badge {
@@ -347,6 +371,12 @@
   border: 1px solid #e2eef6;
 }
 
+/* 货源单图：一条链接一张图，放大便于查看商品规格 */
+.profit-source-card-shot {
+  width: 92px !important;
+  height: 92px !important;
+}
+
 .profit-source-card-img-fallback {
   display: flex;
   align-items: center;
@@ -408,6 +438,46 @@
 .profit-source-unlink:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+/* 导入货源链接的货源组截图（截图1/2/3）与成本 */
+.profit-source-card-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border-top: 1px dashed #dce9f2;
+  background: #f6fafd;
+}
+
+.profit-source-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profit-source-gallery-img {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid #dce9f2;
+  background: #fff;
+}
+
+.profit-source-card-cost {
+  margin-left: auto;
+  color: #1c3752;
+  font-size: 0.8rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.profit-source-card-cost::before {
+  content: "成本 ";
+  color: #6d8399;
+  font-weight: 750;
 }
 
 .profit-source-card-profit {
@@ -517,6 +587,247 @@
   font-weight: 750;
 }
 
+/* 产品库表格编辑单元格与备注列 */
+/* 产品库表格：不做内部垂直滚动，表格随整页滚动；仅保留水平滚动处理超宽列 */
+.profit-table-wrap {
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+}
+
+/* 水平滚动条：加宽、常显、hover 高亮 */
+.profit-table-wrap::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.profit-table-wrap::-webkit-scrollbar-track {
+  background: #f0f5fa;
+  border-radius: 6px;
+}
+
+.profit-table-wrap::-webkit-scrollbar-thumb {
+  background: #b9cbd9;
+  border-radius: 6px;
+  border: 2px solid #f0f5fa;
+}
+
+.profit-table-wrap::-webkit-scrollbar-thumb:hover {
+  background: #8fa9bd;
+}
+
+.profit-table-wrap::-webkit-scrollbar-corner {
+  background: #f0f5fa;
+}
+
+.profit-table .profit-edit-input {
+  width: 88px;
+  padding: 6px 8px;
+  border: 1px solid #d5e4ee;
+  border-radius: 9px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+  text-align: right;
+  font-weight: 750;
+  font-size: .82rem;
+}
+
+/* SKC 对应图单元格 */
+.profit-product-image-cell {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  min-width: 84px;
+}
+
+.profit-product-image,
+.profit-product-image-empty {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid #e2eef6;
+  display: block;
+}
+
+.profit-product-image-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9cb1c3;
+  background: #f4f8fb;
+  font-size: .76rem;
+  font-weight: 750;
+}
+
+.profit-product-image-upload {
+  padding: 4px 10px !important;
+  border-radius: 8px !important;
+  color: #0a8cf2 !important;
+  background: #f2faff !important;
+  font-size: .74rem !important;
+  line-height: 1.3;
+}
+
+.profit-product-image-upload:hover:not(:disabled) {
+  border-color: #82c9ef !important;
+}
+
+.profit-product-image-error {
+  color: #b42318;
+  font-size: .7rem;
+  font-weight: 750;
+}
+
+/* 图片列：标准审核表识别的货源截图缩略图 */
+.profit-source-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 200px;
+}
+
+.profit-source-thumb {
+  width: 52px;
+  height: 52px;
+  border-radius: 9px;
+  object-fit: cover;
+  border: 1px solid #e2eef6;
+  background: #f4f8fb;
+  display: block;
+}
+
+/* 图片列缩略图按钮：点击查看大图 */
+.profit-source-thumb-btn {
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 9px !important;
+  background: none !important;
+  line-height: 0;
+  cursor: zoom-in;
+  box-shadow: none !important;
+}
+
+.profit-source-thumb-btn:hover .profit-source-thumb {
+  border-color: #0a8cf2;
+  box-shadow: 0 0 0 2px #0a8cf21f;
+}
+
+/* 大图预览弹窗 */
+.profit-image-preview-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 22, 36, 0.62);
+  backdrop-filter: blur(2px);
+  padding: 24px;
+}
+
+.profit-image-preview-modal {
+  position: relative;
+  max-width: min(92vw, 960px);
+  max-height: 88vh;
+  display: flex;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 64px rgba(5, 16, 28, 0.4);
+  overflow: hidden;
+}
+
+.profit-image-preview-img {
+  display: block;
+  max-width: min(92vw, 960px);
+  max-height: 88vh;
+  object-fit: contain;
+}
+
+.profit-image-preview-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  width: 36px;
+  height: 36px;
+  border: 0 !important;
+  border-radius: 50% !important;
+  color: #fff !important;
+  background: rgba(13, 32, 52, 0.55) !important;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25) !important;
+}
+
+.profit-image-preview-close:hover {
+  background: rgba(13, 32, 52, 0.8) !important;
+}
+
+.profit-table .profit-edit-input:focus {
+  border-color: #0a8cf2;
+  box-shadow: 0 0 0 3px #0a8cf214;
+}
+
+.profit-table .profit-note-cell {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #526a82;
+  font-size: .82rem;
+}
+
+/* 表头列宽拖拽手柄 */
+.profit-table th {
+  position: relative;
+  border-right: 1px solid #d3e2ee;
+}
+
+.profit-table th:last-child {
+  border-right: 0;
+}
+
+.profit-col-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 10px;
+  height: 100%;
+  z-index: 2;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 列交界处的拖动把手：默认一条细竖条，悬停/拖动时加宽加亮 */
+.profit-col-resizer::after {
+  content: "";
+  width: 3px;
+  height: 44%;
+  min-height: 16px;
+  border-radius: 3px;
+  background: #9db6ca;
+  opacity: 0.85;
+  transition: background 0.15s ease, height 0.15s ease;
+}
+
+.profit-col-resizer:hover::after,
+.profit-col-resizer.is-dragging::after {
+  background: #0a8cf2;
+  height: 62%;
+  min-height: 22px;
+}
+
+.profit-col-resizer:hover,
+.profit-col-resizer.is-dragging {
+  background: rgba(10, 140, 242, 0.12);
+}
+
 @media (max-width: 640px) {
   .profit-source-card-fields {
     grid-template-columns: 1fr;
@@ -534,4 +845,3 @@
     flex-wrap: wrap;
   }
 }
-

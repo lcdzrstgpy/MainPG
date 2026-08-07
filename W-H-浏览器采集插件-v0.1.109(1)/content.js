@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   if (window.__temuWorkbenchConnector) return;
   window.__temuWorkbenchConnector = true;
   const tenantContext = globalThis.WorkbenchTenantContext;
@@ -578,8 +578,14 @@
       }
       setPriceQuoteCaptureButtonState(response.statusText || `已入库${Number(response.item_count || 0)}条`, false);
       window.setTimeout(refreshPriceQuoteCaptureButton, 3000);
-    } catch (_error) {
-      setPriceQuoteCaptureButtonState("核价采集失败", false);
+    } catch (error) {
+      const message = String(error?.message || error || "");
+      if (/extension_context_invalidated/.test(message)) {
+        // 扩展重新加载后，已打开页面的内容脚本会失效，刷新页面即可恢复。
+        setPriceQuoteCaptureButtonState("请刷新当前 Temu 页面后再采集", false, "扩展已更新，刷新页面后采集按钮会自动恢复");
+      } else {
+        setPriceQuoteCaptureButtonState("核价采集失败", false, message);
+      }
       window.setTimeout(refreshPriceQuoteCaptureButton, 3000);
     }
   }

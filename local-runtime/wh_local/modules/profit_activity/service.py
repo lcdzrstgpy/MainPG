@@ -145,13 +145,27 @@ class ProfitActivityService:
         if not skc:
             raise ValueError("skc is required")
         settings = self.get_settings(actor)
-        preview = calculate_profit(site_code=site, selling_price=_decimal(payload.get("selling_price")), cost_price=_decimal(payload.get("cost_price")), weight_kg=_decimal(payload.get("weight_kg")), settings=settings.settings)
         current = self._repository.find_product(skc, site, context.workspace_id)
         if current is not None and current.created_by != context.actor_id and not (allow_company_write or context.is_admin):
             raise ProfitActivityConflict("profit_activity_company_write_required")
+        # 数值字段缺失时回退当前记录，保证“仅上传/替换图片”这类局部更新也能保存。
+        preview = calculate_profit(
+            site_code=site,
+            selling_price=_decimal(payload.get("selling_price", current.selling_price if current else None)),
+            cost_price=_decimal(payload.get("cost_price", current.cost_price if current else None)),
+            weight_kg=_decimal(payload.get("weight_kg", current.weight_kg if current else None)),
+            settings=settings.settings,
+        )
         root = self._asset_root(settings.settings)
         image_path = current.image_path if current else ""
         source_groups = _source_groups(payload.get("source_groups_json"), current.source_groups_json if current else "[]")
+        payload_source_url = str(payload.get("source_url") or "").strip()
+        if payload_source_url and not any(str(group.get("source_url") or "").strip() for group in source_groups):
+            # 兼容旧字段：Excel 导入/旧表单只传单个 source_url，把它并入货源组，
+            # 保证产品库货源列/侧边栏能展示该链接。
+            if not source_groups:
+                source_groups.append({"source_url": "", "image_paths": []})
+            source_groups[0]["source_url"] = payload_source_url
         if image:
             image_path = save_asset(root, site=site, skc=skc, kind="product", filename=image[0], content=image[1])
         if source_image:
@@ -199,7 +213,7 @@ class ProfitActivityService:
             "note": payload.get("note", current.note), "visibility": payload.get("visibility", current.visibility),
             "source_url": payload.get("source_url", current.source_url), "source_groups_json": payload.get("source_groups_json", current.source_groups_json),
         }
-        return self.upsert_product(merged, actor=actor, allow_company_write=allow_company_write, require_complete_profile=True)
+        return self.upsert_product(merged, actor=actor, allow_company_write=allow_company_write, require_complete_profile=False)
 
     def delete_product(self, skc: str, site: SiteCode, actor: Any | None = None, *, allow_company_delete: bool = False) -> dict[str, Any]:
         context = _actor_context(actor)
@@ -218,17 +232,37 @@ class ProfitActivityService:
             extracted = image_rows.get(row["row_id"], {})
             product_images = extracted.get("product", [])
             source_images = extracted.get("source", [])
+            row_site = _site(row.get("site") or site)
             if product_images:
                 filename, content = product_images[0]
-                row["product_image_path"] = save_asset(root, site=site, skc=f"import_{import_id}_{row['row_id']}", kind="preview_product", filename=filename, content=content)
+                row["product_image_path"] = save_asset(root, site=row_site, skc=f"import_{import_id}_{row['row_id']}", kind="preview_product", filename=filename, content=content)
                 row["has_product_image"] = True
             if source_images:
                 filename, content = source_images[0]
-                row["source_image_path"] = save_asset(root, site=site, skc=f"import_{import_id}_{row['row_id']}", kind="preview_source", filename=filename, content=content)
+                row["source_image_path"] = save_asset(root, site=row_site, skc=f"import_{import_id}_{row['row_id']}", kind="preview_source", filename=filename, content=content)
                 row["has_source_image"] = True
-        self._repository.save_import_session(context.workspace_id, import_id, original_filename, site, rows)
+            group_paths: dict[str, list[str]] = {}
+            for key, files in extracted.items():
+                if not key.startswith("source_"):
+                    continue
+                group_index = key.split("_", 1)[1]
+                saved = [
+                    save_asset(root, site=row_site, skc=f"import_{import_id}_{row['row_id']}", kind=f"preview_source_{group_index}", filename=filename, content=content)
+                    for filename, content in files
+                ]
+                if saved:
+                    group_paths[group_index] = saved
+            if group_paths:
+                row["source_group_images"] = group_paths
+        session_site = _site(rows[0].get("site")) if rows else _site(site)
+        self._repository.save_import_session(context.workspace_id, import_id, original_filename, session_site, rows)
         summary = _import_summary(rows)
-        return {"import_id": import_id, "original_filename": original_filename, "site": site, "summary": summary, "rows": rows}
+        site_counts: dict[str, int] = {}
+        for row in rows:
+            row_site = _site(row.get("site") or site)
+            site_counts[row_site] = site_counts.get(row_site, 0) + 1
+        summary["sites"] = site_counts
+        return {"import_id": import_id, "original_filename": original_filename, "site": session_site, "summary": summary, "rows": rows}
 
     def latest_import_session(self, actor: Any | None = None) -> dict[str, Any] | None:
         context = _actor_context(actor)
@@ -266,18 +300,29 @@ class ProfitActivityService:
         for row in rows:
             if row["row_id"] not in selected or row["status"] != "ready":
                 continue
-            exists = self._repository.find_product(row["skc"], _site(session.site), context.workspace_id) is not None
+            row_site = _site(row.get("site") or session.site)
+            exists = self._repository.find_product(row["skc"], row_site, context.workspace_id) is not None
             if exists and on_conflict == "skip":
                 skipped += 1
                 continue
             image = _asset_tuple(row.get("product_image_path"))
             source_image = _asset_tuple(row.get("source_image_path"))
+            source_groups = row.get("source_groups") or []
+            payload = {**row, "site": row_site, "visibility": "shared"}
+            if source_groups:
+                payload["source_groups_json"] = json.dumps(source_groups)
+            group_images: dict[int, list[tuple[str, bytes]]] = {}
+            for group_index, paths in (row.get("source_group_images") or {}).items():
+                files = [file for file in (_asset_tuple(path) for path in paths) if file]
+                if files:
+                    group_images[int(group_index)] = files
             product = self.upsert_product(
-                {**row, "site": session.site, "visibility": "shared"},
+                payload,
                 image=image,
                 actor=actor,
                 allow_company_write=True,
                 source_image=source_image,
+                source_group_images=group_images or None,
             )
             products.append(product)
             if exists:
@@ -347,14 +392,14 @@ class ProfitActivityService:
             **filtered,
         }
         task = self._repository.create_filter_task(context.workspace_id, result)
-        return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": "completed", **result}
+        return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": "completed", "created_at": _local_iso(task.created_at), **result}
 
     def get_filter_task_legacy(self, task_id: int, actor: Any | None = None) -> dict[str, Any]:
         context = _actor_context(actor)
         task = self._repository.get_filter_task(task_id, context.workspace_id)
         if task is None:
             raise ProfitActivityNotFound("filter_task_not_found")
-        return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": task.status, **json.loads(task.result_json)}
+        return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": task.status, "created_at": _local_iso(task.created_at), **json.loads(task.result_json)}
 
     def output_path(self, task_id: int, kind: str, actor: Any | None = None) -> Path:
         result = self.get_filter_task_legacy(task_id, actor)
@@ -459,6 +504,41 @@ class ProfitActivityService:
             raise ProfitActivityNotFound("activity_run_not_found")
         return result
 
+    def export_filter_run(self, run_id: int, kind: str, actor: Any | None = None) -> Path:
+        """按“产品过滤”批次导出可申报/剔除产品 Excel 报告，与页面统计口径一致。"""
+        context = _actor_context(actor)
+        result = self._repository.get_activity_run(run_id, context.workspace_id)
+        if result is None:
+            raise ProfitActivityNotFound("activity_run_not_found")
+        run, decisions = result
+        if kind not in {"eligible", "excluded"}:
+            raise ValueError("kind must be eligible or excluded")
+        decision_kind = "eligible" if kind == "eligible" else "excluded"
+        record_ids = [item.record_id for item in decisions if item.decision == decision_kind]
+        records = self._repository.get_records_for_filter(context.workspace_id, run.site_code, record_ids, actor_id=context.actor_id, include_workspace_shared=True)
+        by_id = {record.id: record for record in records}
+        workbook = new_workbook()
+        sheet = workbook.active
+        sheet.title = "products"
+        sheet.append(["站点", "SKC", "售价", "成本", "重量KG", "净利润", "利润率", "判定", "原因"])
+        for item in decisions:
+            if item.decision != decision_kind:
+                continue
+            record = by_id.get(item.record_id)
+            if record is None:
+                continue
+            sheet.append([
+                record.site_code, record.skc, float(record.selling_price), float(record.cost_price),
+                float(record.weight_kg), float(record.net_profit), float(record.profit_rate),
+                "可申报" if decision_kind == "eligible" else "剔除", item.reason_code,
+            ])
+        root = self._asset_root(self.get_settings(actor).settings) / "activity_outputs"
+        root.mkdir(parents=True, exist_ok=True)
+        names = {"eligible": "可申报产品", "excluded": "剔除产品"}
+        path = root / f"{names[kind]}_{run_id}.xlsx"
+        path.write_bytes(workbook_bytes(workbook))
+        return path
+
 
 def create_profit_activity_service(database_url: str | Path | None = None) -> ProfitActivityService:
     database = create_database(database_url)
@@ -510,13 +590,18 @@ def _source_groups(value: Any, fallback: str) -> list[dict[str, Any]]:
     result = []
     for item in raw if isinstance(raw, list) else []:
         if isinstance(item, dict):
-            result.append({"source_url": str(item.get("source_url") or ""), "image_paths": [str(path) for path in item.get("image_paths", []) if str(path)]})
+            cost = item.get("cost")
+            result.append({
+                "source_url": str(item.get("source_url") or ""),
+                "image_paths": [str(path) for path in item.get("image_paths", []) if str(path)],
+                "cost": float(cost) if cost is not None else None,
+            })
     return result
 
 
 def _ensure_group(groups: list[dict[str, Any]], index: int) -> dict[str, Any]:
     while len(groups) <= index:
-        groups.append({"source_url": "", "image_paths": []})
+        groups.append({"source_url": "", "image_paths": [], "cost": None})
     return groups[index]
 
 

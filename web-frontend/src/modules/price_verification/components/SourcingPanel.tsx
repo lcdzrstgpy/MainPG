@@ -288,7 +288,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, onLi
                       return (
                         <div className="pv-source-card" key={`${group.skc_id}-${index}`}>
                           <a className="pv-source-card-media" href={candidate.source_url} target="_blank" rel="noreferrer" title={candidate.source_url}>
-                            {candidate.main_image_url ? <img src={candidate.main_image_url} alt="" loading="lazy" /> : null}
+                            {candidate.main_image_url ? <img src={candidate.main_image_url} alt="" loading="lazy" referrerPolicy="no-referrer" /> : null}
                           </a>
                           <div className="pv-source-card-main">
                             <div className="pv-source-card-top">
