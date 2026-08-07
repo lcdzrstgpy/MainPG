@@ -256,6 +256,16 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     void refreshRuns();
   }, []);
 
+  // 悬浮 toast：成功提示 2s、错误提示 3s 后自动消失，不常驻、不占页面空间
+  useEffect(() => {
+    if (!notice && !error) return;
+    const timer = window.setTimeout(() => {
+      setNotice("");
+      setError("");
+    }, error ? 3000 : 2000);
+    return () => window.clearTimeout(timer);
+  }, [notice, error]);
+
   useEffect(() => {
     if (!collecting) return;
     const timer = window.setInterval(() => {
@@ -588,7 +598,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       {(error || notice) && (
         <div className={`daily-message ${error ? "is-error" : "is-success"}`} role="status">
           <span>{error ? "!" : "✓"}</span>{error || notice}
-          <button type="button" onClick={() => { setError(""); setNotice(""); }}>×</button>
         </div>
       )}
 
@@ -734,7 +743,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               {(error || notice) && (
                 <div className={`daily-message ${error ? "is-error" : "is-success"}`} role="status">
                   <span>{error ? "!" : "✓"}</span>{error || notice}
-                  <button type="button" onClick={() => { setError(""); setNotice(""); }}>×</button>
                 </div>
               )}
               <div className="daily-work-grid">
