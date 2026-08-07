@@ -63,6 +63,11 @@ type FilterTask = {
   status?: string;
   kept_skc_count?: number;
   removed_skc_count?: number;
+  kept_row_count?: number;
+  removed_row_count?: number;
+  kept_activity_count?: number;
+  removed_activity_count?: number;
+  qualification_counts?: Record<string, number>;
   filtered_path?: string;
   removed_path?: string;
   id?: number;
@@ -112,8 +117,6 @@ const siteSettingFields: Record<Site, SiteSettingField[]> = {
     { key: "domestic_fee", label: "国内操作费" },
     { key: "shipping_subsidy", label: "运费补贴" },
     { key: "refund_rate", label: "退款率 %", transform: "percent" },
-    { key: "activity_min_net_profit", label: "活动最低实际利润 元" },
-    { key: "activity_profit_rate_threshold", label: "活动最低利润率 %", transform: "percent" },
   ],
   CO: [
     { key: "co_first_mile_rate", label: "当前站点头程每kg" },
@@ -121,8 +124,6 @@ const siteSettingFields: Record<Site, SiteSettingField[]> = {
     { key: "domestic_fee", label: "国内操作费" },
     { key: "shipping_subsidy", label: "运费补贴" },
     { key: "refund_rate", label: "退款率 %", transform: "percent" },
-    { key: "activity_min_net_profit", label: "活动最低实际利润 元" },
-    { key: "activity_profit_rate_threshold", label: "活动最低利润率 %", transform: "percent" },
   ],
   EC: [
     { key: "ec_first_mile_rate", label: "当前站点头程每kg" },
@@ -132,13 +133,32 @@ const siteSettingFields: Record<Site, SiteSettingField[]> = {
     { key: "ec_shipping_subsidy_price_limit", label: "补贴售价上限（含）" },
     { key: "ec_end_fee", label: "尾程固定费" },
     { key: "ec_refund_rate", label: "退款率 %", transform: "percent" },
-    { key: "activity_min_net_profit", label: "活动最低实际利润 元" },
-    { key: "activity_profit_rate_threshold", label: "活动最低利润率 %", transform: "percent" },
   ],
 };
 
+// 与后端 ProfitSettings 内置默认值保持一致，用于“恢复默认设置”
+const DEFAULT_PROFIT_SETTINGS: Record<string, number> = {
+  domestic_fee: 2.5,
+  shipping_subsidy: 21,
+  refund_rate: 0.05,
+  us_first_mile_rate: 72,
+  us_first_mile_fixed: 5,
+  co_first_mile_rate: 80,
+  co_first_mile_fixed: 0,
+  ec_domestic_fee: 2.5,
+  ec_shipping_subsidy: 15,
+  ec_shipping_subsidy_price_limit: 120,
+  ec_first_mile_rate: 108,
+  ec_first_mile_fixed: 0,
+  ec_end_fee: 27,
+  ec_refund_rate: 0.05,
+  activity_min_net_profit: 8,
+  activity_profit_rate_threshold: 0.2,
+};
+
 export function ProfitActivityTestPage() {
-  const [apiBase, setApiBase] = useState(localStorage.getItem("profitActivityApiBase") || "");
+  // API 地址固定为空：所有请求走同源相对路径，由 Vite 代理转发到后端 8010（团队约定端口）
+  const [apiBase, setApiBase] = useState("");
   const [token, setToken] = useState(defaultToken);
   const [site, setSite] = useState<Site>("US");
   const [scope, setScope] = useState<Scope>("default");
@@ -165,6 +185,8 @@ export function ProfitActivityTestPage() {
   });
   const [activityFile, setActivityFile] = useState<File | null>(null);
   const [filterTask, setFilterTask] = useState<FilterTask | null>(null);
+  // 没有任何可申报产品时的提示弹窗
+  const [noEligibleOpen, setNoEligibleOpen] = useState(false);
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("输入 SKC、售价、成本、重量后会自动预览利润。");
   const [recentSaved, setRecentSaved] = useState<string[]>(() => {
@@ -188,7 +210,6 @@ export function ProfitActivityTestPage() {
   const formReadyForArchive = Boolean(formReadyForPreview && productImage && sourceImagesReady && productForm.note.trim());
 
   useEffect(() => {
-    if (!apiBase) return;
     void loadSettings();
     void queryProducts("");
     void restoreImportSessions();
@@ -243,7 +264,8 @@ export function ProfitActivityTestPage() {
     anchor.href = objectUrl;
     anchor.download = filename;
     anchor.click();
-    URL.revokeObjectURL(objectUrl);
+    // 延迟释放 objectURL，避免个别浏览器在下载尚未开始时就把数据源回收导致下载失败
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   };
 
   const withBusy = async (label: string, action: () => Promise<void>, successMessage?: string) => {
@@ -265,7 +287,27 @@ export function ProfitActivityTestPage() {
     // 后端返回的是实际生效的本地保存目录；不在此处注入写死的兜底路径，避免展示与真实落盘位置不一致
     setSettings(data);
     setSiteSettings(extractSiteSettings(data, site));
+    return data;
   }
+
+  // 保存设置；遇到版本冲突（settings_revision_conflict）时自动重取最新设置并以最新 revision 重试一次，避免被乐观锁卡住
+  const putSettings = async (payload: Record<string, unknown>) => {
+    const save = () => request<Record<string, unknown>>("/api/profit-activity/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    try {
+      return await save();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("settings_revision_conflict")) {
+        const fresh = await loadSettings();
+        payload.expected_revision = Number(fresh?.revision || 0);
+        return await save();
+      }
+      throw error;
+    }
+  };
 
   const saveSiteSettings = () => withBusy("保存当前站点公式", async () => {
     const payload: Record<string, unknown> = {
@@ -275,14 +317,48 @@ export function ProfitActivityTestPage() {
     for (const field of siteSettingFields[site]) {
       payload[field.key] = field.transform === "percent" ? Number(siteSettings[field.key] || 0) / 100 : Number(siteSettings[field.key] || 0);
     }
-    const data = await request<Record<string, unknown>>("/api/profit-activity/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const data = await putSettings(payload);
     setSettings(data);
     setSiteSettings(extractSiteSettings(data, site));
   });
+
+  const restoreDefaultSettings = () => withBusy("恢复默认设置", async () => {
+    const payload: Record<string, unknown> = {
+      expected_revision: Number(settings?.revision || 0),
+      save_root: String(settings?.save_root || ""),
+    };
+    for (const field of siteSettingFields[site]) {
+      payload[field.key] = DEFAULT_PROFIT_SETTINGS[field.key] ?? 0;
+    }
+    const data = await putSettings(payload);
+    setSettings(data);
+    setSiteSettings(extractSiteSettings(data, site));
+  }, "已将当前站点公式恢复为默认值并保存。");
+
+  // 活动申报门槛：三区共用同一个全局值，保存/恢复只提交这两个字段
+  const saveActivityThreshold = () => withBusy("保存活动门槛", async () => {
+    const payload: Record<string, unknown> = {
+      expected_revision: Number(settings?.revision || 0),
+      save_root: String(settings?.save_root || ""),
+      activity_min_net_profit: Number(siteSettings.activity_min_net_profit || 0),
+      activity_profit_rate_threshold: Number(siteSettings.activity_profit_rate_threshold || 0) / 100,
+    };
+    const data = await putSettings(payload);
+    setSettings(data);
+    setSiteSettings(extractSiteSettings(data, site));
+  });
+
+  const restoreActivityThreshold = () => withBusy("恢复活动门槛默认", async () => {
+    const payload: Record<string, unknown> = {
+      expected_revision: Number(settings?.revision || 0),
+      save_root: String(settings?.save_root || ""),
+      activity_min_net_profit: DEFAULT_PROFIT_SETTINGS.activity_min_net_profit,
+      activity_profit_rate_threshold: DEFAULT_PROFIT_SETTINGS.activity_profit_rate_threshold,
+    };
+    const data = await putSettings(payload);
+    setSettings(data);
+    setSiteSettings(extractSiteSettings(data, site));
+  }, "已恢复活动门槛为默认值并保存。");
 
   const queryProducts = async (overrideSkcs = querySkcs) => {
     // 静默查询：仅用于刷新产品列表与按钮禁用，不写顶部状态条
@@ -435,7 +511,21 @@ export function ProfitActivityTestPage() {
     await queryProducts();
   });
 
-  const generateFiltered = () => withBusy("生成可申报产品", async () => {
+  // 产品过滤：用上传的活动 Excel 计算可申报/剔除统计并展示结果，不生成文件、不下载
+  const runActivityFilter = () => withBusy("产品过滤", async () => {
+    if (!activityFile) throw new Error("先选择活动 Excel。");
+    const form = new FormData();
+    form.append("site", site);
+    form.append("scope", scope);
+    form.append("file", activityFile);
+    const task = await request<FilterTask>("/api/profit-activity/activity-filter", { method: "POST", body: form });
+    setFilterTask(task);
+    const kept = task.kept_row_count ?? task.kept_activity_count ?? task.kept_skc_count ?? 0;
+    const removed = task.removed_row_count ?? task.removed_activity_count ?? task.removed_skc_count ?? 0;
+    setMessage(`产品过滤完成：逐条匹配 ${kept + removed} 条，可申报 ${kept} 条，剔除 ${removed} 条。确认后可点“生成并下载可申报产品”下载报告。`);
+  });
+
+  const generateFiltered = () => withBusy("生成并下载可申报产品", async () => {
     if (!activityFile) throw new Error("先选择活动 Excel。");
     const form = new FormData();
     form.append("site", site);
@@ -446,24 +536,17 @@ export function ProfitActivityTestPage() {
     const taskId = task.task_id || task.filter_task_id;
     if (!taskId) throw new Error("生成任务未返回任务编号。");
     const saved = await request<{ saved_path?: string }>(`/api/profit-activity/activity-filter/${taskId}/save?kind=filtered`, { method: "POST" });
-    const kept = task.kept_skc_count ?? 0;
-    const removed = task.removed_skc_count ?? 0;
+    const kept = task.kept_row_count ?? task.kept_activity_count ?? task.kept_skc_count ?? 0;
+    const removed = task.removed_row_count ?? task.removed_activity_count ?? task.removed_skc_count ?? 0;
+    if (kept > 0) {
+      await download(`/api/profit-activity/activity-filter/${taskId}/download?kind=filtered`, "可申报产品.xlsx");
+    }
     setMessage(kept > 0
-      ? `已生成 ${kept} 条可申报、${removed} 条剔除，并保存到本地保存目录 ${saved.saved_path || "-"}。点下方“下载可申报产品/下载剔除产品”下载报告。`
-      : `活动表 ${removed} 条 SKC 均未匹配到产品库产品，可申报为空。可先点“产品过滤”过滤产品库产品，再点“下载可申报产品”下载报告。`);
-  });
-
-  const runRecordFilter = () => withBusy("按数据库产品跑过滤规则", async () => {
-    const recordIds = products.filter((item) => selected.has(item.skc)).map((item) => item.id).filter((id): id is number => typeof id === "number");
-    const task = await request<FilterTask>("/api/profit-activity/filter-runs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ site_code: site, record_ids: recordIds.length ? recordIds : undefined }),
-    });
-    setFilterTask(task);
-    const retained = task.retained_count ?? 0;
-    const excluded = task.excluded_count ?? 0;
-    setMessage(`活动过滤完成：共过滤 ${retained + excluded} 条，可申报 ${retained} 条，剔除 ${excluded} 条。`);
+      ? `已生成 ${kept} 条可申报、${removed} 条剔除，可申报产品已自动下载到浏览器默认下载目录；文件也已保存到本地保存目录 ${saved.saved_path || "-"}。剔除产品可点下方“下载剔除产品”下载。`
+      : `活动表 ${removed} 条均未通过判定（产品库无此 SKC 或利润不达标），可申报为空，未生成下载。`);
+    if (kept <= 0) {
+      setNoEligibleOpen(true);
+    }
   });
 
   const downloadCatalog = () => withBusy("下载产品档案", async () => {
@@ -472,7 +555,7 @@ export function ProfitActivityTestPage() {
 
   const saveFilter = (kind: "filtered" | "removed") => withBusy(`下载${kind === "filtered" ? "可申报" : "剔除"}产品`, async () => {
     const task = filterTask;
-    if (!task) throw new Error("暂无过滤结果。请先点击“产品过滤”或“生成并下载可申报产品”。");
+    if (!task) throw new Error("暂无过滤结果。请先点击“生成并下载可申报产品”。");
     const filename = kind === "filtered" ? "可申报产品.xlsx" : "剔除产品.xlsx";
     // 产品过滤（filter-runs）返回批次 id，直接从批次导出报告；
     // 活动模板过滤（activity-filter）返回任务 id，从任务生成的文件下载。
@@ -522,19 +605,14 @@ export function ProfitActivityTestPage() {
             <p className="profit-formula-note">当前编辑{siteLabels[site]}公式：重量kg × 每kg费用 + 固定费；美国、哥伦比亚和厄瓜多尔互不影响，单品预览、入档和活动申报过滤都会使用保存后的当前站点公式。</p>
             <div className="profit-settings-grid">
               {siteSettingFields[site].map((field) => (
-                <label key={field.key}>{field.label}<input type="number" value={siteSettings[field.key] || ""} onChange={(event) => setSiteSettings((current) => ({ ...current, [field.key]: event.target.value }))} /></label>
+                <label key={field.key}>{field.label}<input type="number" value={siteSettings[field.key] ?? ""} onChange={(event) => setSiteSettings((current) => ({ ...current, [field.key]: event.target.value }))} /></label>
               ))}
               <button onClick={saveSiteSettings} disabled={!!busy}>保存设置</button>
+              <button onClick={restoreDefaultSettings} disabled={!!busy}>恢复默认设置</button>
             </div>
           </section>
         </div>
       </div>
-
-      <section className="profit-test-toolbar">
-        <label>API Base<input value={apiBase} onChange={(event) => { setApiBase(event.target.value); localStorage.setItem("profitActivityApiBase", event.target.value); }} placeholder="留空同源，例如 http://127.0.0.1:8000" /></label>
-        <label>Bearer Token<input value={token} onChange={(event) => { setToken(event.target.value); localStorage.setItem("whLocalApiToken", event.target.value); }} /></label>
-        <label>查询范围<select value={scope} onChange={(event) => setScope(event.target.value as Scope)}><option value="default">只查本人/默认权限</option><option value="company">查本公司在档产品</option></select></label>
-      </section>
 
       {message && <p className="profit-status" role="status">{message}</p>}
 
@@ -589,10 +667,21 @@ export function ProfitActivityTestPage() {
             <p className="profit-warn">{activityFile ? `已选择：${activityFile.name}` : "先选择活动 Excel。"}</p>
           </div>
           <p className="muted">上传活动表后，后端会用数据库产品和当前站点利润设置生成可申报模板，并把可申报/剔除文件保存到“本地保存目录”。</p>
+          <div className="profit-threshold-box">
+            <h3>活动申报门槛</h3>
+            <p className="profit-formula-note">跟随当前站点 {siteLabels[site]}（美区/哥伦比亚/厄瓜多尔共用同一门槛值）。</p>
+            <div className="profit-threshold-fields">
+              <label>活动最低实际利润 元<input type="number" value={siteSettings.activity_min_net_profit ?? ""} onChange={(event) => setSiteSettings((current) => ({ ...current, activity_min_net_profit: event.target.value }))} /></label>
+              <label>活动最低利润率 %<input type="number" value={siteSettings.activity_profit_rate_threshold ?? ""} onChange={(event) => setSiteSettings((current) => ({ ...current, activity_profit_rate_threshold: event.target.value }))} /></label>
+            </div>
+            <div className="profit-threshold-actions">
+              <button onClick={saveActivityThreshold} disabled={!!busy}>保存设置</button>
+              <button onClick={restoreActivityThreshold} disabled={!!busy}>恢复默认设置</button>
+            </div>
+          </div>
           <div className="profit-actions">
-            <button className="primary-button" onClick={runRecordFilter} disabled={!!busy}>产品过滤</button>
-            <button className="primary-button" onClick={generateFiltered} disabled={!!busy}>生成可申报产品</button>
-            <button onClick={() => saveFilter("filtered")} disabled={!!busy || !filterTask}>下载可申报产品</button>
+            <button className="primary-button" onClick={runActivityFilter} disabled={!!busy}>产品过滤</button>
+            <button className="primary-button" onClick={generateFiltered} disabled={!!busy}>生成并下载可申报产品</button>
             <button onClick={() => saveFilter("removed")} disabled={!!busy || !filterTask}>下载剔除产品</button>
           </div>
           {filterTask && <FilterRunSummary task={filterTask} />}
@@ -613,6 +702,19 @@ export function ProfitActivityTestPage() {
         {importFiles.length ? <p className="profit-warn">已选择 {importFiles.length} 个文件：{importFiles.map((item) => item.name).join("、")}</p> : lastImportFiles.length ? <p className="muted">上次选择的文件：{lastImportFiles.join("、")}（浏览器出于安全原因不保留本地完整路径，切换页面后需重新选择文件）</p> : null}
         {importPreviews.length > 0 && <ImportPreviewSummary previews={importPreviews} />}
       </section>
+
+      {noEligibleOpen && (
+        <div className="profit-modal-mask" onClick={() => setNoEligibleOpen(false)}>
+          <div className="profit-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <span className="profit-modal-icon">!</span>
+            <h3>没有可申报的产品</h3>
+            <p>活动表中没有满足条件的可申报产品。请确认产品库中是否已导入活动表对应的 SKC，以及申报价、成本、重量是否正确。</p>
+            <div className="profit-modal-actions">
+              <button className="primary-button" onClick={() => setNoEligibleOpen(false)}>知道了</button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
@@ -712,17 +814,28 @@ function ImportPreviewSummary({ previews }: { previews: ImportPreview[] }) {
 
 function FilterRunSummary({ task }: { task: FilterTask }) {
   const decisions = Array.isArray(task.decisions) ? task.decisions : [];
-  const retained = task.retained_count ?? (typeof task.kept_skc_count === "number" ? task.kept_skc_count : decisions.filter((item) => item.decision === "eligible").length);
-  const excluded = task.excluded_count ?? (typeof task.removed_skc_count === "number" ? task.removed_skc_count : decisions.filter((item) => item.decision === "excluded").length);
+  // 逐条统计：优先用“行”数（每条 SKC×活动×申报价 一条），兼容旧任务/产品过滤的 SKC 口径
+  const retained = task.retained_count
+    ?? task.kept_row_count
+    ?? task.kept_activity_count
+    ?? (typeof task.kept_skc_count === "number" ? task.kept_skc_count : decisions.filter((item) => item.decision === "eligible").length);
+  const excluded = task.excluded_count
+    ?? task.removed_row_count
+    ?? task.removed_activity_count
+    ?? (typeof task.removed_skc_count === "number" ? task.removed_skc_count : decisions.filter((item) => item.decision === "excluded").length);
   const total = decisions.length || retained + excluded;
+  // 兼容两种任务来源：产品过滤返回 rule_version/minimum_*，活动模板过滤返回 activity_filter_rule_version/min_net_profit_threshold/profit_rate_threshold
+  const ruleVersion = (task.rule_version ?? task.activity_filter_rule_version) as number | undefined;
+  const minNetProfit = (task.minimum_net_profit ?? task.min_net_profit_threshold ?? task.threshold) as number | undefined;
+  const minProfitRate = (task.minimum_profit_rate ?? task.profit_rate_threshold ?? task.activity_profit_rate_threshold) as number | undefined;
   return (
     <section className="profit-import-summary" aria-label="活动过滤任务结果">
       <div className="profit-import-summary-head">
         <strong>活动过滤结果</strong>
-        <span>规则 v{task.rule_version ?? "-"}</span>
+        <span>规则 v{ruleVersion ?? "-"}</span>
       </div>
       <p className="profit-formula-note">
-        最低实际利润 {money(task.minimum_net_profit)} 元 · 最低利润率 {percent(task.minimum_profit_rate)} · 任务时间 {formatImportTime(task.created_at) || "-"}
+        最低实际利润 {money(minNetProfit)} 元 · 最低利润率 {percent(minProfitRate)} · 任务时间 {formatImportTime(task.created_at) || "-"}
       </p>
       <div className="profit-import-stats">
         <div><span>过滤产品</span><strong>{total}</strong><em>条</em></div>
@@ -764,8 +877,16 @@ function ProductTable({ products, selected, onSelected }: { products: ProductRow
 function extractSiteSettings(settings: Record<string, unknown>, site: Site) {
   const result: Record<string, string> = {};
   for (const field of siteSettingFields[site]) {
-    const value = Number(settings[field.key] || 0);
+    // 数据库缺失的字段回退到内置默认值；已保存的值（包括 0）原样展示
+    const raw = settings[field.key] == null ? (DEFAULT_PROFIT_SETTINGS[field.key] ?? 0) : settings[field.key];
+    const value = Number(raw);
     result[field.key] = String(field.transform === "percent" ? value * 100 : value);
+  }
+  // 活动申报门槛为三区共用的全局值，随站点 tab 一起展示
+  for (const key of ["activity_min_net_profit", "activity_profit_rate_threshold"] as const) {
+    const raw = settings[key] == null ? (DEFAULT_PROFIT_SETTINGS[key] ?? 0) : settings[key];
+    const value = Number(raw);
+    result[key] = String(key === "activity_profit_rate_threshold" ? value * 100 : value);
   }
   return result;
 }
