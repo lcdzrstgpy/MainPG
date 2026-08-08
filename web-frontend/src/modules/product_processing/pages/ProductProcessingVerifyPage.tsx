@@ -639,7 +639,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
                     const s = new Set(cur.skuDeletes);
                     if (s.has(skuId)) s.delete(skuId);
                     else if (s.has(label)) s.delete(label);
-                    else s.add(variant.sku_id || variant.source_sku_id || label || idx);
+                    else s.add(String(variant.sku_id || variant.source_sku_id || label || idx));
                     return { ...p, [target.id]: { ...cur, skuDeletes: Array.from(s) } };
                   });
                   const changeValue = (next: string) => setEdits((p) => {

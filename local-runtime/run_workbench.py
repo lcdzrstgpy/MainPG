@@ -10,12 +10,21 @@
 from __future__ import annotations
 
 import argparse
+import os
 import socket
+import sys
 import threading
 import time
 import webbrowser
 
 import uvicorn
+
+# windowed 模式（PyInstaller console=False）下 sys.stdout/stderr 为 None，
+# uvicorn 日志初始化访问 sys.stdout.isatty() 会抛异常；替换为空设备流。
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8010

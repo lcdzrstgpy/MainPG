@@ -75,8 +75,8 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    # 保留控制台窗口便于查看日志；正式交付可改 False（windowed）
-    console=True,
+    # 正式交付使用 windowed（无黑色控制台窗口），日志不影响功能
+    console=False,
     disable_windowed_traceback=False,
 )
 
