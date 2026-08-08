@@ -228,6 +228,23 @@ def register_price_verification_routes(
             logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
+    @router.delete("/api/v1/price-verification/capture-batches/{batch_id}/items")
+    def delete_capture_batch_item(
+        batch_id: str,
+        skc_id: str | None = Query(default=None),
+        delete_all: bool = Query(default=False),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            if delete_all:
+                return quote_service.clear_capture_batch_items(actor, batch_id)
+            if not skc_id:
+                raise PriceVerificationContractError("skc_id or delete_all=true is required")
+            return quote_service.remove_capture_batch_item(actor, batch_id, skc_id)
+        except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
+            _raise_http(error)
+
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/drafts")
     def confirm_capture_batch_drafts(
         batch_id: str,

@@ -120,6 +120,31 @@ export function PriceVerificationPage() {
     } catch (error) { setNotice(`加入待审列表失败：${errorMessage(error)}`); }
   };
 
+  const deleteBatchItem = async (batchId: string, skcId: string) => {
+    if (!batchId) return;
+    try {
+      const result = await priceVerificationApi.removeCaptureBatchItem(batchId, skcId);
+      setBatchItems((current) => current.filter((item) => item.skc_id !== skcId));
+      setNotice(`已删除 SKC ${result.skc_id}（移除 ${result.removed} 条报价），不再出现在本次批次报价审核中。`);
+      await refresh(true);
+    } catch (error) { setNotice(`删除批次报价失败：${errorMessage(error)}`); }
+  };
+
+  const deleteBatchItems = async (batchId: string, skcIds: string[]) => {
+    if (!batchId || !skcIds.length) return;
+    try {
+      let removed = 0;
+      for (const skcId of skcIds) {
+        const result = await priceVerificationApi.removeCaptureBatchItem(batchId, skcId);
+        removed += result.removed;
+      }
+      const removedSet = new Set(skcIds);
+      setBatchItems((current) => current.filter((item) => !removedSet.has(item.skc_id)));
+      setNotice(`已删除选中的 ${skcIds.length} 个 SKC（移除 ${removed} 条报价），不再出现在本次批次报价审核中。`);
+      await refresh(true);
+    } catch (error) { setNotice(`删除选中报价失败：${errorMessage(error)}`); }
+  };
+
   const reviewBatchSelection = async (batchId: string, selectionId: number, decision: "retained" | "deleted", maxCandidates: number) => {
     setBusyKey(String(selectionId));
     try {
@@ -176,6 +201,6 @@ export function PriceVerificationPage() {
     <section className="price-verification-hero"><div><p className="eyebrow">PRICE VERIFICATION · LOCAL WORKSPACE</p><h1>核价及货源</h1><p>插件采集 Temu 本页报价（每页最多 50 个 SKC），新采集覆盖旧数据，后台按申报价初筛，人工确认后写入草稿池并匹配至可追溯货源。</p></div><div className="price-verification-hero-status"><span className="status-dot" />{currentBatchId ? "当前批次已就绪" : "等待插件采集"}</div></section>
     <section className="price-verification-workflow-card"><div className="price-verification-workflow-heading"><span>◇</span><strong>核价及货源工作流</strong><small>按顺序完成，数据全程保留关联关系</small></div><WorkflowSteps activeStage={activeStage} /></section>
     <p className="price-verification-notice" role="status" aria-live="polite">{notice}</p>
-    <div className="price-verification-content-grid"><div className="price-verification-main-column"><PrescreenPanel isChecking={loading} totalItems={captureBatches.find((batch) => batch.is_current)?.quote_count ?? 0} totalSkc={captureBatches.find((batch) => batch.is_current)?.skc_count ?? 0} passedItems={batchItems.length} prescreen={prescreen} onPrescreenChange={(value) => savePrescreen(value)} onRefresh={() => void refresh()} /><BatchReviewPanel batchId={currentBatchId} items={batchItems} busy={loading} onConfirm={(batchId, skcIds, maxCandidates) => stageBatchToReview(batchId, skcIds, maxCandidates)} /><BatchReviewConfirmPanel batchId={currentBatchId} selections={batchSelections} busy={busyKey === "source" || loading} sourceSkcIds={sourceSkcIds} onSourceSelectionChange={setSourceSkcIds} onReview={(batchId, selectionId, decision, maxCandidates) => reviewBatchSelection(batchId, selectionId, decision, maxCandidates)} /><SourcingPanel preview={sourcePreview} batchId={currentBatchId} busy={busyKey === "source" || loading} sourceCount={batchSelections.filter((item) => item.status === "retained" && sourceSkcIds.includes(item.skc_id)).length} links={sourceLinks} onLink={(skcId, offerId, candidate, priceOverride) => linkSkcSource(skcId, offerId, candidate, priceOverride)} onStart={(mode) => void startBatchSourcing(mode)} /><LinkedSourcePanel links={sourceLinks} onUnlink={(linkId) => unlinkSkcSource(linkId)} /></div></div>
+    <div className="price-verification-content-grid"><div className="price-verification-main-column"><PrescreenPanel isChecking={loading} totalItems={captureBatches.find((batch) => batch.is_current)?.quote_count ?? 0} totalSkc={captureBatches.find((batch) => batch.is_current)?.skc_count ?? 0} passedItems={batchItems.length} prescreen={prescreen} onPrescreenChange={(value) => savePrescreen(value)} onRefresh={() => void refresh()} /><BatchReviewPanel batchId={currentBatchId} items={batchItems} busy={loading} onConfirm={(batchId, skcIds, maxCandidates) => stageBatchToReview(batchId, skcIds, maxCandidates)} onDelete={(batchId, skcId) => deleteBatchItem(batchId, skcId)} onDeleteSelected={(batchId, skcIds) => deleteBatchItems(batchId, skcIds)} /><BatchReviewConfirmPanel batchId={currentBatchId} selections={batchSelections} busy={busyKey === "source" || loading} sourceSkcIds={sourceSkcIds} onSourceSelectionChange={setSourceSkcIds} onReview={(batchId, selectionId, decision, maxCandidates) => reviewBatchSelection(batchId, selectionId, decision, maxCandidates)} /><SourcingPanel preview={sourcePreview} batchId={currentBatchId} busy={busyKey === "source" || loading} sourceCount={batchSelections.filter((item) => item.status === "retained" && sourceSkcIds.includes(item.skc_id)).length} links={sourceLinks} onLink={(skcId, offerId, candidate, priceOverride) => linkSkcSource(skcId, offerId, candidate, priceOverride)} onStart={(mode) => void startBatchSourcing(mode)} /><LinkedSourcePanel links={sourceLinks} onUnlink={(linkId) => unlinkSkcSource(linkId)} /></div></div>
   </div>;
 }

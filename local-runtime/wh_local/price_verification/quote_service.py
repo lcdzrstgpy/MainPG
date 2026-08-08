@@ -365,6 +365,44 @@ class QuoteService:
             )
         return tuple(rows)
 
+    def remove_capture_batch_item(
+        self,
+        actor: PriceVerificationActor,
+        batch_id: str,
+        skc_id: str,
+    ) -> Mapping[str, Any]:
+        """Remove one SKC group (and all its SKU quotes) from the current
+        capture batch review list."""
+        actor = _actor(actor)
+        self._repository.get_quote_capture_batch(workspace_id=actor.workspace_id, batch_id=batch_id)
+        target = str(skc_id or "").strip()
+        if not target:
+            raise PriceVerificationContractError("skc_id is required")
+        rows = self.list_capture_batch_review_items(actor, batch_id)
+        matched = next((row for row in rows if str(row["skc_id"]).strip() == target), None)
+        if matched is None:
+            raise PriceVerificationContractError(f"SKC {target} 不在当前批次报价审核中")
+        removed = self._repository.remove_capture_chunk_quote_items(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            quote_keys=matched["quote_keys"],
+        )
+        return {"batch_id": batch_id, "skc_id": target, "removed": removed}
+
+    def clear_capture_batch_items(
+        self,
+        actor: PriceVerificationActor,
+        batch_id: str,
+    ) -> Mapping[str, Any]:
+        """Remove every quote row from the current capture batch review list."""
+        actor = _actor(actor)
+        self._repository.get_quote_capture_batch(workspace_id=actor.workspace_id, batch_id=batch_id)
+        removed = self._repository.clear_capture_chunks(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+        )
+        return {"batch_id": batch_id, "removed": removed}
+
     def confirm_batch_quotes_to_draft(
         self,
         actor: PriceVerificationActor,

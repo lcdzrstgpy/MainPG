@@ -388,29 +388,32 @@ def filter_activity_workbook(
         removed_skcs: set[str] = set()
         kept_spus: set[str] = set()
         kept_activity_spus: set[tuple[str, str]] = set()
+        kept_activity_keys: set[tuple[str, str]] = set()
+        removed_activity_keys: set[tuple[str, str]] = set()
+        # 逐条判定：同一 SKC 在不同活动（活动主题）下申报价不同，每条 SKC×活动×申报价 独立评估，
+        # 满足条件的行保留、不符合的行剔除，不再按 SKC 去重汇总、也不取组内最低价。
         for (skc, activity_name), entries in groups.items():
-            prices = [price for _, price in entries if price is not None and price > 0]
-            if not prices:
-                decision: dict[str, Any] = {"keep": False, "reason_code": "invalid_activity_price", "net_profit": None, "profit_rate": None}
-            else:
-                decision = evaluate(skc, min(prices))
-            decision = {**decision, "skc": skc, "activity_name": activity_name, "min_price": float(min(prices)) if prices else None}
-            decisions.append(decision)
-            reason = str(decision.get("reason_code") or "unknown")
-            qualification_counts[reason] += 1
-            row_numbers = {number for number, _ in entries}
-            if decision.get("keep"):
-                kept_rows.update(row_numbers)
-                kept_skcs.add(skc)
-                for row_number in row_numbers:
+            for row_number, price in entries:
+                if price is None or price <= 0:
+                    decision: dict[str, Any] = {"keep": False, "decision": "excluded", "reason_code": "invalid_activity_price", "net_profit": None, "profit_rate": None}
+                else:
+                    decision = evaluate(skc, price)
+                decision = {**decision, "skc": skc, "activity_name": activity_name, "price": float(price) if price is not None else None}
+                decisions.append(decision)
+                reason = str(decision.get("reason_code") or "unknown")
+                qualification_counts[reason] += 1
+                if decision.get("keep"):
+                    kept_rows.add(row_number)
+                    kept_skcs.add(skc)
+                    kept_activity_keys.add((skc, activity_name))
                     spu = spu_by_row.get(row_number, "")
                     if spu:
                         kept_spus.add(spu)
                         kept_activity_spus.add((activity_name, spu))
-            else:
-                removed_row_numbers.update(row_numbers)
-                removed_skcs.add(skc)
-                for row_number, _ in entries:
+                else:
+                    removed_row_numbers.add(row_number)
+                    removed_skcs.add(skc)
+                    removed_activity_keys.add((skc, activity_name))
                     removed_rows.append(_removed_row(worksheet, row_number, reason, decision))
 
         _delete_rows(worksheet, removed_row_numbers)
@@ -442,8 +445,8 @@ def filter_activity_workbook(
             "removed_bytes": removed_bytes,
             "kept_skc_count": len(kept_skcs), "removed_skc_count": len(removed_skcs),
             "kept_row_count": len(kept_rows), "removed_row_count": len(removed_rows),
-            "kept_activity_count": sum(1 for item in decisions if item.get("keep")),
-            "removed_activity_count": sum(1 for item in decisions if not item.get("keep")),
+            "kept_activity_count": len(kept_activity_keys),
+            "removed_activity_count": len(removed_activity_keys),
             "qualification_counts": dict(qualification_counts), "removed_rows": removed_rows,
             "activity_decisions": decisions,
             "template_site_summary": {

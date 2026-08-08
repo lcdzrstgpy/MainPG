@@ -113,7 +113,7 @@ class ProductProcessingRepository:
                 statement = statement.where(ProductDraftRow.selection_run_id == selection_run_id)
             if source_type is not None:
                 statement = statement.where(ProductDraftRow.source_type == source_type)
-            statement = statement.order_by(ProductDraftRow.updated_at.desc(), ProductDraftRow.id.desc()).offset(offset).limit(limit + 1)
+            statement = statement.order_by(ProductDraftRow.created_at.desc(), ProductDraftRow.id.desc()).offset(offset).limit(limit + 1)
             rows = session.scalars(statement).all()
             return [self._draft(row) for row in rows[:limit]], len(rows) > limit
 
