@@ -214,6 +214,81 @@
   gap: 10px;
 }
 
+/* 活动过滤历史结果列表 */
+.profit-filter-history {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed #dce9f2;
+}
+
+.profit-filter-history h3 {
+  margin: 0;
+  color: #172b44;
+  font-size: .9rem;
+}
+
+.profit-filter-history-list {
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.profit-filter-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 6px 12px;
+  align-items: center;
+  width: 100%;
+  border: 1px solid #e2edf5;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #36526c;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  font-size: .8rem;
+}
+
+.profit-filter-history-item:hover {
+  border-color: #82c9ef;
+  background: #f4fbfe;
+}
+
+.profit-filter-history-item.is-active {
+  border-color: #0a8cf2;
+  background: #eefaff;
+  box-shadow: inset 0 0 0 1px #b7ddf8;
+}
+
+.profit-filter-history-item strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1c3752;
+  font-weight: 800;
+}
+
+.profit-filter-history-item span {
+  color: #7a93ab;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.profit-filter-history-item em {
+  color: #07966f;
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.profit-filter-history-item em.is-error {
+  color: #b42318;
+}
+
 .profit-modal-mask {
   position: fixed;
   inset: 0;

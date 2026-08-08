@@ -336,11 +336,16 @@ def _worksheet_site(worksheet, header_map: dict[str, int], fallback: str) -> str
     return str(fallback or "US").upper()
 
 
+class FilterPausedError(InterruptedError):
+    """活动过滤被用户暂停时抛出。"""
+
+
 def filter_activity_workbook(
     workbook_bytes: bytes,
     *,
     site: str,
     evaluate: Callable[[str, Decimal], dict[str, Any]],
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Filter an activity workbook while retaining its sheet layout and data.
 
@@ -393,6 +398,8 @@ def filter_activity_workbook(
         # 逐条判定：同一 SKC 在不同活动（活动主题）下申报价不同，每条 SKC×活动×申报价 独立评估，
         # 满足条件的行保留、不符合的行剔除，不再按 SKC 去重汇总、也不取组内最低价。
         for (skc, activity_name), entries in groups.items():
+            if should_stop and should_stop():
+                raise FilterPausedError("filter paused")
             for row_number, price in entries:
                 if price is None or price <= 0:
                     decision: dict[str, Any] = {"keep": False, "decision": "excluded", "reason_code": "invalid_activity_price", "net_profit": None, "profit_rate": None}

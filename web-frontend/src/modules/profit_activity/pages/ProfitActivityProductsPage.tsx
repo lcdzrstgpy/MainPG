@@ -15,25 +15,41 @@ import "../styles/profitActivityProducts.css";
 const siteLabels: Record<ProfitActivitySite, string> = { US: "美区", CO: "哥伦比亚", EC: "厄瓜多尔" };
 const allSites: ProfitActivitySite[] = ["US", "CO", "EC"];
 const pageSizeOptions = [10, 50, 100] as const;
+const editFieldLabels: Record<"selling_price" | "cost_price" | "weight_kg" | "note", string> = {
+  selling_price: "售价",
+  cost_price: "成本",
+  weight_kg: "重量",
+  note: "备注",
+};
 
 const productKey = (item: ProfitActivityProduct) => `${item.site || item.site_code || "US"}-${item.skc}`;
 
+// 产品库跨挂载缓存：切换页面再返回时立即展示上次数据，避免每次空表 + 重新等待查询
+type LibraryPageSize = (typeof pageSizeOptions)[number];
+const productLibraryCache: {
+  sites?: ProfitActivitySite[];
+  scope?: ProfitActivityScope;
+  querySkcs?: string;
+  products?: ProfitActivityProduct[];
+  page?: number;
+  pageSize?: LibraryPageSize;
+} = {};
+
 export function ProfitActivityProductsPage() {
-  const [sites, setSites] = useState<Set<ProfitActivitySite>>(() => new Set(allSites));
+  const [sites, setSites] = useState<Set<ProfitActivitySite>>(() => new Set(productLibraryCache.sites ?? allSites));
   const masterRef = useRef<HTMLInputElement>(null);
-  const [scope, setScope] = useState<ProfitActivityScope>("default");
-  const [querySkcs, setQuerySkcs] = useState("");
-  const [products, setProducts] = useState<ProfitActivityProduct[]>([]);
+  const [scope, setScope] = useState<ProfitActivityScope>(productLibraryCache.scope ?? "default");
+  const [querySkcs, setQuerySkcs] = useState(productLibraryCache.querySkcs ?? "");
+  const [products, setProducts] = useState<ProfitActivityProduct[]>(productLibraryCache.products ?? []);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<(typeof pageSizeOptions)[number]>(10);
+  const [page, setPage] = useState(productLibraryCache.page ?? 1);
+  const [pageSize, setPageSize] = useState<(typeof pageSizeOptions)[number]>(productLibraryCache.pageSize ?? 10);
   // 页码输入框的草稿值：允许用户自由填写，回车/失焦/点“跳转”才生效
   const [pageInput, setPageInput] = useState("1");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("输入 SKC 查询；留空展示数据库中当前权限可见产品。");
   const [activeProduct, setActiveProduct] = useState<ProfitActivityProduct | null>(null);
   const [previewImage, setPreviewImage] = useState<{ url: string; label: string } | null>(null);
-  const [edits, setEdits] = useState<Record<string, Partial<Record<"selling_price" | "cost_price" | "weight_kg", string>>>>({});
   const tableWrapRef = useRef<HTMLDivElement>(null);
   const tableScrollbarRef = useRef<HTMLDivElement>(null);
   const theadRef = useRef<HTMLTableSectionElement>(null);
@@ -47,8 +63,6 @@ export function ProfitActivityProductsPage() {
   const [tableDragging, setTableDragging] = useState(false);
   // 跟随视口的横向滚动条：track 宽度等于表格实际宽度
   const [tableScrollWidth, setTableScrollWidth] = useState(0);
-
-  const dirtyCount = Object.keys(edits).length;
 
   const totalPages = Math.max(1, Math.ceil(products.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -90,17 +104,27 @@ export function ProfitActivityProductsPage() {
 
   const fetchProducts = async () => {
     if (!sites.size) return [];
-    const results = await Promise.all(
+    // 单个站点查询失败不应导致整个产品库显示为空：失败站点提示，其余站点正常展示
+    const settled = await Promise.allSettled(
       [...sites].map((site) => listProfitActivityProducts({ site, scope, skcs: querySkcs })),
     );
-    return results.flat();
+    const results: ProfitActivityProduct[] = [];
+    const failures: string[] = [];
+    settled.forEach((item, index) => {
+      if (item.status === "fulfilled") results.push(...item.value);
+      else {
+        const site = [...sites][index];
+        failures.push(`${siteLabels[site]}: ${item.reason instanceof Error ? item.reason.message : String(item.reason)}`);
+      }
+    });
+    if (failures.length) setMessage(`部分站点查询失败：${failures.join("；")}`);
+    return results;
   };
 
   const queryProducts = () => withBusy("查询产品", async () => {
     if (!sites.size) {
       setProducts([]);
       setSelected(new Set());
-      setEdits({});
       setPage(1);
       setMessage("请至少勾选一个站点。");
       return;
@@ -108,16 +132,38 @@ export function ProfitActivityProductsPage() {
     const nextProducts = await fetchProducts();
     setProducts(nextProducts);
     setSelected(new Set());
-    setEdits({});
     setPage(1);
     setMessage(`查询数据库产品 完成。\n已查询到 ${nextProducts.length} 个产品。`);
   });
 
   useEffect(() => {
-    // 仅首次进入自动查询；之后筛选/查询条件变化后需手动点击“查询产品”生效
-    void queryProducts();
+    // 有缓存：立即展示上次数据并在后台静默刷新（不置 busy、不重置页码/选择）；
+    // 无缓存：首次进入自动查询。
+    if (productLibraryCache.products) {
+      void (async () => {
+        try {
+          const next = await fetchProducts();
+          setProducts(next);
+          setMessage(`已刷新为最新产品数据，共 ${next.length} 个产品。`);
+        } catch {
+          setMessage("后台刷新失败，当前展示上次缓存数据；可点击“查询产品”重试。");
+        }
+      })();
+    } else {
+      void queryProducts();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 页面状态变化时同步到跨挂载缓存，切走再切回可立即恢复上次展示
+  useEffect(() => {
+    productLibraryCache.sites = [...sites];
+    productLibraryCache.scope = scope;
+    productLibraryCache.querySkcs = querySkcs;
+    productLibraryCache.products = products;
+    productLibraryCache.page = page;
+    productLibraryCache.pageSize = pageSize;
+  }, [sites, scope, querySkcs, products, page, pageSize]);
 
   // 刷新产品列表但保留页码/选择/未保存修改：用于图片上传等局部更新，避免把用户“弹回”首页。
   const refreshProducts = async () => {
@@ -405,50 +451,34 @@ export function ProfitActivityProductsPage() {
 
   const downloadCatalog = () => withBusy("下载产品档案", async () => {
     if (!sites.size) throw new Error("请至少勾选一个站点。");
-    for (const site of sites) {
-      await downloadProfitActivityCatalog({ site, scope });
-    }
+    await downloadProfitActivityCatalog({ sites: [...sites], scope });
     setMessage("产品档案已开始下载。");
   });
 
-  const setEditValue = (key: string, field: "selling_price" | "cost_price" | "weight_kg", value: string) => {
-    setEdits((current) => ({ ...current, [key]: { ...current[key], [field]: value } }));
-  };
-
-  const saveEdits = () => withBusy("保存修改", async () => {
-    if (!dirtyCount) return;
-    let saved = 0;
-    const errors: string[] = [];
-    for (const key of Object.keys(edits)) {
-      const product = products.find((item) => productKey(item) === key);
-      if (!product) continue;
-      const patch = edits[key];
-      try {
-        await updateProfitActivityProduct({
-          site: (product.site || product.site_code || "US") as ProfitActivitySite,
-          skc: product.skc,
-          selling_price: patch.selling_price,
-          cost_price: patch.cost_price,
-          weight_kg: patch.weight_kg,
-        });
-        saved += 1;
-      } catch (error) {
-        errors.push(`${product.skc}: ${error instanceof Error ? error.message : String(error)}`);
-      }
+  // 行内即时保存单个字段：回车或点“保存”按钮触发，成功后仅更新本地列表，不重置翻页/选择。
+  const saveProductField = async (
+    item: ProfitActivityProduct,
+    field: "selling_price" | "cost_price" | "weight_kg" | "note",
+    rawValue: string,
+  ): Promise<boolean | "ignore"> => {
+    // 数字字段清空：视为撤销，不提交
+    if (field !== "note" && rawValue.trim() === "") return "ignore";
+    try {
+      await updateProfitActivityProduct({
+        site: (item.site || item.site_code || "US") as ProfitActivitySite,
+        skc: item.skc,
+        [field]: rawValue,
+      });
+      const nextValue = field === "note" ? rawValue : Number(rawValue);
+      setProducts((current) => current.map((product) => (
+        productKey(product) === productKey(item) ? { ...product, [field]: nextValue } : product
+      )));
+      setMessage(`已保存 ${item.skc} 的${editFieldLabels[field]}。`);
+      return true;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+      return false;
     }
-    setEdits({});
-    const nextProducts = await fetchProducts();
-    setProducts(nextProducts);
-    setSelected(new Set());
-    setPage((current) => Math.min(current, Math.max(1, Math.ceil(nextProducts.length / pageSize))));
-    setMessage(errors.length
-      ? `保存完成：成功 ${saved} 个，失败 ${errors.length} 个（${errors.join("；")}）`
-      : `保存完成，已更新 ${saved} 个产品。`);
-  });
-
-  const cancelEdits = () => {
-    setEdits({});
-    setMessage("已撤销未保存的修改。");
   };
 
   return (
@@ -486,8 +516,6 @@ export function ProfitActivityProductsPage() {
             <button onClick={togglePageSelected} disabled={!pageProducts.length}>{pageSelected ? "取消本页" : "全选本页"}</button>
             <button className="danger-button" onClick={deleteSelected} disabled={!selectedCount || !!busy}>删除已选 {selectedCount}</button>
             <button onClick={downloadCatalog} disabled={!!busy}>下载产品档案</button>
-            <button className="primary-button" onClick={saveEdits} disabled={!dirtyCount || !!busy}>保存修改{dirtyCount ? ` (${dirtyCount})` : ""}</button>
-            <button onClick={cancelEdits} disabled={!dirtyCount || !!busy}>撤销修改{dirtyCount ? ` (${dirtyCount})` : ""}</button>
           </div>
         </div>
         <p className="profit-products-message">{busy || message.split("\n").map((line, index) => (<span key={index}>{line}<br /></span>))}</p>
@@ -531,12 +559,12 @@ export function ProfitActivityProductsPage() {
                     <td>{siteLabels[(item.site || item.site_code || "US") as ProfitActivitySite]}</td>
                     <td>{item.skc}{item.source_type === "price_verification" && <em className="profit-source-badge" title="来自核价及货源板块自动入库">核价</em>}</td>
                     <td><ProductImageCell item={item} onChanged={refreshProducts} /></td>
-                    <td><EditNumberInput value={edits[key]?.selling_price ?? (typeof item.selling_price === "number" ? String(item.selling_price) : "")} onChange={(value) => setEditValue(key, "selling_price", value)} /></td>
-                    <td><EditNumberInput value={edits[key]?.cost_price ?? (typeof item.cost_price === "number" ? String(item.cost_price) : "")} onChange={(value) => setEditValue(key, "cost_price", value)} /></td>
-                    <td><EditNumberInput value={edits[key]?.weight_kg ?? (typeof item.weight_kg === "number" ? String(item.weight_kg) : "")} onChange={(value) => setEditValue(key, "weight_kg", value)} /></td>
+                    <td><EditableCell type="number" value={typeof item.selling_price === "number" ? String(item.selling_price) : ""} onSave={(value) => saveProductField(item, "selling_price", value)} /></td>
+                    <td><EditableCell type="number" value={typeof item.cost_price === "number" ? String(item.cost_price) : ""} onSave={(value) => saveProductField(item, "cost_price", value)} /></td>
+                    <td><EditableCell type="number" value={typeof item.weight_kg === "number" ? String(item.weight_kg) : ""} onSave={(value) => saveProductField(item, "weight_kg", value)} /></td>
                     <td className={(item.net_profit ?? 0) >= 0 ? "profit-good" : "profit-bad"}>{money(item.net_profit)}</td>
                     <td>{percent(item.profit_rate)}</td>
-                    <td className="profit-note-cell" title={item.note}>{item.note || "-"}</td>
+                    <td><EditableCell type="text" className="profit-note-input" value={item.note ?? ""} onSave={(value) => saveProductField(item, "note", value)} /></td>
                     <td>{item.source_url ? <button className="profit-source-open" onClick={() => setActiveProduct(item)} title="查看该 SKC 已关联的 1688 货源">打开（{(item.source_groups ?? []).filter((group) => group?.source_url).length}）</button> : "-"}</td>
                     <td><SourceImagesCell item={item} onPreview={(url) => setPreviewImage({ url, label: `${item.skc} 货源图` })} /></td>
                   </tr>
@@ -765,16 +793,108 @@ function SourceImagesCell({ item, onPreview }: { item: ProfitActivityProduct; on
   );
 }
 
-function EditNumberInput({ value, onChange }: { value: string; onChange: (next: string) => void }) {
+/**
+ * 行内可编辑单元格：聚焦后显示“保存/撤销”按钮；回车或点“保存”即时保存，
+ * 保存成功后按钮消失；失焦未保存的修改会还原。
+ */
+function EditableCell({
+  value,
+  type = "text",
+  className = "",
+  onSave,
+}: {
+  value: string;
+  type?: "number" | "text";
+  className?: string;
+  /** 返回值：true=已保存；false=保存失败（保留编辑态）；"ignore"=无需提交（还原） */
+  onSave: (next: string) => Promise<boolean | "ignore">;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  // 保存进行中失焦时不还原（保存完成后由结果决定编辑态）
+  const savingRef = useRef(false);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const dirty = draft !== value;
+
+  const save = async () => {
+    if (savingRef.current) return;
+    if (!dirty) {
+      setEditing(false);
+      return;
+    }
+    savingRef.current = true;
+    setSaving(true);
+    const result = await onSave(draft);
+    savingRef.current = false;
+    setSaving(false);
+    if (result === true) {
+      setEditing(false);
+    } else if (result === "ignore") {
+      setDraft(value);
+      setEditing(false);
+    }
+    // 失败：保留编辑态与输入内容，顶部提示错误
+  };
+
+  const cancel = () => {
+    setDraft(value);
+    setEditing(false);
+  };
+
+  const handleBlur = () => {
+    if (savingRef.current) return; // 保存中不打断
+    setDraft(value); // 未保存的修改失焦还原
+    setEditing(false);
+  };
+
   return (
-    <input
-      className="profit-edit-input"
-      type="number"
-      step="any"
-      min="0"
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-    />
+    <span className={`profit-edit-cell ${className}`}>
+      <input
+        className={`profit-edit-input ${type === "number" ? "profit-edit-number" : "profit-edit-text"}`}
+        type={type}
+        step={type === "number" ? "any" : undefined}
+        min={type === "number" ? 0 : undefined}
+        maxLength={type === "text" ? 500 : undefined}
+        placeholder={type === "text" ? "-" : undefined}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onFocus={() => setEditing(true)}
+        onBlur={handleBlur}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void save();
+          }
+        }}
+      />
+      {editing ? (
+        <span className="profit-edit-actions">
+          <button
+            type="button"
+            className="profit-edit-save"
+            disabled={saving}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => void save()}
+          >
+            {saving ? "保存中…" : "保存"}
+          </button>
+          <button
+            type="button"
+            className="profit-edit-cancel"
+            disabled={saving}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={cancel}
+          >
+            撤销
+          </button>
+        </span>
+      ) : null}
+    </span>
   );
 }
 

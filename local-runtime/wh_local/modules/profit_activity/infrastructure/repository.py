@@ -163,12 +163,31 @@ class ProfitActivityRepository:
             row = session.get(ImportTaskRow, task_id)
             return row if row is not None and row.workspace_id == workspace_id else None
 
-    def create_filter_task(self, workspace_id: str, result: dict) -> FilterTaskRow:
+    def create_filter_task(self, workspace_id: str, status: str, result: dict) -> FilterTaskRow:
         with self._sessions.begin() as session:
-            task = FilterTaskRow(workspace_id=workspace_id, status="completed", result_json=json.dumps(result, ensure_ascii=False, default=str))
+            task = FilterTaskRow(workspace_id=workspace_id, status=status, result_json=json.dumps(result, ensure_ascii=False, default=str))
             session.add(task)
             session.flush()
             return task
+
+    def update_filter_task(self, task_id: int, workspace_id: str, status: str, result: dict) -> FilterTaskRow | None:
+        with self._sessions.begin() as session:
+            row = session.get(FilterTaskRow, task_id)
+            if row is None or row.workspace_id != workspace_id:
+                return None
+            row.status = status
+            row.result_json = json.dumps(result, ensure_ascii=False, default=str)
+            session.flush()
+            return row
+
+    def list_filter_tasks(self, workspace_id: str = "default", limit: int = 20) -> list[FilterTaskRow]:
+        with self._sessions() as session:
+            return list(session.scalars(
+                select(FilterTaskRow)
+                .where(FilterTaskRow.workspace_id == workspace_id)
+                .order_by(FilterTaskRow.created_at.desc())
+                .limit(limit)
+            ))
 
     def get_filter_task(self, task_id: int, workspace_id: str = "default") -> FilterTaskRow | None:
         with self._sessions() as session:

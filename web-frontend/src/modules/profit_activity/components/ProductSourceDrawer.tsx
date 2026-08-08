@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { listProductSources, loadProductImage } from "../api/profitActivityApi";
+import { listProductSources, loadProductImage, updateProductSourceGroup } from "../api/profitActivityApi";
 import type { ProfitActivityProduct, ProductSourceLink, ProductSources } from "../types/products";
 import { priceVerificationApi } from "../../price_verification/api/priceVerificationApi";
 import type { SourceTopProfit } from "../../price_verification/types";
@@ -119,6 +119,12 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   const [profitBusy, setProfitBusy] = useState<number | null>(null);
   const [unlinkBusy, setUnlinkBusy] = useState<number | null>(null);
   const [unlinkError, setUnlinkError] = useState("");
+  // 非核价产品货源卡片的编辑态：修改链接与截图
+  const [editGroup, setEditGroup] = useState<number | null>(null);
+  const [editUrl, setEditUrl] = useState("");
+  const [editImage, setEditImage] = useState<File | null>(null);
+  const [editImagePreview, setEditImagePreview] = useState("");
+  const [savingSource, setSavingSource] = useState(false);
 
   const open = product !== null;
 
@@ -161,10 +167,18 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
       setPrices({});
       setWeights({});
       setUnlinkError("");
+      setEditGroup(null);
+      setEditUrl("");
+      setEditImage(null);
+      setEditImagePreview("");
+      setSavingSource(false);
     }
   }, [open, refresh]);
 
   if (!open || !product) return null;
+
+  // 核价入库产品保留候选源价/重量/利润核算与解除关联；其他产品仅展示并允许修改图片与链接
+  const isPriceVerification = product.source_type === "price_verification";
 
   const changePrice = (link: ProductSourceLink, rawValue: string) => {
     if (!/^\d*\.?\d*$/.test(rawValue)) return;
@@ -211,6 +225,52 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     }
   };
 
+  // 非核价产品：进入“修改链接/截图”编辑态
+  const startEditSource = (link: ProductSourceLink) => {
+    setEditGroup(link.group ?? 0);
+    setEditUrl(link.source_url || "");
+    setEditImage(null);
+    setEditImagePreview("");
+    setUnlinkError("");
+  };
+
+  const cancelEditSource = () => {
+    setEditGroup(null);
+    setEditUrl("");
+    setEditImage(null);
+    setEditImagePreview("");
+  };
+
+  const onEditImageSelected = (file: File | undefined) => {
+    if (!file) return;
+    if (editImagePreview) URL.revokeObjectURL(editImagePreview);
+    setEditImage(file);
+    setEditImagePreview(URL.createObjectURL(file));
+  };
+
+  const saveEditSource = async () => {
+    if (savingSource || editGroup === null) return;
+    setSavingSource(true);
+    setUnlinkError("");
+    try {
+      const group = editGroup;
+      // 基于当前产品货源组构造新组，仅替换目标组的链接与图片，其余组原样保留
+      const groups = [...(product.source_groups ?? [])];
+      while (groups.length <= group) groups.push({ source_url: "", image_paths: [] });
+      groups[group] = { ...groups[group], source_url: editUrl.trim() };
+      const site = (product.site || product.site_code || "US") as "US" | "CO" | "EC";
+      await updateProductSourceGroup({ site, skc: product.skc, group, sourceGroups: groups, image: editImage });
+      cancelEditSource();
+      await refresh();
+      onChanged?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setUnlinkError(`保存失败：${message}`);
+    } finally {
+      setSavingSource(false);
+    }
+  };
+
   return (
     <div className="profit-source-drawer-root">
       <div className="profit-source-drawer-mask" onClick={onClose} />
@@ -241,63 +301,136 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
             const profit = profits[link.id] ?? null;
             const priceText = prices[link.id] !== undefined ? prices[link.id] : String(link.price_cny ?? "");
             const weightText = weights[link.id] ?? "0.5";
+            const isEditing = editGroup === (link.group ?? 0);
             return (
-              <div className="profit-source-card" key={link.id}>
+              <div className={`profit-source-card ${isPriceVerification ? "" : "profit-source-card-simple"}`} key={link.id}>
                 <div className="profit-source-card-row">
-                  <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
-                    <SourceCardImage
-                      skc={product.skc}
-                      site={sources?.site || product.site || product.site_code || "US"}
-                      group={link.group}
-                      imagePaths={link.image_paths ?? []}
-                      fallbackUrl={link.main_image_url}
-                    />
-                    <span className="profit-source-card-body">
-                      <span className="profit-source-card-title">{link.source_title || "候选商品"}</span>
-                      <small className="profit-source-card-meta">
-                        offer {link.offer_id} · 起订量 {link.moq ? `${link.moq} 件` : "—"} · 国内运费 {link.domestic_freight_cny ? `¥${link.domestic_freight_cny}` : "—"}
-                      </small>
-                    </span>
-                    <b>{moneyText(link.price_cny)}</b>
-                  </a>
-                  <button
-                    className="profit-source-unlink"
-                    onClick={() => void unlink(link)}
-                    disabled={unlinkBusy === link.id}
-                  >
-                    {unlinkBusy === link.id ? "解除中…" : "解除关联"}
-                  </button>
-                </div>
-
-                <div className="profit-source-card-profit">
-                  <dl className="profit-source-card-fields">
-                    <div className="is-editable">
-                      <dt>候选源价（可调）</dt>
-                      <dd><input type="number" min="0.01" step="0.01" value={priceText} onChange={(event) => changePrice(link, event.target.value)} disabled={profitBusy === link.id} /> 元</dd>
-                    </div>
-                    <div className="is-editable is-weight">
-                      <dt>重量（可调）</dt>
-                      <dd><input type="number" min="0.1" max="10" step="0.1" value={weightText} onChange={(event) => changeWeight(link, event.target.value)} disabled={profitBusy === link.id} /> kg</dd>
-                    </div>
-                  </dl>
-                  {profit?.available ? (
-                    <div className={`profit-source-card-result ${profit.qualified ? "is-qualified" : ""}`}>
-                      <dl className="profit-source-card-result-fields">
-                        <div><dt>总成本</dt><dd>{moneyText(profit.total_cost)}</dd></div>
-                        <div><dt>净利润</dt><dd>{moneyText(profit.net_profit)}</dd></div>
-                        <div><dt>利润率</dt><dd>{percentText(profit.profit_rate)}</dd></div>
-                      </dl>
-                      <em className={profit.qualified ? "is-qualified" : ""} title={qualificationText(profit.qualification)}>
-                        {profit.qualified ? "达标 ✓" : "未达标"}
-                      </em>
-                    </div>
+                  {isPriceVerification ? (
+                    <>
+                      <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
+                        <SourceCardImage
+                          skc={product.skc}
+                          site={sources?.site || product.site || product.site_code || "US"}
+                          group={link.group}
+                          imagePaths={link.image_paths ?? []}
+                          fallbackUrl={link.main_image_url}
+                        />
+                        <span className="profit-source-card-body">
+                          <span className="profit-source-card-title">{link.source_title || "候选商品"}</span>
+                          <small className="profit-source-card-meta">
+                            offer {link.offer_id} · 起订量 {link.moq ? `${link.moq} 件` : "—"} · 国内运费 {link.domestic_freight_cny ? `¥${link.domestic_freight_cny}` : "—"}
+                          </small>
+                        </span>
+                        <b>{moneyText(link.price_cny)}</b>
+                      </a>
+                      <button
+                        className="profit-source-unlink"
+                        onClick={() => void unlink(link)}
+                        disabled={unlinkBusy === link.id}
+                      >
+                        {unlinkBusy === link.id ? "解除中…" : "解除关联"}
+                      </button>
+                    </>
+                  ) : isEditing ? (
+                    <>
+                      <div className="profit-source-edit-main">
+                        <div className="profit-source-edit-image">
+                          {editImagePreview ? (
+                            <img className="profit-source-card-shot" src={editImagePreview} alt="新货源截图" />
+                          ) : (
+                            <SourceCardImage
+                              skc={product.skc}
+                              site={sources?.site || product.site || product.site_code || "US"}
+                              group={link.group}
+                              imagePaths={link.image_paths ?? []}
+                              fallbackUrl={link.main_image_url}
+                            />
+                          )}
+                          <label className="profit-source-edit-image-button">
+                            {editImagePreview ? "重新选择" : "替换图片"}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              hidden
+                              onChange={(event) => {
+                                onEditImageSelected(event.target.files?.[0]);
+                                event.target.value = "";
+                              }}
+                            />
+                          </label>
+                        </div>
+                        <label className="profit-source-edit-url">
+                          <span>链接地址</span>
+                          <input
+                            type="url"
+                            placeholder="https://…"
+                            value={editUrl}
+                            onChange={(event) => setEditUrl(event.target.value)}
+                          />
+                        </label>
+                      </div>
+                      <div className="profit-source-edit-actions">
+                        <button className="profit-edit-save" onClick={() => void saveEditSource()} disabled={savingSource}>
+                          {savingSource ? "保存中…" : "保存"}
+                        </button>
+                        <button className="profit-edit-cancel" onClick={cancelEditSource} disabled={savingSource}>
+                          撤销
+                        </button>
+                      </div>
+                    </>
                   ) : (
-                    <div className="profit-source-card-result is-empty">
-                      <span>利润核算不可用：{reasonText(profit?.reason)}</span>
-                      {profitBusy === link.id ? <small>核算中…</small> : null}
-                    </div>
+                    <>
+                      <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
+                        <SourceCardImage
+                          skc={product.skc}
+                          site={sources?.site || product.site || product.site_code || "US"}
+                          group={link.group}
+                          imagePaths={link.image_paths ?? []}
+                          fallbackUrl={link.main_image_url}
+                        />
+                        <span className="profit-source-card-body">
+                          <span className="profit-source-card-title">{link.source_title || "货源链接"}</span>
+                          <small className="profit-source-card-meta profit-source-card-url" title={link.source_url}>{link.source_url || "—"}</small>
+                        </span>
+                      </a>
+                      <button className="profit-source-edit-button" onClick={() => startEditSource(link)}>
+                        修改
+                      </button>
+                    </>
                   )}
                 </div>
+
+                {isPriceVerification ? (
+                  <div className="profit-source-card-profit">
+                    <dl className="profit-source-card-fields">
+                      <div className="is-editable">
+                        <dt>候选源价（可调）</dt>
+                        <dd><input type="number" min="0.01" step="0.01" value={priceText} onChange={(event) => changePrice(link, event.target.value)} disabled={profitBusy === link.id} /> 元</dd>
+                      </div>
+                      <div className="is-editable is-weight">
+                        <dt>重量（可调）</dt>
+                        <dd><input type="number" min="0.1" max="10" step="0.1" value={weightText} onChange={(event) => changeWeight(link, event.target.value)} disabled={profitBusy === link.id} /> kg</dd>
+                      </div>
+                    </dl>
+                    {profit?.available ? (
+                      <div className={`profit-source-card-result ${profit.qualified ? "is-qualified" : ""}`}>
+                        <dl className="profit-source-card-result-fields">
+                          <div><dt>总成本</dt><dd>{moneyText(profit.total_cost)}</dd></div>
+                          <div><dt>净利润</dt><dd>{moneyText(profit.net_profit)}</dd></div>
+                          <div><dt>利润率</dt><dd>{percentText(profit.profit_rate)}</dd></div>
+                        </dl>
+                        <em className={profit.qualified ? "is-qualified" : ""} title={qualificationText(profit.qualification)}>
+                          {profit.qualified ? "达标 ✓" : "未达标"}
+                        </em>
+                      </div>
+                    ) : (
+                      <div className="profit-source-card-result is-empty">
+                        <span>利润核算不可用：{reasonText(profit?.reason)}</span>
+                        {profitBusy === link.id ? <small>核算中…</small> : null}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </div>
             );
           })}

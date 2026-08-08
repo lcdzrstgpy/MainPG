@@ -185,6 +185,11 @@ export function ProfitActivityTestPage() {
   });
   const [activityFile, setActivityFile] = useState<File | null>(null);
   const [filterTask, setFilterTask] = useState<FilterTask | null>(null);
+  // 过滤任务进行中（含上传/轮询），控制“产品过滤中…”按钮与暂停按钮
+  const [filterBusy, setFilterBusy] = useState(false);
+  // 历史过滤结果（按时间倒序）
+  const [filterHistory, setFilterHistory] = useState<FilterTask[]>([]);
+  const filterPollRef = useRef<number | undefined>(undefined);
   // 没有任何可申报产品时的提示弹窗
   const [noEligibleOpen, setNoEligibleOpen] = useState(false);
   const [busy, setBusy] = useState("");
@@ -213,8 +218,12 @@ export function ProfitActivityTestPage() {
     void loadSettings();
     void queryProducts("");
     void restoreImportSessions();
+    void loadFilterHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBase, token]);
+
+  // 组件卸载时清理过滤轮询定时器
+  useEffect(() => () => window.clearTimeout(filterPollRef.current), []);
 
   useEffect(() => {
     if (!settings) return;
@@ -511,33 +520,26 @@ export function ProfitActivityTestPage() {
     await queryProducts();
   });
 
-  // 产品过滤：用上传的活动 Excel 计算可申报/剔除统计并展示结果，不生成文件、不下载
-  const runActivityFilter = () => withBusy("产品过滤", async () => {
-    if (!activityFile) throw new Error("先选择活动 Excel。");
-    const form = new FormData();
-    form.append("site", site);
-    form.append("scope", scope);
-    form.append("file", activityFile);
-    const task = await request<FilterTask>("/api/profit-activity/activity-filter", { method: "POST", body: form });
-    setFilterTask(task);
-    const kept = task.kept_row_count ?? task.kept_activity_count ?? task.kept_skc_count ?? 0;
-    const removed = task.removed_row_count ?? task.removed_activity_count ?? task.removed_skc_count ?? 0;
-    setMessage(`产品过滤完成：逐条匹配 ${kept + removed} 条，可申报 ${kept} 条，剔除 ${removed} 条。确认后可点“生成并下载可申报产品”下载报告。`);
-  });
+  const filterTaskId = (task: FilterTask | null | undefined): number | null => {
+    const id = task?.task_id ?? task?.filter_task_id ?? task?.operation_task_id ?? null;
+    return typeof id === "number" ? id : null;
+  };
 
-  const generateFiltered = () => withBusy("生成并下载可申报产品", async () => {
-    if (!activityFile) throw new Error("先选择活动 Excel。");
-    const form = new FormData();
-    form.append("site", site);
-    form.append("scope", scope);
-    form.append("file", activityFile);
-    const task = await request<FilterTask>("/api/profit-activity/activity-filter", { method: "POST", body: form });
-    setFilterTask(task);
-    const taskId = task.task_id || task.filter_task_id;
-    if (!taskId) throw new Error("生成任务未返回任务编号。");
+  // 加载历史过滤结果（最新在前，最多保留 5 条）
+  const loadFilterHistory = async () => {
+    try {
+      const tasks = await request<FilterTask[]>("/api/profit-activity/activity-filter/tasks?limit=5");
+      setFilterHistory(Array.isArray(tasks) ? tasks.slice(0, 5) : []);
+    } catch {
+      // 历史接口不可用时静默忽略，不影响主流程
+    }
+  };
+
+  // 过滤完成后保存并下载可申报产品
+  const finishFilteredDownload = async (task: FilterTask, kept: number, removed: number) => {
+    const taskId = filterTaskId(task);
+    if (!taskId) return;
     const saved = await request<{ saved_path?: string }>(`/api/profit-activity/activity-filter/${taskId}/save?kind=filtered`, { method: "POST" });
-    const kept = task.kept_row_count ?? task.kept_activity_count ?? task.kept_skc_count ?? 0;
-    const removed = task.removed_row_count ?? task.removed_activity_count ?? task.removed_skc_count ?? 0;
     if (kept > 0) {
       await download(`/api/profit-activity/activity-filter/${taskId}/download?kind=filtered`, "可申报产品.xlsx");
     }
@@ -547,7 +549,142 @@ export function ProfitActivityTestPage() {
     if (kept <= 0) {
       setNoEligibleOpen(true);
     }
-  });
+  };
+
+  // 轮询过滤任务直到结束；downloadOnDone=true 时完成后自动保存并下载可申报产品
+  const startFilterTask = (taskId: number, downloadOnDone: boolean) => {
+    window.clearTimeout(filterPollRef.current);
+    setFilterBusy(true);
+    const tick = async () => {
+      try {
+        const data = await request<FilterTask>(`/api/profit-activity/activity-filter/tasks/${taskId}`);
+        setFilterTask(data);
+        const status = data.status ?? "running";
+        if (status === "completed") {
+          setFilterBusy(false);
+          void loadFilterHistory();
+          const kept = data.kept_row_count ?? data.kept_activity_count ?? data.kept_skc_count ?? 0;
+          const removed = data.removed_row_count ?? data.removed_activity_count ?? data.removed_skc_count ?? 0;
+          if (downloadOnDone) {
+            try {
+              await finishFilteredDownload(data, kept, removed);
+            } catch (error) {
+              setMessage(error instanceof Error ? error.message : String(error));
+            }
+          } else {
+            setMessage(`产品过滤完成：逐条匹配 ${kept + removed} 条，可申报 ${kept} 条，剔除 ${removed} 条。确认后可点“生成并下载可申报产品”下载报告。`);
+          }
+        } else if (status === "paused") {
+          setFilterBusy(false);
+          void loadFilterHistory();
+          setMessage("产品过滤已暂停。可重新点击“产品过滤”开始新的一次过滤。");
+        } else if (status === "failed") {
+          setFilterBusy(false);
+          void loadFilterHistory();
+          setMessage(`产品过滤失败：${typeof data.error === "string" ? data.error : "未知错误"}`);
+        } else {
+          // queued / running：继续轮询
+          filterPollRef.current = window.setTimeout(() => void tick(), 1000);
+        }
+      } catch (error) {
+        setFilterBusy(false);
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
+    };
+    void tick();
+  };
+
+  // 产品过滤：上传活动 Excel 并异步启动过滤任务，轮询进度
+  const runActivityFilter = async () => {
+    if (!activityFile) {
+      setMessage("先选择活动 Excel。");
+      return;
+    }
+    if (filterBusy) return;
+    // 防止站点选错导致整表“站点不匹配”剔除，先与用户确认过滤站点
+    if (!window.confirm(`是否过滤${siteLabels[site]}的产品？`)) {
+      setMessage("已取消产品过滤。");
+      return;
+    }
+    setFilterBusy(true);
+    setMessage("产品过滤中…");
+    try {
+      const form = new FormData();
+      form.append("site", site);
+      form.append("scope", scope);
+      form.append("file", activityFile);
+      const task = await request<FilterTask>("/api/profit-activity/activity-filter", { method: "POST", body: form });
+      const taskId = filterTaskId(task);
+      if (!taskId) throw new Error("过滤任务未返回任务编号。");
+      setFilterTask(task);
+      startFilterTask(taskId, false);
+    } catch (error) {
+      setFilterBusy(false);
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const generateFiltered = async () => {
+    // 已有本次过滤的完成结果：直接基于该结果保存并下载可申报产品，避免重复过滤
+    const currentTaskId = filterTaskId(filterTask);
+    if (currentTaskId && filterTask?.status === "completed") {
+      try {
+        const kept = Number(filterTask.kept_row_count ?? filterTask.kept_activity_count ?? filterTask.kept_skc_count ?? 0);
+        const removed = Number(filterTask.removed_row_count ?? filterTask.removed_activity_count ?? filterTask.removed_skc_count ?? 0);
+        await finishFilteredDownload(filterTask, kept, removed);
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+    if (!activityFile) {
+      setMessage("先选择活动 Excel。");
+      return;
+    }
+    if (filterBusy) return;
+    setFilterBusy(true);
+    setMessage("产品过滤中…");
+    try {
+      const form = new FormData();
+      form.append("site", site);
+      form.append("scope", scope);
+      form.append("file", activityFile);
+      const task = await request<FilterTask>("/api/profit-activity/activity-filter", { method: "POST", body: form });
+      const taskId = filterTaskId(task);
+      if (!taskId) throw new Error("生成任务未返回任务编号。");
+      setFilterTask(task);
+      startFilterTask(taskId, true);
+    } catch (error) {
+      setFilterBusy(false);
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  // 暂停正在运行的过滤任务
+  const pauseFilter = async () => {
+    const taskId = filterTaskId(filterTask);
+    if (!taskId) return;
+    try {
+      const data = await request<FilterTask>(`/api/profit-activity/activity-filter/${taskId}/pause`, { method: "POST" });
+      // 后端只是置位了暂停标志，线程稍后才会落库为 paused；这里先按已暂停展示，
+      // 避免用户点了暂停却仍看到“过滤中…”
+      setFilterTask({ ...data, status: "paused" });
+      setFilterBusy(false);
+      setMessage("产品过滤已暂停。");
+      // 后台再同步一次最终状态，供历史列表刷新
+      window.clearTimeout(filterPollRef.current);
+      filterPollRef.current = window.setTimeout(() => {
+        void request<FilterTask>(`/api/profit-activity/activity-filter/tasks/${taskId}`)
+          .then((latest) => {
+            setFilterTask(latest);
+            void loadFilterHistory();
+          })
+          .catch(() => {});
+      }, 1500);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   const downloadCatalog = () => withBusy("下载产品档案", async () => {
     await download(`/api/profit-activity/catalog/rebuild?${new URLSearchParams({ site, scope })}`, `${site}_product_catalog.xlsx`);
@@ -680,11 +817,42 @@ export function ProfitActivityTestPage() {
             </div>
           </div>
           <div className="profit-actions">
-            <button className="primary-button" onClick={runActivityFilter} disabled={!!busy}>产品过滤</button>
-            <button className="primary-button" onClick={generateFiltered} disabled={!!busy}>生成并下载可申报产品</button>
+            <button className="primary-button" onClick={() => void runActivityFilter()} disabled={!!busy || filterBusy || !activityFile}>
+              {filterBusy ? "产品过滤中…" : "产品过滤"}
+            </button>
+            <button className="primary-button" onClick={() => void generateFiltered()} disabled={!!busy || filterBusy || !activityFile}>
+              生成并下载可申报产品
+            </button>
+            <button onClick={() => void pauseFilter()} disabled={!filterBusy}>暂停过滤</button>
             <button onClick={() => saveFilter("removed")} disabled={!!busy || !filterTask}>下载剔除产品</button>
           </div>
           {filterTask && <FilterRunSummary task={filterTask} />}
+          {filterHistory.length > 0 && (
+            <div className="profit-filter-history">
+              <h3>历史过滤结果</h3>
+              <div className="profit-filter-history-list">
+                {filterHistory.map((item) => {
+                  const kept = Number(item.kept_row_count ?? item.kept_activity_count ?? item.kept_skc_count ?? 0) || 0;
+                  const removed = Number(item.removed_row_count ?? item.removed_activity_count ?? item.removed_skc_count ?? 0) || 0;
+                  const active = filterTaskId(item) === filterTaskId(filterTask);
+                  return (
+                    <button
+                      key={filterTaskId(item) ?? `${item.created_at ?? ""}-${item.original_filename ?? ""}`}
+                      type="button"
+                      className={`profit-filter-history-item ${active ? "is-active" : ""}`}
+                      onClick={() => setFilterTask(item)}
+                    >
+                      <strong title={String(item.original_filename || "活动表")}>{String(item.original_filename || "活动表")}</strong>
+                      <span>{formatImportTime(item.created_at) || "-"}</span>
+                      <span>{filterStatusLabel(item.status)}</span>
+                      {item.status === "completed" ? <em>可申报 {kept} · 剔除 {removed}</em> : null}
+                      {item.status !== "completed" && typeof item.error === "string" ? <em className="is-error">{item.error}</em> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </article>
       </section>
 
@@ -825,15 +993,19 @@ function FilterRunSummary({ task }: { task: FilterTask }) {
     ?? (typeof task.removed_skc_count === "number" ? task.removed_skc_count : decisions.filter((item) => item.decision === "excluded").length);
   const total = decisions.length || retained + excluded;
   // 兼容两种任务来源：产品过滤返回 rule_version/minimum_*，活动模板过滤返回 activity_filter_rule_version/min_net_profit_threshold/profit_rate_threshold
-  const ruleVersion = (task.rule_version ?? task.activity_filter_rule_version) as number | undefined;
   const minNetProfit = (task.minimum_net_profit ?? task.min_net_profit_threshold ?? task.threshold) as number | undefined;
   const minProfitRate = (task.minimum_profit_rate ?? task.profit_rate_threshold ?? task.activity_profit_rate_threshold) as number | undefined;
   return (
     <section className="profit-import-summary" aria-label="活动过滤任务结果">
       <div className="profit-import-summary-head">
         <strong>活动过滤结果</strong>
-        <span>规则 v{ruleVersion ?? "-"}</span>
+        <span>{filterStatusLabel(task.status)}</span>
       </div>
+      {task.status && task.status !== "completed" && (
+        <p className="profit-warn">
+          {task.status === "paused" ? "过滤已暂停，未生成可申报/剔除文件。" : task.status === "failed" ? `过滤失败：${typeof task.error === "string" ? task.error : "未知错误"}` : "过滤正在进行中，请稍候…"}
+        </p>
+      )}
       <p className="profit-formula-note">
         最低实际利润 {money(minNetProfit)} 元 · 最低利润率 {percent(minProfitRate)} · 任务时间 {formatImportTime(task.created_at) || "-"}
       </p>
@@ -963,6 +1135,18 @@ function formatImportTime(value?: string) {
   if (Number.isNaN(date.getTime())) return "";
   const pad = (part: number) => String(part).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+const filterStatusLabels: Record<string, string> = {
+  running: "过滤中…",
+  queued: "排队中…",
+  paused: "已暂停",
+  failed: "失败",
+  completed: "已完成",
+};
+
+function filterStatusLabel(status?: string) {
+  return (status && filterStatusLabels[status]) || status || "-";
 }
 
 const importSiteNames: Record<string, string> = { US: "美区", CO: "哥伦比亚", EC: "厄瓜多尔" };

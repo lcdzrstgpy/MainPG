@@ -295,9 +295,12 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
     @router.post("/catalog/rebuild")
-    def rebuild_catalog(site: Literal["US", "CO", "EC"] = "US", scope: str = "default", actor: Actor = Depends(profit_activity_actor)):
+    def rebuild_catalog(site: Literal["US", "CO", "EC"] = "US", sites: str = "", scope: str = "default", actor: Actor = Depends(profit_activity_actor)):
         require_permission(actor, "profit_activity.export", database_path)
-        path = service.create_catalog(site, actor, include_workspace_shared=_include_company(scope, actor, database_path))
+        selected = [item.strip() for item in re.split(r"[,，\s]+", sites) if item.strip() in ("US", "CO", "EC")]
+        if not selected:
+            selected = [site]
+        path = service.create_catalog(selected, actor, include_workspace_shared=_include_company(scope, actor, database_path))
         return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     @router.post("/activity-filter")
@@ -309,17 +312,32 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "file is required")
         try:
             content = await file.read()
+            filename = str(getattr(file, "filename", "activity.xlsx") or "activity.xlsx")
             await file.close()
             scope = str(form.get("scope") or "default")
-            return service.filter_activity_template(content, str(getattr(file, "filename", "activity.xlsx") or "activity.xlsx"), str(form.get("site") or "US"), actor, include_workspace_shared=_include_company(scope, actor, database_path))
+            task_id = service.start_activity_filter(content, filename, str(form.get("site") or "US"), actor, include_workspace_shared=_include_company(scope, actor, database_path))
+            return {"task_id": task_id, "filter_task_id": task_id, "operation_task_id": task_id, "status": "running", "task_status": "running"}
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    @router.get("/activity-filter/tasks")
+    def list_filter_tasks(limit: int = Query(20, ge=1, le=100), actor: Actor = Depends(profit_activity_actor)) -> list[dict[str, Any]]:
+        require_permission(actor, "profit_activity.read", database_path)
+        return service.list_filter_tasks(actor, limit=limit)
 
     @router.get("/activity-filter/tasks/{task_id}")
     def filter_task(task_id: int, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.read", database_path)
         try:
             return service.get_filter_task_legacy(task_id, actor)
+        except ProfitActivityNotFound as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+    @router.post("/activity-filter/{task_id}/pause")
+    def pause_filter_task(task_id: int, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+        require_permission(actor, "profit_activity.filter", database_path)
+        try:
+            return service.pause_activity_filter(task_id, actor)
         except ProfitActivityNotFound as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
