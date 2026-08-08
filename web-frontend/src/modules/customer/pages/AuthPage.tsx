@@ -33,8 +33,9 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
-  const [workspaceCode, setWorkspaceCode] = useState("wh_demo");
-  const [workspaceName, setWorkspaceName] = useState("");
+  // 工作区固定为 default（名称留空），注册页不允许用户修改。
+  const FIXED_WORKSPACE_CODE = "default";
+  const FIXED_WORKSPACE_NAME = "";
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -64,8 +65,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
             email,
             password,
             role: "operator",
-            workspace_code: workspaceCode.trim() || "wh_demo",
-            workspace_name: workspaceName.trim() || "默认工作区",
+            workspace_code: FIXED_WORKSPACE_CODE,
+            workspace_name: FIXED_WORKSPACE_NAME,
           },
           token: "",
         });
@@ -106,8 +107,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
           <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete={isLogin ? "current-password" : "new-password"} required /></label>
           {!isLogin && (
             <>
-              <label>工作区编码<input type="text" value={workspaceCode} onChange={(e) => setWorkspaceCode(e.target.value)} placeholder="wh_demo" /></label>
-              <label>工作区名称<input type="text" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} placeholder="默认工作区" /></label>
+              <label>工作区编码<input type="text" value={FIXED_WORKSPACE_CODE} disabled /></label>
+              <label>工作区名称<input type="text" value={FIXED_WORKSPACE_NAME} disabled placeholder="（固定工作区，无需填写）" /></label>
             </>
           )}
           {error && <p className="auth-error">{error}</p>}
