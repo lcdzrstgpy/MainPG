@@ -170,7 +170,10 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
             </div>
           )}
           {activeModuleId === "dashboard" && <WorkspaceHomePage onOpenModule={openModule} />}
-          {activeModuleId === "daily_selection" && <DailySelectionPage view="collection" topbarStatusVisible />}
+          {/* 每日选品主面板常驻挂载（隐藏而非卸载），保证采集进行中切走再回来时进度和结果不丢失 */}
+          <div hidden={activeModuleId !== "daily_selection"}>
+            <DailySelectionPage view="collection" topbarStatusVisible={activeModuleId === "daily_selection"} />
+          </div>
           {profitActivityMounted && (
             <div hidden={activeModuleId !== "profit_activity"}>
               <ProfitActivityTestPage />

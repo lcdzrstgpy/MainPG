@@ -116,10 +116,13 @@ class SQLiteCustomerAuthService:
         username = _text(payload, "username")
         email = _text(payload, "email")
         password = _text(payload, "password")
+        invitation_code = _text(payload, "invitation_code")
         if not username:
             raise ValueError("username is required")
         if not password or len(password) < 6:
             raise ValueError("password must be at least 6 characters")
+        if not invitation_code:
+            raise ValueError("invitation code is required")
 
         # 初版阶段所有自注册用户统一授予 admin，方便本地工作台直接操作系统配置。
         # 后续如需权限分级，再改回 operator 并通过邀请/分配流程授予角色。
@@ -133,6 +136,26 @@ class SQLiteCustomerAuthService:
 
         try:
             with transaction(self.database_path) as conn:
+                # 校验邀请码：存在、未过期、未用尽，通过后 used_count + 1
+                row = conn.execute(
+                    """
+                    SELECT code, max_uses, used_count, expires_at
+                    FROM invitation_codes
+                    WHERE code = ?
+                    """,
+                    (invitation_code,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("invitation code is invalid")
+                if row["expires_at"] and row["expires_at"] < now:
+                    raise ValueError("invitation code has expired")
+                if row["used_count"] >= row["max_uses"]:
+                    raise ValueError("invitation code has been used up")
+                conn.execute(
+                    "UPDATE invitation_codes SET used_count = used_count + 1 WHERE code = ?",
+                    (invitation_code,),
+                )
+
                 workspace_row = conn.execute(
                     "SELECT workspace_id FROM workspaces WHERE workspace_code = ?",
                     (workspace_code,),

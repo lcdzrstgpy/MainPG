@@ -258,6 +258,20 @@ CREATE TABLE IF NOT EXISTS account_invitations (
 CREATE INDEX IF NOT EXISTS idx_account_invitations_workspace_email
     ON account_invitations (workspace_id, email, expires_at, accepted_at, revoked_at);
 
+-- 注册邀请码表：管理员在服务器上生成邀请码，用户注册时必须提供有效邀请码
+-- （一个邀请码可被多个用户重复使用，用 max_uses / used_count 控制可用次数）。
+CREATE TABLE IF NOT EXISTS invitation_codes (
+    code TEXT PRIMARY KEY,
+    max_uses INTEGER NOT NULL DEFAULT 100,
+    used_count INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_invitation_codes_status
+    ON invitation_codes (used_count, expires_at);
+
 -- 商业授权状态表：打包售卖时限制客户、域名、用户数、模块和到期时间。
 CREATE TABLE IF NOT EXISTS license_state (
     license_id TEXT PRIMARY KEY,

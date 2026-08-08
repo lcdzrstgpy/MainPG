@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { WorkspaceModuleId } from "../navigation/modules";
+import { useTheme, THEME_META, type ThemeId } from "../../shared/hooks/useTheme";
 
 export type WorkspaceTab = {
   key: string;
@@ -28,7 +29,9 @@ type TopNavigationProps = {
 export function TopNavigation({ sidebarPinned, topbarPinned, activeKey, tabs, onToggleSidebar, onToggleTopbarPin, onSelectTab, onCloseTab, onSignOut }: TopNavigationProps) {
   const [closingKeys, setClosingKeys] = useState<string[]>([]);
   const [topbarStuck, setTopbarStuck] = useState(false);
+  const [showThemePanel, setShowThemePanel] = useState(false);
   const topbarRef = useRef<HTMLElement>(null);
+  const { theme, setTheme } = useTheme();
 
   useEffect(() => {
     if (!topbarPinned) {
@@ -85,11 +88,30 @@ export function TopNavigation({ sidebarPinned, topbarPinned, activeKey, tabs, on
                   <span className="iconfont icon-edit" aria-hidden="true" />
                   <span>用户账号</span>
                 </button>
-                <button className="user-menu-action" type="button">
+                <button className="user-menu-action" type="button" onClick={() => setShowThemePanel((v) => !v)}>
                   <span className="iconfont icon-setting" aria-hidden="true" />
                   <span>偏好设置</span>
                 </button>
               </div>
+              {showThemePanel && (
+                <div className="theme-switcher">
+                  <span className="theme-switcher-label">主题风格</span>
+                  <div className="theme-options">
+                    {(Object.keys(THEME_META) as ThemeId[]).map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        className={`theme-option ${theme === id ? "is-active" : ""}`}
+                        onClick={() => setTheme(id)}
+                      >
+                        <span className="theme-swatch" style={{ background: THEME_META[id].swatch }} />
+                        <span className="theme-option-name">{THEME_META[id].label}</span>
+                        {theme === id && <span className="theme-check">✓</span>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <button className="user-menu-signout" type="button" onClick={onSignOut}>退出登录</button>
             </div>
           </details>

@@ -8,7 +8,7 @@ import {
   listSelectionRuns,
   rejectCandidate,
 } from "../api/dailySelectionApi";
-import { apiToken } from "../../../shared/api/apiClient";
+import { getApiToken } from "../../../shared/api/apiClient";
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -138,6 +138,17 @@ function formatDate(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
+function formatRunDuration(createdAt: string, updatedAt: string): string {
+  const start = new Date(createdAt).getTime();
+  const end = new Date(updatedAt).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return "";
+  const seconds = Math.round((end - start) / 1000);
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest > 0 ? `${minutes} 分 ${rest} 秒` : `${minutes} 分钟`;
+}
+
 function formatMoney(value: number | string | null): string {
   if (value === null || value === "") return "-";
   const parsed = Number(value);
@@ -168,7 +179,7 @@ function DailySelectionImage({ runId, url }: { runId: string; url: string }) {
     setObjectUrl("");
     setState("loading");
     fetch(`/desktop/daily-selection/image?run_id=${encodeURIComponent(runId)}&url=${encodeURIComponent(url)}`, {
-      headers: { Authorization: `Bearer ${apiToken}` },
+      headers: { Authorization: `Bearer ${getApiToken()}` },
     })
       .then((response) => (response.ok ? response.blob() : null))
       .then((blob) => {
@@ -1057,20 +1068,23 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           <div className="run-list history-drawer-list">
             {historyBusy && <div className="run-empty">正在读取批次…</div>}
             {!historyBusy && runs.length === 0 && <div className="run-empty">暂无采集记录<br /><small>完成首次采集后会显示在这里</small></div>}
-            {runs.map((run) => (
-              <button
-                key={run.run_id}
-                type="button"
-                className={activeRun?.run_id === run.run_id ? "is-active" : ""}
-                onClick={() => {
-                  setHistoryDrawerOpen(false);
-                  void openRun(run.run_id);
-                }}
-              >
-                <span><strong>{run.run_id.slice(0, 8)}</strong><small>{formatDate(run.created_at)}</small></span>
-                <span><b>{run.candidate_count}</b><small>{STATUS_LABELS[run.status] ?? run.status}</small></span>
-              </button>
-            ))}
+            {runs.map((run) => {
+              const duration = formatRunDuration(run.created_at, run.updated_at);
+              return (
+                <button
+                  key={run.run_id}
+                  type="button"
+                  className={activeRun?.run_id === run.run_id ? "is-active" : ""}
+                  onClick={() => {
+                    setHistoryDrawerOpen(false);
+                    void openRun(run.run_id);
+                  }}
+                >
+                  <span><strong>{run.run_id.slice(0, 8)}</strong><small>{formatDate(run.created_at)}</small></span>
+                  <span><b>{run.candidate_count}</b><small>{STATUS_LABELS[run.status] ?? run.status}{duration ? ` · 耗时 ${duration}` : ""}</small></span>
+                </button>
+              );
+            })}
           </div>
         </aside>
       </div>
