@@ -90,7 +90,7 @@ export function TopNavigation({ sidebarPinned, topbarPinned, activeKey, tabs, on
                   <span>偏好设置</span>
                 </button>
               </div>
-              <button className="user-menu-signout" type="button" onClick={onSignOut}>退出演示</button>
+              <button className="user-menu-signout" type="button" onClick={onSignOut}>退出登录</button>
             </div>
           </details>
         </div>

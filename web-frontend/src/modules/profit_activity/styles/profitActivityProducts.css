@@ -594,6 +594,48 @@
   scrollbar-gutter: stable;
 }
 
+/* 拖拽平移中才显示抓取光标并禁止选中，平时保持默认光标与文本可复制 */
+.profit-table-wrap.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/* 跟随视口的横向滚动条：sticky 贴在顶部，随时可拖，track 宽度与表格一致 */
+.profit-table-scrollbar {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 12px;
+  margin-top: 10px;
+  background: #f0f5fa;
+  border: 1px solid #e2edf5;
+  border-radius: 6px;
+}
+
+.profit-table-scrollbar-track {
+  height: 1px;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar {
+  height: 12px;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar-thumb {
+  background: #b9cbd9;
+  border-radius: 6px;
+  border: 2px solid #f0f5fa;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #8fa9bd;
+}
+
 /* 水平滚动条：加宽、常显、hover 高亮 */
 .profit-table-wrap::-webkit-scrollbar {
   width: 12px;
@@ -617,6 +659,54 @@
 
 .profit-table-wrap::-webkit-scrollbar-corner {
   background: #f0f5fa;
+}
+
+/* 固定表头克隆：原表头滚出可视区时显示，始终跟随内容区宽度与横向滚动位置 */
+.profit-table-head-sticky {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9;
+  overflow: hidden;
+  display: none;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  background: #f0f6fa;
+  border-bottom: 1px solid #d3e2ee;
+  box-shadow: 0 8px 22px rgba(23, 61, 92, 0.12);
+  /* 仅作视觉参考，不拦截下方表格内容的点击与选择 */
+  pointer-events: none;
+}
+
+.profit-table-head-sticky.is-visible {
+  display: block;
+}
+
+.profit-table-head-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.profit-table-head-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.profit-table-head-sticky .profit-table {
+  margin: 0;
+  border-collapse: collapse;
+  background: transparent;
+}
+
+.profit-table-head-sticky .profit-table th {
+  border-right: 1px solid #d3e2ee;
+  border-bottom: 0;
+  background: #f0f6fa;
+}
+
+.profit-table-head-sticky .profit-table th:last-child {
+  border-right: 0;
 }
 
 .profit-table .profit-edit-input {

@@ -35,8 +35,18 @@ export function ProfitActivityProductsPage() {
   const [previewImage, setPreviewImage] = useState<{ url: string; label: string } | null>(null);
   const [edits, setEdits] = useState<Record<string, Partial<Record<"selling_price" | "cost_price" | "weight_kg", string>>>>({});
   const tableWrapRef = useRef<HTMLDivElement>(null);
+  const tableScrollbarRef = useRef<HTMLDivElement>(null);
+  const theadRef = useRef<HTMLTableSectionElement>(null);
+  const fixedHeaderRef = useRef<HTMLDivElement>(null);
+  const fixedHeaderScrollRef = useRef<HTMLDivElement>(null);
+  const [headerStuck, setHeaderStuck] = useState(false);
   // 首次进入时若备注列过宽会自动收敛列宽；用户手动拖动后不再自动调整。
   const columnAdjusted = useRef(false);
+  // 鼠标拖拽横向平移表格：记录按下时的起点与初始横向偏移
+  const tableDragRef = useRef<{ startX: number; startScrollLeft: number } | null>(null);
+  const [tableDragging, setTableDragging] = useState(false);
+  // 跟随视口的横向滚动条：track 宽度等于表格实际宽度
+  const [tableScrollWidth, setTableScrollWidth] = useState(0);
 
   const dirtyCount = Object.keys(edits).length;
 
@@ -184,6 +194,165 @@ export function ProfitActivityProductsPage() {
     };
   }, [pageProducts]);
 
+  // 跟随视口的横向滚动条：与表格容器的 scrollLeft 双向同步，track 宽度 = 表格实际宽度。
+  // 这样滚动条始终贴在视口顶部可见，不用滑到页面最底部去拖动。
+  useEffect(() => {
+    const wrap = tableWrapRef.current;
+    const bar = tableScrollbarRef.current;
+    if (!wrap || !bar) return;
+    const syncBar = () => {
+      if (bar.scrollLeft !== wrap.scrollLeft) bar.scrollLeft = wrap.scrollLeft;
+    };
+    const syncWrap = () => {
+      if (wrap.scrollLeft !== bar.scrollLeft) wrap.scrollLeft = bar.scrollLeft;
+    };
+    const updateWidth = () => setTableScrollWidth(wrap.scrollWidth);
+    const resizeObserver = new ResizeObserver(updateWidth);
+    wrap.addEventListener("scroll", syncBar, { passive: true });
+    bar.addEventListener("scroll", syncWrap, { passive: true });
+    resizeObserver.observe(wrap);
+    updateWidth();
+    return () => {
+      wrap.removeEventListener("scroll", syncBar);
+      bar.removeEventListener("scroll", syncWrap);
+      resizeObserver.disconnect();
+    };
+  }, []);
+
+  // 独立固定表头：原表头滚出可视区时，显示一份固定在顶部的克隆表头，
+  // 保证滚动到第 20 行等位置时仍能看到"选择/站点/SKC..."标题行。
+  useEffect(() => {
+    const contentCard = document.querySelector(".content-card") as HTMLElement | null;
+    const wrap = tableWrapRef.current;
+    const clone = fixedHeaderRef.current;
+    const thead = theadRef.current;
+    if (!contentCard || !wrap || !clone || !thead) return;
+
+    const update = () => {
+      const contentRect = contentCard.getBoundingClientRect();
+      const wrapRect = wrap.getBoundingClientRect();
+      const theadRect = thead.getBoundingClientRect();
+      // 克隆表头横向与内容区对齐，内层再留出表格左边距，使列与原表头完全对齐
+      clone.style.left = `${Math.round(contentRect.left)}px`;
+      clone.style.width = `${Math.round(contentRect.width)}px`;
+      clone.style.paddingLeft = `${Math.round(wrapRect.left - contentRect.left)}px`;
+      // 顶部位置：顶栏被固定时贴在顶栏下方；否则贴在悬浮横向滚动条下方
+      let top = 8;
+      const topbar = document.querySelector(".topbar-card") as HTMLElement | null;
+      if (topbar?.classList.contains("is-pinned")) {
+        const topbarBottom = Math.round(topbar.getBoundingClientRect().bottom);
+        if (topbarBottom > 0) top = topbarBottom + 6;
+      } else {
+        const scrollbar = document.querySelector(".profit-table-scrollbar") as HTMLElement | null;
+        if (scrollbar) {
+          const scrollbarBottom = Math.round(scrollbar.getBoundingClientRect().bottom);
+          if (scrollbarBottom > 0) top = scrollbarBottom + 4;
+        }
+      }
+      clone.style.top = `${top}px`;
+      // 原表头滚出顶部可视区后显示克隆表头
+      setHeaderStuck(theadRect.bottom < top);
+    };
+
+    update();
+    window.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    contentCard.addEventListener("scroll", update, { passive: true });
+    const resizeObserver = new ResizeObserver(update);
+    resizeObserver.observe(contentCard);
+    resizeObserver.observe(wrap);
+    return () => {
+      window.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+      contentCard.removeEventListener("scroll", update);
+      resizeObserver.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    const thead = theadRef.current;
+    const fixedHeader = fixedHeaderRef.current;
+    if (!thead || !fixedHeader) return;
+    const syncWidths = () => {
+      const sourceTable = thead.closest("table") as HTMLTableElement | null;
+      const cloneTable = fixedHeader.querySelector("table") as HTMLTableElement | null;
+      if (sourceTable && cloneTable) {
+        cloneTable.style.width = `${sourceTable.offsetWidth}px`;
+        cloneTable.style.minWidth = `${sourceTable.offsetWidth}px`;
+        cloneTable.style.tableLayout = "fixed";
+      }
+      const sourceThs = thead.querySelectorAll("th");
+      const cloneThs = fixedHeader.querySelectorAll("th");
+      sourceThs.forEach((th, index) => {
+        const cloneTh = cloneThs[index] as HTMLElement | undefined;
+        if (cloneTh) {
+          const width = `${(th as HTMLElement).offsetWidth}px`;
+          cloneTh.style.width = width;
+          cloneTh.style.minWidth = width;
+        }
+      });
+    };
+    syncWidths();
+    const resizeObserver = new ResizeObserver(syncWidths);
+    resizeObserver.observe(thead);
+    return () => resizeObserver.disconnect();
+  }, [pageProducts, headerStuck]);
+
+  useEffect(() => {
+    const wrap = tableWrapRef.current;
+    const cloneScroll = fixedHeaderScrollRef.current;
+    if (!wrap || !cloneScroll) return;
+    const syncClone = () => {
+      if (cloneScroll.scrollLeft !== wrap.scrollLeft) cloneScroll.scrollLeft = wrap.scrollLeft;
+    };
+    const syncWrap = () => {
+      if (wrap.scrollLeft !== cloneScroll.scrollLeft) wrap.scrollLeft = cloneScroll.scrollLeft;
+    };
+    wrap.addEventListener("scroll", syncClone, { passive: true });
+    cloneScroll.addEventListener("scroll", syncWrap, { passive: true });
+    return () => {
+      wrap.removeEventListener("scroll", syncClone);
+      cloneScroll.removeEventListener("scroll", syncWrap);
+    };
+  }, []);
+
+  // 鼠标拖拽横向平移表格：命中文本内容时保留浏览器默认选中/复制；
+  // 只有落在空白处（单元格留白、表格周边空白、滚动条条带）才触发平移。
+  const tableDraggingRef = useRef(false);
+  // 判断指针落点是否在文本上，用于区分"选择复制"与"拖拽平移"
+  const pointerOverText = (x: number, y: number) => {
+    const range = document.caretRangeFromPoint?.(x, y);
+    if (range) return range.startContainer.nodeType === Node.TEXT_NODE;
+    const position = document.caretPositionFromPoint?.(x, y);
+    return !!position && position.offsetNode.nodeType === Node.TEXT_NODE;
+  };
+  const onTablePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    // 列宽拖拽、表单控件、链接、按钮均不触发平移
+    if (target.closest(".profit-col-resizer") || target.closest("input, textarea, select, button, a, label")) return;
+    const wrap = tableWrapRef.current;
+    if (!wrap || wrap.scrollWidth <= wrap.clientWidth || event.button !== 0) return;
+    // 按下位置命中文本 → 让浏览器正常选择/复制，不进入平移
+    if (pointerOverText(event.clientX, event.clientY)) return;
+    tableDragRef.current = { startX: event.clientX, startScrollLeft: wrap.scrollLeft };
+    tableDraggingRef.current = false;
+  };
+  const onTablePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = tableDragRef.current;
+    const wrap = tableWrapRef.current;
+    if (!drag || !wrap) return;
+    const deltaX = event.clientX - drag.startX;
+    if (!tableDraggingRef.current && Math.abs(deltaX) < 6) return;
+    tableDraggingRef.current = true;
+    setTableDragging(true);
+    wrap.scrollLeft = drag.startScrollLeft - deltaX;
+  };
+  const endTableDrag = () => {
+    tableDragRef.current = null;
+    tableDraggingRef.current = false;
+    setTableDragging(false);
+  };
+
   const toggleSite = (item: ProfitActivitySite, checked: boolean) => {
     setSites((current) => {
       const next = new Set(current);
@@ -323,9 +492,34 @@ export function ProfitActivityProductsPage() {
         </div>
         <p className="profit-products-message">{busy || message.split("\n").map((line, index) => (<span key={index}>{line}<br /></span>))}</p>
 
-        <div className="profit-table-wrap" ref={tableWrapRef}>
+        <div className="profit-table-scrollbar" ref={tableScrollbarRef} aria-label="横向滚动产品表格">
+          <div className="profit-table-scrollbar-track" style={{ width: tableScrollWidth || "100%" }} />
+        </div>
+        <div
+          className={`profit-table-head-sticky ${headerStuck ? "is-visible" : ""}`}
+          ref={fixedHeaderRef}
+          style={{ position: "fixed" }}
+          aria-hidden="true"
+        >
+          <div className="profit-table-head-scroll" ref={fixedHeaderScrollRef}>
+            <table className="profit-table">
+              <thead>
+                <tr><th>选择</th><th>站点</th><th>SKC</th><th>SKC对应图</th><th>售价</th><th>成本</th><th>重量</th><th>利润</th><th>利润率</th><th>备注</th><th>货源</th><th>图片</th></tr>
+              </thead>
+            </table>
+          </div>
+        </div>
+        <div
+          className={`profit-table-wrap ${tableDragging ? "is-dragging" : ""}`}
+          ref={tableWrapRef}
+          onPointerDown={onTablePointerDown}
+          onPointerMove={onTablePointerMove}
+          onPointerUp={endTableDrag}
+          onPointerCancel={endTableDrag}
+          onPointerLeave={endTableDrag}
+        >
           <table className="profit-table">
-            <thead>
+            <thead ref={theadRef}>
               <tr><th>选择<span className="profit-col-resizer" /></th><th>站点<span className="profit-col-resizer" /></th><th>SKC<span className="profit-col-resizer" /></th><th>SKC对应图<span className="profit-col-resizer" /></th><th>售价<span className="profit-col-resizer" /></th><th>成本<span className="profit-col-resizer" /></th><th>重量<span className="profit-col-resizer" /></th><th>利润<span className="profit-col-resizer" /></th><th>利润率<span className="profit-col-resizer" /></th><th>备注<span className="profit-col-resizer" /></th><th>货源<span className="profit-col-resizer" /></th><th>图片<span className="profit-col-resizer" /></th></tr>
             </thead>
             <tbody>

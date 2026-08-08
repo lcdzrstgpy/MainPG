@@ -7,6 +7,8 @@ type Props = {
   items: QuoteBatchReviewItem[];
   busy: boolean;
   onConfirm: (batchId: string, skcIds: string[], maxCandidates: number) => Promise<void>;
+  onDelete: (batchId: string, skcId: string) => Promise<void>;
+  onDeleteSelected: (batchId: string, skcIds: string[]) => Promise<void>;
 };
 
 function money(value?: string | number | null) {
@@ -19,9 +21,11 @@ function priceRange(min?: string | number | null, max?: string | number | null) 
   return `¥ ${minText} ~ ${max}`;
 }
 
-export function BatchReviewPanel({ batchId, items, busy, onConfirm }: Props) {
+export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, onDeleteSelected }: Props) {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [confirming, setConfirming] = useState(false);
+  const [deletingSkcId, setDeletingSkcId] = useState("");
+  const [deletingSelected, setDeletingSelected] = useState(false);
   const [maxCandidates, setMaxCandidates] = useState(5);
   const selectedSkcIds = useMemo(
     () => items.filter((item) => selected[item.skc_id]).map((item) => item.skc_id),
@@ -51,6 +55,28 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm }: Props) {
     }
   };
 
+  const remove = async (skcId: string) => {
+    if (deletingSkcId) return;
+    setDeletingSkcId(skcId);
+    try {
+      await onDelete(batchId, skcId);
+      setSelected((current) => ({ ...current, [skcId]: false }));
+    } finally {
+      setDeletingSkcId("");
+    }
+  };
+
+  const removeSelected = async () => {
+    if (deletingSelected) return;
+    setDeletingSelected(true);
+    try {
+      await onDeleteSelected(batchId, selectedSkcIds);
+      setSelected({});
+    } finally {
+      setDeletingSelected(false);
+    }
+  };
+
   return (
     <section className="price-verification-panel">
       <div className="price-verification-panel-heading">
@@ -72,6 +98,17 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm }: Props) {
           </label>
           <button className="price-verification-secondary-button" onClick={() => toggleAll(!allSelected)} disabled={!items.length || busy}>
             {allSelected ? "取消全选" : "全选"}
+          </button>
+          <button
+            className="price-verification-danger-button"
+            onClick={() => {
+              if (window.confirm(`确认删除选中的 ${selectedCount} 个 SKC？删除后不可恢复。`)) {
+                void removeSelected();
+              }
+            }}
+            disabled={!selectedSkcIds.length || busy || confirming || deletingSelected}
+          >
+            {deletingSelected ? "删除中…" : `删除选中${selectedCount ? `（${selectedCount}）` : ""}`}
           </button>
           <button className="price-verification-primary-button" onClick={() => void confirm()} disabled={!selectedSkcIds.length || busy || confirming}>
             {confirming ? "确认中…" : `确认加入待审列表${selectedCount ? `（${selectedCount} 个 SKC）` : ""}`}
@@ -110,6 +147,18 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm }: Props) {
                   <td className="batch-review-price-cell is-adjusted">{priceRange(item.adjusted_min, item.adjusted_max)}</td>
                   <td className="batch-review-action-cell">
                     {item.official_link_url && <a href={item.official_link_url} target="_blank" rel="noreferrer">官方链接 ↗</a>}
+                    <button
+                      type="button"
+                      className="batch-review-delete-button"
+                      disabled={busy || Boolean(deletingSkcId)}
+                      onClick={() => {
+                        if (window.confirm(`确认删除 SKC ${item.skc_id}？删除后该商品不再出现在本次批次报价审核中。`)) {
+                          void remove(item.skc_id);
+                        }
+                      }}
+                    >
+                      {deletingSkcId === item.skc_id ? "删除中…" : "删除"}
+                    </button>
                   </td>
                 </tr>
               ))}

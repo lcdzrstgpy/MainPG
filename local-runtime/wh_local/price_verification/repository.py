@@ -1038,6 +1038,108 @@ class PriceVerificationRepository:
             ).fetchall()
         return tuple(_capture_chunk_record(row) for row in rows)
 
+    def remove_capture_chunk_quote_items(
+        self, *, workspace_id: str, batch_id: str, quote_keys: Sequence[str]
+    ) -> int:
+        """Remove quote rows whose quote_key is in the target set from the
+        batch's capture chunks; chunks that become empty are dropped."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        targets = {str(key).strip() for key in quote_keys if str(key).strip()}
+        if not targets:
+            return 0
+        now = _now()
+        removed = 0
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._owned_row_in(
+                    connection,
+                    "price_verification_quote_capture_batches",
+                    workspace_id,
+                    "batch_id",
+                    batch_id,
+                )
+                rows = connection.execute(
+                    """SELECT chunk_id, items_json, item_count
+                    FROM price_verification_quote_capture_chunks
+                    WHERE workspace_id = ? AND batch_id = ?""",
+                    (workspace_id, batch_id),
+                ).fetchall()
+                for row in rows:
+                    items = json.loads(row["items_json"]) if row["items_json"] else []
+                    kept = [
+                        item for item in items
+                        if str((item or {}).get("quote_key") or "").strip() not in targets
+                    ]
+                    if len(kept) == len(items):
+                        continue
+                    removed += len(items) - len(kept)
+                    if kept:
+                        connection.execute(
+                            """UPDATE price_verification_quote_capture_chunks
+                            SET items_json = ?, item_count = ?
+                            WHERE chunk_id = ?""",
+                            (json.dumps(kept, ensure_ascii=False), len(kept), row["chunk_id"]),
+                        )
+                    else:
+                        connection.execute(
+                            """DELETE FROM price_verification_quote_capture_chunks
+                            WHERE chunk_id = ?""",
+                            (row["chunk_id"],),
+                        )
+                connection.execute(
+                    """UPDATE price_verification_quote_capture_batches
+                    SET updated_at = ? WHERE workspace_id = ? AND batch_id = ?""",
+                    (now, workspace_id, batch_id),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return removed
+
+    def clear_capture_chunks(self, *, workspace_id: str, batch_id: str) -> int:
+        """Remove every capture chunk (and thus every quote row) of a batch,
+        returning how many quote rows were removed."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        now = _now()
+        removed = 0
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._owned_row_in(
+                    connection,
+                    "price_verification_quote_capture_batches",
+                    workspace_id,
+                    "batch_id",
+                    batch_id,
+                )
+                row = connection.execute(
+                    """SELECT COALESCE(SUM(item_count), 0) AS total
+                    FROM price_verification_quote_capture_chunks
+                    WHERE workspace_id = ? AND batch_id = ?""",
+                    (workspace_id, batch_id),
+                ).fetchone()
+                if row is not None:
+                    removed = int(row["total"] or 0)
+                connection.execute(
+                    """DELETE FROM price_verification_quote_capture_chunks
+                    WHERE workspace_id = ? AND batch_id = ?""",
+                    (workspace_id, batch_id),
+                )
+                connection.execute(
+                    """UPDATE price_verification_quote_capture_batches
+                    SET updated_at = ? WHERE workspace_id = ? AND batch_id = ?""",
+                    (now, workspace_id, batch_id),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return removed
+
     def record_quote_capture_batch_snapshot(
         self, *, workspace_id: str, batch_id: str, quote_run_id: str
     ) -> QuoteCaptureBatchSnapshotRecord:

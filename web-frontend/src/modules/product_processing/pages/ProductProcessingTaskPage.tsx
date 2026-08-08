@@ -21,7 +21,6 @@ const SCOPES: { key: string; label: string }[] = [
   { key: 'product_dimensions', label: '产品尺寸' },
   { key: 'four_grid', label: '四宫格' },
   { key: 'detail_images', label: '详情图' },
-  { key: 'sku_images', label: 'SKU 图' },
   { key: 'qualification', label: '资质' },
 ];
 
@@ -151,7 +150,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batch?.task_id, batch?.task.status]);
 
-  const startBatch = async (preflightOnly = false) => {
+  const startBatch = async () => {
     if (!initialDraftIds?.length) { setError('没有可处理的草稿'); return; }
     setLoading(true);
     setMessage('');
@@ -159,11 +158,10 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
     try {
       const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/drafts/process`, {
         body: {
-          title: preflightOnly ? '预检任务' : '产品处理任务',
+          title: '产品处理任务',
           draft_ids: initialDraftIds.slice(0, options.maxProducts || 100),
           max_products: options.maxProducts,
           async_mode: true,
-          preflight_only: preflightOnly,
           target_site: options.targetSite,
           target_language: options.targetLanguage,
           processing_scope: options.processingScope,
@@ -175,32 +173,8 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
         },
       });
       setBatch(data);
-      notify(data.message || (preflightOnly ? '预检完成' : '批次已提交'));
+      notify(data.message || '批次已提交');
     } catch (err) { fail(err); } finally { setLoading(false); }
-  };
-
-  const pauseBatch = async () => {
-    if (!batch) return;
-    try {
-      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/pause`, { body: {} });
-      setBatch(data); notify(data.message);
-    } catch (err) { fail(err); }
-  };
-
-  const resumeBatch = async () => {
-    if (!batch) return;
-    try {
-      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/resume`, { body: {} });
-      setBatch(data); notify(data.message);
-    } catch (err) { fail(err); }
-  };
-
-  const retryFailures = async () => {
-    if (!batch) return;
-    try {
-      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/retry-attention`, { body: {} });
-      setBatch(data); notify(data.message);
-    } catch (err) { fail(err); }
   };
 
   const clearBatch = async () => {
@@ -303,11 +277,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
               <span className="verify-slider-value">{options.maxParallelDrafts} 线程{options.maxParallelDrafts <= 1 ? '（串行）' : ''}</span>
             </div>
             <div className="verify-actions">
-              <button className="primary" onClick={() => startBatch(false)} disabled={loading || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
-              <button onClick={() => startBatch(true)} disabled={loading || !initialDraftIds?.length}>预检</button>
-              <button onClick={pauseBatch} disabled={!batch}>暂停</button>
-              <button onClick={resumeBatch} disabled={!batch}>继续</button>
-              <button onClick={retryFailures} disabled={!batch || !failureItems.length}>重试失败项</button>
+              <button className="primary" onClick={() => startBatch()} disabled={loading || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
               <button onClick={clearBatch} disabled={!batch}>清空任务</button>
             </div>
           </section>

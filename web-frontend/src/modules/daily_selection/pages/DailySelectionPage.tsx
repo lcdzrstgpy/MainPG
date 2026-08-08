@@ -277,6 +277,12 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     });
   }, [activeRun, appliedSkuFilter]);
 
+  // 当前可勾选的候选（状态为 candidate 的）
+  const selectableCandidates = filteredCandidates.filter((candidate) => candidate.status === "candidate");
+  // 全选复选框状态：可勾选候选均被选中时为 true
+  const allCandidatesSelected = selectableCandidates.length > 0
+    && selectableCandidates.every((candidate) => selectedCandidates.includes(candidate.candidate_id));
+
   useEffect(() => {
     void refreshRuns();
   }, []);
@@ -590,6 +596,23 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     }
   }
 
+  function toggleSelectAllCandidates() {
+    if (!activeRun) return;
+    setSelectedCandidates((current) => {
+      const selectable = filteredCandidates
+        .filter((candidate) => candidate.status === "candidate")
+        .map((candidate) => candidate.candidate_id);
+      const allSelected = selectable.length > 0 && selectable.every((id) => current.includes(id));
+      if (allSelected) {
+        // 已全选 → 取消全选
+        return current.filter((id) => !selectable.includes(id));
+      }
+      // 未全选 → 全选（保留已有的其他选择）
+      return [...new Set([...current, ...selectable])];
+    });
+  }
+
+  // 「全选」按钮：始终选中全部可勾选候选
   function selectAllCandidates() {
     if (!activeRun) return;
     setSelectedCandidates(filteredCandidates
@@ -844,7 +867,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             </label>
             <label><span>站点</span><select value={site} onChange={(event) => setSite(event.target.value as TargetSite)}><option value="US">美国站 US</option><option value="CO">哥伦比亚 CO</option><option value="EC">厄瓜多尔 EC</option></select></label>
             <label><span>选品范围</span><select value={scope} onChange={(event) => setScope(event.target.value as SelectionScope)}><option value="divergent">发散相似款</option><option value="exact">精准匹配</option></select></label>
-            <label><span>每个关键词</span><input type="number" min="1" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
+            <label><span>采集数量</span><input type="number" min="1" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
             <label className="field-wide">
               <span>采集关键词 <em>{mode === "keyword" ? "必填" : "作为图片描述标签"}</em></span>
               <input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="多个关键词用逗号分隔，最多 5 个" />
@@ -933,7 +956,15 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             )}
             {activeRun && <span>批次 {activeRun.run_id.slice(0, 8)} · {activeRun.candidate_count} 条</span>}
             <button type="button" className="history-drawer-trigger" onClick={() => setHistoryDrawerOpen(true)}><span aria-hidden="true">◷</span> 最近批次 <b>{runs.length}</b></button>
-            <button type="button" className="select-all-button" disabled={busy || !activeRun || !filteredCandidates.some((candidate) => candidate.status === "candidate")} onClick={selectAllCandidates}>选择全部</button>
+            <label className="select-all-check" title={allCandidatesSelected ? "取消全选" : "全选"}>
+              <input
+                type="checkbox"
+                checked={allCandidatesSelected}
+                disabled={busy || !activeRun || selectableCandidates.length === 0}
+                onChange={toggleSelectAllCandidates}
+              />
+            </label>
+            <button type="button" className="select-all-button" disabled={busy || !activeRun || selectableCandidates.length === 0} onClick={selectAllCandidates}>全选</button>
             <button type="button" className="confirm-button" disabled={busy || selectedCandidates.length === 0} onClick={() => void confirmSelected()}>确认入池（{selectedCandidates.length}）</button>
           </div>
         </div>
