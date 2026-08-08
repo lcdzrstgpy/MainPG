@@ -33,6 +33,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
+  const [invitationCode, setInvitationCode] = useState("");
   // 工作区固定为 default（名称留空），注册页不允许用户修改。
   const FIXED_WORKSPACE_CODE = "default";
   const FIXED_WORKSPACE_NAME = "";
@@ -64,6 +65,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
             username: identifier,
             email,
             password,
+            invitation_code: invitationCode,
             role: "operator",
             workspace_code: FIXED_WORKSPACE_CODE,
             workspace_name: FIXED_WORKSPACE_NAME,
@@ -102,6 +104,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
             <>
               <label>用户名<input type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="例如：ops-team-a" autoComplete="username" required /></label>
               <label>邮箱<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" autoComplete="email" required /></label>
+              <label>邀请码<input type="text" value={invitationCode} onChange={(e) => setInvitationCode(e.target.value)} placeholder="请输入管理员提供的邀请码" autoComplete="off" required /></label>
             </>
           )}
           <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete={isLogin ? "current-password" : "new-password"} required /></label>

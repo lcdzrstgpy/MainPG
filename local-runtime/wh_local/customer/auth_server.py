@@ -109,6 +109,86 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     def reset_password(payload: dict[str, Any]) -> dict[str, Any]:
         return _action_response(_call_action(service.reset_password, payload))
 
+    # ---- 邀请码管理（管理员在服务器上生成/查看邀请码） ----
+    @app.post("/api/customer/invitations/generate")
+    def generate_invitations(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            token = _bearer_token(authorization)
+            actor = _account_by_token(db_path, token)
+            if actor is None:
+                raise HTTPException(status_code=401, detail="invalid bearer token")
+            if str(actor.get("role", "")).lower() != "admin":
+                raise HTTPException(status_code=403, detail="admin role required")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _raise_http_error(exc)
+
+        try:
+            count = int(payload.get("count", 1))
+            max_uses = int(payload.get("max_uses", 100))
+            expires_at = str(payload.get("expires_at", "") or "")
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="count/max_uses must be integers")
+
+        count = max(1, min(count, 500))
+        max_uses = max(1, max_uses)
+        codes = [_invitation_code() for _ in range(count)]
+        now = _utc_now()
+        with transaction(db_path) as conn:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO invitation_codes (
+                    code, max_uses, used_count, expires_at, created_by, created_at
+                )
+                VALUES (?, ?, 0, ?, ?, ?)
+                """,
+                [(code, max_uses, expires_at, actor.get("username", ""), now) for code in codes],
+            )
+        return {"ok": True, "count": len(codes), "codes": codes}
+
+    @app.get("/api/customer/invitations")
+    def list_invitations(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            token = _bearer_token(authorization)
+            actor = _account_by_token(db_path, token)
+            if actor is None:
+                raise HTTPException(status_code=401, detail="invalid bearer token")
+            if str(actor.get("role", "")).lower() != "admin":
+                raise HTTPException(status_code=403, detail="admin role required")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _raise_http_error(exc)
+
+        with transaction(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT code, max_uses, used_count, expires_at, created_by, created_at
+                FROM invitation_codes
+                ORDER BY created_at DESC
+                """,
+            ).fetchall()
+        return {
+            "ok": True,
+            "invitations": [
+                {
+                    "code": row["code"],
+                    "max_uses": row["max_uses"],
+                    "used_count": row["used_count"],
+                    "expires_at": row["expires_at"],
+                    "created_by": row["created_by"],
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ],
+        }
+
     return app
 
 
@@ -226,6 +306,14 @@ def _bearer_token(authorization: str | None) -> str:
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _invitation_code() -> str:
+    """Generate a human-friendly invitation code, e.g. MAINPG-8F3K-2Q7M."""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # 去掉易混淆的 I/O/0/1
+    def _chunk(size: int) -> str:
+        return "".join(secrets.choice(alphabet) for _ in range(size))
+    return f"MAINPG-{_chunk(4)}-{_chunk(4)}"
 
 
 def _utc_now() -> str:

@@ -1,0 +1,328 @@
+/* ================================================================
+   MainPG 主题系统
+   三套主题通过 [data-theme] 属性切换：
+     - classic  : 经典蓝青（默认）
+     - sunset   : 暖阳橙
+     - violet   : 深空紫
+   ================================================================ */
+
+/* ---- 默认主题变量（经典蓝青）---- */
+:root {
+  --theme-page-bg: #edf4fb;
+  --theme-card-bg: rgba(255, 255, 255, .92);
+  --theme-card-border: rgba(184, 209, 230, .82);
+  --theme-card-shadow: rgba(26, 65, 101, .10);
+  --theme-card-shadow-lg: rgba(26, 65, 101, .1);
+
+  --theme-text-primary: #13233a;
+  --theme-text-secondary: #527089;
+  --theme-text-muted: #8295aa;
+
+  --theme-primary: #0877d3;
+  --theme-primary-light: #e7f6ff;
+  --theme-accent: #04bfea;
+
+  --theme-sidebar-hover-bg: #f0f7fb;
+  --theme-sidebar-active-bg: linear-gradient(100deg, #ccecff, #d5f5ef);
+  --theme-sidebar-active-color: #056fc8;
+  --theme-sidebar-active-border: #8fd3ec;
+  --theme-sidebar-active-shadow: 0 5px 13px #168ac014;
+
+  --theme-hero-gradient: linear-gradient(120deg, #083d71, #0c78bd 56%, #1ebfb3);
+  --theme-hero-text: #d6efff;
+  --theme-hero-eyebrow: #9edafa;
+
+  --theme-brand-gradient: linear-gradient(145deg, #008bff, #16d7c0);
+  --theme-brand-shadow: #0a91e134;
+  --theme-brand-large-color: #086bbd;
+  --theme-brand-large-bg: #ffffff;
+
+  --theme-avatar-bg: #d9f4ff;
+  --theme-avatar-color: #075fa7;
+
+  --theme-icon-button-border: #d7e3ed;
+  --theme-icon-button-bg: #fff;
+  --theme-icon-button-color: #466079;
+
+  --theme-page-tab-border: #e0eaf2;
+  --theme-page-tab-bg: #f7fafc;
+  --theme-page-tab-active-border: #a7dafa;
+  --theme-page-tab-active-bg: #eaf8ff;
+  --theme-page-tab-active-color: #0877d3;
+
+  --theme-flow-color-a: rgba(37, 170, 237, .08);
+  --theme-flow-color-b: rgba(24, 187, 218, .2);
+  --theme-flow-color-c: rgba(33, 214, 172, .25);
+  --theme-flow-color-d: rgba(47, 183, 225, .15);
+  --theme-flow-ripple: rgba(35, 218, 179, .29);
+  --theme-flow-ripple-secondary: rgba(25, 164, 226, .17);
+
+  --theme-scroll-gradient: linear-gradient(145deg, #0789e9, #12bdb4);
+  --theme-scroll-shadow: rgba(8, 119, 181, .3);
+
+  --theme-meteor-gradient: linear-gradient(90deg, transparent 0%, rgba(35, 190, 199, .2) 24%, rgba(24, 169, 218, .8) 82%, rgba(119, 244, 218, .96) 100%);
+  --theme-meteor-dot: #86f7de;
+  --theme-meteor-dot-shadow: rgba(41, 190, 196, .82);
+
+  --theme-auth-gradient: linear-gradient(135deg, #082b55 0%, #0d4d82 34%, #147ea0 62%, #1fc6bc 100%);
+  --theme-auth-brand-text: #d6eaf8;
+  --theme-auth-brand-eyebrow: #9fd9f3;
+  --theme-auth-tabs-bg: #eff5fa;
+  --theme-auth-tabs-active-color: #0876df;
+  --theme-auth-input-border: #d6e2ed;
+  --theme-auth-input-outline: #1e91e6;
+  --theme-auth-label-color: #4b617a;
+  --theme-auth-hint-color: #7a8fa5;
+
+  --theme-primary-button-gradient: linear-gradient(105deg, #087bf5, #14c8c0);
+  --theme-primary-button-shadow: #0b93dc35;
+}
+
+/* ---- 暖阳橙 ---- */
+[data-theme="sunset"] {
+  --theme-page-bg: #fdf5ec;
+  --theme-card-bg: rgba(255, 253, 248, .92);
+  --theme-card-border: rgba(228, 195, 150, .55);
+  --theme-card-shadow: rgba(120, 60, 10, .08);
+  --theme-card-shadow-lg: rgba(120, 60, 10, .12);
+
+  --theme-text-primary: #2c1810;
+  --theme-text-secondary: #6b4a20;
+  --theme-text-muted: #a0845a;
+
+  --theme-primary: #d97706;
+  --theme-primary-light: #fff7ed;
+  --theme-accent: #f59e0b;
+
+  --theme-sidebar-hover-bg: #fef7ed;
+  --theme-sidebar-active-bg: linear-gradient(100deg, #fde8cd, #fef3c7);
+  --theme-sidebar-active-color: #b45309;
+  --theme-sidebar-active-border: #f59e0b;
+  --theme-sidebar-active-shadow: 0 5px 13px #b4530920;
+
+  --theme-hero-gradient: linear-gradient(118deg, #7c3a0a, #d35400 55%, #f59e0b);
+  --theme-hero-text: #fef3c7;
+  --theme-hero-eyebrow: #fde68a;
+
+  --theme-brand-gradient: linear-gradient(145deg, #e67e22, #fbbf24);
+  --theme-brand-shadow: #e67e2234;
+  --theme-brand-large-color: #b45309;
+  --theme-brand-large-bg: #fef3c7;
+
+  --theme-avatar-bg: #fef3c7;
+  --theme-avatar-color: #b45309;
+
+  --theme-icon-button-border: #e5d0b0;
+  --theme-icon-button-bg: #fffdf8;
+  --theme-icon-button-color: #6b4a20;
+
+  --theme-page-tab-border: #e8d5bc;
+  --theme-page-tab-bg: #fdf8f0;
+  --theme-page-tab-active-border: #fdba74;
+  --theme-page-tab-active-bg: #fff7ed;
+  --theme-page-tab-active-color: #d97706;
+
+  --theme-flow-color-a: rgba(245, 158, 11, .08);
+  --theme-flow-color-b: rgba(234, 179, 8, .18);
+  --theme-flow-color-c: rgba(217, 119, 6, .2);
+  --theme-flow-color-d: rgba(245, 158, 11, .12);
+  --theme-flow-ripple: rgba(245, 158, 11, .25);
+  --theme-flow-ripple-secondary: rgba(234, 179, 8, .15);
+
+  --theme-scroll-gradient: linear-gradient(145deg, #e67e22, #f59e0b);
+  --theme-scroll-shadow: rgba(230, 126, 34, .3);
+
+  --theme-meteor-gradient: linear-gradient(90deg, transparent 0%, rgba(245, 158, 11, .2) 24%, rgba(234, 179, 8, .8) 82%, rgba(253, 224, 71, .96) 100%);
+  --theme-meteor-dot: #fde68a;
+  --theme-meteor-dot-shadow: rgba(245, 158, 11, .82);
+
+  --theme-auth-gradient: linear-gradient(135deg, #431407 0%, #7c2d12 34%, #c2410c 62%, #f59e0b 100%);
+  --theme-auth-brand-text: #fef3c7;
+  --theme-auth-brand-eyebrow: #fde68a;
+  --theme-auth-tabs-bg: #fef7ed;
+  --theme-auth-tabs-active-color: #d97706;
+  --theme-auth-input-border: #e5d0b0;
+  --theme-auth-input-outline: #e67e22;
+  --theme-auth-label-color: #6b4a20;
+  --theme-auth-hint-color: #a0845a;
+
+  --theme-primary-button-gradient: linear-gradient(105deg, #e67e22, #f39c12);
+  --theme-primary-button-shadow: #e67e2235;
+
+  --theme-hero-gradient-overwrite: linear-gradient(118deg, #7c3a0a 0%, #d35400 55%, #f59e0b 100%);
+  --theme-hero-shadow: #b4530926;
+  --theme-hero-fluid-bg: radial-gradient(circle at 35% 38%, #fde68a6e, #f59e0b4a 48%, transparent 70%);
+  --theme-hero-sheen-color: #ffffff1f;
+}
+
+/* ---- 深空紫 ---- */
+[data-theme="violet"] {
+  --theme-page-bg: #f3eef8;
+  --theme-card-bg: rgba(252, 250, 255, .92);
+  --theme-card-border: rgba(196, 180, 220, .55);
+  --theme-card-shadow: rgba(80, 30, 120, .08);
+  --theme-card-shadow-lg: rgba(80, 30, 120, .12);
+
+  --theme-text-primary: #1a0a2e;
+  --theme-text-secondary: #5b2d8e;
+  --theme-text-muted: #8b7aa0;
+
+  --theme-primary: #7c3aed;
+  --theme-primary-light: #f5f0ff;
+  --theme-accent: #a855f7;
+
+  --theme-sidebar-hover-bg: #f5f0ff;
+  --theme-sidebar-active-bg: linear-gradient(100deg, #ede9fe, #fce7f3);
+  --theme-sidebar-active-color: #6d28d9;
+  --theme-sidebar-active-border: #a78bfa;
+  --theme-sidebar-active-shadow: 0 5px 13px #6d28d920;
+
+  --theme-hero-gradient: linear-gradient(118deg, #1e1040, #6d28d9 55%, #a855f7);
+  --theme-hero-text: #ede9fe;
+  --theme-hero-eyebrow: #c4b5fd;
+
+  --theme-brand-gradient: linear-gradient(145deg, #8b5cf6, #f472b6);
+  --theme-brand-shadow: #8b5cf634;
+  --theme-brand-large-color: #6d28d9;
+  --theme-brand-large-bg: #ede9fe;
+
+  --theme-avatar-bg: #ede9fe;
+  --theme-avatar-color: #6d28d9;
+
+  --theme-icon-button-border: #d4c8ec;
+  --theme-icon-button-bg: #faf8ff;
+  --theme-icon-button-color: #5b2d8e;
+
+  --theme-page-tab-border: #ddd2ee;
+  --theme-page-tab-bg: #f8f5fd;
+  --theme-page-tab-active-border: #c4b5fd;
+  --theme-page-tab-active-bg: #f5f0ff;
+  --theme-page-tab-active-color: #7c3aed;
+
+  --theme-flow-color-a: rgba(139, 92, 246, .08);
+  --theme-flow-color-b: rgba(168, 85, 247, .18);
+  --theme-flow-color-c: rgba(196, 130, 246, .22);
+  --theme-flow-color-d: rgba(139, 92, 246, .12);
+  --theme-flow-ripple: rgba(168, 85, 247, .25);
+  --theme-flow-ripple-secondary: rgba(139, 92, 246, .15);
+
+  --theme-scroll-gradient: linear-gradient(145deg, #7c3aed, #ec4899);
+  --theme-scroll-shadow: rgba(124, 58, 237, .3);
+
+  --theme-meteor-gradient: linear-gradient(90deg, transparent 0%, rgba(168, 85, 247, .2) 24%, rgba(139, 92, 246, .8) 82%, rgba(244, 114, 182, .96) 100%);
+  --theme-meteor-dot: #f0abfc;
+  --theme-meteor-dot-shadow: rgba(168, 85, 247, .82);
+
+  --theme-auth-gradient: linear-gradient(135deg, #0f0520 0%, #2e1065 34%, #6d28d9 62%, #a855f7 100%);
+  --theme-auth-brand-text: #ede9fe;
+  --theme-auth-brand-eyebrow: #c4b5fd;
+  --theme-auth-tabs-bg: #f5f0ff;
+  --theme-auth-tabs-active-color: #7c3aed;
+  --theme-auth-input-border: #d4c8ec;
+  --theme-auth-input-outline: #8b5cf6;
+  --theme-auth-label-color: #5b2d8e;
+  --theme-auth-hint-color: #8b7aa0;
+
+  --theme-primary-button-gradient: linear-gradient(105deg, #7c3aed, #ec4899);
+  --theme-primary-button-shadow: #7c3aed35;
+
+  --theme-hero-gradient-overwrite: linear-gradient(118deg, #1e1040 0%, #6d28d9 55%, #a855f7 100%);
+  --theme-hero-shadow: #6d28d926;
+  --theme-hero-fluid-bg: radial-gradient(circle at 35% 38%, #c4b5fd6e, #a855f74a 48%, transparent 70%);
+  --theme-hero-sheen-color: #ffffff1f;
+}
+
+/* ================================================================
+   主题覆盖样式：侧边栏、标签页、头像、仪表盘等
+   ================================================================ */
+
+/* ---- 侧边栏选中态 ---- */
+[data-theme="sunset"] .sidebar-item.is-active { background: linear-gradient(100deg, #fde8cd, #fef3c7) !important; color: #b45309 !important; box-shadow: inset 0 0 0 1px #f59e0b, 0 5px 13px #b4530920 !important; }
+[data-theme="sunset"] .sidebar-subitem.is-active { color: #b45309 !important; background: #fef3c7 !important; box-shadow: inset 3px 0 0 #e67e22 !important; }
+[data-theme="sunset"] .sidebar-item:hover, [data-theme="sunset"] .sidebar-subitem:hover { background: #fef7ed !important; }
+
+[data-theme="violet"] .sidebar-item.is-active { background: linear-gradient(100deg, #ede9fe, #fce7f3) !important; color: #6d28d9 !important; box-shadow: inset 0 0 0 1px #a78bfa, 0 5px 13px #6d28d920 !important; }
+[data-theme="violet"] .sidebar-subitem.is-active { color: #6d28d9 !important; background: #ede9fe !important; box-shadow: inset 3px 0 0 #8b5cf6 !important; }
+[data-theme="violet"] .sidebar-item:hover, [data-theme="violet"] .sidebar-subitem:hover { background: #f5f0ff !important; }
+
+/* ---- 顶栏激活按钮 ---- */
+[data-theme="sunset"] .sidebar-pin-button.is-active { color: #d97706 !important; border-color: #fde68a !important; background: #fef3c7 !important; box-shadow: inset 0 0 0 1px #fcd34d !important; }
+[data-theme="sunset"] .page-tab.is-active { border-color: #fdba74 !important; background: #fff7ed !important; }
+[data-theme="sunset"] .page-tab.is-active > button { color: #d97706 !important; }
+[data-theme="sunset"] .topbar-pin-toggle.is-active { color: #d97706 !important; border-color: #fde68a !important; background: #fef3c7 !important; }
+
+[data-theme="violet"] .sidebar-pin-button.is-active { color: #7c3aed !important; border-color: #c4b5fd !important; background: #f5f0ff !important; box-shadow: inset 0 0 0 1px #ddd6fe !important; }
+[data-theme="violet"] .page-tab.is-active { border-color: #c4b5fd !important; background: #f5f0ff !important; }
+[data-theme="violet"] .page-tab.is-active > button { color: #7c3aed !important; }
+[data-theme="violet"] .topbar-pin-toggle.is-active { color: #7c3aed !important; border-color: #c4b5fd !important; background: #f5f0ff !important; }
+
+/* ---- 头像 ---- */
+[data-theme="sunset"] .avatar { color: #b45309; background: #fef3c7; }
+[data-theme="violet"] .avatar { color: #6d28d9; background: #ede9fe; }
+
+/* ---- 仪表盘 Hero 卡片 ---- */
+[data-theme="sunset"] .dashboard-page .page-hero-card { background: linear-gradient(118deg, #7c3a0a 0%, #d35400 55%, #f59e0b 100%) !important; box-shadow: 0 18px 42px #b4530926 !important; }
+[data-theme="sunset"] .dashboard-page .page-hero-card::before { background: radial-gradient(circle at 35% 38%, #fde68a6e, #f59e0b4a 48%, transparent 70%) !important; }
+[data-theme="sunset"] .page-hero-card { background: linear-gradient(120deg, #7c3a0a, #d35400 56%, #f59e0b) !important; }
+[data-theme="sunset"] .page-hero-card p:not(.eyebrow) { color: #fef3c7 !important; }
+[data-theme="sunset"] .page-hero-card .eyebrow { color: #fde68a !important; }
+[data-theme="sunset"] .profit-test-hero { background: linear-gradient(118deg, #7c3a0a, #d35400 58%, #f59e0b) !important; }
+
+[data-theme="violet"] .dashboard-page .page-hero-card { background: linear-gradient(118deg, #1e1040 0%, #6d28d9 55%, #a855f7 100%) !important; box-shadow: 0 18px 42px #6d28d926 !important; }
+[data-theme="violet"] .dashboard-page .page-hero-card::before { background: radial-gradient(circle at 35% 38%, #c4b5fd6e, #a855f74a 48%, transparent 70%) !important; }
+[data-theme="violet"] .page-hero-card { background: linear-gradient(120deg, #1e1040, #6d28d9 56%, #a855f7) !important; }
+[data-theme="violet"] .page-hero-card p:not(.eyebrow) { color: #ede9fe !important; }
+[data-theme="violet"] .page-hero-card .eyebrow { color: #c4b5fd !important; }
+[data-theme="violet"] .profit-test-hero { background: linear-gradient(118deg, #1e1040, #6d28d9 58%, #a855f7) !important; }
+
+/* ---- 仪表盘流星特效 ---- */
+[data-theme="sunset"] .dashboard-meteor { background: linear-gradient(90deg, transparent 0%, rgba(245, 158, 11, .2) 24%, rgba(234, 179, 8, .8) 82%, rgba(253, 224, 71, .96) 100%) !important; }
+[data-theme="sunset"] .dashboard-meteor::after { background: #fde68a !important; box-shadow: 0 0 9px rgba(245, 158, 11, .82) !important; }
+[data-theme="violet"] .dashboard-meteor { background: linear-gradient(90deg, transparent 0%, rgba(168, 85, 247, .2) 24%, rgba(139, 92, 246, .8) 82%, rgba(244, 114, 182, .96) 100%) !important; }
+[data-theme="violet"] .dashboard-meteor::after { background: #f0abfc !important; box-shadow: 0 0 9px rgba(168, 85, 247, .82) !important; }
+
+/* ---- 利润测算按钮 ---- */
+[data-theme="sunset"] .profit-test-page .primary-button { background: linear-gradient(105deg, #e67e22, #f39c12) !important; }
+[data-theme="sunset"] .profit-site-tabs button.is-active { color: #fff; background: #e67e22; box-shadow: 0 7px 14px #e67e2230; }
+[data-theme="sunset"] .profit-title-icon { color: #e67e22; background: #fef7ed; border-color: #fde8cd; }
+[data-theme="violet"] .profit-test-page .primary-button { background: linear-gradient(105deg, #7c3aed, #ec4899) !important; }
+[data-theme="violet"] .profit-site-tabs button.is-active { color: #fff; background: #7c3aed; box-shadow: 0 7px 14px #7c3aed30; }
+[data-theme="violet"] .profit-title-icon { color: #7c3aed; background: #f5f0ff; border-color: #ddd6fe; }
+
+/* ---- 主题切换按钮样式 ---- */
+.theme-switcher { display: grid; gap: 6px; padding-top: 8px; margin-top: 8px; border-top: 1px solid #e5edf4; }
+.theme-switcher-label { font-size: .7rem; font-weight: 800; color: #8295aa; letter-spacing: .06em; text-transform: uppercase; }
+.theme-options { display: grid; gap: 4px; }
+.theme-option { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #e5edf4; border-radius: 9px; background: transparent; color: #527089; font-size: .82rem; font-weight: 700; text-align: left; cursor: pointer; transition: border-color .16s, background .16s; width: 100%; }
+.theme-option:hover { border-color: #c9deeb; background: #f4f8fb; }
+.theme-option.is-active { border-color: #a7dafa; background: #eaf8ff; color: #0877d3; }
+[data-theme="sunset"] .theme-option.is-active { border-color: #fdba74; background: #fff7ed; color: #d97706; }
+[data-theme="violet"] .theme-option.is-active { border-color: #c4b5fd; background: #f5f0ff; color: #7c3aed; }
+.theme-swatch { width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0; border: 2px solid rgba(255,255,255,.5); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.theme-option-name { flex: 1; }
+.theme-check { font-size: .85rem; color: inherit; }
+
+/* ---- 顶栏 & 侧边栏流光特效 ---- */
+[data-theme="sunset"] .topbar-card::before,
+[data-theme="sunset"] .sidebar-card::before {
+  background: linear-gradient(105deg, transparent 22%, rgba(245, 158, 11, .08) 36%, rgba(234, 179, 8, .18) 46%, rgba(217, 119, 6, .2) 53%, rgba(245, 158, 11, .12) 62%, transparent 78%) !important;
+}
+[data-theme="sunset"] .topbar-card::after,
+[data-theme="sunset"] .sidebar-card::after {
+  background: radial-gradient(ellipse at 50% 115%, rgba(245, 158, 11, .25) 0 16%, rgba(234, 179, 8, .15) 36%, transparent 68%) 0 0 / 180px 32px repeat-x !important;
+}
+
+[data-theme="violet"] .topbar-card::before,
+[data-theme="violet"] .sidebar-card::before {
+  background: linear-gradient(105deg, transparent 22%, rgba(139, 92, 246, .08) 36%, rgba(168, 85, 247, .18) 46%, rgba(196, 130, 246, .22) 53%, rgba(139, 92, 246, .12) 62%, transparent 78%) !important;
+}
+[data-theme="violet"] .topbar-card::after,
+[data-theme="violet"] .sidebar-card::after {
+  background: radial-gradient(ellipse at 50% 115%, rgba(168, 85, 247, .25) 0 16%, rgba(139, 92, 246, .15) 36%, transparent 68%) 0 0 / 180px 32px repeat-x !important;
+}
+
+/* ---- 仪表盘背景流体光斑 ---- */
+[data-theme="sunset"] .dashboard-page::before { background: radial-gradient(circle at 35% 35%, #fde68a, #f59e0b 58%, transparent 72%) !important; }
+[data-theme="sunset"] .dashboard-page::after { background: radial-gradient(circle at 45% 45%, #fcd34d, #fbbf24 58%, transparent 73%) !important; }
+[data-theme="violet"] .dashboard-page::before { background: radial-gradient(circle at 35% 35%, #c4b5fd, #8b5cf6 58%, transparent 72%) !important; }
+[data-theme="violet"] .dashboard-page::after { background: radial-gradient(circle at 45% 45%, #f0abfc, #ec4899 58%, transparent 73%) !important; }

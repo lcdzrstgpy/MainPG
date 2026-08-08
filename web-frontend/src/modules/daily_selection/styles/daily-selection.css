@@ -83,7 +83,7 @@
 .daily-collection-surface .daily-results { order: 2; }
 .daily-collection-surface .run-history-panel { order: 3; }
 .daily-collection-surface .run-list { max-height: 260px; }
-.daily-collection-surface .candidate-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.daily-collection-surface .candidate-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .preset-dialog-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(18, 39, 57, .38); backdrop-filter: blur(3px); }
 .preset-dialog { width: min(620px, 100%); overflow: hidden; border: 1px solid #cfe1eb; border-radius: 16px; background: #fff; box-shadow: 0 24px 65px rgba(16, 52, 78, .24); }
 .preset-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 18px; border-bottom: 1px solid #e1ebf1; }.preset-dialog-header > div { display: grid; gap: 2px; }.preset-dialog-header span { color: #0799c7; font-size: .61rem; font-weight: 850; letter-spacing: .13em; }.preset-dialog-header strong { color: #1c344b; font-size: 1.08rem; }.preset-dialog-header button { width: 34px; height: 34px; border: 1px solid #d8e4ec; border-radius: 9px; color: #647b8f; background: #fff; font-size: 1.2rem; }
