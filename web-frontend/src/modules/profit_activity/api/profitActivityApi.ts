@@ -150,22 +150,66 @@ export async function updateProfitActivityProduct({
   selling_price,
   cost_price,
   weight_kg,
+  note,
 }: {
   site: ProfitActivitySite;
   skc: string;
   selling_price?: string;
   cost_price?: string;
   weight_kg?: string;
+  note?: string;
 }) {
   const body: Record<string, unknown> = { site };
   if (selling_price !== undefined && selling_price !== "") body.selling_price = selling_price;
   if (cost_price !== undefined && cost_price !== "") body.cost_price = cost_price;
   if (weight_kg !== undefined && weight_kg !== "") body.weight_kg = weight_kg;
+  if (note !== undefined) body.note = note;
   return request<{ product: ProfitActivityProduct }>(`/api/profit-activity/products/${encodeURIComponent(skc)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+/**
+ * 更新产品的一个货源组（链接 + 截图）：非核价入库产品在货源侧边栏修改
+ * “图片和对应链接”后保存。走 multipart，仅更新 source_groups_json 与
+ * 目标组的截图，其他字段沿用当前记录。
+ */
+export async function updateProductSourceGroup({
+  site,
+  skc,
+  group,
+  sourceGroups,
+  image,
+}: {
+  site: ProfitActivitySite;
+  skc: string;
+  group: number;
+  sourceGroups: Array<{ source_url?: string; image_paths?: string[]; cost?: number | null }>;
+  image?: File | null;
+}) {
+  const { apiBase } = resolveEndpoint();
+  const token = candidateTokens()[0];
+  const form = new FormData();
+  form.set("site", site);
+  form.set("skc", skc);
+  form.set("source_groups_json", JSON.stringify(sourceGroups));
+  if (image) form.set(`source_group_image_${group}`, image);
+  const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  const text = await response.text();
+  let data: unknown = text;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    // 非 JSON 响应时保留原文
+  }
+  if (!response.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+  return data as { product: ProfitActivityProduct };
 }
 
 export async function deleteProfitActivityProducts({
@@ -183,17 +227,17 @@ export async function deleteProfitActivityProducts({
 }
 
 export async function downloadProfitActivityCatalog({
-  site,
+  sites,
   scope,
 }: {
-  site: ProfitActivitySite;
+  sites: ProfitActivitySite[];
   scope: ProfitActivityScope;
 }) {
   const { apiBase } = resolveEndpoint();
   const headers = new Headers();
   const token = candidateTokens()[0];
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${apiBase}/api/profit-activity/catalog/rebuild?${new URLSearchParams({ site, scope })}`, {
+  const response = await fetch(`${apiBase}/api/profit-activity/catalog/rebuild?${new URLSearchParams({ sites: sites.join(","), scope })}`, {
     method: "POST",
     headers,
   });
@@ -202,7 +246,7 @@ export async function downloadProfitActivityCatalog({
   const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
-  anchor.download = `${site}_product_catalog.xlsx`;
+  anchor.download = "product_catalog.xlsx";
   anchor.click();
   URL.revokeObjectURL(objectUrl);
 }

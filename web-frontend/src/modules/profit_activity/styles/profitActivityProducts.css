@@ -440,6 +440,102 @@
   opacity: 0.6;
 }
 
+/* 非核价产品的简化货源卡片：图片 + 链接 + 修改/保存 */
+.profit-source-card-simple .profit-source-card-row {
+  align-items: center;
+}
+
+.profit-source-edit-button {
+  flex: none;
+  border: 1px solid #b8d9f2;
+  border-radius: 9px;
+  padding: 7px 12px;
+  color: #0a8cf2;
+  background: #f2faff;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-edit-button:hover {
+  border-color: #82c9ef;
+  background: #e7f6ff;
+}
+
+.profit-source-card-url {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0a8cf2 !important;
+}
+
+.profit-source-edit-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.profit-source-edit-image {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.profit-source-edit-image-button {
+  display: inline-block;
+  border: 1px solid #cfe0eb;
+  border-radius: 8px;
+  padding: 5px 9px;
+  color: #526a82;
+  background: #fff;
+  font-size: 0.74rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-edit-image-button:hover {
+  border-color: #82c9ef;
+  color: #0a8cf2;
+}
+
+.profit-source-edit-url {
+  display: grid;
+  gap: 5px;
+}
+
+.profit-source-edit-url span {
+  color: #6d8399;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.profit-source-edit-url input {
+  width: 100%;
+  border: 1px solid #cfe0eb;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+}
+
+.profit-source-edit-actions {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 6px;
+  align-self: center;
+}
+
+.profit-source-edit-actions .profit-edit-save,
+.profit-source-edit-actions .profit-edit-cancel {
+  border-radius: 9px;
+  padding: 7px 12px;
+  font-size: 0.8rem;
+}
+
 /* 导入货源链接的货源组截图（截图1/2/3）与成本 */
 .profit-source-card-gallery {
   display: flex;
@@ -709,8 +805,17 @@
   border-right: 0;
 }
 
+/* 行内编辑单元格：输入框 + 保存/撤销按钮（聚焦时显示） */
+.profit-table .profit-edit-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
 .profit-table .profit-edit-input {
-  width: 88px;
+  flex: 1 1 auto;
+  min-width: 56px;
   padding: 6px 8px;
   border: 1px solid #d5e4ee;
   border-radius: 9px;
@@ -720,6 +825,43 @@
   text-align: right;
   font-weight: 750;
   font-size: .82rem;
+}
+
+.profit-table .profit-edit-input.profit-edit-text {
+  text-align: left;
+}
+
+.profit-edit-actions {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+}
+
+.profit-edit-actions button {
+  border: 1px solid #cfe0eb;
+  border-radius: 7px;
+  padding: 3px 6px;
+  font-size: .72rem;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.profit-edit-save {
+  color: #fff;
+  border-color: #0a8cf2;
+  background: #0a8cf2;
+}
+
+.profit-edit-cancel {
+  color: #526a82;
+  background: #fff;
+}
+
+.profit-edit-actions button:disabled {
+  cursor: not-allowed;
+  opacity: .6;
 }
 
 /* SKC 对应图单元格 */
@@ -858,6 +1000,11 @@
 .profit-table .profit-edit-input:focus {
   border-color: #0a8cf2;
   box-shadow: 0 0 0 3px #0a8cf214;
+}
+
+.profit-table .profit-note-input {
+  flex: 1 1 160px;
+  min-width: 120px;
 }
 
 .profit-table .profit-note-cell {

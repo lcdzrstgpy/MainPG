@@ -4,13 +4,14 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import uuid
 from dataclasses import dataclass
 from dataclasses import asdict
-from datetime import timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .domain.engine import activity_decision, calculate_profit, validate_settings
 from .domain.models import ProfitPreview, ProfitSettings, SiteCode
@@ -18,6 +19,7 @@ from .infrastructure.database import ProfitActivityDatabase, create_database
 from .infrastructure.repository import ProfitActivityRepository, SettingsRevisionConflict, SettingsSnapshot
 from .infrastructure.assets import ensure_writable_directory, resolve_asset, save_asset
 from .domain.workbooks import (
+    FilterPausedError,
     extract_product_workbook_images,
     filter_activity_workbook,
     new_workbook,
@@ -52,6 +54,9 @@ class ProfitActivityService:
     def __init__(self, repository: ProfitActivityRepository, database: ProfitActivityDatabase | None = None) -> None:
         self._repository = repository
         self._database = database
+        # 活动过滤后台任务：task_id -> 暂停事件（set=暂停），用于暂停正在运行的过滤
+        self._filter_events: dict[int, threading.Event] = {}
+        self._filter_events_lock = threading.Lock()
 
     def close(self) -> None:
         """释放数据库连接；供应用 shutdown 与测试清理调用。"""
@@ -340,19 +345,20 @@ class ProfitActivityService:
             raise ProfitActivityNotFound("import_task_not_found")
         return {"task": {"id": task.id, "status": task.status, "updated_at": task.updated_at}, "result": json.loads(task.result_json), "blockers": []}
 
-    def create_catalog(self, site: SiteCode, actor: Any | None = None, *, include_workspace_shared: bool = False) -> Path:
+    def create_catalog(self, sites: list[SiteCode], actor: Any | None = None, *, include_workspace_shared: bool = False) -> Path:
         workbook = new_workbook()
         sheet = workbook.active
         sheet.title = "products"
         sheet.append(["site", "SKC", "售价", "成本", "重量KG", "备注", "货源", "利润", "利润率"])
-        for product in self.list_products(site=site, actor=actor, include_workspace_shared=include_workspace_shared):
-            sheet.append([product["site"], product["skc"], product["selling_price"], product["cost_price"], product["weight_kg"], product["note"], product["source_url"], product["net_profit"], product["profit_rate"]])
+        for site in sites:
+            for product in self.list_products(site=site, actor=actor, include_workspace_shared=include_workspace_shared):
+                sheet.append([product["site"], product["skc"], product["selling_price"], product["cost_price"], product["weight_kg"], product["note"], product["source_url"], product["net_profit"], product["profit_rate"]])
         root = self._asset_root(self.get_settings(actor).settings)
-        path = root / f"{site}_product_catalog.xlsx"
+        path = root / "product_catalog.xlsx"
         path.write_bytes(workbook_bytes(workbook))
         return path
 
-    def filter_activity_template(self, workbook: bytes, original_filename: str, site: SiteCode, actor: Any | None = None, *, include_workspace_shared: bool = False) -> dict[str, Any]:
+    def filter_activity_template(self, workbook: bytes, original_filename: str, site: SiteCode, actor: Any | None = None, *, include_workspace_shared: bool = False, should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
         context = _actor_context(actor)
         products = {product["skc"]: product for product in self.list_products(site=site, actor=actor, include_workspace_shared=include_workspace_shared)}
         settings = self.get_settings(actor).settings
@@ -375,7 +381,7 @@ class ProfitActivityService:
                 "profit_rate_passed": preview.profit_rate >= settings.activity_profit_rate_threshold,
             }
 
-        filtered = filter_activity_workbook(workbook, site=site, evaluate=evaluate)
+        filtered = filter_activity_workbook(workbook, site=site, evaluate=evaluate, should_stop=should_stop)
         root = self._asset_root(settings) / "activity_outputs"
         root.mkdir(parents=True, exist_ok=True)
         token = uuid.uuid4().hex[:12]
@@ -383,23 +389,99 @@ class ProfitActivityService:
         removed_path = root / f"excluded_{token}.xlsx"
         filtered_path.write_bytes(filtered.pop("filtered_bytes"))
         removed_path.write_bytes(filtered.pop("removed_bytes"))
-        result = {
+        return self._trim_filter_result({
             "site": site, "requested_site": site, "site_auto_switched": False,
             "original_filename": original_filename, "filtered_path": str(filtered_path), "removed_path": str(removed_path),
             "threshold": float(settings.activity_min_net_profit), "min_net_profit_threshold": float(settings.activity_min_net_profit),
             "profit_rate_threshold": float(settings.activity_profit_rate_threshold), "activity_profit_rate_threshold": float(settings.activity_profit_rate_threshold),
             "activity_filter_rule_version": settings.rule_version,
             **filtered,
-        }
-        task = self._repository.create_filter_task(context.workspace_id, result)
-        return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": "completed", "created_at": _local_iso(task.created_at), **result}
+        })
+
+    def start_activity_filter(self, workbook: bytes, original_filename: str, site: SiteCode, actor: Any | None = None, *, include_workspace_shared: bool = False) -> int:
+        """异步启动活动过滤：立即返回任务编号，过滤在后台线程执行，支持暂停。"""
+        context = _actor_context(actor)
+        task = self._repository.create_filter_task(
+            context.workspace_id, "running",
+            {"original_filename": original_filename, "site": site, "started_at": _local_iso(datetime.now(timezone.utc))},
+        )
+        event = threading.Event()
+        with self._filter_events_lock:
+            self._filter_events[task.id] = event
+
+        def run() -> None:
+            try:
+                result = self.filter_activity_template(
+                    workbook, original_filename, site, actor,
+                    include_workspace_shared=include_workspace_shared,
+                    should_stop=event.is_set,
+                )
+                self._repository.update_filter_task(task.id, context.workspace_id, "completed", result)
+            except FilterPausedError:
+                self._repository.update_filter_task(
+                    task.id, context.workspace_id, "paused",
+                    {"original_filename": original_filename, "site": site, "paused_at": _local_iso(datetime.now(timezone.utc))},
+                )
+            except Exception as exc:  # noqa: BLE001 - 后台任务统一落库，避免线程静默失败
+                self._repository.update_filter_task(
+                    task.id, context.workspace_id, "failed",
+                    {"original_filename": original_filename, "site": site, "error": str(exc)},
+                )
+            finally:
+                with self._filter_events_lock:
+                    self._filter_events.pop(task.id, None)
+
+        threading.Thread(target=run, daemon=True, name=f"activity-filter-{task.id}").start()
+        return task.id
+
+    def pause_activity_filter(self, task_id: int, actor: Any | None = None) -> dict[str, Any]:
+        """暂停正在运行的活动过滤任务，返回任务当前状态。"""
+        context = _actor_context(actor)
+        with self._filter_events_lock:
+            event = self._filter_events.get(task_id)
+            if event is not None:
+                event.set()
+        task = self._repository.get_filter_task(task_id, context.workspace_id)
+        if task is None:
+            raise ProfitActivityNotFound("filter_task_not_found")
+        return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": task.status, "created_at": _local_iso(task.created_at) if task.created_at else None, **json.loads(task.result_json)}
+
+    def list_filter_tasks(self, actor: Any | None = None, *, limit: int = 20) -> list[dict[str, Any]]:
+        """返回当前工作区的历史活动过滤任务，最新在前；剥离大字段仅保留统计与状态。"""
+        context = _actor_context(actor)
+        tasks = self._repository.list_filter_tasks(context.workspace_id, limit)
+        payloads: list[dict[str, Any]] = []
+        for task in tasks:
+            result = json.loads(task.result_json)
+            # 历史列表不需要剔除明细/逐条判定等大字段，避免一次返回超大 JSON
+            result.pop("removed_rows", None)
+            result.pop("activity_decisions", None)
+            payloads.append({
+                "task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id,
+                "status": task.status, "created_at": _local_iso(task.created_at) if task.created_at else None,
+                **result,
+            })
+        return payloads
+
+    @staticmethod
+    def _trim_filter_result(result: dict[str, Any]) -> dict[str, Any]:
+        """裁剪过滤结果中的大字段，避免超大 JSON 拖垮轮询/历史/前端。
+
+        剔除明细与逐条判定在历史任务里不需要全量返回（前端只用统计和文件路径），
+        落库与查询时只保留前 100 条用于展示。
+        """
+        for key in ("removed_rows", "activity_decisions"):
+            value = result.get(key)
+            if isinstance(value, list):
+                result[key] = value[:100]
+        return result
 
     def get_filter_task_legacy(self, task_id: int, actor: Any | None = None) -> dict[str, Any]:
         context = _actor_context(actor)
         task = self._repository.get_filter_task(task_id, context.workspace_id)
         if task is None:
             raise ProfitActivityNotFound("filter_task_not_found")
-        return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": task.status, "created_at": _local_iso(task.created_at), **json.loads(task.result_json)}
+        return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": task.status, "created_at": _local_iso(task.created_at), **self._trim_filter_result(json.loads(task.result_json))}
 
     def output_path(self, task_id: int, kind: str, actor: Any | None = None) -> Path:
         result = self.get_filter_task_legacy(task_id, actor)

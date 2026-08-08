@@ -34,6 +34,8 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const [tabs, setTabs] = useState<WorkspaceTab[]>([moduleTab("dashboard")]);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
   const [showScrollTop, setShowScrollTop] = useState(false);
+  // 利润活动页 keep-alive：首次打开后保持挂载，切换走仅隐藏，表单/文件/过滤进度不丢失
+  const [profitActivityMounted, setProfitActivityMounted] = useState(false);
   const collectionSequence = useRef(0);
   const processingSequence = useRef(0);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -77,6 +79,10 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   useEffect(() => {
     setShowScrollTop(false);
   }, [activeTabKey]);
+
+  useEffect(() => {
+    if (activeModuleId === "profit_activity") setProfitActivityMounted(true);
+  }, [activeModuleId]);
 
   const scrollBackToTop = () => {
     contentRef.current?.scrollTo({ top: 0, behavior: "smooth" });
@@ -165,7 +171,11 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
           )}
           {activeModuleId === "dashboard" && <WorkspaceHomePage onOpenModule={openModule} />}
           {activeModuleId === "daily_selection" && <DailySelectionPage view="collection" topbarStatusVisible />}
-          {activeModuleId === "profit_activity" && <ProfitActivityTestPage />}
+          {profitActivityMounted && (
+            <div hidden={activeModuleId !== "profit_activity"}>
+              <ProfitActivityTestPage />
+            </div>
+          )}
           {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
           {activeModuleId === "basic_settings" && <BasicSettingsPage />}
           {activeModuleId === "price_verification" && <PriceVerificationPage />}
