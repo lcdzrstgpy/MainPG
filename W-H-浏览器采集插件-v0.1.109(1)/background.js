@@ -1,14 +1,6 @@
 importScripts("tenant_context.js");
 
-const DEFAULT_BASE_URL = "https://workbench.haocoming.top";
-const LEGACY_DEFAULT_BASE_URLS = new Set([
-  "http://127.0.0.1:8001",
-  "http://127.0.0.1:8002",
-  "http://localhost:8001",
-  "http://localhost:8002"
-]);
-const ALLOWED_HTTPS_WORKBENCH_HOSTS = new Set(["workbench.haocoming.top"]);
-const ALLOWED_HTTP_WORKBENCH_HOSTS = new Set(["localhost", "127.0.0.1"]);
+const DEFAULT_BASE_URL = "http://127.0.0.1:8010";
 const tenantContext = self.WorkbenchTenantContext;
 const BUSINESS_HOST_RE = /(^|\.)((temu)|(dianxiaomi))\.com$/i;
 const PRODUCT_CAPTURE_HOST_RE = /(^|\.)(temu|1688|alibaba|pinduoduo|yangkeduo|amazon)\.com$/i;
@@ -116,12 +108,7 @@ function normalizeBaseUrl(value) {
 
 function isAllowedWorkbenchUrl(value) {
   try {
-    const canonical = tenantContext.canonicalEntryBaseUrl(value);
-    const url = new URL(canonical.httpBase);
-    const host = url.hostname.toLowerCase();
-    if (url.protocol === "https:") return ALLOWED_HTTPS_WORKBENCH_HOSTS.has(host);
-    if (url.protocol === "http:") return ALLOWED_HTTP_WORKBENCH_HOSTS.has(host);
-    return false;
+    return tenantContext.normalizeEntryBaseUrl(value) === DEFAULT_BASE_URL;
   } catch (_error) {
     return false;
   }
@@ -206,8 +193,7 @@ async function readConnectionContext(options = {}) {
   if (!allowLegacyMigration || !settings.sessionId || !settings.sessionToken) return null;
 
   if (
-    tenantContext.isLoopbackHttpEntryUrl(settings.baseUrl)
-    && settings.baseUrlMode !== "explicit"
+    normalizeBaseUrl(settings.baseUrl) !== DEFAULT_BASE_URL
   ) {
     await clearConnectionState();
     await chrome.storage.local.set({ baseUrl: DEFAULT_BASE_URL, baseUrlMode: "default" });
@@ -550,10 +536,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   if (settings.connectionContext) {
     try {
       const connection = tenantContext.validateConnectionContext(settings.connectionContext);
-      if (
-        !tenantContext.isLoopbackHttpEntryUrl(connection.http_base)
-        || settings.baseUrlMode === "explicit"
-      ) {
+      if (normalizeBaseUrl(connection.http_base) === DEFAULT_BASE_URL) {
         await chrome.storage.local.set({
           baseUrl: connection.http_base,
           baseUrlMode: settings.baseUrlMode || "connected"
@@ -566,13 +549,8 @@ chrome.runtime.onInstalled.addListener(async () => {
       await clearConnectionState();
     }
   }
-  const storedBaseUrl = settings.baseUrl ? normalizeBaseUrl(settings.baseUrl) : "";
-  const staleLegacyLocal = LEGACY_DEFAULT_BASE_URLS.has(storedBaseUrl)
-    && settings.baseUrlMode !== "explicit";
-  if (!storedBaseUrl || staleLegacyLocal) {
-    if (staleLegacyLocal) await clearConnectionState();
-    await chrome.storage.local.set({ baseUrl: DEFAULT_BASE_URL, baseUrlMode: "default" });
-  }
+  await clearConnectionState();
+  await chrome.storage.local.set({ baseUrl: DEFAULT_BASE_URL, baseUrlMode: "default" });
   schedulePollAlarm();
   await restoreConnection();
 });
@@ -7858,7 +7836,7 @@ function isLikelyWorkbenchTab(tab) {
     const host = parsed.hostname.toLowerCase();
     return parsed.protocol === "http:"
       && (host === "127.0.0.1" || host === "localhost" || /^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\./.test(host))
-      && (parsed.port === "8001" || parsed.pathname === "/" || /workbench|local|price|source/i.test(parsed.href));
+      && (parsed.port === "8010" || parsed.pathname === "/" || /workbench|local|price|source/i.test(parsed.href));
   } catch (_error) {
     return false;
   }

@@ -474,18 +474,20 @@
 /* ---------- 修复 SectionHelp 教程弹窗被遮挡 ---------- */
 .price-verification-section-help {
   position: relative;
-  z-index: 1200;
+  z-index: 12;
 }
 
 /* tip 改为贴左对齐向右展开：避免在内容区左侧（短标题）时居中弹出导致左半部分
    溢出内容区被 overflow 裁剪，视觉上像被左侧导航栏遮挡。
    用双类选择器 + !important 强制覆盖 priceVerificationApi.css 的原始规则
-   （Vite 打包后原始规则声明顺序可能反超，需提高特异性保证生效） */
+   （Vite 打包后原始规则声明顺序可能反超，需提高特异性保证生效）。
+   z-index 控制在顶部导航栏（.topbar-card z-index 18/20）之下，
+   避免弹窗悬浮到导航栏之上。 */
 .price-verification-section-help .price-verification-section-help-tip {
   left: 0 !important;
   transform: none !important;
   max-width: min(340px, 62vw) !important;
-  z-index: 1300 !important;
+  z-index: 15 !important;
 }
 
 /* ---------- 响应式 ---------- */
