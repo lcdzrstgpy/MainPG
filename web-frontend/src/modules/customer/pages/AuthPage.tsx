@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 
+import { BRAND_LOGO_URL, BRAND_NAME } from "../../../shared/brand";
 import { httpJson, saveAuthSession } from "../../../transport/http/client";
 
 type AuthPageProps = { onEnter: () => void };
@@ -33,9 +34,9 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
-  // 工作区固定为 default（名称留空），注册页不允许用户修改。
-  const FIXED_WORKSPACE_CODE = "default";
-  const FIXED_WORKSPACE_NAME = "";
+  // 工作区编码/名称由用户填写，无默认值（留白）
+  const [workspaceCode, setWorkspaceCode] = useState("");
+  const [workspaceName, setWorkspaceName] = useState("");
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -65,8 +66,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
             email,
             password,
             role: "operator",
-            workspace_code: FIXED_WORKSPACE_CODE,
-            workspace_name: FIXED_WORKSPACE_NAME,
+            workspace_code: workspaceCode.trim(),
+            workspace_name: workspaceName.trim(),
           },
           token: "",
         });
@@ -85,9 +86,9 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   return (
     <main className="auth-screen">
       <section className="auth-brand-card">
-        <span className="brand-mark brand-mark-large">智</span>
-        <p className="eyebrow">SMART ECOMMERCE PLATFORM</p>
-        <h1>智能电商平台</h1>
+        <img className="brand-logo-large" src={BRAND_LOGO_URL} alt={BRAND_NAME} />
+        <p className="eyebrow">QIFAN ECOMMERCE PLATFORM</p>
+        <h1>启凡电商平台</h1>
         <p>面向跨境电商团队的本地运营中台。登录/注册已连接真实后端接口，账号数据由后端账号服务统一管理。</p>
         <div className="auth-feature-list"><span>✓ 模块化工作流</span><span>✓ 本地运行时</span><span>✓ 团队协作预留</span></div>
       </section>
@@ -107,8 +108,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
           <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete={isLogin ? "current-password" : "new-password"} required /></label>
           {!isLogin && (
             <>
-              <label>工作区编码<input type="text" value={FIXED_WORKSPACE_CODE} disabled /></label>
-              <label>工作区名称<input type="text" value={FIXED_WORKSPACE_NAME} disabled placeholder="（固定工作区，无需填写）" /></label>
+              <label>工作区编码<input type="text" value={workspaceCode} onChange={(e) => setWorkspaceCode(e.target.value)} placeholder="填写工作区编码" /></label>
+              <label>工作区名称<input type="text" value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} placeholder="填写工作区名称" /></label>
             </>
           )}
           {error && <p className="auth-error">{error}</p>}

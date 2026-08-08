@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { BRAND_LOGO_URL, BRAND_NAME } from "../../../shared/brand";
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
 import { DashboardStats } from "../components/DashboardStats";
 
@@ -37,7 +38,8 @@ export function WorkspaceHomePage({ onOpenModule }: WorkspaceHomePageProps) {
       <span className="dashboard-meteor is-two" aria-hidden="true" />
       <span className="dashboard-meteor is-three" aria-hidden="true" />
       <section className="page-hero-card">
-        <p className="eyebrow">LOCAL WORKSPACE</p>
+        <img className="brand-logo-hero" src={BRAND_LOGO_URL} alt={BRAND_NAME} />
+        <p className="eyebrow">QIFAN ECOMMERCE PLATFORM · 启凡电商平台</p>
         <h1>{greeting}，准备开始今天的工作。</h1>
       </section>
       <section>

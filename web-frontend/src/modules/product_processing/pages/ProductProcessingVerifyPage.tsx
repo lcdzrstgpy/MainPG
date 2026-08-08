@@ -9,8 +9,6 @@ import '../styles/ProductProcessingVerifyPage.css';
 
 const API_BASE = '/api/product-processing';
 
-const PAGE_SIZE = 10;
-
 type DraftEdit = {
   title: string;
   imageUrl: string;
@@ -53,12 +51,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  // SKU 管理抽屉：当前正在管理的草稿 id（null 表示关闭）
+  const [skuDrawerDraftId, setSkuDrawerDraftId] = useState<number | null>(null);
   const [edits, setEdits] = useState<Record<number, DraftEdit>>({});
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [jumpPage, setJumpPage] = useState('');
+  // 单页展示数量：10 / 30 / 50 / 100
+  const [pageSize, setPageSize] = useState(10);
   const [viewMode, setViewMode] = useState<'all' | 'selected'>('all');
   const [searchTerm, setSearchTerm] = useState('');
   // SKU 数量筛选：0 = 全部，否则为最少变种数
@@ -66,6 +68,69 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
   // 不看单规格：隐藏无变种 / 仅 1 个变种的草稿
   const [hideSingleSpec, setHideSingleSpec] = useState(false);
   const draftListRef = useRef<HTMLDivElement>(null);
+  const stickyToolbarRef = useRef<HTMLDivElement>(null);
+  const stickySpacerRef = useRef<HTMLDivElement>(null);
+
+  // 滚动发生在 window（.content-card 的 overflow:auto 会作为 sticky 的滚动祖先但不参与滚动，
+  // 导致纯 CSS sticky 永远吸不住）。参照产品库固定表头做法：JS 测量工具栏自然位置，
+  // 滚出顶部导航栏下方后切换为 position:fixed，用 spacer 占位防止内容跳动。
+  useEffect(() => {
+    const toolbar = stickyToolbarRef.current;
+    const spacer = stickySpacerRef.current;
+    if (!toolbar || !spacer) return;
+    const contentCard = document.querySelector('.content-card') as HTMLElement | null;
+    let stuck = false;
+    let naturalTop = 0;
+    const apply = () => {
+      const scrolled =
+        contentCard && contentCard.scrollHeight > contentCard.clientHeight + 1
+          ? contentCard.scrollTop
+          : window.scrollY || document.documentElement.scrollTop;
+      const topbar = document.querySelector('.topbar-card') as HTMLElement | null;
+      let topbarBottom = 0;
+      if (topbar) {
+        const rect = topbar.getBoundingClientRect();
+        if (rect.bottom > 0) topbarBottom = Math.round(rect.bottom);
+      }
+      const threshold = topbarBottom + 6;
+      if (!stuck) {
+        // 只在未固定时刷新"自然文档位置"，固定后上方内容高度不再变化
+        naturalTop = toolbar.getBoundingClientRect().top + scrolled;
+      }
+      const viewportTop = naturalTop - scrolled;
+      if (!stuck && viewportTop < threshold) {
+        stuck = true;
+        const contentRect = contentCard?.getBoundingClientRect();
+        toolbar.style.position = 'fixed';
+        toolbar.style.top = `${threshold}px`;
+        toolbar.style.left = contentRect ? `${Math.round(contentRect.left)}px` : '0px';
+        toolbar.style.width = contentRect ? `${Math.round(contentRect.width)}px` : '100%';
+        spacer.style.height = `${toolbar.offsetHeight}px`;
+        toolbar.classList.add('is-stuck');
+      } else if (stuck && viewportTop >= threshold) {
+        stuck = false;
+        toolbar.style.position = '';
+        toolbar.style.top = '';
+        toolbar.style.left = '';
+        toolbar.style.width = '';
+        spacer.style.height = '';
+        toolbar.classList.remove('is-stuck');
+      }
+    };
+    apply();
+    window.addEventListener('scroll', apply, { passive: true });
+    window.addEventListener('resize', apply);
+    contentCard?.addEventListener('scroll', apply, { passive: true });
+    const observer = new ResizeObserver(apply);
+    if (contentCard) observer.observe(contentCard);
+    observer.observe(document.body);
+    return () => {
+      window.removeEventListener('scroll', apply);
+      window.removeEventListener('resize', apply);
+      contentCard?.removeEventListener('scroll', apply);
+      observer.disconnect();
+    };
+  }, []);
 
   const dirtyCount = useMemo(
     () => drafts.filter((d) => draftDirty(d, edits)).length,
@@ -87,17 +152,18 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
       // 不看单规格：隐藏无变种 / 仅 1 个变种的单规格草稿
       if (hideSingleSpec && variantCount <= 1) return false;
       if (!keyword) return true;
-      return [d.title, d.product_name, d.skc, d.sku, d.source_ref, raw.source_title]
+      // 搜索框只按标题搜索
+      return [d.title, d.product_name, raw.source_title]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword));
     });
   }, [selectableDrafts, viewMode, selectedIds, searchTerm, skuCountFilter, hideSingleSpec]);
   const totalDrafts = filteredDrafts.length;
-  const totalPages = Math.max(1, Math.ceil(totalDrafts / PAGE_SIZE));
-  const pageStart = (page - 1) * PAGE_SIZE;
+  const totalPages = Math.max(1, Math.ceil(totalDrafts / pageSize));
+  const pageStart = (page - 1) * pageSize;
   const pageDrafts = useMemo(
-    () => filteredDrafts.slice(pageStart, pageStart + PAGE_SIZE),
-    [filteredDrafts, pageStart]
+    () => filteredDrafts.slice(pageStart, pageStart + pageSize),
+    [filteredDrafts, pageStart, pageSize]
   );
 
   const notify = (ok: string) => { setMessage(ok); setError(''); };
@@ -143,9 +209,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
     });
   };
 
-  const saveOneDraft = async (draft: DraftSummary): Promise<boolean> => {
+  const saveOneDraft = async (draft: DraftSummary): Promise<DraftSummary | null> => {
     const edit = edits[draft.id];
-    if (!edit || !draftDirty(draft, edits)) return false;
+    if (!edit || !draftDirty(draft, edits)) return null;
     const raw = draft.raw_payload || {};
     const variants: DraftVariant[] = raw.source_variant_records || [];
     const skuEdits: Record<string, string> = {};
@@ -161,16 +227,27 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
         else if (editMap[skuId] !== undefined && editMap[skuId] !== (variant.display_name || label)) { skuEdits[label] = editMap[skuId]; }
       }
     }
-    await ppRequest(ctx, `${API_BASE}/drafts/${draft.id}`, { method: 'PATCH', body: { title: edit.title, image_url: edit.imageUrl, sku_name_edits: skuEdits, sku_name_deletes: skuDeletes } });
-    return true;
+    const saved = await ppRequest<{ draft: DraftSummary }>(ctx, `${API_BASE}/drafts/${draft.id}`, { method: 'PATCH', body: { title: edit.title, image_url: edit.imageUrl, sku_name_edits: skuEdits, sku_name_deletes: skuDeletes } });
+    // 返回更新后的草稿（标题/主图以服务端为准）
+    return { ...draft, title: saved.draft.title ?? draft.title, image_url: saved.draft.image_url ?? edit.imageUrl };
+  };
+
+  // 保存成功后原位合并更新草稿，保持列表相对顺序不变
+  const applySavedDraft = (updated: DraftSummary) => {
+    setDrafts((prev) => prev.map((d) => (d.id === updated.id ? { ...d, title: updated.title, image_url: updated.image_url } : d)));
+    setEdits((prev) => { const next = { ...prev }; delete next[updated.id]; return next; });
   };
 
   const saveRow = async (draft: DraftSummary) => {
     setLoading(true);
     try {
       const saved = await saveOneDraft(draft);
-      await refresh();
-      notify(saved ? '已保存该草稿修改' : '该行没有需要保存的修改');
+      if (saved) {
+        applySavedDraft(saved);
+        notify('已保存该草稿修改');
+      } else {
+        notify('该行没有需要保存的修改');
+      }
     } catch (err) { fail(err); } finally { setLoading(false); }
   };
 
@@ -182,8 +259,14 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
     if (!targets.length) { notify(onlySelected ? '没有需要保存的已选修改' : '没有未保存的修改'); return; }
     setLoading(true);
     try {
-      for (const draft of targets) { await saveOneDraft(draft); }
-      await refresh();
+      const updated: DraftSummary[] = [];
+      for (const draft of targets) { const saved = await saveOneDraft(draft); if (saved) updated.push(saved); }
+      // 原位合并更新，保持列表顺序不变
+      if (updated.length) setDrafts((prev) => prev.map((d) => {
+        const hit = updated.find((u) => u.id === d.id);
+        return hit ? { ...d, title: hit.title, image_url: hit.image_url } : d;
+      }));
+      setEdits((prev) => { const next = { ...prev }; for (const d of targets) delete next[d.id]; return next; });
       notify(`已保存 ${targets.length} 条草稿修改`);
     } catch (err) { fail(err); } finally { setLoading(false); }
   };
@@ -227,14 +310,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
       )}
 
       <section className="verify-section" ref={draftListRef}>
+        <div className="verify-sticky-toolbar-spacer" ref={stickySpacerRef}>
+        <div className="verify-sticky-toolbar" ref={stickyToolbarRef}>
         <div className="verify-section-head">
           <h2><i className="iconfont icon-database" aria-hidden="true" />草稿池</h2>
           <div className="verify-actions">
             <button onClick={selectAll}><i className="iconfont icon-select" aria-hidden="true" />全选本页</button>
             <button onClick={clearSelection}><i className="iconfont icon-close-circle" aria-hidden="true" />取消选择</button>
             <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
-            <button onClick={() => saveDrafts(false)} disabled={loading}><i className="iconfont icon-save-fill" aria-hidden="true" />保存全部修改</button>
-            <button onClick={deleteSelected} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />移除已选</button>
+            <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
+            <button onClick={deleteSelected} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
             <button onClick={() => refresh().catch(fail)} disabled={loading}><i className="iconfont icon-sync" aria-hidden="true" />刷新</button>
           </div>
         </div>
@@ -250,6 +335,20 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
             {dirtyCount > 0 && <span className="dirty"><i className="iconfont icon-save" aria-hidden="true" />未保存修改 <strong>{dirtyCount}</strong></span>}
           </div>
           <div className="verify-pool-controls">
+            <div className="verify-page-size">
+              <i className="iconfont icon-appstore" aria-hidden="true" />
+              <select
+                className="verify-pool-select"
+                value={pageSize}
+                title="单页展示数量"
+                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+              >
+                <option value={10}>每页 10</option>
+                <option value={30}>每页 30</option>
+                <option value={50}>每页 50</option>
+                <option value={100}>每页 100</option>
+              </select>
+            </div>
             <div className="verify-sku-filter">
               <i className="iconfont icon-filter" aria-hidden="true" />
               <select
@@ -296,6 +395,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
               />
             </div>
           </div>
+        </div>
+        </div>
         </div>
 
         {viewMode === 'selected' && (
@@ -384,8 +485,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
                         ) : (<span>单规格</span>)}
                       </span>
                       <div className="pool-inline-acts">
-                        <button className="btn-mini" onClick={() => copy(skcText)}><i className="iconfont icon-barcode" aria-hidden="true" />复制SKC</button>
-                        <button className="btn-mini" onClick={() => copy(skuText)}><i className="iconfont icon-barcode" aria-hidden="true" />复制SKU</button>
+                        {variants.length > 1 && (
+                          <button className="btn-mini" onClick={() => { if (!edits[draft.id]) beginEdit(draft); setSkuDrawerDraftId(draft.id); }}><i className="iconfont icon-eye" aria-hidden="true" />管理 SKU</button>
+                        )}
                       </div>
                     </div>
                     <div className="pool-cat-info">
@@ -420,30 +522,13 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
                       </div>
                     </div>
                     {variants.length > 0 && (
-                      <div className="verify-sku-list">
-                        {variants.map((variant, idx) => {
-                          const attrs = variant.attributes || {};
-                          const label = Object.values(attrs).join('/');
-                          const skuId = String(variant.sku_id || variant.source_sku_id || label || idx);
-                          const isDeleted = edit.skuDeletes.includes(skuId) || edit.skuDeletes.includes(label);
-                          const value = edit.skuEdits[skuId] ?? edit.skuEdits[label] ?? variant.display_name ?? label;
-                          return (
-                            <section key={idx} className={`verify-sku ${isDeleted ? 'deleted' : ''}`}>
-                              <header>
-                                <div><strong>SKU {idx + 1}</strong><small>{variant.source_sku_id ?? '无货号'}</small></div>
-                                <button onClick={() => setEdits((p) => { const cur = p[draft.id]!; const s = new Set(cur.skuDeletes); s.has(skuId) ? s.delete(skuId) : s.add(skuId); return { ...p, [draft.id]: { ...cur, skuDeletes: Array.from(s) } }; })}>{isDeleted ? '恢复' : '删除'}</button>
-                              </header>
-                              {!isDeleted ? (
-                                <div className="verify-variant-grid">
-                                  <label><span>{label || '规格属性'}</span>
-                                    <input value={value} onChange={(e) => setEdits((p) => ({ ...p, [draft.id]: { ...edit, skuEdits: { ...edit.skuEdits, [skuId]: e.target.value } } }))} />
-                                  </label>
-                                  <small>¥{variant.price_cny ?? '-'} · 起订 {variant.min_order_quantity ?? '-'}</small>
-                                </div>
-                              ) : (<p className="verify-sku-note">该 SKU 不会进入下次处理。</p>)}
-                            </section>
-                          );
-                        })}
+                      <div className="verify-sku-summary">
+                        <div className="verify-sku-summary-info">
+                          <span><i className="iconfont icon-barcode" aria-hidden="true" /><strong>{variants.length}</strong> 个 SKU</span>
+                          {edit.skuDeletes.length > 0 && <span className="dirty">已删除 <strong>{edit.skuDeletes.length}</strong></span>}
+                          <span className="muted">点击「管理 SKU」在右侧弹窗中查看全部规格并批量删除</span>
+                        </div>
+                        <button className="btn-mini primary" onClick={() => setSkuDrawerDraftId(draft.id)}><i className="iconfont icon-eye" aria-hidden="true" />管理 SKU</button>
                       </div>
                     )}
                     <div className="verify-row-actions">
@@ -492,12 +577,107 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
       <section className="verify-quickbar">
         <div className="verify-actions">
           <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
-          <button onClick={() => handleProcess(true)} disabled={loading || !selectedIds.size}><i className="iconfont icon-eye" aria-hidden="true" />预检</button>
           <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
-          <button onClick={() => saveDrafts(false)} disabled={loading}><i className="iconfont icon-save-fill" aria-hidden="true" />保存全部修改</button>
-          <button onClick={deleteSelected} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />移除已选</button>
+          <button onClick={deleteSelected} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
         </div>
       </section>
+
+      {skuDrawerDraftId !== null && (() => {
+        const target = drafts.find((d) => d.id === skuDrawerDraftId);
+        if (!target) return null;
+        const raw = target.raw_payload || {};
+        const variants: DraftVariant[] = raw.source_variant_records || [];
+        const edit = edits[target.id] ?? { title: target.title || '', imageUrl: target.image_url || '', skuEdits: {}, skuDeletes: [] };
+        const isDeleted = (variant: DraftVariant, skuId: string, label: string) =>
+          edit.skuDeletes.includes(skuId) || edit.skuDeletes.includes(label);
+        // 未删除保持原序在前，已删除自动置队尾，便于连续批量删除
+        const orderedVariants = [...variants].sort((a, b) => {
+          const attrsA = a.attributes || {};
+          const labelA = Object.values(attrsA).join('/');
+          const skuIdA = String(a.sku_id || a.source_sku_id || labelA);
+          const attrsB = b.attributes || {};
+          const labelB = Object.values(attrsB).join('/');
+          const skuIdB = String(b.sku_id || b.source_sku_id || labelB);
+          return (isDeleted(a, skuIdA, labelA) ? 1 : 0) - (isDeleted(b, skuIdB, labelB) ? 1 : 0);
+        });
+        const deletedCount = variants.filter((v, idx) => {
+          const attrs = v.attributes || {};
+          const label = Object.values(attrs).join('/');
+          const skuId = String(v.sku_id || v.source_sku_id || label || idx);
+          return isDeleted(v, skuId, label);
+        }).length;
+        const closeDrawer = () => setSkuDrawerDraftId(null);
+        return (
+          <div className="verify-drawer-root">
+            <div className="verify-drawer-mask" onClick={closeDrawer} />
+            <aside className="verify-drawer">
+              <header className="verify-drawer-head">
+                <div>
+                  <p className="verify-eyebrow">SKU EDITOR</p>
+                  <h2 title={target.title || raw.source_title || '未命名商品'}>
+                    {target.title || raw.source_title || '未命名商品'}
+                  </h2>
+                  <p>共 {variants.length} 个 SKU · 已删除 <strong>{deletedCount}</strong> 个</p>
+                </div>
+                <button className="verify-drawer-close" onClick={closeDrawer} aria-label="关闭">×</button>
+              </header>
+
+              <div className="verify-drawer-body">
+                <div className="verify-drawer-tip">
+                  <i className="iconfont icon-infomation" aria-hidden="true" />
+                  已删除的 SKU 会自动移动到列表末尾，便于连续批量删除；恢复后回到原位置。
+                </div>
+                {variants.length === 0 && <p className="verify-drawer-status">该草稿没有 SKU（单规格）。</p>}
+                {orderedVariants.map((variant, idx) => {
+                  const attrs = variant.attributes || {};
+                  const label = Object.values(attrs).join('/');
+                  const skuId = String(variant.sku_id || variant.source_sku_id || label || idx);
+                  const deleted = isDeleted(variant, skuId, label);
+                  const value = edit.skuEdits[skuId] ?? edit.skuEdits[label] ?? variant.display_name ?? label;
+                  const toggleDelete = () => setEdits((p) => {
+                    const cur = p[target.id] ?? { title: target.title || '', imageUrl: target.image_url || '', skuEdits: {}, skuDeletes: [] };
+                    const s = new Set(cur.skuDeletes);
+                    if (s.has(skuId)) s.delete(skuId);
+                    else if (s.has(label)) s.delete(label);
+                    else s.add(variant.sku_id || variant.source_sku_id || label || idx);
+                    return { ...p, [target.id]: { ...cur, skuDeletes: Array.from(s) } };
+                  });
+                  const changeValue = (next: string) => setEdits((p) => {
+                    const cur = p[target.id] ?? { title: target.title || '', imageUrl: target.image_url || '', skuEdits: {}, skuDeletes: [] };
+                    const key = variant.sku_id || variant.source_sku_id || label || idx;
+                    return { ...p, [target.id]: { ...cur, skuEdits: { ...cur.skuEdits, [key]: next } } };
+                  });
+                  return (
+                    <section key={`${skuId}-${idx}`} className={`verify-drawer-sku ${deleted ? 'deleted' : ''}`}>
+                      <header>
+                        <div>
+                          <strong>SKU {idx + 1}</strong>
+                          <small>{variant.source_sku_id ?? '无货号'}</small>
+                          {deleted && <em>已删除 · 已移至队尾</em>}
+                        </div>
+                        <button onClick={toggleDelete}>{deleted ? '恢复' : '删除'}</button>
+                      </header>
+                      {!deleted ? (
+                        <div className="verify-variant-grid">
+                          <label><span>{label || '规格属性'}</span>
+                            <input value={value} onChange={(e) => changeValue(e.target.value)} />
+                          </label>
+                          <small>¥{variant.price_cny ?? '-'} · 起订 {variant.min_order_quantity ?? '-'}</small>
+                        </div>
+                      ) : (<p className="verify-sku-note">该 SKU 不会进入下次处理。</p>)}
+                    </section>
+                  );
+                })}
+              </div>
+
+              <footer className="verify-drawer-foot">
+                <span>已删除 {deletedCount} / {variants.length} 个 SKU</span>
+                <button className="primary" onClick={() => { void saveRow(target); closeDrawer(); }} disabled={loading}>保存</button>
+              </footer>
+            </aside>
+          </div>
+        );
+      })()}
     </div>
   );
 }
