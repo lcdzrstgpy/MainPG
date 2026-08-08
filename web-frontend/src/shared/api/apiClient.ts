@@ -1,10 +1,16 @@
-export const apiToken = import.meta.env.VITE_WH_API_TOKEN || "dev-admin-token";
+const TOKEN_KEY = "wh_demo_token";
+
+export function getApiToken(): string {
+  const stored = window.localStorage.getItem(TOKEN_KEY);
+  if (stored) return stored;
+  return import.meta.env.VITE_WH_API_TOKEN || "dev-admin-token";
+}
 
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers: {
-      Authorization: `Bearer ${apiToken}`,
+      Authorization: `Bearer ${getApiToken()}`,
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
       ...init?.headers,
     },

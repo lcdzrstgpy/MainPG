@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +17,7 @@ logger = logging.getLogger("wh_local.app")
 
 from ..config import default_config
 from ..customer.auth_service import SQLiteCustomerAuthService
+from ..customer.collect_credentials import CollectCredentialsError, request_collect_credentials
 from ..customer.db_store import SQLiteCustomerSessionStore
 from ..customer.local_session import LocalSessionService
 from ..customer.remote_client import CustomerAuthClient
@@ -59,13 +60,28 @@ def _price_verification_actor(
 
 
 def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
-    """Resolve OneBound credentials from local global configuration."""
+    """Resolve OneBound credentials from the platform collect-key service.
+
+    The API key/secret never ship with the client software. Each collection
+    obtains them from the server (which verifies the user account) using an
+    RSA-wrapped one-time AES session key, so credentials stay out of the
+    client's disk and source code.
+    """
     config = default_config()
+    try:
+        credentials = request_collect_credentials(
+            base_url=config.customer_auth_base_url,
+            account_id=actor.actor_id,
+            username="",
+            workspace_code=actor.workspace_id,
+        )
+    except CollectCredentialsError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     return {
-        "api_key": config.onebound_1688_api_key,
-        "api_secret": config.onebound_1688_api_secret,
-        "base_url": config.onebound_1688_base_url,
-        "enabled": config.onebound_1688_enabled,
+        "api_key": credentials.get("api_key", ""),
+        "api_secret": credentials.get("api_secret", ""),
+        "base_url": credentials.get("base_url", ""),
+        "enabled": True,
     }
 
 

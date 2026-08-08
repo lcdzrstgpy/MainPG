@@ -29,7 +29,10 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
         data_dir=data_dir,
         database_path=database_path,
         dev_admin_token=os.environ.get("WH_LOCAL_DEV_ADMIN_TOKEN", "dev-admin-token"),
-        customer_auth_base_url=os.environ.get("WH_LOCAL_CUSTOMER_AUTH_BASE_URL", ""),
+        customer_auth_base_url=os.environ.get(
+            "WH_LOCAL_CUSTOMER_AUTH_BASE_URL",
+            "https://workbench.haocoming.top/auth-api",
+        ),
         onebound_1688_api_key=os.environ.get(
             "DAILY_SELECTION_ONEBOUND_API_KEY", local_secrets.get("api_key", "")
         ),

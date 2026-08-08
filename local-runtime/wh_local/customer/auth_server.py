@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
+import os
 from pathlib import Path
 import secrets
 from typing import Any
 
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, Header, HTTPException, Request
 
 from ..config import default_config
@@ -189,6 +196,66 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             ],
         }
 
+    # ---- 采集凭据下发（OneBound API key 只在服务器持有，按用户身份加密下发） ----
+    @app.post("/api/customer/collect-key")
+    def collect_key(payload: dict[str, Any]) -> dict[str, Any]:
+        account_id = str(payload.get("account_id") or "").strip()
+        username = str(payload.get("username") or "").strip()
+        workspace_code = str(payload.get("workspace_code") or "").strip()
+        encrypted_session_key = str(payload.get("encrypted_session_key") or "")
+        if (not account_id and not username) or not encrypted_session_key:
+            raise HTTPException(status_code=400, detail="account_id/username and encrypted_session_key are required")
+
+        # 校验用户存在且有效（账号必须在服务器注册过）
+        with transaction(db_path) as conn:
+            if account_id:
+                row = conn.execute(
+                    """
+                    SELECT a.account_id, a.account_status
+                    FROM auth_accounts a
+                    LEFT JOIN workspaces w ON w.workspace_id = a.workspace_id
+                    WHERE a.account_id = ?
+                      AND (? = '' OR w.workspace_code = ?)
+                    """,
+                    (account_id, workspace_code, workspace_code),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT a.account_id, a.account_status
+                    FROM auth_accounts a
+                    LEFT JOIN workspaces w ON w.workspace_id = a.workspace_id
+                    WHERE lower(a.username) = lower(?)
+                      AND (? = '' OR w.workspace_code = ?)
+                    """,
+                    (username, workspace_code, workspace_code),
+                ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=401, detail="user is not registered on the server")
+        if str(row["account_status"]).strip().lower() in {"disabled", "inactive", "locked", "suspended", "deleted"}:
+            raise HTTPException(status_code=403, detail="user account is not active")
+
+        # 用服务器私钥解出临时 AES 会话密钥，再加密 OneBound 凭据下发
+        try:
+            session_key = _rsa_decrypt_session_key(encrypted_session_key)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="cannot decrypt session key") from exc
+
+        credentials = _server_onebound_config()
+        if not credentials.get("api_key") or not credentials.get("api_secret"):
+            raise HTTPException(status_code=503, detail="collect credentials are not configured on the server")
+
+        plaintext = json.dumps(credentials).encode("utf-8")
+        nonce = os.urandom(12)
+        encryptor = Cipher(algorithms.AES(session_key), modes.GCM(nonce)).encryptor()
+        ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+        return {
+            "ok": True,
+            "payload": base64.b64encode(ciphertext).decode("ascii"),
+            "nonce": base64.b64encode(nonce).decode("ascii"),
+            "tag": base64.b64encode(encryptor.tag).decode("ascii"),
+        }
+
     return app
 
 
@@ -314,6 +381,71 @@ def _invitation_code() -> str:
     def _chunk(size: int) -> str:
         return "".join(secrets.choice(alphabet) for _ in range(size))
     return f"MAINPG-{_chunk(4)}-{_chunk(4)}"
+
+
+# ---- 采集凭据（OneBound API key/secret）只在服务器持有 ----
+
+def _server_rsa_private_key_pem() -> str:
+    """Load the server's RSA private key used to unwrap collect-key sessions."""
+    env = os.environ.get("WH_AUTH_RSA_PRIVATE_KEY", "").strip()
+    if env:
+        return env
+    path = os.environ.get("WH_AUTH_RSA_PRIVATE_KEY_PATH", "/opt/wh-workbench/data/rsa_private.pem")
+    return Path(path).read_text(encoding="utf-8")
+
+
+def _rsa_decrypt_session_key(encrypted_session_key_b64: str) -> bytes:
+    """Decrypt the client's one-time AES session key using the server RSA key."""
+    pem = _server_rsa_private_key_pem().encode("utf-8")
+    private_key = serialization.load_pem_private_key(pem, password=None)
+    if not isinstance(private_key, rsa.RSAPrivateKey):
+        raise ValueError("configured collect-key private key is not RSA")
+    encrypted = base64.b64decode(encrypted_session_key_b64)
+    return private_key.decrypt(
+        encrypted,
+        asymmetric_padding.OAEP(
+            mgf=asymmetric_padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
+    )
+
+
+def _server_onebound_config() -> dict[str, str]:
+    """Resolve OneBound credentials from server environment/config file."""
+    env_key = os.environ.get("SERVER_ONEBOUND_API_KEY", "").strip()
+    env_secret = os.environ.get("SERVER_ONEBOUND_API_SECRET", "").strip()
+    if env_key and env_secret:
+        return {
+            "api_key": env_key,
+            "api_secret": env_secret,
+            "base_url": os.environ.get(
+                "SERVER_ONEBOUND_BASE_URL", "https://api-gw.onebound.cn/1688"
+            ),
+        }
+    # 配置文件兜底：与本地工作台相同位置，但只在服务器部署时存在。
+    candidates = [
+        Path(__file__).with_name("onebound.local.json"),
+        Path("/opt/wh-workbench/MainPG/local-runtime/wh_local/onebound.local.json"),
+    ]
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        api_key = str(data.get("api_key") or "").strip()
+        api_secret = str(data.get("api_secret") or "").strip()
+        if api_key and api_secret:
+            return {
+                "api_key": api_key,
+                "api_secret": api_secret,
+                "base_url": str(data.get("base_url") or "https://api-gw.onebound.cn/1688"),
+            }
+    return {}
 
 
 def _utc_now() -> str:

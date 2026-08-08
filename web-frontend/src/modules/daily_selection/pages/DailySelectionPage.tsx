@@ -8,7 +8,7 @@ import {
   listSelectionRuns,
   rejectCandidate,
 } from "../api/dailySelectionApi";
-import { apiToken } from "../../../shared/api/apiClient";
+import { getApiToken } from "../../../shared/api/apiClient";
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -179,7 +179,7 @@ function DailySelectionImage({ runId, url }: { runId: string; url: string }) {
     setObjectUrl("");
     setState("loading");
     fetch(`/desktop/daily-selection/image?run_id=${encodeURIComponent(runId)}&url=${encodeURIComponent(url)}`, {
-      headers: { Authorization: `Bearer ${apiToken}` },
+      headers: { Authorization: `Bearer ${getApiToken()}` },
     })
       .then((response) => (response.ok ? response.blob() : null))
       .then((blob) => {

@@ -25,6 +25,8 @@ local-runtime/build/
 # Local secrets
 local-runtime/wh_local/onebound.local.json
 local-runtime/wh_local/modules/product_processing/cos.local.json
+local-runtime/_rsa_private.pem
+local-runtime/_rsa_public.pem
 
 # Local tooling
 local-runtime/python.exe
