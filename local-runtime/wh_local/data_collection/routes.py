@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Qu
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .budget import TaskApiBudget
-from .contracts import DailySelectionContractError, DailySelectionError
+from .contracts import DailySelectionContractError
 from .criteria import DailySelectionCriteriaError
 from .repository import (
     DailySelectionCandidateNotConfirmable,
@@ -191,9 +191,8 @@ def register_daily_selection_routes(
     ) -> DailySelectionRun:
         try:
             run = service.preview(actor=actor, request=request)
-            run = _with_api_draft_intake(run, _ingest_api_run(run, background_tasks))
-            # 采集完成后由后台自动启动第一轮 SKU 补齐，无需用户手动点击。
-            background_tasks.add_task(service.auto_start_sku_repull, actor, run.run_id)
+            # 采集预览不写入草稿池：候选需用户在每日选品页确认入池后才会进入。
+            background_tasks.add_task(service.auto_start_sku_repull, actor=actor, run_id=run.run_id)
             return run
         except (
             DailySelectionCriteriaError,
@@ -221,9 +220,8 @@ def register_daily_selection_routes(
     ) -> DailySelectionRun:
         try:
             run = service.preview_from_1688_link(actor=actor, request=request)
-            run = _with_api_draft_intake(run, _ingest_api_run(run, background_tasks))
-            # 采集完成后由后台自动启动第一轮 SKU 补齐，无需用户手动点击。
-            background_tasks.add_task(service.auto_start_sku_repull, actor, run.run_id)
+            # 采集预览不写入草稿池：候选需用户在每日选品页确认入池后才会进入。
+            background_tasks.add_task(service.auto_start_sku_repull, actor=actor, run_id=run.run_id)
             return run
         except (ValueError, DailySelectionCriteriaError, DailySelectionContractError, ValidationError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
@@ -415,58 +413,6 @@ def register_daily_selection_routes(
         )["drafts"]
         return {"drafts": [draft for draft in listed if draft.get("source_ref") in requested]}
 
-    def _ingest_api_run(
-        run: DailySelectionRun, background_tasks: BackgroundTasks | None
-    ) -> Mapping[str, Any]:
-        if plugin_draft_writer is None:
-            raise HTTPException(status_code=503, detail="product draft storage is unavailable")
-        receipt = plugin_draft_writer.intake_daily_selection(run)
-        for draft in receipt["drafts"]:
-            _schedule_source_image_sync(plugin_draft_writer, background_tasks, draft, run.workspace_id)
-        return receipt
-
-    def _with_api_draft_intake(
-        run: DailySelectionRun, intake: Mapping[str, Any]
-    ) -> DailySelectionRun:
-        """Expose only stable, candidate-scoped intake state to preview callers."""
-        receipt = intake.get("receipt")
-        if not isinstance(receipt, Mapping):
-            raise RuntimeError("daily-selection draft intake did not return a receipt")
-        metadata = dict(run.metadata)
-        metadata["api_draft_intake"] = {
-            "status": "partial" if _intake_candidate_errors(receipt) else "completed",
-            "created_count": _intake_count(receipt.get("created_count")),
-            "skipped_count": _intake_count(receipt.get("skipped_count")),
-            "errors": _intake_candidate_errors(receipt),
-        }
-        return run.model_copy(update={"metadata": metadata})
-
-    def _intake_count(value: object) -> int:
-        return value if isinstance(value, int) and value >= 0 else 0
-
-    def _intake_candidate_errors(receipt: Mapping[str, Any]) -> list[dict[str, Any]]:
-        errors = receipt.get("errors")
-        if not isinstance(errors, list):
-            return []
-        summaries: list[dict[str, Any]] = []
-        for error in errors:
-            if not isinstance(error, Mapping):
-                continue
-            context = error.get("context")
-            candidate_id = context.get("candidate_id") if isinstance(context, Mapping) else None
-            if not isinstance(candidate_id, str) or not candidate_id.strip():
-                continue
-            try:
-                safe_error = DailySelectionError(
-                    code=error.get("code"),
-                    message=error.get("message"),
-                    context={"candidate_id": candidate_id},
-                )
-            except DailySelectionContractError:
-                continue
-            summaries.append(safe_error.model_dump(mode="json"))
-        return summaries
-
     def _ingest_temu_link_result(
         command: PluginCommand,
         session_token: str,
@@ -553,6 +499,7 @@ def register_daily_selection_routes(
         response_model=list[DailySelectionHandoff],
     )
     def confirm(
+        background_tasks: BackgroundTasks,
         run_id: str,
         request: DailySelectionConfirmRequest,
         actor: DailySelectionActor = Depends(actor_dependency),
@@ -568,7 +515,7 @@ def register_daily_selection_routes(
                 # a dedicated consumer when product processing is deployed.
                 return handoffs
             try:
-                handoff_consumer(handoffs)
+                consumed = handoff_consumer(handoffs)
             except Exception as error:
                 # Confirmation has already been committed.  Do not expose a
                 # downstream stack trace or discard the durable pending record;
@@ -580,6 +527,11 @@ def register_daily_selection_routes(
                         "message": "产品处理服务暂不可用，确认记录已保留，稍后可重试",
                     },
                 ) from error
+            # 确认即入池：为新入池草稿调度来源图本地同步（下载副本供草稿池展示）。
+            for draft in consumed.get("drafts") or []:
+                _schedule_source_image_sync(
+                    plugin_draft_writer, background_tasks, draft, actor.workspace_id
+                )
             return service.mark_handoffs_consumed(actor=actor, handoffs=handoffs)
         except DailySelectionRunNotFound as error:
             raise _run_not_found(error) from error

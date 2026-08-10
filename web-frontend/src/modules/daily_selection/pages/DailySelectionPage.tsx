@@ -656,11 +656,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       setCollectionProgress(100);
       setActiveRun(run);
       setSelectedCandidates([]);
-      const intake = run.metadata.api_draft_intake;
-      const intakeNotice = intake?.status === "partial"
-        ? `；其中 ${intake.errors.length} 个候选未进入 API 草稿视图`
-        : "";
-      setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选${intakeNotice}`);
+      // 采集预览不再自动写入草稿池；候选需确认入池后才会出现在草稿池。
+      setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选`);
       await refreshRuns();
       await new Promise((resolve) => window.setTimeout(resolve, 320));
     } catch (requestError) {

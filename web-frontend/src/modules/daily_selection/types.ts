@@ -78,24 +78,7 @@ export type DailySelectionRunSummary = {
   updated_at: string;
 };
 
-export type ApiDraftIntakeError = {
-  code: string;
-  message: string;
-  context: {
-    candidate_id: string;
-  };
-};
-
-export type ApiDraftIntakeSummary = {
-  status: "completed" | "partial";
-  created_count: number;
-  skipped_count: number;
-  errors: ApiDraftIntakeError[];
-};
-
-export type DailySelectionRunMetadata = Record<string, unknown> & {
-  api_draft_intake?: ApiDraftIntakeSummary;
-};
+export type DailySelectionRunMetadata = Record<string, unknown>;
 
 export type DailySelectionRun = DailySelectionRunSummary & {
   criteria: Record<string, unknown>;
