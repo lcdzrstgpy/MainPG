@@ -37,6 +37,13 @@ import time
 
 _RATE_LIMIT_RETRIES = 1
 _RATE_LIMIT_BACKOFF_BASE_SECONDS = 1.5
+# 搜索类操作（item_search / item_search_img）对上游波动（超时、空结果、
+# 上游失败）自动重试一次，缓解 OneBound/1688 间歇性返回空或超时导致的
+# “采集经常为空、很快返回”问题。
+_SEARCH_RETRIES = 1
+_SEARCH_RETRY_BACKOFF_SECONDS = 1.5
+# 搜索类操作触发自动重试的 outcome：上游超时、空结果、上游失败。
+_SEARCH_RETRY_OUTCOMES = frozenset({"timeout", "no_results", "upstream_failed"})
 
 
 @dataclass(frozen=True)
@@ -253,7 +260,7 @@ class OneBound1688Provider:
             "base_url",
             sensitive_values=(self._api_key, self._api_secret),
         )
-        self._timeout_seconds = self._positive_number(config.get("timeout_seconds", 10), "timeout_seconds")
+        self._timeout_seconds = self._positive_number(config.get("timeout_seconds", 15), "timeout_seconds")
         enabled = config.get("enabled", True)
         if not isinstance(enabled, bool):
             raise ValueError("enabled must be a boolean")
@@ -284,6 +291,7 @@ class OneBound1688Provider:
             "item_search",
             {"q": " ".join(criteria.keywords), "page_size": criteria.target_count},
             request_metadata={"query_count": len(criteria.keywords)},
+            retry_outcomes=_SEARCH_RETRY_OUTCOMES,
         )
 
     def upload_reference_image(self, reference_image_url: str) -> ProviderCallResult:
@@ -329,6 +337,7 @@ class OneBound1688Provider:
             request_metadata={"image_id_present": True, "keyword_tag_count": len(criteria.keyword_tags)},
             prior_audits=uploaded.audits,
             extra_response_summary={"upload_outcome": uploaded.audit.response_summary.get("outcome")},
+            retry_outcomes=_SEARCH_RETRY_OUTCOMES,
         )
 
     def get_item_detail(self, offer_id: str) -> ProviderCallResult:
@@ -384,12 +393,14 @@ class OneBound1688Provider:
         request_metadata: Mapping[str, Any],
         prior_audits: tuple[ApiEvidence, ...] = (),
         extra_response_summary: Mapping[str, Any] | None = None,
+        retry_outcomes: frozenset[str] = frozenset(),
     ) -> ProviderCallResult:
         if not self._enabled:
             return self._result_with_error(prior_audits, operation, "provider_disabled", "provider is disabled")
         request_summary = {"http_method": http_method, "operation": operation, **request_metadata}
+        max_attempts = 1 + max(_RATE_LIMIT_RETRIES, _SEARCH_RETRIES)
         last_error: ProviderCallResult | None = None
-        for attempt in range(1 + _RATE_LIMIT_RETRIES):
+        for attempt in range(max_attempts):
             try:
                 upstream = self._transport.request(
                     http_method,
@@ -401,58 +412,64 @@ class OneBound1688Provider:
                 )
             except (TimeoutError, socket.timeout):
                 audit = self._audit(operation, "timeout", request_summary=request_summary)
-                return ProviderCallResult({}, prior_audits + (audit,), self._error("timeout", "OneBound request timed out"))
+                result = ProviderCallResult({}, prior_audits + (audit,), self._error("timeout", "OneBound request timed out"))
+                outcome = "timeout"
+                http_status = None
+                request_id = None
             except Exception:
                 audit = self._audit(operation, "upstream_failed", request_summary=request_summary)
-                return ProviderCallResult({}, prior_audits + (audit,), self._error("upstream_failed", "OneBound request failed"))
-
-            payload = self._json_mapping(upstream.body)
-            outcome = self._outcome_for_status(upstream.status, payload)
-            response_summary: dict[str, Any] = {
-                "http_status": upstream.status,
-                "outcome": outcome,
-            }
-            code = payload.get("code")
-            if isinstance(code, (str, int, float)):
-                response_summary["upstream_code"] = code
-            request_id = payload.get("request_id")
-            if isinstance(request_id, str):
-                response_summary["request_id"] = request_id
-            item_count = self._item_count(payload)
-            if item_count is not None:
-                response_summary["item_count"] = item_count
-            if extra_response_summary:
-                response_summary.update(extra_response_summary)
-            audit = self._audit(
-                operation,
-                outcome,
-                request_summary=request_summary,
-                response_summary=response_summary,
-                request_id=request_id if isinstance(request_id, str) else None,
-            )
-            sanitized = self._sanitize(payload)
+                result = ProviderCallResult({}, prior_audits + (audit,), self._error("upstream_failed", "OneBound request failed"))
+                outcome = "upstream_failed"
+                http_status = None
+                request_id = None
+            else:
+                payload = self._json_mapping(upstream.body)
+                outcome = self._outcome_for_status(upstream.status, payload)
+                http_status = upstream.status
+                response_summary: dict[str, Any] = {
+                    "http_status": upstream.status,
+                    "outcome": outcome,
+                }
+                code = payload.get("code")
+                if isinstance(code, (str, int, float)):
+                    response_summary["upstream_code"] = code
+                request_id = payload.get("request_id")
+                if isinstance(request_id, str):
+                    response_summary["request_id"] = request_id
+                item_count = self._item_count(payload)
+                if item_count is not None:
+                    response_summary["item_count"] = item_count
+                if extra_response_summary:
+                    response_summary.update(extra_response_summary)
+                audit = self._audit(
+                    operation,
+                    outcome,
+                    request_summary=request_summary,
+                    response_summary=response_summary,
+                    request_id=request_id if isinstance(request_id, str) else None,
+                )
+                sanitized = self._sanitize(payload)
+                result = ProviderCallResult(
+                    sanitized,
+                    prior_audits + (audit,),
+                    self._error(outcome, "OneBound returned an unsuccessful response", http_status, request_id)
+                    if outcome not in {"success", "no_results"}
+                    else None,
+                )
             if outcome == "rate_limited" and attempt < _RATE_LIMIT_RETRIES:
                 wait = _RATE_LIMIT_BACKOFF_BASE_SECONDS * (2 ** attempt)
                 time.sleep(wait)
-                last_error = ProviderCallResult(
-                    sanitized,
-                    prior_audits + (audit,),
-                    self._error(outcome, f"rate-limited, retry {attempt + 1}/{_RATE_LIMIT_RETRIES} in {wait:.1f}s", upstream.status, request_id),
-                )
+                last_error = result
                 continue
-            if outcome in {"success", "no_results"}:
-                return ProviderCallResult(sanitized, prior_audits + (audit,))
-            return ProviderCallResult(
-                sanitized,
-                prior_audits + (audit,),
-                self._error(outcome, "OneBound returned an unsuccessful response", upstream.status, request_id),
-            )
-        # 所有重试均被限流
-        return last_error or ProviderCallResult(
-            {},
-            prior_audits,
-            self._error("rate_limited", "OneBound rate limit exceeded after retries"),
-        )
+            if outcome in retry_outcomes and attempt < _SEARCH_RETRIES:
+                # 排除 404：商品下架/不存在时重试无意义（item_get 详情 404 是常态）。
+                if not (outcome == "upstream_failed" and http_status == 404):
+                    time.sleep(_SEARCH_RETRY_BACKOFF_SECONDS)
+                    last_error = result
+                    continue
+            return result
+        # 所有重试均失败，返回最后一次结果（优先返回带错误的限流/波动结果）
+        return last_error or result
 
     def _local_error(self, operation: str, code: str, message: str) -> ProviderCallResult:
         return self._result_with_error((), operation, code, message)
