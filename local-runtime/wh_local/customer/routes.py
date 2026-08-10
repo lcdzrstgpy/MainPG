@@ -101,7 +101,16 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
     @router.post("/logout")
     def logout(authorization: str | None = Header(default=None)) -> dict[str, bool]:
         try:
-            sessions.logout(bearer_token(authorization))
+            token = bearer_token(authorization)
+            # 登出时联动撤销云端登录态（单端登录），失败不阻断本地登出。
+            try:
+                session = sessions.store.get_session(token)
+                remote_token = session.remote_token if session is not None else ""
+                if remote_token:
+                    remote_auth.logout(remote_token)
+            except Exception:
+                pass
+            sessions.logout(token)
             return {"ok": True}
         except Exception as exc:
             handle_auth_error(exc)

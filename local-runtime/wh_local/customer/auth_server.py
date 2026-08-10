@@ -79,6 +79,14 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     def logout(authorization: str | None = Header(default=None)) -> dict[str, bool]:
         token = _bearer_token(authorization)
         with transaction(db_path) as conn:
+            session_row = conn.execute(
+                """
+                SELECT account_id
+                FROM auth_platform_sessions
+                WHERE token_hash = ? AND revoked_at = ''
+                """,
+                (_hash_token(token),),
+            ).fetchone()
             conn.execute(
                 """
                 UPDATE auth_platform_sessions
@@ -87,6 +95,26 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 """,
                 (_utc_now(), _hash_token(token)),
             )
+            if session_row is not None:
+                # 该账号若无其他未过期且未撤销的会话，则账号整体回到离线状态。
+                remaining = conn.execute(
+                    """
+                    SELECT 1 FROM auth_platform_sessions
+                    WHERE account_id = ?
+                      AND revoked_at = ''
+                      AND expires_at > ?
+                    """,
+                    (session_row["account_id"], _utc_now()),
+                ).fetchone()
+                if remaining is None:
+                    conn.execute(
+                        """
+                        UPDATE auth_accounts
+                        SET login_status = 'offline', updated_at = ?
+                        WHERE account_id = ?
+                        """,
+                        (_utc_now(), session_row["account_id"]),
+                    )
         return {"ok": True}
 
     @app.post("/api/customer/activate")
@@ -285,6 +313,7 @@ def _account_payload(customer: CustomerAuthResult) -> dict[str, Any]:
         "email": customer.email,
         "display_name": customer.username,
         "account_status": customer.account_status or "active",
+        "login_status": customer.login_status or "offline",
         "role": customer.role or "admin",
         "workspace_code": customer.workspace_code,
         "workspace_name": customer.workspace_name,
@@ -331,6 +360,7 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
                 a.display_name,
                 a.role,
                 a.account_status,
+                a.login_status,
                 w.workspace_code,
                 w.workspace_name
             FROM auth_platform_sessions s
@@ -356,6 +386,7 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
         "display_name": row["display_name"],
         "role": row["role"],
         "account_status": row["account_status"],
+        "login_status": row["login_status"] if row["login_status"] is not None else "offline",
         "workspace_code": row["workspace_code"] or "",
         "workspace_name": row["workspace_name"] or "",
         "workspace": {"code": row["workspace_code"] or "", "name": row["workspace_name"] or ""},
