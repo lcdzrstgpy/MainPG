@@ -90,7 +90,9 @@
       if (!parsed || !isBusinessHost) return false;
       const text = `${parsed.hostname} ${parsed.pathname} ${parsed.search}`.toLowerCase();
       if (/receiveaddress|address|logistics|freight|coupon|cart|member|login/.test(text)) return false;
-      return /offer|detail|product|goods|item|sku|spec|price|stock|inventory|sale|trade|widget|apollo|mtop|h5/.test(text);
+      // 覆盖 1688 详情/异步 SKU 接口（/offer/xxx.json、/async/、/unify/、mtop、h5 等），
+      // 让探针能完整保留商品与 SKU 数据响应供提取。
+      return /offer|detail|product|goods|item|sku|spec|price|stock|inventory|sale|trade|widget|apollo|mtop|h5|async|seller|unify|eai|sldk|h5api|getsku|getSku|skuinfo|skulist|promotion|merchant|tracelog|mlayout/.test(text);
     }
     return false;
   }

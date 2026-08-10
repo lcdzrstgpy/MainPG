@@ -199,6 +199,15 @@
       });
       const normalized = filtered.map((item) => utils ? utils.normalizeRecord(item, captureType) : item);
       return utils ? utils.trimRecords(normalized, limit) : normalized.slice(-50);
+    },
+    // 1688 新版详情页（od-* SPA）的 SKU/价格接口可能不在 shouldCaptureUrl 的
+    // URL 规则内，直接按"是 JSON 响应"读取最近记录，交由提取方自行识别规格结构。
+    getAllJsonCaptures(limit) {
+      const normalized = captures
+        .filter((item) => item && !item.error && item.responseText)
+        .map((item) => utils ? utils.normalizeRecord(item, "product_capture_to_workbench") : item)
+        .filter((item) => item && item.responseJson);
+      return utils ? utils.trimRecords(normalized, limit) : normalized.slice(-50);
     }
   };
 })();
