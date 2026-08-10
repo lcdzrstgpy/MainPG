@@ -12232,7 +12232,11 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       }
       return containers;
     };
-    const genericContainers = Array.from(document.querySelectorAll("[class*='sku'], [class*='prop'], [class*='attribute'], [class*='spec']"));
+    const genericContainers = Array.from(document.querySelectorAll(
+      platform === "temu"
+        ? "[class*='sku'], [class*='prop'], [class*='attribute'], [class*='spec']"
+        : "[class*='sku'], [class*='prop'], [class*='attribute'], [class*='spec'], [class*='option'], [class*='selector'], [class*='variant']"
+    ));
     const temuContainers = platform === "temu"
       ? Array.from(document.querySelectorAll("[data-testid*='sku'], [data-testid*='Sku'], [data-testid*='variant'], [data-testid*='Variant'], [data-testid*='option'], [data-testid*='Option'], [class*='variant'], [class*='Variant'], [class*='option'], [class*='Option']"))
       : [];
@@ -12290,19 +12294,19 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         .filter((item) => item && item.value.length >= 1 && item.value.length <= 80 && !badSpecValueRe.test(item.value));
       const hasBoundOptionEvidence = values.some(variantOptionHasBoundEvidence);
       let hasSalesOptionEvidence = values.some(variantOptionHasSalesEvidence);
-      // Temu 规格选项常是纯文本按钮（无价格/库存/SKU 属性且无 selectable 标志），
+      // Temu/1688 规格选项常是纯文本元素（无价格/库存/SKU 属性且无 selectable 标志），
       // 若容器带规格标签且存在 ≥2 个短规格值，按可选项保留，避免只采到默认单规格。
-      const temuBareTextGroup = platform === "temu"
+      const bareTextGroup = (platform === "temu" || platform === "1688" || /1688|alibaba/i.test(host))
         && values.length >= 2
         && Boolean(sourceName)
         && values.every((item) => text(item.value).length <= 40);
-      if (temuBareTextGroup && !hasSalesOptionEvidence) {
+      if (bareTextGroup && !hasSalesOptionEvidence) {
         values = values.map((item) => ({ ...item, selectable: true }));
         hasSalesOptionEvidence = true;
       }
       if (!hasSalesOptionEvidence) continue;
-      if (parameterNoiseGroup && !hasBoundOptionEvidence && !temuBareTextGroup) continue;
-      if (attributeNoiseNameRe.test(`${sourceName} ${classText} ${fullText.slice(0, 100)}`) && !hasBoundOptionEvidence && !temuBareTextGroup) continue;
+      if (parameterNoiseGroup && !hasBoundOptionEvidence && !bareTextGroup) continue;
+      if (attributeNoiseNameRe.test(`${sourceName} ${classText} ${fullText.slice(0, 100)}`) && !hasBoundOptionEvidence && !bareTextGroup) continue;
       const deduped = [];
       const seenValues = new Set();
       for (const item of values) {
@@ -12506,12 +12510,27 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     const literalOffset = rest.search(/[\[{]/);
     if (literalOffset < 0) return null;
     const literal = extractBalancedLiteral(rest, literalOffset);
-    if (!literal || literal.length > 1200000) return null;
+    if (!literal || literal.length > 8000000) return null;
     try {
       return JSON.parse(literal);
     } catch (_error) {
       return null;
     }
+  };
+  const deepParseJson = (value) => {
+    let current = value;
+    for (let step = 0; step < 3; step += 1) {
+      if (typeof current === "string" && /^[\s\r\n]*[\[{]/.test(current)) {
+        try {
+          current = JSON.parse(current);
+        } catch (_error) {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+    return current;
   };
   const jsonSourcesFromPage = () => {
     const sources = [];
@@ -12520,6 +12539,14 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       const records = probe?.getCaptures?.("product_capture_to_workbench", "", 50) || [];
       records.forEach((record) => {
         if (record?.responseJson) sources.push({ source: `network:${record.endpoint || record.url || ""}`, value: record.responseJson });
+      });
+    } catch (_error) {}
+    // 1688 新版详情页（od-* SPA）的 SKU/价格接口可能不在 URL 过滤规则内，
+    // 额外把探针捕获的全部 JSON 响应纳入扫描，由 walkObjects 自行识别规格结构。
+    try {
+      const allRecords = probe?.getAllJsonCaptures?.(80) || [];
+      allRecords.forEach((record) => {
+        if (record?.responseJson) sources.push({ source: `network-all:${record.endpoint || record.url || ""}`, value: record.responseJson });
       });
     } catch (_error) {}
     const windowKeys = [
@@ -12553,10 +12580,10 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     }
     document.querySelectorAll("script[type='application/json'], script").forEach((script, index) => {
       const raw = script.textContent || "";
-      if (!/(sku|offer|price|stock|inventory|spec|prop)/i.test(raw) || raw.length > 1200000) return;
+      if (!/(sku|offer|price|stock|inventory|spec|prop)/i.test(raw) || raw.length > 8000000) return;
       const trimmed = raw.trim();
       try {
-        if (/^[\[{]/.test(trimmed)) sources.push({ source: `script:${index}`, value: JSON.parse(trimmed) });
+        if (/^[\[{]/.test(trimmed)) sources.push({ source: `script:${index}`, value: deepParseJson(JSON.parse(trimmed)) });
       } catch (_error) {}
       [
         "window.__page__data",
@@ -12574,13 +12601,54 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         "window.detailData"
       ].forEach((marker) => {
         const value = parseAssignedJson(raw, marker);
-        if (value) sources.push({ source: `script-assignment:${marker}:${index}`, value });
+        if (value) sources.push({ source: `script-assignment:${marker}:${index}`, value: deepParseJson(value) });
       });
       const nextMatch = trimmed.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
       if (nextMatch) {
-        try { sources.push({ source: `script-next:${index}`, value: JSON.parse(nextMatch[1]) }); } catch (_error) {}
+        try { sources.push({ source: `script-next:${index}`, value: deepParseJson(JSON.parse(nextMatch[1])) }); } catch (_error) {}
       }
     });
+    // 1688 新版详情页常在超大内联脚本里嵌入完整商品/规格 JSON（依赖不固定的全局
+    // 变量名），这里直接在脚本文本中定位规格关键字段并提取所在对象，交给
+    // walkObjects 识别 skuProps/skuInfoMap 等结构。
+    const embeddedSkuKeys = ["skuProps", "sku_props", "saleProps", "salePropList", "skuInfoMap", "skuMap", "skuInfos", "skuList", "skuItems", "goodsSkus", "skuInfoList", "goodsSkuList", "skuAttrs", "skuAttrList", "skuRecords", "saleSkuList"];
+    let embeddedAttempts = 0;
+    for (const script of document.querySelectorAll("script")) {
+      if (embeddedAttempts >= 12) break;
+      const rawText = script.textContent || "";
+      if (rawText.length > 8000000 || !/sku|offer|goods/i.test(rawText)) continue;
+      let searchFrom = 0;
+      while (embeddedAttempts < 12) {
+        let nearest = -1;
+        let hitKey = "";
+        for (const key of embeddedSkuKeys) {
+          const found = rawText.indexOf(`"${key}"`, searchFrom);
+          if (found >= 0 && (nearest < 0 || found < nearest)) {
+            nearest = found;
+            hitKey = key;
+          }
+        }
+        if (nearest < 0) break;
+        const openObject = rawText.lastIndexOf("{", nearest);
+        const openArray = rawText.lastIndexOf("[", nearest);
+        const start = openObject >= 0 ? openObject : openArray;
+        if (start < 0 || nearest - start > 6000 || rawText.slice(start, nearest).includes(";")) {
+          searchFrom = nearest + hitKey.length + 2;
+          continue;
+        }
+        const literal = extractBalancedLiteral(rawText, start);
+        if (literal) {
+          try {
+            const parsed = deepParseJson(JSON.parse(literal));
+            if (parsed && typeof parsed === "object") {
+              sources.push({ source: `script-embedded:${hitKey}:${index}`, value: parsed });
+              embeddedAttempts += 1;
+            }
+          } catch (_error) {}
+        }
+        searchFrom = nearest + hitKey.length + 2;
+      }
+    }
     return sources;
   };
   const cleanSourceAttributeName = (value) => {
@@ -13083,27 +13151,63 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     }
     return selected;
   };
-  const buildCombosFromSingleGroupValues = (groups) => {
-    if (groups.length !== 1) return [];
-    const group = groups[0];
-    return (group.values || [])
-      .filter((item) => item && typeof item === "object" && variantOptionHasSalesEvidence(item))
-      .map((item) => {
-        const sourceSkuId = text(item.source_sku_id || item.sourceSkuId || item.sku || "");
-        return {
-          attributes: { [group.source_name || group.name]: item.value },
-          price: item.price || "",
-          stock: item.stock || "",
-          sku: sourceSkuId,
-          source_sku_id: sourceSkuId,
-          image_url: item.image_url || "",
-          selected: Boolean(item.selected),
-          selectable: Boolean(item.selectable),
-          source: "dom-group",
-          confidence: item.image_url || item.price || item.stock || sourceSkuId ? "medium" : "low",
-          ...skuPathFieldsFromObject(item)
-        };
+  const buildCombosFromGroups = (groups) => {
+    const cartesianProduct = (arrays) => arrays.reduce(
+      (acc, list) => acc.flatMap((item) => list.map((value) => [...item, value])),
+      [[]]
+    );
+    const candidateGroups = (groups || [])
+      .filter((group) => (group.values || []).some(variantOptionHasSalesEvidence))
+      .slice(0, 3);
+    if (!candidateGroups.length) return [];
+    if (candidateGroups.length === 1) {
+      const group = candidateGroups[0];
+      return (group.values || [])
+        .filter((item) => item && typeof item === "object" && variantOptionHasSalesEvidence(item))
+        .map((item) => {
+          const sourceSkuId = text(item.source_sku_id || item.sourceSkuId || item.sku || "");
+          return {
+            attributes: { [group.source_name || group.name]: item.value },
+            price: item.price || "",
+            stock: item.stock || "",
+            sku: sourceSkuId,
+            source_sku_id: sourceSkuId,
+            image_url: item.image_url || "",
+            selected: Boolean(item.selected),
+            selectable: Boolean(item.selectable),
+            source: "dom-group",
+            confidence: item.image_url || item.price || item.stock || sourceSkuId ? "medium" : "low",
+            ...skuPathFieldsFromObject(item)
+          };
+        });
+    }
+    // 多规格组（如 颜色×度数）时没有逐 SKU 的映射，退化为各规格值的笛卡尔积，
+    // 属性组合作为规格身份，价格/库存/货号留空由用户在草稿池补充。
+    const valueLists = candidateGroups.map((group) => (group.values || [])
+      .filter((item) => item && typeof item === "object")
+      .map((item) => ({ group, item })));
+    const combos = [];
+    for (const combination of cartesianProduct(valueLists)) {
+      if (combos.length >= 80) break;
+      const attributes = {};
+      for (const entry of combination) {
+        attributes[entry.group.source_name || entry.group.name] = entry.item.value;
+      }
+      const firstWithImage = combination.find((entry) => text(entry.item.image_url || ""));
+      combos.push({
+        attributes,
+        price: "",
+        stock: "",
+        sku: "",
+        source_sku_id: "",
+        image_url: firstWithImage?.item?.image_url || "",
+        selected: false,
+        selectable: true,
+        source: "dom-group",
+        confidence: "low"
       });
+    }
+    return combos;
   };
   const jsonVariantData = extractJsonVariantData();
   const sourceAttributeData = extractSourceAttributeData();
@@ -13112,7 +13216,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
   const mergedVariantGroups = dedupeGroups(rawVariantGroups);
   const rawVariantCombinationFragments = [
     ...jsonVariantData.combos,
-    ...buildCombosFromSingleGroupValues(mergedVariantGroups)
+    ...buildCombosFromGroups(mergedVariantGroups)
   ];
   const variantCombinations = dedupeCombos(rawVariantCombinationFragments);
   const rawVariantCombinations = variantCombinations;
