@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useChangePoller } from "../../../shared/hooks/useChangePoller";
 import { priceVerificationApi } from "../api/priceVerificationApi";
 import { BatchReviewConfirmPanel } from "../components/BatchReviewConfirmPanel";
 import { BatchReviewPanel } from "../components/BatchReviewPanel";
@@ -127,6 +128,12 @@ export function PriceVerificationPage() {
   };
 
   useEffect(() => { void refresh(false); }, []);
+
+  // 容器级自动刷新：插件采集核价本页/核价确认后，批次 revision 变化即静默重拉数据。
+  useChangePoller({
+    url: "/api/v1/price-verification/capture-batches/revision",
+    onChange: () => void refresh(true),
+  });
 
   // 批次就绪后从缓存恢复图搜结果 / 勾选 / 阶段
   useEffect(() => {

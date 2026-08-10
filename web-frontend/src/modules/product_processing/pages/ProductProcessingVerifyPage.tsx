@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useChangePoller } from '../../../shared/hooks/useChangePoller';
 import { ppRequest, type ApiContext } from '../api/client';
 import type {
   DraftSummary,
@@ -235,6 +236,15 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
     refresh().catch(fail);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 容器级自动刷新：插件采集/每日选品确认入池/处理完成后，草稿池 revision 变化即静默重拉列表
+  // （revision 指纹不变时不做无意义的全量刷新；仅页面可见时轮询，切走标签页自动暂停）
+  // revision 请求必须带与列表相同的 X-Workspace-ID，否则指纹按 local 计算、与展示的 default 列表错位。
+  useChangePoller({
+    url: `${API_BASE}/drafts/revision`,
+    headers: { "X-Workspace-ID": ctx.workspaceId },
+    onChange: () => { refresh().catch(() => undefined); },
+  });
 
   const toggleDraft = (id: number) => {
     setSelectedIds((prev) => {

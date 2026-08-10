@@ -113,6 +113,12 @@ def create_product_processing_router(
             workspace_id=_workspace(workspace_id),
         )
 
+    @router.get("/drafts/revision")
+    def drafts_revision(
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, str]:
+        return {"revision": service.drafts_revision(_workspace(workspace_id))}
+
     @router.post("/drafts")
     def create_draft(
         body: DraftCreateRequest,

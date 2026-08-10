@@ -808,6 +808,20 @@ class PriceVerificationRepository:
             ).fetchall()
         return tuple(_capture_batch_record(row) for row in rows)
 
+    def capture_batches_revision(self, *, workspace_id: str) -> str:
+        """轻量变更指纹：最近一次核价批次写入/更新/采集的时间（ISO 字符串，字典序即时间序）。
+
+        供前端轮询检测插件采集/核价确认产生的新数据，避免频繁拉全量列表。
+        """
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT MAX(updated_at) FROM price_verification_quote_capture_batches WHERE workspace_id = ?""",
+                (workspace_id,),
+            ).fetchone()
+        value = row[0] if row else None
+        return str(value) if value else ""
+
     def get_current_quote_capture_batch(self, *, workspace_id: str) -> QuoteCaptureBatchRecord:
         workspace_id = _required_text(workspace_id, "workspace_id")
         with self._connect() as connection:

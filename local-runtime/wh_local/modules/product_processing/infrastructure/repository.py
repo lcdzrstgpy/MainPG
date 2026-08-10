@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Select, and_, or_, select, update
+from sqlalchemy import Select, and_, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from .database import ProductProcessingDatabase
@@ -116,6 +116,17 @@ class ProductProcessingRepository:
             statement = statement.order_by(ProductDraftRow.created_at.desc(), ProductDraftRow.id.desc()).offset(offset).limit(limit + 1)
             rows = session.scalars(statement).all()
             return [self._draft(row) for row in rows[:limit]], len(rows) > limit
+
+    def drafts_revision(self, workspace_id: str = "local") -> str:
+        """轻量变更指纹：最近一次草稿写入/更新的时间（ISO 字符串，字典序即时间序）。
+
+        供前端轮询检测外部采集/入池产生的新草稿，避免频繁拉全量列表。
+        """
+        with self.database.sessions() as session:
+            value = session.execute(
+                select(func.max(ProductDraftRow.updated_at)).where(ProductDraftRow.workspace_id == workspace_id)
+            ).scalar_one_or_none()
+            return str(value) if value else ""
 
     def update_draft(
         self,

@@ -178,6 +178,16 @@ def register_price_verification_routes(
             logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
+    @router.get("/api/v1/price-verification/capture-batches/revision")
+    def capture_batches_revision(
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, str]:
+        try:
+            return {"revision": quote_service.capture_batches_revision(actor)}
+        except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
+            _raise_http(error)
+
     @router.get("/api/v1/price-verification/capture-batches/{batch_id}")
     def get_capture_batch(
         batch_id: str, actor: PriceVerificationActor = Depends(actor_dependency)

@@ -171,6 +171,11 @@ class QuoteService:
         actor = _actor(actor)
         return self._repository.list_quote_capture_batches(workspace_id=actor.workspace_id)
 
+    def capture_batches_revision(self, actor: PriceVerificationActor) -> str:
+        """核价数据变更指纹，供前端轮询做容器级自动刷新。"""
+        actor = _actor(actor)
+        return self._repository.capture_batches_revision(workspace_id=actor.workspace_id)
+
     def activate_capture_batch(
         self, actor: PriceVerificationActor, batch_id: str
     ) -> QuoteCaptureBatchRecord:

@@ -393,6 +393,10 @@ class ProductProcessingService:
             },
         }
 
+    def drafts_revision(self, workspace_id: str = "local") -> str:
+        """草稿池变更指纹，供前端轮询做容器级自动刷新（指纹不变则全量数据不变）。"""
+        return self.repository.drafts_revision(workspace_id)
+
     def update_draft(
         self,
         draft_id: int,
