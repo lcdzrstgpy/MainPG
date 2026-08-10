@@ -25,6 +25,7 @@ from .repository import (
 )
 from .handoff import DailySelectionHandoff
 from .link_collection import canonical_1688_offer_url, detail_seed
+from .sku_repull import SkuRepullRunner, empty_repull_state, incomplete_candidates
 
 
 class DailySelectionActor(BaseModel):
@@ -116,6 +117,11 @@ class DailySelectionService:
         self._provider_factory = provider_factory
         self._image_cache = image_cache
         self._run_id_factory = run_id_factory or (lambda: str(uuid.uuid4()))
+        self._sku_repull_runner = SkuRepullRunner(
+            repository=repository,
+            provider_config_resolver=provider_config_resolver,
+            provider_factory=provider_factory,
+        )
 
     @classmethod
     def from_database_path(
@@ -240,6 +246,68 @@ class DailySelectionService:
         return self._repository.get_run(
             workspace_id=actor.workspace_id, run_id=run_id
         )
+
+    def start_sku_repull(
+        self, *, actor: DailySelectionActor, run_id: str
+    ) -> Mapping[str, Any]:
+        """Start (or resume observing) a background SKU re-pull round."""
+        run = self.get_run(actor=actor, run_id=run_id)
+        current = self._sku_repull_runner.state(actor=actor, run=run)
+        if current.get("status") == "running":
+            # 已有轮次在跑，只观察不重复启动（内存 job 优先，避免与
+            # 持久化元数据存在写入窗口时误判为已完成而重复开轮）。
+            return current
+        previous_round = current.get("round", 0) if current.get("status") != "idle" else 0
+        targets = incomplete_candidates(run)
+        return self._sku_repull_runner.start(
+            actor=actor,
+            run=run,
+            targets=targets,
+            previous_round=previous_round,
+        )
+
+    def auto_start_sku_repull(
+        self, *, actor: DailySelectionActor, run_id: str
+    ) -> Mapping[str, Any]:
+        """Automatically start the first re-pull round after collection.
+
+        只在从未执行过补齐（idle）时自动启动第一轮；后续轮次由用户手动触发，
+        避免对长期失败的候选重复消耗 API 调用。无未读全候选时直接返回空状态。
+        运行器内存状态优先，避免与持久化元数据存在写入窗口时重复启动同轮。
+        """
+        run = self.get_run(actor=actor, run_id=run_id)
+        current = self._sku_repull_runner.state(actor=actor, run=run)
+        if current.get("status") != "idle":
+            return current
+        previous_metadata = run.metadata.get("sku_repull")
+        if isinstance(previous_metadata, Mapping) and previous_metadata.get("status") not in (
+            None,
+            "idle",
+        ):
+            return dict(previous_metadata)
+        if not incomplete_candidates(run):
+            return empty_repull_state()
+        previous_round = (
+            int(previous_metadata.get("round")) if isinstance(previous_metadata, Mapping) else 0
+        )
+        return self._sku_repull_runner.start(
+            actor=actor,
+            run=run,
+            targets=incomplete_candidates(run),
+            previous_round=previous_round,
+        )
+
+    def get_sku_repull_state(
+        self, *, actor: DailySelectionActor, run_id: str
+    ) -> Mapping[str, Any]:
+        run = self.get_run(actor=actor, run_id=run_id)
+        return self._sku_repull_runner.state(actor=actor, run=run)
+
+    def cancel_sku_repull(
+        self, *, actor: DailySelectionActor, run_id: str
+    ) -> Mapping[str, Any]:
+        run = self.get_run(actor=actor, run_id=run_id)
+        return self._sku_repull_runner.cancel(actor=actor, run=run)
 
     def record_feedback(
         self,

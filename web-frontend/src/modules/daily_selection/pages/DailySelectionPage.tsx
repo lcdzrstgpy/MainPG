@@ -2,11 +2,14 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import {
+  cancelSkuRepull,
   collectByCriteria,
   confirmCandidates,
   getSelectionRun,
+  getSkuRepullState,
   listSelectionRuns,
   rejectCandidate,
+  startSkuRepull,
 } from "../api/dailySelectionApi";
 import { getApiToken } from "../../../shared/api/apiClient";
 import type {
@@ -17,6 +20,7 @@ import type {
   DailySelectionRun,
   DailySelectionRunSummary,
   SelectionScope,
+  SkuRepullState,
   TargetSite,
 } from "../types";
 import "../styles/daily-selection.css";
@@ -163,6 +167,11 @@ function formatListedAt(value: string | null): string {
   return date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
 }
 
+function hasIncompleteSkuCandidates(run: DailySelectionRun): boolean {
+  // 存在 SKU 规格读取失败（0 条变种记录）的候选即需要后台补齐。
+  return run.candidates.some((candidate) => (candidate.source_variant_records?.length ?? 0) === 0);
+}
+
 /**
  * Renders a candidate image through the authenticated local proxy instead of
  * the raw CDN URL. alicdn rejects browser requests carrying a localhost
@@ -259,6 +268,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [collectionProgress, setCollectionProgress] = useState(0);
   const [historyBusy, setHistoryBusy] = useState(true);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
+  const [skuRepull, setSkuRepull] = useState<SkuRepullState | null>(null);
+  const [skuRepullBusy, setSkuRepullBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [noticeLeaving, setNoticeLeaving] = useState(false);
@@ -288,8 +299,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     });
   }, [activeRun, appliedSkuFilter]);
 
-  // 当前可勾选的候选（状态为 candidate 的）
-  const selectableCandidates = filteredCandidates.filter((candidate) => candidate.status === "candidate");
+  // 当前可勾选的候选（候选与已过滤候选均可勾选，采集到的商品可全部复核后入池）
+  const selectableCandidates = filteredCandidates.filter(
+    (candidate) => candidate.status === "candidate" || candidate.status === "filtered",
+  );
   // 全选复选框状态：可勾选候选均被选中时为 true
   const allCandidatesSelected = selectableCandidates.length > 0
     && selectableCandidates.every((candidate) => selectedCandidates.includes(candidate.candidate_id));
@@ -364,6 +377,73 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   useEffect(() => {
     window.localStorage.setItem(REMOVED_DEFAULT_DIRECTIONS_KEY, JSON.stringify(removedDefaultDirectionIds));
   }, [removedDefaultDirectionIds]);
+
+  // 打开批次时同步一次 SKU 补齐状态（内存任务或历史轮次持久化）；
+  // 若存在 SKU 未读取成功的候选且从未补齐过，自动在后台启动第一轮。
+  useEffect(() => {
+    if (!activeRun) {
+      setSkuRepull(null);
+      return;
+    }
+    let alive = true;
+    getSkuRepullState(activeRun.run_id)
+      .then((state) => {
+        if (!alive) return;
+        setSkuRepull(state);
+        if (state.status === "idle" && hasIncompleteSkuCandidates(activeRun)) {
+          startSkuRepull(activeRun.run_id)
+            .then((started) => { if (alive) setSkuRepull(started); })
+            .catch(() => undefined);
+        }
+      })
+      .catch(() => { if (alive) setSkuRepull(null); });
+    return () => { alive = false; };
+  }, [activeRun]);
+
+  // SKU 补齐轮询：任务运行中每秒刷新进度；完成后刷新批次候选显示最新 SKU 数。
+  useEffect(() => {
+    if (!activeRun || skuRepull?.status !== "running") return;
+    const timer = window.setInterval(async () => {
+      try {
+        const state = await getSkuRepullState(activeRun.run_id);
+        setSkuRepull(state);
+        if (state.status !== "running") {
+          setActiveRun(await getSelectionRun(activeRun.run_id));
+        }
+      } catch (requestError) {
+        setError(requestError instanceof Error ? requestError.message : "SKU 补齐进度读取失败");
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [activeRun, skuRepull?.status]);
+
+  async function startSkuRepullNow() {
+    if (!activeRun || skuRepull?.status === "running") return;
+    setSkuRepullBusy(true);
+    setError("");
+    try {
+      const state = await startSkuRepull(activeRun.run_id);
+      setSkuRepull(state);
+      setActiveRun(await getSelectionRun(activeRun.run_id));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "SKU 补齐启动失败");
+    } finally {
+      setSkuRepullBusy(false);
+    }
+  }
+
+  async function cancelSkuRepullNow() {
+    if (!activeRun) return;
+    setSkuRepullBusy(true);
+    try {
+      const state = await cancelSkuRepull(activeRun.run_id);
+      setSkuRepull(state);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "SKU 补齐中断失败");
+    } finally {
+      setSkuRepullBusy(false);
+    }
+  }
 
   async function refreshRuns() {
     setHistoryBusy(true);
@@ -611,7 +691,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     if (!activeRun) return;
     setSelectedCandidates((current) => {
       const selectable = filteredCandidates
-        .filter((candidate) => candidate.status === "candidate")
+        .filter((candidate) => candidate.status === "candidate" || candidate.status === "filtered")
         .map((candidate) => candidate.candidate_id);
       const allSelected = selectable.length > 0 && selectable.every((id) => current.includes(id));
       if (allSelected) {
@@ -623,11 +703,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     });
   }
 
-  // 「全选」按钮：始终选中全部可勾选候选
+  // 「全选」按钮：始终选中全部可勾选候选（含已过滤，用户可人工复核后再入池）
   function selectAllCandidates() {
     if (!activeRun) return;
     setSelectedCandidates(filteredCandidates
-      .filter((candidate) => candidate.status === "candidate")
+      .filter((candidate) => candidate.status === "candidate" || candidate.status === "filtered")
       .map((candidate) => candidate.candidate_id));
   }
 
@@ -967,6 +1047,38 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             )}
             {activeRun && <span>批次 {activeRun.run_id.slice(0, 8)} · {activeRun.candidate_count} 条</span>}
             <button type="button" className="history-drawer-trigger" onClick={() => setHistoryDrawerOpen(true)}><span aria-hidden="true">◷</span> 最近批次 <b>{runs.length}</b></button>
+            {activeRun && (
+              <div className={`sku-repull-control ${skuRepull?.status === "running" ? "is-running" : ""}`}>
+                <button
+                  type="button"
+                  className="sku-repull-button"
+                  disabled={skuRepullBusy || skuRepull?.status === "running"}
+                  onClick={() => void startSkuRepullNow()}
+                  title="对 SKU 规格未读取成功的商品后台自动重新拉取详情"
+                >
+                  <span aria-hidden="true">↻</span> SKU补齐
+                </button>
+                {skuRepull && skuRepull.status !== "idle" && (
+                  <span className="sku-repull-state">
+                    {skuRepull.status === "running" ? (
+                      <>
+                        <b>第 {skuRepull.round} 轮</b>
+                        <i>{skuRepull.done}/{skuRepull.total} · {Math.round((skuRepull.done / Math.max(1, skuRepull.total)) * 100)}%</i>
+                        <button type="button" className="sku-repull-cancel" disabled={skuRepullBusy} onClick={() => void cancelSkuRepullNow()}>中断</button>
+                      </>
+                    ) : (
+                      <i>
+                        {skuRepull.status === "completed"
+                          ? `第 ${skuRepull.round} 轮完成（成功 ${skuRepull.succeeded} / 失败 ${skuRepull.failed}）`
+                          : skuRepull.status === "cancelled"
+                            ? `第 ${skuRepull.round} 轮已中断（完成 ${skuRepull.done}/${skuRepull.total}）`
+                            : skuRepull.message}
+                      </i>
+                    )}
+                  </span>
+                )}
+              </div>
+            )}
             <label className="select-all-check" title={allCandidatesSelected ? "取消全选" : "全选"}>
               <input
                 type="checkbox"
@@ -987,17 +1099,17 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         {activeRun && filteredCandidates.length > 0 && (
           <div className="candidate-grid">
             {filteredCandidates.map((candidate) => {
-              const selectable = candidate.status === "candidate";
+              const selectable = candidate.status === "candidate" || candidate.status === "filtered";
               const checked = selectedCandidates.includes(candidate.candidate_id);
               const statusText = STATUS_LABELS[candidate.status] ?? candidate.status;
               return (
                 <article key={candidate.candidate_id} className={`candidate-card status-${candidate.status} ${checked ? "is-checked" : "is-removed"} ${!selectable ? "is-locked" : ""}`}>
                   <label
                     className="candidate-keep"
-                    title={!selectable ? statusText : checked ? "本次确认时保留" : "已从本次确认中剔除"}
+                    title={!selectable ? statusText : checked ? "本次确认时保留" : candidate.status === "filtered" ? "已过滤候选，可手动勾选后再次入池" : "已从本次确认中剔除"}
                   >
                     <input type="checkbox" checked={checked} disabled={!selectable} onChange={() => toggleCandidate(candidate.candidate_id)} />
-                    <span>{!selectable ? statusText : checked ? "保留" : "已剔除"}</span>
+                    <span>{!selectable ? statusText : checked ? "保留" : candidate.status === "filtered" ? "已过滤" : "已剔除"}</span>
                   </label>
                   <div
                     className={`candidate-image ${selectable ? "is-clickable" : ""}`}

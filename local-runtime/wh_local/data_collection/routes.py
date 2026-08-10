@@ -191,7 +191,10 @@ def register_daily_selection_routes(
     ) -> DailySelectionRun:
         try:
             run = service.preview(actor=actor, request=request)
-            return _with_api_draft_intake(run, _ingest_api_run(run, background_tasks))
+            run = _with_api_draft_intake(run, _ingest_api_run(run, background_tasks))
+            # 采集完成后由后台自动启动第一轮 SKU 补齐，无需用户手动点击。
+            background_tasks.add_task(service.auto_start_sku_repull, actor, run.run_id)
+            return run
         except (
             DailySelectionCriteriaError,
             DailySelectionContractError,
@@ -218,7 +221,10 @@ def register_daily_selection_routes(
     ) -> DailySelectionRun:
         try:
             run = service.preview_from_1688_link(actor=actor, request=request)
-            return _with_api_draft_intake(run, _ingest_api_run(run, background_tasks))
+            run = _with_api_draft_intake(run, _ingest_api_run(run, background_tasks))
+            # 采集完成后由后台自动启动第一轮 SKU 补齐，无需用户手动点击。
+            background_tasks.add_task(service.auto_start_sku_repull, actor, run.run_id)
+            return run
         except (ValueError, DailySelectionCriteriaError, DailySelectionContractError, ValidationError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         except DailySelectionProviderUnavailable as error:
@@ -589,6 +595,45 @@ def register_daily_selection_routes(
         except (DailySelectionContractError, ValueError, TypeError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
+    @router.post(
+        "/desktop/daily-selection/runs/{run_id}/sku-repull/start",
+        response_model=dict[str, Any],
+    )
+    def sku_repull_start(
+        run_id: str,
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return service.start_sku_repull(actor=actor, run_id=run_id)
+        except DailySelectionRunNotFound as error:
+            raise _run_not_found(error) from error
+
+    @router.get(
+        "/desktop/daily-selection/runs/{run_id}/sku-repull/state",
+        response_model=dict[str, Any],
+    )
+    def sku_repull_state(
+        run_id: str,
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return service.get_sku_repull_state(actor=actor, run_id=run_id)
+        except DailySelectionRunNotFound as error:
+            raise _run_not_found(error) from error
+
+    @router.post(
+        "/desktop/daily-selection/runs/{run_id}/sku-repull/cancel",
+        response_model=dict[str, Any],
+    )
+    def sku_repull_cancel(
+        run_id: str,
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return service.cancel_sku_repull(actor=actor, run_id=run_id)
+        except DailySelectionRunNotFound as error:
+            raise _run_not_found(error) from error
+
     @router.get("/desktop/daily-selection/image")
     def image(
         run_id: str = Query(min_length=1),
@@ -657,7 +702,83 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
         "source_image_urls": source_image_urls,
         "declared_price": product.get("price"),
         "sku": str(product.get("sku") or "").strip() or None,
+        # 插件只回传 variant_combinations；这里把它换算成草稿池/导出使用的
+        # 标准 SKU 记录（source_variant_records），保证草稿池能看到完整规格。
+        "source_variant_records": _plugin_variant_records(product),
     }
+
+
+def _plugin_variant_records(product: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Derive draft-pool SKU records from plugin ``variant_combinations``.
+
+    1688 采集插件在页面上只产出 ``variant_combinations``（每组含属性组合、
+    SKU 货号、价格、库存、规格图），不产出标准 ``source_variant_records``。
+    这里把组合换算成与 OneBound 详情一致的记录结构，缺失货号时用
+    ``{product_id}:{index}`` 兜底，保证每个规格都可独立展示与编辑。
+    """
+    combos = product.get("variant_combinations") or product.get("raw_variant_combinations") or []
+    if not isinstance(combos, (list, tuple)):
+        return []
+    product_id = str(product.get("product_id") or product.get("source_product_id") or "").strip()
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, combo in enumerate(combos):
+        if not isinstance(combo, Mapping):
+            continue
+        sku_id = str(
+            combo.get("source_sku_id")
+            or combo.get("sourceSkuId")
+            or combo.get("sku_id")
+            or combo.get("sku")
+            or ""
+        ).strip()
+        if not sku_id:
+            sku_id = f"{product_id or 'plugin'}:variant-{index}"
+        attributes = combo.get("attributes")
+        attributes = {str(key): value for key, value in attributes.items()} if isinstance(attributes, Mapping) else {}
+        price_cny = _plugin_decimal(combo.get("price"))
+        dedupe_key = f"{sku_id}|{price_cny}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        records.append(
+            {
+                "sku_id": sku_id,
+                "attributes": attributes,
+                "spec_text": str(combo.get("spec_text") or combo.get("properties_name") or "") or None,
+                "image_url": str(combo.get("image_url") or combo.get("imageUrl") or "") or None,
+                "price_cny": price_cny,
+                "quantity": _plugin_int(combo.get("stock") or combo.get("quantity") or combo.get("inventory")),
+            }
+        )
+    return records
+
+
+def _plugin_decimal(value: object) -> float | None:
+    """Parse a plugin money value (may include currency or a price range)."""
+    if value is None:
+        return None
+    text = str(value).strip().lstrip("¥￥$€ \t\n")
+    # 区间价如 "1.5-3.5" 取最小值，与 OneBound 详情价语义一致。
+    for separator in ("-", "~", "至", "—"):
+        if separator in text:
+            text = text.split(separator, 1)[0].strip()
+            break
+    try:
+        parsed = float(text)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _plugin_int(value: object) -> int | None:
+    if value is None:
+        return None
+    digits = "".join(character for character in str(value) if character.isdigit())
+    try:
+        return int(digits)
+    except (TypeError, ValueError):
+        return None
 
 
 def _schedule_source_image_sync(

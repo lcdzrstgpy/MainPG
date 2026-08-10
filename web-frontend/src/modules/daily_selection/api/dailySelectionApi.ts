@@ -3,6 +3,7 @@ import type {
   DailySelectionHandoff,
   DailySelectionRun,
   DailySelectionRunSummary,
+  SkuRepullState,
 } from "../types";
 import { apiRequest } from "../../../shared/api/apiClient";
 
@@ -32,5 +33,21 @@ export function rejectCandidate(runId: string, candidateId: string, reason: stri
   return apiRequest(`/desktop/daily-selection/runs/${encodeURIComponent(runId)}/feedback`, {
     method: "POST",
     body: JSON.stringify({ candidate_id: candidateId, reason, details: {} }),
+  });
+}
+
+export function startSkuRepull(runId: string): Promise<SkuRepullState> {
+  return apiRequest(`/desktop/daily-selection/runs/${encodeURIComponent(runId)}/sku-repull/start`, {
+    method: "POST",
+  });
+}
+
+export function getSkuRepullState(runId: string): Promise<SkuRepullState> {
+  return apiRequest(`/desktop/daily-selection/runs/${encodeURIComponent(runId)}/sku-repull/state`);
+}
+
+export function cancelSkuRepull(runId: string): Promise<SkuRepullState> {
+  return apiRequest(`/desktop/daily-selection/runs/${encodeURIComponent(runId)}/sku-repull/cancel`, {
+    method: "POST",
   });
 }

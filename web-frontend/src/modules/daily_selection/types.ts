@@ -113,3 +113,14 @@ export type DailySelectionHandoff = {
   idempotency_key: string;
   created_at: string;
 };
+
+export type SkuRepullState = {
+  status: "idle" | "running" | "completed" | "cancelled" | "failed";
+  round: number;
+  total: number;
+  done: number;
+  succeeded: number;
+  failed: number;
+  message: string;
+  updated_at: string;
+};
