@@ -49,14 +49,29 @@ class CustomerAuthClient:
     def reset_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
         return normalize_action_response(self._post("/api/customer/reset-password", payload))
 
-    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def logout(self, remote_token: str) -> CustomerAuthActionResult:
+        """Revoke a remote wh_auth_* platform session (single-login state)."""
+        if not remote_token:
+            return CustomerAuthActionResult(ok=True, message="no remote token to revoke")
+        return normalize_action_response(
+            self._post(
+                "/api/customer/logout",
+                {},
+                headers={"Authorization": f"Bearer {remote_token}"},
+            )
+        )
+
+    def _post(self, path: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
         if not self.base_url:
             raise CustomerAuthUnavailable("customer auth service is not configured")
         body = json.dumps(payload).encode("utf-8")
+        request_headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if headers:
+            request_headers.update(headers)
         request = Request(
             f"{self.base_url}{path}",
             data=body,
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            headers=request_headers,
             method="POST",
         )
         try:

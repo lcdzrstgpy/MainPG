@@ -93,12 +93,41 @@ class SQLiteCustomerAuthService:
                 )
                 raise PermissionError("invalid username/email or password")
 
+            # 单端登录限制：账号存在未过期且未撤销的平台会话时，禁止再次登录。
+            now = _utc_now()
+            active_session = conn.execute(
+                """
+                SELECT 1 FROM auth_platform_sessions
+                WHERE account_id = ?
+                  AND revoked_at = ''
+                  AND expires_at > ?
+                """,
+                (row["account_id"], now),
+            ).fetchone()
+            if active_session is not None:
+                conn.execute(
+                    """
+                    INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
+                    VALUES (?, ?, ?, 0, ?, ?)
+                    """,
+                    (row["account_id"], row["username"], row["email"], "账号已在其他设备登录", now),
+                )
+                raise PermissionError("该账号已在其他设备登录，请先退出后再登录")
+
+            conn.execute(
+                """
+                UPDATE auth_accounts
+                SET login_status = 'online', updated_at = ?
+                WHERE account_id = ?
+                """,
+                (now, row["account_id"]),
+            )
             conn.execute(
                 """
                 INSERT INTO auth_login_logs (account_id, username, email, success, created_at)
                 VALUES (?, ?, ?, 1, ?)
                 """,
-                (row["account_id"], row["username"], row["email"], _utc_now()),
+                (row["account_id"], row["username"], row["email"], now),
             )
 
             return CustomerAuthResult(
@@ -106,10 +135,11 @@ class SQLiteCustomerAuthService:
                 username=row["username"],
                 email=row["email"],
                 account_status=row["account_status"],
+                login_status="online",
                 role=row["role"],
                 workspace_code=row["workspace_code"] or DEFAULT_WORKSPACE_CODE,
                 workspace_name=row["workspace_name"] or DEFAULT_WORKSPACE_NAME,
-                raw={"provider": "sqlite", "account_id": row["account_id"]},
+                raw={"provider": "sqlite", "account_id": row["account_id"], "login_status": "online"},
             )
 
     def register(self, payload: dict[str, Any]) -> CustomerAuthActionResult:

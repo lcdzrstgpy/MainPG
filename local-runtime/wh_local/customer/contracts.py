@@ -20,6 +20,7 @@ class CustomerAuthResult:
     username: str
     email: str = ""
     account_status: str = "active"
+    login_status: str = "offline"
     remote_token: str = ""
     remote_expires_at: str = ""
     role: str = "admin"
@@ -49,3 +50,4 @@ class LocalSession:
     workspace_id: str = "default"
     workspace_code: str = ""
     workspace_name: str = ""
+    remote_token: str = ""

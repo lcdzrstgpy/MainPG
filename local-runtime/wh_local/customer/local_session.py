@@ -81,6 +81,7 @@ class LocalSessionService:
             workspace_id=workspace_id,
             workspace_code=customer.workspace_code,
             workspace_name=customer.workspace_name,
+            remote_token=customer.remote_token,
         )
         self.store.save_session(session, customer)
         return session
@@ -89,7 +90,10 @@ class LocalSessionService:
         session = self.store.get_session(token)
         if session is None:
             raise PermissionError("invalid bearer token")
-        return asdict(session)
+        payload = asdict(session)
+        # remote_token 只用于登出联动，不暴露给前端。
+        payload.pop("remote_token", None)
+        return payload
 
     def logout(self, token: str) -> None:
         self.store.revoke_session(token)

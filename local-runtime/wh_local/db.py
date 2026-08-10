@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS user_permission_overrides (
 );
 
 -- 登录会话表：只保存 token_hash，不保存明文 token。
+-- remote_token：远端账号服务的 wh_auth_* token 原文，仅用于工作台登出时联动撤销云端登录态。
 CREATE TABLE IF NOT EXISTS customer_sessions (
     session_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -123,6 +124,7 @@ CREATE TABLE IF NOT EXISTS customer_sessions (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     user_agent TEXT NOT NULL DEFAULT '',
     client_ip TEXT NOT NULL DEFAULT '',
+    remote_token TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (user_id) REFERENCES customer_users (user_id) ON DELETE CASCADE
 );
 
@@ -130,6 +132,7 @@ CREATE INDEX IF NOT EXISTS idx_customer_sessions_user_active
     ON customer_sessions (user_id, expires_at, revoked_at);
 
 -- 本地真实账号表：第二阶段账号服务使用。后续迁移 MySQL 时保持字段语义不变。
+-- login_status：账号当前登录状态（offline/online），云端认证服务维护，用于单端登录限制。
 CREATE TABLE IF NOT EXISTS auth_accounts (
     account_id TEXT PRIMARY KEY,
     username TEXT NOT NULL,
@@ -138,6 +141,7 @@ CREATE TABLE IF NOT EXISTS auth_accounts (
     role TEXT NOT NULL DEFAULT 'operator',
     workspace_id TEXT NOT NULL DEFAULT 'default',
     account_status TEXT NOT NULL DEFAULT 'active',
+    login_status TEXT NOT NULL DEFAULT 'offline',
     email_verified_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -518,6 +522,10 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     """Keep local SQLite files created by earlier dev builds usable."""
     _ensure_column(conn, "action_logs", "workspace_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "action_logs", "module", "TEXT NOT NULL DEFAULT ''")
+    # 登录状态字段：账号级单端登录限制（云端认证服务与本地工作台共用同一 schema）。
+    _ensure_column(conn, "auth_accounts", "login_status", "TEXT NOT NULL DEFAULT 'offline'")
+    # 本地会话表保存远端 wh_auth_* token，登出时联动撤销云端登录态。
+    _ensure_column(conn, "customer_sessions", "remote_token", "TEXT NOT NULL DEFAULT ''")
 
 
 DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (

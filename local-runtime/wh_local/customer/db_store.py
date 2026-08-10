@@ -103,11 +103,12 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                     expires_at,
                     revoked_at,
                     last_used_at,
-                    created_at
+                    created_at,
+                    remote_token
                 )
-                VALUES (?, ?, ?, ?, '', ?, ?)
+                VALUES (?, ?, ?, ?, '', ?, ?, ?)
                 """,
-                (session_id, session.user_id, _hash_token(session.token), session.expires_at, now, now),
+                (session_id, session.user_id, _hash_token(session.token), session.expires_at, now, now, session.remote_token),
             )
 
     def get_session(self, token: str) -> LocalSession | None:
@@ -119,6 +120,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 SELECT
                     s.user_id,
                     s.expires_at,
+                    s.remote_token,
                     u.username,
                     u.role,
                     u.workspace_id,
@@ -144,6 +146,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 workspace_id=row["workspace_id"] or DEFAULT_WORKSPACE_ID,
                 workspace_code=row["workspace_code"] or "",
                 workspace_name=row["workspace_name"] or "",
+                remote_token=row["remote_token"] or "",
             )
         # last_used_at 更新放在读事务之外单独短事务执行：同一事务里“先读后写”
         # 会把读快照升级为写锁，WAL 模式下若期间有并发提交会立即抛
