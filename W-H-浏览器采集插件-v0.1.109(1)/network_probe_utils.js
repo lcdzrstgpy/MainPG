@@ -43,6 +43,22 @@
     }
   }
 
+  // 判断是否为平台商品/货源数据接口（用于识别“商品数据请求被其他插件拦截”）。
+  function isProductDataApi(url) {
+    try {
+      const { parsed, isBusinessHost } = parsedBusinessUrl(url);
+      if (!parsed || !isBusinessHost) return false;
+    } catch (_error) {
+      return false;
+    }
+    const endpoint = endpointFromUrl(url);
+    if (!endpoint) return false;
+    const isProductEndpoint = /api\/phantom|pfb|visage-agent-seller|goods|offer|sku|spu|stock|inventory|spec|price|item|detail|product/i.test(endpoint);
+    if (!isProductEndpoint) return false;
+    if (/login|receiveaddress|address|cart|member|logistics|freight|coupon|accept|reject|negotiate|submit|publish|remove|delete|batch\.review|confirm|commit|save/i.test(endpoint)) return false;
+    return true;
+  }
+
   function shouldCaptureUrl(url, captureType) {
     const endpoint = endpointFromUrl(url);
     if (captureType === "capture_temu_goods") {
@@ -190,6 +206,7 @@
     buildSafeFlowAnalysisRequest,
     endpointFromUrl,
     isLikelyJsonBusinessEndpoint,
+    isProductDataApi,
     normalizeRecord,
     parseAndSanitizeRequest,
     parseAndSanitizeResponse,

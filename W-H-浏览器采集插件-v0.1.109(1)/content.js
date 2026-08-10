@@ -682,13 +682,13 @@
     });
   }
 
-  function setProductListButtonState(text, busy = false) {
+  function setProductListButtonState(text, busy = false, help = "") {
     const button = document.getElementById("temu-workbench-product-list-capture");
     if (!button) return;
     productListCaptureBusy = Boolean(busy);
     const value = String(text || "");
     button.textContent = value.length > 28 ? `${value.slice(0, 26)}...` : value;
-    button.title = value;
+    button.title = String(help || value || "").trim();
     button.disabled = busy;
   }
 
@@ -717,7 +717,7 @@
     try {
       const response = await safeSendRuntimeMessage({ type: "CAPTURE_VISIBLE_PRODUCTS_TO_WORKBENCH" });
       if (!response?.ok) {
-        setProductListButtonState(response?.statusText || "批量采集失败", false);
+        setProductListButtonState(response?.statusText || "批量采集失败", false, response?.help || response?.error || "");
         setProductListCancelButtonState(false);
         window.setTimeout(refreshProductListCaptureButton, 3200);
         return;

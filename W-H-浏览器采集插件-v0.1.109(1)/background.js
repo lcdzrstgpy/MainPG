@@ -6732,18 +6732,18 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
       if (!Array.isArray(skuProps)) return map;
       for (const prop of skuProps) {
         if (!prop || typeof prop !== "object") continue;
-        const groupName = text(objectValueByKeys(prop, ["name", "title", "label", "propName", "propertyName", "attributeName"]) || "");
+        const groupName = text(objectValueByKeys(prop, ["name", "title", "label", "propName", "propertyName", "attributeName", "specName", "optionName", "salePropName"]) || "");
         const propId = text(objectValueByKeys(prop, ["id", "propId", "pid", "propertyId", "fid"]) || "");
-        const values = objectValueByKeys(prop, ["values", "value", "children", "items", "props", "propertyValues", "propValues"]);
+        const values = objectValueByKeys(prop, ["values", "value", "children", "items", "props", "propertyValues", "propValues", "valueList", "specValueList", "optionList", "specValues", "valueItems", "saleValueList"]);
         if (!Array.isArray(values)) continue;
         for (const item of values) {
           if (!item || typeof item !== "object") continue;
-          const value = optionValueText(objectValueByKeys(item, ["value", "text", "label", "name", "valueName", "propertyValueName", "title"]) || "");
+          const value = optionValueText(objectValueByKeys(item, ["value", "text", "label", "name", "valueName", "propertyValueName", "specValueName", "optionValue", "title"]) || "");
           if (!value) continue;
           const entry = {
             group_name: groupName || inferGroupName(value),
             value,
-            image_url: imageFromElement(null) || normalizeImageUrl(objectValueByKeys(item, ["imageUrl", "image", "imgUrl", "picUrl", "skuImageUrl", "url"]) || ""),
+            image_url: imageFromElement(null) || normalizeImageUrl(objectValueByKeys(item, ["imageUrl", "image", "imgUrl", "picUrl", "skuImageUrl", "originImage", "url"]) || ""),
             stock_text: structuredStockTextFromObject(item)
           };
           [
@@ -6758,7 +6758,7 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
     };
     const structuredAttrsFromObject = (object, propMap = {}) => {
       const attrs = {};
-      const attrSource = objectValueByKeys(object, ["specAttributes", "skuAttributes", "attributes", "saleProps", "props", "properties", "specs", "skuProps"]);
+      const attrSource = objectValueByKeys(object, ["specAttributes", "skuAttributes", "attributes", "saleProps", "props", "properties", "specs", "skuProps", "saleAttrs", "saleSpecs", "specList"]);
       const putAttr = (name, value) => {
         const cleanValue = optionValueText(value);
         if (!cleanValue) return;
@@ -6953,7 +6953,7 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
       for (const source of structuredSourcesFromWindow()) {
         const stockBySkuId = collectStructuredStockBySkuId(source.value);
         walkStructuredObjects(source.value, (object) => {
-          const skuProps = object.skuProps || object.sku_props || object.saleProps || object.salePropList || object.props || object.propertyList;
+          const skuProps = object.skuProps || object.sku_props || object.saleProps || object.salePropList || object.props || object.propertyList || object.skuAttrs || object.skuAttrList;
           const mapSource = object.skuInfoMap || object.skuMap || object.skuInfo || object.skuInfos || object.skuItems || object.skus || object.skuList;
           if (!mapSource || typeof mapSource !== "object") return;
           const propMap = structuredPropValueMap(skuProps);
@@ -9381,7 +9381,11 @@ function captureFailureStatusText(errorText, status = 0) {
 async function captureProductToWorkbench(sourceTab) {
   const tab = sourceTab?.id ? sourceTab : await getActiveBusinessTab({ allowAny: true });
   const captured = await captureProductFromTab(tab, { commandType: "product_capture_to_workbench" });
-  if (captured.error) return { ok: false, ...captured };
+  if (captured.error) {
+    const blockedFailure = await blockedByOtherExtensionFailure(tab, "采集失败：其他插件拦截了商品数据");
+    if (blockedFailure) return blockedFailure;
+    return { ok: false, ...captured };
+  }
   const connection = await readConnectionContext();
   if (!connection) {
     return {
@@ -9632,6 +9636,8 @@ async function captureVisibleProductsToWorkbenchJob(tab, job) {
   }
   const products = Array.isArray(captured.products) ? captured.products : [];
   if (!products.length) {
+    const blockedFailure = await blockedByOtherExtensionFailure(tab, "批量采集失败：其他插件拦截了商品数据");
+    if (blockedFailure) return blockedFailure;
     const skippedItems = Array.isArray(captured.skipped) ? captured.skipped : [];
     const reasonCounts = {};
     for (const item of skippedItems) {
@@ -9900,6 +9906,8 @@ async function captureVisibleProductsToWorkbenchJob(tab, job) {
   }
 
   if (!draftProducts.length) {
+    const blockedFailure = await blockedByOtherExtensionFailure(tab, "批量采集失败：其他插件拦截了商品数据");
+    if (blockedFailure) return blockedFailure;
     return {
       ok: false,
       error: "no_deep_captured_products",
@@ -10619,6 +10627,12 @@ async function captureProductFromTab(tab, { commandType, expectedProductId = "" 
     await injectNetworkProbe(tab.id);
   } catch (_error) {
     // Product DOM extraction can still work if the page blocks probe reinjection.
+  }
+
+  if (/temu\.com/.test(hostname)) {
+    // Temu 商品数据在 DOMContentLoaded 之后异步渲染；给足渲染时间，
+    // 避免规格选项尚未出现时只采到默认单规格。
+    await delay(2000);
   }
 
   const riskState = await detectProductCaptureRiskControl(tab.id);
@@ -12275,10 +12289,20 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         })
         .filter((item) => item && item.value.length >= 1 && item.value.length <= 80 && !badSpecValueRe.test(item.value));
       const hasBoundOptionEvidence = values.some(variantOptionHasBoundEvidence);
-      const hasSalesOptionEvidence = values.some(variantOptionHasSalesEvidence);
+      let hasSalesOptionEvidence = values.some(variantOptionHasSalesEvidence);
+      // Temu 规格选项常是纯文本按钮（无价格/库存/SKU 属性且无 selectable 标志），
+      // 若容器带规格标签且存在 ≥2 个短规格值，按可选项保留，避免只采到默认单规格。
+      const temuBareTextGroup = platform === "temu"
+        && values.length >= 2
+        && Boolean(sourceName)
+        && values.every((item) => text(item.value).length <= 40);
+      if (temuBareTextGroup && !hasSalesOptionEvidence) {
+        values = values.map((item) => ({ ...item, selectable: true }));
+        hasSalesOptionEvidence = true;
+      }
       if (!hasSalesOptionEvidence) continue;
-      if (parameterNoiseGroup && !hasBoundOptionEvidence) continue;
-      if (attributeNoiseNameRe.test(`${sourceName} ${classText} ${fullText.slice(0, 100)}`) && !hasBoundOptionEvidence) continue;
+      if (parameterNoiseGroup && !hasBoundOptionEvidence && !temuBareTextGroup) continue;
+      if (attributeNoiseNameRe.test(`${sourceName} ${classText} ${fullText.slice(0, 100)}`) && !hasBoundOptionEvidence && !temuBareTextGroup) continue;
       const deduped = [];
       const seenValues = new Set();
       for (const item of values) {
@@ -12316,7 +12340,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     return "";
   };
   const imageFromObject = (object) => {
-    const direct = firstObjectValue(object, ["image_url", "imageUrl", "img", "imgUrl", "picUrl", "skuImageUrl", "skuPicUrl", "thumbUrl", "originalImage", "url"]);
+    const direct = firstObjectValue(object, ["image_url", "imageUrl", "img", "imgUrl", "picUrl", "skuImageUrl", "skuPicUrl", "thumbUrl", "originalImage", "originImage", "url"]);
     if (direct && /\.(jpg|jpeg|png|webp)(?:[?#].*)?$/i.test(String(direct))) return normalizeImageUrl(direct);
     if (!object || typeof object !== "object") return "";
     for (const value of Object.values(object)) {
@@ -12382,6 +12406,15 @@ function extractProductFromCurrentPage(expectedProductId = "") {
   const attrsFromObject = (object, propValueMap = {}) => {
     const attrs = {};
     if (!object || typeof object !== "object") return attrs;
+    // Temu 单轴商品 SKU 项常直接携带纯文本规格（spec: "10 rolls"）。
+    if (typeof object.spec === "string") {
+      const pair = normalizeAttrPair("spec", object.spec);
+      if (pair) attrs[pair.source_name || pair.name] = pair.value;
+    }
+    if (typeof object.saleSpec === "string") {
+      const pair = normalizeAttrPair("spec", object.saleSpec);
+      if (pair) attrs[pair.source_name || pair.name] = pair.value;
+    }
     const candidates = [
       object.attributes,
       object.attribute,
@@ -12392,7 +12425,8 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       object.specAttrs,
       object.specs,
       object.properties,
-      object.values
+      object.values,
+      object.specList
     ];
     for (const candidate of candidates) {
       if (!candidate) continue;
@@ -12508,6 +12542,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       "pageData",
       "offerData",
       "globalData",
+      "detailData",
       "skuModel"
     ];
     for (const key of windowKeys) {
@@ -12535,7 +12570,8 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         "window.productDetailData",
         "window.pageData",
         "window.offerData",
-        "window.globalData"
+        "window.globalData",
+        "window.detailData"
       ].forEach((marker) => {
         const value = parseAssignedJson(raw, marker);
         if (value) sources.push({ source: `script-assignment:${marker}:${index}`, value });
@@ -12684,13 +12720,13 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     if (!Array.isArray(skuProps)) return { map, groups };
     for (const prop of skuProps) {
       if (!prop || typeof prop !== "object") continue;
-      const sourceName = text(firstObjectValue(prop, ["name", "title", "label", "prop", "propName", "propertyName"]));
-      const values = firstObjectValue(prop, ["values", "value", "children", "items", "props", "propertyValues", "propValues"]);
+      const sourceName = text(firstObjectValue(prop, ["name", "title", "label", "prop", "propName", "propertyName", "specName", "optionName", "salePropName", "attrName"]));
+      const values = firstObjectValue(prop, ["values", "value", "children", "items", "props", "propertyValues", "propValues", "valueList", "specValueList", "optionList", "specValues", "valueItems", "saleValueList"]);
       const groupValues = [];
       const list = Array.isArray(values) ? values : [];
       for (const item of list) {
         if (!item || typeof item !== "object") continue;
-        const value = text(firstObjectValue(item, ["value", "text", "label", "name", "valueName", "propertyValueName"]));
+        const value = text(firstObjectValue(item, ["value", "text", "label", "name", "valueName", "propertyValueName", "specValueName", "optionValue", "valueText"]));
         const sourceSkuId = sourceSkuIdFromObject(item, true);
         const pair = normalizeAttrPair(sourceName, value, {
           image_url: imageFromObject(item),
@@ -12783,8 +12819,8 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     for (const source of sources) {
       walkObjects(source.value, (object, path) => {
         if (!object || typeof object !== "object" || Array.isArray(object)) return;
-        const skuProps = object.skuProps || object.sku_props || object.saleProps || object.salePropList || object.props;
-        const mapSource = object.skuInfoMap || object.skuMap || object.skuInfo || object.skuInfos || object.skuList || object.skus || object.skuItems || object.sku_records || object.skuRecords || object.skuRecordList || object.sku_record_list;
+        const skuProps = object.skuProps || object.sku_props || object.saleProps || object.salePropList || object.props || object.specList || object.specs || object.saleSpecs || object.optionList || object.saleOptions || object.saleAttrs || object.saleAttr || object.skuAttrs || object.skuAttrList;
+        const mapSource = object.skuInfoMap || object.skuMap || object.skuInfo || object.skuInfos || object.skuList || object.skus || object.skuItems || object.sku_records || object.skuRecords || object.skuRecordList || object.sku_record_list || object.skuInfoList || object.goodsSkuList || object.goodsSkus || object.skuStockList || object.skuSpecs || object.skuSpec || object.saleSkuList;
         const propData = propValueMapFromSkuProps(skuProps);
         if (propData.groups.length) groups.push(...propData.groups.map((group) => ({ ...group, source: source.source })));
         if (mapSource && typeof mapSource === "object") {
@@ -13222,6 +13258,55 @@ async function getProbeCaptures(tabId, captureType, since, limit) {
   }
   merged.sort((left, right) => String(left?.capturedAt || "").localeCompare(String(right?.capturedAt || "")));
   return merged.slice(Math.max(0, merged.length - Math.min(limit || 50, 120)));
+}
+
+// 检测页面最近被拦截/失败的商品数据请求（诊断“其他插件拦截导致入池失败”）。
+async function detectBlockedProductApis(tabId, lookbackMs = 120000) {
+  if (!tabId) return [];
+  try {
+    await injectNetworkProbe(tabId);
+  } catch (_error) {
+    return [];
+  }
+  let results = [];
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      args: [lookbackMs],
+      func: (sinceMs) => {
+        const probe = window.__temuWorkbenchNetworkProbe;
+        const utils = window.WorkbenchNetworkProbeUtils;
+        if (!probe?.getBlockedCaptures || !utils?.isProductDataApi) return [];
+        return probe.getBlockedCaptures(sinceMs)
+          .filter((record) => utils.isProductDataApi(String(record?.url || "")))
+          .slice(0, 5);
+      }
+    });
+  } catch (_error) {
+    return [];
+  }
+  const blocked = [];
+  for (const item of results || []) {
+    if (Array.isArray(item?.result)) blocked.push(...item.result);
+  }
+  return blocked.slice(0, 3);
+}
+
+// 采集失败时若检测到“商品数据请求被其他插件拦截”，生成明确原因提示。
+const BLOCKED_BY_EXTENSION_HELP =
+  "检测到浏览器里的其他插件（常见为广告拦截类，如 AdBlock、uBlock、AdGuard）拦截了平台加载商品数据的请求，导致采集不到商品。请在浏览器扩展列表里关闭或卸载这些插件（或给 temu.com / 1688.com 添加白名单），刷新页面后重新采集。";
+
+async function blockedByOtherExtensionFailure(tab, statusText) {
+  const blockedApis = await detectBlockedProductApis(tab?.id);
+  if (!blockedApis.length) return null;
+  return {
+    ok: false,
+    error: "product_api_blocked_by_extension",
+    statusText,
+    help: BLOCKED_BY_EXTENSION_HELP,
+    blocked_product_apis: blockedApis.map((item) => item.url || "")
+  };
 }
 
 async function getRecentEndpointDiagnostics(tabId, since, limit = 30) {
