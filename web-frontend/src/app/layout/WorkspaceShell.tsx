@@ -36,6 +36,8 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const [showScrollTop, setShowScrollTop] = useState(false);
   // 利润活动页 keep-alive：首次打开后保持挂载，切换走仅隐藏，表单/文件/过滤进度不丢失
   const [profitActivityMounted, setProfitActivityMounted] = useState(false);
+  // 核价页 keep-alive：图搜/货源匹配执行中切走不中断，返回时结果仍在（与每日选品面板一致）
+  const [priceVerificationMounted, setPriceVerificationMounted] = useState(false);
   const collectionSequence = useRef(0);
   const processingSequence = useRef(0);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -82,6 +84,10 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
 
   useEffect(() => {
     if (activeModuleId === "profit_activity") setProfitActivityMounted(true);
+  }, [activeModuleId]);
+
+  useEffect(() => {
+    if (activeModuleId === "price_verification") setPriceVerificationMounted(true);
   }, [activeModuleId]);
 
   const scrollBackToTop = () => {
@@ -200,7 +206,11 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
           )}
           {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
           {activeModuleId === "basic_settings" && <BasicSettingsPage />}
-          {activeModuleId === "price_verification" && <PriceVerificationPage />}
+          {priceVerificationMounted && (
+            <div hidden={activeModuleId !== "price_verification"}>
+              <PriceVerificationPage />
+            </div>
+          )}
           {activeModuleId === "product_processing" && <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} onOpenHistoryTasks={openHistoryTasks} />}
           {collectionTabs.map((tab) => (
             <div key={tab.key} hidden={activeTabKey !== tab.key}>
