@@ -75,6 +75,26 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="invalid bearer token")
         return {"ok": True, "account": account}
 
+    @app.post("/api/customer/heartbeat")
+    def heartbeat(authorization: str | None = Header(default=None)) -> dict[str, bool]:
+        """刷新当前远端会话的 last_used_at（前端页面心跳，用于失联判定）。"""
+        token = _bearer_token(authorization)
+        with transaction(db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM auth_platform_sessions
+                WHERE token_hash = ? AND revoked_at = '' AND expires_at > ?
+                """,
+                (_hash_token(token), _utc_now()),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=401, detail="invalid bearer token")
+            conn.execute(
+                "UPDATE auth_platform_sessions SET last_used_at = ? WHERE token_hash = ?",
+                (_utc_now(), _hash_token(token)),
+            )
+        return {"ok": True}
+
     @app.post("/api/customer/logout")
     def logout(authorization: str | None = Header(default=None)) -> dict[str, bool]:
         token = _bearer_token(authorization)

@@ -17,6 +17,9 @@ DEFAULT_WORKSPACE_ID = "default"
 DEFAULT_WORKSPACE_CODE = "local-demo"
 PASSWORD_RESET_TTL = timedelta(minutes=30)
 DEFAULT_WORKSPACE_NAME = "本地演示工作区"
+# 会话失联阈值：前端心跳间隔约 30 秒，超过该阈值未刷新 last_used_at 视为
+# 已关闭页面/断线，允许该账号重新登录并撤销旧会话。
+SESSION_STALE_SECONDS = 90
 
 
 class SQLiteCustomerAuthService:
@@ -93,11 +96,14 @@ class SQLiteCustomerAuthService:
                 )
                 raise PermissionError("invalid username/email or password")
 
-            # 单端登录限制：账号存在未过期且未撤销的平台会话时，禁止再次登录。
+            # 单端登录限制：账号存在"活跃且未失联"的平台会话时，禁止再次登录。
+            # 失联判定：前端会周期性心跳刷新 last_used_at；超过阈值未心跳视为
+            # 已关闭页面/断线，此时允许重新登录并撤销旧会话，避免用户被锁死。
             now = _utc_now()
+            stale_before = _utc_ago(SESSION_STALE_SECONDS)
             active_session = conn.execute(
                 """
-                SELECT 1 FROM auth_platform_sessions
+                SELECT session_id, last_used_at FROM auth_platform_sessions
                 WHERE account_id = ?
                   AND revoked_at = ''
                   AND expires_at > ?
@@ -105,14 +111,26 @@ class SQLiteCustomerAuthService:
                 (row["account_id"], now),
             ).fetchone()
             if active_session is not None:
+                last_used = str(active_session["last_used_at"] or "")
+                still_active = bool(last_used and last_used >= stale_before)
+                if still_active:
+                    conn.execute(
+                        """
+                        INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
+                        VALUES (?, ?, ?, 0, ?, ?)
+                        """,
+                        (row["account_id"], row["username"], row["email"], "账号已在其他设备登录", now),
+                    )
+                    raise PermissionError("该账号已在其他设备登录，请先退出后再登录")
+                # 旧会话已失联（如关闭页面未登出），撤销并允许本次登录。
                 conn.execute(
                     """
-                    INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
-                    VALUES (?, ?, ?, 0, ?, ?)
+                    UPDATE auth_platform_sessions
+                    SET revoked_at = ?
+                    WHERE account_id = ? AND revoked_at = ''
                     """,
-                    (row["account_id"], row["username"], row["email"], "账号已在其他设备登录", now),
+                    (now, row["account_id"]),
                 )
-                raise PermissionError("该账号已在其他设备登录，请先退出后再登录")
 
             conn.execute(
                 """
@@ -552,3 +570,7 @@ def _text(payload: dict[str, Any], key: str) -> str:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _utc_ago(seconds: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(timespec="seconds")

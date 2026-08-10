@@ -98,6 +98,22 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.post("/heartbeat")
+    def heartbeat(authorization: str | None = Header(default=None)) -> dict[str, bool]:
+        try:
+            token = bearer_token(authorization)
+            # 页面心跳：刷新云端会话 last_used_at，避免失联判定误伤在线用户。
+            try:
+                session = sessions.store.get_session(token)
+                remote_token = session.remote_token if session is not None else ""
+                if remote_token:
+                    remote_auth.heartbeat(remote_token)
+            except Exception:
+                pass
+            return {"ok": True}
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.post("/logout")
     def logout(authorization: str | None = Header(default=None)) -> dict[str, bool]:
         try:

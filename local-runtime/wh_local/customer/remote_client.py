@@ -61,6 +61,18 @@ class CustomerAuthClient:
             )
         )
 
+    def heartbeat(self, remote_token: str) -> CustomerAuthActionResult:
+        """Refresh the remote session last_used_at (page-open heartbeat)."""
+        if not remote_token:
+            return CustomerAuthActionResult(ok=True, message="no remote token to heartbeat")
+        return normalize_action_response(
+            self._post(
+                "/api/customer/heartbeat",
+                {},
+                headers={"Authorization": f"Bearer {remote_token}"},
+            )
+        )
+
     def _post(self, path: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
         if not self.base_url:
             raise CustomerAuthUnavailable("customer auth service is not configured")
