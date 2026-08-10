@@ -145,6 +145,25 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
     setWorkspaceNotice("");
   };
 
+  // 历史采集入口：从草稿池直接打开「历史任务」页（无处理参数，仅查看记录与输出）
+  const openHistoryTasks = () => {
+    const openPanelCount = tabs.filter((tab) => tab.moduleId === "product_processing_tasks").length;
+    if (openPanelCount >= MAX_PROCESSING_PANELS) {
+      setWorkspaceNotice(`最多同时打开 ${MAX_PROCESSING_PANELS} 个处理任务，请先关闭一个再继续。`);
+      return;
+    }
+    processingSequence.current += 1;
+    const key = `product-processing-tasks-${processingSequence.current}`;
+    setTabs((current) => [...current, {
+      key,
+      moduleId: "product_processing_tasks",
+      label: "历史任务",
+      icon: "◷",
+    }]);
+    setActiveTabKey(key);
+    setWorkspaceNotice("");
+  };
+
   const collectionTabs = tabs.filter((tab) => tab.moduleId === "daily_selection_collection");
   const expandedSidebarModuleIds = tabs.map((tab) => tab.moduleId);
   const sidebarTemporarilyExpanded = sidebarCollapsed && sidebarHovered;
@@ -182,7 +201,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
           {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
           {activeModuleId === "basic_settings" && <BasicSettingsPage />}
           {activeModuleId === "price_verification" && <PriceVerificationPage />}
-          {activeModuleId === "product_processing" && <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} />}
+          {activeModuleId === "product_processing" && <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} onOpenHistoryTasks={openHistoryTasks} />}
           {collectionTabs.map((tab) => (
             <div key={tab.key} hidden={activeTabKey !== tab.key}>
               <DailySelectionPage view="collection" initialDirectionId={tab.directionId} topbarStatusVisible={activeTabKey === tab.key} />

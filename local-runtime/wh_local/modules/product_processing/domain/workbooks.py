@@ -4,7 +4,7 @@ import csv
 import re
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from openpyxl import Workbook, load_workbook
 
@@ -283,6 +283,21 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     weight = _export_number(dimensions.get("weight_g"))
     package_shape, package_type = _package_export_values(dimensions)
 
+    # 店小秘体积重校验兜底：变种属性里的尺寸（如 30*20*10cm，店小秘以此算体积重）
+    # 与独立长宽高列取体积重（长×宽×高÷6），重量必须大于体积重，否则导入整行被拒。
+    dimensions_texts: list[Any] = []
+    if length not in ("", None) and width not in ("", None) and height not in ("", None):
+        dimensions_texts.append(f"{length}*{width}*{height}")
+    # 变种属性全部值（不限于导出前两条规格轴）与商品级属性都可能携带尺寸文本
+    if variant is not None:
+        variant_attributes = variant.get("attributes") or {}
+        if isinstance(variant_attributes, dict):
+            dimensions_texts.extend(variant_attributes.values())
+    if isinstance(source_attributes, dict):
+        dimensions_texts.extend(source_attributes.values())
+    dimensions_texts.extend(value for _, value in variant_values)
+    weight = _weight_meeting_volumetric(weight, dimensions_texts)
+
     # 建议售价（对齐原型 _build_dxm_row）：变种建议售价 → 行建议售价 → 来源成本
     suggested_price = variant.get("suggested_price") if variant else None
     if suggested_price in (None, ""):
@@ -361,6 +376,53 @@ def _export_number(value: Any) -> Any:
     if number == int(number):
         return int(number)
     return round(number, 2)
+
+
+# 尺寸文本模式：如 "30*20*10" / "30×20×10cm" / "40.5*30*20 CM"（1688 变种尺寸属性值）
+_DIMENSIONS_PATTERN = re.compile(
+    r"(?P<l>\d+(?:\.\d+)?)\s*[*×xX]\s*(?P<w>\d+(?:\.\d+)?)\s*[*×xX]\s*(?P<h>\d+(?:\.\d+)?)"
+    r"\s*(?:cm|厘米|mm|毫米)?",
+    re.IGNORECASE,
+)
+
+
+def _parse_dimensions(value: Any) -> tuple[float, float, float] | None:
+    """从文本提取 (长, 宽, 高) 厘米；无法识别返回 None。"""
+    if value in (None, ""):
+        return None
+    match = _DIMENSIONS_PATTERN.search(str(value))
+    if not match:
+        return None
+    length = float(match.group("l"))
+    width = float(match.group("w"))
+    height = float(match.group("h"))
+    if length <= 0 or width <= 0 or height <= 0:
+        return None
+    return length, width, height
+
+
+def _volumetric_weight_g(length: float, width: float, height: float) -> float:
+    """店小秘体积重（克）：长×宽×高(cm³) ÷ 6。导入校验要求实际重量大于体积重。"""
+    return length * width * height / 6.0
+
+
+def _weight_meeting_volumetric(weight: Any, dimensions_texts: Sequence[Any]) -> Any:
+    """按店小秘体积重校验兜底重量。
+
+    对每段尺寸文本解析长宽高并计算体积重（取最大值），若当前重量缺失或小于等于
+    体积重，则提升到「体积重之上 1g」，保证店小秘导入不因「材积重量大于实际重量」
+    拒绝整行，且不虚高申报重量。无有效尺寸时原样返回。
+    """
+    volumetric = 0.0
+    for text in dimensions_texts:
+        parsed = _parse_dimensions(text)
+        if parsed is not None:
+            volumetric = max(volumetric, _volumetric_weight_g(*parsed))
+    if volumetric <= 0:
+        return weight
+    if isinstance(weight, (int, float)) and weight > volumetric:
+        return weight
+    return int(volumetric) + 1
 
 
 def _normalize_stock(value: Any) -> int:

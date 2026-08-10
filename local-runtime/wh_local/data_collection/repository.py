@@ -364,9 +364,10 @@ class DailySelectionRepository:
                     """,
                     (workspace_id, run_id, candidate_id),
                 ).fetchone() is not None
-                if candidate.risk_tags:
-                    non_confirmable[candidate_id] = "candidate has risk tags"
-                elif candidate.status == "candidate":
+                if candidate.status in {"candidate", "filtered"}:
+                    # 已过滤(filtered)候选允许被用户显式选中再次入池：采集到的全部商品
+                    # 都可复核后确认，过滤与风险标签只是初筛建议，不剥夺用户的人工判断。
+                    # 用户勾选即视为人工复核通过，因此带风险标签的候选也可确认入库。
                     continue
                 elif candidate.status == "confirmed" and handoff_exists:
                     # Confirmation is intentionally replay-safe.  A retry can
@@ -481,6 +482,76 @@ class DailySelectionRepository:
                 handoffs.append(DailySelectionHandoff(**dict(row)))
             connection.commit()
             return tuple(handoffs)
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def update_candidate(
+        self,
+        *,
+        workspace_id: str,
+        run_id: str,
+        candidate: DailySelectionCandidate,
+        timestamp: str | None = None,
+    ) -> None:
+        """Replace one run candidate (used by background SKU re-pull)."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        run_id = _required_text(run_id, "run_id")
+        if not isinstance(candidate, DailySelectionCandidate):
+            raise TypeError("candidate must be a DailySelectionCandidate value")
+        stamp = timestamp or _now()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._owned_run(connection, workspace_id=workspace_id, run_id=run_id)
+            self._upsert_candidate(
+                connection,
+                workspace_id=workspace_id,
+                run_id=run_id,
+                candidate=candidate,
+                timestamp=stamp,
+            )
+            connection.execute(
+                """
+                UPDATE daily_selection_runs
+                SET updated_at = ?
+                WHERE workspace_id = ? AND run_id = ?
+                """,
+                (stamp, workspace_id, run_id),
+            )
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def update_run_metadata(
+        self,
+        *,
+        workspace_id: str,
+        run_id: str,
+        metadata: Mapping[str, Any] | BaseModel,
+    ) -> None:
+        """Persist merged run metadata (used by SKU re-pull round tracking)."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        run_id = _required_text(run_id, "run_id")
+        metadata_json = _dump_json(metadata)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._owned_run(connection, workspace_id=workspace_id, run_id=run_id)
+            connection.execute(
+                """
+                UPDATE daily_selection_runs
+                SET metadata_json = ?, updated_at = ?
+                WHERE workspace_id = ? AND run_id = ?
+                """,
+                (metadata_json, _now(), workspace_id, run_id),
+            )
+            connection.commit()
         except BaseException:
             connection.rollback()
             raise

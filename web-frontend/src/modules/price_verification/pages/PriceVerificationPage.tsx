@@ -18,6 +18,38 @@ function errorMessage(error: unknown) {
   return message;
 }
 
+// 图搜结果缓存：切走再回来不丢结果，避免重复执行图搜（按批次隔离）
+const PV_SOURCE_CACHE_KEY = "price-verification:source-cache:v1";
+
+type SourceCacheEntry = {
+  activeStage: PriceVerificationStage;
+  sourceSkcIds: string[];
+  sourcePreview: SourcePreview | null;
+  savedAt: number;
+};
+
+function loadSourceCache(batchId: string): SourceCacheEntry | null {
+  try {
+    const raw = localStorage.getItem(PV_SOURCE_CACHE_KEY);
+    if (!raw) return null;
+    const map = JSON.parse(raw) as Record<string, SourceCacheEntry>;
+    return map[batchId] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function saveSourceCache(batchId: string, entry: Omit<SourceCacheEntry, "savedAt">) {
+  try {
+    const raw = localStorage.getItem(PV_SOURCE_CACHE_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, SourceCacheEntry>) : {};
+    map[batchId] = { ...entry, savedAt: Date.now() };
+    localStorage.setItem(PV_SOURCE_CACHE_KEY, JSON.stringify(map));
+  } catch {
+    // localStorage 不可用或超出配额时静默忽略，不影响主流程
+  }
+}
+
 export function PriceVerificationPage() {
   const [activeStage, setActiveStage] = useState<PriceVerificationStage>("collect");
   const [captureBatches, setCaptureBatches] = useState<QuoteCaptureBatch[]>([]);
@@ -40,7 +72,10 @@ export function PriceVerificationPage() {
       setBatchSelections(selections);
       if (sourceSkcBatchRef.current !== batchId) {
         sourceSkcBatchRef.current = batchId;
-        setSourceSkcIds([]);
+        const cached = loadSourceCache(batchId);
+        if (!cached?.sourceSkcIds?.length) {
+          setSourceSkcIds([]);
+        }
       }
     } catch {
       setBatchSelections([]);
@@ -92,6 +127,26 @@ export function PriceVerificationPage() {
   };
 
   useEffect(() => { void refresh(false); }, []);
+
+  // 批次就绪后从缓存恢复图搜结果 / 勾选 / 阶段
+  useEffect(() => {
+    if (!currentBatchId) return;
+    const cached = loadSourceCache(currentBatchId);
+    if (!cached) return;
+    if (cached.sourcePreview) setSourcePreview(cached.sourcePreview);
+    if (cached.sourceSkcIds?.length) setSourceSkcIds(cached.sourceSkcIds);
+    if (cached.activeStage) {
+      setActiveStage(cached.activeStage === "source" && !cached.sourcePreview ? "collect" : cached.activeStage);
+    }
+  }, [currentBatchId]);
+
+  // 状态变化时写回缓存；恢复瞬间（preview 尚未从缓存取出）不要清空旧缓存
+  useEffect(() => {
+    if (!currentBatchId) return;
+    const cached = loadSourceCache(currentBatchId);
+    if (sourcePreview === null && cached?.sourcePreview) return;
+    saveSourceCache(currentBatchId, { activeStage, sourceSkcIds, sourcePreview });
+  }, [currentBatchId, activeStage, sourceSkcIds, sourcePreview]);
 
   const savePrescreen = async (minAdjustedPriceCny: string) => {
     try {

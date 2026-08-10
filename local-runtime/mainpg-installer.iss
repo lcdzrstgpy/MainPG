@@ -26,6 +26,12 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 
+; 升级时清掉旧版本残留的程序文件（_internal），保证新旧版本文件不会混在一起
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal"
+Type: filesandordirs; Name: "{app}\build"
+Type: files; Name: "{app}\MainPG.exe"
+
 [Files]
 Source: "dist\{#MyAppNameEn}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
@@ -36,3 +42,14 @@ Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingD
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// 安装前自动结束正在运行的旧版 MainPG.exe，避免文件占用导致升级不完整
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  Exec('taskkill.exe', '/F /IM MainPG.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(1200);
+end;

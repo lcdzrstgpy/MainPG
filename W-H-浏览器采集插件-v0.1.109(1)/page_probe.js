@@ -1,5 +1,5 @@
 (function installWorkbenchNetworkProbe() {
-  const PROBE_VERSION = "0.1.109";
+  const PROBE_VERSION = "0.1.112";
   if (window.__temuWorkbenchNetworkProbe?.installed && window.__temuWorkbenchNetworkProbe.version === PROBE_VERSION) return;
 
   const MAX_CAPTURED = 200;
@@ -59,7 +59,24 @@
     const requestUrl = typeof resource === "string" ? resource : resource?.url;
     const method = init?.method || resource?.method || "GET";
     const requestText = await serializeFetchRequest(resource, init);
-    const response = await originalFetch.apply(this, arguments);
+    let response;
+    try {
+      response = await originalFetch.apply(this, arguments);
+    } catch (_error) {
+      // 请求被拦截（广告拦截类插件 cancel）或网络失败时记录失败原因，
+      // 再原样抛出，保持页面行为不变。
+      record({
+        url: String(requestUrl || ""),
+        method,
+        status: 0,
+        contentType: "",
+        requestText,
+        error: "blocked",
+        responseText: "",
+        capturedAt: new Date().toISOString()
+      });
+      throw _error;
+    }
     try {
       const clone = response.clone();
       const contentType = clone.headers.get("content-type") || "";
@@ -135,6 +152,24 @@
         // Some responses do not expose responseText; ignore them.
       }
     }, { once: true });
+    this.addEventListener("error", function workbenchXhrErrorProbe() {
+      // 请求被拦截（广告拦截类插件 cancel）或网络失败时记录失败原因。
+      try {
+        const capturedRequest = this.__workbenchProbeRequest || request;
+        record({
+          url: capturedRequest.url || "",
+          method: capturedRequest.method || "GET",
+          status: 0,
+          contentType: "",
+          requestText: capturedRequest.requestText || "",
+          error: "blocked",
+          responseText: "",
+          capturedAt: new Date().toISOString()
+        });
+      } catch (_error) {
+        // Ignore probe errors.
+      }
+    }, { once: true });
     return originalXHRSend.apply(this, arguments);
   };
 
@@ -143,6 +178,20 @@
     version: PROBE_VERSION,
     captures,
     startedAt: new Date().toISOString(),
+    getBlockedCaptures(sinceMs) {
+      // 返回最近 sinceMs 毫秒内被拦截/失败的请求记录（用于诊断兼容性问题）。
+      const cutoff = Date.now() - (Number(sinceMs) || 60000);
+      return captures
+        .filter((item) => item?.error === "blocked")
+        .filter((item) => {
+          try {
+            return new Date(item.capturedAt).getTime() >= cutoff;
+          } catch (_error) {
+            return true;
+          }
+        })
+        .slice(-40);
+    },
     getCaptures(captureType, since, limit) {
       const filtered = captures.filter((item) => {
         if (since && item.capturedAt < since) return false;

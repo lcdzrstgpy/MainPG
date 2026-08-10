@@ -172,9 +172,10 @@ export async function updateProfitActivityProduct({
 }
 
 /**
- * 更新产品的一个货源组（链接 + 截图）：非核价入库产品在货源侧边栏修改
+ * 更新产品的货源组（链接 + 截图）：非核价入库产品在货源侧边栏修改
  * “图片和对应链接”后保存。走 multipart，仅更新 source_groups_json 与
- * 目标组的截图，其他字段沿用当前记录。
+ * 目标组的截图，其他字段沿用当前记录。groupImages 支持一次提交多个
+ * 货源组的新截图（键为组号），与 source_groups_json 重建后的组号对应。
  */
 export async function updateProductSourceGroup({
   site,
@@ -182,12 +183,14 @@ export async function updateProductSourceGroup({
   group,
   sourceGroups,
   image,
+  groupImages,
 }: {
   site: ProfitActivitySite;
   skc: string;
   group: number;
   sourceGroups: Array<{ source_url?: string; image_paths?: string[]; cost?: number | null }>;
   image?: File | null;
+  groupImages?: Record<number, File>;
 }) {
   const { apiBase } = resolveEndpoint();
   const token = candidateTokens()[0];
@@ -196,6 +199,11 @@ export async function updateProductSourceGroup({
   form.set("skc", skc);
   form.set("source_groups_json", JSON.stringify(sourceGroups));
   if (image) form.set(`source_group_image_${group}`, image);
+  if (groupImages) {
+    for (const [groupIndex, file] of Object.entries(groupImages)) {
+      form.set(`source_group_image_${groupIndex}`, file);
+    }
+  }
   const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : {},

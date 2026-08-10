@@ -654,9 +654,16 @@ class ProductProcessingService:
                 handoff.candidate_id, handoff.workspace_id
             )
             if draft is None or draft["status"] == "deleted":
-                raise ValueError(
-                    "daily-selection handoff requires an ingressed onebound_api draft"
+                # 确认入池是草稿池的唯一入口：preview 不再自动建草稿，
+                # 首次确认时用 handoff 载荷创建草稿（候选级幂等由 create_draft 保证）。
+                draft, _created = self.create_draft(
+                    self._draft_payload_from_handoff(handoff),
+                    selection_run_id=handoff.run_id,
+                    workspace_id=handoff.workspace_id,
+                    handoff_id=handoff.handoff_id,
+                    handoff_idempotency_key=handoff.idempotency_key,
                 )
+                created_count += 1
             receipt = self.repository.save_handoff_receipt(
                 handoff_id=handoff.handoff_id,
                 idempotency_key=handoff.idempotency_key,
@@ -669,9 +676,6 @@ class ProductProcessingService:
             )
             receipts.append(receipt)
             drafts.append(draft)
-            # Confirmation is selection state only. The OneBound preview
-            # ingress owns draft creation, so a handoff can never add a
-            # second candidate draft.
         return {
             "contract_version": "daily-selection-handoff-consumer-v1",
             "consumer_status": "consumed",
@@ -681,6 +685,59 @@ class ProductProcessingService:
             "receipts": receipts,
             "drafts": drafts,
             "upstream_ack_required": True,
+        }
+
+    @staticmethod
+    def _draft_payload_from_handoff(
+        handoff: DailySelectionHandoffEnvelope,
+    ) -> dict[str, Any]:
+        """Build a ``create_draft`` payload from a confirmed handoff.
+
+        Preview no longer ingresses drafts, so confirmation is the only entry
+        into the draft pool.  The handoff payload carries the candidate
+        snapshot captured at confirmation time.
+        """
+        try:
+            payload = json.loads(handoff.payload_json)
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        candidate = payload.get("candidate") or {}
+        images = payload.get("images") or {}
+        gallery = [str(value) for value in (images.get("gallery") or []) if value]
+        detail = [str(value) for value in (images.get("detail") or []) if value]
+        attributes = payload.get("attributes") or {}
+        selection = payload.get("selection_metadata") or {}
+        title = str(candidate.get("source_title") or "").strip()
+        source_ref = str(
+            candidate.get("source_url")
+            or candidate.get("candidate_id")
+            or candidate.get("offer_id")
+            or ""
+        ).strip()
+        return {
+            "source_type": "onebound_api",
+            "candidate_id": str(candidate.get("candidate_id") or "").strip() or None,
+            "offer_id": str(candidate.get("offer_id") or "").strip() or None,
+            "source_platform": str(candidate.get("source_platform") or "1688").strip(),
+            "source_ref": source_ref,
+            "source_url": str(candidate.get("source_url") or "").strip() or None,
+            "source_title": title,
+            "title": title,
+            "product_name": title,
+            "image_url": str(images.get("main") or (gallery[0] if gallery else "")) or None,
+            "source_image_urls": gallery,
+            "source_detail_image_urls": detail,
+            "source_variant_records": payload.get("skus") or [],
+            "source_attributes": dict(attributes) if isinstance(attributes, dict) else {},
+            "price_cny": candidate.get("price_cny"),
+            "freight_cny": candidate.get("freight_cny"),
+            "min_order_quantity": candidate.get("min_order_quantity"),
+            "evidence": payload.get("source_evidence") or [],
+            "selection_score": selection.get("selection_score"),
+            "selection_reasons": list(selection.get("selection_reasons") or []),
+            "risk_tags": list(selection.get("risk_tags") or []),
         }
 
     @staticmethod

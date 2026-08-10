@@ -4,6 +4,7 @@ import type {
   DraftSummary,
   DraftVariant,
   ProductProcessingOptions,
+  TaskHistoryItem,
 } from '../types';
 import '../styles/ProductProcessingVerifyPage.css';
 
@@ -18,6 +19,7 @@ type DraftEdit = {
 
 type Props = {
   onStartProcessing?: (draftIds: number[], options: ProductProcessingOptions) => void;
+  onOpenHistoryTasks?: () => void;
 };
 
 function api(): ApiContext {
@@ -35,7 +37,7 @@ function draftDirty(draft: DraftSummary, edits: Record<number, DraftEdit>): bool
   );
 }
 
-export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
+export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTasks }: Props) {
   const ctx = api();
   const [options, setOptions] = useState<ProductProcessingOptions>({
     targetSite: 'US',
@@ -67,6 +69,11 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
   const [skuCountFilter, setSkuCountFilter] = useState(0);
   // 不看单规格：隐藏无变种 / 仅 1 个变种的草稿
   const [hideSingleSpec, setHideSingleSpec] = useState(false);
+  // 历史采集卡片：草稿池底部按钮唤出的历史任务弹层
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyTasks, setHistoryTasks] = useState<TaskHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
   const draftListRef = useRef<HTMLDivElement>(null);
   const stickyToolbarRef = useRef<HTMLDivElement>(null);
   const stickySpacerRef = useRef<HTMLDivElement>(null);
@@ -173,6 +180,48 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
     const draftData = await ppRequest<{ drafts: DraftSummary[] }>(ctx, `${API_BASE}/drafts?view=summary&limit=500`);
     setDrafts(draftData.drafts || []);
   };
+
+  const loadHistory = async () => {
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      const data = await ppRequest<{ tasks: TaskHistoryItem[] }>(
+        ctx, `${API_BASE}/tasks/history?limit=20`
+      );
+      setHistoryTasks(data.tasks || []);
+    } catch (err) {
+      setHistoryTasks([]);
+      setHistoryError(err instanceof Error ? err.message : '历史任务读取失败');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const openHistory = () => {
+    setHistoryOpen(true);
+    loadHistory();
+  };
+
+  const closeHistory = () => {
+    setHistoryOpen(false);
+    setHistoryTasks([]);
+    setHistoryError('');
+  };
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeHistory();
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyOpen]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -572,6 +621,17 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
             </span>
           </footer>
         )}
+        {/* 草稿池底部历史采集入口：直接在本界面唤出历史任务卡片 */}
+        <div className="verify-pool-history-entry">
+          <button type="button" onClick={openHistory} disabled={historyLoading}>
+            <i className="iconfont icon-clock" aria-hidden="true" />
+            <span>
+              <strong>历史采集任务</strong>
+              <small>查看最近的产品处理任务记录与输出文件</small>
+            </span>
+            <em aria-hidden="true">›</em>
+          </button>
+        </div>
       </section>
 
       <section className="verify-quickbar">
@@ -579,6 +639,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
           <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
           <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
           <button onClick={deleteSelected} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
+          <button className="history-collection-trigger" onClick={openHistory}><i className="iconfont icon-clock" aria-hidden="true" />历史采集</button>
         </div>
       </section>
 
@@ -678,8 +739,78 @@ export function ProductProcessingVerifyPage({ onStartProcessing }: Props) {
           </div>
         );
       })()}
+
+      {historyOpen && (
+        <div className="verify-history-layer">
+          <div className="verify-history-mask" onClick={closeHistory} />
+          <section className="verify-history-card" role="dialog" aria-modal="true" aria-label="历史采集任务">
+            <header className="verify-history-head">
+              <div>
+                <p className="verify-eyebrow">COLLECTION HISTORY</p>
+                <h2>历史采集</h2>
+                <p>最近的产品处理任务记录，点击「打开任务页」可查看完整结果与下载输出文件。</p>
+              </div>
+              <div className="verify-history-head-acts">
+                <button className="btn-mini" onClick={loadHistory} disabled={historyLoading}><i className="iconfont icon-sync" aria-hidden="true" />刷新</button>
+                <button className="verify-drawer-close" onClick={closeHistory} aria-label="关闭">×</button>
+              </div>
+            </header>
+            {historyError && <div className="verify-message error">{historyError}</div>}
+            <div className="verify-history-body">
+              {historyLoading && <p className="verify-empty">正在读取历史任务…</p>}
+              {!historyLoading && historyTasks.length === 0 && (
+                <p className="verify-empty">暂无历史采集任务。勾选草稿并点击「开始处理」后，任务记录会显示在这里。</p>
+              )}
+              {!historyLoading && historyTasks.length > 0 && (
+                <ul className="verify-history">
+                  {historyTasks.map((task) => (
+                    <li key={task.task_id} className="history-card-item">
+                      <span className="verify-history-title" title={task.title}>{task.title}</span>
+                      <span className={`verify-badge status-${task.status}`}>
+                        {({
+                          queued: '等待处理',
+                          running: '处理中',
+                          paused: '已暂停',
+                          completed: '已完成',
+                          completed_with_review: '完成·待确认',
+                          failed: '任务失败',
+                          partial_failure: '部分失败',
+                        } as Record<string, string>)[task.status] || task.status}
+                      </span>
+                      <span className="verify-history-counts">
+                        共 <b>{task.total_count}</b> · 成功 <b className="ok">{task.success_count}</b> · 失败 <b className="bad">{task.failed_count}</b>
+                        {task.skipped_count > 0 && <> · 跳过 <b>{task.skipped_count}</b></>}
+                      </span>
+                      {task.target_site && <span className="verify-history-site">{task.target_site}{task.target_language_label ? ` · ${task.target_language_label}` : ''}</span>}
+                      {task.elapsed_seconds !== undefined && <span className="verify-history-elapsed">耗时 {formatHistoryDuration(task.elapsed_seconds)}</span>}
+                      <span className="verify-history-date">{new Date(task.created_at).toLocaleString('zh-CN')}</span>
+                      <button className="btn-mini" onClick={() => { closeHistory(); onOpenHistoryTasks?.(); }}>打开任务页</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            {!historyLoading && historyTasks.length > 0 && (
+              <footer className="verify-history-foot">
+                <span>仅展示最近 {historyTasks.length} 条，完整列表见任务页。</span>
+                <button className="primary" onClick={() => { closeHistory(); onOpenHistoryTasks?.(); }}>打开完整任务页</button>
+              </footer>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   );
+}
+
+function formatHistoryDuration(seconds?: number): string {
+  const total = Math.max(0, Math.floor(seconds || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}小时${minutes}分`;
+  if (minutes > 0) return `${minutes}分${secs}秒`;
+  return `${secs}秒`;
 }
 
 export default ProductProcessingVerifyPage;

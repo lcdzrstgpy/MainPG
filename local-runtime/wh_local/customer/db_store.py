@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 import secrets
+import sqlite3
 
 from ..db import transaction
 from .contracts import CustomerAuthResult, LocalSession
@@ -134,11 +135,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
             ).fetchone()
             if row is None:
                 return None
-            conn.execute(
-                "UPDATE customer_sessions SET last_used_at = ? WHERE token_hash = ?",
-                (now, token_hash),
-            )
-            return LocalSession(
+            session = LocalSession(
                 user_id=row["user_id"],
                 token=token,
                 expires_at=row["expires_at"],
@@ -148,6 +145,21 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 workspace_code=row["workspace_code"] or "",
                 workspace_name=row["workspace_name"] or "",
             )
+        # last_used_at 更新放在读事务之外单独短事务执行：同一事务里“先读后写”
+        # 会把读快照升级为写锁，WAL 模式下若期间有并发提交会立即抛
+        # SQLITE_BUSY_SNAPSHOT（OperationalError database is locked，busy_timeout
+        # 不生效），此前被 session.actor_from_bearer_token 误映射成 401。
+        # 新事务首条语句直接取写锁，可正常走 busy_timeout 等待。
+        try:
+            with transaction(self.database_path) as conn:
+                conn.execute(
+                    "UPDATE customer_sessions SET last_used_at = ? WHERE token_hash = ?",
+                    (now, token_hash),
+                )
+        except sqlite3.Error:
+            # last_used_at 仅用于会话活跃度展示，写失败不阻断本次鉴权。
+            pass
+        return session
 
     def revoke_session(self, token: str) -> None:
         token_hash = _hash_token(token)
