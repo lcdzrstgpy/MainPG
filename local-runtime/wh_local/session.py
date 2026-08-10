@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import logging
 import sqlite3
 
 from fastapi import Header, HTTPException
@@ -9,6 +10,8 @@ from fastapi import Header, HTTPException
 from .config import default_config
 from .customer.db_store import SQLiteCustomerSessionStore
 from .db import connect
+
+logger = logging.getLogger("wh_local.session")
 
 
 @dataclass(frozen=True)
@@ -39,7 +42,10 @@ def actor_from_bearer_token(token: str, database_path: Path | None = None) -> Ac
     try:
         session = SQLiteCustomerSessionStore(db_path).get_session(token)
     except sqlite3.Error as exc:
-        raise HTTPException(status_code=401, detail="invalid bearer token") from exc
+        # 数据库暂时不可用（如写锁竞争）≠ 令牌无效：返回 503 而不是 401，
+        # 避免前端把临时故障误判为登录态失效而清空会话跳登录页。
+        logger.warning("authentication database unavailable: %r", exc)
+        raise HTTPException(status_code=503, detail="authentication database unavailable") from exc
     if session is None:
         raise HTTPException(status_code=401, detail="invalid bearer token")
 
