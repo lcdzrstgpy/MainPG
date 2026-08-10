@@ -1,8 +1,8 @@
 (function installWorkbenchNetworkProbe() {
-  const PROBE_VERSION = "0.1.112";
+  const PROBE_VERSION = "0.1.115";
   if (window.__temuWorkbenchNetworkProbe?.installed && window.__temuWorkbenchNetworkProbe.version === PROBE_VERSION) return;
 
-  const MAX_CAPTURED = 200;
+  const MAX_CAPTURED = 500;
   const utils = window.WorkbenchNetworkProbeUtils;
   const captures = [];
   const originalFetch = window.fetch;
@@ -136,7 +136,12 @@
     this.addEventListener("load", function workbenchXhrLoadProbe() {
       try {
         const contentType = this.getResponseHeader("content-type") || "";
-        if (/json|text/i.test(contentType || "") && typeof this.responseText === "string") {
+        // responseType='json'（或 blob/arraybuffer 但 content-type 为 json）时
+        // responseText 为空串，数据在 this.response 里；取不到时跳过不误录空串。
+        let responseText = this.responseType === "json" && typeof this.response !== "undefined" && this.response != null
+          ? (typeof this.response === "string" ? this.response : JSON.stringify(this.response))
+          : this.responseText;
+        if ((/json|text/i.test(contentType || "") || (responseText && /^[\s\r\n]*[\[{]/.test(String(responseText)))) && typeof responseText === "string" && responseText !== "") {
           const capturedRequest = this.__workbenchProbeRequest || request;
           record({
             url: capturedRequest.url || "",
@@ -144,7 +149,7 @@
             status: this.status,
             contentType,
             requestText: capturedRequest.requestText || "",
-            responseText: this.responseText,
+            responseText,
             capturedAt: new Date().toISOString()
           });
         }
@@ -172,6 +177,83 @@
     }, { once: true });
     return originalXHRSend.apply(this, arguments);
   };
+
+  // 1688（mtop/h5api/laputa 等）的 SKU/详情数据通过 <script> 标签 JSONP 加载，
+  // fetch/XHR 补丁捕获不到。这里用 MutationObserver 监听新增脚本，包装其
+  // callback 全局函数，把 JSONP 返回的数据对象写入 captures 供提取方使用。
+  function installJsonpProbe() {
+    try {
+      if (typeof MutationObserver === "undefined") return;
+      const seenCallbacks = new Set();
+      const wrapCallback = (script) => {
+        try {
+          if (!script || script.__workbenchJsonpWatched) return;
+          script.__workbenchJsonpWatched = true;
+          let callbackName = "";
+          try {
+            callbackName = new URL(script.src || "", location.href).searchParams.get("callback")
+              || new URL(script.src || "", location.href).searchParams.get("jsonp")
+              || new URL(script.src || "", location.href).searchParams.get("cb")
+              || "";
+          } catch (_error) {}
+          if (!callbackName || !/^[A-Za-z_$][\w$]*$/.test(callbackName)) return;
+          if (seenCallbacks.has(callbackName)) return;
+          const original = window[callbackName];
+          if (typeof original !== "function") return;
+          seenCallbacks.add(callbackName);
+          window[callbackName] = function workbenchJsonpProbe(...args) {
+            try {
+              const payload = args && args.length ? args[0] : undefined;
+              if (payload && typeof payload === "object" && !(payload instanceof ArrayBuffer)) {
+                let responseText = "";
+                try { responseText = JSON.stringify(payload); } catch (_error) { responseText = ""; }
+                if (responseText) {
+                  record({
+                    url: script.src || "",
+                    method: "JSONP",
+                    status: 200,
+                    contentType: "application/json",
+                    requestText: "",
+                    responseText,
+                    capturedAt: new Date().toISOString()
+                  });
+                }
+              }
+            } catch (_error) {}
+            try {
+              return original.apply(this, args);
+            } catch (_error) {
+              return undefined;
+            }
+          };
+        } catch (_error) {}
+      };
+      const scanNode = (node) => {
+        if (!node || node.nodeType !== 1) return;
+        if (String(node.tagName || "").toUpperCase() === "SCRIPT" && node.src) {
+          wrapCallback(node);
+          return;
+        }
+        if (node.querySelectorAll) {
+          Array.from(node.querySelectorAll("script[src]")).forEach(wrapCallback);
+        }
+      };
+      // 已有脚本兜底（页面动态追加的脚本可能已存在）。
+      Array.from(document.querySelectorAll("script[src]")).forEach(wrapCallback);
+      const observer = new MutationObserver((mutations) => {
+        try {
+          for (const mutation of mutations) {
+            for (const node of mutation.addedNodes || []) scanNode(node);
+          }
+        } catch (_error) {}
+      });
+      observer.observe(document.documentElement || document, { childList: true, subtree: true });
+    } catch (_error) {
+      // JSONP 探针失败不阻断页面与采集主流程。
+    }
+  }
+
+  installJsonpProbe();
 
   window.__temuWorkbenchNetworkProbe = {
     installed: true,

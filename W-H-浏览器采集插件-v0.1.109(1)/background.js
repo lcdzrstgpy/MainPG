@@ -10592,6 +10592,215 @@ async function captureProductListFromTab(tab) {
   };
 }
 
+// 自包含的「页面级 SKU 选项提取」：会通过 chrome.scripting.executeScript 注入到
+// 任意 frame（含跨域 sku-panel iframe）执行，因此不能引用 background 作用域变量，
+// 所有辅助函数必须内联。输出可序列化的规格组结构（与 pageWideSkuGroups 一致）。
+function extractPageSkuGroupsInFrame() {
+  const text = (value) => (value == null ? "" : String(value)).replace(/\s+/g, " ").trim();
+  const visible = (element) => {
+    try {
+      if (!element) return false;
+      const style = window.getComputedStyle(element);
+      if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) === 0) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    } catch (_error) {
+      return false;
+    }
+  };
+  const cleanSpecValue = (raw) => {
+    let value = text(raw)
+      .replace(/^(?:颜色|规格|款式|型号|容量|尺寸|尺码|数量|包装|套装|Color|Size|Style|Capacity|Pack)[:：\s]*/i, "")
+      .replace(/\s*(?:已选|请选择|选择|库存|起批|¥|￥|\$).*/i, "")
+      .replace(/[\uE000-\uF8FF]+/g, "");
+    if (!value || value.length > 40) return "";
+    return value;
+  };
+  const badSpecValueRe = /官方|退货|客服|收藏|好评|店铺|评价|保障|包邮|发货|物流|起批|库存|已售|加购|选择|请选择|加入|立即|下单|采购车|跨境铺货|分销代发|全部参数|商品参数|产品参数|规格参数|详细参数|基本参数/i;
+  const optionSelector = [
+    "button[class*='sku']",
+    "li[class*='sku']",
+    "[class*='sku-filter']",
+    "[class*='sku-select']",
+    "[class*='sku-option']",
+    "[class*='sku-item']",
+    "[class*='sale-prop']",
+    "[class*='feature-item'] button",
+    "[class*='feature-item'] [class*='item']",
+    "[class*='property-item']",
+    "[class*='attribute-item']",
+    "[class*='spec-item']",
+    "[role='button'][class*='sku']",
+    "[role='option']",
+    "[role='radio']"
+  ].join(",");
+  const isLeaf = (element) => {
+    try {
+      const nested = Array.from(element.querySelectorAll("button, li, [role='button'], [role='option'], [role='radio'], [class*='option'], [class*='item']"))
+        .filter((child) => child !== element && visible(child));
+      return nested.length === 0;
+    } catch (_error) {
+      return true;
+    }
+  };
+  const imageUrl = (element) => {
+    try {
+      const img = element.querySelector("img");
+      if (img) return img.currentSrc || img.src || "";
+      const style = window.getComputedStyle(element);
+      const match = style.backgroundImage && style.backgroundImage.match(/url\(["']?(.*?)["']?\)/);
+      return match ? match[1] : "";
+    } catch (_error) {
+      return "";
+    }
+  };
+  const normalizeGroupName = (name, valueText) => {
+    const sample = `${name} ${valueText || ""}`;
+    if (/\u989c\u8272/.test(sample)) return "Color";
+    if (/\u5c3a\u5bf8|\u5c3a\u7801|\u5927\u5c0f|\u5305\u88c5\u5c3a\u5bf8/.test(sample)) return "Size";
+    if (/\u5bb9\u91cf|\u5347|ml\b|\bl\b/.test(sample)) return "Capacity";
+    if (/\u89c4\u683c|\u6b3e\u5f0f|\u578b\u53f7|\u6570\u91cf|\u5305\u88c5|\u5957\u88c5/.test(sample)) return "Pack";
+    if (/color|colour/.test(sample)) return "Color";
+    if (/size/.test(sample)) return "Size";
+    if (/style|model/.test(sample)) return "Style";
+    return "Style";
+  };
+  const items = [];
+  const seenValues = new Set();
+  for (const element of Array.from(document.querySelectorAll(optionSelector))) {
+    if (!visible(element) || !isLeaf(element)) continue;
+    const value = cleanSpecValue(element.innerText || element.textContent || element.getAttribute("title") || element.getAttribute("aria-label"));
+    if (!value || value.length < 1 || value.length > 40 || badSpecValueRe.test(value)) continue;
+    if (seenValues.has(value)) continue;
+    seenValues.add(value);
+    const tagName = String(element.tagName || "").toUpperCase();
+    const classText = `${element.className || ""} ${element.getAttribute("aria-selected") || ""} ${element.getAttribute("aria-checked") || ""}`;
+    const selected = /selected|active|current|checked|true/i.test(classText);
+    const price = element.getAttribute("data-price") || element.getAttribute("data-sale-price") || element.getAttribute("data-sku-price") || "";
+    const stock = element.getAttribute("data-stock") || element.getAttribute("data-inventory") || "";
+    const sku = element.getAttribute("data-sku-id") || element.getAttribute("data-skuid") || element.getAttribute("data-sku") || "";
+    let label = "";
+    let strongSkuHint = false;
+    let ancestor = element.parentElement;
+    for (let depth = 0; ancestor && depth < 5; depth += 1, ancestor = ancestor.parentElement) {
+      const ancestorClass = `${ancestor.className || ""}`;
+      strongSkuHint = strongSkuHint || /sku-filter|sku-select|sale-prop|sku-option|selector|variant|feature-item|prop|spec|attribute/i.test(ancestorClass);
+      const ancestorText = text(ancestor.innerText || ancestor.textContent || "").slice(0, 120);
+      const labelMatch = ancestorText.match(/^(颜色|规格|款式|型号|容量|尺寸|尺码|数量|包装|套装|Color|Size|Style|Capacity|Pack)\s*[:：]?\s*(.*)$/i);
+      if (labelMatch) {
+        label = labelMatch[1];
+        break;
+      }
+      const directChildLabel = Array.from(ancestor.children)
+        .map((child) => text(child.innerText || child.textContent || ""))
+        .find((childText) => /^(颜色|规格|款式|型号|容量|尺寸|尺码|数量|包装|套装|Color|Size|Style|Capacity|Pack)[:：]?$/i.test(childText));
+      if (directChildLabel) {
+        label = directChildLabel.replace(/[:：]/g, "");
+        break;
+      }
+    }
+    // 只接受“明确是 SKU 选项”的元素：按钮标签、或能找到规格标签、或祖先带
+    // 强 SKU 痕迹类名；避免把推荐位/商品卡片等类名带 sku 的元素误当规格值。
+    if (!label && !strongSkuHint && tagName !== "BUTTON" && tagName !== "LI") continue;
+    items.push({
+      source_name: label,
+      value,
+      image_url: imageUrl(element),
+      price,
+      stock,
+      sku,
+      source_sku_id: sku,
+      selected,
+      selectable: true
+    });
+  }
+  const grouped = new Map();
+  for (const item of items) {
+    const name = normalizeGroupName(item.source_name || "规格", item.value);
+    const list = grouped.get(name) || [];
+    list.push(item);
+    grouped.set(name, list);
+  }
+  const output = [];
+  for (const [name, values] of grouped) {
+    if (values.length < 2) continue;
+    output.push({ name, source_name: name, values: values.slice(0, 50) });
+  }
+  return output;
+}
+
+// 在所有 frame（含跨域 sku-panel iframe）执行 extractPageSkuGroupsInFrame 并合并去重。
+async function extractPageSkuGroupsFromAllFrames(tabId) {
+  let frameResults = [];
+  try {
+    frameResults = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "MAIN",
+      func: extractPageSkuGroupsInFrame
+    });
+  } catch (_error) {
+    try {
+      frameResults = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: extractPageSkuGroupsInFrame
+      });
+    } catch (_error2) {
+      return null;
+    }
+  }
+  const merged = [];
+  const seenGroupKeys = new Set();
+  for (const frame of frameResults || []) {
+    const groups = Array.isArray(frame?.result) ? frame.result : [];
+    for (const group of groups) {
+      if (!group || typeof group !== "object" || !Array.isArray(group.values) || !group.values.length) continue;
+      const key = `${group.name || ""}|${group.values.map((v) => String(v.value || "")).join(",")}`;
+      if (seenGroupKeys.has(key)) continue;
+      seenGroupKeys.add(key);
+      merged.push(group);
+    }
+  }
+  return merged;
+}
+
+// 由多轴规格组生成组合（笛卡尔积），供跨 frame 兜底结果使用。
+function buildCombosFromGroupList(groups) {
+  const axes = (groups || [])
+    .filter((g) => g && typeof g === "object" && Array.isArray(g.values) && g.values.length > 0)
+    .map((g) => ({ name: g.name || g.source_name || "规格", source_name: g.source_name || g.name || "规格", values: g.values }));
+  if (!axes.length) return [];
+  const combos = [];
+  const cartesian = (axisIndex, attrs, evidence) => {
+    if (axisIndex >= axes.length) {
+      combos.push({
+        attributes: { ...attrs },
+        source: "frame-dom",
+        confidence: "medium",
+        image_url: evidence.image_url || "",
+        price: evidence.price || "",
+        stock: evidence.stock || "",
+        sku: evidence.sku || "",
+        source_sku_id: evidence.sku || "",
+        selectable: true,
+        selected: false
+      });
+      return;
+    }
+    const axis = axes[axisIndex];
+    for (const value of axis.values) {
+      cartesian(axisIndex + 1, { ...attrs, [axis.name]: value.value }, {
+        image_url: value.image_url || evidence.image_url || "",
+        price: value.price || evidence.price || "",
+        stock: value.stock || evidence.stock || "",
+        sku: value.sku || evidence.sku || ""
+      });
+    }
+  };
+  cartesian(0, {}, {});
+  return combos;
+}
+
 async function captureProductFromTab(tab, { commandType, expectedProductId = "" } = {}) {
   const rawUrl = tab.url || "";
   let hostname = "";
@@ -10633,6 +10842,94 @@ async function captureProductFromTab(tab, { commandType, expectedProductId = "" 
     // Temu 商品数据在 DOMContentLoaded 之后异步渲染；给足渲染时间，
     // 避免规格选项尚未出现时只采到默认单规格。
     await delay(2000);
+    // Temu 的规格/颜色选择区同样懒渲染（视口外不创建 DOM），先滚到 SKU 区
+    // 或页面中部触发渲染，等它稳定后再提取，避免规格区未渲染导致单规格。
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: () => {
+          try {
+            const skuArea = Array.from(document.querySelectorAll(
+              "[class*='sku'], [data-testid*='sku'], [class*='spec'], [class*='option'], [class*='prop'], [class*='attribute']"
+            )).filter((el) => {
+              const rect = el.getBoundingClientRect();
+              return rect.width > 20 && rect.height > 20;
+            }).find((el) => /(颜色|规格|尺寸|尺码|型号|已选|Color|Size|Style|Spec)/i.test(String(el.innerText || el.textContent || "")));
+            if (skuArea) {
+              skuArea.scrollIntoView({ block: "center" });
+            } else {
+              window.scrollTo(0, Math.round(document.body.scrollHeight * 0.35));
+            }
+          } catch (_error) {}
+        }
+      });
+    } catch (_error) {}
+    await delay(1500);
+  }
+
+  if (/1688|alibaba/i.test(hostname)) {
+    // 1688 新版详情页（od-* SPA）的 SKU 区（module-od-sku-selection）按需渲染/懒加载，
+    // 且页面顶部常有类名带 sku 的其它元素（面包屑/描述表等）。旧逻辑滚动到“第一个
+    // 有文字的 sku 元素”常命中错误目标，导致 SKU 区始终未渲染、规格为空。
+    // 这里优先定向滚动到 SKU 区自身（即使还是空占位），两轮滚动 + 等待。
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: () => {
+          try {
+            const pick = (selector, requireText) => {
+              const nodes = Array.from(document.querySelectorAll(selector));
+              return (requireText
+                ? nodes.find((el) => String(el.innerText || el.textContent || "").trim().length > 0)
+                : nodes[0]) || null;
+            };
+            const target = pick(
+              "[class*='sku-selection'], [class*='sku-select'], [class*='module-od-sku'], .feature-item, [class*='feature-item']",
+              true
+            ) || pick(
+              "[class*='sku-selection'], [class*='sku-select'], [class*='module-od-sku'], .feature-item, [class*='feature-item']",
+              false
+            ) || pick(
+              "[class*='sku'], [class*='offer-main'], [class*='price'], [class*='trade'], [class*='buy']",
+              true
+            );
+            if (target) {
+              target.scrollIntoView({ block: "center" });
+              const offset = target.getBoundingClientRect();
+              window.scrollBy(0, Math.max(0, offset.top - window.innerHeight / 2));
+            } else {
+              window.scrollTo(0, Math.round(document.body.scrollHeight * 0.5));
+            }
+          } catch (_error) {}
+        }
+      });
+    } catch (_error) {}
+    await delay(1600);
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: () => {
+          try {
+            // SKU 区渲染后再把已出现的规格选项滚到视口中部，保证规格区稳定渲染。
+            const nodes = Array.from(document.querySelectorAll(
+              ".sku-filter-button, [class*='sku-filter-button'], .feature-item, [class*='feature-item'], [class*='sku-selection'] [class*='option'], [class*='sku-select'] [class*='option']"
+            ));
+            const target = nodes.filter((el) => {
+              const r = el.getBoundingClientRect();
+              return r.width > 10 && r.height > 10;
+            }).pop();
+            if (target) {
+              target.scrollIntoView({ block: "center" });
+              window.scrollBy(0, -window.innerHeight * 0.15);
+            }
+          } catch (_error) {}
+        }
+      });
+    } catch (_error) {}
+    await delay(1800);
   }
 
   const riskState = await detectProductCaptureRiskControl(tab.id);
@@ -10651,12 +10948,149 @@ async function captureProductFromTab(tab, { commandType, expectedProductId = "" 
     };
   }
 
-  const [result] = await chrome.scripting.executeScript({
+  const [firstResult] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: "MAIN",
     func: extractProductFromCurrentPage,
     args: [expectedProductId]
   });
+  let result = firstResult;
+  // 1688 新 SPA / Temu 的 SKU 区懒加载偶发未触发（模块加载失败/滚动目标不对），
+  // 首次提取无规格时再激进滚动重试一次，避免漏采。
+  if (/1688|alibaba|temu/i.test(hostname)) {
+    const productHasVariants = (p) => {
+      const f = p?.captured_fields;
+      return Boolean(
+        (f && typeof f === "object" && (Number(f.variant_combinations_count) > 0 || Number(f.variant_groups_count) > 0))
+        || (Array.isArray(p?.variant_combinations) && p.variant_combinations.length > 0)
+        || (Array.isArray(p?.variant_groups) && p.variant_groups.length > 0)
+      );
+    };
+    if (!productHasVariants(result?.result || {})) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          world: "MAIN",
+          func: () => {
+            try {
+              // 整页分段滚动，把 SKU 区所在区域拉进视口触发渲染。
+              const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+              window.scrollTo(0, Math.round(height * 0.35));
+            } catch (_error) {}
+          }
+        });
+      } catch (_error) {}
+      await delay(2000);
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          world: "MAIN",
+          func: () => {
+            try {
+              const skuArea = document.querySelector("[class*='sku-selection'], [class*='module-od-sku'], [class*='sku'], [class*='spec'], [data-testid*='sku'], [class*='price'], [class*='buy'], [class*='option']");
+              if (skuArea) skuArea.scrollIntoView({ block: "center" });
+            } catch (_error) {}
+          }
+        });
+      } catch (_error) {}
+      await delay(1800);
+      try {
+        const [retryResult] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          world: "MAIN",
+          func: extractProductFromCurrentPage,
+          args: [expectedProductId]
+        });
+        if (productHasVariants(retryResult?.result || {})) {
+          result = retryResult;
+        }
+      } catch (_error) {}
+      // 第三路兜底：从所有 frame（含跨域 sku-panel iframe）的探针捕获中捞含
+      // SKU 模型的 JSON 响应，注入主页面 __workbenchSkuJsonCache（jsonSourcesFromPage
+      // 会把它作为 cached-sku 源交给 walkObjects 识别 skuProps/skuInfoMap 等），
+      // 再重跑提取——绕过 1688 SPA 的懒加载渲染，SKU 数据在网络层始终可得。
+      // 注意：1688 SKU 接口 URL 不一定带 sku/sale/spec 字样，因此不按 URL 过滤，
+      // 而是先收集全部 JSON 响应，再用 SKU 模型关键词 + 结构信号打分挑选候选。
+      if (!productHasVariants(result?.result || {})) {
+        let frameTexts = [];
+        try {
+          const frameResults = await chrome.scripting.executeScript({
+            target: { tabId: tab.id, allFrames: true },
+            world: "MAIN",
+            func: () => {
+              try {
+                const probe = window.__temuWorkbenchNetworkProbe;
+                if (!probe) return [];
+                return (probe.captures || [])
+                  .filter((c) => c && !c.error && c.responseText)
+                  .map((c) => String(c.responseText || ""))
+                  .filter((t) => t.length > 200 && /^\s*[\[{]/.test(t));
+              } catch (_error) { return []; }
+            }
+          });
+          for (const frame of frameResults || []) {
+            if (Array.isArray(frame?.result)) frameTexts.push(...frame.result);
+          }
+        } catch (_error) {}
+        const skuModelRe = /skuProps|sku_props|saleProps|salePropList|skuInfoMap|skuMap|skuInfos|skuList|skuItems|goodsSkus|skuInfoList|goodsSkuList|skuAttrs|skuAttrList|skuRecords|saleSkuList|saleProp|sale_prop|saleSpecs|saleSpec|specs|propKey|specKey|skuPrice|sku_price/;
+        const skuSignalScore = (t) => {
+          let score = 0;
+          const signalKeys = ["skuProps", "sku_props", "saleProps", "salePropList", "skuInfoMap", "skuMap", "skuInfos", "skuList", "skuItems", "goodsSkus", "skuInfoList", "goodsSkuList", "skuAttrs", "skuAttrList", "skuRecords", "saleSkuList", "saleProp", "sale_prop", "saleSpecs", "saleSpec", "propKey", "specKey", "skuId", "sku_id", "skuPrice", "sku_price"];
+          for (const key of signalKeys) {
+            if (t.includes(key)) score += 1;
+          }
+          return score;
+        };
+        const candidates = frameTexts
+          .filter((t) => skuModelRe.test(t))
+          .sort((a, b) => (skuSignalScore(b) - skuSignalScore(a)) || (b.length - a.length));
+        for (const candidate of candidates.slice(0, 5)) {
+          try {
+            JSON.parse(candidate); // 校验 JSON 合法性，避免写入脏数据
+            await chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              world: "MAIN",
+              func: (json) => {
+                try { window.__workbenchSkuJsonCache = json; } catch (_error) {}
+              },
+              args: [candidate]
+            });
+            const [netResult] = await chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              world: "MAIN",
+              func: extractProductFromCurrentPage,
+              args: [expectedProductId]
+            });
+            if (productHasVariants(netResult?.result || {})) {
+              result = netResult;
+              break;
+            }
+          } catch (_error) {}
+        }
+      }
+      // 第四路兜底：跨 frame DOM 提取。1688 新版 SPA 的 SKU 面板可能渲染在
+      // 跨域 iframe（od-panel/sku-panel.html）里，主 frame 的 DOM 提取取不到。
+      // 这里在全部 frame 执行自包含的页面级提取并合并进最终结果。
+      if (!productHasVariants(result?.result || {})) {
+        const frameGroups = await extractPageSkuGroupsFromAllFrames(tab.id);
+        if (frameGroups && frameGroups.length) {
+          if (!result || !result.result || typeof result.result !== "object") result = { result: {} };
+          const product = result.result;
+          const combos = buildCombosFromGroupList(frameGroups);
+          product.variant_groups = frameGroups;
+          product.raw_variant_groups = frameGroups;
+          product.variant_combinations = combos;
+          product.raw_variant_combinations = combos;
+          if (product.captured_fields && typeof product.captured_fields === "object") {
+            product.captured_fields.variant_groups = frameGroups;
+            product.captured_fields.variant_combinations_count = combos.length;
+            product.captured_fields.raw_variant_groups_count = frameGroups.length;
+            product.captured_fields.raw_variant_combinations_count = combos.length;
+          }
+        }
+      }
+    }
+  }
   const product = result?.result || {};
   const capturedProductId = String(product.product_id || productIdFromCaptureUrl(product.product_link || product.link || rawUrl) || "").trim();
   const expectedId = String(expectedProductId || "").trim();
@@ -12296,12 +12730,17 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       let hasSalesOptionEvidence = values.some(variantOptionHasSalesEvidence);
       // Temu/1688 规格选项常是纯文本元素（无价格/库存/SKU 属性且无 selectable 标志），
       // 若容器带规格标签且存在 ≥2 个短规格值，按可选项保留，避免只采到默认单规格。
+      // 1688 部分页面规格区没有显式标签文本（如「颜色」只渲染在图标里），此时
+      // 只要容器类名带 sku/spec/option 等规格痕迹也按可选项保留。
+      const hasSkuClassHint = /sku|spec|prop|option|selector|variant/i.test(
+        text(`${container.className || ""} ${container.getAttribute?.("data-spm") || ""} ${container.getAttribute?.("data-testid") || ""}`)
+      );
       const bareTextGroup = (platform === "temu" || platform === "1688" || /1688|alibaba/i.test(host))
         && values.length >= 2
-        && Boolean(sourceName)
+        && (Boolean(sourceName) || hasSkuClassHint)
         && values.every((item) => text(item.value).length <= 40);
       if (bareTextGroup && !hasSalesOptionEvidence) {
-        values = values.map((item) => ({ ...item, selectable: true }));
+        values = values.map((item) => ({ ...item, selectable: true, source_name: sourceName || "规格" }));
         hasSalesOptionEvidence = true;
       }
       if (!hasSalesOptionEvidence) continue;
@@ -12320,11 +12759,90 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       const groupKey = name;
       if (seenGroupKeys.has(groupKey)) continue;
       seenGroupKeys.add(groupKey);
-      groups.push({ name, source_name: sourceName || name, values: deduped.slice(0, 30) });
-      if (groups.length >= 3) break;
+      groups.push({ name, source_name: sourceName || name, values: deduped.slice(0, 50) });
+      if (groups.length >= 4) break;
     }
     return groups;
   };
+
+  // 兜底：1688 新版详情页（od-* SPA）部分 SKU 区的容器类名不含 sku/prop/spec
+  // 等痕迹（如仅用 flex/od- 前缀），容器级提取会漏掉规格选项（表现为首采有规格、
+  // 换页/复采为 0）。这里直接页面级扫描“类名带 sku/sale-prop 的可选项”，按最近
+  // 带规格标签的祖先分组；标签缺失时归入“规格”组。
+  const pageWideSkuGroups = (() => {
+    if (platform !== "1688" && !/1688|alibaba/i.test(host)) return [];
+    const optionSelector = [
+      "button[class*='sku']",
+      "li[class*='sku']",
+      "[class*='sku-filter']",
+      "[class*='sku-select']",
+      "[class*='sku-option']",
+      "[class*='sku-item']",
+      "[class*='sale-prop']"
+    ].join(",");
+    const items = [];
+    const seenValues = new Set();
+    for (const element of Array.from(document.querySelectorAll(optionSelector))) {
+      if (!visible(element) || !isLeafVariantOptionElement(element)) continue;
+      const value = cleanSpecValue(element.innerText || element.textContent || element.getAttribute("title") || element.getAttribute("aria-label"));
+      if (!value || value.length < 1 || value.length > 40 || badSpecValueRe.test(value)) continue;
+      if (seenValues.has(value)) continue;
+      seenValues.add(value);
+      const tagName = String(element.tagName || "").toUpperCase();
+      const classText = `${element.className || ""} ${element.getAttribute("aria-selected") || ""} ${element.getAttribute("aria-checked") || ""}`;
+      const selected = /selected|active|current|checked|true/i.test(classText);
+      const price = element.getAttribute("data-price") || element.getAttribute("data-sale-price") || element.getAttribute("data-sku-price") || "";
+      const stock = element.getAttribute("data-stock") || element.getAttribute("data-inventory") || "";
+      const sku = element.getAttribute("data-sku-id") || element.getAttribute("data-skuid") || element.getAttribute("data-sku") || "";
+      let label = "";
+      let strongSkuHint = false;
+      let ancestor = element.parentElement;
+      for (let depth = 0; ancestor && depth < 5; depth += 1, ancestor = ancestor.parentElement) {
+        const ancestorClass = `${ancestor.className || ""}`;
+        strongSkuHint = strongSkuHint || /sku-filter|sku-select|sale-prop|sku-option|selector|variant/i.test(ancestorClass);
+        const ancestorText = text(ancestor.innerText || ancestor.textContent || "").slice(0, 120);
+        const labelMatch = ancestorText.match(/^(颜色|规格|款式|型号|容量|尺寸|尺码|数量|包装|套装|Color|Size|Style|Capacity|Pack)\s*[:：]?\s*(.*)$/i);
+        if (labelMatch) {
+          label = labelMatch[1];
+          break;
+        }
+        const directChildLabel = Array.from(ancestor.children)
+          .map((child) => text(child.innerText || child.textContent || ""))
+          .find((childText) => /^(颜色|规格|款式|型号|容量|尺寸|尺码|数量|包装|套装|Color|Size|Style|Capacity|Pack)[:：]?$/i.test(childText));
+        if (directChildLabel) {
+          label = directChildLabel.replace(/[:：]/g, "");
+          break;
+        }
+      }
+      // 只接受“明确是 SKU 选项”的元素：按钮标签、或能找到规格标签、或祖先带
+      // 强 SKU 痕迹类名；避免把推荐位/商品卡片等类名带 sku 的元素误当规格值。
+      if (!label && !strongSkuHint && tagName !== "BUTTON") continue;
+      items.push({
+        source_name: label,
+        value,
+        image_url: variantOptionImageUrl(element),
+        price,
+        stock,
+        sku,
+        source_sku_id: sku,
+        selected,
+        selectable: true
+      });
+    }
+    const grouped = new Map();
+    for (const item of items) {
+      const name = normalizeGroupName(item.source_name || "规格", item.value);
+      const list = grouped.get(name) || [];
+      list.push(item);
+      grouped.set(name, list);
+    }
+    const output = [];
+    for (const [name, values] of grouped) {
+      if (values.length < 2) continue;
+      output.push({ name, source_name: name, values: values.slice(0, 50) });
+    }
+    return output;
+  })();
 
   const compactImageKey = imageEvidenceKey;
   const moneyValue = (value) => {
@@ -12343,14 +12861,19 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     }
     return "";
   };
-  const imageFromObject = (object) => {
+  const imageFromObject = (object, seen = null) => {
+    if (!object || typeof object !== "object") return "";
+    // Temu 等页面的全局 JS 数据普遍存在循环引用（self/parent 自引用），
+    // 必须带环检测，否则 Object.values 递归会无限自调用导致栈溢出。
+    const visited = seen || new WeakSet();
+    if (visited.has(object)) return "";
+    visited.add(object);
     const direct = firstObjectValue(object, ["image_url", "imageUrl", "img", "imgUrl", "picUrl", "skuImageUrl", "skuPicUrl", "thumbUrl", "originalImage", "originImage", "url"]);
     if (direct && /\.(jpg|jpeg|png|webp)(?:[?#].*)?$/i.test(String(direct))) return normalizeImageUrl(direct);
-    if (!object || typeof object !== "object") return "";
     for (const value of Object.values(object)) {
       if (typeof value === "string" && /\.(jpg|jpeg|png|webp)(?:[?#].*)?$/i.test(value)) return normalizeImageUrl(value);
       if (value && typeof value === "object" && !Array.isArray(value)) {
-        const nested = imageFromObject(value);
+        const nested = imageFromObject(value, visited);
         if (nested) return nested;
       }
     }
@@ -12544,7 +13067,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     // 1688 新版详情页（od-* SPA）的 SKU/价格接口可能不在 URL 过滤规则内，
     // 额外把探针捕获的全部 JSON 响应纳入扫描，由 walkObjects 自行识别规格结构。
     try {
-      const allRecords = probe?.getAllJsonCaptures?.(80) || [];
+      const allRecords = probe?.getAllJsonCaptures?.(200) || [];
       allRecords.forEach((record) => {
         if (record?.responseJson) sources.push({ source: `network-all:${record.endpoint || record.url || ""}`, value: record.responseJson });
       });
@@ -12578,6 +13101,30 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         if (value && typeof value === "object") sources.push({ source: `window:${key}`, value });
       } catch (_error) {}
     }
+    // 动态发现 window 上其它承载商品/规格数据的键（不依赖固定变量名），
+    // 覆盖 1688 等平台随版本变化的全局挂载点；walkObjects 有循环/深度/节点上限保护。
+    try {
+      const fixed = new Set(windowKeys);
+      const dynamicKeys = Object.keys(window)
+        .filter((key) => key.length <= 60 && !fixed.has(key) && /sku|offer|goods|detail|product|init|page|global|data|state/i.test(key))
+        .slice(0, 80);
+      for (const key of dynamicKeys) {
+        try {
+          const value = window[key];
+          if (value && typeof value === "object") sources.push({ source: `window-dynamic:${key}`, value });
+        } catch (_error) {}
+      }
+    } catch (_error) {}
+    // 复用上次成功提取的 SKU JSON 数据源：1688 JSONP 响应在探针捕获缓冲滑窗
+    // 中可能已被挤出（缓冲上限 200 条），首次采集成功后缓存该 JSON，同页再次
+    // 采集即使网络/全局数据丢失也能重新推导完整规格与组合。
+    try {
+      const cachedSku = window.__workbenchSkuJsonCache;
+      if (cachedSku && typeof cachedSku === "string" && cachedSku.length > 0 && cachedSku.length <= 8 * 1024 * 1024) {
+        const value = JSON.parse(cachedSku);
+        if (value && typeof value === "object") sources.push({ source: "cached-sku", value });
+      }
+    } catch (_error) {}
     document.querySelectorAll("script[type='application/json'], script").forEach((script, index) => {
       const raw = script.textContent || "";
       if (!/(sku|offer|price|stock|inventory|spec|prop)/i.test(raw) || raw.length > 8000000) return;
@@ -12789,7 +13336,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     for (const prop of skuProps) {
       if (!prop || typeof prop !== "object") continue;
       const sourceName = text(firstObjectValue(prop, ["name", "title", "label", "prop", "propName", "propertyName", "specName", "optionName", "salePropName", "attrName"]));
-      const values = firstObjectValue(prop, ["values", "value", "children", "items", "props", "propertyValues", "propValues", "valueList", "specValueList", "optionList", "specValues", "valueItems", "saleValueList"]);
+      const values = firstObjectValue(prop, ["values", "value", "children", "items", "props", "options", "propertyValues", "propValues", "valueList", "specValueList", "optionList", "specValues", "valueItems", "saleValueList"]);
       const groupValues = [];
       const list = Array.isArray(values) ? values : [];
       for (const item of list) {
@@ -12850,16 +13397,23 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       pairs.push(mapped);
     };
     const scanIds = (value) => {
-      if (Array.isArray(value)) {
-        value.forEach(scanIds);
-        return;
-      }
-      if (value && typeof value === "object") {
-        Object.values(value).forEach(scanIds);
-        return;
-      }
-      const raw = text(value);
-      [raw, ...raw.split(/[^A-Za-z0-9_\u4e00-\u9fff]+/).filter(Boolean)].filter(Boolean).forEach(addMapped);
+      // Temu 全局对象可能带循环引用，必须用 WeakSet 防环，避免无限递归。
+      const visited = new WeakSet();
+      const scan = (current) => {
+        if (Array.isArray(current)) {
+          current.forEach(scan);
+          return;
+        }
+        if (current && typeof current === "object") {
+          if (visited.has(current)) return;
+          visited.add(current);
+          Object.values(current).forEach(scan);
+          return;
+        }
+        const raw = text(current);
+        [raw, ...raw.split(/[^A-Za-z0-9_\u4e00-\u9fff]+/).filter(Boolean)].filter(Boolean).forEach(addMapped);
+      };
+      scan(value);
     };
     [
       object?.skuAttr,
@@ -12884,13 +13438,17 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     const groups = [];
     const combos = [];
     const sources = jsonSourcesFromPage();
+    const contributingSources = new Set();
     for (const source of sources) {
       walkObjects(source.value, (object, path) => {
         if (!object || typeof object !== "object" || Array.isArray(object)) return;
         const skuProps = object.skuProps || object.sku_props || object.saleProps || object.salePropList || object.props || object.specList || object.specs || object.saleSpecs || object.optionList || object.saleOptions || object.saleAttrs || object.saleAttr || object.skuAttrs || object.skuAttrList;
         const mapSource = object.skuInfoMap || object.skuMap || object.skuInfo || object.skuInfos || object.skuList || object.skus || object.skuItems || object.sku_records || object.skuRecords || object.skuRecordList || object.sku_record_list || object.skuInfoList || object.goodsSkuList || object.goodsSkus || object.skuStockList || object.skuSpecs || object.skuSpec || object.saleSkuList;
         const propData = propValueMapFromSkuProps(skuProps);
-        if (propData.groups.length) groups.push(...propData.groups.map((group) => ({ ...group, source: source.source })));
+        if (propData.groups.length) {
+          contributingSources.add(source.source);
+          groups.push(...propData.groups.map((group) => ({ ...group, source: source.source })));
+        }
         if (mapSource && typeof mapSource === "object") {
           const entries = Array.isArray(mapSource) ? mapSource.map((item, index) => [String(index), item]) : Object.entries(mapSource);
           for (const [key, item] of entries) {
@@ -12909,6 +13467,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
             const stock = stockFromObject(item);
             const imageUrl = imageFromObject(item) || imageForSkuObject(item, attributes, propData.map) || "";
             if (!sourceSkuId && !variantIdentityPath(pathFields) && !price && !stock && !imageUrl) continue;
+            contributingSources.add(source.source);
             combos.push({
               attributes,
               price,
@@ -12936,6 +13495,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
           skuRecordContext && (price || stock || imageUrl)
         );
         if (hasVariantSignal) {
+          contributingSources.add(source.source);
           combos.push({
             attributes: genericAttrs,
             price,
@@ -12950,6 +13510,18 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         }
       });
     }
+    // 把贡献了规格/组合数据的 JSON 源缓存到页面，供同页后续采集复用
+    // （探针捕获缓冲有上限，滑窗会挤掉早期 1688 JSONP 的 SKU 响应）。
+    if (contributingSources.size) {
+      try {
+        const preferred = sources.find((source) => contributingSources.has(source.source)
+          && /sku|offer|detail|goods|product|mtop|h5api|laputa/i.test(source.source));
+        const best = preferred || sources.find((source) => contributingSources.has(source.source));
+        if (best && best.value && typeof best.value === "object") {
+          window.__workbenchSkuJsonCache = JSON.stringify(best.value);
+        }
+      } catch (_error) {}
+    }
     return { groups, combos };
   };
   const dedupeGroups = (groups) => {
@@ -12961,7 +13533,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       const groupKey = `${text(sourceName || name).toLowerCase()}|${name}`;
       let target = indexedGroups.get(groupKey);
       if (!target) {
-        if (output.length >= 3) continue;
+        if (output.length >= 4) continue;
         target = { name, source_name: group.source_name || group.name || name, values: [], valueIndex: new Map() };
         indexedGroups.set(groupKey, target);
         output.push(target);
@@ -13005,7 +13577,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     }
     const finalGroups = output
       .filter((group) => group.values.length)
-      .map((group) => ({ name: group.name, source_name: group.source_name, values: group.values.slice(0, 30) }));
+      .map((group) => ({ name: group.name, source_name: group.source_name, values: group.values.slice(0, 50) }));
     return finalGroups.filter((group, index, list) => {
       if (group.name !== "Color" || group.values.length !== 1) return true;
       const colorValue = cleanSpecValue(group.values[0].value).toLowerCase();
@@ -13137,7 +13709,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         output[index] = merged;
         continue;
       }
-      if (output.length >= 60) continue;
+      if (output.length >= 200) continue;
       indexedCombos.set(key, output.length);
       output.push(normalized);
     }
@@ -13158,7 +13730,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     );
     const candidateGroups = (groups || [])
       .filter((group) => (group.values || []).some(variantOptionHasSalesEvidence))
-      .slice(0, 3);
+      .slice(0, 4);
     if (!candidateGroups.length) return [];
     if (candidateGroups.length === 1) {
       const group = candidateGroups[0];
@@ -13188,7 +13760,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       .map((item) => ({ group, item })));
     const combos = [];
     for (const combination of cartesianProduct(valueLists)) {
-      if (combos.length >= 80) break;
+      if (combos.length >= 200) break;
       const attributes = {};
       for (const entry of combination) {
         attributes[entry.group.source_name || entry.group.name] = entry.item.value;
@@ -13211,14 +13783,54 @@ function extractProductFromCurrentPage(expectedProductId = "") {
   };
   const jsonVariantData = extractJsonVariantData();
   const sourceAttributeData = extractSourceAttributeData();
-  const variantGroups = extractVariantGroups();
-  const rawVariantGroups = filterParameterNoiseGroups([...jsonVariantData.groups, ...variantGroups], jsonVariantData.combos);
-  const mergedVariantGroups = dedupeGroups(rawVariantGroups);
+  const variantGroups = [...extractVariantGroups(), ...pageWideSkuGroups];
+  let rawVariantGroups = filterParameterNoiseGroups([...jsonVariantData.groups, ...variantGroups], jsonVariantData.combos);
+  let mergedVariantGroups = dedupeGroups(rawVariantGroups);
   const rawVariantCombinationFragments = [
     ...jsonVariantData.combos,
     ...buildCombosFromGroups(mergedVariantGroups)
   ];
-  const variantCombinations = dedupeCombos(rawVariantCombinationFragments);
+  let variantCombinations = dedupeCombos(rawVariantCombinationFragments);
+  // 首次采集成功后把结果缓存到页面 window：1688 等 SPA 的 SKU 数据由 JSONP 在
+  // 页面加载早期返回，探针捕获缓冲（200 条滑窗）会被后续请求挤出，导致同页第二次
+  // 采集 JSON 路径失效；此时回退到上次成功结果，保证重复采集结果稳定。
+  const SKU_RESULT_CACHE_KEY = "__workbenchSkuResultCache";
+  const skuCacheKey = pageProductId || canonicalProductLink(location.href, "") || location.href;
+  let skuCache = {};
+  try {
+    const cachedRaw = window[SKU_RESULT_CACHE_KEY];
+    skuCache = cachedRaw && typeof cachedRaw === "object" ? cachedRaw : {};
+  } catch (_error) {}
+  const cachedSkuResult = (skuCache && skuCache[skuCacheKey]) || null;
+  if (variantCombinations.length || mergedVariantGroups.length) {
+    // 本次结果若明显比缓存差（如 JSON 缓冲被挤出，只剩无价格/货号/规格图的
+    // DOM 规格），保留并复用上次更完整的缓存结果，避免富数据被劣质结果覆盖。
+    const cachedEvidence = cachedSkuResult
+      ? (cachedSkuResult.combos || []).filter(comboHasSalesEvidence).length
+      : 0;
+    const currentEvidence = variantCombinations.filter(comboHasSalesEvidence).length;
+    if (cachedSkuResult && cachedEvidence > currentEvidence) {
+      variantCombinations = cachedSkuResult.combos || [];
+      mergedVariantGroups = cachedSkuResult.groups || [];
+      rawVariantGroups = cachedSkuResult.rawGroups || [];
+    } else {
+      try {
+        const entries = Object.entries(skuCache || {}).slice(-4);
+        entries.push([skuCacheKey, {
+          groups: mergedVariantGroups,
+          combos: variantCombinations,
+          rawGroups: rawVariantGroups,
+          ts: Date.now()
+        }]);
+        window[SKU_RESULT_CACHE_KEY] = Object.fromEntries(entries);
+      } catch (_error) {}
+    }
+  } else if (cachedSkuResult) {
+    // 本次空提取：复用上次成功结果（同页第二次采集、缓冲被挤出等场景）。
+    variantCombinations = cachedSkuResult.combos || [];
+    mergedVariantGroups = cachedSkuResult.groups || [];
+    rawVariantGroups = cachedSkuResult.rawGroups || [];
+  }
   const rawVariantCombinations = variantCombinations;
   const selectedAttributes = selectedAttributesFromGroups(mergedVariantGroups);
   const title = titleCandidates[0]?.value || "";
