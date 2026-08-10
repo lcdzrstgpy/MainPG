@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { listProductSources, loadProductImage, updateProductSourceGroup } from "../api/profitActivityApi";
 import type { ProfitActivityProduct, ProductSourceLink, ProductSources } from "../types/products";
@@ -9,6 +9,16 @@ type Props = {
   product: ProfitActivityProduct | null;
   onClose: () => void;
   onChanged?: () => void;
+};
+
+/** 非核价产品货源编辑态的一行：一条货源链接 + 可选的替换截图 */
+type EditSourceRow = {
+  key: number;
+  /** 原始货源组号，保存时据此判断链接/图片是否变化 */
+  originalGroup: number;
+  url: string;
+  image: File | null;
+  imagePreview: string;
 };
 
 const siteLabel = (site?: string) => {
@@ -119,12 +129,11 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   const [profitBusy, setProfitBusy] = useState<number | null>(null);
   const [unlinkBusy, setUnlinkBusy] = useState<number | null>(null);
   const [unlinkError, setUnlinkError] = useState("");
-  // 非核价产品货源卡片的编辑态：修改链接与截图
-  const [editGroup, setEditGroup] = useState<number | null>(null);
-  const [editUrl, setEditUrl] = useState("");
-  const [editImage, setEditImage] = useState<File | null>(null);
-  const [editImagePreview, setEditImagePreview] = useState("");
+  // 非核价产品货源卡片的编辑态：可新增/删除多条货源链接与截图
+  const [editingSources, setEditingSources] = useState(false);
+  const [editRows, setEditRows] = useState<EditSourceRow[]>([]);
   const [savingSource, setSavingSource] = useState(false);
+  const nextEditRowKeyRef = useRef(0);
 
   const open = product !== null;
 
@@ -167,10 +176,8 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
       setPrices({});
       setWeights({});
       setUnlinkError("");
-      setEditGroup(null);
-      setEditUrl("");
-      setEditImage(null);
-      setEditImagePreview("");
+      setEditingSources(false);
+      setEditRows([]);
       setSavingSource(false);
     }
   }, [open, refresh]);
@@ -225,42 +232,91 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     }
   };
 
-  // 非核价产品：进入“修改链接/截图”编辑态
-  const startEditSource = (link: ProductSourceLink) => {
-    setEditGroup(link.group ?? 0);
-    setEditUrl(link.source_url || "");
-    setEditImage(null);
-    setEditImagePreview("");
+  // 非核价产品：进入“修改货源链接”编辑态，载入全部货源组
+  const startEditSources = () => {
+    const groups = product.source_groups ?? [];
+    const rows: EditSourceRow[] = groups.length
+      ? groups.map((group, index) => ({
+          key: index,
+          originalGroup: index,
+          url: group?.source_url ?? "",
+          image: null,
+          imagePreview: "",
+        }))
+      : [{ key: 0, originalGroup: 0, url: "", image: null, imagePreview: "" }];
+    nextEditRowKeyRef.current = rows.length;
+    setEditRows(rows);
+    setEditingSources(true);
     setUnlinkError("");
   };
 
-  const cancelEditSource = () => {
-    setEditGroup(null);
-    setEditUrl("");
-    setEditImage(null);
-    setEditImagePreview("");
+  const cancelEditSources = () => {
+    for (const row of editRows) {
+      if (row.imagePreview) URL.revokeObjectURL(row.imagePreview);
+    }
+    setEditingSources(false);
+    setEditRows([]);
   };
 
-  const onEditImageSelected = (file: File | undefined) => {
+  const addEditRow = () => {
+    setEditRows((current) => [
+      ...current,
+      { key: nextEditRowKeyRef.current++, originalGroup: current.length, url: "", image: null, imagePreview: "" },
+    ]);
+  };
+
+  const removeEditRow = (key: number) => {
+    setEditRows((current) => {
+      if (current.length <= 1) return current;
+      const target = current.find((row) => row.key === key);
+      if (target?.imagePreview) URL.revokeObjectURL(target.imagePreview);
+      return current.filter((row) => row.key !== key);
+    });
+  };
+
+  const changeEditRowUrl = (key: number, url: string) => {
+    setEditRows((current) => current.map((row) => (row.key === key ? { ...row, url } : row)));
+  };
+
+  const onEditRowImageSelected = (key: number, file: File | undefined) => {
     if (!file) return;
-    if (editImagePreview) URL.revokeObjectURL(editImagePreview);
-    setEditImage(file);
-    setEditImagePreview(URL.createObjectURL(file));
+    setEditRows((current) => current.map((row) => {
+      if (row.key !== key) return row;
+      if (row.imagePreview) URL.revokeObjectURL(row.imagePreview);
+      return { ...row, image: file, imagePreview: URL.createObjectURL(file) };
+    }));
   };
 
-  const saveEditSource = async () => {
-    if (savingSource || editGroup === null) return;
+  const saveEditSources = async () => {
+    if (savingSource || !editingSources) return;
+    const filled = editRows.filter((row) => row.url.trim().length > 0);
+    if (!filled.length) {
+      setUnlinkError("请至少保留一个货源链接再保存。");
+      return;
+    }
     setSavingSource(true);
     setUnlinkError("");
     try {
-      const group = editGroup;
-      // 基于当前产品货源组构造新组，仅替换目标组的链接与图片，其余组原样保留
-      const groups = [...(product.source_groups ?? [])];
-      while (groups.length <= group) groups.push({ source_url: "", image_paths: [] });
-      groups[group] = { ...groups[group], source_url: editUrl.trim() };
+      // 重建货源组：仅保留有链接的组，组号紧凑重排；链接未变且未换图时保留原截图
+      const originals = product.source_groups ?? [];
+      const groups: Array<{ source_url: string; image_paths: string[]; cost?: number | null }> = [];
+      const groupImages: Record<number, File> = {};
+      filled.forEach((row, index) => {
+        const original = originals[row.originalGroup];
+        const urlUnchanged = original && (original.source_url ?? "").trim() === row.url.trim();
+        groups.push({
+          source_url: row.url.trim(),
+          image_paths: urlUnchanged && !row.image ? [...(original.image_paths ?? [])] : [],
+          cost: original?.cost ?? null,
+        });
+        if (row.image) groupImages[index] = row.image;
+      });
       const site = (product.site || product.site_code || "US") as "US" | "CO" | "EC";
-      await updateProductSourceGroup({ site, skc: product.skc, group, sourceGroups: groups, image: editImage });
-      cancelEditSource();
+      await updateProductSourceGroup({ site, skc: product.skc, group: 0, sourceGroups: groups, groupImages });
+      for (const row of editRows) {
+        if (row.imagePreview) URL.revokeObjectURL(row.imagePreview);
+      }
+      cancelEditSources();
       await refresh();
       onChanged?.();
     } catch (err) {
@@ -293,15 +349,21 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
         <div className="profit-source-drawer-body">
           {loading ? <p className="profit-source-drawer-status">加载货源明细中…</p> : null}
           {!loading && error ? <p className="profit-source-drawer-status is-error">{error}</p> : null}
-          {!loading && !error && (sources?.links.length ?? 0) === 0 ? (
-            <p className="profit-source-drawer-status">该 SKC 暂无已关联的 1688 货源。</p>
+          {!loading && !error && !editingSources && (sources?.links.length ?? 0) === 0 ? (
+            isPriceVerification ? (
+              <p className="profit-source-drawer-status">该 SKC 暂无已关联的 1688 货源。</p>
+            ) : (
+              <div className="profit-source-drawer-empty">
+                <p className="profit-source-drawer-status">该 SKC 暂无货源链接，点击下方按钮新增。</p>
+                <button className="profit-source-add-row" onClick={startEditSources}>新增货源链接</button>
+              </div>
+            )
           ) : null}
 
-          {(sources?.links ?? []).map((link) => {
+          {!isPriceVerification && editingSources ? null : (sources?.links ?? []).map((link) => {
             const profit = profits[link.id] ?? null;
             const priceText = prices[link.id] !== undefined ? prices[link.id] : String(link.price_cny ?? "");
             const weightText = weights[link.id] ?? "0.5";
-            const isEditing = editGroup === (link.group ?? 0);
             return (
               <div className={`profit-source-card ${isPriceVerification ? "" : "profit-source-card-simple"}`} key={link.id}>
                 <div className="profit-source-card-row">
@@ -331,53 +393,6 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                         {unlinkBusy === link.id ? "解除中…" : "解除关联"}
                       </button>
                     </>
-                  ) : isEditing ? (
-                    <>
-                      <div className="profit-source-edit-main">
-                        <div className="profit-source-edit-image">
-                          {editImagePreview ? (
-                            <img className="profit-source-card-shot" src={editImagePreview} alt="新货源截图" />
-                          ) : (
-                            <SourceCardImage
-                              skc={product.skc}
-                              site={sources?.site || product.site || product.site_code || "US"}
-                              group={link.group}
-                              imagePaths={link.image_paths ?? []}
-                              fallbackUrl={link.main_image_url}
-                            />
-                          )}
-                          <label className="profit-source-edit-image-button">
-                            {editImagePreview ? "重新选择" : "替换图片"}
-                            <input
-                              type="file"
-                              accept="image/*"
-                              hidden
-                              onChange={(event) => {
-                                onEditImageSelected(event.target.files?.[0]);
-                                event.target.value = "";
-                              }}
-                            />
-                          </label>
-                        </div>
-                        <label className="profit-source-edit-url">
-                          <span>链接地址</span>
-                          <input
-                            type="url"
-                            placeholder="https://…"
-                            value={editUrl}
-                            onChange={(event) => setEditUrl(event.target.value)}
-                          />
-                        </label>
-                      </div>
-                      <div className="profit-source-edit-actions">
-                        <button className="profit-edit-save" onClick={() => void saveEditSource()} disabled={savingSource}>
-                          {savingSource ? "保存中…" : "保存"}
-                        </button>
-                        <button className="profit-edit-cancel" onClick={cancelEditSource} disabled={savingSource}>
-                          撤销
-                        </button>
-                      </div>
-                    </>
                   ) : (
                     <>
                       <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
@@ -393,7 +408,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                           <small className="profit-source-card-meta profit-source-card-url" title={link.source_url}>{link.source_url || "—"}</small>
                         </span>
                       </a>
-                      <button className="profit-source-edit-button" onClick={() => startEditSource(link)}>
+                      <button className="profit-source-edit-button" onClick={startEditSources}>
                         修改
                       </button>
                     </>
@@ -434,6 +449,74 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
               </div>
             );
           })}
+          {!isPriceVerification && editingSources ? (
+            <div className="profit-source-edit-panel">
+              <div className="profit-source-edit-rows">
+                {editRows.map((row, index) => {
+                  const original = (product.source_groups ?? [])[row.originalGroup];
+                  return (
+                    <div className="profit-source-edit-row" key={row.key}>
+                      <div className="profit-source-edit-main">
+                        <div className="profit-source-edit-image">
+                          {row.imagePreview ? (
+                            <img className="profit-source-card-shot" src={row.imagePreview} alt="新货源截图" />
+                          ) : (
+                            <SourceCardImage
+                              skc={product.skc}
+                              site={sources?.site || product.site || product.site_code || "US"}
+                              group={row.originalGroup}
+                              imagePaths={original?.image_paths ?? []}
+                              fallbackUrl=""
+                            />
+                          )}
+                          <label className="profit-source-edit-image-button">
+                            {row.imagePreview ? "重新选择" : "选择图片"}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              hidden
+                              onChange={(event) => {
+                                onEditRowImageSelected(row.key, event.target.files?.[0]);
+                                event.target.value = "";
+                              }}
+                            />
+                          </label>
+                        </div>
+                        <label className="profit-source-edit-url">
+                          <span>货源链接 {index + 1}</span>
+                          <input
+                            type="url"
+                            placeholder="https://…"
+                            value={row.url}
+                            onChange={(event) => changeEditRowUrl(row.key, event.target.value)}
+                          />
+                        </label>
+                      </div>
+                      <button
+                        className="profit-source-remove-row"
+                        onClick={() => removeEditRow(row.key)}
+                        disabled={editRows.length <= 1}
+                        title={editRows.length <= 1 ? "至少保留一个货源链接" : "删除该货源链接"}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="profit-source-edit-toolbar">
+                <button className="profit-source-add-row" onClick={addEditRow}>新增链接</button>
+                <span className="profit-source-edit-toolbar-actions">
+                  <button className="profit-edit-save" onClick={() => void saveEditSources()} disabled={savingSource}>
+                    {savingSource ? "保存中…" : "保存"}
+                  </button>
+                  <button className="profit-edit-cancel" onClick={cancelEditSources} disabled={savingSource}>
+                    撤销
+                  </button>
+                </span>
+              </div>
+            </div>
+          ) : null}
           {unlinkError ? <p className="profit-source-drawer-status is-error">{unlinkError}</p> : null}
         </div>
       </aside>

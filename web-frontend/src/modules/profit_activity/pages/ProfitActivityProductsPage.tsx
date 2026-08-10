@@ -565,7 +565,7 @@ export function ProfitActivityProductsPage() {
                     <td className={(item.net_profit ?? 0) >= 0 ? "profit-good" : "profit-bad"}>{money(item.net_profit)}</td>
                     <td>{percent(item.profit_rate)}</td>
                     <td><EditableCell type="text" className="profit-note-input" value={item.note ?? ""} onSave={(value) => saveProductField(item, "note", value)} /></td>
-                    <td>{item.source_url ? <button className="profit-source-open" onClick={() => setActiveProduct(item)} title="查看该 SKC 已关联的 1688 货源">打开（{(item.source_groups ?? []).filter((group) => group?.source_url).length}）</button> : "-"}</td>
+                    <td><button className="profit-source-open" onClick={() => setActiveProduct(item)} title="查看/编辑该 SKC 的货源链接">打开（{(item.source_groups ?? []).filter((group) => group?.source_url).length}）</button></td>
                     <td><SourceImagesCell item={item} onPreview={(url) => setPreviewImage({ url, label: `${item.skc} 货源图` })} /></td>
                   </tr>
                 );

@@ -536,6 +536,101 @@
   font-size: 0.8rem;
 }
 
+/* 非核价产品多货源链接编辑面板：新增/删除链接（至少保留一条） */
+.profit-source-drawer-empty {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.profit-source-edit-panel {
+  border: 1px solid #dce9f2;
+  border-radius: 14px;
+  padding: 12px;
+  background: #f6fafd;
+  display: grid;
+  gap: 10px;
+}
+
+.profit-source-edit-rows {
+  display: grid;
+  gap: 10px;
+}
+
+.profit-source-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #e4eef5;
+  border-radius: 12px;
+  padding: 10px;
+  background: #fff;
+}
+
+.profit-source-edit-row .profit-source-edit-main {
+  flex: 1;
+}
+
+.profit-source-remove-row {
+  flex: none;
+  align-self: center;
+  border: 1px solid #f2c9cd;
+  border-radius: 9px;
+  padding: 7px 12px;
+  color: #e24a57;
+  background: #fff7f8;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-remove-row:hover:not(:disabled) {
+  border-color: #ef9aa3;
+  background: #ffecee;
+}
+
+.profit-source-remove-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.profit-source-edit-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.profit-source-add-row {
+  border: 1px dashed #9fc8e8;
+  border-radius: 9px;
+  padding: 8px 14px;
+  color: #0a8cf2;
+  background: #fff;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-add-row:hover {
+  border-color: #0a8cf2;
+  background: #f2faff;
+}
+
+.profit-source-edit-toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-save,
+.profit-source-edit-toolbar-actions .profit-edit-cancel {
+  border-radius: 9px;
+  padding: 7px 14px;
+  font-size: 0.8rem;
+}
+
 /* 导入货源链接的货源组截图（截图1/2/3）与成本 */
 .profit-source-card-gallery {
   display: flex;
