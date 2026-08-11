@@ -230,10 +230,11 @@ class ProfitActivityService:
 
     def delete_product(self, skc: str, site: SiteCode, actor: Any | None = None, *, allow_company_delete: bool = False) -> dict[str, Any]:
         context = _actor_context(actor)
-        current = self._repository.find_product(skc, site, context.workspace_id)
+        # 核价及货源自动入库的产品属于公司级产品库（跨工作区可见），删除时同样按该语义定位。
+        current = self._repository.find_product(skc, site, context.workspace_id, include_price_verification=True)
         if current is not None and current.created_by != context.actor_id and not (allow_company_delete or context.is_admin):
             raise ProfitActivityConflict("profit_activity_company_delete_required")
-        return {"status": "deleted" if self._repository.delete_product(skc, site, context.workspace_id) else "not_found", "skc": skc, "site": site}
+        return {"status": "deleted" if self._repository.delete_product(skc, site, context.workspace_id, include_price_verification=True) else "not_found", "skc": skc, "site": site}
 
     def preview_import(self, workbook: bytes, original_filename: str, site: SiteCode, actor: Any | None = None) -> dict[str, Any]:
         context = _actor_context(actor)

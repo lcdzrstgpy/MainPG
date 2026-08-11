@@ -112,13 +112,15 @@ class ProfitActivityRepository:
         with self._sessions() as session:
             return {(str(site), str(skc)) for site, skc in session.execute(select(ProfitRecordRow.site_code, ProfitRecordRow.skc).where(ProfitRecordRow.workspace_id == workspace_id))}
 
-    def find_product(self, skc: str, site: SiteCode, workspace_id: str = "default") -> ProfitRecordRow | None:
+    def find_product(self, skc: str, site: SiteCode, workspace_id: str = "default", *, include_price_verification: bool = False) -> ProfitRecordRow | None:
         with self._sessions() as session:
-            return session.scalar(select(ProfitRecordRow).where(ProfitRecordRow.workspace_id == workspace_id, ProfitRecordRow.site_code == site, ProfitRecordRow.skc == skc))
+            scope = (ProfitRecordRow.source_type == "price_verification") | (ProfitRecordRow.workspace_id == workspace_id) if include_price_verification else (ProfitRecordRow.workspace_id == workspace_id)
+            return session.scalar(select(ProfitRecordRow).where(scope, ProfitRecordRow.site_code == site, ProfitRecordRow.skc == skc))
 
-    def delete_product(self, skc: str, site: SiteCode, workspace_id: str = "default") -> bool:
+    def delete_product(self, skc: str, site: SiteCode, workspace_id: str = "default", *, include_price_verification: bool = False) -> bool:
         with self._sessions.begin() as session:
-            row = session.scalar(select(ProfitRecordRow).where(ProfitRecordRow.workspace_id == workspace_id, ProfitRecordRow.site_code == site, ProfitRecordRow.skc == skc))
+            scope = (ProfitRecordRow.source_type == "price_verification") | (ProfitRecordRow.workspace_id == workspace_id) if include_price_verification else (ProfitRecordRow.workspace_id == workspace_id)
+            row = session.scalar(select(ProfitRecordRow).where(scope, ProfitRecordRow.site_code == site, ProfitRecordRow.skc == skc))
             if row is None:
                 return False
             session.delete(row)

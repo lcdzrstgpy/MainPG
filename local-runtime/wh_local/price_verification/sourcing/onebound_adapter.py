@@ -12,9 +12,10 @@ from dataclasses import dataclass
 import re
 from typing import Any, Protocol
 
-from ..contracts import PriceVerificationActor, redact_sensitive
+from ..contracts import PriceVerificationActor, redact_sensitive, redact_sensitive_text
 from ..repository import PriceVerificationRepository
 from ...data_collection.criteria import DailySelectionCriteria
+from ...data_collection.contracts import DailySelectionError
 from .contracts import SourceSearchTask
 from .title_translation import to_search_keywords, translate_title_to_chinese
 
@@ -83,8 +84,10 @@ class OneBoundSourceAdapter:
 
         try:
             provider = self._provider_factory()
-        except Exception:
-            return _result_for_items([_failed_item(task, "provider request failed") for task in task_list])
+        except Exception as error:
+            return _result_for_items(
+                [_failed_item(task, _provider_error_message(error)) for task in task_list]
+            )
         items: list[dict[str, Any]] = []
         for task in task_list:
             item, _ = self._search_task(provider, task, keyword_search=keyword_search)
@@ -100,20 +103,24 @@ class OneBoundSourceAdapter:
             # channel; it carries the OB similarity score used for ranking.
             image_raw: list[Mapping[str, Any]] = []
             image_ok = False
+            image_error = ""
             try:
                 searched = provider.search_by_image(_ImageSearchCriteria(task.main_image_url))
                 evidence.extend(_redacted_audits(searched))
                 if _result_ok(searched):
                     image_ok = True
                     image_raw = _search_items(_response(searched))
-            except Exception:
-                pass  # opaque: provider exceptions may contain credentials
+                else:
+                    image_error = _provider_result_error(searched)
+            except Exception as error:
+                image_error = _provider_error_message(error)
 
             # Channel B (optional): translated-title keyword search.  Only runs
             # when the user opts in, because the Temu title is translated to
             # Chinese and hits carry no similarity score.
             keyword_raw: list[Mapping[str, Any]] = []
             keyword_ok = False
+            keyword_error = ""
             keywords = to_search_keywords(translate_title_to_chinese(task.product_title)) if keyword_search else ""
             # Only run the keyword channel when the title translated into
             # Chinese; a raw-English fallback would search 1688 with the wrong
@@ -131,15 +138,17 @@ class OneBoundSourceAdapter:
                     if _result_ok(keyword_hits):
                         keyword_ok = True
                         keyword_raw = _search_items(_response(keyword_hits))
-                except Exception:
-                    pass  # opaque: provider exceptions may contain credentials
+                    else:
+                        keyword_error = _provider_result_error(keyword_hits)
+                except Exception as error:
+                    keyword_error = _provider_error_message(error)
 
             merged = _merge_channels(image_raw, keyword_raw, max(int(task.max_candidates or 0), 1))
             if not merged:
                 # A successful search with no hits is a valid empty result; only
                 # fail when every channel errored out.
                 if not image_ok and not keyword_ok:
-                    return _failed_item(task, "provider request failed", evidence), len(evidence)
+                    return _failed_item(task, image_error or keyword_error or _GENERIC_PROVIDER_ERROR, evidence), len(evidence)
                 return {
                     "task_key": task.task_key,
                     "skc_id": task.skc_id,
@@ -173,10 +182,11 @@ class OneBoundSourceAdapter:
                 "candidates": candidates,
                 "evidence": evidence,
             }, len(evidence)
-        except Exception:
+        except Exception as error:
             # Provider exceptions are intentionally opaque: they can contain
-            # credentials or request URLs and must never cross this boundary.
-            return _failed_item(task, "provider request failed", evidence), len(evidence)
+            # credentials or request URLs.  Only the normalized safe diagnostic
+            # is allowed to cross this boundary.
+            return _failed_item(task, _provider_error_message(error), evidence), len(evidence)
 
 
 def _failed_item(
@@ -210,6 +220,56 @@ def _result_for_items(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 def _result_ok(result: object) -> bool:
     return result is not None and getattr(result, "error", None) is None
+
+
+_GENERIC_PROVIDER_ERROR = "OneBound 图搜请求失败，请稍后重试"
+
+
+def _provider_result_error(result: object) -> str:
+    """Return a safe diagnostic from a provider result without exposing secrets."""
+    error = getattr(result, "error", None)
+    return _provider_error_message(error) if error is not None else _GENERIC_PROVIDER_ERROR
+
+
+def _provider_error_message(error: object) -> str:
+    """Normalize expected local/OB failures into actionable, non-sensitive text."""
+    if isinstance(error, DailySelectionError):
+        return _message_for_provider_error(error.code, error.message)
+
+    # The provider configuration resolver raises FastAPI's HTTPException.  Its
+    # detail is deliberately built from CollectCredentialsError and therefore is
+    # the only exception text safe enough to inspect here.
+    detail = getattr(error, "detail", None)
+    if isinstance(detail, str) and detail.strip():
+        return _message_for_provider_error("credential", detail)
+
+    return _GENERIC_PROVIDER_ERROR
+
+
+def _message_for_provider_error(code: object, message: object) -> str:
+    normalized_code = _text(code).casefold()
+    safe_message = redact_sensitive_text(_text(message))[:300]
+    normalized_message = safe_message.casefold()
+
+    if "not registered" in normalized_message:
+        return "当前账号未开通 OneBound 图搜权限，请在服务端注册账号后重试"
+    if "credentials are not configured" in normalized_message:
+        return "服务端未配置 OneBound 图搜凭据"
+    if "cannot reach collect-key" in normalized_message:
+        return "无法连接图搜凭据服务，请检查本机网络或服务地址"
+    if "collect credential service" in normalized_message:
+        return "图搜凭据服务配置异常"
+    if normalized_code == "authentication_failed":
+        return "OneBound 图搜鉴权失败，请检查服务端凭据配置"
+    if normalized_code == "rate_limited":
+        return "OneBound 图搜请求过于频繁，请稍后重试"
+    if normalized_code == "quota_exhausted":
+        return "OneBound 图搜额度不足，请检查服务端账户余额"
+    if normalized_code == "invalid_request":
+        return safe_message or "商品主图无法用于图搜"
+    if normalized_code == "upstream_failed":
+        return safe_message or "OneBound 图搜服务暂不可用，请稍后重试"
+    return safe_message or _GENERIC_PROVIDER_ERROR
 
 
 def _response(result: object) -> Mapping[str, Any]:

@@ -73,7 +73,10 @@ def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
             base_url=config.customer_auth_base_url,
             account_id=actor.actor_id,
             username="",
-            workspace_code=actor.workspace_id,
+            # OneBound 图搜是平台公共能力，只按有效账号校验。
+            # 留空可避免本地 workspace_id 与服务端 workspace_code 表示不同
+            # 时把已注册的新用户误判为未注册。
+            workspace_code="",
         )
     except CollectCredentialsError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
@@ -168,9 +171,12 @@ def _register_frontend_shell(app: FastAPI) -> None:
     """Expose the built workbench at the same local origin as the plugin API."""
     frontend_dist = _frontend_dist_dir()
     assets = frontend_dist / "assets"
+    brand = frontend_dist / "brand"
     index = frontend_dist / "index.html"
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=assets), name="workbench-assets")
+    if brand.is_dir():
+        app.mount("/brand", StaticFiles(directory=brand), name="workbench-brand")
 
     @app.get("/", include_in_schema=False, response_class=HTMLResponse)
     def workbench_root():
