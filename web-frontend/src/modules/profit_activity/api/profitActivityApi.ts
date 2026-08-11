@@ -74,18 +74,23 @@ export async function loadProductImage({
   kind,
   group = 0,
   index = 0,
+  version,
 }: {
   skc: string;
   site: ProfitActivitySite;
   kind: ProductImageKind;
   group?: number;
   index?: number;
+  /** 图片路径变更时传入，避免同一接口地址命中浏览器旧缓存。 */
+  version?: string;
 }): Promise<string> {
   const { apiBase } = resolveEndpoint();
   const token = candidateTokens()[0];
   const query = new URLSearchParams({ site, kind, group: String(group), index: String(index) });
+  if (version) query.set("v", version);
   const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/image?${query}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
+    cache: "no-store",
   });
   if (!response.ok) throw new Error(await response.text());
   return URL.createObjectURL(await response.blob());
@@ -204,12 +209,21 @@ export async function updateProductSourceGroup({
       form.set(`source_group_image_${groupIndex}`, file);
     }
   }
+  // 调试：打印实际提交给后端的表单字段（完全展开，方便直接复制）
+  console.log("[货源保存-请求] 表单字段(展开) = " + JSON.stringify(
+    [...form.entries()].map(([key, value]) => [
+      key,
+      typeof value === "string" ? value : { name: value.name, size: value.size, type: value.type, lastModified: value.lastModified },
+    ]),
+  ));
   const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: form,
   });
   const text = await response.text();
+  // 调试：打印后端响应状态与原文（应包含保存后的 source_groups）
+  console.log("[货源保存-响应] status = " + response.status + "\n响应原文 = " + text.slice(0, 1200));
   let data: unknown = text;
   try {
     data = text ? JSON.parse(text) : {};
