@@ -136,6 +136,12 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         }
         if product is None:
             return result
+        # 非核价入库产品：直接按货源组逐组展示（每组一条，含各自的截图与组号，
+        # 不按 URL 去重，避免同 URL 多组时只显示第一组、图片无法按组对应）。
+        # 核价入库产品保持原逻辑：联查核价链接表展示价格/运费/解除关联。
+        if str((product or {}).get("source_type") or "") != "price_verification":
+            result["links"] = _product_source_group_links(product)
+            return result
         source_urls = [str(group.get("source_url") or "").strip() for group in (product.get("source_groups") or [])]
         source_urls = [url for url in source_urls if url]
         legacy_url = str((product or {}).get("source_url") or "").strip()
@@ -159,10 +165,15 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
                     (*source_urls, skc),
                 ).fetchall()
                 result["links"] = [dict(row) for row in rows]
-                if not result["links"]:
-                    # 该 SKC 未做过核价（例如 Excel 导入的产品）：回退展示产品自身
-                    # 货源组中的链接，保证货源侧边栏能看到这些导入链接。
-                    result["links"] = _product_source_fallbacks(product, source_urls)
+                # 仅非核价入库产品：核价链接表可能只匹配到部分货源组（例如手工
+                # 导入的链接未做核价），这里把未匹配的 source_groups 链接补全，
+                # 保证侧边栏打开即显示全部链接。核价入库产品保持原行为。
+                if str((product or {}).get("source_type") or "") != "price_verification":
+                    matched = {str(link.get("source_url") or "").strip() for link in result["links"]}
+                    for fallback_link in _product_source_fallbacks(product, source_urls):
+                        url = str(fallback_link.get("source_url") or "").strip()
+                        if url and url not in matched:
+                            result["links"].append(fallback_link)
             finally:
                 conn.close()
         except Exception:
@@ -426,6 +437,41 @@ def _attach_source_group_images(links: list[dict[str, Any]], product: dict[str, 
             group_index, images = group_by_url[url]
             link["group"] = group_index
             link["image_paths"] = images
+    return links
+
+
+def _product_source_group_links(product: dict[str, Any]) -> list[dict[str, Any]]:
+    """按产品货源组逐组生成链接卡片（每组一条，不去重）。
+
+    非核价入库产品的货源信息保存在 product.source_groups（source_url + image_paths），
+    每组可能有相同的 source_url 但各自独立的截图。这里按组索引生成，
+    保证侧边栏打开即显示全部链接，且每组图片与组号一一对应，
+    避免按 URL 去重后同 URL 多组只显示第一组、修改第二组图片看不到效果。
+    """
+    groups = product.get("source_groups") or []
+    links: list[dict[str, Any]] = []
+    for group_index, group in enumerate(groups):
+        url = str(group.get("source_url") or "").strip()
+        if not url:
+            continue
+        images = [path for path in group.get("image_paths", []) if str(path)]
+        links.append({
+            "id": -(len(links) + 1),
+            "batch_id": "",
+            "skc_id": product.get("skc") or "",
+            "offer_id": "",
+            "source_url": url,
+            "source_title": "货源链接",
+            "main_image_url": "",
+            "image_paths": images,
+            "group": group_index,
+            "price_cny": group.get("cost"),
+            "moq": None,
+            "domestic_freight_cny": None,
+            "source_decision": "manual",
+            "note": "",
+            "status": "active",
+        })
     return links
 
 

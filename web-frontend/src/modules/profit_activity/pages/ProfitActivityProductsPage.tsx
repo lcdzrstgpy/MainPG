@@ -602,7 +602,7 @@ export function ProfitActivityProductsPage() {
       <ProductSourceDrawer
         product={activeProduct}
         onClose={() => setActiveProduct(null)}
-        onChanged={queryProducts}
+        onChanged={refreshProducts}
       />
       {previewImage ? (
         <ImagePreviewModal
@@ -658,7 +658,7 @@ function ProductImageCell({ item, onChanged }: { item: ProfitActivityProduct; on
     setError("");
     setSourceImageFailed(false);
     if (item.image_path) {
-      loadProductImage({ skc: item.skc, site, kind: "product" })
+      loadProductImage({ skc: item.skc, site, kind: "product", version: item.image_path })
         .then((url) => {
           if (cancelled) {
             URL.revokeObjectURL(url);
@@ -757,6 +757,9 @@ function SourceImagesCell({ item, onPreview }: { item: ProfitActivityProduct; on
   const site = (item.site || item.site_code || "US") as ProfitActivitySite;
   const groups = item.source_groups ?? [];
   const imageCount = groups.reduce((sum, group) => sum + (group?.image_paths?.length ?? 0), 0);
+  // 图片资源指纹：换图后 image_paths 中的文件路径（uuid 文件名）变化，
+  // 用它作依赖，保证保存替换货源图后表格缩略图立即重新加载，而不是复用旧图。
+  const imagePathsKey = JSON.stringify(groups.map((group) => group?.image_paths ?? []));
   const [urls, setUrls] = useState<(string | null)[]>([]);
 
   useEffect(() => {
@@ -772,7 +775,14 @@ function SourceImagesCell({ item, onPreview }: { item: ProfitActivityProduct; on
     });
     Promise.all(
       entries.map((entry) =>
-        loadProductImage({ skc: item.skc, site, kind: "source", group: entry.group, index: entry.index })
+        loadProductImage({
+          skc: item.skc,
+          site,
+          kind: "source",
+          group: entry.group,
+          index: entry.index,
+          version: imagePathsKey,
+        })
           .then((url) => {
             if (cancelled) {
               URL.revokeObjectURL(url);
@@ -784,14 +794,19 @@ function SourceImagesCell({ item, onPreview }: { item: ProfitActivityProduct; on
           .catch(() => null),
       ),
     ).then((loaded) => {
-      if (!cancelled) setUrls(loaded);
+      if (!cancelled) {
+        setUrls(loaded);
+        // 调试：打印表格缩略图加载结果（保存换图后应能看到 imagePathsKey 变化并重新加载）
+        console.log("[表格缩略图] skc:", item.skc, "| imageCount:", imageCount,
+          "| imagePathsKey:", imagePathsKey, "| 加载到图片数:", loaded.filter(Boolean).length);
+      }
     });
     return () => {
       cancelled = true;
       created.forEach((url) => URL.revokeObjectURL(url));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item.skc, site, imageCount]);
+  }, [item.skc, site, imageCount, imagePathsKey]);
 
   if (!imageCount) return <span className="profit-product-image-empty">无图</span>;
   return (

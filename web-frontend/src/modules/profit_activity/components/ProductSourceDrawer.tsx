@@ -55,8 +55,18 @@ function SourceCardImage({ skc, site, group, imagePaths, fallbackUrl }: { skc: s
   useEffect(() => {
     let cancelled = false;
     let objectUrl = "";
+    // 调试：打印每次加载货源图的参数（group 与 imagePaths 变化时应重新请求）
+    console.log("[货源图显示] 尝试加载 → skc:", skc, "| site:", site, "| group:", group,
+      "| first:", first, "| imagePaths:", JSON.stringify(imagePaths));
     if (first) {
-      loadProductImage({ skc, site: (site || "US") as "US" | "CO" | "EC", kind: "source", group: group ?? 0, index: 0 })
+      loadProductImage({
+        skc,
+        site: (site || "US") as "US" | "CO" | "EC",
+        kind: "source",
+        group: group ?? 0,
+        index: 0,
+        version: first,
+      })
         .then((loaded) => {
           if (cancelled) {
             URL.revokeObjectURL(loaded);
@@ -64,8 +74,11 @@ function SourceCardImage({ skc, site, group, imagePaths, fallbackUrl }: { skc: s
           }
           objectUrl = loaded;
           setUrl(loaded);
+          console.log("[货源图显示] 加载成功 → skc:", skc, "| group:", group, "| objectURL:", loaded);
         })
-        .catch(() => {});
+        .catch((err) => {
+          console.error("[货源图显示] 加载失败 → skc:", skc, "| group:", group, "| first:", first, err);
+        });
     }
     return () => {
       cancelled = true;
@@ -134,16 +147,23 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   const [editRows, setEditRows] = useState<EditSourceRow[]>([]);
   const [savingSource, setSavingSource] = useState(false);
   const nextEditRowKeyRef = useRef(0);
+  // 抽屉内维护最新产品数据：保存/解除关联后更新，避免编辑态复用旧的 source_groups
+  const [productData, setProductData] = useState<ProfitActivityProduct | null>(product);
 
   const open = product !== null;
 
+  useEffect(() => {
+    setProductData(product);
+  }, [product]);
+
   const refresh = useCallback(async () => {
-    if (!product) return;
+    const target = productData ?? product;
+    if (!target) return;
     setLoading(true);
     setError("");
     try {
-      const site = (product.site || product.site_code || "US") as "US" | "CO" | "EC";
-      const data = await listProductSources({ skc: product.skc, site });
+      const site = (target.site || target.site_code || "US") as "US" | "CO" | "EC";
+      const data = await listProductSources({ skc: target.skc, site });
       setSources(data);
       const nextPrices: Record<number, string> = {};
       const nextWeights: Record<number, string> = {};
@@ -154,7 +174,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
       });
       setPrices(nextPrices);
       setWeights(nextWeights);
-      const selling = data.selling_price ?? product.selling_price;
+      const selling = data.selling_price ?? target.selling_price;
       const nextProfits: Record<number, SourceTopProfit | null> = {};
       await Promise.all(data.links.map(async (link) => {
         const profit = await computeProfit(link, nextPrices[link.id], nextWeights[link.id], data.site, selling);
@@ -166,7 +186,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [product]);
+  }, [product, productData]);
 
   useEffect(() => {
     if (open) void refresh();
@@ -184,8 +204,11 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
 
   if (!open || !product) return null;
 
+  // 使用抽屉内最新产品数据（保存后刷新），避免编辑态复用旧的 source_groups
+  const current = productData ?? product;
+
   // 核价入库产品保留候选源价/重量/利润核算与解除关联；其他产品仅展示并允许修改图片与链接
-  const isPriceVerification = product.source_type === "price_verification";
+  const isPriceVerification = current.source_type === "price_verification";
 
   const changePrice = (link: ProductSourceLink, rawValue: string) => {
     if (!/^\d*\.?\d*$/.test(rawValue)) return;
@@ -193,7 +216,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     const parsed = Number(rawValue);
     if (!Number.isFinite(parsed) || parsed <= 0) return;
     setProfitBusy(link.id);
-    void computeProfit(link, rawValue, weights[link.id], sources?.site, sources?.selling_price ?? product.selling_price)
+    void computeProfit(link, rawValue, weights[link.id], sources?.site, sources?.selling_price ?? current.selling_price)
       .then((profit) => setProfits((current) => ({ ...current, [link.id]: profit })))
       .finally(() => setProfitBusy((current) => (current === link.id ? null : current)));
   };
@@ -204,7 +227,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     const parsed = Number(rawValue);
     if (!Number.isFinite(parsed) || parsed <= 0) return;
     setProfitBusy(link.id);
-    void computeProfit(link, prices[link.id], rawValue, sources?.site, sources?.selling_price ?? product.selling_price)
+    void computeProfit(link, prices[link.id], rawValue, sources?.site, sources?.selling_price ?? current.selling_price)
       .then((profit) => setProfits((current) => ({ ...current, [link.id]: profit })))
       .finally(() => setProfitBusy((current) => (current === link.id ? null : current)));
   };
@@ -234,7 +257,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
 
   // 非核价产品：进入“修改货源链接”编辑态，载入全部货源组
   const startEditSources = () => {
-    const groups = product.source_groups ?? [];
+    const groups = (productData ?? product).source_groups ?? [];
     const rows: EditSourceRow[] = groups.length
       ? groups.map((group, index) => ({
           key: index,
@@ -294,11 +317,17 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
       setUnlinkError("请至少保留一个货源链接再保存。");
       return;
     }
+    // 调试：打印编辑态每行的原始信息
+    console.log("[货源保存-1] editRows =", editRows.map((r) => ({
+      key: r.key, originalGroup: r.originalGroup, url: r.url,
+      image: r.image ? { name: r.image.name, size: r.image.size, type: r.image.type } : null,
+      imagePreview: r.imagePreview ? "(有预览)" : "(无预览)",
+    })));
     setSavingSource(true);
     setUnlinkError("");
     try {
       // 重建货源组：仅保留有链接的组，组号紧凑重排；链接未变且未换图时保留原截图
-      const originals = product.source_groups ?? [];
+      const originals = (productData ?? product).source_groups ?? [];
       const groups: Array<{ source_url: string; image_paths: string[]; cost?: number | null }> = [];
       const groupImages: Record<number, File> = {};
       filled.forEach((row, index) => {
@@ -311,8 +340,22 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
         });
         if (row.image) groupImages[index] = row.image;
       });
-      const site = (product.site || product.site_code || "US") as "US" | "CO" | "EC";
-      await updateProductSourceGroup({ site, skc: product.skc, group: 0, sourceGroups: groups, groupImages });
+      // 调试：打印重建后的货源组与待上传的组图
+      console.log("[货源保存-2] 重建 groups =", JSON.stringify(groups, null, 2));
+      console.log("[货源保存-2] groupImages 键(组号) =", Object.keys(groupImages),
+        "| 值 =", Object.fromEntries(Object.entries(groupImages).map(([k, f]) => [k, f.name])));
+      const site = ((productData ?? product).site || (productData ?? product).site_code || "US") as "US" | "CO" | "EC";
+      const saved = await updateProductSourceGroup({
+        site,
+        skc: (productData ?? product).skc,
+        group: 0,
+        sourceGroups: groups,
+        groupImages,
+      });
+      // 调试：打印后端保存后返回的产品 source_groups（应包含新上传的图片路径）
+      console.log("[货源保存-3] 后端返回 product.source_groups =", JSON.stringify(saved?.product?.source_groups ?? [], null, 2));
+      // 用接口返回的最新产品数据刷新抽屉内状态，再次编辑时使用最新的 source_groups
+      if (saved?.product) setProductData(saved.product);
       for (const row of editRows) {
         if (row.imagePreview) URL.revokeObjectURL(row.imagePreview);
       }
@@ -321,6 +364,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
       onChanged?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      console.error("[货源保存-错误] 保存失败:", err);
       setUnlinkError(`保存失败：${message}`);
     } finally {
       setSavingSource(false);
@@ -334,16 +378,23 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
         <header className="profit-source-drawer-head">
           <div>
             <p className="eyebrow">PRODUCT SOURCES</p>
-            <h2>{product.skc}</h2>
+            <h2>{current.skc}</h2>
             <p>
-              <span>{siteLabel(product.site || product.site_code)}</span>
+              <span>{siteLabel(current.site || current.site_code)}</span>
               <span className="profit-source-drawer-sep">·</span>
-              <span>调整后申报价 {moneyText(sources?.selling_price ?? product.selling_price)}</span>
+              <span>调整后申报价 {moneyText(sources?.selling_price ?? current.selling_price)}</span>
               <span className="profit-source-drawer-sep">·</span>
               <span>已关联 1688 {sources?.links.length ?? 0} 条</span>
             </p>
           </div>
-          <button className="profit-source-drawer-close" onClick={onClose} aria-label="关闭">×</button>
+          <div className="profit-source-drawer-head-actions">
+            {!isPriceVerification && !editingSources ? (
+              <button className="profit-source-edit-button" onClick={startEditSources}>
+                修改货源
+              </button>
+            ) : null}
+            <button className="profit-source-drawer-close" onClick={onClose} aria-label="关闭">×</button>
+          </div>
         </header>
 
         <div className="profit-source-drawer-body">
@@ -371,8 +422,8 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                     <>
                       <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
                         <SourceCardImage
-                          skc={product.skc}
-                          site={sources?.site || product.site || product.site_code || "US"}
+                          skc={current.skc}
+                          site={sources?.site || current.site || current.site_code || "US"}
                           group={link.group}
                           imagePaths={link.image_paths ?? []}
                           fallbackUrl={link.main_image_url}
@@ -397,8 +448,8 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                     <>
                       <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
                         <SourceCardImage
-                          skc={product.skc}
-                          site={sources?.site || product.site || product.site_code || "US"}
+                          skc={current.skc}
+                          site={sources?.site || current.site || current.site_code || "US"}
                           group={link.group}
                           imagePaths={link.image_paths ?? []}
                           fallbackUrl={link.main_image_url}
@@ -408,9 +459,6 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                           <small className="profit-source-card-meta profit-source-card-url" title={link.source_url}>{link.source_url || "—"}</small>
                         </span>
                       </a>
-                      <button className="profit-source-edit-button" onClick={startEditSources}>
-                        修改
-                      </button>
                     </>
                   )}
                 </div>
@@ -453,7 +501,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
             <div className="profit-source-edit-panel">
               <div className="profit-source-edit-rows">
                 {editRows.map((row, index) => {
-                  const original = (product.source_groups ?? [])[row.originalGroup];
+                  const original = (current.source_groups ?? [])[row.originalGroup];
                   return (
                     <div className="profit-source-edit-row" key={row.key}>
                       <div className="profit-source-edit-main">
@@ -462,8 +510,8 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                             <img className="profit-source-card-shot" src={row.imagePreview} alt="新货源截图" />
                           ) : (
                             <SourceCardImage
-                              skc={product.skc}
-                              site={sources?.site || product.site || product.site_code || "US"}
+                              skc={current.skc}
+                              site={sources?.site || current.site || current.site_code || "US"}
                               group={row.originalGroup}
                               imagePaths={original?.image_paths ?? []}
                               fallbackUrl=""

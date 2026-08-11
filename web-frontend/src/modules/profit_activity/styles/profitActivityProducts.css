@@ -315,6 +315,28 @@
   color: #0a8cf2;
 }
 
+/* 抽屉头部右侧操作区：修改货源按钮 + 关闭按钮 并排 */
+.profit-source-drawer-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding-top: 2px;
+}
+
+/* 头部“修改货源”按钮（与关闭按钮同排，置顶） */
+.profit-source-drawer-head .profit-source-edit-button {
+  border-color: #b8d9f2;
+  color: #0a8cf2;
+  background: #fff;
+  box-shadow: 0 6px 14px #188bd61a;
+}
+
+.profit-source-drawer-head .profit-source-edit-button:hover {
+  border-color: #0a8cf2;
+  background: #f2faff;
+}
+
 .profit-source-drawer-body {
   flex: 1;
   overflow-y: auto;
