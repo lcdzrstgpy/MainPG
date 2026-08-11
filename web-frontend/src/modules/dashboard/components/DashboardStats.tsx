@@ -10,11 +10,22 @@ export function DashboardStats({ onOpenModule }: DashboardStatsProps) {
 
   useEffect(() => {
     let cancelled = false;
-    void getDashboardStats().then((data) => {
-      if (!cancelled) setStats(data);
-    });
+    const load = () => {
+      void getDashboardStats().then((data) => {
+        if (!cancelled) setStats(data);
+      });
+    };
+    load();
+    // 数据概览定时刷新：产品处理任务/入库在别处进行时，这里能跟上变化
+    const timer = window.setInterval(load, 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 

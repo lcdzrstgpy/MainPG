@@ -134,7 +134,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
     const openPanelCount = tabs.filter((tab) => tab.moduleId === "product_processing_tasks").length;
     if (openPanelCount >= MAX_PROCESSING_PANELS) {
       setWorkspaceNotice(`最多同时打开 ${MAX_PROCESSING_PANELS} 个处理任务，请先关闭一个再继续。`);
-      return;
+      return false;
     }
 
     processingSequence.current += 1;
@@ -149,6 +149,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
     }]);
     setActiveTabKey(key);
     setWorkspaceNotice("");
+    return true;
   };
 
   // 历史采集入口：从草稿池直接打开「历史任务」页（无处理参数，仅查看记录与输出）

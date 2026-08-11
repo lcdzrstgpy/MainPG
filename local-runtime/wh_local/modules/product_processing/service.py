@@ -57,7 +57,7 @@ _CACHE_VOLATILE_RAW_KEYS = frozenset(
     }
 )
 
-_STAGE_CACHE_VERSION = 2
+_STAGE_CACHE_VERSION = 3
 
 
 def _ai_enabled() -> bool:
@@ -852,6 +852,10 @@ class ProductProcessingService:
             idempotency_key=idempotency_key,
             workspace_id=workspace_id,
         )
+        # 提交处理即把涉及草稿置为 processing：草稿池立即隐藏（前端过滤该状态），
+        # 处理完成置 processed，失败/待确认回退 draft 以便重新出现在草稿池重试。
+        if not preflight_only:
+            self.repository.mark_drafts_status(draft_ids, "processing", workspace_id=workspace_id)
         if bool(payload.get("async_mode", True)):
             self._launch_background_execute(task["id"], workspace_id)
             return {**self._task_response(task, "任务已提交，正在后台处理"), "async_mode": True}
@@ -1104,6 +1108,8 @@ class ProductProcessingService:
                         self._mark_draft_processed(draft, task_id, settings, workspace_id)
                 else:
                     failures.append(processed)
+                    if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
+                        self._mark_draft_failed(draft, workspace_id)
         else:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures_map = {
@@ -1136,6 +1142,8 @@ class ProductProcessingService:
                                 self._mark_draft_processed(draft, task_id, settings, workspace_id)
                         else:
                             failures.append(processed)
+                            if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
+                                self._mark_draft_failed(draft, workspace_id)
 
         preserve = settings.get("source_image_to_library")
         if preserve is None:
@@ -1183,6 +1191,15 @@ class ProductProcessingService:
             raw,
             workspace_id=workspace_id,
         )
+
+    def _mark_draft_failed(self, draft: dict[str, Any], workspace_id: str) -> None:
+        """处理失败/待确认后把草稿状态回退为 draft，使其重新出现在草稿池供重试。
+
+        仅在草稿仍处于 processing（本次提交刚置上的状态）时回退，避免影响已完成草稿。
+        """
+        if not draft or draft.get("status") != "processing":
+            return
+        self.repository.mark_drafts_status([draft["id"]], "draft", workspace_id=workspace_id)
 
     def _process_one(
         self,
@@ -1556,7 +1573,7 @@ class ProductProcessingService:
             ensure_target_language_result("详情", data.get("description"), target_language)
             result = {
                 "title": self._normalized_title(data["optimized_title"]),
-                "description": self._normalized_title(data.get("description") or ""),
+                "description": self._normalized_description(data.get("description") or ""),
                 "variant_translations": self._combined_variant_translations(data, variant_values),
             }
             self._save_ai_stage_cache(
@@ -1617,7 +1634,7 @@ class ProductProcessingService:
         try:
             text = self._ai_client().chat([{"role": "user", "content": prompt}])
             ensure_target_language_result("详情", text, target_language)
-            return self._normalized_title(text)
+            return self._normalized_description(text)
         except (AiProviderError, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "details", _ai_error_reason(exc))
             return ""
@@ -2729,6 +2746,18 @@ class ProductProcessingService:
     @staticmethod
     def _normalized_title(value: str) -> str:
         return re.sub(r"\s+", " ", value).strip()[:200]
+
+    @staticmethod
+    def _normalized_description(value: str) -> str:
+        """描述归一化：保留 Amazon 五点 bullet 的换行结构。
+
+        _normalized_title 会折叠换行并截断到 200 字符，只适用于单行标题；
+        五点描述若用它会把 5 条 bullet 挤成一行并砍到只剩 2 条（已修复的 bug）。
+        这里逐行折叠行内空白、去掉空行，整段保留换行，上限 2000 字符。
+        """
+        lines = [re.sub(r"\s+", " ", line).strip() for line in str(value or "").replace("\r\n", "\n").split("\n")]
+        text = "\n".join(line for line in lines if line)
+        return text[:2000]
 
     @staticmethod
     def _text(value: Any) -> str:

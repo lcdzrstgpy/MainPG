@@ -128,6 +128,25 @@ class ProductProcessingRepository:
             ).scalar_one_or_none()
             return str(value) if value else ""
 
+    def mark_drafts_status(
+        self,
+        draft_ids: list[int],
+        status: str,
+        *,
+        workspace_id: str = "local",
+    ) -> list[int]:
+        """批量更新草稿状态：提交处理后置 processing（草稿池立即隐藏），失败后回退 draft。"""
+        with self.database.sessions.begin() as session:
+            rows = session.scalars(
+                select(ProductDraftRow).where(
+                    ProductDraftRow.id.in_(draft_ids),
+                    ProductDraftRow.workspace_id == workspace_id,
+                )
+            ).all()
+            for row in rows:
+                row.status = status
+            return [row.id for row in rows]
+
     def update_draft(
         self,
         draft_id: int,

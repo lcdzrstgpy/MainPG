@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useChangePoller } from '../../../shared/hooks/useChangePoller';
+import { SkuBatchManager } from '../components/SkuBatchManager';
 import { ppRequest, type ApiContext } from '../api/client';
 import type {
   DraftSummary,
@@ -19,7 +20,7 @@ type DraftEdit = {
 };
 
 type Props = {
-  onStartProcessing?: (draftIds: number[], options: ProductProcessingOptions) => void;
+  onStartProcessing?: (draftIds: number[], options: ProductProcessingOptions) => boolean;
   onOpenHistoryTasks?: () => void;
 };
 
@@ -56,6 +57,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
   const [expandedId, setExpandedId] = useState<number | null>(null);
   // SKU 管理抽屉：当前正在管理的草稿 id（null 表示关闭）
   const [skuDrawerDraftId, setSkuDrawerDraftId] = useState<number | null>(null);
+  // 批量管理 SKU：跨商品按条件筛选后批量删除/保留
+  const [skuBatchOpen, setSkuBatchOpen] = useState(false);
   const [edits, setEdits] = useState<Record<number, DraftEdit>>({});
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -80,8 +83,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
   const stickySpacerRef = useRef<HTMLDivElement>(null);
 
   // 滚动发生在 window（.content-card 的 overflow:auto 会作为 sticky 的滚动祖先但不参与滚动，
-  // 导致纯 CSS sticky 永远吸不住）。参照产品库固定表头做法：工具栏**常驻**固定，
-  // 始终贴在顶部导航栏下方（数据少/页面不可滚动时也吸顶），用 spacer 占位防止内容跳动。
+  // 导致纯 CSS sticky 永远吸不住）。这里用 JS 做条件吸顶：
+  // 仅当工具栏自然位置滚出导航栏下方时才 position:fixed 吸顶；不需要漂浮时放回
+  // 草稿池容器内部（不设 spacer 高度），避免数据少时在容器顶部留下一块空白。
   useEffect(() => {
     const toolbar = stickyToolbarRef.current;
     const spacer = stickySpacerRef.current;
@@ -94,20 +98,34 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
         const rect = topbar.getBoundingClientRect();
         if (rect.bottom > 0) topbarBottom = Math.round(rect.bottom);
       }
-      const contentRect = contentCard?.getBoundingClientRect();
-      toolbar.style.position = 'fixed';
-      toolbar.style.top = `${topbarBottom + 6}px`;
-      toolbar.style.left = contentRect ? `${Math.round(contentRect.left)}px` : '0px';
-      toolbar.style.width = contentRect ? `${Math.round(contentRect.width)}px` : '100%';
-      spacer.style.height = `${toolbar.offsetHeight}px`;
-      toolbar.classList.add('is-stuck');
+      // spacer 在文档流中始终处于工具栏的自然位置：需要吸顶时其顶部已滚到导航栏下沿之下
+      const needStick = spacer.getBoundingClientRect().top <= topbarBottom + 6;
+      if (needStick) {
+        const contentRect = contentCard?.getBoundingClientRect();
+        toolbar.style.position = 'fixed';
+        toolbar.style.top = `${topbarBottom + 6}px`;
+        toolbar.style.left = contentRect ? `${Math.round(contentRect.left)}px` : '0px';
+        toolbar.style.width = contentRect ? `${Math.round(contentRect.width)}px` : '100%';
+        spacer.style.height = `${toolbar.offsetHeight}px`;
+        toolbar.classList.add('is-stuck');
+      } else {
+        toolbar.style.position = '';
+        toolbar.style.top = '';
+        toolbar.style.left = '';
+        toolbar.style.width = '';
+        spacer.style.height = '';
+        toolbar.classList.remove('is-stuck');
+      }
     };
     apply();
+    window.addEventListener('scroll', apply, { passive: true });
     window.addEventListener('resize', apply);
     const observer = new ResizeObserver(apply);
     if (contentCard) observer.observe(contentCard);
+    observer.observe(toolbar);
     observer.observe(document.body);
     return () => {
+      window.removeEventListener('scroll', apply);
       window.removeEventListener('resize', apply);
       observer.disconnect();
     };
@@ -118,10 +136,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
     [drafts, edits]
   );
   // 草稿池只保留未处理项：处理完成的草稿自动从列表消失（processed），删除的不再展示。
+  // 提交处理中的草稿（processing）同样隐藏，处理失败后回退 draft 会重新出现。
   // 失败/待确认的草稿保持 draft 状态，仍会显示，可勾选后重新处理。
   const selectableDrafts = useMemo(
-    () => drafts.filter((d) => d.status !== 'deleted' && d.status !== 'processed'),
+    () => drafts.filter((d) => d.status !== 'deleted' && d.status !== 'processed' && d.status !== 'processing'),
     [drafts]
+  );
+  // 批量管理 SKU 的目标草稿：勾选且仍可处理的草稿
+  const selectedDrafts = useMemo(
+    () => drafts.filter((d) => selectedIds.has(d.id) && d.status !== 'deleted' && d.status !== 'processed' && d.status !== 'processing'),
+    [drafts, selectedIds]
   );
   const filteredDrafts = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
@@ -272,6 +296,70 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
     setEdits((prev) => { const next = { ...prev }; delete next[updated.id]; return next; });
   };
 
+  // 批量管理 SKU 的基准删除集合：已保存（raw_payload.sku_name_deletes）+ 未保存编辑态（edits.skuDeletes）
+  const baseDeletes = (draftId: number): string[] => {
+    const draft = drafts.find((d) => d.id === draftId);
+    const raw = draft?.raw_payload || {};
+    const saved = Array.isArray(raw.sku_name_deletes) ? raw.sku_name_deletes : [];
+    const edit = edits[draftId];
+    const unsaved = edit?.skuDeletes ?? [];
+    return Array.from(new Set([...saved, ...unsaved]));
+  };
+
+  // 批量管理 SKU：保存一个草稿的完整删除集合（后端为全量替换语义）。
+  // 只发送 sku 相关字段，草稿的其他未保存编辑（标题等）保留在原编辑态；
+  // 保存成功后本地同步 raw_payload（移除已删除变种 + 记录已保存删除集合），
+  // 并从编辑态移除已落库的删除集合，避免之后「保存已选」以旧删除集合二次 PATCH。
+  const saveSkuDeletes = async (draftId: number, deletes: string[]) => {
+    const draft = drafts.find((d) => d.id === draftId);
+    const body: Record<string, unknown> = { sku_name_deletes: deletes };
+    if (draft) {
+      const edit = edits[draftId];
+      if (edit && Object.keys(edit.skuEdits).length > 0) {
+        // 草稿有未保存的 SKU 改名：一并提交，防止后端把 sku_name_edits 簿记清空
+        const raw = draft.raw_payload || {};
+        const variants: DraftVariant[] = raw.source_variant_records || [];
+        const skuEdits: Record<string, string> = {};
+        for (const variant of variants) {
+          const attributes = variant.attributes || {};
+          const label = Object.values(attributes).join('/');
+          const skuId = String(variant.sku_id || variant.source_sku_id || label);
+          const value = edit.skuEdits[skuId] ?? edit.skuEdits[label];
+          if (value !== undefined && value !== (variant.display_name || label)) skuEdits[label] = value;
+        }
+        if (Object.keys(skuEdits).length > 0) body.sku_name_edits = skuEdits;
+      }
+    }
+    await ppRequest(ctx, `${API_BASE}/drafts/${draftId}`, { method: 'PATCH', body });
+    // 本地同步：移除已删除变种 + 记录已保存删除集合，保证刷新前的抽屉/编辑态一致
+    const del = new Set(deletes);
+    setDrafts((prev) => prev.map((d) => {
+      if (d.id !== draftId) return d;
+      const raw = d.raw_payload || {};
+      const variants = Array.isArray(raw.source_variant_records)
+        ? raw.source_variant_records.filter((v: DraftVariant) => {
+            const attrs = v.attributes || {};
+            const label = Object.values(attrs).join('/');
+            const vid = String(v.sku_id || v.source_sku_id || label);
+            return !del.has(label) && !del.has(vid);
+          })
+        : raw.source_variant_records;
+      return { ...d, raw_payload: { ...raw, source_variant_records: variants, sku_name_deletes: [...del] } };
+    }));
+    // 删除集合已落库并同步进 raw_payload，无需继续保留在未保存编辑态
+    setEdits((prev) => {
+      const cur = prev[draftId];
+      if (!cur || cur.skuDeletes.length === 0) return prev;
+      return { ...prev, [draftId]: { ...cur, skuDeletes: [] } };
+    });
+  };
+
+  const openSkuBatch = () => {
+    if (!selectedIds.size) { setError('请先勾选草稿'); return; }
+    setError('');
+    setSkuBatchOpen(true);
+  };
+
   const saveRow = async (draft: DraftSummary) => {
     setLoading(true);
     try {
@@ -328,10 +416,18 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
 
   const handleProcess = (preflightOnly = false) => {
     if (!selectedIds.size) { setError('请先勾选需要处理的草稿'); return; }
-    onStartProcessing?.(Array.from(selectedIds), {
+    const ids = Array.from(selectedIds);
+    const processOptions: ProductProcessingOptions = {
       ...options,
       ...(preflightOnly ? { preflightOnly: true } as Partial<ProductProcessingOptions> : {}),
-    });
+    };
+    const opened = onStartProcessing?.(ids, processOptions);
+    if (opened === false) return; // 任务面板未打开（如已达上限），草稿保持原样
+    // 提交处理即让勾选草稿从池中消失：本地同步置 processing（后端同样置位），
+    // 处理完成置 processed 保持隐藏，失败回退 draft 后会自动重新出现。
+    setDrafts((prev) => prev.map((d) => (ids.includes(d.id) ? { ...d, status: 'processing' as const } : d)));
+    setSelectedIds(new Set());
+    setEdits((prev) => { const next = { ...prev }; for (const id of ids) delete next[id]; return next; });
   };
 
   return (
@@ -361,6 +457,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
           <div className="verify-actions">
             <button onClick={selectAll}><i className="iconfont icon-select" aria-hidden="true" />全选本页</button>
             <button onClick={clearSelection}><i className="iconfont icon-close-circle" aria-hidden="true" />取消选择</button>
+            <button onClick={openSkuBatch} disabled={!selectedIds.size}><i className="iconfont icon-barcode" aria-hidden="true" />批量管理 SKU</button>
             <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
             <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
             <button onClick={() => deleteSelected()} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
@@ -457,7 +554,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
           <p className="verify-empty">
             {viewMode === 'selected'
               ? '还没有勾选草稿。先勾选目标草稿，再切换「只看已选」即可核对全部所选链接。'
-              : '草稿池为空，请先在每日选品中确认入池。'}
+              : '正在拉取新数据中....'}
           </p>
         )}
         <div className="verify-draft-list">
@@ -632,6 +729,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
         <div className="verify-actions">
           <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
           <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
+          <button onClick={openSkuBatch} disabled={!selectedIds.size}><i className="iconfont icon-barcode" aria-hidden="true" />批量管理 SKU</button>
           <button onClick={() => deleteSelected()} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
           <button className="history-collection-trigger" onClick={openHistory}><i className="iconfont icon-clock" aria-hidden="true" />历史采集</button>
         </div>
@@ -733,6 +831,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
           </div>
         );
       })()}
+
+      {skuBatchOpen && selectedDrafts.length > 0 && (
+        <SkuBatchManager
+          drafts={selectedDrafts}
+          baseDeletes={baseDeletes}
+          onSaveDeletes={saveSkuDeletes}
+          onBatchSaved={() => { void refresh(); }}
+          onClose={() => setSkuBatchOpen(false)}
+        />
+      )}
 
       {historyOpen && (
         <div className="verify-history-layer">

@@ -1,4 +1,4 @@
-export type DraftStatus = "draft" | "processed" | "deleted" | "attention_required";
+export type DraftStatus = "draft" | "processing" | "processed" | "deleted" | "attention_required";
 
 export type Draft = {
   id: number;

@@ -36,15 +36,17 @@ Verified material evidence for title: {verified_material_evidence}
 Output the optimized title directly, no explanation."""
 
 
-DESC_PROMPT = """You are a TEMU cross-border e-commerce product description expert. Generate an English product description for this product.
+DESC_PROMPT = """You are a TEMU cross-border e-commerce product description expert. Generate an English product description formatted as Amazon-style five key points (bullet points) for this product.
 
 STRICT RULES:
-1. Highlight concrete selling points and usage scenarios.
-2. Natural fluent English for US consumers.
-3. 80-150 English words, max 500 characters.
-4. Avoid generic claims, exaggerated words, brands, trademarks, country names, marketplace/platform names, and superlatives.
-5. Do not state a material unless verified material evidence explicitly supplies it.
-6. Use only facts supported by the source title, category, and attributes. Do not invent features.
+1. Output exactly 5 bullet points. Each point must start with a 2-5 word ALL-CAPS key phrase that captures one selling angle, followed by ": " or " - " and one fluent sentence.
+2. Example structure:
+   DURABLE MATERIAL - This product is built with sturdy ABS plastic, designed to withstand everyday use.
+3. Cover five distinct angles: material/build quality, function or usage scenario, size/capacity, easy care or convenience, and one practical detail that adds value. Do not repeat the same selling point in two bullets.
+4. Natural fluent English for US consumers. Total 80-150 English words, max 500 characters.
+5. Avoid generic claims, exaggerated words, brands, trademarks, country names, marketplace/platform names, and superlatives.
+6. Do not state a material unless verified material evidence explicitly supplies it.
+7. Use only facts supported by the source title, category, and attributes. Do not invent features.
 
 Product title: {title}
 Product category: {category}
@@ -53,7 +55,7 @@ Required category attributes: {required_attributes}
 Value evidence from source: {value_evidence}
 Verified material evidence for description: {verified_material_evidence}
 
-Output the description directly, no explanation."""
+Output the 5 bullet points directly, one bullet per line, no explanation."""
 
 
 COMBINED_TEXT_PROMPT = """You are a TEMU cross-border e-commerce product title and description editor. Analyze the source title, category, and attributes, then produce a faithful optimized title and a concise description.
@@ -72,9 +74,9 @@ TITLE STRICT RULES:
 11. Sensitive but legally salable products must use neutral wording; never change the real product identity just to bypass rules.
 
 DESCRIPTION STRICT RULES:
-1. Highlight concrete selling points and usage scenarios.
-2. Natural fluent English for US consumers.
-3. 80-150 English words, max 500 characters.
+1. Output exactly 5 bullet points (Amazon-style five key points). Each point starts with a 2-5 word ALL-CAPS key phrase, then ": " or " - ", then one fluent sentence.
+2. Cover five distinct angles: material/build quality, function or usage scenario, size/capacity, easy care or convenience, and one practical detail that adds value. Do not repeat the same selling point in two bullets.
+3. Natural fluent English for US consumers. Total 80-150 English words, max 500 characters.
 4. Avoid generic claims, exaggerated words, brands, trademarks, country names, marketplace/platform names, and superlatives.
 5. Do not state a material unless verified material evidence explicitly supplies it.
 6. Use only facts supported by the source title, category, and attributes. Do not invent features.

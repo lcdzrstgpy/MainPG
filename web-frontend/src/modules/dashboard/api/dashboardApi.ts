@@ -5,7 +5,7 @@ import type { ProfitActivityProduct, ProfitActivitySite } from "../../profit_act
 export type DashboardStats = {
   productCount: number | null;       // 产品库产品总数（US+CO+EC）
   todayInboundCount: number | null;  // 今日入库数量（北京时间今日新增入库的产品数）
-  todayProcessedCount: number | null; // 今日产品处理数量（北京时间今日创建的处理任务处理条数）
+  todayProcessedCount: number | null; // 今日产品处理数量（北京时间今日创建的处理的批次数量）
 };
 
 type ProcessingTaskItem = {
@@ -70,7 +70,6 @@ async function loadProducts(): Promise<ProfitActivityProduct[]> {
 async function loadTodayProcessed(): Promise<number> {
   const data = await apiRequest<{ tasks: ProcessingTaskItem[] }>("/product-processing/tasks/history?limit=200");
   const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-  return tasks
-    .filter((task) => isTodayInChina(task.created_at))
-    .reduce((sum, task) => sum + (task.total_count ?? 0), 0);
+  // 今日产品处理数量 = 今日历史处理任务的批次数量（每提交一批草稿即一条任务）
+  return tasks.filter((task) => isTodayInChina(task.created_at)).length;
 }
