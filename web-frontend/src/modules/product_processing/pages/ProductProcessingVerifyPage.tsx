@@ -305,14 +305,24 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
     } catch (err) { fail(err); } finally { setLoading(false); }
   };
 
-  const deleteSelected = async () => {
-    if (!selectedIds.size) return;
+  // 批量删除勾选草稿；单条删除时传入目标 id（targetIds），删除后同步从勾选集中移除
+  const deleteSelected = async (targetIds?: Iterable<number>) => {
+    const ids = targetIds ? Array.from(targetIds) : Array.from(selectedIds);
+    if (!ids.length) return;
     setLoading(true);
     try {
-      await ppRequest(ctx, `${API_BASE}/drafts/delete`, { body: { draft_ids: Array.from(selectedIds), delete_all: false } });
-      setSelectedIds(new Set());
+      await ppRequest(ctx, `${API_BASE}/drafts/delete`, { body: { draft_ids: ids, delete_all: false } });
+      if (targetIds) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (const id of ids) next.delete(id);
+          return next;
+        });
+      } else {
+        setSelectedIds(new Set());
+      }
       await refresh();
-      notify('已移除勾选草稿');
+      notify(`已移除 ${ids.length} 条草稿`);
     } catch (err) { fail(err); } finally { setLoading(false); }
   };
 
@@ -353,7 +363,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
             <button onClick={clearSelection}><i className="iconfont icon-close-circle" aria-hidden="true" />取消选择</button>
             <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
             <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
-            <button onClick={deleteSelected} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
+            <button onClick={() => deleteSelected()} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
             <button onClick={() => refresh().catch(fail)} disabled={loading}><i className="iconfont icon-sync" aria-hidden="true" />刷新</button>
           </div>
         </div>
@@ -488,7 +498,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
                       <div className="pool-inline-acts">
                         <button className="btn-mini" onClick={() => copy(displayTitle)}><i className="iconfont icon-file-copy" aria-hidden="true" />复制</button>
                         <button className="btn-mini" onClick={() => beginEdit(draft)}><i className="iconfont icon-edit" aria-hidden="true" />{isExpanded ? '收起' : '编辑'}</button>
-                        <button className="btn-mini danger" onClick={() => { if (window.confirm('确认删除该草稿？')) deleteSelected(); }}><i className="iconfont icon-delete" aria-hidden="true" />删除</button>
+                        <button className="btn-mini danger" onClick={() => { if (window.confirm('确认删除该草稿？')) deleteSelected([draft.id]); }}><i className="iconfont icon-delete" aria-hidden="true" />删除</button>
                       </div>
                     </div>
                     <div className="pool-meta">
@@ -622,7 +632,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
         <div className="verify-actions">
           <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
           <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
-          <button onClick={deleteSelected} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
+          <button onClick={() => deleteSelected()} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
           <button className="history-collection-trigger" onClick={openHistory}><i className="iconfont icon-clock" aria-hidden="true" />历史采集</button>
         </div>
       </section>
