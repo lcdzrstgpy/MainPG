@@ -1,11 +1,12 @@
-export type PriceVerificationStage = "collect" | "review" | "source";
+export type PriceVerificationStage = "prescreen" | "batchReview" | "finalReview" | "sourcing";
 
 export type StageDefinition = { id: PriceVerificationStage; number: string; title: string; description: string };
 
 export const priceVerificationStages: StageDefinition[] = [
-  { id: "collect", number: "01", title: "数据初筛", description: "设置申报价门槛，插件采集本页数据先初筛" },
-  { id: "review", number: "02", title: "人工确认", description: "逐条保留或拒绝报价，再进入图搜" },
-  { id: "source", number: "03", title: "货源匹配", description: "只为已保留的报价匹配货源候选" },
+  { id: "prescreen", number: "01", title: "数据初筛", description: "设置申报价门槛，插件采集本页数据先初筛" },
+  { id: "batchReview", number: "02", title: "批次审核", description: "勾选本批需进入最终确认的商品" },
+  { id: "finalReview", number: "03", title: "最终确认", description: "保留商品并选择参与图搜的 SKC" },
+  { id: "sourcing", number: "04", title: "货源匹配", description: "图搜、关联并查看 1688 货源" },
 ];
 
 export type PrescreenSettings = { workspace_id: string; min_adjusted_price_cny?: string | number | null; updated_at?: string; updated_by?: string };
@@ -26,3 +27,7 @@ export type SourcePreviewItem = { quote_key: string; skc_id?: string; product_ti
 export type SourcePreviewSkcGroup = { skc_id: string; quote_keys: string[]; sku_ids: string[]; items: SourcePreviewItem[] };
 export type SourcePreview = { items: SourcePreviewItem[]; skc_groups?: SourcePreviewSkcGroup[]; ranking_mode?: "similarity" | "price"; candidate_limit?: number; counts: { candidate_count?: number; failed_quotes?: number; [key: string]: number | undefined }; employee_action_summary?: { message?: string } };
 export type SkcSourceLink = { id: number; batch_id: string; skc_id: string; offer_id: string; source_url: string; source_title: string; main_image_url: string; price_cny?: string | number | null; moq?: string | number | null; domestic_freight_cny?: string | number | null; source_decision: string; note?: string; status: "active" | "removed"; created_at?: string; updated_at?: string; product_title?: string; site?: string; selling_price?: string | number | null; profit?: SourceTopProfit | null };
+export type SourceCandidateSelection = { skc_id: string; offer_id: string; source_url: string; source_title?: string; main_image_url?: string; price_cny?: string | number | null; moq?: string | number | null; domestic_freight_cny?: string | number | null; source_decision?: string };
+export type ProductLibrarySource = { source_url?: string; source_title?: string; main_image_url?: string; offer_id?: string; price_cny?: string | number | null; moq?: string | number | null; domestic_freight_cny?: string | number | null; profit?: SourceTopProfit | null };
+export type ProductLibraryMatch = { id: number; skc: string; site?: string; selling_price?: string | number; source_url?: string; source_main_image_url?: string; source_groups?: ProductLibrarySource[]; net_profit?: string | number; profit_rate?: string | number };
+export type BatchSourcingState = { selected_skc_ids: string[]; unresolved_skc_ids: string[]; matched_products: ProductLibraryMatch[]; preview: SourcePreview | null; selected_candidates: SourceCandidateSelection[]; updated_at?: string };

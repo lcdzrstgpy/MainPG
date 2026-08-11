@@ -933,6 +933,11 @@ class PriceVerificationRepository:
                     (workspace_id, batch_id),
                 )
                 connection.execute(
+                    """DELETE FROM price_verification_batch_sourcing_sessions
+                    WHERE workspace_id = ? AND batch_id = ?""",
+                    (workspace_id, batch_id),
+                )
+                connection.execute(
                     """DELETE FROM price_verification_quote_capture_chunks
                     WHERE workspace_id = ? AND batch_id = ?""",
                     (workspace_id, batch_id),
@@ -1310,6 +1315,119 @@ class PriceVerificationRepository:
                 raise
         return _batch_selection_record(saved)
 
+    def replace_batch_selection_scope(
+        self, *, workspace_id: str, batch_id: str, skc_ids: Sequence[str]
+    ) -> None:
+        """Keep only the SKCs selected in the latest STEP 02 confirmation."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        selected = tuple(dict.fromkeys(_required_text(value, "skc_id") for value in skc_ids))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._owned_row_in(
+                    connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id
+                )
+                if selected:
+                    placeholders = ",".join("?" for _ in selected)
+                    connection.execute(
+                        f"""DELETE FROM price_verification_batch_selections
+                        WHERE workspace_id = ? AND batch_id = ? AND skc_id NOT IN ({placeholders})""",
+                        (workspace_id, batch_id, *selected),
+                    )
+                else:
+                    connection.execute(
+                        """DELETE FROM price_verification_batch_selections
+                        WHERE workspace_id = ? AND batch_id = ?""",
+                        (workspace_id, batch_id),
+                    )
+                connection.execute(
+                    """DELETE FROM price_verification_batch_sourcing_sessions
+                    WHERE workspace_id = ? AND batch_id = ?""",
+                    (workspace_id, batch_id),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
+    def save_batch_sourcing_session(
+        self,
+        *,
+        workspace_id: str,
+        batch_id: str,
+        selected_skc_ids: Sequence[str],
+        unresolved_skc_ids: Sequence[str],
+        matched_products: Sequence[Mapping[str, Any]],
+        preview: Mapping[str, Any] | None = None,
+        selected_candidates: Sequence[Mapping[str, Any]] | None = None,
+    ) -> Mapping[str, Any]:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        now = _now()
+        selected = [_required_text(value, "skc_id") for value in dict.fromkeys(selected_skc_ids)]
+        unresolved = [_required_text(value, "skc_id") for value in dict.fromkeys(unresolved_skc_ids)]
+        products = [_json_safe(dict(value)) for value in matched_products]
+        preview_json = json.dumps(_json_safe(dict(preview)), ensure_ascii=False) if preview is not None else None
+        candidates = [_json_safe(dict(value)) for value in (selected_candidates or [])]
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._owned_row_in(connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id)
+                connection.execute(
+                    """INSERT INTO price_verification_batch_sourcing_sessions
+                    (workspace_id, batch_id, selected_skc_ids_json, unresolved_skc_ids_json,
+                     matched_products_json, preview_json, selected_candidates_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(workspace_id, batch_id) DO UPDATE SET
+                      selected_skc_ids_json = excluded.selected_skc_ids_json,
+                      unresolved_skc_ids_json = excluded.unresolved_skc_ids_json,
+                      matched_products_json = excluded.matched_products_json,
+                      preview_json = excluded.preview_json,
+                      selected_candidates_json = excluded.selected_candidates_json,
+                      updated_at = excluded.updated_at""",
+                    (workspace_id, batch_id, json.dumps(selected, ensure_ascii=False), json.dumps(unresolved, ensure_ascii=False),
+                     json.dumps(products, ensure_ascii=False), preview_json, json.dumps(candidates, ensure_ascii=False), now),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_batch_sourcing_session(workspace_id=workspace_id, batch_id=batch_id) or {}
+
+    def get_batch_sourcing_session(self, *, workspace_id: str, batch_id: str) -> Mapping[str, Any] | None:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        with self._connect() as connection:
+            self._owned_row_in(connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id)
+            row = connection.execute(
+                """SELECT * FROM price_verification_batch_sourcing_sessions
+                WHERE workspace_id = ? AND batch_id = ?""", (workspace_id, batch_id)
+            ).fetchone()
+        if row is None:
+            return None
+        values = dict(row)
+        return {
+            "selected_skc_ids": _load_json_list(values["selected_skc_ids_json"]),
+            "unresolved_skc_ids": _load_json_list(values["unresolved_skc_ids_json"]),
+            "matched_products": _load_snapshot_list(values["matched_products_json"]),
+            "preview": _load_snapshot(values["preview_json"]) if values.get("preview_json") else None,
+            "selected_candidates": _load_snapshot_list(values["selected_candidates_json"]),
+            "updated_at": values["updated_at"],
+        }
+
+    def clear_batch_sourcing_results(self, *, workspace_id: str, batch_id: str) -> None:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE price_verification_batch_sourcing_sessions
+                SET unresolved_skc_ids_json = '[]', preview_json = NULL,
+                    selected_candidates_json = '[]', updated_at = ?
+                WHERE workspace_id = ? AND batch_id = ?""",
+                (_now(), workspace_id, batch_id),
+            )
+
     def list_batch_selections(
         self, *, workspace_id: str, batch_id: str, include_deleted: bool = False
     ) -> tuple[BatchSelectionRecord, ...]:
@@ -1517,6 +1635,24 @@ class PriceVerificationRepository:
                     ORDER BY skc_id, created_at""",
                     (workspace_id, batch_id),
                 ).fetchall()
+        return tuple(_skc_source_link_record(row) for row in rows)
+
+    def list_active_skc_source_links_for_skcs(
+        self, *, workspace_id: str, skc_ids: Sequence[str]
+    ) -> tuple[SkcSourceLinkRecord, ...]:
+        """Return durable 1688 details for the selected SKCs across their batches."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        selected = tuple(dict.fromkeys(_required_text(skc_id, "skc_id") for skc_id in skc_ids))
+        if not selected:
+            return ()
+        placeholders = ",".join("?" for _ in selected)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT * FROM price_verification_skc_source_links
+                WHERE workspace_id = ? AND status = 'active' AND skc_id IN ({placeholders})
+                ORDER BY skc_id, updated_at DESC""",
+                (workspace_id, *selected),
+            ).fetchall()
         return tuple(_skc_source_link_record(row) for row in rows)
 
     def active_skc_link_targets(

@@ -49,6 +49,7 @@ class ProfitRecordRow(Base):
     created_by: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_by_username: Mapped[str] = mapped_column(String(128), nullable=False, default="local")
     image_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_main_image_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
     source_image_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
     source_groups_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     source_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
