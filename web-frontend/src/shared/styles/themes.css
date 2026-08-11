@@ -76,6 +76,21 @@
 
   --theme-primary-button-gradient: linear-gradient(105deg, #087bf5, #14c8c0);
   --theme-primary-button-shadow: #0b93dc35;
+  --theme-on-primary: #ffffff;
+
+  /* Shared module surfaces and controls. Business-module styles consume these
+     aliases through the theme coverage layer at the end of this file. */
+  --theme-module-surface: #ffffff;
+  --theme-module-surface-raised: rgba(255, 255, 255, .96);
+  --theme-module-surface-soft: #f7fafc;
+  --theme-module-surface-tint: #eaf8ff;
+  --theme-module-border: #d8e9f3;
+  --theme-module-border-strong: #a7dafa;
+  --theme-module-primary-strong: #056fc8;
+  --theme-module-primary-rgb: 8, 119, 211;
+  --theme-module-panel-gradient: linear-gradient(120deg, #f5fbff 0%, #ffffff 64%, #eafaff 100%);
+  --theme-module-shadow: rgba(26, 105, 149, .08);
+  --theme-module-overlay: rgba(15, 36, 53, .22);
 }
 
 /* ---- 暖阳橙 ---- */
@@ -100,7 +115,7 @@
   --theme-sidebar-active-border: #f59e0b;
   --theme-sidebar-active-shadow: 0 5px 13px #b4530920;
 
-  --theme-hero-gradient: linear-gradient(118deg, #7c3a0a, #d35400 55%, #f59e0b);
+  --theme-hero-gradient: linear-gradient(118deg, #5a1f08, #9a3412 55%, #b45309);
   --theme-hero-text: #fef3c7;
   --theme-hero-eyebrow: #fde68a;
 
@@ -146,13 +161,26 @@
   --theme-auth-label-color: #6b4a20;
   --theme-auth-hint-color: #a0845a;
 
-  --theme-primary-button-gradient: linear-gradient(105deg, #e67e22, #f39c12);
+  --theme-primary-button-gradient: linear-gradient(105deg, #c2410c, #b45309);
   --theme-primary-button-shadow: #e67e2235;
+  --theme-on-primary: #ffffff;
 
-  --theme-hero-gradient-overwrite: linear-gradient(118deg, #7c3a0a 0%, #d35400 55%, #f59e0b 100%);
+  --theme-hero-gradient-overwrite: linear-gradient(118deg, #5a1f08 0%, #9a3412 55%, #b45309 100%);
   --theme-hero-shadow: #b4530926;
   --theme-hero-fluid-bg: radial-gradient(circle at 35% 38%, #fde68a6e, #f59e0b4a 48%, transparent 70%);
   --theme-hero-sheen-color: #ffffff1f;
+
+  --theme-module-surface: #fffdf8;
+  --theme-module-surface-raised: rgba(255, 253, 248, .97);
+  --theme-module-surface-soft: #fef7ed;
+  --theme-module-surface-tint: #fef3c7;
+  --theme-module-border: #ead6b8;
+  --theme-module-border-strong: #fdba74;
+  --theme-module-primary-strong: #b45309;
+  --theme-module-primary-rgb: 217, 119, 6;
+  --theme-module-panel-gradient: linear-gradient(120deg, #fff7ed 0%, #fffdf8 64%, #fef3c7 100%);
+  --theme-module-shadow: rgba(120, 60, 10, .11);
+  --theme-module-overlay: rgba(67, 20, 7, .22);
 }
 
 /* ---- 深空紫 ---- */
@@ -177,7 +205,7 @@
   --theme-sidebar-active-border: #a78bfa;
   --theme-sidebar-active-shadow: 0 5px 13px #6d28d920;
 
-  --theme-hero-gradient: linear-gradient(118deg, #1e1040, #6d28d9 55%, #a855f7);
+  --theme-hero-gradient: linear-gradient(118deg, #1e1040, #6d28d9 55%, #7e22ce);
   --theme-hero-text: #ede9fe;
   --theme-hero-eyebrow: #c4b5fd;
 
@@ -223,13 +251,116 @@
   --theme-auth-label-color: #5b2d8e;
   --theme-auth-hint-color: #8b7aa0;
 
-  --theme-primary-button-gradient: linear-gradient(105deg, #7c3aed, #ec4899);
+  --theme-primary-button-gradient: linear-gradient(105deg, #6d28d9, #be185d);
   --theme-primary-button-shadow: #7c3aed35;
+  --theme-on-primary: #ffffff;
 
-  --theme-hero-gradient-overwrite: linear-gradient(118deg, #1e1040 0%, #6d28d9 55%, #a855f7 100%);
+  --theme-hero-gradient-overwrite: linear-gradient(118deg, #1e1040 0%, #6d28d9 55%, #7e22ce 100%);
   --theme-hero-shadow: #6d28d926;
   --theme-hero-fluid-bg: radial-gradient(circle at 35% 38%, #c4b5fd6e, #a855f74a 48%, transparent 70%);
   --theme-hero-sheen-color: #ffffff1f;
+
+  --theme-module-surface: #fdfbff;
+  --theme-module-surface-raised: rgba(253, 251, 255, .97);
+  --theme-module-surface-soft: #f5f0ff;
+  --theme-module-surface-tint: #ede9fe;
+  --theme-module-border: #ddd6fe;
+  --theme-module-border-strong: #c4b5fd;
+  --theme-module-primary-strong: #6d28d9;
+  --theme-module-primary-rgb: 124, 58, 237;
+  --theme-module-panel-gradient: linear-gradient(120deg, #f5f0ff 0%, #fdfbff 64%, #fce7f3 100%);
+  --theme-module-shadow: rgba(80, 30, 120, .11);
+  --theme-module-overlay: rgba(30, 16, 64, .22);
+}
+
+/* ---- 黑白钻石 ---- */
+[data-theme="diamond"] {
+  --theme-page-bg: #0b0c0f;
+  --theme-card-bg: rgba(23, 25, 30, .94);
+  --theme-card-border: rgba(226, 232, 240, .22);
+  --theme-card-shadow: rgba(0, 0, 0, .34);
+  --theme-card-shadow-lg: rgba(0, 0, 0, .48);
+
+  --theme-text-primary: #f8fafc;
+  --theme-text-secondary: #cbd5e1;
+  --theme-text-muted: #94a3b8;
+
+  --theme-primary: #e5e7eb;
+  --theme-primary-light: #272a31;
+  --theme-accent: #ffffff;
+
+  --theme-sidebar-hover-bg: #24272e;
+  --theme-sidebar-active-bg: linear-gradient(105deg, #ffffff, #cbd5e1);
+  --theme-sidebar-active-color: #111318;
+  --theme-sidebar-active-border: #ffffff;
+  --theme-sidebar-active-shadow: 0 7px 18px rgba(255, 255, 255, .14);
+
+  --theme-hero-gradient: linear-gradient(120deg, #050505, #24272e 56%, #4b515c);
+  --theme-hero-text: #f1f5f9;
+  --theme-hero-eyebrow: #d8dee8;
+
+  --theme-brand-gradient: linear-gradient(145deg, #ffffff, #8b929e 48%, #262a31);
+  --theme-brand-shadow: rgba(255, 255, 255, .18);
+  --theme-brand-large-color: #111318;
+  --theme-brand-large-bg: #f8fafc;
+
+  --theme-avatar-bg: #f8fafc;
+  --theme-avatar-color: #111318;
+
+  --theme-icon-button-border: #444a55;
+  --theme-icon-button-bg: #1d2026;
+  --theme-icon-button-color: #e5e7eb;
+
+  --theme-page-tab-border: #363b45;
+  --theme-page-tab-bg: #191b20;
+  --theme-page-tab-active-border: #f8fafc;
+  --theme-page-tab-active-bg: #f8fafc;
+  --theme-page-tab-active-color: #111318;
+
+  --theme-flow-color-a: rgba(255, 255, 255, .04);
+  --theme-flow-color-b: rgba(226, 232, 240, .11);
+  --theme-flow-color-c: rgba(148, 163, 184, .16);
+  --theme-flow-color-d: rgba(255, 255, 255, .08);
+  --theme-flow-ripple: rgba(255, 255, 255, .18);
+  --theme-flow-ripple-secondary: rgba(203, 213, 225, .1);
+
+  --theme-scroll-gradient: linear-gradient(145deg, #f8fafc, #8b929e);
+  --theme-scroll-shadow: rgba(255, 255, 255, .2);
+
+  --theme-meteor-gradient: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, .12) 24%, rgba(226, 232, 240, .72) 82%, #ffffff 100%);
+  --theme-meteor-dot: #ffffff;
+  --theme-meteor-dot-shadow: rgba(255, 255, 255, .78);
+
+  --theme-auth-gradient: linear-gradient(135deg, #030303 0%, #111318 40%, #30343c 72%, #626975 100%);
+  --theme-auth-brand-text: #f8fafc;
+  --theme-auth-brand-eyebrow: #d8dee8;
+  --theme-auth-tabs-bg: #24272e;
+  --theme-auth-tabs-active-color: #111318;
+  --theme-auth-input-border: #444a55;
+  --theme-auth-input-outline: #f8fafc;
+  --theme-auth-label-color: #d8dee8;
+  --theme-auth-hint-color: #a8b0bd;
+
+  --theme-primary-button-gradient: linear-gradient(105deg, #ffffff, #cbd5e1);
+  --theme-primary-button-shadow: rgba(255, 255, 255, .18);
+  --theme-on-primary: #111318;
+
+  --theme-hero-gradient-overwrite: linear-gradient(120deg, #050505, #24272e 56%, #4b515c);
+  --theme-hero-shadow: rgba(0, 0, 0, .42);
+  --theme-hero-fluid-bg: radial-gradient(circle at 35% 38%, rgba(255, 255, 255, .2), rgba(148, 163, 184, .12) 48%, transparent 70%);
+  --theme-hero-sheen-color: rgba(255, 255, 255, .12);
+
+  --theme-module-surface: #17191e;
+  --theme-module-surface-raised: rgba(23, 25, 30, .98);
+  --theme-module-surface-soft: #22252c;
+  --theme-module-surface-tint: #2d313a;
+  --theme-module-border: #3a404a;
+  --theme-module-border-strong: #e5e7eb;
+  --theme-module-primary-strong: #ffffff;
+  --theme-module-primary-rgb: 229, 231, 235;
+  --theme-module-panel-gradient: linear-gradient(120deg, #111318 0%, #1b1e24 64%, #30343c 100%);
+  --theme-module-shadow: rgba(0, 0, 0, .32);
+  --theme-module-overlay: rgba(0, 0, 0, .64);
 }
 
 /* ================================================================
@@ -261,19 +392,19 @@
 [data-theme="violet"] .avatar { color: #6d28d9; background: #ede9fe; }
 
 /* ---- 仪表盘 Hero 卡片 ---- */
-[data-theme="sunset"] .dashboard-page .page-hero-card { background: linear-gradient(118deg, #7c3a0a 0%, #d35400 55%, #f59e0b 100%) !important; box-shadow: 0 18px 42px #b4530926 !important; }
+[data-theme="sunset"] .dashboard-page .page-hero-card { background: var(--theme-hero-gradient) !important; box-shadow: 0 18px 42px #b4530926 !important; }
 [data-theme="sunset"] .dashboard-page .page-hero-card::before { background: radial-gradient(circle at 35% 38%, #fde68a6e, #f59e0b4a 48%, transparent 70%) !important; }
-[data-theme="sunset"] .page-hero-card { background: linear-gradient(120deg, #7c3a0a, #d35400 56%, #f59e0b) !important; }
+[data-theme="sunset"] .page-hero-card { background: var(--theme-hero-gradient) !important; }
 [data-theme="sunset"] .page-hero-card p:not(.eyebrow) { color: #fef3c7 !important; }
 [data-theme="sunset"] .page-hero-card .eyebrow { color: #fde68a !important; }
-[data-theme="sunset"] .profit-test-hero { background: linear-gradient(118deg, #7c3a0a, #d35400 58%, #f59e0b) !important; }
+[data-theme="sunset"] .profit-test-hero { background: var(--theme-hero-gradient) !important; }
 
-[data-theme="violet"] .dashboard-page .page-hero-card { background: linear-gradient(118deg, #1e1040 0%, #6d28d9 55%, #a855f7 100%) !important; box-shadow: 0 18px 42px #6d28d926 !important; }
+[data-theme="violet"] .dashboard-page .page-hero-card { background: var(--theme-hero-gradient) !important; box-shadow: 0 18px 42px #6d28d926 !important; }
 [data-theme="violet"] .dashboard-page .page-hero-card::before { background: radial-gradient(circle at 35% 38%, #c4b5fd6e, #a855f74a 48%, transparent 70%) !important; }
-[data-theme="violet"] .page-hero-card { background: linear-gradient(120deg, #1e1040, #6d28d9 56%, #a855f7) !important; }
+[data-theme="violet"] .page-hero-card { background: var(--theme-hero-gradient) !important; }
 [data-theme="violet"] .page-hero-card p:not(.eyebrow) { color: #ede9fe !important; }
 [data-theme="violet"] .page-hero-card .eyebrow { color: #c4b5fd !important; }
-[data-theme="violet"] .profit-test-hero { background: linear-gradient(118deg, #1e1040, #6d28d9 58%, #a855f7) !important; }
+[data-theme="violet"] .profit-test-hero { background: var(--theme-hero-gradient) !important; }
 
 /* ---- 仪表盘流星特效 ---- */
 [data-theme="sunset"] .dashboard-meteor { background: linear-gradient(90deg, transparent 0%, rgba(245, 158, 11, .2) 24%, rgba(234, 179, 8, .8) 82%, rgba(253, 224, 71, .96) 100%) !important; }
@@ -282,10 +413,10 @@
 [data-theme="violet"] .dashboard-meteor::after { background: #f0abfc !important; box-shadow: 0 0 9px rgba(168, 85, 247, .82) !important; }
 
 /* ---- 利润测算按钮 ---- */
-[data-theme="sunset"] .profit-test-page .primary-button { background: linear-gradient(105deg, #e67e22, #f39c12) !important; }
-[data-theme="sunset"] .profit-site-tabs button.is-active { color: #fff; background: #e67e22; box-shadow: 0 7px 14px #e67e2230; }
+[data-theme="sunset"] .profit-test-page .primary-button { background: var(--theme-primary-button-gradient) !important; }
+[data-theme="sunset"] .profit-site-tabs button.is-active { color: #fff; background: #b45309; box-shadow: 0 7px 14px #b4530930; }
 [data-theme="sunset"] .profit-title-icon { color: #e67e22; background: #fef7ed; border-color: #fde8cd; }
-[data-theme="violet"] .profit-test-page .primary-button { background: linear-gradient(105deg, #7c3aed, #ec4899) !important; }
+[data-theme="violet"] .profit-test-page .primary-button { background: var(--theme-primary-button-gradient) !important; }
 [data-theme="violet"] .profit-site-tabs button.is-active { color: #fff; background: #7c3aed; box-shadow: 0 7px 14px #7c3aed30; }
 [data-theme="violet"] .profit-title-icon { color: #7c3aed; background: #f5f0ff; border-color: #ddd6fe; }
 
@@ -326,3 +457,2099 @@
 [data-theme="sunset"] .dashboard-page::after { background: radial-gradient(circle at 45% 45%, #fcd34d, #fbbf24 58%, transparent 73%) !important; }
 [data-theme="violet"] .dashboard-page::before { background: radial-gradient(circle at 35% 35%, #c4b5fd, #8b5cf6 58%, transparent 72%) !important; }
 [data-theme="violet"] .dashboard-page::after { background: radial-gradient(circle at 45% 45%, #f0abfc, #ec4899 58%, transparent 73%) !important; }
+
+/* ---- 黑白钻石：工作台外壳与登录页 ---- */
+[data-theme="diamond"] .auth-screen::before {
+  background:
+    radial-gradient(circle at 14% 18%, rgba(255, 255, 255, .16) 0, transparent 25%),
+    radial-gradient(circle at 78% 78%, rgba(148, 163, 184, .14) 0, transparent 32%),
+    linear-gradient(112deg, transparent 18%, rgba(255, 255, 255, .13) 35%, transparent 49%);
+  background-size: 100% 100%, 100% 100%, 190% 100%;
+}
+[data-theme="diamond"] .auth-form-card {
+  color: var(--theme-text-primary);
+  background: rgba(23, 25, 30, .9);
+  border-color: rgba(255, 255, 255, .24);
+  box-shadow: 0 26px 70px rgba(0, 0, 0, .52);
+}
+[data-theme="diamond"] .auth-form-card input {
+  color: var(--theme-text-primary);
+  background: #101216;
+}
+[data-theme="diamond"] .workspace-shell {
+  background-color: var(--theme-page-bg);
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, .018) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, .018) 75%),
+    linear-gradient(-45deg, rgba(255, 255, 255, .018) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, .018) 75%);
+  background-position: 0 0, 18px 18px;
+  background-size: 36px 36px;
+}
+[data-theme="diamond"] :is(.brand-logo, .brand-logo-large, .brand-logo-hero) {
+  filter: grayscale(1) brightness(2.25) contrast(1.1) drop-shadow(0 10px 22px rgba(0, 0, 0, .35));
+}
+[data-theme="diamond"] .auth-tabs button { color: var(--theme-text-secondary); }
+[data-theme="diamond"] .auth-tabs button.is-selected {
+  color: #111318;
+  background: #f8fafc;
+  box-shadow: 0 3px 12px rgba(255, 255, 255, .16);
+}
+[data-theme="diamond"] .primary-button,
+[data-theme="diamond"] .scroll-to-top,
+[data-theme="diamond"] .brand-mark {
+  color: var(--theme-on-primary);
+}
+
+[data-theme="diamond"] .sidebar-item,
+[data-theme="diamond"] .sidebar-subitem,
+[data-theme="diamond"] .sidebar-caption,
+[data-theme="diamond"] .sidebar-status,
+[data-theme="diamond"] .breadcrumb,
+[data-theme="diamond"] .user-menu summary,
+[data-theme="diamond"] .page-tab > button {
+  color: var(--theme-text-secondary);
+}
+[data-theme="diamond"] .breadcrumb strong { color: var(--theme-text-primary); }
+[data-theme="diamond"] .sidebar-item:hover,
+[data-theme="diamond"] .sidebar-subitem:hover { background: var(--theme-sidebar-hover-bg) !important; }
+[data-theme="diamond"] .sidebar-item.is-active {
+  color: var(--theme-sidebar-active-color) !important;
+  background: var(--theme-sidebar-active-bg) !important;
+  box-shadow: inset 0 0 0 1px var(--theme-sidebar-active-border), var(--theme-sidebar-active-shadow) !important;
+}
+[data-theme="diamond"] .sidebar-subitem.is-active {
+  color: #111318 !important;
+  background: #e5e7eb !important;
+  box-shadow: inset 3px 0 0 #ffffff !important;
+}
+[data-theme="diamond"] .sidebar-pin-button.is-active,
+[data-theme="diamond"] .topbar-pin-toggle.is-active {
+  color: #111318 !important;
+  border-color: #ffffff !important;
+  background: #f8fafc !important;
+  box-shadow: inset 0 0 0 1px #d1d5db !important;
+}
+[data-theme="diamond"] .page-tab { border-color: var(--theme-page-tab-border); background: var(--theme-page-tab-bg); }
+[data-theme="diamond"] .page-tab.is-active {
+  border-color: var(--theme-page-tab-active-border) !important;
+  background: var(--theme-page-tab-active-bg) !important;
+}
+[data-theme="diamond"] .page-tab.is-active > button { color: var(--theme-page-tab-active-color) !important; }
+[data-theme="diamond"] .avatar { color: var(--theme-avatar-color); background: var(--theme-avatar-bg); }
+[data-theme="diamond"] .topbar-card.is-pinned.is-stuck { background: var(--theme-card-bg); }
+
+[data-theme="diamond"] .user-popover {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-module-border);
+  background: var(--theme-module-surface-raised);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, .48);
+}
+[data-theme="diamond"] .user-popover span { color: var(--theme-text-secondary); }
+[data-theme="diamond"] .user-popover .user-menu-action {
+  color: var(--theme-text-secondary);
+  background: var(--theme-module-surface-soft);
+}
+[data-theme="diamond"] .user-popover .user-menu-action:hover {
+  color: var(--theme-text-primary);
+  background: var(--theme-module-surface-tint);
+}
+[data-theme="diamond"] .theme-switcher { border-color: var(--theme-module-border); }
+[data-theme="diamond"] .theme-switcher-label { color: var(--theme-text-muted); }
+[data-theme="diamond"] .theme-option {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-secondary);
+}
+[data-theme="diamond"] .theme-option:hover { border-color: #737985; background: #24272e; }
+[data-theme="diamond"] .theme-option.is-active {
+  border-color: #ffffff;
+  color: #111318;
+  background: #f8fafc;
+}
+
+[data-theme="diamond"] .page-hero-card,
+[data-theme="diamond"] .dashboard-page .page-hero-card,
+[data-theme="diamond"] .profit-test-hero {
+  background: var(--theme-hero-gradient) !important;
+  box-shadow: 0 18px 42px var(--theme-hero-shadow) !important;
+}
+[data-theme="diamond"] .page-hero-card p:not(.eyebrow) { color: var(--theme-hero-text) !important; }
+[data-theme="diamond"] .page-hero-card .eyebrow { color: var(--theme-hero-eyebrow) !important; }
+[data-theme="diamond"] .dashboard-page .page-hero-card::before {
+  background: radial-gradient(circle at 35% 38%, rgba(255, 255, 255, .24), rgba(148, 163, 184, .12) 48%, transparent 70%) !important;
+}
+[data-theme="diamond"] .dashboard-meteor { background: var(--theme-meteor-gradient) !important; }
+[data-theme="diamond"] .dashboard-meteor::after {
+  background: var(--theme-meteor-dot) !important;
+  box-shadow: 0 0 10px var(--theme-meteor-dot-shadow) !important;
+}
+[data-theme="diamond"] .dashboard-page::before {
+  background: radial-gradient(circle at 35% 35%, #ffffff, #737985 58%, transparent 72%) !important;
+}
+[data-theme="diamond"] .dashboard-page::after {
+  background: radial-gradient(circle at 45% 45%, #d1d5db, #4b515c 58%, transparent 73%) !important;
+}
+
+[data-theme="diamond"] .shortcut-card,
+[data-theme="diamond"] .empty-dashboard-card,
+[data-theme="diamond"] .module-empty-card,
+[data-theme="diamond"] .dashboard-page .shortcut-card,
+[data-theme="diamond"] .dashboard-page .empty-dashboard-card {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: var(--theme-module-surface);
+}
+[data-theme="diamond"] :is(.shortcut-card, .empty-dashboard-card, .module-empty-card) :is(h1, h2, h3) {
+  color: var(--theme-text-primary);
+}
+[data-theme="diamond"] :is(.shortcut-card, .empty-dashboard-card, .module-empty-card) :is(p, span) {
+  color: var(--theme-text-secondary);
+}
+[data-theme="diamond"] .shortcut-card b { color: #f8fafc; }
+[data-theme="diamond"] :is(.empty-dashboard-card > span, .empty-orbit) {
+  color: #111318;
+  background: #f8fafc;
+}
+
+[data-theme="diamond"] .profit-test-page .primary-button {
+  color: var(--theme-on-primary) !important;
+  background: var(--theme-primary-button-gradient) !important;
+}
+[data-theme="diamond"] .profit-site-tabs button.is-active {
+  color: #111318;
+  background: #f8fafc;
+  box-shadow: 0 7px 16px rgba(255, 255, 255, .14);
+}
+[data-theme="diamond"] .profit-title-icon {
+  color: #111318;
+  border-color: #ffffff;
+  background: #f8fafc;
+}
+
+[data-theme="diamond"] .topbar-card::before,
+[data-theme="diamond"] .sidebar-card::before {
+  background: linear-gradient(105deg, transparent 22%, rgba(255, 255, 255, .05) 36%, rgba(226, 232, 240, .14) 46%, rgba(255, 255, 255, .2) 53%, rgba(148, 163, 184, .1) 62%, transparent 78%) !important;
+}
+[data-theme="diamond"] .topbar-card::after,
+[data-theme="diamond"] .sidebar-card::after {
+  background: radial-gradient(ellipse at 50% 115%, rgba(255, 255, 255, .18) 0 16%, rgba(148, 163, 184, .1) 36%, transparent 68%) 0 0 / 180px 32px repeat-x !important;
+}
+
+/* ================================================================
+   Business-module theme coverage
+
+   Module styles predate the theme system and contain many fixed classic-blue
+   colors. These semantic overrides make every main workflow respond to the
+   selected theme without changing success, warning, error, or destructive
+   colors, whose meaning must remain stable across themes.
+   ================================================================ */
+
+/* ---- Module page typography ---- */
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .daily-selection-page,
+    .price-verification-page,
+    .product-processing-page,
+    .product-processing-test-page,
+    .verify-page,
+    .profit-products-page,
+    .profit-test-page,
+    .settings-grid
+  ) {
+  color: var(--theme-text-primary);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .settings-grid,
+    .daily-selection-page,
+    .price-verification-page,
+    .product-processing-page,
+    .product-processing-test-page,
+    .verify-page,
+    .profit-products-page,
+    .profit-test-page
+  )
+  :is(h1, h2, h3) {
+  color: var(--theme-text-primary);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .settings-grid,
+    .daily-selection-page,
+    .price-verification-page,
+    .product-processing-page,
+    .product-processing-test-page,
+    .verify-page,
+    .profit-products-page,
+    .profit-test-page
+  )
+  :is(label, dt, .verify-sub) {
+  color: var(--theme-text-secondary);
+}
+
+/* ---- Full-width module heroes ---- */
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .settings-hero,
+    .daily-page-heading,
+    .price-verification-hero,
+    .product-processing-hero,
+    .verify-commandbar,
+    .profit-products-head,
+    .profit-activity-hero
+  ) {
+  border-color: var(--theme-module-border-strong);
+  color: #fff;
+  background: var(--theme-hero-gradient);
+  box-shadow: 0 16px 38px var(--theme-module-shadow);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .settings-hero,
+    .daily-page-heading,
+    .price-verification-hero,
+    .product-processing-hero,
+    .verify-commandbar,
+    .profit-products-head,
+    .profit-activity-hero
+  )
+  :is(h1, h2, h3, strong) {
+  color: #fff;
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .settings-hero,
+    .daily-page-heading,
+    .price-verification-hero,
+    .product-processing-hero,
+    .verify-commandbar,
+    .profit-products-head,
+    .profit-activity-hero
+  )
+  :is(p, small, .eyebrow, .daily-kicker, .verify-eyebrow) {
+  color: var(--theme-hero-text);
+}
+
+/* ---- Cards, panels, drawers, and dialogs ---- */
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .api-key-panel,
+    .settings-summary-bar,
+    .daily-panel,
+    .daily-collection-surface,
+    .direction-card,
+    .preset-dialog,
+    .price-verification-workflow-card,
+    .price-verification-panel,
+    .price-verification-quote-card,
+    .pv-source-panel,
+    .pv-source-group,
+    .pv-source-card,
+    .product-processing-surface,
+    .product-draft-card,
+    .product-processing-test-page .section,
+    .product-processing-test-page .draft-card,
+    .verify-section,
+    .pool-card,
+    .sku-batch-panel,
+    .verify-history-card,
+    .profit-products-panel,
+    .profit-settings-panel,
+    .profit-test-card,
+    .profit-workflow-card,
+    .profit-test-toolbar,
+    .profit-image-drop,
+    .profit-image-icon,
+    .profit-import-summary,
+    .profit-import-file,
+    .profit-import-stats div,
+    .profit-result,
+    .profit-test-page pre,
+    .profit-preview-strip div,
+    .profit-source-card,
+    .profit-threshold-box,
+    .profit-filter-history-item,
+    .stats-card
+  ) {
+  border-color: var(--theme-module-border);
+  background-color: var(--theme-module-surface);
+  box-shadow: 0 10px 28px var(--theme-module-shadow);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .history-drawer-header,
+    .profit-source-drawer-head,
+    .sku-batch-head,
+    .verify-history-head
+  ) {
+  background: var(--theme-module-panel-gradient);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(.history-drawer, .profit-source-drawer, .verify-history-card, .sku-batch-panel) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: var(--theme-module-surface-raised);
+  box-shadow: -22px 0 55px var(--theme-module-shadow);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(.history-drawer-layer.is-open, .profit-source-drawer-mask, .sku-batch-backdrop, .verify-history-backdrop) {
+  background: var(--theme-module-overlay);
+}
+
+/* ---- Soft information surfaces and empty states ---- */
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .daily-panel-title,
+    .history-drawer-summary,
+    .price-verification-step,
+    .price-verification-session-empty,
+    .price-verification-collect-action,
+    .price-verification-review-summary,
+    .price-verification-source-empty,
+    .price-verification-empty-result,
+    .price-verification-source-callout,
+    .pv-source-stat,
+    .pv-source-sort,
+    .product-processing-tabs,
+    .product-processing-empty,
+    .product-draft-image,
+    .verify-empty,
+    .profit-products-filters,
+    .profit-products-query,
+    .profit-products-pagination,
+    .profit-site-tabs,
+    .profit-workflow-card .profit-step-card,
+    .profit-filter-history-item:hover,
+    .stats-icon
+  ) {
+  border-color: var(--theme-module-border);
+  background-color: var(--theme-module-surface-soft);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .price-verification-notice,
+    .product-processing-notice,
+    .channel-placeholder-note,
+    .result-empty > span,
+    .product-processing-empty > span,
+    .product-draft-image-missing > span,
+    .price-verification-empty-result > span,
+    .price-verification-workflow-heading > span,
+    .count-badge
+  ) {
+  border-color: var(--theme-module-border-strong);
+  color: var(--theme-primary);
+  background-color: var(--theme-module-surface-tint);
+}
+
+/* ---- Form controls ---- */
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .settings-grid,
+    .daily-selection-page,
+    .price-verification-page,
+    .product-processing-page,
+    .product-processing-test-page,
+    .verify-page,
+    .profit-products-page,
+    .profit-test-page,
+    .sku-batch-panel,
+    .verify-history-card
+  )
+  :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: var(--theme-module-surface);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .settings-grid,
+    .daily-selection-page,
+    .price-verification-page,
+    .product-processing-page,
+    .product-processing-test-page,
+    .verify-page,
+    .profit-products-page,
+    .profit-test-page,
+    .sku-batch-panel,
+    .verify-history-card
+  )
+  :is(input, select, textarea):focus {
+  border-color: var(--theme-primary);
+  box-shadow: 0 0 0 3px rgba(var(--theme-module-primary-rgb), .14);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .daily-selection-page,
+    .price-verification-page,
+    .product-processing-test-page,
+    .verify-page,
+    .profit-products-page,
+    .profit-test-page
+  )
+  input:is([type="checkbox"], [type="radio"], [type="range"]) {
+  accent-color: var(--theme-primary);
+}
+
+/* ---- Primary actions ---- */
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .settings-action-buttons .primary-button,
+    .direction-panel-actions > button:not(.toggle-delete-mode-button):not(.preset-entry-button),
+    .preset-dialog-actions button[type="submit"],
+    .collect-button,
+    .confirm-button,
+    .sku-filter-button,
+    .price-verification-primary-button,
+    .pv-source-run-button,
+    .verify-actions button.primary,
+    .verify-row-actions button.primary,
+    .verify-history-foot .primary,
+    .sku-batch-panel .primary-button,
+    .profit-products-page .primary-button,
+    .profit-test-page .primary-button
+  ) {
+  border-color: transparent;
+  color: var(--theme-on-primary);
+  background: var(--theme-primary-button-gradient);
+  box-shadow: 0 8px 18px var(--theme-primary-button-shadow);
+}
+
+/* ---- Secondary actions, links, and active navigation ---- */
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .product-processing-refresh,
+    .product-draft-image-missing button,
+    .price-verification-secondary-button,
+    .price-verification-back-button,
+    .history-drawer-header > button,
+    .preset-dialog-actions button:not([type="submit"]),
+    .verify-actions button:not(.primary),
+    .verify-history button:not(.primary),
+    .verify-row-actions button:not(.primary),
+    .profit-products-page button:not(.primary-button),
+    .profit-test-page .profit-settings-toggle
+  ) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-secondary);
+  background-color: var(--theme-module-surface);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .product-processing-tabs button:hover,
+    .product-processing-tabs button.is-active,
+    .price-verification-text-button,
+    .product-draft-body a,
+    .history-drawer-summary b,
+    .run-list b,
+    .pv-source-head .pv-eyebrow,
+    .pv-source-sort button.is-active,
+    .profit-source-open,
+    .profit-products-page a,
+    .settings-grid a
+  ) {
+  color: var(--theme-primary);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .product-processing-tabs button.is-active,
+    .price-verification-steps .price-verification-step.is-active,
+    .price-verification-action-buttons .price-verification-secondary-button.is-active,
+    .mode-tabs button.is-active,
+    .run-list > button.is-active,
+    .history-drawer-list > button.is-active,
+    .profit-site-check-group label.is-active,
+    .profit-filter-history-item.is-active,
+    .draft-card.selected,
+    .pool-card.selected
+  ) {
+  border-color: var(--theme-module-border-strong);
+  color: var(--theme-module-primary-strong);
+  background-color: var(--theme-module-surface-tint);
+  box-shadow: inset 0 0 0 1px rgba(var(--theme-module-primary-rgb), .12);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .price-verification-steps .price-verification-step.is-active .price-verification-step-number,
+    .direction-card .direction-edit-indicator,
+    .draft-pagination button.current,
+    .verify-pagination button.current,
+    .sku-batch-panel .is-active
+  ) {
+  border-color: var(--theme-primary);
+  color: var(--theme-on-primary);
+  background: var(--theme-primary);
+}
+
+/* ---- Data tables and repeated rows ---- */
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .price-verification-page,
+    .product-processing-test-page,
+    .verify-page,
+    .profit-products-page,
+    .profit-test-page,
+    .sku-batch-panel,
+    .verify-history-card
+  )
+  :is(table, thead, tbody, tr, th, td) {
+  border-color: var(--theme-module-border);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .price-verification-page,
+    .product-processing-test-page,
+    .verify-page,
+    .profit-products-page,
+    .profit-test-page,
+    .sku-batch-panel,
+    .verify-history-card
+  )
+  th {
+  color: var(--theme-text-secondary);
+  background-color: var(--theme-module-surface-soft);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .price-verification-page,
+    .product-processing-test-page,
+    .verify-page,
+    .profit-products-page,
+    .profit-test-page,
+    .sku-batch-panel,
+    .verify-history-card
+  )
+  td {
+  color: var(--theme-text-primary);
+  background-color: var(--theme-module-surface);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .price-verification-page,
+    .product-processing-test-page,
+    .verify-page,
+    .profit-products-page,
+    .profit-test-page,
+    .sku-batch-panel,
+    .verify-history-card
+  )
+  tbody tr:hover td {
+  background-color: var(--theme-module-surface-soft);
+}
+
+/* ---- Floating workflow bars and selection summaries ---- */
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(.price-verification-action-bar, .verify-quickbar, .profit-products-pagination) {
+  border-color: var(--theme-module-border-strong);
+  background: var(--theme-module-surface-raised);
+  box-shadow: 0 12px 30px var(--theme-module-shadow);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(.stats-value, .verify-command-stats strong, .price-verification-action-summary strong) {
+  color: var(--theme-module-primary-strong);
+}
+
+/* Hero contrast guard: nested summary pills intentionally remain translucent
+   so their white labels never end up on a light module surface. */
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(
+    .settings-hero,
+    .daily-page-heading,
+    .price-verification-hero,
+    .product-processing-hero,
+    .verify-commandbar,
+    .profit-products-head,
+    .profit-activity-hero
+  ) {
+  background: var(--theme-hero-gradient);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(.verify-command-stats span, .profit-hero-steps .profit-step-card) {
+  border-color: rgba(255, 255, 255, .3);
+  color: #fff;
+  background: rgba(255, 255, 255, .13);
+  box-shadow: none;
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  :is(.verify-command-stats span, .profit-hero-steps .profit-step-card)
+  :is(strong, em, span) {
+  color: #fff;
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  .verify-command-stats i.iconfont {
+  color: var(--theme-hero-eyebrow);
+  background: transparent;
+}
+
+/* ================================================================
+   Diamond theme: product-processing workspace
+
+   This screen owns a dense sticky toolbar, nested editors, drawers and modal
+   surfaces that intentionally bypass the generic module-card classes.
+   ================================================================ */
+[data-theme="diamond"] .verify-page :is(
+  .verify-section,
+  .pool-card,
+  .verify-sku,
+  .verify-ai-item,
+  .verify-advanced-card,
+  .verify-history li,
+  .verify-drawer,
+  .verify-drawer-sku,
+  .verify-history-card,
+  .sku-batch-panel,
+  .sku-batch-draft
+) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: var(--theme-module-surface);
+  box-shadow: 0 10px 26px var(--theme-module-shadow);
+}
+
+[data-theme="diamond"] .verify-page :is(
+  .verify-sticky-toolbar,
+  .pool-edit-panel,
+  .verify-sku-summary,
+  .verify-progress-area,
+  .verify-ai-config-hint,
+  .verify-quickbar,
+  .task-history,
+  .verify-drawer-head,
+  .verify-drawer-foot,
+  .verify-history-head,
+  .sku-batch-head,
+  .sku-batch-foot
+) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: var(--theme-module-surface-soft);
+}
+
+[data-theme="diamond"] .verify-page .verify-sticky-toolbar.is-stuck {
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .48);
+}
+
+[data-theme="diamond"] .verify-page .verify-pool-toolbar {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: var(--theme-module-panel-gradient);
+  box-shadow: 0 7px 20px rgba(0, 0, 0, .28);
+}
+
+[data-theme="diamond"] .verify-page :is(
+  .verify-section-head h2,
+  .verify-pool-stats strong,
+  .verify-history-head h2,
+  .sku-batch-head h2,
+  .sku-batch-draft header strong,
+  .verify-pool-history-entry button strong
+) {
+  color: var(--theme-text-primary);
+}
+
+[data-theme="diamond"] .verify-page :is(
+  .verify-sub,
+  .verify-pool-stats,
+  .verify-history-head p,
+  .sku-batch-head p,
+  .sku-batch-draft header small,
+  .sku-batch-draft header > span,
+  .sku-batch-remaining,
+  .verify-history-foot span,
+  .verify-pool-history-entry button small
+) {
+  color: var(--theme-text-secondary);
+}
+
+[data-theme="diamond"] .verify-page :is(
+  .verify-actions button,
+  .verify-history button,
+  .verify-row-actions button,
+  .btn-mini,
+  .verify-selected-banner-acts button,
+  .verify-sku header button,
+  .verify-pagination button,
+  .verify-pagination-pages button,
+  .verify-drawer-close,
+  .verify-drawer-sku header button,
+  .sku-batch-foot button
+) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-secondary);
+  background: var(--theme-module-surface);
+}
+
+[data-theme="diamond"] .verify-page :is(
+  .verify-actions button,
+  .verify-history button,
+  .verify-row-actions button,
+  .verify-pagination button,
+  .verify-pagination-pages button,
+  .sku-batch-foot button
+):disabled {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-muted);
+  background: var(--theme-module-surface-soft);
+  opacity: .72;
+}
+
+[data-theme="diamond"] .verify-page :is(
+  .verify-actions button.primary,
+  .verify-row-actions button.primary,
+  .verify-history-foot .primary,
+  .sku-batch-foot button.primary,
+  .verify-pagination button.current,
+  .verify-pagination-pages button.active,
+  .verify-view-toggle button.is-active,
+  .verify-hide-single:has(input:checked)
+) {
+  border-color: #f8fafc;
+  color: var(--theme-on-primary);
+  background: var(--theme-primary-button-gradient);
+  box-shadow: 0 6px 15px rgba(255, 255, 255, .14);
+}
+
+[data-theme="diamond"] .verify-page :is(
+  .verify-actions button.primary,
+  .verify-row-actions button.primary,
+  .verify-history-foot .primary,
+  .sku-batch-foot button.primary
+):disabled {
+  color: #30343c;
+  background: #aeb4be;
+  border-color: #aeb4be;
+  opacity: .78;
+}
+
+[data-theme="diamond"] .verify-page :is(
+  .verify-page-size,
+  .verify-sku-filter,
+  .verify-view-toggle,
+  .verify-hide-single,
+  .verify-scope-check,
+  .verify-count,
+  .sku-chip,
+  .verify-history-site,
+  .verify-badge,
+  .sku-batch-chips span
+) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-secondary);
+  background: var(--theme-module-surface-soft);
+}
+
+[data-theme="diamond"] .verify-page :is(
+  .verify-pool-search,
+  .verify-pool-select,
+  .verify-editor-grid input,
+  .verify-form-row input,
+  .verify-form-row select,
+  .verify-variant-grid input,
+  .verify-pagination-jump input,
+  .sku-batch-filters select,
+  .sku-batch-filters input
+) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: #101216;
+}
+
+[data-theme="diamond"] .verify-page :is(
+  .verify-pool-search,
+  .verify-editor-grid input,
+  .verify-form-row input,
+  .verify-form-row select,
+  .verify-variant-grid input,
+  .verify-pagination-jump input,
+  .sku-batch-filters select,
+  .sku-batch-filters input
+):focus {
+  border-color: #f8fafc;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, .12);
+}
+
+[data-theme="diamond"] .verify-page :is(
+  .pool-thumb,
+  .verify-table th,
+  .sku-batch-filters,
+  .sku-batch-filters input:disabled
+) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-secondary);
+  background: var(--theme-module-surface-soft);
+}
+
+[data-theme="diamond"] .verify-page .verify-selected-banner {
+  border-color: var(--theme-module-border-strong);
+  color: var(--theme-text-primary);
+  background: linear-gradient(105deg, #24272e, #30343c);
+}
+[data-theme="diamond"] .verify-page .verify-selected-banner strong { color: #ffffff; }
+
+[data-theme="diamond"] .verify-page .verify-pool-history-entry button,
+[data-theme="diamond"] .verify-page .history-collection-trigger {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: var(--theme-module-panel-gradient);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .2);
+}
+[data-theme="diamond"] .verify-page .verify-pool-history-entry button > i {
+  color: var(--theme-on-primary);
+  background: var(--theme-primary-button-gradient);
+  box-shadow: 0 6px 14px rgba(255, 255, 255, .12);
+}
+
+[data-theme="diamond"] .verify-page .pool-card.selected {
+  border-color: #f8fafc;
+  background: #20232a;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, .16), 0 10px 24px rgba(0, 0, 0, .3);
+}
+[data-theme="diamond"] .verify-page .pool-card::before {
+  background: linear-gradient(180deg, #ffffff, #737985);
+}
+
+/* Diamond theme: settings, selection, verification and profit modules. */
+[data-theme="diamond"] :is(
+  .api-key-input-row,
+  .settings-card,
+  .settings-baseurl,
+  .delete-confirm-dialog,
+  .candidate-card,
+  .price-verification-sku-rows,
+  .price-verification-source-results,
+  .price-verification-source-results > div,
+  .price-verification-source-candidate,
+  .price-verification-source-linked-group,
+  .price-verification-batch-table-wrap,
+  .price-verification-source-candidate-block,
+  .price-verification-source-linked-candidate,
+  .pv-source-stats,
+  .pv-source-group-head,
+  .pv-profit-box,
+  .draft-card-edit,
+  .count-card,
+  .history-item,
+  .profit-edit-panel,
+  .profit-product-card-result,
+  .profit-products-table-wrap,
+  .profit-image-empty,
+  .profit-image-modal,
+  .profit-modal
+) {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-module-border);
+  background: var(--theme-module-surface);
+  box-shadow: var(--theme-module-shadow);
+}
+
+[data-theme="diamond"] :is(
+  .direction-card-meta span.is-custom,
+  .candidate-facts > span,
+  .price-verification-price-compare span,
+  .price-verification-source-candidate-body em,
+  .price-verification-section-help-tip,
+  .pv-source-keyword em,
+  .profit-product-card-profit,
+  .profit-product-card-fields,
+  .profit-product-card-profit em,
+  .profit-products-table-head,
+  .profit-products-table thead th,
+  .history-status
+) {
+  color: var(--theme-text-secondary);
+  border-color: var(--theme-module-border);
+  background: var(--theme-module-surface-soft);
+}
+
+[data-theme="diamond"] :is(
+  .settings-field input,
+  .preset-form-grid input,
+  .preset-form-grid select,
+  .collection-fields input,
+  .collection-fields select,
+  .sku-filter,
+  .sku-filter input[type="number"],
+  .price-verification-batch-count input,
+  .price-verification-source-controls input,
+  .price-verification-source-controls select,
+  .price-verification-batch-switch input,
+  .pv-profit-edit-field input,
+  .form-row input,
+  .form-row select,
+  .profit-edit-url-input,
+  .profit-edit-row input,
+  .profit-product-card-fields input,
+  .profit-products-edit-input
+) {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-module-border);
+  background: #101216;
+  box-shadow: none;
+}
+
+[data-theme="diamond"] :is(
+  .settings-field input,
+  .preset-form-grid input,
+  .collection-fields input,
+  .sku-filter input,
+  .price-verification-batch-count input,
+  .price-verification-source-controls input,
+  .price-verification-batch-switch input,
+  .pv-profit-edit-field input,
+  .form-row input,
+  .profit-edit-url-input,
+  .profit-edit-row input,
+  .profit-product-card-fields input,
+  .profit-products-edit-input
+)::placeholder {
+  color: var(--theme-text-muted);
+}
+
+[data-theme="diamond"] :is(
+  .api-key-visibility-button,
+  .settings-secondary-button,
+  .add-direction-card,
+  .preset-dialog-header button,
+  .delete-confirm-actions button,
+  .history-drawer-trigger,
+  .select-all-button,
+  .sku-repull-button,
+  .price-verification-keyword-toggle,
+  .price-verification-decision-button,
+  .price-verification-source-link-button,
+  .price-verification-source-linked-group button,
+  .price-verification-source-controls button,
+  .price-verification-batch-current button,
+  .pv-source-link-button,
+  .scope-checkbox,
+  .profit-drawer-close,
+  .profit-edit-url-button,
+  .profit-edit-add-button,
+  .profit-products-edit-cancel,
+  .profit-image-upload-button
+) {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-module-border);
+  background: #101216;
+  box-shadow: none;
+}
+
+[data-theme="diamond"] :is(
+  .api-key-visibility-button,
+  .settings-secondary-button,
+  .add-direction-card,
+  .history-drawer-trigger,
+  .select-all-button,
+  .sku-repull-button,
+  .price-verification-keyword-toggle,
+  .price-verification-decision-button,
+  .price-verification-source-link-button,
+  .price-verification-source-linked-group button,
+  .price-verification-source-controls button,
+  .pv-source-link-button,
+  .profit-edit-url-button,
+  .profit-edit-add-button,
+  .profit-image-upload-button
+):hover {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-module-border-strong);
+  background: var(--theme-module-surface-tint);
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-source-link-button.is-linked,
+  .price-verification-source-linked-group button.is-active,
+  .price-verification-batch-current,
+  .price-verification-source-linked-candidate.is-current,
+  .pv-source-link-button.is-linked
+) {
+  color: var(--theme-on-primary);
+  border-color: var(--theme-primary);
+  background: var(--theme-primary);
+}
+
+[data-theme="diamond"] :is(
+  .daily-selection-page,
+  .price-verification-page,
+  .price-verification-source-page,
+  .product-processing-test-page,
+  .profit-activity-products-page,
+  .profit-activity-test-page,
+  .settings-page
+) :is(h1, h2, h3, strong) {
+  color: var(--theme-text-primary);
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-batch-table,
+  .profit-products-table
+) {
+  color: var(--theme-text-primary);
+  background: var(--theme-module-surface);
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-batch-table th,
+  .profit-products-table th
+) {
+  color: var(--theme-text-secondary);
+  border-color: var(--theme-module-border);
+  background: var(--theme-module-surface-tint);
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-batch-table td,
+  .profit-products-table td
+) {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-module-border);
+  background: transparent;
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-batch-table tbody tr:hover,
+  .profit-products-table tbody tr:hover
+) td {
+  background: var(--theme-module-surface-tint);
+}
+
+[data-theme="diamond"] :is(
+  .thumb,
+  .profit-product-gallery,
+  .profit-product-gallery img,
+  .profit-products-image-thumb
+) {
+  border-color: var(--theme-module-border);
+  background: var(--theme-module-surface-soft);
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-connection-state,
+  .price-verification-hero-status
+) {
+  color: #fde68a;
+  border-color: #6b5721;
+  background: #2a2315;
+}
+
+[data-theme="diamond"] .price-verification-connection-state.is-ready {
+  color: #86efac;
+  border-color: #276749;
+  background: #12251d;
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-profit-strip.is-qualified,
+  .pv-profit-box.is-qualified,
+  .profit-product-card-result.is-qualified
+) {
+  color: #86efac;
+  border-color: #276749;
+  background: #12251d;
+}
+
+[data-theme="diamond"] :is(
+  .reject-button,
+  .sku-repull-state .sku-repull-cancel,
+  .profit-drawer-unlink,
+  .profit-edit-remove-button
+) {
+  color: #fca5a5;
+  border-color: #6b2b32;
+  background: #2a1719;
+}
+
+[data-theme="diamond"] :is(
+  .reject-button,
+  .sku-repull-state .sku-repull-cancel,
+  .profit-drawer-unlink,
+  .profit-edit-remove-button
+):hover {
+  color: #fecaca;
+  border-color: #9f3640;
+  background: #3a1b1f;
+}
+
+[data-theme="diamond"] :is(
+  .pv-profit-empty,
+  .profit-image-empty
+) {
+  color: var(--theme-text-muted);
+  border-color: var(--theme-module-border);
+  background: var(--theme-module-surface-soft);
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-source-candidate,
+  .price-verification-source-linked-candidate,
+  .candidate-card
+):hover {
+  border-color: var(--theme-module-border-strong);
+  background: var(--theme-module-surface-tint);
+}
+
+[data-theme="diamond"] :is(
+  .profit-products-table-wrap,
+  .profit-product-gallery
+)::-webkit-scrollbar-track,
+[data-theme="diamond"] .profit-products-table-wrap::-webkit-scrollbar-corner {
+  background: var(--theme-module-surface-soft);
+}
+
+/* Diamond theme: selectors owned by the denser API and activity screens. */
+[data-theme="diamond"] :is(
+  .price-verification-source-results .source-candidate,
+  .price-verification-source-linked > div,
+  .source-candidate-block,
+  .source-candidate-block .source-candidate-row,
+  .price-verification-linked-group,
+  .price-verification-batch-panel .price-verification-batch-bar,
+  .price-verification-batch-row,
+  .batch-review-table-wrap,
+  .price-verification-source-controls,
+  .profit-source-edit-panel,
+  .profit-source-edit-row,
+  .profit-source-card-gallery,
+  .profit-source-gallery-img,
+  .profit-source-card-profit,
+  .profit-source-card-fields,
+  .profit-source-card-result,
+  .profit-table-scrollbar,
+  .profit-table-wrap,
+  .profit-product-image-empty,
+  .profit-image-preview-modal,
+  .profit-modal
+) {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-module-border);
+  background: var(--theme-module-surface);
+  box-shadow: var(--theme-module-shadow);
+}
+
+[data-theme="diamond"] :is(
+  .source-profit-strip,
+  .source-candidate-body em,
+  .price-verification-section-help-tip,
+  .profit-source-card-profit,
+  .profit-source-card-fields,
+  .profit-table-head-sticky,
+  .profit-table-head-sticky .profit-table th,
+  .profit-product-image-empty,
+  .profit-source-thumb,
+  .profit-modal-icon
+) {
+  color: var(--theme-text-secondary);
+  border-color: var(--theme-module-border);
+  background: var(--theme-module-surface-soft);
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-decision button,
+  .source-link-button,
+  .price-verification-source-linked button,
+  .price-verification-source-controls button,
+  .pv-source-sort button,
+  .pv-source-link-button,
+  .product-processing-test-page button,
+  .profit-source-drawer-close,
+  .profit-source-drawer-head .profit-source-edit-button,
+  .profit-source-edit-button,
+  .profit-source-edit-image-button,
+  .profit-source-add-row,
+  .profit-edit-cancel
+) {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-module-border);
+  background: #101216;
+  box-shadow: none;
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-source-results .source-candidate,
+  .source-candidate-block .source-candidate-row,
+  .price-verification-batch-row,
+  .profit-source-edit-row
+):hover {
+  border-color: var(--theme-module-border-strong);
+  background: var(--theme-module-surface-tint);
+}
+
+[data-theme="diamond"] :is(
+  .source-link-button.is-linked,
+  .price-verification-batch-row.is-current,
+  .batch-review-table tbody tr.is-selected,
+  .pv-source-sort button.is-active
+) {
+  color: var(--theme-on-primary);
+  border-color: var(--theme-primary);
+  background: var(--theme-primary);
+}
+
+[data-theme="diamond"] :is(
+  .source-link-profit em.is-qualified,
+  .source-profit-strip.is-qualified,
+  .source-profit-strip > em.is-qualified,
+  .price-verification-selection-badge,
+  .profit-source-card-result.is-qualified
+) {
+  color: #86efac;
+  border-color: #276749;
+  background: #12251d;
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-danger-button,
+  .price-verification-decision button.is-selected.reject,
+  .batch-review-delete-button,
+  .price-verification-source-linked button,
+  .source-link-profit em,
+  .source-profit-strip > em,
+  .profit-source-unlink,
+  .profit-source-remove-row,
+  .profit-source-card-result em
+) {
+  color: #fca5a5;
+  border-color: #6b2b32;
+  background: #2a1719;
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-danger-button,
+  .batch-review-delete-button,
+  .profit-source-unlink,
+  .profit-source-remove-row
+):hover:not(:disabled) {
+  color: #fecaca;
+  border-color: #9f3640;
+  background: #3a1b1f;
+}
+
+[data-theme="diamond"] :is(
+  .source-candidate-body em.is-keyword,
+  .pv-source-card-meta em.is-keyword,
+  .pv-profit-badge.is-below
+) {
+  color: #fcd34d;
+  border-color: #6b5721;
+  background: #2a2315;
+}
+
+[data-theme="diamond"] :is(
+  .price-verification-price-compare > span.is-adjusted,
+  .source-profit-strip .source-profit-fields input
+) {
+  color: #fde68a;
+  border-color: #6b5721;
+  background: #211c12;
+}
+
+[data-theme="diamond"] :is(
+  .settings-grid,
+  .daily-selection-page,
+  .price-verification-page,
+  .product-processing-test-page,
+  .profit-products-page,
+  .profit-test-page
+) :is(h1, h2, h3, strong) {
+  color: var(--theme-text-primary);
+}
+
+[data-theme="diamond"] :is(
+  .profit-table-scrollbar,
+  .profit-table-wrap
+)::-webkit-scrollbar-track,
+[data-theme="diamond"] .profit-table-wrap::-webkit-scrollbar-corner {
+  background: var(--theme-module-surface-soft);
+}
+
+/* Final contrast guard for native controls whose module CSS uses chained
+   selectors with a higher specificity than the shared theme rules. */
+[data-theme="diamond"] :is(
+  .settings-grid,
+  .daily-selection-page,
+  .price-verification-page,
+  .product-processing-page,
+  .product-processing-test-page,
+  .verify-page,
+  .profit-products-page,
+  .profit-test-page
+) button:not(.primary-button):not(.primary):not([type="submit"]) {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-module-border);
+  background: #101216;
+  box-shadow: none;
+}
+
+[data-theme="diamond"] :is(
+  .settings-grid,
+  .daily-selection-page,
+  .price-verification-page,
+  .product-processing-page,
+  .product-processing-test-page,
+  .verify-page,
+  .profit-products-page,
+  .profit-test-page
+) button:disabled {
+  color: #9ca3af;
+  border-color: #343944;
+  background: #20232a;
+  opacity: .78;
+}
+
+[data-theme="diamond"] :is(
+  .settings-action-buttons .primary-button,
+  .direction-panel-actions > button:not(.toggle-delete-mode-button):not(.preset-entry-button),
+  .preset-dialog-actions button[type="submit"],
+  .collect-button,
+  .confirm-button,
+  .sku-filter-button,
+  .price-verification-primary-button,
+  .pv-source-run-button,
+  .verify-actions button.primary,
+  .verify-row-actions button.primary,
+  .verify-history-foot .primary,
+  .sku-batch-panel .primary-button,
+  .profit-products-page .primary-button,
+  .profit-test-page .primary-button
+) {
+  color: var(--theme-on-primary);
+  border-color: transparent;
+  background: var(--theme-primary-button-gradient);
+  box-shadow: 0 8px 18px var(--theme-primary-button-shadow);
+}
+
+[data-theme="diamond"] :is(
+  .product-processing-tabs button.is-active,
+  .price-verification-steps .price-verification-step.is-active,
+  .mode-tabs button.is-active,
+  .run-list > button.is-active,
+  .history-drawer-list > button.is-active,
+  .profit-site-check-group label.is-active,
+  .draft-pagination button.current,
+  .verify-pagination button.current,
+  .verify-pagination-pages button.active,
+  .verify-view-toggle button.active
+) {
+  color: var(--theme-on-primary);
+  border-color: var(--theme-primary);
+  background: var(--theme-primary);
+}
+
+[data-theme="diamond"] .profit-products-page .profit-source-open,
+[data-theme="diamond"] .profit-products-page .profit-product-image-upload {
+  color: var(--theme-on-primary) !important;
+  border-color: var(--theme-primary) !important;
+  background: var(--theme-primary-button-gradient) !important;
+}
+
+[data-theme="diamond"] :is(
+  .daily-message.is-error,
+  .daily-topbar-status.is-error,
+  .preset-error,
+  .message.error,
+  .verify-message.error,
+  .verify-ai-ping.fail,
+  .price-verification-danger-button,
+  .batch-review-delete-button,
+  .profit-source-unlink,
+  .profit-source-remove-row
+) {
+  color: #fca5a5;
+  border-color: #6b2b32;
+  background: #2a1719;
+}
+
+[data-theme="diamond"] :is(
+  .daily-message.is-success,
+  .daily-topbar-status.is-success,
+  .price-verification-connection-state.is-ready,
+  .source-profit-strip.is-qualified,
+  .pv-profit-box.is-qualified,
+  .profit-source-card-result.is-qualified
+) {
+  color: #86efac;
+  border-color: #276749;
+  background: #12251d;
+}
+
+/* The collection workspace header used to own a fixed blue gradient, so it
+   never followed the selected palette. Keep classic's original styling and
+   let every alternate theme use its own hero colors. */
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  .daily-drawer-header {
+  color: #fff;
+  border-color: var(--theme-module-border-strong);
+  background: var(--theme-hero-gradient);
+  box-shadow: 0 10px 24px var(--theme-module-shadow);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  .daily-drawer-header strong {
+  color: #fff;
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  .daily-drawer-header > div > span {
+  color: var(--theme-hero-eyebrow);
+}
+
+:is([data-theme="sunset"], [data-theme="violet"], [data-theme="diamond"])
+  .daily-drawer-header .collection-workspace-context {
+  color: var(--theme-hero-text);
+}
+
+/* Diamond theme text contrast guard. Module styles contain many dark blue and
+   slate literals designed for white cards. On graphite surfaces they must be
+   mapped to the theme's light text scale. */
+[data-theme="diamond"] :is(
+  .dashboard-page,
+  .settings-grid,
+  .daily-selection-page,
+  .price-verification-page,
+  .product-processing-page,
+  .product-processing-test-page,
+  .verify-page,
+  .profit-products-page,
+  .profit-test-page
+) {
+  color: var(--theme-text-primary);
+}
+
+[data-theme="diamond"] :is(
+  .dashboard-page,
+  .settings-grid,
+  .daily-selection-page,
+  .price-verification-page,
+  .product-processing-page,
+  .product-processing-test-page,
+  .verify-page,
+  .profit-products-page,
+  .profit-test-page
+) :is(section, article, form, table, thead, tbody, tr, td, div, nav, header, footer, aside) {
+  color: inherit;
+}
+
+[data-theme="diamond"] :is(
+  .dashboard-page,
+  .settings-grid,
+  .daily-selection-page,
+  .price-verification-page,
+  .product-processing-page,
+  .product-processing-test-page,
+  .verify-page,
+  .profit-products-page,
+  .profit-test-page
+) :is(h1, h2, h3, h4, h5, h6, strong, b) {
+  color: var(--theme-text-primary);
+}
+
+[data-theme="diamond"] :is(
+  .dashboard-page,
+  .settings-grid,
+  .daily-selection-page,
+  .price-verification-page,
+  .product-processing-page,
+  .product-processing-test-page,
+  .verify-page,
+  .profit-products-page,
+  .profit-test-page
+) :is(p, small, label, dt, dd, caption, th, span, em) {
+  color: var(--theme-text-secondary);
+}
+
+[data-theme="diamond"] :is(
+  .dashboard-page,
+  .settings-grid,
+  .daily-selection-page,
+  .price-verification-page,
+  .product-processing-page,
+  .product-processing-test-page,
+  .verify-page,
+  .profit-products-page,
+  .profit-test-page
+) a {
+  color: #e2e8f0;
+  text-decoration-color: #737985;
+}
+
+[data-theme="diamond"] :is(
+  .dashboard-page,
+  .settings-grid,
+  .daily-selection-page,
+  .price-verification-page,
+  .product-processing-page,
+  .product-processing-test-page,
+  .verify-page,
+  .profit-products-page,
+  .profit-test-page
+) :is(button, a, option) :is(span, em, strong, b, small) {
+  color: inherit;
+}
+
+[data-theme="diamond"] :is(
+  .daily-message.is-error,
+  .daily-topbar-status.is-error,
+  .preset-error,
+  .message.error,
+  .verify-message.error,
+  .verify-ai-ping.fail,
+  .price-verification-danger-button,
+  .batch-review-delete-button,
+  .profit-source-unlink,
+  .profit-source-remove-row,
+  .reject-button
+),
+[data-theme="diamond"] :is(
+  .daily-message.is-error,
+  .daily-topbar-status.is-error,
+  .preset-error,
+  .message.error,
+  .verify-message.error,
+  .verify-ai-ping.fail,
+  .price-verification-danger-button,
+  .batch-review-delete-button,
+  .profit-source-unlink,
+  .profit-source-remove-row,
+  .reject-button
+) :is(span, em, strong, b, small) {
+  color: #fca5a5;
+}
+
+[data-theme="diamond"] :is(
+  .daily-message.is-success,
+  .daily-topbar-status.is-success,
+  .price-verification-connection-state.is-ready,
+  .source-profit-strip.is-qualified,
+  .pv-profit-box.is-qualified,
+  .profit-source-card-result.is-qualified,
+  .tag.ok
+),
+[data-theme="diamond"] :is(
+  .daily-message.is-success,
+  .daily-topbar-status.is-success,
+  .price-verification-connection-state.is-ready,
+  .source-profit-strip.is-qualified,
+  .pv-profit-box.is-qualified,
+  .profit-source-card-result.is-qualified,
+  .tag.ok
+) :is(span, em, strong, b, small) {
+  color: #86efac;
+}
+
+[data-theme="diamond"] :is(
+  .daily-topbar-status.is-progress,
+  .price-verification-connection-state,
+  .source-candidate-body em.is-keyword,
+  .pv-source-card-meta em.is-keyword,
+  .pv-profit-badge.is-below,
+  .badge.status-unsafe,
+  .verify-badge.status-paused
+),
+[data-theme="diamond"] :is(
+  .daily-topbar-status.is-progress,
+  .price-verification-connection-state,
+  .source-candidate-body em.is-keyword,
+  .pv-source-card-meta em.is-keyword,
+  .pv-profit-badge.is-below,
+  .badge.status-unsafe,
+  .verify-badge.status-paused
+) :is(span, em, strong, b, small) {
+  color: #fcd34d;
+}
+
+[data-theme="diamond"] .daily-drawer-header :is(span, strong) {
+  color: #f8fafc;
+}
+
+/* Diamond site filters: unchecked pills stay dark; checked pills use the
+   silver surface with an explicitly dark foreground. */
+[data-theme="diamond"] .profit-products-page .profit-site-check-group label {
+  color: var(--theme-text-secondary);
+  border-color: var(--theme-module-border);
+  background: #101216;
+}
+
+[data-theme="diamond"] .profit-products-page .profit-site-check-group label:hover {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-module-border-strong);
+  background: var(--theme-module-surface-tint);
+}
+
+[data-theme="diamond"] .profit-products-page .profit-site-check-group label.is-active {
+  color: #111318 !important;
+  border-color: #f8fafc;
+  background: #e5e7eb;
+  box-shadow: inset 0 0 0 1px #cbd5e1;
+}
+
+/* Any control rendered on the diamond theme's silver selection surface must
+   also force its nested label/icon text dark. This comes after the general
+   graphite-surface typography guard by design. */
+[data-theme="diamond"] :is(
+  .auth-tabs button.is-selected,
+  .sidebar-subitem.is-active,
+  .sidebar-pin-button.is-active,
+  .topbar-pin-toggle.is-active,
+  .theme-option.is-active,
+  .empty-dashboard-card > span,
+  .empty-orbit,
+  .profit-site-tabs button.is-active,
+  .profit-title-icon,
+  .settings-action-buttons .primary-button,
+  .direction-panel-actions > button:not(.toggle-delete-mode-button):not(.preset-entry-button),
+  .preset-dialog-actions button[type="submit"],
+  .collect-button,
+  .confirm-button,
+  .sku-filter-button,
+  .price-verification-primary-button,
+  .pv-source-run-button,
+  .verify-actions button.primary,
+  .verify-row-actions button.primary,
+  .verify-history-foot .primary,
+  .sku-batch-panel .primary-button,
+  .profit-products-page .primary-button,
+  .profit-test-page .primary-button,
+  .price-verification-steps .price-verification-step.is-active .price-verification-step-number,
+  .direction-card .direction-edit-indicator,
+  .draft-pagination button.current,
+  .verify-pagination button.current,
+  .verify-pagination-pages button.active,
+  .verify-view-toggle button.is-active,
+  .verify-view-toggle button.active,
+  .verify-hide-single:has(input:checked),
+  .price-verification-source-link-button.is-linked,
+  .price-verification-source-linked-group button.is-active,
+  .price-verification-batch-current,
+  .price-verification-source-linked-candidate.is-current,
+  .pv-source-link-button.is-linked,
+  .source-link-button.is-linked,
+  .price-verification-batch-row.is-current,
+  .batch-review-table tbody tr.is-selected,
+  .pv-source-sort button.is-active,
+  .product-processing-tabs button.is-active,
+  .price-verification-steps .price-verification-step.is-active,
+  .mode-tabs button.is-active,
+  .run-list > button.is-active,
+  .history-drawer-list > button.is-active,
+  .profit-site-check-group label.is-active
+),
+[data-theme="diamond"] :is(
+  .auth-tabs button.is-selected,
+  .sidebar-subitem.is-active,
+  .sidebar-pin-button.is-active,
+  .topbar-pin-toggle.is-active,
+  .theme-option.is-active,
+  .empty-dashboard-card > span,
+  .empty-orbit,
+  .profit-site-tabs button.is-active,
+  .profit-title-icon,
+  .settings-action-buttons .primary-button,
+  .direction-panel-actions > button:not(.toggle-delete-mode-button):not(.preset-entry-button),
+  .preset-dialog-actions button[type="submit"],
+  .collect-button,
+  .confirm-button,
+  .sku-filter-button,
+  .price-verification-primary-button,
+  .pv-source-run-button,
+  .verify-actions button.primary,
+  .verify-row-actions button.primary,
+  .verify-history-foot .primary,
+  .sku-batch-panel .primary-button,
+  .profit-products-page .primary-button,
+  .profit-test-page .primary-button,
+  .price-verification-steps .price-verification-step.is-active .price-verification-step-number,
+  .direction-card .direction-edit-indicator,
+  .draft-pagination button.current,
+  .verify-pagination button.current,
+  .verify-pagination-pages button.active,
+  .verify-view-toggle button.is-active,
+  .verify-view-toggle button.active,
+  .verify-hide-single:has(input:checked),
+  .price-verification-source-link-button.is-linked,
+  .price-verification-source-linked-group button.is-active,
+  .price-verification-batch-current,
+  .price-verification-source-linked-candidate.is-current,
+  .pv-source-link-button.is-linked,
+  .source-link-button.is-linked,
+  .price-verification-batch-row.is-current,
+  .batch-review-table tbody tr.is-selected,
+  .pv-source-sort button.is-active,
+  .product-processing-tabs button.is-active,
+  .price-verification-steps .price-verification-step.is-active,
+  .mode-tabs button.is-active,
+  .run-list > button.is-active,
+  .history-drawer-list > button.is-active,
+  .profit-site-check-group label.is-active
+) * {
+  color: #111318 !important;
+}
+
+[data-theme="diamond"] :is(
+  .sidebar-item.is-active,
+  .page-tab.is-active,
+  .primary-button,
+  .scroll-to-top,
+  .brand-mark,
+  .avatar
+),
+[data-theme="diamond"] :is(
+  .sidebar-item.is-active,
+  .page-tab.is-active,
+  .primary-button,
+  .scroll-to-top,
+  .brand-mark,
+  .avatar
+) * {
+  color: #111318 !important;
+}
+
+/* Diamond primary actions must beat the high-specificity neutral-button guard. */
+[data-theme="diamond"] :is(
+  .settings-action-buttons .primary-button,
+  .direction-panel-actions > button:not(.toggle-delete-mode-button):not(.preset-entry-button),
+  .preset-dialog-actions button[type="submit"],
+  .collect-button,
+  .confirm-button,
+  .sku-filter-button,
+  .price-verification-primary-button,
+  .pv-source-run-button,
+  .verify-actions button.primary,
+  .verify-row-actions button.primary,
+  .verify-history-foot .primary,
+  .sku-batch-panel .primary-button,
+  .profit-products-page .primary-button,
+  .profit-test-page .primary-button
+) {
+  color: #111318 !important;
+  border-color: #f8fafc !important;
+  background: var(--theme-primary-button-gradient) !important;
+  box-shadow: 0 8px 18px var(--theme-primary-button-shadow) !important;
+}
+
+/* Selected workflow cards, tabs and pagination use a real silver surface.
+   Applying the background here prevents black-on-black text in active items. */
+[data-theme="diamond"] :is(
+  .product-processing-tabs button.is-active,
+  .price-verification-steps .price-verification-step.is-active,
+  .price-verification-action-buttons .price-verification-secondary-button.is-active,
+  .mode-tabs button.is-active,
+  .run-list > button.is-active,
+  .history-drawer-list > button.is-active,
+  .profit-site-check-group label.is-active,
+  .profit-filter-history-item.is-active,
+  .draft-pagination button.current,
+  .verify-pagination button.current,
+  .verify-pagination-pages button.active,
+  .verify-view-toggle button.is-active,
+  .verify-view-toggle button.active,
+  .verify-hide-single:has(input:checked),
+  .price-verification-source-link-button.is-linked,
+  .price-verification-source-linked-group button.is-active,
+  .price-verification-batch-current,
+  .price-verification-source-linked-candidate.is-current,
+  .pv-source-link-button.is-linked,
+  .source-link-button.is-linked,
+  .price-verification-batch-row.is-current,
+  .batch-review-table tbody tr.is-selected,
+  .pv-source-sort button.is-active
+) {
+  color: #111318 !important;
+  border-color: #f8fafc !important;
+  background: #e5e7eb !important;
+  box-shadow: inset 0 0 0 1px #cbd5e1 !important;
+}
+
+[data-theme="diamond"] :is(
+  .product-processing-tabs button.is-active,
+  .price-verification-steps .price-verification-step.is-active,
+  .price-verification-action-buttons .price-verification-secondary-button.is-active,
+  .mode-tabs button.is-active,
+  .run-list > button.is-active,
+  .history-drawer-list > button.is-active,
+  .profit-site-check-group label.is-active,
+  .profit-filter-history-item.is-active,
+  .draft-pagination button.current,
+  .verify-pagination button.current,
+  .verify-pagination-pages button.active,
+  .verify-view-toggle button.is-active,
+  .verify-view-toggle button.active,
+  .verify-hide-single:has(input:checked),
+  .price-verification-source-link-button.is-linked,
+  .price-verification-source-linked-group button.is-active,
+  .price-verification-batch-current,
+  .price-verification-source-linked-candidate.is-current,
+  .pv-source-link-button.is-linked,
+  .source-link-button.is-linked,
+  .price-verification-batch-row.is-current,
+  .batch-review-table tbody tr.is-selected,
+  .pv-source-sort button.is-active
+) * {
+  color: #111318 !important;
+}
+
+/* Product-processing source metadata shown in the third screenshot. */
+[data-theme="diamond"] .verify-page :is(.pool-meta .tag, .pool-link-label) {
+  color: var(--theme-text-primary) !important;
+  border-color: var(--theme-module-border);
+  background: #24272e;
+}
+
+[data-theme="diamond"] .verify-page .pool-source-link a {
+  color: #f8fafc;
+  text-decoration: underline;
+  text-decoration-color: #737985;
+  text-underline-offset: 2px;
+}
+
+[data-theme="diamond"] .verify-page .pool-source-link a:hover {
+  color: #ffffff;
+  text-decoration-color: #ffffff;
+}
+
+[data-theme="diamond"] .verify-page .pool-meta .muted {
+  color: var(--theme-text-secondary);
+}
+
+[data-theme="diamond"] .verify-page .btn-mini:not(.primary):not(.danger) {
+  color: var(--theme-text-primary) !important;
+  border-color: var(--theme-module-border);
+  background: #101216;
+}
+
+/* Dashboard statistics: module CSS is loaded late and otherwise restores its
+   light-theme navy text on graphite cards. */
+[data-theme="diamond"] .dashboard-page .stats-card {
+  color: var(--theme-text-primary) !important;
+  border-color: var(--theme-module-border) !important;
+  background: var(--theme-module-surface) !important;
+}
+
+[data-theme="diamond"] .dashboard-page .stats-label {
+  color: var(--theme-text-secondary) !important;
+}
+
+[data-theme="diamond"] .dashboard-page .stats-value {
+  color: #f8fafc !important;
+}
+
+[data-theme="diamond"] .dashboard-page .stats-note {
+  color: var(--theme-text-muted) !important;
+}
+
+[data-theme="diamond"] .dashboard-page .stats-icon {
+  color: #111318 !important;
+  border: 1px solid #f8fafc;
+  background: #e5e7eb !important;
+}
+
+/* Workflow numbers are intentionally silver even for unavailable steps, so
+   their foreground must remain dark instead of inheriting muted light text. */
+[data-theme="diamond"] .price-verification-page .price-verification-step-number {
+  color: #111318 !important;
+  border: 1px solid #f8fafc;
+  background: #e5e7eb !important;
+}
+
+/* Profit activity query/form controls: prevent late module rules from
+   restoring white inputs with pale placeholders. */
+[data-theme="diamond"] :is(.profit-products-page, .profit-test-page)
+  :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea) {
+  color: var(--theme-text-primary) !important;
+  border-color: var(--theme-module-border) !important;
+  background: #101216 !important;
+  caret-color: #f8fafc;
+}
+
+[data-theme="diamond"] :is(.profit-products-page, .profit-test-page)
+  :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea)::placeholder {
+  color: var(--theme-text-muted) !important;
+  opacity: 1;
+}
+
+[data-theme="diamond"] .profit-test-page .profit-warn {
+  color: #fcd34d !important;
+  border-color: #6b5721 !important;
+  background: #2a2315 !important;
+}
+
+/* ================================================================
+   Diamond sparkle effects
+   ================================================================ */
+[data-theme="diamond"] .workspace-shell {
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, .2) 0 1px, transparent 1.7px),
+    radial-gradient(circle, rgba(203, 213, 225, .13) 0 1px, transparent 1.8px),
+    linear-gradient(45deg, rgba(255, 255, 255, .018) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, .018) 75%),
+    linear-gradient(-45deg, rgba(255, 255, 255, .018) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, .018) 75%);
+  background-position: 18px 12px, 86px 64px, 0 0, 18px 18px;
+  background-size: 137px 137px, 211px 211px, 36px 36px, 36px 36px;
+  animation: diamond-star-field 24s linear infinite;
+}
+
+[data-theme="diamond"] :is(
+  .page-hero-card,
+  .settings-hero,
+  .daily-page-heading,
+  .daily-drawer-header,
+  .price-verification-hero,
+  .product-processing-hero,
+  .verify-commandbar,
+  .profit-products-head,
+  .profit-activity-hero,
+  .profit-test-hero
+) {
+  background-image:
+    linear-gradient(112deg, transparent 0 38%, rgba(255, 255, 255, 0) 44%, rgba(255, 255, 255, .16) 50%, rgba(255, 255, 255, 0) 56%, transparent 62%),
+    radial-gradient(circle at 17% 31%, rgba(255, 255, 255, .9) 0 1px, transparent 2px),
+    radial-gradient(circle at 72% 24%, rgba(226, 232, 240, .75) 0 1px, transparent 2px),
+    radial-gradient(circle at 86% 72%, rgba(255, 255, 255, .65) 0 1.2px, transparent 2.3px),
+    var(--theme-hero-gradient) !important;
+  background-repeat: no-repeat, repeat, repeat, repeat, no-repeat !important;
+  background-size: 260% 100%, 173px 131px, 229px 167px, 197px 149px, 100% 100% !important;
+  animation: diamond-hero-cut 10s ease-in-out infinite;
+}
+
+[data-theme="diamond"] .topbar-card::before,
+[data-theme="diamond"] .sidebar-card::before {
+  background:
+    radial-gradient(circle at 16% 38%, rgba(255, 255, 255, .95) 0 1px, transparent 2.4px),
+    radial-gradient(circle at 68% 62%, rgba(226, 232, 240, .8) 0 1px, transparent 2.2px),
+    linear-gradient(108deg, transparent 28%, rgba(255, 255, 255, .05) 38%, rgba(255, 255, 255, .28) 49%, rgba(148, 163, 184, .12) 58%, transparent 70%) !important;
+  background-size: 149px 97px, 211px 137px, 240% 100% !important;
+  filter: drop-shadow(0 0 5px rgba(255, 255, 255, .12));
+  animation: diamond-chrome-glint 8.5s ease-in-out infinite !important;
+}
+
+[data-theme="diamond"] .topbar-card::after,
+[data-theme="diamond"] .sidebar-card::after {
+  height: 46px;
+  background:
+    radial-gradient(circle at 12% 72%, rgba(255, 255, 255, .72) 0 1px, transparent 2px),
+    radial-gradient(circle at 58% 36%, rgba(203, 213, 225, .52) 0 1px, transparent 2px),
+    radial-gradient(ellipse at 50% 115%, rgba(255, 255, 255, .14) 0 13%, rgba(148, 163, 184, .08) 34%, transparent 68%) !important;
+  background-size: 113px 43px, 173px 51px, 190px 42px !important;
+  filter: blur(.25px);
+  animation: diamond-edge-sparkle 8.5s ease-in-out infinite !important;
+}
+
+[data-theme="diamond"] :is(
+  .brand-mark,
+  .avatar,
+  .stats-icon,
+  .price-verification-step-number,
+  .sidebar-pin-button.is-active,
+  .topbar-pin-toggle.is-active,
+  .theme-option.is-active
+) {
+  animation: diamond-facet-flash 5.8s ease-in-out infinite;
+}
+
+[data-theme="diamond"] :is(
+  .stats-card,
+  .shortcut-card,
+  .daily-panel,
+  .direction-card,
+  .price-verification-panel,
+  .price-verification-workflow-card,
+  .product-draft-card,
+  .pool-card,
+  .profit-products-panel,
+  .profit-test-card
+):hover {
+  border-color: #737985 !important;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .08), 0 16px 34px rgba(0, 0, 0, .45), 0 0 24px rgba(255, 255, 255, .06) !important;
+}
+
+@keyframes diamond-star-field {
+  from { background-position: 18px 12px, 86px 64px, 0 0, 18px 18px; }
+  to { background-position: 155px 149px, -125px 275px, 36px 36px, 54px 54px; }
+}
+
+@keyframes diamond-hero-cut {
+  0%, 28% { background-position: 150% 0, 0 0, 22px 8px, 48px 24px, 0 0; }
+  48%, 62% { background-position: -150% 0, 16px -8px, 4px 17px, 63px 11px, 0 0; }
+  100% { background-position: -150% 0, 0 0, 22px 8px, 48px 24px, 0 0; }
+}
+
+@keyframes diamond-chrome-glint {
+  0%, 18% { opacity: 0; background-position: 0 0, 22px 4px, 145% 0; }
+  25% { opacity: .82; }
+  48% { opacity: .42; background-position: 18px -7px, 6px 12px, -145% 0; }
+  54%, 100% { opacity: 0; background-position: 18px -7px, 6px 12px, -145% 0; }
+}
+
+@keyframes diamond-edge-sparkle {
+  0%, 20% { opacity: 0; background-position: 0 0, 18px 0, 0 0; }
+  28% { opacity: .88; }
+  45% { opacity: .36; background-position: 113px 0, -155px 0, 190px 0; }
+  52%, 100% { opacity: 0; background-position: 113px 0, -155px 0, 190px 0; }
+}
+
+@keyframes diamond-facet-flash {
+  0%, 68%, 100% { filter: brightness(1) drop-shadow(0 0 0 transparent); }
+  74% { filter: brightness(1.2) drop-shadow(0 0 5px rgba(255, 255, 255, .62)); }
+  79% { filter: brightness(1.02) drop-shadow(0 0 10px rgba(255, 255, 255, .16)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="diamond"] .workspace-shell,
+  [data-theme="diamond"] :is(
+    .page-hero-card,
+    .settings-hero,
+    .daily-page-heading,
+    .daily-drawer-header,
+    .price-verification-hero,
+    .product-processing-hero,
+    .verify-commandbar,
+    .profit-products-head,
+    .profit-activity-hero,
+    .profit-test-hero,
+    .brand-mark,
+    .avatar,
+    .stats-icon,
+    .price-verification-step-number,
+    .sidebar-pin-button.is-active,
+    .topbar-pin-toggle.is-active,
+    .theme-option.is-active
+  ) {
+    animation: none !important;
+  }
+}
+
+/* Diamond API-key status and model icon. */
+[data-theme="diamond"] .settings-grid .api-key-panel-header > .iconfont {
+  color: #111318 !important;
+  border: 1px solid #f8fafc;
+  background: #e5e7eb !important;
+  box-shadow: 0 0 14px rgba(255, 255, 255, .1);
+}
+
+[data-theme="diamond"] .settings-grid .api-key-configured-badge {
+  color: var(--theme-text-secondary) !important;
+  border: 1px solid var(--theme-module-border);
+  background: #24272e !important;
+}
+
+[data-theme="diamond"] .settings-grid .api-key-configured-badge.is-configured {
+  color: #86efac !important;
+  border-color: #276749;
+  background: #12251d !important;
+}
