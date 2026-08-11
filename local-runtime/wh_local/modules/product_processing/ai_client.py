@@ -14,6 +14,9 @@ from typing import Any
 from .provider_config import DEFAULT_AI_TIMEOUT_SECONDS, resolve_ai_provider
 
 
+AI_USER_AGENT = "MainPG-ProductProcessing/1.0"
+
+
 class AiProviderError(RuntimeError):
     """AI 中转调用失败。"""
 
@@ -107,6 +110,7 @@ class AiClient:
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
+                "User-Agent": AI_USER_AGENT,
             },
             method="POST",
         )
@@ -115,7 +119,10 @@ class AiClient:
     def _get(self, path: str) -> dict[str, Any]:
         request = urllib.request.Request(
             f"{self.base_url}{path}",
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "User-Agent": AI_USER_AGENT,
+            },
             method="GET",
         )
         return self._send(request)

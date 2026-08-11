@@ -16,6 +16,11 @@ from wh_local.data_collection.contracts import DailySelectionError
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 
 from .ai_client import AiClient, AiProviderError
+from .domain.content_reference_library import (
+    append_content_reference,
+    select_image_reference,
+    select_title_reference,
+)
 from .domain.language_contract import (
     apply_language_contract_to_prompt,
     ensure_target_language_result,
@@ -1523,6 +1528,13 @@ class ProductProcessingService:
         if ai_notes is not None:
             ai_notes.append(f"{stage}:media-unconfigured（COS未配置且未设WH_MEDIA_BASE_URL，导出将回退来源图）")
 
+    @staticmethod
+    def _note_content_reference(ai_notes: list[str] | None, label: str, reference_id: str) -> None:
+        """记录实际采用的内容参考；仅用于诊断，不进入店小秘字段。"""
+        note = f"{label}:{reference_id}"
+        if ai_notes is not None and note not in ai_notes:
+            ai_notes.append(note)
+
     def _generate_combined_text(
         self,
         source_title: str,
@@ -1553,6 +1565,9 @@ class ProductProcessingService:
             language_code=target_language,
             **context,
         )
+        reference = select_title_reference(raw, title=source_title, category=category)
+        prompt = append_content_reference(prompt, reference, kind="title")
+        self._note_content_reference(ai_notes, "title_reference", reference.reference_id)
         input_data = {
             "title": source_title,
             "category": category,
@@ -1608,6 +1623,9 @@ class ProductProcessingService:
             title_avoid_terms="",
             **context,
         )
+        reference = select_title_reference(raw, title=source_title, category=category)
+        prompt = append_content_reference(prompt, reference, kind="title")
+        self._note_content_reference(ai_notes, "title_reference", reference.reference_id)
         try:
             text = self._ai_client().chat([{"role": "user", "content": prompt}])
             ensure_target_language_result("标题", text, target_language)
@@ -1729,6 +1747,9 @@ class ProductProcessingService:
             if vision_subject:
                 context["product_visual_identity"] = vision_subject
             prompt = format_prompt(contracted, title=optimized_title, **context)
+            reference = select_image_reference(raw, title=optimized_title, category=category)
+            prompt = append_content_reference(prompt, reference, kind="image")
+            self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
             media = processor.generate(stage="grid_image", prompt=prompt, reference_values=reference_urls)
             # OCR 质量门：检出中文 → 定向重绘为英文（本地 OCR 后置验证器，对齐原型）
             media = self._repair_until_clean(processor, "grid_image", "four_grid", media, reference_urls, ai_notes)
@@ -1775,6 +1796,9 @@ class ProductProcessingService:
             if vision_subject:
                 context["product_visual_identity"] = vision_subject
             prompt = format_prompt(contracted, title=optimized_title, **context)
+            reference = select_image_reference(raw, title=optimized_title, category=category)
+            prompt = append_content_reference(prompt, reference, kind="image")
+            self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
             media = processor.generate(stage="detail_image", prompt=prompt, reference_values=reference_urls)
             # OCR 质量门：检出中文 → 定向重绘为英文（本地 OCR 后置验证器，对齐原型）
             media = self._repair_until_clean(processor, "detail_image", "detail_images", media, reference_urls, ai_notes)
