@@ -193,7 +193,7 @@ export function ProfitActivityTestPage() {
   // 没有任何可申报产品时的提示弹窗
   const [noEligibleOpen, setNoEligibleOpen] = useState(false);
   const [busy, setBusy] = useState("");
-  const [message, setMessage] = useState("输入 SKC、售价、成本、重量后会自动预览利润。");
+  const [message, setMessage] = useState("输入商品ID（支持 SKU、SKC、SPU）、售价、成本、重量后会自动预览利润。");
   const [recentSaved, setRecentSaved] = useState<string[]>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("profitActivityRecentSaved") || "[]");
@@ -761,7 +761,7 @@ export function ProfitActivityTestPage() {
             <SiteTabs site={site} onSite={setSite} />
           </div>
           <div className="profit-form-grid">
-            <label>SKC ID<input value={productForm.skc} onChange={(event) => setProductForm({ ...productForm, skc: event.target.value })} placeholder="必填" /></label>
+            <label>商品ID<input value={productForm.skc} onChange={(event) => setProductForm({ ...productForm, skc: event.target.value })} placeholder="支持 SKU、SKC 或 SPU" /></label>
             <label>售价<input value={productForm.selling_price} onChange={(event) => setProductForm({ ...productForm, selling_price: event.target.value })} placeholder="必填" /></label>
             <label>成本<input value={productForm.cost_price} onChange={(event) => setProductForm({ ...productForm, cost_price: event.target.value })} placeholder="必填" /></label>
             <label>重量 KG<input value={productForm.weight_kg} onChange={(event) => setProductForm({ ...productForm, weight_kg: event.target.value })} placeholder="必填" /></label>
@@ -788,7 +788,7 @@ export function ProfitActivityTestPage() {
             <button onClick={() => calculateProfit(true)} disabled={!!busy || !formReadyForPreview}>手动刷新预览</button>
             <button className="primary-button" onClick={saveProduct} disabled={!!busy || !formReadyForArchive}>入产品库</button>
           </div>
-          {!formReadyForArchive && <p className="muted">入档必填：SKC、售价、成本、重量、商品主图、每个货源链接对应的货源图、备注。</p>}
+          {!formReadyForArchive && <p className="muted">入档必填：商品ID、售价、成本、重量、商品主图、每个货源链接对应的货源图、备注。</p>}
           {recentSaved.length > 0 && (
             <p className="profit-recent-saved">最近入库：{recentSaved.map((skc) => <span key={skc}>{skc}</span>)}</p>
           )}
@@ -1022,7 +1022,7 @@ function ProductTable({ products, selected, onSelected }: { products: ProductRow
   return (
     <div className="profit-table-wrap">
       <table className="profit-table">
-        <thead><tr><th>选择</th><th>SKC</th><th>公司</th><th>创建人</th><th>售价</th><th>成本</th><th>重量</th><th>利润</th><th>利润率</th><th>货源</th><th>图片</th><th>操作</th></tr></thead>
+        <thead><tr><th>选择</th><th>商品ID</th><th>公司</th><th>创建人</th><th>售价</th><th>成本</th><th>重量</th><th>利润</th><th>利润率</th><th>货源</th><th>图片</th><th>操作</th></tr></thead>
         <tbody>
           {products.length ? products.map((item) => (
             <tr key={`${item.site || item.site_code}-${item.skc}`}>
@@ -1039,7 +1039,7 @@ function ProductTable({ products, selected, onSelected }: { products: ProductRow
               <td>{item.image_path ? "主图" : "-"} {item.source_image_path ? "货源图" : ""}</td>
               <td>{item.is_owner ? "本人" : item.can_edit ? "可编辑" : "只读"}</td>
             </tr>
-          )) : <tr><td colSpan={12}>输入 SKC 后查询产品；留空查询会展示数据库中当前权限可见产品。</td></tr>}
+          )) : <tr><td colSpan={12}>输入商品ID（SKU、SKC 或 SPU）后查询产品；留空查询会展示数据库中当前权限可见产品。</td></tr>}
         </tbody>
       </table>
     </div>
@@ -1066,6 +1066,7 @@ function extractSiteSettings(settings: Record<string, unknown>, site: Site) {
 function numericProductPayload(form: ProductForm) {
   return {
     skc: form.skc.trim(),
+    product_id: form.skc.trim(),
     selling_price: Number(form.selling_price),
     cost_price: Number(form.cost_price),
     weight_kg: Number(form.weight_kg),
@@ -1073,11 +1074,13 @@ function numericProductPayload(form: ProductForm) {
 }
 
 const importBlockerLabels: Record<string, string> = {
-  missing_skc: "SKC 缺失",
+  missing_skc: "商品ID 缺失",
+  missing_product_id: "商品ID 缺失",
   invalid_selling_price: "售价缺失或无效",
   invalid_cost_price: "成本缺失或无效",
   invalid_weight_kg: "重量缺失或无效",
-  duplicate_skc: "SKC 重复",
+  duplicate_skc: "商品ID 重复",
+  duplicate_product_id: "商品ID 重复",
   missing_product_image: "商品主图缺失",
   missing_source_image: "货源图缺失",
   missing_source_url: "货源链接缺失",

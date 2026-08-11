@@ -11,7 +11,12 @@ from typing import Any, Callable
 
 
 _HEADER_ALIASES = {
-    "skc": {"skc", "skc id", "商品id", "商品 id", "商品编号", "产品id", "产品 id"},
+    # 商品唯一标识兼容三种常见来源。数据库仍以 skc 字段保存，避免破坏旧数据；
+    # 这里只负责从 Excel 中识别实际使用的 SKU / SKC / SPU / 通用商品 ID 列。
+    "product_id": {"商品id", "商品 id", "商品编号", "产品id", "产品 id", "product id", "product_id", "item id", "item_id"},
+    "sku": {"sku", "sku id", "sku编号", "sku 编号"},
+    "skc": {"skc", "skc id", "skc编号", "skc 编号"},
+    "spu": {"spu", "spu id", "spu编号", "spu 编号"},
     "selling_price": {
         "售价", "销售价", "售卖价", "selling price", "price",
         # 核价审核表：核价通过即 Temu 平台售价
@@ -32,11 +37,14 @@ _HEADER_ALIASES = {
         "货源", "货源链接", "采购链接", "source", "source url",
         "1688产品对应链接", "1688产品链接", "1688链接", "1688货源链接", "产品对应链接",
     },
-    "product_image": {"商品主图", "主图", "产品图片", "product image", "main image", "skc对应图"},
+    "product_image": {
+        "商品主图", "主图", "产品图片", "商品对应图", "商品对应图片",
+        "product image", "main image", "sku对应图", "sku对应图片",
+        "skc对应图", "skc对应图片", "spu对应图", "spu对应图片",
+    },
     "source_image": {"货源图", "采购截图", "source image"},
     "activity_price": {"活动申报价", "活动申报价格", "活动报价", "最低活动价", "activity price", "campaign price"},
     "activity_name": {"活动类型(活动主题)", "活动类型", "活动主题", "activity", "activity name"},
-    "spu": {"spu", "spu id"},
     "site": {"站点", "site", "site code"},
 }
 
@@ -64,30 +72,30 @@ def parse_product_workbook(workbook_bytes: bytes, site: str, duplicate_keys: set
                 values = {field: _cell(cells, index) for field, index in header_map.items() if isinstance(index, int)}
                 if not any(str(value or "").strip() for value in values.values()):
                     continue
-                skc = str(values.get("skc") or "").strip()
+                product_id, product_id_type = _product_identifier(values)
                 blockers: list[str] = []
                 warnings: list[str] = []
-                if not skc:
-                    blockers.append("missing_skc")
+                if not product_id:
+                    blockers.append("missing_product_id")
                 numeric = {name: _decimal(values.get(name)) for name in ("selling_price", "cost_price", "weight_kg")}
                 if cost_components:
                     numeric["cost_price"] = _sum_decimal(_cell(cells, index) for index in cost_components)
-                if not skc and all(numeric[name] is None for name in ("selling_price", "cost_price", "weight_kg")):
+                if not product_id and all(numeric[name] is None for name in ("selling_price", "cost_price", "weight_kg")):
                     # 无 SKC 且没有可用的数值列，视为第二行子表头/说明行，不进入导入结果。
                     continue
                 for name, value in numeric.items():
                     if value is None or value <= 0:
                         blockers.append(f"invalid_{name}")
-                is_duplicate = (sheet_site, skc) in duplicate_keys if skc else False
+                is_duplicate = (sheet_site, product_id) in duplicate_keys if product_id else False
                 if is_duplicate:
-                    warnings.append("duplicate_skc")
+                    warnings.append("duplicate_product_id")
                 source_groups = _row_source_groups(cells, header_map)
                 source_url = str(values.get("source_url") or (source_groups[0]["source_url"] if source_groups else "") or "").strip()
                 rows.append({
                     "row_id": f"{worksheet.title}:{row_number}", "worksheet": worksheet.title,
                     "row_number": row_number, "status": "blocked" if blockers else "ready",
-                    "warnings": warnings, "blockers": blockers, "site": sheet_site, "skc": skc,
-                    "product_id": skc, "product_id_type": "skc", "product_id_label": "SKC",
+                    "warnings": warnings, "blockers": blockers, "site": sheet_site, "skc": product_id,
+                    "product_id": product_id, "product_id_type": product_id_type, "product_id_label": "商品ID",
                     "selling_price": _number(numeric["selling_price"]), "cost_price": _number(numeric["cost_price"]),
                     "weight_kg": _number(numeric["weight_kg"]), "domestic_fee": None,
                     "note": str(values.get("note") or "").strip(),
@@ -358,9 +366,9 @@ def filter_activity_workbook(
     try:
         worksheet = _activity_price_sheet(workbook)
         headers = _headers(worksheet)
-        skc_index = headers.get("skc")
-        if skc_index is None:
-            raise ValueError("activity workbook is missing an SKC column")
+        product_id_index = _product_id_index(headers)
+        if product_id_index is None:
+            raise ValueError("activity workbook is missing a product ID column")
         price_index = headers.get("activity_price")
         activity_index = headers.get("activity_name")
         site_index = headers.get("site")
@@ -371,8 +379,8 @@ def filter_activity_workbook(
         site_mismatch_rows: set[int] = set()
 
         for row_number, cells in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
-            skc = str(_cell(cells, skc_index) or "").strip()
-            if not skc:
+            product_id = str(_cell(cells, product_id_index) or "").strip()
+            if not product_id:
                 continue
             row_site = _normalize_site_value(str(_cell(cells, site_index) or "")) if site_index is not None else ""
             if row_site and row_site != site:
@@ -381,7 +389,7 @@ def filter_activity_workbook(
                 continue
             activity_name = str(_cell(cells, activity_index) or "").strip() if activity_index is not None else ""
             price = _decimal(_cell(cells, price_index)) if price_index is not None else None
-            groups.setdefault((skc, activity_name), []).append((row_number, price))
+            groups.setdefault((product_id, activity_name), []).append((row_number, price))
             if spu_index is not None:
                 spu_by_row[row_number] = str(_cell(cells, spu_index) or "").strip()
 
@@ -397,30 +405,30 @@ def filter_activity_workbook(
         removed_activity_keys: set[tuple[str, str]] = set()
         # 逐条判定：同一 SKC 在不同活动（活动主题）下申报价不同，每条 SKC×活动×申报价 独立评估，
         # 满足条件的行保留、不符合的行剔除，不再按 SKC 去重汇总、也不取组内最低价。
-        for (skc, activity_name), entries in groups.items():
+        for (product_id, activity_name), entries in groups.items():
             if should_stop and should_stop():
                 raise FilterPausedError("filter paused")
             for row_number, price in entries:
                 if price is None or price <= 0:
                     decision: dict[str, Any] = {"keep": False, "decision": "excluded", "reason_code": "invalid_activity_price", "net_profit": None, "profit_rate": None}
                 else:
-                    decision = evaluate(skc, price)
-                decision = {**decision, "skc": skc, "activity_name": activity_name, "price": float(price) if price is not None else None}
+                    decision = evaluate(product_id, price)
+                decision = {**decision, "skc": product_id, "product_id": product_id, "activity_name": activity_name, "price": float(price) if price is not None else None}
                 decisions.append(decision)
                 reason = str(decision.get("reason_code") or "unknown")
                 qualification_counts[reason] += 1
                 if decision.get("keep"):
                     kept_rows.add(row_number)
-                    kept_skcs.add(skc)
-                    kept_activity_keys.add((skc, activity_name))
+                    kept_skcs.add(product_id)
+                    kept_activity_keys.add((product_id, activity_name))
                     spu = spu_by_row.get(row_number, "")
                     if spu:
                         kept_spus.add(spu)
                         kept_activity_spus.add((activity_name, spu))
                 else:
                     removed_row_numbers.add(row_number)
-                    removed_skcs.add(skc)
-                    removed_activity_keys.add((skc, activity_name))
+                    removed_skcs.add(product_id)
+                    removed_activity_keys.add((product_id, activity_name))
                     removed_rows.append(_removed_row(worksheet, row_number, reason, decision))
 
         _delete_rows(worksheet, removed_row_numbers)
@@ -501,10 +509,10 @@ def _activity_price_sheet(workbook):
     candidates = []
     for worksheet in workbook.worksheets:
         headers = _headers(worksheet)
-        if "skc" in headers:
+        if _product_id_index(headers) is not None:
             candidates.append(("activity_price" in headers, worksheet))
     if not candidates:
-        raise ValueError("activity workbook is missing a worksheet with an SKC column")
+        raise ValueError("activity workbook is missing a worksheet with a product ID column")
     return next((sheet for has_price, sheet in candidates if has_price), candidates[0][1])
 
 
@@ -527,6 +535,23 @@ def _headers(worksheet) -> dict[str, Any]:
                 result["weight_kg"] = index
                 break
     return result
+
+
+def _product_identifier(values: dict[str, object | None]) -> tuple[str, str]:
+    """Return the first supported product identifier found in one Excel row."""
+    for field in ("product_id", "sku", "skc", "spu"):
+        value = str(values.get(field) or "").strip()
+        if value:
+            return value, field
+    return "", ""
+
+
+def _product_id_index(headers: dict[str, Any]) -> int | None:
+    for field in ("product_id", "sku", "skc", "spu"):
+        index = headers.get(field)
+        if isinstance(index, int):
+            return index
+    return None
 
 
 def _numbered_header_columns(first_row: tuple[object, ...]) -> dict[str, dict[int, int]]:

@@ -511,6 +511,7 @@ class SourcingService:
             payload: dict[str, Any] = {
                 "site": site,
                 "skc": selection.skc_id,
+                "product_id": selection.skc_id,
                 "selling_price": str(selling_price),
                 "cost_price": str(best["cost_price"]),
                 "weight_kg": str(best["weight_kg"]),

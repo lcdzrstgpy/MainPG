@@ -5,6 +5,9 @@ export type ProfitActivityScope = "default" | "company";
 export type ProfitActivityProduct = {
   id?: number;
   skc: string;
+  /** Generic product identifier. skc stays for compatibility with existing APIs. */
+  product_id?: string;
+  product_id_label?: string;
   site?: ProfitActivitySite;
   site_code?: ProfitActivitySite;
   source_type?: "manual" | "price_verification" | string;
@@ -32,6 +35,7 @@ export type ProductQueryParams = {
   site: ProfitActivitySite;
   scope: ProfitActivityScope;
   skcs: string;
+  productIds?: string;
 };
 
 export type ProductSourceLink = {

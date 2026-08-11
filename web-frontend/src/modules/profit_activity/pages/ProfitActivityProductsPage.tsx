@@ -47,7 +47,7 @@ export function ProfitActivityProductsPage() {
   // 页码输入框的草稿值：允许用户自由填写，回车/失焦/点“跳转”才生效
   const [pageInput, setPageInput] = useState("1");
   const [busy, setBusy] = useState("");
-  const [message, setMessage] = useState("输入 SKC 查询；留空展示数据库中当前权限可见产品。");
+  const [message, setMessage] = useState("输入商品ID（支持 SKU、SKC、SPU）查询；留空展示数据库中当前权限可见产品。");
   const [activeProduct, setActiveProduct] = useState<ProfitActivityProduct | null>(null);
   const [previewImage, setPreviewImage] = useState<{ url: string; label: string } | null>(null);
   const tableWrapRef = useRef<HTMLDivElement>(null);
@@ -510,7 +510,7 @@ export function ProfitActivityProductsPage() {
         </div>
 
         <div className="profit-products-query">
-          <textarea value={querySkcs} onChange={(event) => setQuerySkcs(event.target.value)} placeholder="输入 SKC，支持换行、空格、逗号批量查询；留空展示数据库里当前权限可见产品" />
+          <textarea value={querySkcs} onChange={(event) => setQuerySkcs(event.target.value)} placeholder="输入商品ID，支持 SKU、SKC、SPU；可用换行、空格、逗号批量查询；留空展示当前权限可见产品" />
           <div className="profit-products-actions">
             <button className="primary-button" onClick={queryProducts} disabled={!!busy}>查询产品</button>
             <button onClick={togglePageSelected} disabled={!pageProducts.length}>{pageSelected ? "取消本页" : "全选本页"}</button>
@@ -532,7 +532,7 @@ export function ProfitActivityProductsPage() {
           <div className="profit-table-head-scroll" ref={fixedHeaderScrollRef}>
             <table className="profit-table">
               <thead>
-                <tr><th>选择</th><th>站点</th><th>SKC</th><th>SKC对应图</th><th>售价</th><th>成本</th><th>重量</th><th>利润</th><th>利润率</th><th>备注</th><th>货源</th><th>图片</th></tr>
+                <tr><th>选择</th><th>站点</th><th>商品ID</th><th>商品对应图</th><th>售价</th><th>成本</th><th>重量</th><th>利润</th><th>利润率</th><th>备注</th><th>货源</th><th>图片</th></tr>
               </thead>
             </table>
           </div>
@@ -548,7 +548,7 @@ export function ProfitActivityProductsPage() {
         >
           <table className="profit-table">
             <thead ref={theadRef}>
-              <tr><th>选择<span className="profit-col-resizer" /></th><th>站点<span className="profit-col-resizer" /></th><th>SKC<span className="profit-col-resizer" /></th><th>SKC对应图<span className="profit-col-resizer" /></th><th>售价<span className="profit-col-resizer" /></th><th>成本<span className="profit-col-resizer" /></th><th>重量<span className="profit-col-resizer" /></th><th>利润<span className="profit-col-resizer" /></th><th>利润率<span className="profit-col-resizer" /></th><th>备注<span className="profit-col-resizer" /></th><th>货源<span className="profit-col-resizer" /></th><th>图片<span className="profit-col-resizer" /></th></tr>
+              <tr><th>选择<span className="profit-col-resizer" /></th><th>站点<span className="profit-col-resizer" /></th><th>商品ID<span className="profit-col-resizer" /></th><th>商品对应图<span className="profit-col-resizer" /></th><th>售价<span className="profit-col-resizer" /></th><th>成本<span className="profit-col-resizer" /></th><th>重量<span className="profit-col-resizer" /></th><th>利润<span className="profit-col-resizer" /></th><th>利润率<span className="profit-col-resizer" /></th><th>备注<span className="profit-col-resizer" /></th><th>货源<span className="profit-col-resizer" /></th><th>图片<span className="profit-col-resizer" /></th></tr>
             </thead>
             <tbody>
               {pageProducts.length ? pageProducts.map((item) => {
@@ -557,7 +557,7 @@ export function ProfitActivityProductsPage() {
                   <tr key={key}>
                     <td><input type="checkbox" checked={selected.has(key)} onChange={(event) => setSelected(toggleSet(selected, key, event.target.checked))} /></td>
                     <td>{siteLabels[(item.site || item.site_code || "US") as ProfitActivitySite]}</td>
-                    <td>{item.skc}{item.source_type === "price_verification" && <em className="profit-source-badge" title="来自核价及货源板块自动入库">核价</em>}</td>
+                    <td>{item.product_id ?? item.skc}{item.source_type === "price_verification" && <em className="profit-source-badge" title="来自核价及货源板块自动入库">核价</em>}</td>
                     <td><ProductImageCell item={item} onChanged={refreshProducts} /></td>
                     <td><EditableCell type="number" value={typeof item.selling_price === "number" ? String(item.selling_price) : ""} onSave={(value) => saveProductField(item, "selling_price", value)} /></td>
                     <td><EditableCell type="number" value={typeof item.cost_price === "number" ? String(item.cost_price) : ""} onSave={(value) => saveProductField(item, "cost_price", value)} /></td>
@@ -570,7 +570,7 @@ export function ProfitActivityProductsPage() {
                   </tr>
                 );
               }) : (
-                <tr><td colSpan={12}>暂无产品。输入 SKC 后查询，或留空查询当前权限可见产品。</td></tr>
+                <tr><td colSpan={12}>暂无产品。输入商品ID（SKU、SKC 或 SPU）后查询，或留空查询当前权限可见产品。</td></tr>
               )}
             </tbody>
           </table>

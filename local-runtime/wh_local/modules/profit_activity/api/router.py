@@ -105,9 +105,9 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     @router.get("/products")
-    def list_products(site: Literal["US", "CO", "EC"] | None = None, site_code: Literal["US", "CO", "EC"] | None = None, skcs: str = "", scope: str = "default", owner_user_id: int | None = None, source_type: str = "", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+    def list_products(site: Literal["US", "CO", "EC"] | None = None, site_code: Literal["US", "CO", "EC"] | None = None, skcs: str = "", product_ids: str = "", scope: str = "default", owner_user_id: int | None = None, source_type: str = "", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.read", database_path)
-        requested = [item.strip() for item in re.split(r"[\s,，]+", skcs) if item.strip()]
+        requested = [item.strip() for item in re.split(r"[\s,，]+", product_ids or skcs) if item.strip()]
         include_company = _include_company(scope, actor, database_path)
         return {"products": service.list_products(site=site or site_code, skcs=requested, source_type=source_type.strip() or None, actor=actor, include_workspace_shared=include_company), "scope": scope, "owner_user_id": owner_user_id}
 

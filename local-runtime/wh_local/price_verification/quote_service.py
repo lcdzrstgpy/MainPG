@@ -327,7 +327,9 @@ class QuoteService:
         merged = dedupe_quotes(items)
         groups: dict[str, list[QuoteItem]] = {}
         for item in merged:
-            key = item.skc_id or item.spu_or_goods_id or item.product_title or item.quote_key or "other"
+            # A quote can arrive with only SKU or SPU.  Preserve the existing
+            # SKC-first grouping, then use SPU and SKU as compatible product IDs.
+            key = item.skc_id or item.spu_or_goods_id or item.sku_id or item.sku_merchant_code or item.sku_true_id or item.product_title or item.quote_key or "other"
             groups.setdefault(key, []).append(item)
         prescreen = self._repository.get_prescreen_settings(workspace_id=actor.workspace_id)
         min_adjusted = _decimal_or_none(prescreen.min_adjusted_price_cny)
@@ -353,6 +355,8 @@ class QuoteService:
             rows.append(
                 {
                     "skc_id": key,
+                    "product_id": key,
+                    "product_id_label": "商品ID",
                     "quote_keys": [item.quote_key for item in members],
                     "product_title": next((item.product_title for item in members if item.product_title), first.product_title),
                     "main_image_url": next((item.main_image_url for item in members if item.main_image_url), first.main_image_url),
@@ -762,6 +766,7 @@ def _draft_payload_from_selection(
         "source_ref": selection.official_link_url or selection.skc_id,
         "candidate_id": f"price-verification:{selection.skc_id}",
         "skc": selection.skc_id,
+        "product_id": selection.skc_id,
         "sku": first_sku.get("sku_id") if isinstance(first_sku, Mapping) else None,
         "product_name": selection.product_title,
         "title": selection.product_title,

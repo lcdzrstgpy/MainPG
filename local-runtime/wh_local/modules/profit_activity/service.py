@@ -147,9 +147,11 @@ class ProfitActivityService:
     def upsert_product(self, payload: dict[str, Any], *, actor: Any | None = None, allow_company_write: bool = False, require_complete_profile: bool = False, image: tuple[str, bytes] | None = None, source_image: tuple[str, bytes] | None = None, source_group_images: dict[int, list[tuple[str, bytes]]] | None = None) -> dict[str, Any]:
         context = _actor_context(actor)
         site = _site(payload.get("site", payload.get("site_code", "US")))
-        skc = str(payload.get("skc") or payload.get("skc_id") or "").strip()
+        # Keep the storage column named skc for backward compatibility, while
+        # accepting SKU / SKC / SPU / product_id as the business identifier.
+        skc = _product_id_from_payload(payload)
         if not skc:
-            raise ValueError("skc is required")
+            raise ValueError("product_id is required")
         settings = self.get_settings(actor)
         current = self._repository.find_product(skc, site, context.workspace_id)
         if current is not None and current.created_by != context.actor_id and not (allow_company_write or context.is_admin):
@@ -654,6 +656,14 @@ def _site(value: Any) -> SiteCode:
     return site  # type: ignore[return-value]
 
 
+def _product_id_from_payload(payload: dict[str, Any]) -> str:
+    for key in ("product_id", "sku", "skc", "skc_id", "spu", "spu_id"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _decimal(value: Any) -> Decimal:
     try:
         result = Decimal(str(value))
@@ -727,7 +737,8 @@ def _product_payload(record, actor: ProfitActivityActorContext) -> dict[str, Any
     groups = _source_groups(record.source_groups_json, "[]")
     is_owner = record.created_by == actor.actor_id
     return {
-        "id": record.id, "site": record.site_code, "site_code": record.site_code, "skc": record.skc,
+        "id": record.id, "site": record.site_code, "site_code": record.site_code,
+        "skc": record.skc, "product_id": record.skc, "product_id_label": "商品ID",
         "visibility": record.visibility, "source_type": record.source_type,
         "created_by": record.created_by, "created_by_username": record.created_by_username,
         "workspace_id": record.workspace_id, "workspace_code": actor.workspace_code, "workspace_name": actor.workspace_name,

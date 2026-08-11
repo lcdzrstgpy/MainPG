@@ -50,7 +50,7 @@ export async function listProfitActivityProducts(params: ProductQueryParams) {
   const query = new URLSearchParams({
     site: params.site,
     scope: params.scope,
-    skcs: params.skcs,
+    product_ids: params.productIds ?? params.skcs,
   });
   const data = await request<{ products: ProfitActivityProduct[] }>(`/api/profit-activity/products?${query}`);
   return data.products ?? [];
