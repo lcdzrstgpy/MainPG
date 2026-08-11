@@ -1889,13 +1889,18 @@ class ProductProcessingService:
         category: str,
         target_language: str,
     ) -> bytes | None:
-        """用最多 4 张来源图（四宫格分图）本地合成 1024×1024 详情海报（对齐原项目
-        ``_synthesize_local_detail_image`` 的标题栏 + 多图排版思路）。
+        """用最多 4 张来源图（四宫格分图）本地合成 1024×1024 详情海报。
+
+        模板卡池 D/E/F 随机抽取（每张详情图随机一种版式）：
+          D 极简白底：标题置顶 + 居中大图 + 底部三小图 + 类目注脚；
+          E 圆形拼贴：主图居中 + 三张圆形蒙版嵌图 + 顶部压暗标题条；
+          F 混合形状：主图居中 + 圆形/圆角方形/菱形三种蒙版嵌图 + 顶部压暗标题条。
 
         文案全部为确定性英文（标题/类目），不产生中文；返回 JPEG 字节，素材不足返回 None。
         """
+        import random  # noqa: PLC0415
         from io import BytesIO  # noqa: PLC0415
-        from PIL import Image, ImageDraw, ImageFilter, ImageFont  # type: ignore  # noqa: PLC0415
+        from PIL import Image, ImageDraw, ImageFont  # type: ignore  # noqa: PLC0415
 
         images: list[Image.Image] = []
         for value in source_values[:4]:
@@ -1942,21 +1947,32 @@ class ProductProcessingService:
             ImageDraw.Draw(mask).rounded_rectangle((0, 0, part.width, part.height), radius=radius, fill=255)
             base.paste(part, box[:2], mask)
 
-        background = images[0].resize((target, target)).filter(ImageFilter.GaussianBlur(18))
-        canvas = Image.blend(background, Image.new("RGB", (target, target), (248, 248, 245)), 0.72)
-        draw = ImageDraw.Draw(canvas)
+        def shape_mask(size: int, shape: str) -> Image.Image:
+            mask = Image.new("L", (size, size), 0)
+            shape_draw = ImageDraw.Draw(mask)
+            if shape == "circle":
+                shape_draw.ellipse((0, 0, size - 1, size - 1), fill=255)
+            elif shape == "square":
+                shape_draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=int(size * 0.18), fill=255)
+            elif shape == "diamond":
+                shape_draw.polygon(
+                    [(size / 2, 0), (size - 1, size / 2), (size / 2, size - 1), (0, size / 2)], fill=255
+                )
+            return mask
 
-        clean_text = re.sub(r"\s+", " ", str(title or "")).strip(" -_|/")
-        title_text = clean_text[:96] or ("Detalle del producto" if target_language == "es" else "Product Detail")
-        category_text = (re.sub(r"\s+", " ", str(category or "")).strip(" -_|/")[:44]) or "Selected Detail"
+        def paste_shaped(base: Image.Image, image: Image.Image, center, size: int, shape: str, ring: int = 10) -> None:
+            """以指定形状蒙版把图嵌到画布上，外围带一圈白边（ring px）。"""
+            cx, cy = center
+            mask = shape_mask(size, shape)
+            base.paste(Image.new("RGB", (size, size), (255, 255, 255)), (cx - size // 2, cy - size // 2), mask)
+            inner = size - 2 * ring
+            part = cover(image, inner, inner)
+            base.paste(part, (cx - inner // 2, cy - inner // 2), shape_mask(inner, shape))
 
-        # 顶部标题栏（对齐原项目：白底圆角卡 + 两行标题 + 类目小字）
-        draw.rounded_rectangle((44, 40, 980, 152), radius=28, fill=(255, 255, 255), outline=(228, 224, 216), width=2)
-        title_font = font(34, bold=True)
-        subtitle_font = font(19)
-        text_width = draw.textlength
+        measure_draw = ImageDraw.Draw(Image.new("RGB", (target, target), (255, 255, 255)))
+        text_width = measure_draw.textlength
 
-        def wrap(draw_target, text: str, text_font, max_width: int, max_lines: int) -> list[str]:
+        def wrap(text: str, text_font, max_width: int, max_lines: int) -> list[str]:
             words = text.split()
             lines: list[str] = []
             current = ""
@@ -1973,27 +1989,79 @@ class ProductProcessingService:
                 lines.append(current)
             return lines or [text[:40]]
 
-        y = 56
-        for line in wrap(draw, title_text, title_font, 820, 2):
-            draw.text((72, y), line, font=title_font, fill=(36, 38, 39))
-            y += 40
-        if y < 124:
-            draw.text((74, 122), category_text, font=subtitle_font, fill=(95, 98, 98))
+        def title_band(canvas: Image.Image, text_draw: ImageDraw.ImageDraw, title_text: str, category_text: str) -> None:
+            """顶部半透明黑条 + 白色标题/类目（E/F 使用，保证任何图下文字清晰）。"""
+            title_font = font(38, bold=True)
+            sub_font = font(20)
+            band = Image.new("RGBA", (target, 300), (0, 0, 0, 0))
+            band_draw = ImageDraw.Draw(band)
+            for row in range(300):
+                alpha = int(120 * (1 - row / 300) ** 1.2)
+                band_draw.line((0, row, target, row), fill=(0, 0, 0, alpha))
+            canvas.paste(band, (0, 62), band)
+            y = 92
+            for line in wrap(title_text, title_font, 880, 2):
+                text_draw.text((52, y), line, font=title_font, fill=(255, 255, 255))
+                y += 44
+            text_draw.text((54, y + 6), category_text.upper(), font=sub_font, fill=(240, 238, 232))
 
-        # 主体 2×2 分图区（四宫格拆图，0 AI）
-        left, top_gap = 44, 176
-        gap, radius = 16, 22
-        cell_w = (target - 2 * left - gap) // 2
-        cell_h = (target - top_gap - 44 - gap) // 2
-        boxes = (
-            (left, top_gap, left + cell_w, top_gap + cell_h),
-            (left + cell_w + gap, top_gap, left + 2 * cell_w + gap, top_gap + cell_h),
-            (left, top_gap + cell_h + gap, left + cell_w, top_gap + 2 * cell_h + gap),
-            (left + cell_w + gap, top_gap + cell_h + gap, left + 2 * cell_w + gap, top_gap + 2 * cell_h + gap),
-        )
-        for index, box in enumerate(boxes):
-            paste_rounded(canvas, images[index], box, radius)
+        clean_text = re.sub(r"\s+", " ", str(title or "")).strip(" -_|/")
+        title_text = clean_text[:96] or ("Detalle del producto" if target_language == "es" else "Product Detail")
+        category_text = (re.sub(r"\s+", " ", str(category or "")).strip(" -_|/")[:44]) or "Selected Detail"
 
+        def compose_d() -> Image.Image:
+            """D 极简白底：标题置顶 + 居中大图 + 底部三小图 + 类目注脚"""
+            canvas = Image.new("RGB", (target, target), (255, 255, 255))
+            text_draw = ImageDraw.Draw(canvas)
+            title_font = font(38, bold=True)
+            sub_font = font(19)
+            y = 64
+            for line in wrap(title_text, title_font, 880, 2):
+                text_draw.text((52, y), line, font=title_font, fill=(28, 30, 32))
+                y += 44
+            text_draw.rounded_rectangle((54, y + 8, 118, y + 16), radius=4, fill=(232, 150, 62))
+            y += 38
+            text_draw.text((54, y), category_text.upper(), font=sub_font, fill=(120, 123, 124))
+            hero_top = 210
+            hero_h = 540
+            paste_rounded(canvas, images[0], (62, hero_top, target - 62, hero_top + hero_h), 26)
+            margin, gap, radius = 62, 20, 18
+            thumbs_w = (target - 2 * margin - 2 * gap) // 3
+            thumbs_h = target - hero_top - hero_h - 56
+            for index in range(3):
+                x0 = margin + index * (thumbs_w + gap)
+                paste_rounded(
+                    canvas,
+                    images[index + 1],
+                    (x0, hero_top + hero_h + 24, x0 + thumbs_w, hero_top + hero_h + 24 + thumbs_h),
+                    radius,
+                )
+            return canvas
+
+        def compose_e() -> Image.Image:
+            """E 圆形拼贴：主图居中 + 三张圆形蒙版嵌图 + 顶部压暗标题条"""
+            canvas = Image.new("RGB", (target, target), (244, 242, 238))
+            canvas.paste(cover(images[0], 820, 820), (102, 102))
+            paste_shaped(canvas, images[1], (150, 150), 290, "circle")
+            paste_shaped(canvas, images[2], (874, 150), 290, "circle")
+            paste_shaped(canvas, images[3], (512, 950), 290, "circle")
+            text_draw = ImageDraw.Draw(canvas)
+            title_band(canvas, text_draw, title_text, category_text)
+            return canvas
+
+        def compose_f() -> Image.Image:
+            """F 混合形状：主图居中 + 圆形/圆角方形/菱形蒙版嵌图 + 顶部压暗标题条"""
+            canvas = Image.new("RGB", (target, target), (244, 242, 238))
+            canvas.paste(cover(images[0], 820, 820), (102, 102))
+            paste_shaped(canvas, images[1], (150, 150), 300, "circle")
+            paste_shaped(canvas, images[2], (874, 150), 300, "square")
+            paste_shaped(canvas, images[3], (512, 950), 320, "diamond")
+            text_draw = ImageDraw.Draw(canvas)
+            title_band(canvas, text_draw, title_text, category_text)
+            return canvas
+
+        compositor = {"D": compose_d, "E": compose_e, "F": compose_f}[random.choice(("D", "E", "F"))]
+        canvas = compositor()
         buffer = BytesIO()
         canvas.save(buffer, format="JPEG", quality=92)
         return buffer.getvalue()
