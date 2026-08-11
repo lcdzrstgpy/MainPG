@@ -37,6 +37,7 @@ _MEDIA_TYPE_ALIASES = {
 _DOH_HOSTNAME = "cloudflare-dns.com"
 _DOH_ADDRESSES = ("1.1.1.1", "1.0.0.1")
 _MAX_DOH_RESPONSE_BYTES = 64 * 1024
+_PUBLIC_IMAGE_USER_AGENT = "Mozilla/5.0 (compatible; MainPGImageFetcher/1.0)"
 
 
 class PublicImageFetchError(ValueError):
@@ -281,6 +282,10 @@ def _request_once(
                 "Accept": "image/jpeg,image/png,image/gif,image/webp,image/bmp",
                 "Connection": "close",
                 "Host": validated.host_header,
+                # Temu image CDNs reject anonymous HTTP-library requests with
+                # 403, while accepting the same public image with a browser-like
+                # agent.  This does not weaken URL/IP/redirect/content checks.
+                "User-Agent": _PUBLIC_IMAGE_USER_AGENT,
             },
         )
         response = connection.getresponse()
