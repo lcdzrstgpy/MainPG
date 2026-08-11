@@ -68,7 +68,11 @@ async function loadProducts(): Promise<ProfitActivityProduct[]> {
 }
 
 async function loadTodayProcessed(): Promise<number> {
-  const data = await apiRequest<{ tasks: ProcessingTaskItem[] }>("/product-processing/tasks/history?limit=200");
+  // 任务按工作区隔离，必须带与产品处理页面一致的 X-Workspace-ID（default），
+  // 否则后端默认查 local 工作区会漏掉应用里实际创建的处理任务。
+  const data = await apiRequest<{ tasks: ProcessingTaskItem[] }>("/product-processing/tasks/history?limit=200", {
+    headers: { "X-Workspace-ID": "default" },
+  });
   const tasks = Array.isArray(data.tasks) ? data.tasks : [];
   // 今日产品处理数量 = 今日历史处理任务的批次数量（每提交一批草稿即一条任务）
   return tasks.filter((task) => isTodayInChina(task.created_at)).length;
