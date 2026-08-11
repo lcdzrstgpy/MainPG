@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -103,11 +103,19 @@ class SourcingService:
             )
             if item.status == "retained"
         )
+        existing_session = self._repository.get_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id
+        )
         if skc_ids is not None:
             selected = {_text(skc) for skc in skc_ids if _text(skc)}
             selections = tuple(item for item in selections if item.skc_id in selected)
+        session = existing_session or self.prepare_batch_sourcing(
+            actor, batch_id=batch_id, skc_ids=[item.skc_id for item in selections]
+        )
+        unresolved = set(session["unresolved_skc_ids"])
+        selections = tuple(item for item in selections if item.skc_id in unresolved)
         if not selections:
-            raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
+            return {"items": [], "skc_groups": [], "ranking_mode": ranking_mode, "counts": {"candidate_count": 0, "failed_quotes": 0}}
         payload = build_batch_sourcing_payload(
             (_selection_sourcing_view(item) for item in selections)
         )
@@ -117,12 +125,198 @@ class SourcingService:
         adapter = OneBoundSourceAdapter(self._repository, provider_factory)
         result = adapter.search_by_image(actor, tasks, keyword_search=keyword_search)
         quotes = [task.to_payload() for task in tasks]
-        preview = build_source_preview(quotes, result)
-        return _apply_batch_ranking(
-            preview,
+        preview = _apply_batch_ranking(
+            build_source_preview(quotes, result),
             selections_by_skc={item.skc_id: item for item in selections},
             ranking_mode=ranking_mode,
         )
+        self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            selected_skc_ids=session["selected_skc_ids"],
+            unresolved_skc_ids=session["unresolved_skc_ids"],
+            matched_products=session["matched_products"],
+            preview=preview,
+            selected_candidates=session["selected_candidates"],
+        )
+        return preview
+
+    def prepare_batch_sourcing(
+        self, actor: PriceVerificationActor, *, batch_id: str, skc_ids: Sequence[str]
+    ) -> Mapping[str, Any]:
+        """Split this final-review selection into library hits and source-search misses."""
+        actor = _actor(actor)
+        requested = tuple(dict.fromkeys(_text(skc) for skc in skc_ids if _text(skc)))
+        retained = {
+            item.skc_id
+            for item in self._repository.list_batch_selections(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+            if item.status == "retained"
+        }
+        selected = tuple(skc for skc in requested if skc in retained)
+        if not selected:
+            raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
+        existing = self._repository.get_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id
+        )
+        products = self._product_library_products(actor, selected)
+        product_skc_ids = {str(item.get("skc") or "") for item in products}
+        unresolved = tuple(skc for skc in selected if skc not in product_skc_ids)
+        same_selection = existing is not None and tuple(existing["selected_skc_ids"]) == selected
+        return self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            selected_skc_ids=selected,
+            unresolved_skc_ids=unresolved,
+            matched_products=products,
+            preview=existing["preview"] if same_selection and existing else None,
+            selected_candidates=existing["selected_candidates"] if same_selection and existing else (),
+        )
+
+    def get_batch_sourcing_state(
+        self, actor: PriceVerificationActor, *, batch_id: str
+    ) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        session = self._repository.get_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id
+        )
+        if session is not None:
+            # 产品库命中展示每次读取都用耐久的货源关联记录补全，避免早期产品库
+            # 只保存 URL 时在 STEP 04 退化成重复的空白“1688 货源”。
+            products = self._product_library_products(actor, session["selected_skc_ids"])
+            if products:
+                session = self._repository.save_batch_sourcing_session(
+                    workspace_id=actor.workspace_id, batch_id=batch_id,
+                    selected_skc_ids=session["selected_skc_ids"],
+                    unresolved_skc_ids=session["unresolved_skc_ids"], matched_products=products,
+                    preview=session["preview"], selected_candidates=session["selected_candidates"],
+                )
+            return session
+        return {
+            "selected_skc_ids": (), "unresolved_skc_ids": (), "matched_products": (),
+            "preview": None, "selected_candidates": (), "updated_at": "",
+        }
+
+    def select_batch_source_candidate(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        skc_id: str,
+        candidate: Mapping[str, Any],
+        price_cny: object = None,
+    ) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        session = self.get_batch_sourcing_state(actor, batch_id=batch_id)
+        skc_id = _required_text(skc_id, "skc_id")
+        if skc_id not in session["unresolved_skc_ids"]:
+            raise PriceVerificationContractError("SKC does not need source search in this batch")
+        offer_id = _text(candidate.get("offer_id")) or _offer_id_from_url(_text(candidate.get("source_url")))
+        if not re.fullmatch(r"\d{3,}", offer_id):
+            raise PriceVerificationContractError("offer_id must be a 1688 offer id")
+        source_url = canonical_source_url(_text(candidate.get("source_url")), offer_id=offer_id)
+        if not source_url:
+            raise PriceVerificationContractError("source_url must be a valid 1688 offer URL")
+        selected = [dict(item) for item in session["selected_candidates"]
+                    if not (item.get("skc_id") == skc_id and item.get("offer_id") == offer_id)]
+        selected.append({
+            "skc_id": skc_id, "offer_id": offer_id, "source_url": source_url,
+            "source_title": _text(candidate.get("source_title")),
+            "main_image_url": _text(candidate.get("main_image_url")),
+            "price_cny": _nullable_decimal_text(price_cny if price_cny is not None else candidate.get("promotion_price") or candidate.get("price")),
+            "moq": _nullable_decimal_text(candidate.get("moq")),
+            "domestic_freight_cny": _nullable_decimal_text(candidate.get("domestic_freight")),
+            "source_decision": _text(candidate.get("source_decision")),
+        })
+        return self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id,
+            selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=session["unresolved_skc_ids"],
+            matched_products=session["matched_products"], preview=session["preview"], selected_candidates=selected,
+        )
+
+    def unselect_batch_source_candidate(
+        self, actor: PriceVerificationActor, *, batch_id: str, skc_id: str, offer_id: str
+    ) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        session = self.get_batch_sourcing_state(actor, batch_id=batch_id)
+        selected = [dict(item) for item in session["selected_candidates"]
+                    if not (item.get("skc_id") == skc_id and item.get("offer_id") == offer_id)]
+        return self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id,
+            selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=session["unresolved_skc_ids"],
+            matched_products=session["matched_products"], preview=session["preview"], selected_candidates=selected,
+        )
+
+    def complete_batch_sourcing(
+        self, actor: PriceVerificationActor, *, batch_id: str
+    ) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        session = self.get_batch_sourcing_state(actor, batch_id=batch_id)
+        selected_candidates = tuple(session["selected_candidates"])
+        if not selected_candidates:
+            raise PriceVerificationContractError("select at least one 1688 candidate before completing")
+        for candidate in selected_candidates:
+            self.link_skc_source(
+                actor, batch_id=batch_id, skc_id=_required_text(candidate.get("skc_id"), "skc_id"),
+                offer_id=_required_text(candidate.get("offer_id"), "offer_id"),
+                source_url=_required_text(candidate.get("source_url"), "source_url"),
+                source_title=_text(candidate.get("source_title")), main_image_url=_text(candidate.get("main_image_url")),
+                price_cny=candidate.get("price_cny"), moq=candidate.get("moq"),
+                domestic_freight_cny=candidate.get("domestic_freight_cny"),
+                source_decision=_text(candidate.get("source_decision")),
+            )
+        products = self._product_library_products(actor, session["selected_skc_ids"])
+        self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id,
+            selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=(),
+            matched_products=products, preview=None, selected_candidates=(),
+        )
+        self._repository.clear_batch_sourcing_results(workspace_id=actor.workspace_id, batch_id=batch_id)
+        return self.get_batch_sourcing_state(actor, batch_id=batch_id)
+
+    def _product_library_products(
+        self, actor: PriceVerificationActor, skc_ids: Sequence[str]
+    ) -> tuple[Mapping[str, Any], ...]:
+        if self._product_library_service is None or not skc_ids:
+            return ()
+        try:
+            products = self._product_library_service.list_products(
+                skcs=list(skc_ids), actor=actor, include_workspace_shared=True
+            )
+            selected = set(skc_ids)
+            links_by_skc: dict[str, list[SkcSourceLinkRecord]] = {}
+            for link in self._repository.list_active_skc_source_links_for_skcs(
+                workspace_id=actor.workspace_id, skc_ids=skc_ids
+            ):
+                links_by_skc.setdefault(link.skc_id, []).append(link)
+            enriched: list[Mapping[str, Any]] = []
+            for product in products:
+                payload = dict(product)
+                skc_id = _text(payload.get("skc"))
+                if skc_id not in selected:
+                    continue
+                links = links_by_skc.get(skc_id, [])
+                if links:
+                    payload["source_groups"] = [
+                        {
+                            "source_url": link.source_url,
+                            "source_title": link.source_title,
+                            "main_image_url": link.main_image_url,
+                            "offer_id": link.offer_id,
+                            "price_cny": link.price_cny,
+                            "moq": link.moq,
+                            "domestic_freight_cny": link.domestic_freight_cny,
+                        }
+                        for link in links
+                    ]
+                enriched.append(payload)
+            return tuple(enriched)
+        except Exception:
+            return ()
+
+    # existing code paths still use this direct link operation; the new batch
+    # wizard stages candidates above and calls it only from complete_batch_sourcing.
 
     def preview_candidate_profit(
         self,
@@ -324,6 +518,7 @@ class SourcingService:
                 "source_url": str(groups[0].get("source_url") or ""),
                 "source_groups_json": json.dumps(groups, ensure_ascii=False, separators=(",", ":")),
                 "source_type": "price_verification",
+                "source_main_image_url": _text(selection.main_image_url),
                 "visibility": "shared",
             }
             return self._product_library_service.upsert_product(payload, actor=actor)
@@ -777,6 +972,11 @@ def _site_code(value: object) -> str:
     if "厄瓜多尔" in text:
         return "EC"
     return ""
+
+
+def _offer_id_from_url(value: object) -> str:
+    match = re.search(r"(?:offer/|offerId=|offer_id=)(\d{3,})", _text(value), re.IGNORECASE)
+    return match.group(1) if match else ""
 
 
 def _group_source_items_by_skc(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

@@ -489,6 +489,12 @@ class QuoteService:
         candidate_cap = max(1, min(int(max_candidates), 100))
         rows = self.list_capture_batch_review_items(actor, batch_id)
         selected = [row for row in rows if str(row["skc_id"]).strip() in requested]
+        # 每次批次确认都是一次新的选择集；不能把上一轮确认的 SKC 继续带到最终确认或图搜。
+        self._repository.replace_batch_selection_scope(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            skc_ids=[str(row["skc_id"]) for row in selected],
+        )
         now = _now_text()
         staged: list[Mapping[str, Any]] = []
         for row in selected:

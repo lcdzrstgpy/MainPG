@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { BatchSelection } from "../types";
 import { SectionHelp } from "./SectionHelp";
+import { WorkflowActionBar } from "./WorkflowActionBar";
 
 type Props = {
   batchId: string;
@@ -8,7 +9,7 @@ type Props = {
   busy: boolean;
   sourceSkcIds: string[];
   onSourceSelectionChange: (skcIds: string[]) => void;
-  onReview: (batchId: string, selectionId: number, decision: "retained" | "deleted", maxCandidates: number) => Promise<void>;
+  onContinue: () => void;
 };
 
 function money(value?: string | number | null) {
@@ -26,27 +27,15 @@ function priceCell(label: string, min?: string | number | null, max?: string | n
   );
 }
 
-export function BatchReviewConfirmPanel({ batchId, selections, busy, sourceSkcIds, onSourceSelectionChange, onReview }: Props) {
-  const [globalCount, setGlobalCount] = useState(5);
-  const [counts, setCounts] = useState<Record<number, number>>({});
-  const [busyId, setBusyId] = useState<number | null>(null);
-  const visible = useMemo(() => selections.filter((item) => item.status === "pending" || item.status === "retained"), [selections]);
-  const pending = useMemo(() => visible.filter((item) => item.status === "pending"), [visible]);
-  const retained = useMemo(() => visible.filter((item) => item.status === "retained"), [visible]);
-
-  const clamp = (value: number) => Math.min(10, Math.max(1, Number.isFinite(value) ? value : 5));
-
-  const countOf = (selection: BatchSelection) => counts[selection.id] ?? selection.max_candidates;
-
-  const applyAll = () => {
-    setCounts(Object.fromEntries(pending.map((item) => [item.id, clamp(globalCount)])));
-  };
+export function BatchReviewConfirmPanel({ batchId, selections, busy, sourceSkcIds, onSourceSelectionChange, onContinue }: Props) {
+  // 进入待审列表即自动保留入草稿池，这里展示所有未删除的商品供勾选图搜
+  const visible = useMemo(() => selections.filter((item) => item.status !== "deleted"), [selections]);
 
   const toggleSource = (skcId: string, checked: boolean) => {
     onSourceSelectionChange(checked ? [...new Set([...sourceSkcIds, skcId])] : sourceSkcIds.filter((id) => id !== skcId));
   };
 
-  const retainedIds = retained.map((item) => item.skc_id);
+  const retainedIds = visible.map((item) => item.skc_id);
   const selectedRetained = retainedIds.filter((id) => sourceSkcIds.includes(id));
   const allSelected = retainedIds.length > 0 && selectedRetained.length === retainedIds.length;
 
@@ -56,22 +45,8 @@ export function BatchReviewConfirmPanel({ batchId, selections, busy, sourceSkcId
       : [...new Set([...sourceSkcIds, ...retainedIds])]);
   };
 
-  const review = async (selection: BatchSelection, decision: "retained" | "deleted") => {
-    if (busyId) return;
-    setBusyId(selection.id);
-    try {
-      await onReview(batchId, selection.id, decision, countOf(selection));
-    } finally {
-      setBusyId(null);
-    }
-  };
-
   const renderRow = (selection: BatchSelection) => (
     <article className="price-verification-quote-card is-confirm-review" key={selection.id}>
-      <label className="price-verification-source-check" title={selection.status === "retained" ? "勾选后本次图搜会搜索该 SKC；取消勾选可跳过，避免重复图搜" : "请先点击“保留 · 入草稿池”，保留后才能勾选图搜"}>
-        <input type="checkbox" checked={selection.status === "retained" && sourceSkcIds.includes(selection.skc_id)} onChange={(event) => toggleSource(selection.skc_id, event.target.checked)} disabled={busyId !== null || selection.status !== "retained"} />
-        <span>图搜</span>
-      </label>
       <div className="price-verification-quote-image">
         {selection.main_image_url ? <img src={selection.main_image_url} alt="" referrerPolicy="no-referrer" /> : "无图"}
       </div>
@@ -96,40 +71,21 @@ export function BatchReviewConfirmPanel({ batchId, selections, busy, sourceSkcId
             </div>
           </details>
         )}
-        {selection.official_link_url && <a href={selection.official_link_url} target="_blank" rel="noreferrer">查看官方链接 ↗</a>}
       </div>
       <div className="price-verification-decision">
-        {selection.status === "retained" ? (
-          <>
-            <span className="price-verification-selection-badge">已保留 · 已入草稿池</span>
-            <small className="price-verification-decision-hint">图搜相似品数量：{countOf(selection)} 条</small>
-            <button className="is-selected reject" onClick={() => void review(selection, "deleted")} disabled={busyId !== null}>
-              {busyId === selection.id ? "处理中…" : "撤销保留并删除"}
-            </button>
-          </>
-        ) : (
-          <>
-            <label className="price-verification-count-field">
-              <span>图搜相似品数量</span>
-              <input
-                type="number"
-                min={1}
-                max={10}
-                value={countOf(selection)}
-                disabled={busyId !== null}
-                onChange={(event) => setCounts((current) => ({ ...current, [selection.id]: clamp(Number(event.target.value)) }))}
-              />
-            </label>
-            <div className="price-verification-decision-actions">
-              <button className="is-selected" onClick={() => void review(selection, "retained")} disabled={busyId !== null}>
-                {busyId === selection.id ? "处理中…" : "保留 · 入草稿池"}
-              </button>
-              <button className="reject" onClick={() => void review(selection, "deleted")} disabled={busyId !== null}>
-                删除
-              </button>
-            </div>
-          </>
-        )}
+        <span className="price-verification-selection-badge">已入草稿池</span>
+        <label
+          className="price-verification-source-check"
+          title="勾选后本次图搜会搜索该 SKC；取消勾选可跳过，避免重复图搜"
+        >
+          <input
+            type="checkbox"
+            checked={sourceSkcIds.includes(selection.skc_id)}
+            onChange={(event) => toggleSource(selection.skc_id, event.target.checked)}
+            disabled={busy}
+          />
+          <span>图搜</span>
+        </label>
       </div>
     </article>
   );
@@ -139,28 +95,7 @@ export function BatchReviewConfirmPanel({ batchId, selections, busy, sourceSkcId
       <div className="price-verification-panel-heading">
         <div>
           <p className="eyebrow">STEP 02 · FINAL REVIEW</p>
-          <h2>待审商品最终确认<SectionHelp title="第一板块勾选确认的商品已重组成此待审列表，这里是最终裁决：点“保留 · 入草稿池”才写入草稿池，点“删除”即放弃；同时可为每个 SKC 指定图搜相似品数量。每行左侧可勾选是否参与图搜（默认不勾选，需先保留后才能勾选），只图搜勾选的 SKC，避免每次全量图搜产生重复。" /></h2>
-        </div>
-        <div className="price-verification-heading-actions">
-          <label className="price-verification-count-field is-inline">
-            <span>全局图搜数量</span>
-            <input
-              type="number"
-              min={1}
-              max={10}
-              value={globalCount}
-              disabled={busy}
-              onChange={(event) => setGlobalCount(clamp(Number(event.target.value)))}
-            />
-            <small className="price-verification-count-hint">上限 10 个</small>
-          </label>
-          <button className="price-verification-secondary-button" onClick={applyAll} disabled={!pending.length || busy}>
-            应用到全部待审
-          </button>
-          <button className="price-verification-secondary-button" onClick={toggleAllSource} disabled={!retainedIds.length || busy}>
-            {allSelected ? "取消全选" : "全选已保留"}
-          </button>
-          <small className="price-verification-source-selected-hint">已选 {selectedRetained.length}/{retainedIds.length} 个保留 SKC 参与图搜</small>
+          <h2>待审商品最终确认<SectionHelp title="第一板块勾选确认的商品已自动保留入草稿池并重组成此待审列表，无需二次确认。图搜相似品数量固定为 5。每行右侧可勾选是否参与图搜，只图搜勾选的 SKC，避免每次全量图搜产生重复。" /></h2>
         </div>
       </div>
       {visible.length ? (
@@ -172,10 +107,17 @@ export function BatchReviewConfirmPanel({ batchId, selections, busy, sourceSkcId
           <span>◇</span>
           <div>
             <h3>待审列表为空</h3>
-            <p>请在上方“批次报价审核”中勾选需要保留的商品并确认，这里会重组展示这些 SKC，供你逐条做最终保留或删除。</p>
+            <p>请在上方“批次报价审核”中勾选需要保留的商品并确认，这里会展示已自动保留的 SKC，供你勾选图搜。</p>
           </div>
         </div>
       )}
+      <WorkflowActionBar label="最终确认操作">
+        <div className="price-verification-action-summary"><span>图搜对象</span><strong>{selectedRetained.length} / {retainedIds.length} 个已保留 SKC</strong></div>
+        <div className="price-verification-action-buttons">
+          <button className="price-verification-secondary-button" onClick={toggleAllSource} disabled={!retainedIds.length || busy}>{allSelected ? "取消全选" : "全选已保留"}</button>
+          <button className="price-verification-primary-button" onClick={onContinue} disabled={!selectedRetained.length || busy}>进入货源匹配（{selectedRetained.length}）</button>
+        </div>
+      </WorkflowActionBar>
     </section>
   );
 }

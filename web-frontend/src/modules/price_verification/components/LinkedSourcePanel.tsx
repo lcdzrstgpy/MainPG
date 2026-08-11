@@ -1,28 +1,11 @@
-import { useMemo, useState } from "react";
-
-import type { SkcSourceLink, SourceTopProfit } from "../types";
+import type { ProductLibraryMatch, ProductLibrarySource } from "../types";
 import { SectionHelp } from "./SectionHelp";
 
-type Props = {
-  links: SkcSourceLink[];
-  onUnlink: (linkId: number) => Promise<void>;
-};
+type Props = { products: ProductLibraryMatch[] };
 
-function toNumber(value: unknown): number {
-  if (typeof value === "number") return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY;
-  if (value === null || value === undefined || value === "") return Number.POSITIVE_INFINITY;
-  const parsed = Number(String(value).replace(/[¥,\s]/g, ""));
-  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
-}
-
-function moneyText(value: unknown) {
-  const number = toNumber(value);
+function money(value: unknown) {
+  const number = Number(value);
   return Number.isFinite(number) ? `¥${number.toFixed(2)}` : "—";
-}
-
-function percentText(value: unknown) {
-  const number = toNumber(value);
-  return Number.isFinite(number) ? `${Math.round(number * 100)}%` : "";
 }
 
 function siteLabel(site?: string) {
@@ -32,49 +15,16 @@ function siteLabel(site?: string) {
   return site || "—";
 }
 
-function profitReasonText(reason?: string) {
-  if (!reason) return "无法核算";
-  if (reason === "missing_site") return "站点未识别";
-  if (reason === "missing_selling_price") return "缺少调整后申报价";
-  if (reason === "missing_source_price") return "关联价格缺失";
-  if (reason === "profit_calculation_failed") return "利润计算失败";
-  return reason;
+function sourceGroups(product: ProductLibraryMatch): ProductLibrarySource[] {
+  if (product.source_groups?.length) return product.source_groups;
+  return product.source_url ? [{ source_url: product.source_url }] : [];
 }
 
-function LinkProfit({ profit }: { profit: SourceTopProfit | null }) {
-  if (!profit?.available) {
-    return <span className="source-link-profit"><small className="is-muted">利润不可核算：{profitReasonText(profit?.reason)}</small></span>;
-  }
-  return <span className="source-link-profit"><b>{moneyText(profit.net_profit)}</b><small>净利 · {percentText(profit.profit_rate)}</small><em className={profit.qualified ? "is-qualified" : ""}>{profit.qualified ? "达标 ✓" : "未达标"}</em></span>;
-}
-
-export function LinkedSourcePanel({ links, onUnlink }: Props) {
-  const [busyId, setBusyId] = useState<number | null>(null);
-
-  const linkTime = (link: SkcSourceLink) => Date.parse(link.updated_at || link.created_at || "") || 0;
-
-  const groups = useMemo(() => {
-    const grouped: Record<string, SkcSourceLink[]> = {};
-    for (const link of links) (grouped[link.skc_id] ||= []).push(link);
-    return Object.entries(grouped)
-      .map(([skcId, groupLinks]): [string, SkcSourceLink[]] => [skcId, [...groupLinks].sort((a, b) => linkTime(b) - linkTime(a))])
-      .sort(([, a], [, b]) => linkTime(b[0]) - linkTime(a[0]));
-  }, [links]);
-
-  const unlink = async (link: SkcSourceLink) => {
-    if (busyId) return;
-    setBusyId(link.id);
-    try {
-      await onUnlink(link.id);
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  return <section className="price-verification-panel price-verification-linked-panel"><div className="price-verification-panel-heading"><div><p className="eyebrow">STEP 04 · SOURCED</p><h2>已关联 1688 货源<SectionHelp title="集中展示所有已保留 SKC 关联的 1688 代发货源：SKC 标题、站点、调整后申报价一目了然，每条 1688 链接都按“候选源价（可调）”核算了利润（净利润 / 利润率 / 达标与否）。数据已入库，刷新页面不会丢失。" /></h2></div><div className="price-verification-source-empty"><div><span>已关联 SKC</span><strong>{groups.length}</strong></div><div><span>已关联 1688 链接</span><strong>{links.length}</strong></div></div></div>
-    {groups.length ? <div className="price-verification-linked-groups">{groups.map(([skcId, groupLinks]) => {
-      const first = groupLinks[0];
-      return <div className="price-verification-linked-group" key={skcId}><div className="price-verification-source-group-head"><strong>{skcId} · {first?.product_title || "未命名商品"}</strong><small>{siteLabel(first?.site)} · 调整后申报价 {moneyText(first?.selling_price)} · 已关联 {groupLinks.length} 条 · 价格与利润已按候选源价（可调）校准</small></div><div className="price-verification-source-linked">{groupLinks.map((link) => <div key={link.id}><a href={link.source_url} target="_blank" rel="noreferrer"><img src={link.main_image_url} alt="" loading="lazy" referrerPolicy="no-referrer" /><span><b className="source-link-title">{link.source_title || link.offer_id}</b><small className="source-link-offer">offer {link.offer_id}</small></span></a><span className="source-link-source-price"><small>源价</small><b>¥{link.price_cny ?? "—"}</b></span><LinkProfit profit={link.profit ?? null} /><button onClick={() => void unlink(link)} disabled={busyId === link.id}>{busyId === link.id ? "解除中…" : "解除"}</button></div>)}</div></div>;
-    })}</div> : <p className="price-verification-source-empty-line">暂无已关联的 1688 货源；在上方“货源匹配”板块对候选点“关联”后，这里会保留展示（已入库，刷新不丢失）。</p>}
+export function LinkedSourcePanel({ products }: Props) {
+  return <section className="price-verification-panel price-verification-linked-panel"><div className="price-verification-panel-heading"><div><p className="eyebrow">STEP 04 · SOURCED</p><h2>已关联 1688 货源<SectionHelp title="只展示本轮勾选 SKC 在产品库中已存在或刚完成入库的 1688 货源，不混入其他批次。" /></h2></div><div className="price-verification-source-empty"><div><span>已关联 SKC</span><strong>{products.length}</strong></div><div><span>已关联 1688 链接</span><strong>{products.reduce((sum, product) => sum + sourceGroups(product).length, 0)}</strong></div></div></div>
+    {products.length ? <div className="price-verification-linked-groups">{products.map((product) => {
+      const groups = sourceGroups(product);
+      return <div className="price-verification-linked-group" key={product.id || product.skc}><div className="price-verification-source-group-head"><strong>{product.skc}</strong><small>{siteLabel(product.site)} · 调整后申报价 {money(product.selling_price)} · 已入产品库</small></div><div className="price-verification-source-linked">{groups.length ? groups.map((source, index) => <div key={`${product.skc}-${source.offer_id || source.source_url || index}`}><a href={source.source_url} target="_blank" rel="noreferrer">{source.main_image_url ? <img src={source.main_image_url} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span />}<span><b className="source-link-title">{source.source_title || source.offer_id || "1688 货源"}</b><small className="source-link-offer">{source.offer_id ? `offer ${source.offer_id}` : "已关联"}</small></span></a><span className="source-link-source-price"><small>源价</small><b>{money(source.price_cny)}</b></span></div>) : <small>产品库中未保存明细链接</small>}</div></div>;
+    })}</div> : <p className="price-verification-source-empty-line">本轮暂无已入库的 1688 货源。完成上方图搜候选的关联后会展示在这里。</p>}
   </section>;
 }

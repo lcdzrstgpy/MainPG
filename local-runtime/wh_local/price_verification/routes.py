@@ -370,6 +370,70 @@ def register_price_verification_routes(
             logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/sourcing/prepare")
+    def prepare_batch_sourcing(
+        batch_id: str,
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return sourcing_service.prepare_batch_sourcing(
+                actor, batch_id=batch_id, skc_ids=_text_list(request.get("skc_ids"))
+            )
+        except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
+            _raise_http(error)
+
+    @router.get("/api/v1/price-verification/capture-batches/{batch_id}/sourcing")
+    def get_batch_sourcing_state(
+        batch_id: str, actor: PriceVerificationActor = Depends(actor_dependency)
+    ) -> Mapping[str, Any]:
+        try:
+            return sourcing_service.get_batch_sourcing_state(actor, batch_id=batch_id)
+        except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
+            _raise_http(error)
+
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/sourcing/candidates")
+    def select_batch_source_candidate(
+        batch_id: str,
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return sourcing_service.select_batch_source_candidate(
+                actor, batch_id=batch_id, skc_id=_required(request, "skc_id"),
+                candidate=_mapping(request.get("candidate"), "candidate"), price_cny=request.get("price_cny"),
+            )
+        except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
+            _raise_http(error)
+
+    @router.delete("/api/v1/price-verification/capture-batches/{batch_id}/sourcing/candidates")
+    def unselect_batch_source_candidate(
+        batch_id: str,
+        skc_id: str = Query(...),
+        offer_id: str = Query(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return sourcing_service.unselect_batch_source_candidate(
+                actor, batch_id=batch_id, skc_id=skc_id, offer_id=offer_id
+            )
+        except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
+            _raise_http(error)
+
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/sourcing/complete")
+    def complete_batch_sourcing(
+        batch_id: str, actor: PriceVerificationActor = Depends(actor_dependency)
+    ) -> Mapping[str, Any]:
+        try:
+            return sourcing_service.complete_batch_sourcing(actor, batch_id=batch_id)
+        except Exception as error:
+            logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
+            _raise_http(error)
+
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/source-profit-preview")
     def preview_source_candidate_profit(
         batch_id: str,

@@ -44,7 +44,7 @@ class ProfitActivityRepository:
             session.flush()
             return SettingsSnapshot(row.revision, _settings(row))
 
-    def upsert_record(self, *, workspace_id: str, created_by: str, created_by_username: str, skc: str, note: str, preview: ProfitPreview, calculation_hash: str, settings_revision: int, refund_rate: Decimal = Decimal("0"), visibility: str = "shared", source_type: str = "manual", source_url: str = "", image_path: str = "", source_image_path: str = "", source_groups: list[dict] | None = None) -> ProfitRecordRow:
+    def upsert_record(self, *, workspace_id: str, created_by: str, created_by_username: str, skc: str, note: str, preview: ProfitPreview, calculation_hash: str, settings_revision: int, refund_rate: Decimal = Decimal("0"), visibility: str = "shared", source_type: str = "manual", source_url: str = "", image_path: str = "", source_main_image_url: str = "", source_image_path: str = "", source_groups: list[dict] | None = None) -> ProfitRecordRow:
         with self._sessions.begin() as session:
             row = session.scalar(select(ProfitRecordRow).where(ProfitRecordRow.workspace_id == workspace_id, ProfitRecordRow.site_code == preview.site_code, ProfitRecordRow.skc == skc))
             values = {
@@ -52,6 +52,7 @@ class ProfitActivityRepository:
                 "settings_revision": settings_revision, "refund_rate": refund_rate, "visibility": visibility,
                 "source_type": source_type,
                 "source_url": source_url, "image_path": image_path,
+                "source_main_image_url": source_main_image_url,
                 "source_image_path": source_image_path,
                 "source_groups_json": json.dumps(source_groups or [], ensure_ascii=False, separators=(",", ":")),
             }

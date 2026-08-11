@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { PrescreenSettings } from "../types";
 import { SectionHelp } from "./SectionHelp";
+import { WorkflowActionBar } from "./WorkflowActionBar";
 
 type Props = {
   isChecking: boolean;
@@ -8,11 +9,12 @@ type Props = {
   totalSkc: number;
   passedItems: number;
   prescreen: PrescreenSettings | null;
-  onPrescreenChange: (minAdjustedPriceCny: string) => Promise<void>;
+  onPrescreenChange: (minAdjustedPriceCny: string) => Promise<boolean>;
   onRefresh: () => void;
+  onContinue: () => void;
 };
 
-export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, prescreen, onPrescreenChange, onRefresh }: Props) {
+export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, prescreen, onPrescreenChange, onRefresh, onContinue }: Props) {
   const [threshold, setThreshold] = useState(prescreen?.min_adjusted_price_cny != null && prescreen.min_adjusted_price_cny !== "" ? String(prescreen.min_adjusted_price_cny) : "");
   const [saving, setSaving] = useState(false);
   const thresholdActive = prescreen?.min_adjusted_price_cny != null && prescreen.min_adjusted_price_cny !== "";
@@ -21,10 +23,14 @@ export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, 
   const save = async () => {
     setSaving(true);
     try {
-      await onPrescreenChange(threshold.trim());
+      return await onPrescreenChange(threshold.trim());
     } finally {
       setSaving(false);
     }
+  };
+
+  const saveAndContinue = async () => {
+    if (await save()) onContinue();
   };
 
   return <section className="price-verification-panel price-verification-batch-panel">
@@ -48,9 +54,6 @@ export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, 
         />
         <small>调整后申报价（CNY）需 &gt; 该值</small>
       </label>
-      <button className="price-verification-primary-button" onClick={() => void save()} disabled={isChecking || saving}>
-        {saving ? "保存中…" : "保存初筛条件"}
-      </button>
     </div>
     <div className="price-verification-batch-list">
       <div className="price-verification-batch-row is-current">
@@ -59,5 +62,12 @@ export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, 
         <small>{totalSkc} 个 SKC / {totalItems} 条 SKU 报价 → 初筛后 {passedItems} 个 SKC 进入 STEP 02 人工确认{thresholdActive && filteredCount > 0 ? `（过滤掉 ${filteredCount} 个 SKC）` : ""}</small>
       </div>
     </div>
+    <WorkflowActionBar label="数据初筛操作">
+      <div className="price-verification-action-summary"><span>初筛后可审核</span><strong>{passedItems} 个 SKC</strong></div>
+      <div className="price-verification-action-buttons">
+        <button className="price-verification-secondary-button" onClick={() => void save()} disabled={isChecking || saving}>{saving ? "保存中…" : "仅保存"}</button>
+        <button className="price-verification-primary-button" onClick={() => void saveAndContinue()} disabled={isChecking || saving || !totalSkc}>{saving ? "保存中…" : "保存并进入批次审核"}</button>
+      </div>
+    </WorkflowActionBar>
   </section>;
 }

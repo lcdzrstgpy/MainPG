@@ -20,6 +20,7 @@ export type ProfitActivityProduct = {
   source_groups?: Array<{ source_url?: string; image_paths?: string[]; cost?: number | null }>;
   note?: string;
   image_path?: string;
+  source_main_image_url?: string;
   source_image_path?: string;
   created_at?: string;
   updated_at?: string;

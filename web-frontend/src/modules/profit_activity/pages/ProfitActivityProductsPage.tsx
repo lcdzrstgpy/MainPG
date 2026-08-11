@@ -650,11 +650,13 @@ function ProductImageCell({ item, onChanged }: { item: ProfitActivityProduct; on
   const [localPreview, setLocalPreview] = useState("");
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [sourceImageFailed, setSourceImageFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     let objectUrl = "";
     setError("");
+    setSourceImageFailed(false);
     if (item.image_path) {
       loadProductImage({ skc: item.skc, site, kind: "product" })
         .then((url) => {
@@ -676,7 +678,9 @@ function ProductImageCell({ item, onChanged }: { item: ProfitActivityProduct; on
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [item.skc, site, item.image_path]);
+  }, [item.skc, site, item.image_path, item.source_main_image_url]);
+
+  const displayImage = localPreview || imageUrl || (sourceImageFailed ? "" : item.source_main_image_url || "");
 
   const upload = async (file: File | undefined) => {
     if (!file) return;
@@ -712,8 +716,16 @@ function ProductImageCell({ item, onChanged }: { item: ProfitActivityProduct; on
 
   return (
     <div className="profit-product-image-cell" tabIndex={0} onPaste={onPaste} title="可 Ctrl+V 粘贴截图，或点击上传">
-      {(localPreview || imageUrl) ? (
-        <img className="profit-product-image" src={localPreview || imageUrl} alt={`${item.skc} 主图`} />
+      {displayImage ? (
+        <img
+          className="profit-product-image"
+          src={displayImage}
+          alt={`${item.skc} 主图`}
+          referrerPolicy={localPreview || imageUrl ? undefined : "no-referrer"}
+          onError={() => {
+            if (!localPreview && !imageUrl) setSourceImageFailed(true);
+          }}
+        />
       ) : (
         <span className="profit-product-image-empty">无图</span>
       )}
@@ -733,7 +745,7 @@ function ProductImageCell({ item, onChanged }: { item: ProfitActivityProduct; on
         disabled={uploading}
         onClick={() => fileRef.current?.click()}
       >
-        {uploading ? "上传中…" : (imageUrl || localPreview) ? "替换" : "上传"}
+        {uploading ? "上传中…" : displayImage ? "替换" : "上传"}
       </button>
       {error ? <small className="profit-product-image-error" title={error}>保存失败</small> : null}
     </div>

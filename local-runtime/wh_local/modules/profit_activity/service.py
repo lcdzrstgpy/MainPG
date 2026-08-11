@@ -164,6 +164,11 @@ class ProfitActivityService:
         )
         root = self._asset_root(settings.settings)
         image_path = current.image_path if current else ""
+        source_type = str(payload.get("source_type") or (current.source_type if current else "manual"))
+        source_main_image_url = (
+            str(payload.get("source_main_image_url") or (current.source_main_image_url if current else "")).strip()
+            if source_type == "price_verification" else ""
+        )
         source_groups = _source_groups(payload.get("source_groups_json"), current.source_groups_json if current else "[]")
         payload_source_url = str(payload.get("source_url") or "").strip()
         if payload_source_url and not any(str(group.get("source_url") or "").strip() for group in source_groups):
@@ -201,9 +206,10 @@ class ProfitActivityService:
             calculation_hash=_calculation_hash(preview, settings.revision), settings_revision=settings.revision,
             refund_rate=settings.settings.ec_refund_rate if site == "EC" else settings.settings.refund_rate,
             visibility=str(payload.get("visibility") or (current.visibility if current else "shared")),
-            source_type=str(payload.get("source_type") or (current.source_type if current else "manual")),
+            source_type=source_type,
             source_url=source_url,
-            image_path=image_path, source_image_path=source_image_path, source_groups=source_groups,
+            image_path=image_path, source_main_image_url=source_main_image_url,
+            source_image_path=source_image_path, source_groups=source_groups,
         )
         return _product_payload(record, context)
 
@@ -218,6 +224,7 @@ class ProfitActivityService:
             "cost_price": payload.get("cost_price", current.cost_price), "weight_kg": payload.get("weight_kg", current.weight_kg),
             "note": payload.get("note", current.note), "visibility": payload.get("visibility", current.visibility),
             "source_url": payload.get("source_url", current.source_url), "source_groups_json": payload.get("source_groups_json", current.source_groups_json),
+            "source_type": current.source_type, "source_main_image_url": current.source_main_image_url,
         }
         return self.upsert_product(merged, actor=actor, allow_company_write=allow_company_write, require_complete_profile=False)
 
@@ -683,6 +690,15 @@ def _source_groups(value: Any, fallback: str) -> list[dict[str, Any]]:
                 "source_url": str(item.get("source_url") or ""),
                 "image_paths": [str(path) for path in item.get("image_paths", []) if str(path)],
                 "cost": float(cost) if cost is not None else None,
+                "source_title": str(item.get("source_title") or ""),
+                "main_image_url": str(item.get("main_image_url") or ""),
+                "offer_id": str(item.get("offer_id") or ""),
+                "price_cny": item.get("price_cny"),
+                "moq": item.get("moq"),
+                "domestic_freight_cny": item.get("domestic_freight_cny"),
+                "source_decision": str(item.get("source_decision") or ""),
+                "note": str(item.get("note") or ""),
+                "profit": item.get("profit") if isinstance(item.get("profit"), dict) else None,
             })
     return result
 
@@ -715,7 +731,8 @@ def _product_payload(record, actor: ProfitActivityActorContext) -> dict[str, Any
         "created_by": record.created_by, "created_by_username": record.created_by_username,
         "workspace_id": record.workspace_id, "workspace_code": actor.workspace_code, "workspace_name": actor.workspace_name,
         "is_owner": is_owner, "can_edit": is_owner or actor.is_admin,
-        "image_path": record.image_path, "source_image_path": record.source_image_path, "source_groups": groups,
+        "image_path": record.image_path, "source_main_image_url": record.source_main_image_url,
+        "source_image_path": record.source_image_path, "source_groups": groups,
         "selling_price": float(record.selling_price), "cost_price": float(record.cost_price), "weight_kg": float(record.weight_kg),
         "source_url": record.source_url, "note": record.note, "domestic_fee": float(record.domestic_fee),
         "shipping_subsidy": float(record.shipping_subsidy), "refund_rate": float(record.refund_rate) if hasattr(record, "refund_rate") else 0.0,
