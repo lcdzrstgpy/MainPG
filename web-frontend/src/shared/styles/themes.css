@@ -2534,6 +2534,149 @@
   }
 }
 
+/* ================================================================
+   Deep-space violet black-hole effects
+   ================================================================ */
+[data-theme="violet"] .workspace-shell {
+  background-image:
+    radial-gradient(circle at 50% 50%, #020104 0 9px, rgba(12, 6, 24, .98) 10px 15px, rgba(109, 40, 217, .34) 16px 22px, rgba(192, 132, 252, .12) 23px 34px, transparent 48px),
+    conic-gradient(from 28deg at 50% 50%, transparent 0 30%, rgba(168, 85, 247, .08) 38%, rgba(217, 70, 239, .18) 44%, rgba(139, 92, 246, .06) 53%, transparent 62% 100%),
+    radial-gradient(circle at 50% 50%, #030107 0 5px, rgba(88, 28, 135, .24) 8px 15px, rgba(196, 181, 253, .08) 16px 24px, transparent 34px),
+    radial-gradient(circle, rgba(196, 181, 253, .18) 0 1px, transparent 1.8px),
+    linear-gradient(135deg, rgba(245, 240, 255, .82), rgba(253, 244, 255, .66));
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, no-repeat;
+  background-position: calc(100% - 28px) 52px, calc(100% - 28px) 52px, 46px calc(100% - 84px), 19px 13px, 0 0;
+  background-size: 280px 280px, 280px 280px, 170px 170px, 173px 173px, 100% 100%;
+  animation: violet-gravity-drift 26s ease-in-out infinite alternate;
+}
+
+[data-theme="violet"] :is(
+  .page-hero-card,
+  .settings-hero,
+  .daily-page-heading,
+  .daily-drawer-header,
+  .price-verification-hero,
+  .product-processing-hero,
+  .verify-commandbar,
+  .profit-products-head,
+  .profit-activity-hero,
+  .profit-test-hero
+) {
+  background-image:
+    radial-gradient(circle at 87% 50%, #010003 0 13px, rgba(15, 6, 30, .98) 14px 20px, rgba(139, 92, 246, .58) 21px 27px, rgba(217, 70, 239, .22) 28px 39px, transparent 56px),
+    conic-gradient(from 42deg at 87% 50%, transparent 0 30%, rgba(196, 181, 253, .08) 37%, rgba(217, 70, 239, .32) 44%, rgba(139, 92, 246, .1) 53%, transparent 62% 100%),
+    linear-gradient(112deg, transparent 0 40%, rgba(255, 255, 255, 0) 44%, rgba(216, 180, 254, .16) 50%, rgba(255, 255, 255, 0) 56%, transparent 62%),
+    radial-gradient(circle at 18% 28%, rgba(221, 214, 254, .8) 0 1px, transparent 2.5px),
+    var(--theme-hero-gradient) !important;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, no-repeat !important;
+  background-size: 100% 100%, 100% 100%, 260% 100%, 181px 139px, 100% 100% !important;
+  animation: violet-event-horizon 13s ease-in-out infinite;
+}
+
+[data-theme="violet"] .topbar-card::before,
+[data-theme="violet"] .sidebar-card::before {
+  background:
+    radial-gradient(circle at 18% 38%, rgba(221, 214, 254, .82) 0 1px, transparent 2.4px),
+    radial-gradient(circle at 70% 62%, rgba(240, 171, 252, .58) 0 1px, transparent 2.3px),
+    linear-gradient(108deg, transparent 25%, rgba(139, 92, 246, .07) 36%, rgba(168, 85, 247, .25) 48%, rgba(236, 72, 153, .12) 58%, transparent 72%) !important;
+  background-size: 151px 103px, 211px 143px, 240% 100% !important;
+  animation: violet-nebula-flow 10.5s ease-in-out infinite !important;
+}
+
+[data-theme="violet"] .topbar-card::after,
+[data-theme="violet"] .sidebar-card::after {
+  height: 45px;
+  background:
+    radial-gradient(circle at 22% 65%, rgba(192, 132, 252, .48) 0 1.5px, transparent 3px),
+    radial-gradient(circle at 68% 36%, rgba(240, 171, 252, .52) 0 1px, transparent 2.6px),
+    radial-gradient(ellipse at 50% 115%, rgba(139, 92, 246, .2) 0 14%, rgba(217, 70, 239, .09) 36%, transparent 68%) !important;
+  background-size: 127px 45px, 187px 53px, 190px 42px !important;
+  filter: blur(.25px);
+  animation: violet-star-tide 10.5s ease-in-out infinite !important;
+}
+
+[data-theme="violet"] :is(
+  .brand-mark,
+  .avatar,
+  .stats-icon,
+  .sidebar-pin-button.is-active,
+  .topbar-pin-toggle.is-active,
+  .theme-option.is-active
+) {
+  animation: violet-orbit-pulse 6.8s ease-in-out infinite;
+}
+
+[data-theme="violet"] :is(
+  .stats-card,
+  .shortcut-card,
+  .daily-panel,
+  .direction-card,
+  .price-verification-panel,
+  .price-verification-workflow-card,
+  .product-draft-card,
+  .pool-card,
+  .profit-products-panel,
+  .profit-test-card
+):hover {
+  border-color: #a855f7 !important;
+  box-shadow: 0 0 0 1px rgba(168, 85, 247, .11), 0 17px 34px rgba(76, 29, 149, .16), 0 0 28px rgba(168, 85, 247, .12) !important;
+}
+
+@keyframes violet-gravity-drift {
+  0% { background-position: calc(100% - 28px) 52px, calc(100% - 28px) 52px, 46px calc(100% - 84px), 19px 13px, 0 0; }
+  100% { background-position: calc(100% - 62px) 88px, calc(100% - 62px) 88px, 76px calc(100% - 112px), 192px 186px, 0 0; }
+}
+
+@keyframes violet-event-horizon {
+  0%, 24% { background-position: 0 0, 0 0, 150% 0, 0 0, 0 0; filter: saturate(1); }
+  48% { background-position: 2px -1px, -2px 1px, -150% 0, 18px -8px, 0 0; filter: saturate(1.08); }
+  66%, 100% { background-position: 0 0, 0 0, -150% 0, 0 0, 0 0; filter: saturate(1); }
+}
+
+@keyframes violet-nebula-flow {
+  0%, 20% { opacity: 0; background-position: 0 0, 20px 4px, 145% 0; }
+  28% { opacity: .8; }
+  50% { opacity: .4; background-position: 17px -7px, 4px 12px, -145% 0; }
+  57%, 100% { opacity: 0; background-position: 17px -7px, 4px 12px, -145% 0; }
+}
+
+@keyframes violet-star-tide {
+  0%, 22% { opacity: 0; background-position: 0 0, 19px 0, 0 0; }
+  30% { opacity: .84; }
+  49% { opacity: .34; background-position: 127px 0, -168px 0, 190px 0; }
+  56%, 100% { opacity: 0; background-position: 127px 0, -168px 0, 190px 0; }
+}
+
+@keyframes violet-orbit-pulse {
+  0%, 70%, 100% { filter: hue-rotate(0deg) brightness(1) drop-shadow(0 0 0 transparent); }
+  76% { filter: hue-rotate(5deg) brightness(1.08) drop-shadow(0 0 7px rgba(168, 85, 247, .34)); }
+  82% { filter: hue-rotate(0deg) brightness(1.02) drop-shadow(0 0 11px rgba(217, 70, 239, .12)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="violet"] .workspace-shell,
+  [data-theme="violet"] :is(
+    .page-hero-card,
+    .settings-hero,
+    .daily-page-heading,
+    .daily-drawer-header,
+    .price-verification-hero,
+    .product-processing-hero,
+    .verify-commandbar,
+    .profit-products-head,
+    .profit-activity-hero,
+    .profit-test-hero,
+    .brand-mark,
+    .avatar,
+    .stats-icon,
+    .sidebar-pin-button.is-active,
+    .topbar-pin-toggle.is-active,
+    .theme-option.is-active
+  ) {
+    animation: none !important;
+  }
+}
+
 /* Diamond API-key status and model icon. */
 [data-theme="diamond"] .settings-grid .api-key-panel-header > .iconfont {
   color: #111318 !important;
@@ -2552,4 +2695,195 @@
   color: #86efac !important;
   border-color: #276749;
   background: #12251d !important;
+}
+
+/* Diamond light-surface contrast fixes: status bars and value badges. */
+[data-theme="diamond"] .verify-page .verify-message:not(.error) {
+  color: #bfdbfe !important;
+  border-color: #334e68 !important;
+  background: #142235 !important;
+}
+
+[data-theme="diamond"] .verify-page .verify-slider-value {
+  color: #111318 !important;
+  border-color: #f8fafc !important;
+  background: #e5e7eb !important;
+  box-shadow: inset 0 0 0 1px #cbd5e1;
+}
+
+[data-theme="diamond"] .profit-test-page .profit-status {
+  color: #bfdbfe !important;
+  border-color: #334e68 !important;
+  background: #142235 !important;
+}
+
+[data-theme="diamond"] .price-verification-page .pv-source-group-head {
+  border-color: var(--theme-module-border) !important;
+  background: var(--theme-module-surface-soft) !important;
+}
+
+[data-theme="diamond"] .price-verification-page .pv-source-group-badges em {
+  color: var(--theme-text-primary) !important;
+  border: 1px solid var(--theme-module-border);
+  background: #24272e !important;
+}
+
+[data-theme="diamond"] .price-verification-page .pv-source-group-badges em.is-error {
+  color: #fca5a5 !important;
+  border-color: #6b2b32;
+  background: #2a1719 !important;
+}
+
+[data-theme="diamond"] .price-verification-page .pv-source-price {
+  color: #111318 !important;
+  border: 1px solid #f8fafc;
+  background: #e5e7eb !important;
+  box-shadow: inset 0 0 0 1px #cbd5e1;
+}
+
+[data-theme="diamond"] .verify-page .verify-history-elapsed {
+  color: #111318 !important;
+  border-color: #f8fafc !important;
+  background: #e5e7eb !important;
+  box-shadow: inset 0 0 0 1px #cbd5e1;
+}
+
+/* ================================================================
+   Warm-sun orange citrus effects
+   ================================================================ */
+[data-theme="sunset"] .workspace-shell {
+  background-image:
+    radial-gradient(circle, rgba(251, 146, 60, .14) 0 7px, rgba(253, 186, 116, .09) 7px 10px, transparent 11px),
+    radial-gradient(ellipse at 70% 35%, rgba(132, 204, 22, .12) 0 4px, transparent 5px),
+    linear-gradient(135deg, rgba(255, 247, 237, .7), rgba(255, 251, 235, .55));
+  background-position: 16px 22px, 28px 12px, 0 0;
+  background-size: 146px 146px, 146px 146px, 100% 100%;
+  animation: citrus-background-drift 28s linear infinite;
+}
+
+[data-theme="sunset"] :is(
+  .page-hero-card,
+  .settings-hero,
+  .daily-page-heading,
+  .daily-drawer-header,
+  .price-verification-hero,
+  .product-processing-hero,
+  .verify-commandbar,
+  .profit-products-head,
+  .profit-activity-hero,
+  .profit-test-hero
+) {
+  background-image:
+    linear-gradient(110deg, transparent 0 38%, rgba(255, 255, 255, 0) 43%, rgba(255, 237, 213, .23) 50%, rgba(255, 255, 255, 0) 57%, transparent 62%),
+    radial-gradient(circle at 16% 30%, rgba(255, 237, 213, .9) 0 2px, transparent 3px),
+    radial-gradient(circle at 79% 68%, rgba(253, 186, 116, .72) 0 2px, transparent 3px),
+    radial-gradient(circle at 91% 20%, rgba(254, 215, 170, .62) 0 1.5px, transparent 3px),
+    var(--theme-hero-gradient) !important;
+  background-repeat: no-repeat, repeat, repeat, repeat, no-repeat !important;
+  background-size: 260% 100%, 151px 127px, 211px 163px, 179px 139px, 100% 100% !important;
+  animation: citrus-hero-splash 11s ease-in-out infinite;
+}
+
+[data-theme="sunset"] .topbar-card::before,
+[data-theme="sunset"] .sidebar-card::before {
+  background:
+    radial-gradient(circle at 18% 38%, rgba(255, 237, 213, .8) 0 2px, transparent 3px),
+    radial-gradient(circle at 72% 62%, rgba(253, 186, 116, .62) 0 2px, transparent 3px),
+    linear-gradient(108deg, transparent 25%, rgba(251, 146, 60, .06) 36%, rgba(245, 158, 11, .28) 49%, rgba(254, 215, 170, .16) 59%, transparent 72%) !important;
+  background-size: 137px 101px, 199px 139px, 240% 100% !important;
+  animation: citrus-chrome-flow 9.5s ease-in-out infinite !important;
+}
+
+[data-theme="sunset"] .topbar-card::after,
+[data-theme="sunset"] .sidebar-card::after {
+  height: 44px;
+  background:
+    radial-gradient(circle at 20% 64%, rgba(251, 146, 60, .48) 0 2px, transparent 3px),
+    radial-gradient(circle at 66% 40%, rgba(254, 215, 170, .6) 0 1.5px, transparent 3px),
+    radial-gradient(ellipse at 50% 115%, rgba(245, 158, 11, .2) 0 14%, rgba(251, 146, 60, .1) 36%, transparent 68%) !important;
+  background-size: 121px 43px, 181px 51px, 190px 42px !important;
+  filter: blur(.2px);
+  animation: citrus-edge-bubbles 9.5s ease-in-out infinite !important;
+}
+
+[data-theme="sunset"] :is(
+  .brand-mark,
+  .avatar,
+  .stats-icon,
+  .sidebar-pin-button.is-active,
+  .topbar-pin-toggle.is-active,
+  .theme-option.is-active
+) {
+  animation: citrus-pulp-pop 6.4s ease-in-out infinite;
+}
+
+[data-theme="sunset"] :is(
+  .stats-card,
+  .shortcut-card,
+  .daily-panel,
+  .direction-card,
+  .price-verification-panel,
+  .price-verification-workflow-card,
+  .product-draft-card,
+  .pool-card,
+  .profit-products-panel,
+  .profit-test-card
+):hover {
+  border-color: #fb923c !important;
+  box-shadow: 0 0 0 1px rgba(251, 146, 60, .1), 0 16px 32px rgba(180, 83, 9, .14), 0 0 24px rgba(245, 158, 11, .1) !important;
+}
+
+@keyframes citrus-background-drift {
+  from { background-position: 16px 22px, 28px 12px, 0 0; }
+  to { background-position: 162px 168px, 174px 158px, 0 0; }
+}
+
+@keyframes citrus-hero-splash {
+  0%, 30% { background-position: 150% 0, 0 0, 18px 8px, 43px 21px, 0 0; }
+  50%, 64% { background-position: -150% 0, 14px -7px, 2px 18px, 59px 9px, 0 0; }
+  100% { background-position: -150% 0, 0 0, 18px 8px, 43px 21px, 0 0; }
+}
+
+@keyframes citrus-chrome-flow {
+  0%, 20% { opacity: 0; background-position: 0 0, 18px 4px, 145% 0; }
+  28% { opacity: .8; }
+  49% { opacity: .42; background-position: 15px -6px, 4px 11px, -145% 0; }
+  56%, 100% { opacity: 0; background-position: 15px -6px, 4px 11px, -145% 0; }
+}
+
+@keyframes citrus-edge-bubbles {
+  0%, 22% { opacity: 0; background-position: 0 0, 17px 0, 0 0; }
+  30% { opacity: .82; }
+  48% { opacity: .32; background-position: 121px 0, -164px 0, 190px 0; }
+  55%, 100% { opacity: 0; background-position: 121px 0, -164px 0, 190px 0; }
+}
+
+@keyframes citrus-pulp-pop {
+  0%, 70%, 100% { filter: saturate(1) brightness(1); transform: translateY(0); }
+  76% { filter: saturate(1.12) brightness(1.06); transform: translateY(-1px); }
+  81% { filter: saturate(1.02) brightness(1.02); transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="sunset"] .workspace-shell,
+  [data-theme="sunset"] :is(
+    .page-hero-card,
+    .settings-hero,
+    .daily-page-heading,
+    .daily-drawer-header,
+    .price-verification-hero,
+    .product-processing-hero,
+    .verify-commandbar,
+    .profit-products-head,
+    .profit-activity-hero,
+    .profit-test-hero,
+    .brand-mark,
+    .avatar,
+    .stats-icon,
+    .sidebar-pin-button.is-active,
+    .topbar-pin-toggle.is-active,
+    .theme-option.is-active
+  ) {
+    animation: none !important;
+  }
 }
