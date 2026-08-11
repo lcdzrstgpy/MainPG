@@ -37,8 +37,8 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
   const selectedCount = useMemo(() => Object.values(selected).filter(Boolean).length, [selected]);
   const allSelected = items.length > 0 && items.every((item) => selected[item.skc_id]);
 
-  // .content-card 是实际滚动容器，不能只依赖 CSS sticky；滚过顶部导航后，
-  // 将操作栏固定在导航下沿，同时用占位元素维持表格位置。
+  // .content-card 是实际滚动容器，不能只依赖 CSS sticky。操作栏滚出可视区后
+  // 固定在工作区底部（而不是顶部导航下方），并用占位元素维持表格位置。
   useEffect(() => {
     const bar = floatingActionBarRef.current;
     const spacer = floatingActionBarSpacerRef.current;
@@ -50,6 +50,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
     const reset = () => {
       bar.style.position = "";
       bar.style.top = "";
+      bar.style.bottom = "";
       bar.style.left = "";
       bar.style.width = "";
       spacer.style.height = "";
@@ -71,13 +72,15 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
         stuck = true;
         spacer.style.height = `${bar.offsetHeight}px`;
         bar.style.position = "fixed";
-        bar.style.top = `${threshold}px`;
+        bar.style.top = "";
+        bar.style.bottom = "14px";
         bar.style.left = `${Math.round(rect.left)}px`;
         bar.style.width = `${Math.round(rect.width)}px`;
         bar.classList.add("is-stuck");
       } else if (stuck) {
         const spacerRect = spacer.getBoundingClientRect();
-        bar.style.top = `${threshold}px`;
+        bar.style.top = "";
+        bar.style.bottom = "14px";
         bar.style.left = `${Math.round(spacerRect.left)}px`;
         bar.style.width = `${Math.round(spacerRect.width)}px`;
         if (viewportTop > threshold) {
