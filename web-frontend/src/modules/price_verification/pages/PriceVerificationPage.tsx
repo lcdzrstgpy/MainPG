@@ -8,7 +8,7 @@ import { LinkedSourcePanel } from "../components/LinkedSourcePanel";
 import { PrescreenPanel } from "../components/PrescreenPanel";
 import { SourcingPanel } from "../components/SourcingPanel";
 import { WorkflowSteps } from "../components/WorkflowSteps";
-import type { BatchSelection, BatchSourcingState, PriceVerificationStage, PrescreenSettings, QuoteBatchReviewItem, QuoteCaptureBatch, SourceCandidate, SourcePreview } from "../types";
+import type { BatchSelection, BatchSourcingState, PriceVerificationStage, PrescreenSettings, QuoteBatchReviewItem, QuoteCaptureBatch, SkcSourceLink, SourceCandidate, SourcePreview } from "../types";
 import "../styles/priceVerification.css";
 import "../styles/priceVerificationHero.css";
 import "../styles/priceVerificationApi.css";
@@ -32,6 +32,7 @@ export function PriceVerificationPage() {
   const [prescreen, setPrescreen] = useState<PrescreenSettings | null>(null);
   const [sourceSkcIds, setSourceSkcIds] = useState<string[]>([]);
   const [sourcingState, setSourcingState] = useState<BatchSourcingState>(emptySourcingState);
+  const [sourceLinks, setSourceLinks] = useState<SkcSourceLink[]>([]);
   const [loading, setLoading] = useState(false);
   const [busyKey, setBusyKey] = useState("");
   const [notice, setNotice] = useState("正在读取核价批次…");
@@ -151,16 +152,33 @@ export function PriceVerificationPage() {
     } catch (error) { setNotice(`执行图搜失败：${errorMessage(error)}`); } finally { setBusyKey(""); }
   };
 
+  // 已关联 1688 货源列表（SourcingPanel 持久化关联模型），进入图搜阶段或关联变化时拉取
+  const loadSourceLinks = async () => {
+    if (!currentBatchId) return;
+    try {
+      setSourceLinks(await priceVerificationApi.listSkcSourceLinks(currentBatchId));
+    } catch { /* 列表加载失败静默，面板内不阻塞操作 */ }
+  };
+
+  useEffect(() => {
+    if (activeStage === "sourcing" && currentBatchId) void loadSourceLinks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStage, currentBatchId]);
+
   const selectSourceCandidate = async (skcId: string, candidate: SourceCandidate, priceOverride?: string) => {
     if (!currentBatchId) return;
     const state = await priceVerificationApi.selectBatchSourceCandidate(currentBatchId, skcId, candidate, priceOverride);
     setSourcingState(state);
+    await loadSourceLinks();
   };
 
-  const unselectSourceCandidate = async (skcId: string, offerId: string) => {
+  // SourcingPanel 新 API：按持久化链接 id 解除关联
+  const removeSourceLink = async (linkId: number) => {
     if (!currentBatchId) return;
-    const state = await priceVerificationApi.unselectBatchSourceCandidate(currentBatchId, skcId, offerId);
-    setSourcingState(state);
+    try {
+      await priceVerificationApi.removeSkcSourceLink(currentBatchId, linkId);
+      await loadSourceLinks();
+    } catch (error) { setNotice(`解除关联失败：${errorMessage(error)}`); }
   };
 
   const completeSourcing = async () => {
@@ -196,7 +214,7 @@ export function PriceVerificationPage() {
       {activeStage === "prescreen" && <PrescreenPanel isChecking={loading} totalItems={captureBatches.find((batch) => batch.is_current)?.quote_count ?? 0} totalSkc={captureBatches.find((batch) => batch.is_current)?.skc_count ?? 0} passedItems={batchItems.length} prescreen={prescreen} onPrescreenChange={savePrescreen} onRefresh={() => void refresh()} onContinue={() => openStage("batchReview")} />}
       {activeStage === "batchReview" && <BatchReviewPanel batchId={currentBatchId} items={batchItems} busy={loading} onConfirm={(batchId, skcIds, maxCandidates) => stageBatchToReview(batchId, skcIds, maxCandidates)} onDelete={(batchId, skcId) => deleteBatchItem(batchId, skcId)} onDeleteSelected={(batchId, skcIds) => deleteBatchItems(batchId, skcIds)} />}
       {activeStage === "finalReview" && <BatchReviewConfirmPanel batchId={currentBatchId} selections={batchSelections} busy={Boolean(busyKey) || loading} sourceSkcIds={sourceSkcIds} onSourceSelectionChange={setSourceSkcIds} onContinue={() => void enterSourcing()} />}
-      {activeStage === "sourcing" && <><SourcingPanel preview={sourcingState.preview} batchId={currentBatchId} busy={Boolean(busyKey) || loading} sourceCount={sourceCount} needsSourcing={sourceCount > 0} selectedCandidates={sourcingState.selected_candidates} onSelect={selectSourceCandidate} onUnselect={unselectSourceCandidate} onComplete={() => void completeSourcing()} onStart={(mode, keywordSearch) => void startBatchSourcing(mode, keywordSearch)} matchingCompleted={sourceCount === 0 && sourcingState.preview === null} /><LinkedSourcePanel products={sourcedProducts} /></>}
+      {activeStage === "sourcing" && <><SourcingPanel preview={sourcingState.preview} batchId={currentBatchId} busy={Boolean(busyKey) || loading} sourceCount={sourceCount} links={sourceLinks} onLink={(skcId, _offerId, candidate, priceOverride) => selectSourceCandidate(skcId, candidate, priceOverride)} onUnlink={(linkId) => removeSourceLink(linkId)} onComplete={() => void completeSourcing()} onStart={(mode, keywordSearch) => void startBatchSourcing(mode, keywordSearch)} matchingCompleted={sourceCount === 0 && sourcingState.preview === null} /><LinkedSourcePanel products={sourcedProducts} /></>}
     </div></div>
   </div>;
 }
