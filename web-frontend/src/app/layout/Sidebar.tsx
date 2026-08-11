@@ -1,4 +1,4 @@
-import { BRAND_LOGO_URL, BRAND_NAME } from "../../shared/brand";
+import { BRAND_LOGO_URL, BRAND_MARK_URL, BRAND_NAME } from "../../shared/brand";
 import type { WorkspaceModule, WorkspaceModuleId } from "../navigation/modules";
 
 type SidebarProps = {
@@ -19,7 +19,7 @@ export function Sidebar({ collapsed, activeId, expandedModuleIds, modules, onSel
       onMouseLeave={() => onHoverChange(false)}
     >
       <div className="brand-lockup">
-        <img className="brand-logo" src={BRAND_LOGO_URL} alt={BRAND_NAME} />
+        <img className={`brand-logo${collapsed ? " is-mark" : ""}`} src={collapsed ? BRAND_MARK_URL : BRAND_LOGO_URL} alt={BRAND_NAME} />
       </div>
       <p className="sidebar-caption">本地运营中台</p>
       <nav className="sidebar-menu">
