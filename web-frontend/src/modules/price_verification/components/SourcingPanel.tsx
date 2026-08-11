@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 
 import { priceVerificationApi } from "../api/priceVerificationApi";
-import type { SkcSourceLink, SourceCandidate, SourcePreview, SourcePreviewItem, SourcePreviewSkcGroup, SourceTopProfit } from "../types";
+import type { SourceCandidate, SourceCandidateSelection, SourcePreview, SourcePreviewItem, SourcePreviewSkcGroup, SourceTopProfit } from "../types";
 import { SectionHelp } from "./SectionHelp";
+import { WorkflowActionBar } from "./WorkflowActionBar";
 import "../styles/priceVerificationSource.css";
 
 type Props = {
@@ -10,9 +11,13 @@ type Props = {
   batchId: string;
   busy: boolean;
   sourceCount?: number;
-  links: SkcSourceLink[];
-  onLink: (skcId: string, offerId: string, candidate: SourceCandidate, priceOverride?: string) => Promise<void>;
+  needsSourcing: boolean;
+  selectedCandidates: SourceCandidateSelection[];
+  onSelect: (skcId: string, candidate: SourceCandidate, priceOverride?: string) => Promise<void>;
+  onUnselect: (skcId: string, offerId: string) => Promise<void>;
+  onComplete: () => void;
   onStart: (mode: "similarity" | "price", keywordSearch?: boolean) => void;
+  matchingCompleted?: boolean;
 };
 
 type RankingMode = "similarity" | "price";
@@ -118,7 +123,7 @@ function sortCandidates(candidates: SourceCandidate[], mode: RankingMode) {
   });
 }
 
-export function SourcingPanel({ preview, batchId, busy, sourceCount, links, onLink, onStart }: Props) {
+export function SourcingPanel({ preview, batchId, busy, sourceCount, needsSourcing, selectedCandidates, onSelect, onUnselect, onComplete, onStart, matchingCompleted = false }: Props) {
   const [rankingMode, setRankingMode] = useState<RankingMode>(preview?.ranking_mode ?? "similarity");
   const [keywordSearch, setKeywordSearch] = useState(false);
   const [weights, setWeights] = useState<Record<string, string>>({});
@@ -158,9 +163,9 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, onLi
     }
   };
 
-  const isLinkedCandidate = (skcKey: string, candidate: SourceCandidate) => {
+  const selectedRecord = (skcKey: string, candidate: SourceCandidate) => {
     const offerId = offerIdFor(candidate);
-    return links.some((link) => link.skc_id === skcKey && (link.offer_id === offerId || (candidate.source_url ? link.source_url === candidate.source_url : false)));
+    return selectedCandidates.find((item) => item.skc_id === skcKey && (item.offer_id === offerId || (candidate.source_url ? item.source_url === candidate.source_url : false)));
   };
 
   const changeCandidatePrice = (item: SourcePreviewItem, candidate: SourceCandidate, rawValue: string) => {
@@ -175,9 +180,9 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, onLi
     void computeCandidateProfit(item, candidate, weightKg, rawValue)
       .then((profit) => setProfitOverrides((current) => ({ ...current, [candKey]: profit })))
       .finally(() => setProfitBusy(""));
-    if (isLinkedCandidate(itemKey(item), candidate)) {
-      void onLink(itemKey(item), offerIdFor(candidate), candidate, rawValue).catch(() => {
-        // 静默失败：关联记录价格保留上次已同步的值
+    if (selectedRecord(itemKey(item), candidate)) {
+      void onSelect(itemKey(item), candidate, rawValue).catch(() => {
+        // 临时候选选中失败时保留当前编辑值，按钮仍可重试。
       });
     }
   };
@@ -194,16 +199,25 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, onLi
       .finally(() => setProfitBusy(""));
   };
 
-  const linkCandidate = async (group: SourcePreviewSkcGroup, candidate: SourceCandidate) => {
+  const selectCandidate = async (group: SourcePreviewSkcGroup, candidate: SourceCandidate) => {
     if (!batchId) return;
     const key = `${group.skc_id}:${candidate.source_url ?? ""}`;
     setBusyLink(key);
     const candKey = candidateKeyFor(group.skc_id, candidate);
     const adjustedPrice = priceOverrides[candKey] !== undefined && priceOverrides[candKey] !== "" ? priceOverrides[candKey] : undefined;
     try {
-      await onLink(group.skc_id, offerIdFor(candidate), candidate, adjustedPrice);
+      await onSelect(group.skc_id, candidate, adjustedPrice);
     } catch {
       // link errors surface only via the row button staying available
+    } finally {
+      setBusyLink("");
+    }
+  };
+
+  const unselectCandidate = async (key: string, skcId: string, offerId: string) => {
+    setBusyLink(key);
+    try {
+      await onUnselect(skcId, offerId);
     } finally {
       setBusyLink("");
     }
@@ -216,39 +230,32 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, onLi
     items: [item],
   }));
   const candidateCount = preview?.items.reduce((sum, item) => sum + (item.all_candidates?.length ?? item.candidates.length), 0) ?? 0;
-  const linkedCount = links.length;
+  const selectedCount = selectedCandidates.length;
 
   return (
     <section className="pv-source-panel">
-      {/* 头部：标题 + 教程感叹号 + 执行按钮 */}
       <div className="pv-source-head">
         <div>
           <p className="pv-eyebrow">STEP 03 · SOURCE</p>
           <h2>货源匹配<SectionHelp title="对第二板块已保留的 SKC 执行搜索：默认下载商品主图走 OB 1688 图搜（带相似度）；图搜结果不满意时，勾选「包含标题搜索」重跑，商品标题会先自动翻译成中文做关键词搜索，两路结果合并。结果按 SKC 分组，每个 SKC 默认展示前 5 条（通常 3-5 条）；每条候选都按 Temu 调整后申报价核算利润，源价与重量可调（搜索常返回最便宜的引流款，可自行修正后核算）。" /></h2>
         </div>
-        <button className="pv-source-run-button" onClick={() => onStart(rankingMode, keywordSearch)} disabled={busy || (sourceCount ?? 0) === 0} title={(sourceCount ?? 0) === 0 ? "请先在“待审商品最终确认”板块勾选要图搜的 SKC" : undefined}>
-          {busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0} 个 SKC）`}
-        </button>
       </div>
 
       {/* 统计 + 排序控件 */}
       <div className="pv-source-stats">
         <div className="pv-source-stat"><span>图搜 SKC</span><strong>{preview?.items.length ?? 0}</strong></div>
         <div className="pv-source-stat"><span>货源候选</span><strong>{candidateCount}</strong></div>
-        <div className="pv-source-stat"><span>已关联 1688</span><strong>{linkedCount}</strong></div>
-        <div className="pv-source-sort">
-          <span className="pv-source-sort-label">候选排序</span>
-          <button className={rankingMode === "similarity" ? "is-active" : ""} onClick={() => setRankingMode("similarity")} disabled={busy}>按相似度</button>
-          <button className={rankingMode === "price" ? "is-active" : ""} onClick={() => setRankingMode("price")} disabled={busy}>按价格低→高</button>
-          <label className="pv-source-keyword" title="图搜结果不满意时勾选：把商品标题翻译成中文做 1688 关键词搜索，补充图搜不足">
-            <input type="checkbox" checked={keywordSearch} onChange={(event) => setKeywordSearch(event.target.checked)} disabled={busy} />
-            <span>包含标题搜索</span>
-          </label>
-        </div>
+        <div className="pv-source-stat"><span>待入库候选</span><strong>{selectedCount}</strong></div>
       </div>
 
       {/* SKC 分组候选列表 */}
-      {groups?.length ? (
+      {!needsSourcing ? (
+        <div className="pv-profit-empty">无需图搜：本轮勾选的 SKC 均已在产品库中关联货源，见下方 STEP 04。</div>
+      ) : matchingCompleted ? (
+        <div className="pv-profit-empty">
+          图搜结果已收起（完成关联），已关联 1688 货源见下方第四板块；点击「重新图搜」可恢复候选列表。
+        </div>
+      ) : groups?.length ? (
         <div className="pv-source-cards">
           {groups.map((group) => {
             const item = group.items[0];
@@ -256,8 +263,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, onLi
             const all = item?.all_candidates?.length ? item.all_candidates : item?.candidates ?? [];
             const displayLimit = (item?.keyword_count ?? 0) > 0 ? Math.min(10, cap + (item?.keyword_count ?? 0)) : Math.min(CANDIDATE_LIMIT, cap);
             const candidates = sortCandidates(all, rankingMode).slice(0, displayLimit);
-            const groupLinks = links.filter((link) => link.skc_id === group.skc_id);
-            const linkedUrls = new Set(groupLinks.map((link) => link.source_url));
+            const groupSelections = selectedCandidates.filter((item) => item.skc_id === group.skc_id);
             const searchFailed = item?.source_search_status === "failed" || item?.source_search_status === "error";
             return (
               <div className="pv-source-group" key={group.skc_id}>
@@ -270,14 +276,15 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, onLi
                     <em>图搜 {statusText(item?.source_search_status)}</em>
                     {item?.keyword_count ? <em>标题搜索 {item.keyword_count} 条</em> : null}
                     <em>展示 {candidates.length}/{all.length} 条</em>
-                    <em>已关联 1688 {groupLinks.length} 条（下方第四板块）</em>
+                    <em>待入库 {groupSelections.length} 条</em>
                     {searchFailed && item?.source_search_error ? <em className="is-error" title={sourceErrorText(item.source_search_error)}>{sourceErrorText(item.source_search_error)}</em> : null}
                   </div>
                 </div>
                 {candidates.length ? (
                   <div className="pv-source-cards">
                     {candidates.map((candidate, index) => {
-                      const isLinked = linkedUrls.has(candidate.source_url ?? "");
+                      const selected = selectedRecord(group.skc_id, candidate);
+                      const isSelected = Boolean(selected);
                       const busyKey = `${group.skc_id}:${candidate.source_url ?? ""}`;
                       const candKey = candidateKeyFor(group.skc_id, candidate);
                       const profit = profitOverrides[candKey] ?? candidate.profit ?? null;
@@ -302,8 +309,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, onLi
                               </div>
                               <div className="pv-source-card-side">
                                 <b className="pv-source-price">{moneyText(candidate.promotion_price ?? candidate.price)}</b>
-                                <button className={isLinked ? "pv-source-link-button is-linked" : "pv-source-link-button"} onClick={() => (isLinked ? undefined : void linkCandidate(group, candidate))} disabled={busyLink === busyKey || !candidate.source_url} title={candidate.source_url || "该候选无 1688 链接，无法关联"}>
-                                  {busyLink === busyKey ? "关联中…" : isLinked ? "✓ 已关联" : "关联"}
+                                <button className={isSelected ? "pv-source-link-button is-linked" : "pv-source-link-button"} onClick={() => selected ? void unselectCandidate(busyKey, group.skc_id, selected.offer_id) : void selectCandidate(group, candidate)} disabled={busyLink === busyKey || !candidate.source_url} title={isSelected ? "再次点击取消本次入库" : candidate.source_url || "该候选无 1688 链接，无法关联"}>
+                                  {busyLink === busyKey ? "处理中…" : isSelected ? "✓ 待入库（点击撤回）" : "关联入库"}
                                 </button>
                               </div>
                             </div>
@@ -349,6 +356,20 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, onLi
       ) : (
         <div className="pv-profit-empty">{preview ? "暂无货源候选" : "等待图搜结果"}</div>
       )}
+      {needsSourcing ? <WorkflowActionBar label="货源匹配操作">
+        <div className="price-verification-action-summary"><span>待图搜</span><strong>{sourceCount ?? 0} 个 SKC</strong></div>
+        <div className="price-verification-action-buttons">
+          <span className="pv-source-sort-label">候选排序</span>
+          <button className={`price-verification-secondary-button${rankingMode === "similarity" ? " is-active" : ""}`} onClick={() => setRankingMode("similarity")} disabled={busy}>按相似度</button>
+          <button className={`price-verification-secondary-button${rankingMode === "price" ? " is-active" : ""}`} onClick={() => setRankingMode("price")} disabled={busy}>按价格低→高</button>
+          <label className="pv-source-keyword" title="图搜结果不满意时勾选：把商品标题翻译成中文做 1688 关键词搜索，补充图搜不足">
+            <input type="checkbox" checked={keywordSearch} onChange={(event) => setKeywordSearch(event.target.checked)} disabled={busy} />
+            <span>包含标题搜索</span>
+          </label>
+          <button className="price-verification-primary-button" onClick={() => onStart(rankingMode, keywordSearch)} disabled={busy || (sourceCount ?? 0) === 0} title={(sourceCount ?? 0) === 0 ? "请先在“待审商品最终确认”板块勾选要图搜的 SKC" : undefined}>{busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0} 个 SKC）`}</button>
+          {preview && selectedCount > 0 && !matchingCompleted ? <button className="price-verification-secondary-button" onClick={onComplete} disabled={busy}>完成关联并入库（{selectedCount}）</button> : null}
+        </div>
+      </WorkflowActionBar> : null}
     </section>
   );
 }
