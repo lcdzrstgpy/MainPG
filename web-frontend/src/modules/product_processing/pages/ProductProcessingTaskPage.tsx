@@ -33,6 +33,19 @@ const FAILURE_CLASS_LABELS: Record<string, string> = {
 
 const HISTORY_PAGE_SIZE = 10;
 
+// AI 配置/额度类失败（401 key 无效、403 权限、402/429 额度或限流、key 未配置、连接不可达等），
+// 用户需要去「系统配置」检查 AI key 或账户余额，而不是修改商品数据。
+const AI_CONFIG_ERROR_RE =
+  /HTTP\s+40[1239]|api\s+key\s+is\s+not\s+configured|insufficient.*(?:quota|balance)|quota|balance|unauthorized|forbidden|unreachable|invalid.*(?:api\s*key|credentials)/i;
+
+function isAiConfigError(reason?: string): boolean {
+  if (!reason) return false;
+  return AI_CONFIG_ERROR_RE.test(reason);
+}
+
+const AI_CONFIG_HINT =
+  '似乎 api key 配置有问题哦，可以先去系统配置保存一下或者检查一下余额亲~（当前失败为 AI 服务鉴权/额度问题，与商品数据无关）';
+
 type Props = {
   initialDraftIds?: number[];
   initialOptions?: ProductProcessingOptions;
@@ -93,6 +106,12 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
       (item) => item.status === 'attention_required' || item.status === 'failed'
     ) || [],
     [batch]
+  );
+
+  // 是否存在 AI 配置/额度类失败（此时应提示用户去系统配置检查 key/余额）
+  const hasAiConfigIssue = useMemo(
+    () => failureItems.some((item) => isAiConfigError(item.reason)),
+    [failureItems]
   );
 
   // 实时处理进度：processed_count / total_count，与后端轮询结果同步刷新
@@ -188,6 +207,35 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
   const download = (kind: string, filename: string) => {
     if (!batch) return;
     ppDownload(ctx, `${API_BASE}/tasks/${batch.task_id}/download?kind=${kind}`, filename).catch(fail);
+  };
+
+  // 重新处理失败/待确认项：以这些草稿为新的批次重新走处理流水线（async_mode 后台执行）
+  const retryFailed = async (draftIds: number[]) => {
+    if (!draftIds.length) return;
+    setLoading(true);
+    setMessage('');
+    setError('');
+    try {
+      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/drafts/process`, {
+        body: {
+          title: '失败项重新处理',
+          draft_ids: draftIds,
+          max_products: 0,
+          async_mode: true,
+          target_site: options.targetSite,
+          target_language: options.targetLanguage,
+          processing_scope: options.processingScope,
+          qualification_mode: options.qualificationMode,
+          include_product_video: options.includeProductVideo,
+          skip_duplicates: false,
+          ip_check: options.ipCheck,
+          max_parallel_drafts: options.maxParallelDrafts,
+        },
+      });
+      setBatch(data);
+      notify(data.message || `已提交 ${draftIds.length} 个失败项重新处理`);
+      loadHistory(1);
+    } catch (err) { fail(err); } finally { setLoading(false); }
   };
 
   const historyTotalPages = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
@@ -350,20 +398,45 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
 
           {failureItems.length > 0 && (
             <section className="verify-section">
-              <div className="verify-section-head"><h2>失败商品</h2></div>
+              <div className="verify-section-head">
+                <h2>失败商品</h2>
+                <span className="verify-actions">
+                  <button
+                    className="btn-mini primary"
+                    disabled={loading || batchProcessing}
+                    onClick={() => retryFailed(failureItems.map((item) => item.product_draft_id).filter((id): id is number => id != null))}
+                    title={batchProcessing ? '当前批次处理中，完成后可重试' : undefined}
+                  ><i className="iconfont icon-rocket" aria-hidden="true" />重试全部失败（{failureItems.length}）</button>
+                </span>
+              </div>
+              {hasAiConfigIssue && (
+                <p className="verify-ai-config-hint"><i className="iconfont icon-infomation" aria-hidden="true" />{AI_CONFIG_HINT}</p>
+              )}
               <table className="verify-table">
-                <thead><tr><th>SKC</th><th>标题</th><th>状态</th><th>失败类型</th><th>原因</th><th>操作提示</th><th>可重试</th></tr></thead>
+                <thead><tr><th>SKC</th><th>标题</th><th>状态</th><th>失败类型</th><th>原因</th><th>操作提示</th><th>可重试</th><th>操作</th></tr></thead>
                 <tbody>
                   {failureItems.map((item) => {
                     const result = (item.result as any) || {};
                     const failureClass = result.failure_class || 'unknown';
+                    const draftId = item.product_draft_id;
                     return (
                       <tr key={item.id}>
                         <td>{item.skc || '-'}</td><td>{item.title || '-'}</td>
                         <td>{item.status === 'attention_required' ? '待确认' : '失败'}</td>
                         <td>{FAILURE_CLASS_LABELS[failureClass] || failureClass}</td>
-                        <td>{item.reason || '-'}</td><td>{result.operator_hint || '-'}</td>
+                        <td>{isAiConfigError(item.reason) ? 'AI 服务鉴权/额度问题（详见上方提示）' : (item.reason || '-')}</td>
+                        <td>{result.operator_hint || '-'}</td>
                         <td>{result.retryable ? '是' : '否'}</td>
+                        <td>
+                          {draftId != null ? (
+                            <button
+                              className="btn-mini primary"
+                              disabled={loading || batchProcessing}
+                              onClick={() => retryFailed([draftId])}
+                              title="以该草稿重新提交处理流水线"
+                            >重新处理</button>
+                          ) : ('-')}
+                        </td>
                       </tr>
                     );
                   })}

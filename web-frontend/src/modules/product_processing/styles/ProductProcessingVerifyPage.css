@@ -1277,6 +1277,25 @@
   font-weight: 800;
 }
 
+/* ── 失败商品区：AI 配置/额度友好提示（key 未配置或余额不足时引导去系统配置） ── */
+.verify-ai-config-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #f0c36d;
+  border-radius: 10px;
+  background: #fff8e8;
+  color: #8a5a00;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.verify-ai-config-hint .iconfont {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
 .verify-advanced-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));

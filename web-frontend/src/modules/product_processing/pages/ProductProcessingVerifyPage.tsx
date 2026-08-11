@@ -80,62 +80,35 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
   const stickySpacerRef = useRef<HTMLDivElement>(null);
 
   // 滚动发生在 window（.content-card 的 overflow:auto 会作为 sticky 的滚动祖先但不参与滚动，
-  // 导致纯 CSS sticky 永远吸不住）。参照产品库固定表头做法：JS 测量工具栏自然位置，
-  // 滚出顶部导航栏下方后切换为 position:fixed，用 spacer 占位防止内容跳动。
+  // 导致纯 CSS sticky 永远吸不住）。参照产品库固定表头做法：工具栏**常驻**固定，
+  // 始终贴在顶部导航栏下方（数据少/页面不可滚动时也吸顶），用 spacer 占位防止内容跳动。
   useEffect(() => {
     const toolbar = stickyToolbarRef.current;
     const spacer = stickySpacerRef.current;
     if (!toolbar || !spacer) return;
     const contentCard = document.querySelector('.content-card') as HTMLElement | null;
-    let stuck = false;
-    let naturalTop = 0;
     const apply = () => {
-      const scrolled =
-        contentCard && contentCard.scrollHeight > contentCard.clientHeight + 1
-          ? contentCard.scrollTop
-          : window.scrollY || document.documentElement.scrollTop;
       const topbar = document.querySelector('.topbar-card') as HTMLElement | null;
       let topbarBottom = 0;
       if (topbar) {
         const rect = topbar.getBoundingClientRect();
         if (rect.bottom > 0) topbarBottom = Math.round(rect.bottom);
       }
-      const threshold = topbarBottom + 6;
-      if (!stuck) {
-        // 只在未固定时刷新"自然文档位置"，固定后上方内容高度不再变化
-        naturalTop = toolbar.getBoundingClientRect().top + scrolled;
-      }
-      const viewportTop = naturalTop - scrolled;
-      if (!stuck && viewportTop < threshold) {
-        stuck = true;
-        const contentRect = contentCard?.getBoundingClientRect();
-        toolbar.style.position = 'fixed';
-        toolbar.style.top = `${threshold}px`;
-        toolbar.style.left = contentRect ? `${Math.round(contentRect.left)}px` : '0px';
-        toolbar.style.width = contentRect ? `${Math.round(contentRect.width)}px` : '100%';
-        spacer.style.height = `${toolbar.offsetHeight}px`;
-        toolbar.classList.add('is-stuck');
-      } else if (stuck && viewportTop >= threshold) {
-        stuck = false;
-        toolbar.style.position = '';
-        toolbar.style.top = '';
-        toolbar.style.left = '';
-        toolbar.style.width = '';
-        spacer.style.height = '';
-        toolbar.classList.remove('is-stuck');
-      }
+      const contentRect = contentCard?.getBoundingClientRect();
+      toolbar.style.position = 'fixed';
+      toolbar.style.top = `${topbarBottom + 6}px`;
+      toolbar.style.left = contentRect ? `${Math.round(contentRect.left)}px` : '0px';
+      toolbar.style.width = contentRect ? `${Math.round(contentRect.width)}px` : '100%';
+      spacer.style.height = `${toolbar.offsetHeight}px`;
+      toolbar.classList.add('is-stuck');
     };
     apply();
-    window.addEventListener('scroll', apply, { passive: true });
     window.addEventListener('resize', apply);
-    contentCard?.addEventListener('scroll', apply, { passive: true });
     const observer = new ResizeObserver(apply);
     if (contentCard) observer.observe(contentCard);
     observer.observe(document.body);
     return () => {
-      window.removeEventListener('scroll', apply);
       window.removeEventListener('resize', apply);
-      contentCard?.removeEventListener('scroll', apply);
       observer.disconnect();
     };
   }, []);
@@ -144,8 +117,10 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
     () => drafts.filter((d) => draftDirty(d, edits)).length,
     [drafts, edits]
   );
+  // 草稿池只保留未处理项：处理完成的草稿自动从列表消失（processed），删除的不再展示。
+  // 失败/待确认的草稿保持 draft 状态，仍会显示，可勾选后重新处理。
   const selectableDrafts = useMemo(
-    () => drafts.filter((d) => d.status !== 'deleted'),
+    () => drafts.filter((d) => d.status !== 'deleted' && d.status !== 'processed'),
     [drafts]
   );
   const filteredDrafts = useMemo(() => {
@@ -560,7 +535,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
                       {variants.length > 0 && <span>{variants.length} 个变种</span>}
                       {Array.isArray(raw.source_image_urls) && raw.source_image_urls.length > 0 && (<span>{raw.source_image_urls.length} 张来源图</span>)}
                       {draft.status === 'attention_required' && <span className="badge attn">需确认</span>}
-                      {draft.status === 'processed' && <span className="badge ok">已处理</span>}
                       {Array.isArray(raw.risk_tags) && raw.risk_tags.length > 0 && (<span className="badge risk">风险: {raw.risk_tags.join('、')}</span>)}
                     </div>
                   </div>

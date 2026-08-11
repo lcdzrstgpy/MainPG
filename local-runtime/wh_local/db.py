@@ -270,11 +270,29 @@ CREATE TABLE IF NOT EXISTS invitation_codes (
     used_count INTEGER NOT NULL DEFAULT 0,
     expires_at TEXT NOT NULL DEFAULT '',
     created_by TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_by_admin_id TEXT NOT NULL DEFAULT '',
+    creation_operation_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_invitation_codes_status
     ON invitation_codes (used_count, expires_at);
+
+-- 邀请码使用明细：注册成功时记录邀请码与账号的归属关系。
+-- 历史版本只累计 used_count，无法可靠反推旧账号，因此从本表上线后开始精确记录。
+CREATE TABLE IF NOT EXISTS invitation_code_usages (
+    code TEXT NOT NULL,
+    account_id TEXT NOT NULL UNIQUE,
+    username TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    used_at TEXT NOT NULL,
+    PRIMARY KEY (code, account_id),
+    FOREIGN KEY (code) REFERENCES invitation_codes (code),
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_invitation_code_usages_code
+    ON invitation_code_usages (code, used_at DESC);
 
 -- 商业授权状态表：打包售卖时限制客户、域名、用户数、模块和到期时间。
 CREATE TABLE IF NOT EXISTS license_state (
