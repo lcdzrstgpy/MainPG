@@ -81,26 +81,6 @@ export function PriceVerificationPage() {
     onChange: () => void refresh(true),
   });
 
-  // 批次就绪后从缓存恢复图搜结果 / 勾选 / 阶段
-  useEffect(() => {
-    if (!currentBatchId) return;
-    const cached = loadSourceCache(currentBatchId);
-    if (!cached) return;
-    if (cached.sourcePreview) setSourcePreview(cached.sourcePreview);
-    if (cached.sourceSkcIds?.length) setSourceSkcIds(cached.sourceSkcIds);
-    if (cached.activeStage) {
-      setActiveStage(cached.activeStage === "source" && !cached.sourcePreview ? "collect" : cached.activeStage);
-    }
-  }, [currentBatchId]);
-
-  // 状态变化时写回缓存；恢复瞬间（preview 尚未从缓存取出）不要清空旧缓存
-  useEffect(() => {
-    if (!currentBatchId) return;
-    const cached = loadSourceCache(currentBatchId);
-    if (sourcePreview === null && cached?.sourcePreview) return;
-    saveSourceCache(currentBatchId, { activeStage, sourceSkcIds, sourcePreview });
-  }, [currentBatchId, activeStage, sourceSkcIds, sourcePreview]);
-
   const savePrescreen = async (minAdjustedPriceCny: string) => {
     try {
       const settings = await priceVerificationApi.setPrescreen(minAdjustedPriceCny);
