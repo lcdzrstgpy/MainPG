@@ -15,6 +15,8 @@ DECLARED_PRICE_MULTIPLIER = 4
 DECLARED_PRICE_MIN_CNY = 150.0
 DXM_STOCK_MIN = 0
 DXM_STOCK_MAX = 999999
+# 店小秘 *重量（g） 导入允许区间上限（校验规则 0.01-99999.9）
+DXM_WEIGHT_MAX_G = 99999.9
 
 # 外包装形状/类型（对齐原型 _build_dxm_row：soft → 软包装软物/气泡袋，rigid → 硬包装硬物/纸箱）
 _PACKAGE_EXPORT_BY_PROFILE = {
@@ -381,13 +383,18 @@ def _export_number(value: Any) -> Any:
 # 尺寸文本模式：如 "30*20*10" / "30×20×10cm" / "40.5*30*20 CM"（1688 变种尺寸属性值）
 _DIMENSIONS_PATTERN = re.compile(
     r"(?P<l>\d+(?:\.\d+)?)\s*[*×xX]\s*(?P<w>\d+(?:\.\d+)?)\s*[*×xX]\s*(?P<h>\d+(?:\.\d+)?)"
-    r"\s*(?:cm|厘米|mm|毫米)?",
+    r"\s*(?P<unit>cm|厘米|mm|毫米)?",
     re.IGNORECASE,
 )
 
 
 def _parse_dimensions(value: Any) -> tuple[float, float, float] | None:
-    """从文本提取 (长, 宽, 高) 厘米；无法识别返回 None。"""
+    """从文本提取 (长, 宽, 高) 厘米；无法识别返回 None。
+
+    单位 mm/毫米 时换算为厘米（÷10），cm/厘米/无单位按厘米处理。
+    1688 变种尺寸属性常以毫米标注（如 34.5cm 商品写 "345*255*55mm"），
+    若不换算会把体积重虚大 1000 倍，导致导出重量超出店小秘允许区间。
+    """
     if value in (None, ""):
         return None
     match = _DIMENSIONS_PATTERN.search(str(value))
@@ -398,6 +405,9 @@ def _parse_dimensions(value: Any) -> tuple[float, float, float] | None:
     height = float(match.group("h"))
     if length <= 0 or width <= 0 or height <= 0:
         return None
+    unit = (match.group("unit") or "").lower()
+    if unit in {"mm", "毫米"}:
+        length, width, height = length / 10.0, width / 10.0, height / 10.0
     return length, width, height
 
 
@@ -412,6 +422,9 @@ def _weight_meeting_volumetric(weight: Any, dimensions_texts: Sequence[Any]) -> 
     对每段尺寸文本解析长宽高并计算体积重（取最大值），若当前重量缺失或小于等于
     体积重，则提升到「体积重之上 1g」，保证店小秘导入不因「材积重量大于实际重量」
     拒绝整行，且不虚高申报重量。无有效尺寸时原样返回。
+
+    店小秘 *重量（g） 只接受 0.01-99999.9：当兜底值超上限时（例如带 mm 单位但
+    未识别的异常尺寸文本使体积重虚大），封顶到上限，避免导出行被区间校验整行拒绝。
     """
     volumetric = 0.0
     for text in dimensions_texts:
@@ -422,7 +435,7 @@ def _weight_meeting_volumetric(weight: Any, dimensions_texts: Sequence[Any]) -> 
         return weight
     if isinstance(weight, (int, float)) and weight > volumetric:
         return weight
-    return int(volumetric) + 1
+    return min(int(volumetric) + 1, DXM_WEIGHT_MAX_G)
 
 
 def _normalize_stock(value: Any) -> int:
