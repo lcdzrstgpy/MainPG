@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import re
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -464,9 +465,12 @@ def _weight_meeting_volumetric(weight: Any, dimensions_texts: Sequence[Any]) -> 
             volumetric = max(volumetric, _volumetric_weight_g(*parsed))
     if volumetric <= 0:
         return weight
-    if isinstance(weight, (int, float)) and weight > volumetric:
+    if isinstance(weight, (int, float)) and weight > math.ceil(volumetric):
         return weight
-    return min(int(volumetric) + 1, DXM_WEIGHT_MAX_G)
+    # 体积重为小数时（含小数长宽高），店小秘若将体积重四舍五入到整数再与重量比较，
+    # 低于 ceil(vol)+1 的重量（含恰好等于舍入值）会被 "材积重量大于实际重量" 拒绝；
+    # ceil(vol)+1 保证重量严格大于任何舍入结果（比最低值多 ≤1g，不虚高）。
+    return min(math.ceil(volumetric) + 1, DXM_WEIGHT_MAX_G)
 
 
 def _normalize_stock(value: Any) -> int:
