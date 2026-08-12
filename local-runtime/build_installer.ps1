@@ -46,6 +46,8 @@ if (-not (Test-Path $dist)) { throw "bundle output missing: $dist" }
 Write-Host "[build] copying local credentials into bundle ..."
 Copy-Item "wh_local\modules\product_processing\cos.local.json" $dist -ErrorAction Stop
 Copy-Item "wh_local\onebound.local.json" $dist -ErrorAction Stop
+# 4b. Copy the app icon so shortcuts can use the product logo (qifan-mark)
+Copy-Item "app-icon.ico" $dist -ErrorAction Stop
 
 # 5. Pack a portable zip
 Write-Host "[build] creating portable zip ..."

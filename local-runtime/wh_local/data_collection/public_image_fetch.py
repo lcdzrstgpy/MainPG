@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
 
+import certifi
+
 
 MAX_PUBLIC_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_PUBLIC_IMAGE_REDIRECTS = 5
@@ -314,7 +316,16 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     def __init__(self, hostname: str, port: int, *, connect_ip: str, timeout: float) -> None:
         self._connect_ip = connect_ip
-        super().__init__(hostname, port=port, timeout=timeout, context=ssl.create_default_context())
+        # The Windows/Python runtime may not expose the same root store used by
+        # the browser.  That made the pinned Cloudflare DoH fallback fail before
+        # Temu CDN hosts could be resolved.  Use the maintained CA bundle that
+        # ships with the application dependencies for both DoH and image TLS.
+        super().__init__(
+            hostname,
+            port=port,
+            timeout=timeout,
+            context=ssl.create_default_context(cafile=certifi.where()),
+        )
 
     def connect(self) -> None:
         raw_socket = socket.create_connection((self._connect_ip, self.port), self.timeout, self.source_address)
