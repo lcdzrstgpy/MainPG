@@ -362,7 +362,6 @@ def register_price_verification_routes(
                 ),
                 ranking_mode="image_order",
                 skc_ids=_text_list(request.get("skc_ids")),
-                keyword_search=True,
             )
         except HTTPException:
             raise

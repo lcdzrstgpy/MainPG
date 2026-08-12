@@ -78,7 +78,6 @@ class SourcingService:
         provider_factory: Callable[[], Any],
         ranking_mode: str = "image_order",
         skc_ids: Sequence[str] | None = None,
-        keyword_search: bool = True,
     ) -> dict[str, Any]:
         """Run the established OB 1688 image-search chain for retained SKCs.
 
@@ -91,8 +90,8 @@ class SourcingService:
 
         ``skc_ids`` restricts the search to the user-selected SKCs; when it is
         ``None`` every retained selection is searched (backward compatible).
-        ``keyword_search`` adds the translated-title keyword channel by default
-        so every search combines product image and title evidence.
+        The Temu title stays local and is used only for category-conflict
+        filtering after image search; no title query is sent to OneBound.
         """
         from .onebound_adapter import OneBoundSourceAdapter
 
@@ -124,7 +123,7 @@ class SourcingService:
         if not tasks:
             raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
         adapter = OneBoundSourceAdapter(self._repository, provider_factory)
-        result = adapter.search_by_image(actor, tasks, keyword_search=keyword_search)
+        result = adapter.search_by_image(actor, tasks)
         quotes = [task.to_payload() for task in tasks]
         preview = _apply_batch_ranking(
             build_source_preview(quotes, result),

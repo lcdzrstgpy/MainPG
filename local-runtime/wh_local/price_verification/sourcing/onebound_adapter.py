@@ -14,10 +14,8 @@ from typing import Any, Protocol
 
 from ..contracts import PriceVerificationActor, redact_sensitive, redact_sensitive_text
 from ..repository import PriceVerificationRepository
-from ...data_collection.criteria import DailySelectionCriteria
 from ...data_collection.contracts import DailySelectionError
 from .contracts import SourceSearchTask
-from .title_translation import to_search_keywords, translate_title_to_chinese
 
 
 _PROVIDER_NAME = "onebound-1688"
@@ -61,18 +59,16 @@ class OneBoundSourceAdapter:
         self._repository = repository
         self._provider_factory = provider_factory
 
-    def search_by_image(
-        self, actor: PriceVerificationActor, tasks: Sequence[SourceSearchTask], *, keyword_search: bool = True
-    ) -> dict[str, Any]:
+    def search_by_image(self, actor: PriceVerificationActor, tasks: Sequence[SourceSearchTask]) -> dict[str, Any]:
         """Run each task independently so one provider failure remains retriable.
 
         There is no daily call budget: every task always executes against the
         provider, and provider-side failures surface per task so a single
         upstream hiccup never blocks the rest of the batch.
 
-        ``keyword_search`` additionally searches the translated title.  The
-        title request can only corroborate an offer returned by image search;
-        it must never turn a text hit into a visual-match candidate.
+        The Temu title never triggers an external search. It is used later by
+        the local category guard to remove clear conflicts from these image
+        results.
         """
         if not isinstance(actor, PriceVerificationActor):
             raise TypeError("actor must be PriceVerificationActor")
@@ -90,13 +86,11 @@ class OneBoundSourceAdapter:
             )
         items: list[dict[str, Any]] = []
         for task in task_list:
-            item, _ = self._search_task(provider, task, keyword_search=keyword_search)
+            item, _ = self._search_task(provider, task)
             items.append(item)
         return _result_for_items(items)
 
-    def _search_task(
-        self, provider: _OneBoundProvider, task: SourceSearchTask, *, keyword_search: bool = False
-    ) -> tuple[dict[str, Any], int]:
+    def _search_task(self, provider: _OneBoundProvider, task: SourceSearchTask) -> tuple[dict[str, Any], int]:
         evidence: list[dict[str, Any]] = []
         try:
             # Channel A: pure image search. This is the only channel allowed
@@ -115,36 +109,7 @@ class OneBoundSourceAdapter:
             except Exception as error:
                 image_error = _provider_error_message(error)
 
-            # Channel B: translated-title keyword search. OneBound's image
-            # endpoint does not accept title text, so this only corroborates
-            # image hits and never contributes standalone candidates.
-            keyword_raw: list[Mapping[str, Any]] = []
-            keyword_ok = False
-            keyword_error = ""
-            translated_title = translate_title_to_chinese(task.product_title) if keyword_search else ""
-            keywords = to_search_keywords(translated_title)
-            # Only run the keyword channel when the title translated into
-            # Chinese; a raw-English fallback would search 1688 with the wrong
-            # language and return noise.
-            if keywords and _contains_cjk(keywords):
-                try:
-                    keyword_hits = provider.search_keyword(
-                        DailySelectionCriteria(
-                            collection_mode="keyword",
-                            keywords=(keywords,),
-                            target_count=max(int(task.max_candidates or 0), 1),
-                        )
-                    )
-                    evidence.extend(_redacted_audits(keyword_hits))
-                    if _result_ok(keyword_hits):
-                        keyword_ok = True
-                        keyword_raw = _search_items(_response(keyword_hits))
-                    else:
-                        keyword_error = _provider_result_error(keyword_hits)
-                except Exception as error:
-                    keyword_error = _provider_error_message(error)
-
-            merged = _merge_channels(image_raw, keyword_raw, max(int(task.max_candidates or 0), 1))
+            merged = _image_candidates(image_raw, max(int(task.max_candidates or 0), 1))
             if not merged:
                 # A keyword hit is not evidence of a visual match. If image
                 # search failed, make the SKC retriable instead of showing text
@@ -335,25 +300,8 @@ def _offer_id(candidate: Mapping[str, Any]) -> str:
     return ""
 
 
-def _contains_cjk(value: str) -> bool:
-    return any("\u4e00" <= char <= "\u9fff" for char in value)
-
-
-def _merge_channels(
-    image_raw: Sequence[Mapping[str, Any]],
-    keyword_raw: Sequence[Mapping[str, Any]],
-    max_candidates: int,
-) -> list[Mapping[str, Any]]:
-    """Return only image-search offers, de-duplicated by offer ID.
-
-    A title hit says nothing about whether the product looks the same. When both
-    channels return one offer we keep the image hit only.
-    """
-    keyword_offer_ids = {
-        _offer_id(candidate)
-        for candidate in keyword_raw
-        if _offer_id(candidate)
-    }
+def _image_candidates(image_raw: Sequence[Mapping[str, Any]], max_candidates: int) -> list[Mapping[str, Any]]:
+    """Return OneBound image-search offers, de-duplicated in provider order."""
     seen: set[str] = set()
     merged: list[Mapping[str, Any]] = []
     for index, candidate in enumerate(image_raw, start=1):
@@ -367,8 +315,6 @@ def _merge_channels(
         # OneBound's image endpoint. Do not interpret ``turn_head`` as an image
         # similarity score; the provider does not document it as one.
         item["image_search_rank"] = index
-        if offer_id in keyword_offer_ids:
-            item["title_search_confirmed"] = True
         merged.append(item)
         if len(merged) >= max_candidates:
             break

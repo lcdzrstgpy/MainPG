@@ -276,7 +276,11 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
             const cap = item?.max_candidates && item.max_candidates > 0 ? item.max_candidates : 10;
             const all = item?.all_candidates?.length ? item.all_candidates : item?.candidates ?? [];
             const displayLimit = Math.min(CANDIDATE_LIMIT, cap);
-            const candidates = all.slice(0, displayLimit);
+            // 保留万邦原始排序；仅把当前展示范围内的首条放到最后，避免其默认占据首屏。
+            const rankedCandidates = all.slice(0, displayLimit);
+            const candidates = rankedCandidates.length > 1
+              ? [...rankedCandidates.slice(1), rankedCandidates[0]]
+              : rankedCandidates;
             const groupLinks = links.filter((link) => link.skc_id === group.skc_id);
             const searchFailed = item?.source_search_status === "failed" || item?.source_search_status === "error";
             return (
@@ -297,7 +301,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                 </div>
                 {candidates.length ? (
                   <div className="pv-source-cards">
-                    {candidates.map((candidate, index) => {
+                    {candidates.map((candidate) => {
                       const linked = linkedRecord(group.skc_id, candidate);
                       const selected = selectedRecord(group.skc_id, candidate);
                       const isLinked = Boolean(linked || selected);
@@ -310,9 +314,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                         candidate.image_search_rank ? `万邦图搜第 ${candidate.image_search_rank} 位` : "",
                         candidate.sales !== undefined ? `销量 ${candidate.sales}` : "",
                       ].filter(Boolean);
-                      const rankBadge = index === 0 ? { text: "第1名", cls: "is-top" } : { text: decisionLabel(candidate.source_decision), cls: "is-plain" };
                       return (
-                        <div className="pv-source-card" key={`${group.skc_id}-${index}`}>
+                        <div className="pv-source-card" key={candKey}>
                           <a className="pv-source-card-media" href={candidate.source_url} target="_blank" rel="noreferrer" title={candidate.source_url}>
                             {candidate.main_image_url ? <img src={candidate.main_image_url} alt="" loading="lazy" referrerPolicy="no-referrer" /> : null}
                           </a>
@@ -321,7 +324,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                               <div className="pv-source-card-info">
                                 <span className="pv-source-card-title">{candidate.source_title || "候选商品"}</span>
                                 <div className="pv-source-card-meta">
-                                  <em className={rankBadge.cls}>{rankBadge.text}</em>
+                                  {candidate.source_decision ? <em className="is-plain">{decisionLabel(candidate.source_decision)}</em> : null}
                                   {metaParts.length ? <small>{metaParts.join(" · ")}</small> : null}
                                 </div>
                               </div>
@@ -378,7 +381,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       <WorkflowActionBar label="货源匹配操作" floating ref={actionBarRef}>
         <div className="price-verification-action-summary"><span>待图搜</span><strong>{sourceCount ?? 0} 个 SKC</strong></div>
         <div className="price-verification-action-buttons">
-          <span className="pv-source-sort-label">候选按万邦图搜原始顺序展示</span>
+          <span className="pv-source-sort-label">候选保留万邦排序，首条置于当前展示末尾</span>
           <button className="price-verification-primary-button" onClick={onStart} disabled={busy || (sourceCount ?? 0) === 0} title={(sourceCount ?? 0) === 0 ? "本轮 SKC 均已复用产品库货源" : undefined}>{busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0} 个 SKC）`}</button>
           {selectedCandidates.length > 0 && !matchingCompleted ? <button className="price-verification-secondary-button" onClick={onComplete} disabled={busy}>完成关联（{selectedCandidates.length}）</button> : null}
         </div>

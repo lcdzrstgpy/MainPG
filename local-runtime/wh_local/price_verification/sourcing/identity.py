@@ -19,6 +19,7 @@ _ENGLISH_CATEGORY_TERMS = (
     (("bag",), ("包", "袋", "bag")),
     (("rack", "shelf", "stand"), ("架", "展示", "rack", "shelf", "stand")),
 )
+_TOY_TERMS = ("玩具", "摆件", "公仔", "toy", "doll", "figurine", "play")
 
 
 def evaluate_product_evidence(
@@ -66,6 +67,8 @@ def _cross_language_category_mismatch(quote_title: str, source_title: str) -> bo
         return False
     quote = _compact(quote_title)
     source = _compact(source_title)
+    if any(term in source for term in _TOY_TERMS) and not any(term in quote for term in _TOY_TERMS):
+        return True
     required = [aliases for triggers, aliases in _ENGLISH_CATEGORY_TERMS if any(trigger in quote for trigger in triggers)]
     return bool(required) and any(not any(alias in source for alias in aliases) for aliases in required)
 

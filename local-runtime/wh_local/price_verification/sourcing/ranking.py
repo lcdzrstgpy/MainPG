@@ -24,18 +24,16 @@ def rank_source_candidates(
 def rank_candidates_by_image_order(
     candidates: Iterable[Mapping[str, Any]],
 ) -> tuple[Mapping[str, Any], ...]:
-    """Prefer title-corroborated image hits, then keep OneBound's image order.
+    """Keep OneBound's image-search order after local category filtering.
 
-    OneBound does not provide a documented visual similarity score. A title hit
-    never becomes a candidate by itself; it only prevents an obviously
-    unrelated image hit from taking first place when an image candidate is also
-    confirmed by the translated Temu title search.
+    OneBound title search is deliberately not called.  The Temu title is used
+    locally only to remove clear product-category conflicts before this ranker
+    is invoked.
     """
     return tuple(
         sorted(
             candidates,
             key=lambda candidate: (
-                not bool(candidate.get("title_search_confirmed")),
                 _number(candidate.get("image_search_rank")),
                 str(candidate.get("candidate_key") or candidate.get("offer_id") or ""),
             ),

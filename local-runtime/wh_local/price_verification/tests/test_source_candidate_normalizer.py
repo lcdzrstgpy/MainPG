@@ -124,7 +124,7 @@ def test_image_candidates_keep_onebound_return_order_instead_of_price_order() ->
     assert [candidate["offer_id"] for candidate in ranked] == ["first-from-onebound", "cheap-but-second"]
 
 
-def test_title_confirmed_image_candidate_precedes_unconfirmed_onebound_first_result() -> None:
+def test_image_order_ignores_legacy_title_search_confirmation() -> None:
     ranked = rank_candidates_by_image_order(
         [
             {"offer_id": "wrong-category-first", "image_search_rank": 1},
@@ -132,7 +132,7 @@ def test_title_confirmed_image_candidate_precedes_unconfirmed_onebound_first_res
         ]
     )
 
-    assert [candidate["offer_id"] for candidate in ranked] == ["same-style-confirmed", "wrong-category-first"]
+    assert [candidate["offer_id"] for candidate in ranked] == ["wrong-category-first", "same-style-confirmed"]
 
 
 def test_cross_language_category_mismatch_rejects_pet_bowl_for_bamboo_cooling_mat() -> None:
@@ -143,6 +143,36 @@ def test_cross_language_category_mismatch_rejects_pet_bowl_for_bamboo_cooling_ma
             "item_url": "https://detail.1688.com/offer/123456789012.html",
             "title": "猫碗陶瓷保护颈椎防打翻猫粮碗实木猫盆猫咪食盆水碗宠物用品",
             "image_search_rank": 2,
+        },
+    )
+
+    assert candidate["product_evidence_status"] == "conflict"
+    assert candidate["product_evidence"] == ["product_category_mismatch"]
+
+
+def test_cross_language_category_mismatch_rejects_tablecloth_for_cooling_mat() -> None:
+    candidate = normalize_source_candidate(
+        QuoteItem(product_title="Bamboo Cooling Mat for Dogs and Cats"),
+        {
+            "num_iid": "123456789012",
+            "item_url": "https://detail.1688.com/offer/123456789012.html",
+            "title": "棉麻印花餐桌布防水防烫桌旗家用茶几桌布",
+            "image_search_rank": 2,
+        },
+    )
+
+    assert candidate["product_evidence_status"] == "conflict"
+    assert candidate["product_evidence"] == ["product_category_mismatch"]
+
+
+def test_cross_language_category_mismatch_rejects_toy_for_pet_sleeping_blanket() -> None:
+    candidate = normalize_source_candidate(
+        QuoteItem(product_title="Pet Accessory Dog Sleeping Blanket Winter Warm Pet Bed Mat for Small Dogs"),
+        {
+            "num_iid": "123456789012",
+            "item_url": "https://detail.1688.com/offer/123456789012.html",
+            "title": "仿真布垫会叫狗会叫仿真睡狗摆件玩具送人礼品萌物",
+            "image_search_rank": 1,
         },
     )
 

@@ -59,9 +59,6 @@ def normalize_source_candidate(
         "price": price,
         "promotion_price": promotion_price,
         "image_search_rank": image_search_rank,
-        # A keyword hit may corroborate an image-search candidate, but keyword
-        # results themselves are never included as source candidates.
-        "title_search_confirmed": bool(raw_candidate.get("title_search_confirmed")),
         "sales": _number(raw_candidate, "sales", "sold", "volume"),
         "moq": moq,
         "moq_status": moq_status,
