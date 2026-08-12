@@ -5,7 +5,7 @@
 
 #define MyAppName "启凡电商平台"
 #define MyAppNameEn "MainPG"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "启凡"
 #define MyAppExeName "MainPG.exe"
 

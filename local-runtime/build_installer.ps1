@@ -1,6 +1,6 @@
 # Build the local workbench distribution (PyInstaller onedir + zip + Inno Setup installer).
 # Usage: powershell -ExecutionPolicy Bypass -File build_installer.ps1
-# Precondition: gitignored cos.local.json / onebound.local.json exist locally (packed into the dist).
+# Security: local credential files are never copied into public artifacts.
 # NOTE: keep this file ASCII-only to avoid PowerShell 5 (ANSI) encoding issues.
 
 $ErrorActionPreference = "Stop"
@@ -42,12 +42,24 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 $dist = Join-Path $PSScriptRoot "dist\MainPG"
 if (-not (Test-Path $dist)) { throw "bundle output missing: $dist" }
 
-# 4. Copy gitignored local credentials next to the exe (COS image host + OneBound collection API)
-Write-Host "[build] copying local credentials into bundle ..."
-Copy-Item "wh_local\modules\product_processing\cos.local.json" $dist -ErrorAction Stop
-Copy-Item "wh_local\onebound.local.json" $dist -ErrorAction Stop
-# 4b. Copy the app icon so shortcuts can use the product logo (qifan-mark)
+# 4. Copy the app icon so shortcuts can use the product logo (qifan-mark).
+# Existing installations keep their app-local credential files because the installer does not
+# delete them. Fresh installations must be configured from System Settings or environment vars.
 Copy-Item "app-icon.ico" $dist -ErrorAction Stop
+
+$forbiddenNames = @(
+    "cos.local.json",
+    "onebound.local.json",
+    ".env",
+    "workbench.sqlite3"
+)
+$forbiddenFiles = Get-ChildItem -LiteralPath $dist -Recurse -File | Where-Object {
+    $forbiddenNames -contains $_.Name -or
+    $_.Extension -in @(".sqlite", ".sqlite3", ".db")
+}
+if ($forbiddenFiles) {
+    throw "Refusing to package local credentials or databases"
+}
 
 # 5. Pack a portable zip
 Write-Host "[build] creating portable zip ..."
