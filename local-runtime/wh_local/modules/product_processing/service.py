@@ -170,7 +170,7 @@ class ProductProcessingService:
         self._ai_lock = threading.Lock()  # 保护 AiClient 懒加载（多线程并行处理时避免重复创建）
         self._media_instance = None  # ProductImageProcessor (懒加载，可选依赖)
         # 主体识别结果缓存：同一来源主图只识别一次（批量任务大量重复商品时省 N 次 AI 调用）
-        self._subject_cache: dict[str, str] = {}
+        self._subject_cache: dict[str, dict[str, str]] = {}
         self._subject_cache_lock = threading.Lock()
 
     def engine_status(self) -> dict[str, Any]:
@@ -816,6 +816,8 @@ class ProductProcessingService:
             s["product_video_template"] = True
         s["skip_duplicates"] = _as_bool(s.get("skip_duplicates"), default=False)
         s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
+        # 生图提示词模板：A=标准商品海报（现有），B=高端模特视觉（防比价）。
+        s["image_template"] = "B" if str(s.get("image_template") or "A").strip().upper() == "B" else "A"
         return s
 
     def process_drafts(
@@ -981,17 +983,260 @@ class ProductProcessingService:
                 f"任务尚未完成（当前状态：{task['status']}），输出文件将在处理后生成"
             )
         normalized = self._text(kind).lower()
+        if normalized == "dxm_final":
+            # 预检导出最终版：合并预览覆盖后重新生成的店小秘表格
+            path = self.assets.output_root / f"task_{task_id}" / f"dxm_import_task_{task_id}_final.xlsx"
+            try:
+                return self.assets.require_managed_file(str(path))
+            except FileNotFoundError as exc:
+                raise ProductProcessingNotFound(
+                    "最终版表格尚未生成，请先在预检页点击「导出最终版表格」"
+                ) from exc
         field = {
             "dxm": "output_file",
             "errors": "error_report_file",
             "video_manifest": "video_manifest_file",
         }.get(normalized)
         if field is None:
-            raise ValueError("kind must be dxm, errors or video_manifest")
+            raise ValueError("kind must be dxm, dxm_final, errors or video_manifest")
         try:
             return self.assets.require_managed_file(task[field])
         except FileNotFoundError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
+
+    def task_preview(
+        self, task_id: int, *, workspace_id: str = "local"
+    ) -> dict[str, Any]:
+        """预检数据：任务完成后逐商品展示标题/原图/生成图轮播/详情图/核心字段。
+
+        用户已保存的预览覆盖优先展示；未覆盖时展示生成结果原值。
+        """
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] not in {"completed", "failed", "partial_failure"}:
+            raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
+        items = []
+        for item in task["items"]:
+            result = item.get("result") or {}
+            draft_id = item.get("product_draft_id")
+            draft = self.repository.get_draft(draft_id, workspace_id=workspace_id) if draft_id else None
+            saved = (draft or {}).get("preview_overrides") or {}
+            if not isinstance(saved, dict):
+                saved = {}
+            items.append(self._preview_item(item, result, saved))
+        return {
+            "task_id": task_id,
+            "task": {
+                "id": task["id"],
+                "title": task["title"],
+                "status": task["status"],
+                "total_count": task["total_count"],
+                "success_count": task["success_count"],
+                "failed_count": task["failed_count"],
+                "skipped_count": task["skipped_count"],
+            },
+            "item_count": len(items),
+            "items": items,
+        }
+
+    def save_task_preview(
+        self,
+        task_id: int,
+        items: list[dict[str, Any]],
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """保存预检覆盖：按 product_draft_id 写入草稿 preview_overrides_json。
+
+        用户可改（标题/图片/核心字段）也可不修改默认保存；导出最终版表格时合并应用。
+        """
+        self._require_task(task_id, workspace_id)
+        saved_items: list[dict[str, Any]] = []
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            draft_id = entry.get("product_draft_id")
+            if not draft_id:
+                continue
+            overrides = entry.get("overrides") or {}
+            if not isinstance(overrides, dict):
+                overrides = {}
+            cleaned = self._clean_preview_overrides(overrides)
+            updated = self.repository.save_draft_preview_overrides(
+                draft_id, cleaned, workspace_id=workspace_id
+            )
+            if updated is None:
+                raise ProductProcessingNotFound(f"product draft {draft_id} not found")
+            saved_items.append({"product_draft_id": draft_id, "overrides": cleaned})
+        return {"task_id": task_id, "saved_count": len(saved_items), "items": saved_items}
+
+    def upload_preview_image(
+        self,
+        task_id: int,
+        draft_id: int,
+        content: bytes,
+        filename: str,
+        content_type: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """预检图片上传：保存到后端静态图床（/pp-media 可预览），优先上传 COS 转外链。
+
+        COS 上传成功后返回外链（导出最终版表格可直接写入店小秘）；
+        COS 不可用时保留本地路径 URL，导出表会回退该字段的生成/来源图。
+        """
+        if not content:
+            raise ValueError("uploaded image is empty")
+        suffix = Path(filename or "").suffix.lower()
+        safe_suffix = suffix if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"} else ".jpg"
+        path = self.assets.save_generated_image(task_id, draft_id, "preview_override", content, safe_suffix)
+        url = self._display_url(str(path))
+        published = False
+        try:
+            processor = self._media_processor()
+            from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
+
+            cos_url = processor.upload_to_cos(
+                GeneratedMedia(
+                    stage="preview_override",
+                    content=content,
+                    content_type=content_type or "image/jpeg",
+                    suffix=safe_suffix,
+                    provider="upload",
+                    model="upload",
+                    reference_count=0,
+                ),
+                task_id=task_id,
+                draft_id=draft_id,
+            )
+            if cos_url:
+                url = cos_url
+                published = True
+        except Exception:
+            published = False
+        return {"url": url, "local_path": str(path), "published": published}
+
+    def export_final_workbook(self, task_id: int, *, workspace_id: str = "local") -> dict[str, Any]:
+        """导出最终版店小秘表格：合并各商品已保存的预检覆盖后重新生成 xlsx。
+
+        字段规则与原版一致（workbooks._dxm_export_rows 逐 SKU 行 + 规格组合去重）。
+        """
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] not in {"completed", "failed", "partial_failure"}:
+            raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
+        rows: list[dict[str, Any]] = []
+        for item in task["items"]:
+            result = item.get("result") or {}
+            if not result.get("optimized_title"):
+                continue
+            merged = dict(result)
+            draft_id = item.get("product_draft_id")
+            draft = self.repository.get_draft(draft_id, workspace_id=workspace_id) if draft_id else None
+            if draft and draft.get("preview_overrides"):
+                merged["preview_overrides"] = draft["preview_overrides"]
+            rows.append(merged)
+        if not rows:
+            raise ValueError("task has no successful products to export")
+        from .domain import workbooks as wb_module  # noqa: PLC0415
+
+        exported_rows = [export for row in rows for export in wb_module._dxm_export_rows(row)]
+        if not exported_rows:
+            raise ValueError("task has no exportable rows")
+        workbook_path = self.assets.output_root / f"task_{task_id}" / f"dxm_import_task_{task_id}_final.xlsx"
+        wb_module.create_result_workbook(rows, workbook_path)
+        return {
+            "task_id": task_id,
+            "file": workbook_path.name,
+            "row_count": len(exported_rows),
+            "product_count": len(rows),
+            "download": f"/api/product-processing/tasks/{task_id}/download?kind=dxm_final",
+        }
+
+    @staticmethod
+    def _clean_preview_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
+        """清理预检覆盖：去掉空字符串/空列表，避免覆盖默认生成结果。"""
+        cleaned: dict[str, Any] = {}
+        for key in ("title", "description", "main_image"):
+            value = str(overrides.get(key) or "").strip()
+            if value:
+                cleaned[key] = value
+        for key in ("carousel_images", "detail_images"):
+            values = [str(value).strip() for value in (overrides.get(key) or []) if str(value or "").strip()]
+            if values:
+                cleaned[key] = values
+        core_fields = overrides.get("core_fields") or {}
+        if isinstance(core_fields, dict):
+            core: dict[str, Any] = {}
+            for key, value in core_fields.items():
+                if value is None:
+                    continue
+                if isinstance(value, str) and not value.strip():
+                    continue
+                core[key] = value
+            if core:
+                cleaned["core_fields"] = core
+        return cleaned
+
+    def _preview_item(
+        self,
+        item: dict[str, Any],
+        result: dict[str, Any],
+        saved: dict[str, Any],
+    ) -> dict[str, Any]:
+        core_fields = saved.get("core_fields") or {}
+        if not isinstance(core_fields, dict):
+            core_fields = {}
+        dimensions = result.get("product_dimensions") or {}
+        if not isinstance(dimensions, dict):
+            dimensions = {}
+        # 标题/描述：覆盖优先，其次生成结果
+        title = str(saved.get("title") or result.get("optimized_title") or "").strip()
+        description = str(saved.get("description") or result.get("description") or "").strip()
+        # 图片：覆盖优先，其次生成结果
+        override_carousel = [str(v).strip() for v in (saved.get("carousel_images") or []) if str(v or "").strip()]
+        override_detail = [str(v).strip() for v in (saved.get("detail_images") or []) if str(v or "").strip()]
+        override_main = str(saved.get("main_image") or "").strip()
+        carousel_sources = override_carousel or list(result.get("carousel_image_paths") or [])
+        detail_sources = override_detail or list(result.get("detail_image_paths") or [])
+        main_source = override_main or (carousel_sources[0] if carousel_sources else "")
+        return {
+            "item_id": item.get("id") or item.get("item_id"),
+            "product_draft_id": item.get("product_draft_id"),
+            "skc": item.get("skc") or "",
+            "status": item.get("status") or "",
+            "reason": item.get("reason") or "",
+            "title": title,
+            "description": description,
+            "source_image_urls": [self._display_url(value) for value in (result.get("source_image_urls") or [])],
+            "carousel_images": [self._display_url(value) for value in carousel_sources],
+            "main_image": self._display_url(main_source),
+            "detail_images": [self._display_url(value) for value in detail_sources],
+            "core_fields": {
+                "sku": str(core_fields.get("sku") or result.get("sku") or "").strip(),
+                "declared_price": core_fields.get("declared_price", result.get("declared_price")),
+                "suggested_price": core_fields.get("suggested_price", result.get("suggested_price")),
+                "stock": core_fields.get("stock", result.get("stock")),
+                "category_path": str(core_fields.get("category_path") or result.get("category_path") or "").strip(),
+                "category_id": str(core_fields.get("category_id") or result.get("category_id") or "").strip(),
+                "length_cm": core_fields.get("length_cm", dimensions.get("length_cm")),
+                "width_cm": core_fields.get("width_cm", dimensions.get("width_cm")),
+                "height_cm": core_fields.get("height_cm", dimensions.get("height_cm")),
+                "weight_g": core_fields.get("weight_g", dimensions.get("weight_g")),
+            },
+            "overrides": saved,
+        }
+
+    def _display_url(self, value: Any) -> str:
+        """本地生成图路径 → /pp-media/ 相对 URL（后端静态图床）；http(s) 外链原样返回。"""
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text.lower().startswith(("http://", "https://")):
+            return text
+        try:
+            relative = Path(text).resolve().relative_to(self.assets.output_root.resolve())
+        except (ValueError, OSError):
+            return text
+        return f"/pp-media/{relative.as_posix()}"
 
     def process_workbook(
         self,
@@ -1308,73 +1553,71 @@ class ProductProcessingService:
             and _as_bool(settings.get("ai_media_opt_in"), default=True)
         )
         vision_subject = ""
+        vision_preliminary_title = ""
         combined_variant_translations: dict[str, str] = {}
         if not preflight_only:
-            # 文本生成与视觉主体识别是两个独立 AI 调用：并行执行省一段串行等待
-            # （主体识别提示词仅用原始标题作上下文，不依赖文本结果，可提前发起）。
-            from concurrent.futures import ThreadPoolExecutor
+            # 视觉识别先行：主图 → 可售主体 + 图像初步标题。初步标题是标题/描述生成的关键
+            # 图像证据（标题必须基于真实商品生成而非直译来源标题），因此文本生成依赖其结果，
+            # 不再与识别并行（识别失败时回退原来源标题流程，兼容无图像/未启用图像优化场景）。
+            if source_image_urls and (
+                (need_grid or need_detail)
+                or ("title" in scope and settings.get("title_optimize", True))
+            ):
+                vision_subject, vision_preliminary_title = self._identify_subject(
+                    source_image_urls[0], title, category, ai_notes
+                )
 
-            def _run_text() -> tuple[str, str, dict[str, str]]:
-                local_title = title
-                local_desc = description
-                translations: dict[str, str] = {}
-                needs_title = "title" in scope and settings.get("title_optimize", True)
-                needs_desc = "details" in scope and not local_desc
-                if needs_title and needs_desc:
-                    combined = self._generate_combined_text(
-                        title,
-                        category,
-                        raw,
-                        target_language,
-                        target_site,
-                        ai_notes,
-                    )
-                    if combined:
-                        if combined.get("title"):
-                            local_title = self._normalized_title(combined["title"])
-                        if combined.get("description"):
-                            local_desc = combined["description"]
-                        if combined.get("variant_translations"):
-                            translations = combined["variant_translations"]
-                        ai_notes.append("text:ai-combined")
-                        needs_title = needs_desc = False
-                if needs_title:
-                    generated_title = self._generate_title(
-                        title,
-                        category,
-                        raw,
-                        target_language,
-                        target_site,
-                        ai_notes,
-                    )
-                    if generated_title:
-                        local_title = generated_title
-                        ai_notes.append("title:ai")
-                if needs_desc:
-                    generated_desc = self._generate_description(
-                        local_title,
-                        category,
-                        raw,
-                        target_language,
-                        target_site,
-                        ai_notes,
-                    )
-                    if generated_desc:
-                        local_desc = generated_desc
-                        ai_notes.append("details:ai")
-                return local_title, local_desc, translations
-
-            def _run_subject() -> str:
-                if not ((need_grid or need_detail) and source_image_urls):
-                    return ""
-                return self._identify_subject(source_image_urls[0], title, category, ai_notes)
-
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_text = executor.submit(_run_text)
-                future_subject = executor.submit(_run_subject)
-                # 主体识别先取（图片阶段立即要用）；文本结果随后合并
-                vision_subject = future_subject.result()
-                optimized_title, description, combined_variant_translations = future_text.result()
+            local_title = title
+            local_desc = description
+            translations: dict[str, str] = {}
+            needs_title = "title" in scope and settings.get("title_optimize", True)
+            needs_desc = "details" in scope and not local_desc
+            if needs_title and needs_desc:
+                combined = self._generate_combined_text(
+                    title,
+                    category,
+                    raw,
+                    target_language,
+                    target_site,
+                    ai_notes,
+                    image_derived_title=vision_preliminary_title,
+                )
+                if combined:
+                    if combined.get("title"):
+                        local_title = self._normalized_title(combined["title"])
+                    if combined.get("description"):
+                        local_desc = combined["description"]
+                    if combined.get("variant_translations"):
+                        translations = combined["variant_translations"]
+                    ai_notes.append("text:ai-combined")
+                    needs_title = needs_desc = False
+            if needs_title:
+                generated_title = self._generate_title(
+                    title,
+                    category,
+                    raw,
+                    target_language,
+                    target_site,
+                    ai_notes,
+                    image_derived_title=vision_preliminary_title,
+                )
+                if generated_title:
+                    local_title = generated_title
+                    ai_notes.append("title:ai")
+            if needs_desc:
+                generated_desc = self._generate_description(
+                    local_title,
+                    category,
+                    raw,
+                    target_language,
+                    target_site,
+                    ai_notes,
+                    image_derived_title=vision_preliminary_title,
+                )
+                if generated_desc:
+                    local_desc = generated_desc
+                    ai_notes.append("details:ai")
+            optimized_title, description, combined_variant_translations = local_title, local_desc, translations
 
         if not description:
             # AI 未启用或生成失败时保留旧模板兜底，避免导入表描述为空
@@ -1435,6 +1678,7 @@ class ProductProcessingService:
                 target_site,
                 ai_notes,
                 vision_subject,
+                image_template=str(settings.get("image_template") or "A"),
             )
         if need_detail:
             if grid_image_paths:
@@ -1496,6 +1740,7 @@ class ProductProcessingService:
             "grid_image_summary_path": grid_summary_path,
             "detail_image_paths": detail_image_paths,
             "ai_notes": ai_notes,
+            "preview_overrides": draft.get("preview_overrides") or {},
             "selection_run_id": draft.get("selection_run_id"),
             "selection_keyword": raw.get("selection_keyword") or "",
             "selection_score": raw.get("selection_score"),
@@ -1537,6 +1782,26 @@ class ProductProcessingService:
         if ai_notes is not None and note not in ai_notes:
             ai_notes.append(note)
 
+    @staticmethod
+    def _text_messages(prompt: str, *, image_derived_title: str = "") -> list[dict[str, Any]]:
+        """组装文本 AI 消息：图像初步标题作为 system 级证据前置。
+
+        这样即使操作员自定义的提示词未引用 {image_derived_title}，模型也一定能收到
+        主图识别的商品理解（标题据此生成而非直译来源标题）；无图像证据时保持单条消息。
+        """
+        if not str(image_derived_title or "").strip():
+            return [{"role": "user", "content": prompt}]
+        system = (
+            "Image analysis of the source product main image (authoritative visual evidence of the "
+            "actual product being sold). Draft title based only on what is visible in the image: "
+            f"{str(image_derived_title).strip()[:300]}\n\n"
+            "Generate the requested listing text primarily from this image-derived understanding of "
+            "the actual product, combined with the source facts and instructions in the prompt below. "
+            "The source title in the prompt is supporting evidence only: do not literally translate it. "
+            "Do not invent any feature that is neither visible in the image nor stated in the source facts."
+        )
+        return [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+
     def _generate_combined_text(
         self,
         source_title: str,
@@ -1545,6 +1810,7 @@ class ProductProcessingService:
         target_language: str,
         target_site: str,
         ai_notes: list[str] | None = None,
+        image_derived_title: str = "",
     ) -> dict[str, Any] | None:
         """一次调用同时生成标题、描述与变种属性值翻译（交接文档 §9.3 + VARIANT_VALUE_TRANSLATION_PROMPT）。
 
@@ -1562,6 +1828,7 @@ class ProductProcessingService:
         prompt = format_prompt(
             contracted,
             title=source_title,
+            image_derived_title=image_derived_title,
             variant_options=variant_options_text,
             target_language_name=profile.get("ai_language", target_language),
             language_code=target_language,
@@ -1574,6 +1841,7 @@ class ProductProcessingService:
             "title": source_title,
             "category": category,
             "raw": self._stable_raw(raw),
+            "image_derived_title": image_derived_title,
         }
         cache_key = self._ai_stage_cache_key("combined_text", prompt=prompt, input_data=input_data)
         cached = self._load_ai_stage_cache("combined_text", cache_key)
@@ -1581,7 +1849,7 @@ class ProductProcessingService:
             ai_notes.append("text:cache-hit")
             return cached if isinstance(cached, dict) else None
         try:
-            text = self._ai_client().chat([{"role": "user", "content": prompt}])
+            text = self._ai_client().chat(self._text_messages(prompt, image_derived_title=image_derived_title))
             data = _extract_json_object(text)
             if not isinstance(data, dict) or not data.get("optimized_title"):
                 self._note_ai_failure(ai_notes, "text", "combined 输出未包含可用的 optimized_title")
@@ -1609,8 +1877,13 @@ class ProductProcessingService:
         target_language: str,
         target_site: str,
         ai_notes: list[str] | None = None,
+        image_derived_title: str = "",
     ) -> str:
-        """按目标语言生成标题；失败时返回空串（由调用方决定回退）。"""
+        """按目标语言生成标题；失败时返回空串（由调用方决定回退）。
+
+        image_derived_title：主图识别出的图像初步标题，作为标题生成的权威视觉证据
+        （标题据此生成而非直译来源标题）。
+        """
         if not _ai_enabled():
             return ""
         template = self._effective_prompt("title")
@@ -1619,6 +1892,7 @@ class ProductProcessingService:
         prompt = format_prompt(
             contracted,
             title=source_title,
+            image_derived_title=image_derived_title,
             title_identity_context=source_title,
             title_formula="product type + key real attributes + intended use, concise and scannable",
             title_priority_terms="",
@@ -1629,7 +1903,7 @@ class ProductProcessingService:
         prompt = append_content_reference(prompt, reference, kind="title")
         self._note_content_reference(ai_notes, "title_reference", reference.reference_id)
         try:
-            text = self._ai_client().chat([{"role": "user", "content": prompt}])
+            text = self._ai_client().chat(self._text_messages(prompt, image_derived_title=image_derived_title))
             ensure_target_language_result("标题", text, target_language)
             return self._normalized_title(text)
         except (AiProviderError, ValueError, OSError) as exc:
@@ -1644,15 +1918,18 @@ class ProductProcessingService:
         target_language: str,
         target_site: str,
         ai_notes: list[str] | None = None,
+        image_derived_title: str = "",
     ) -> str:
         if not _ai_enabled():
             return ""
         template = self._effective_prompt("desc")
         contracted = apply_language_contract_to_prompt(template, "desc", target_language, target_site)
         context = listing_prompt_context(raw, title=optimized_title, category=category)
-        prompt = format_prompt(contracted, title=optimized_title, **context)
+        prompt = format_prompt(
+            contracted, title=optimized_title, image_derived_title=image_derived_title, **context
+        )
         try:
-            text = self._ai_client().chat([{"role": "user", "content": prompt}])
+            text = self._ai_client().chat(self._text_messages(prompt, image_derived_title=image_derived_title))
             ensure_target_language_result("详情", text, target_language)
             return self._normalized_description(text)
         except (AiProviderError, ValueError, OSError) as exc:
@@ -1733,6 +2010,7 @@ class ProductProcessingService:
         target_site: str,
         ai_notes: list[str] | None = None,
         vision_subject: str = "",
+        image_template: str = "A",
     ) -> tuple[list[str], str]:
         """按原型逻辑生成 2x2 四宫格并本地拆分为 4 张轮播图 + 1 张汇总图。"""
         if not _ai_enabled() or not reference_urls:
@@ -1743,7 +2021,8 @@ class ProductProcessingService:
         processor_cls, media_config_error, media_error = media_types
         try:
             processor = self._media_processor()
-            template = self._effective_prompt("grid_image")
+            prompt_key = "grid_image_b" if str(image_template).strip().upper() == "B" else "grid_image"
+            template = self._effective_prompt(prompt_key)
             contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)
             context = listing_prompt_context(raw, title=optimized_title, category=category)
             if vision_subject:
@@ -1991,22 +2270,6 @@ class ProductProcessingService:
                 lines.append(current)
             return lines or [text[:40]]
 
-        def title_band(canvas: Image.Image, text_draw: ImageDraw.ImageDraw, title_text: str, category_text: str) -> None:
-            """顶部半透明黑条 + 白色标题/类目（E/F 使用，保证任何图下文字清晰）。"""
-            title_font = font(38, bold=True)
-            sub_font = font(20)
-            band = Image.new("RGBA", (target, 300), (0, 0, 0, 0))
-            band_draw = ImageDraw.Draw(band)
-            for row in range(300):
-                alpha = int(120 * (1 - row / 300) ** 1.2)
-                band_draw.line((0, row, target, row), fill=(0, 0, 0, alpha))
-            canvas.paste(band, (0, 62), band)
-            y = 92
-            for line in wrap(title_text, title_font, 880, 2):
-                text_draw.text((52, y), line, font=title_font, fill=(255, 255, 255))
-                y += 44
-            text_draw.text((54, y + 6), category_text.upper(), font=sub_font, fill=(240, 238, 232))
-
         clean_text = re.sub(r"\s+", " ", str(title or "")).strip(" -_|/")
         title_text = clean_text[:96] or ("Detalle del producto" if target_language == "es" else "Product Detail")
         category_text = (re.sub(r"\s+", " ", str(category or "")).strip(" -_|/")[:44]) or "Selected Detail"
@@ -2041,25 +2304,21 @@ class ProductProcessingService:
             return canvas
 
         def compose_e() -> Image.Image:
-            """E 圆形拼贴：主图居中 + 三张圆形蒙版嵌图 + 顶部压暗标题条"""
+            """E 圆形拼贴：主图居中 + 三张圆形蒙版嵌图（无文字覆盖）"""
             canvas = Image.new("RGB", (target, target), (244, 242, 238))
             canvas.paste(cover(images[0], 820, 820), (102, 102))
             paste_shaped(canvas, images[1], (150, 150), 290, "circle")
             paste_shaped(canvas, images[2], (874, 150), 290, "circle")
             paste_shaped(canvas, images[3], (512, 950), 290, "circle")
-            text_draw = ImageDraw.Draw(canvas)
-            title_band(canvas, text_draw, title_text, category_text)
             return canvas
 
         def compose_f() -> Image.Image:
-            """F 混合形状：主图居中 + 圆形/圆角方形/菱形蒙版嵌图 + 顶部压暗标题条"""
+            """F 混合形状：主图居中 + 圆形/圆角方形/菱形蒙版嵌图（无文字覆盖）"""
             canvas = Image.new("RGB", (target, target), (244, 242, 238))
             canvas.paste(cover(images[0], 820, 820), (102, 102))
             paste_shaped(canvas, images[1], (150, 150), 300, "circle")
             paste_shaped(canvas, images[2], (874, 150), 300, "square")
             paste_shaped(canvas, images[3], (512, 950), 320, "diamond")
-            text_draw = ImageDraw.Draw(canvas)
-            title_band(canvas, text_draw, title_text, category_text)
             return canvas
 
         compositor = {"D": compose_d, "E": compose_e, "F": compose_f}[random.choice(("D", "E", "F"))]
@@ -2450,28 +2709,35 @@ class ProductProcessingService:
         title: str,
         category: str,
         ai_notes: list[str] | None = None,
-    ) -> str:
-        """多模态识别主图中的可售主体（对齐原型 NativeVisualModelClient.judge）。
+    ) -> tuple[str, str]:
+        """多模态识别主图中的可售主体 + 基于主图的初步标题（对齐原型 NativeVisualModelClient.judge）。
 
-        返回英文主体描述，用于替换生图提示词 ``Product:`` 行的标题猜测，减少主体误判；
-        任何失败返回空串，调用方回退原标题描述。
+        返回 (subject, preliminary_title)：
+        - subject：英文主体描述，用于替换生图提示词 ``Product:`` 行的标题猜测，减少主体误判；
+        - preliminary_title：仅依据主图可见内容生成的英文初步标题草稿，作为文本生成
+          （标题/描述）的图像证据——标题据此生成而非直译来源标题。
+        任何失败返回 ("", "")，调用方回退原标题/描述流程。
         """
         if not _ai_enabled() or not image_url:
-            return ""
+            return "", ""
         # 缓存：同一来源主图只识别一次（批量任务重复商品省 N 次多模态调用）
         with self._subject_cache_lock:
             cached = self._subject_cache.get(image_url)
         if cached:
-            return cached
+            return cached["subject"], cached["preliminary_title"]
         data_url = self._image_to_data_url(image_url)
         if not data_url:
-            return ""
+            return "", ""
         prompt = (
-            "Identify the actual sellable product shown in the main image. "
+            "Analyze the actual sellable product shown in the main image. "
             "The foreground sellable subject is the product to sell; ignore houses, rooms, tables, "
             "people, props, and background scenes. Reply with strict JSON only: "
             '{"sellable_subject": "<one short English noun phrase describing the sellable product, '
             'e.g. a round acrylic keychain with letter charms>", '
+            '"preliminary_title": "<one draft English listing title (80-180 letters) written ONLY from '
+            'what is visible in the image: exact product type + 2-4 real visible attributes such as '
+            'material, color, size, shape, quantity + intended use only if clearly shown; never invent '
+            'facts that are not visible in the image>", '
             '"material_evidence": "<visible material and structure details>", '
             '"background_scene": "<what the background shows>"}'
         )
@@ -2490,18 +2756,24 @@ class ProductProcessingService:
                 ],
                 model="gpt-5.6-terra",
             )
-            data = _extract_json_object(text)
-            subject = self._text((data or {}).get("sellable_subject"))
-            if not subject:
-                return ""
+            data = _extract_json_object(text) or {}
+            subject = self._text(data.get("sellable_subject"))
+            preliminary_title = self._text(data.get("preliminary_title"))
+            if not subject and not preliminary_title:
+                return "", ""
             ai_notes.append("subject_identity:ai")
-            result = str(subject).strip()[:160]
+            if preliminary_title:
+                ai_notes.append("subject_identity:preliminary-title")
+            result = {
+                "subject": str(subject).strip()[:160],
+                "preliminary_title": self._normalized_title(preliminary_title) if preliminary_title else "",
+            }
             with self._subject_cache_lock:
                 self._subject_cache[image_url] = result
-            return result
+            return result["subject"], result["preliminary_title"]
         except (AiProviderError, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "subject_identity", _ai_error_reason(exc))
-            return ""
+            return "", ""
 
     def _media_processor(self) -> Any:
         if self._media_instance is None:
@@ -2524,6 +2796,7 @@ class ProductProcessingService:
                 "reference_model": provider.get("reference_image_model") or "",
                 # 图片模型池：同中转多模型轮巡（对齐原型 _provider_order 游标轮巡）
                 "image_models": list(provider.get("image_models") or ()),
+                "image_size": provider.get("image_size") or "2048x2048",
             }
         # COS 图床：gitignored 本地配置 cos.local.json 优先，环境变量 WH_COS_* 可覆盖。
         # 对齐原型出图保存逻辑——生成图上传 COS 转外链后写进导入表，店小秘可直接读取。
@@ -2577,7 +2850,7 @@ class ProductProcessingService:
             "image_retry_attempts": sys_limits.get("image_retry_attempts", 2),
             "grid_image_reference_max_count": 4,
             "detail_image_reference_max_count": 2,
-            "image_provider_strategy": sys_limits.get("image_provider_strategy", "balanced"),
+            "image_provider_strategy": sys_limits.get("image_provider_strategy", "primary_first"),
         }
         sys_updates = provider.get("_sys_updates") or {}
         if sys_updates.get("cos_prefix"):

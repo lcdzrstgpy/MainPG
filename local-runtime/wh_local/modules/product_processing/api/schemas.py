@@ -153,6 +153,15 @@ class RetryTaskRequest(BaseModel):
     plugin_session_id: int | None = None
 
 
+class PreviewSaveItem(BaseModel):
+    product_draft_id: int
+    overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class PreviewSaveRequest(BaseModel):
+    items: list[PreviewSaveItem] = Field(default_factory=list)
+
+
 class PromptUpdateRequest(BaseModel):
     prompts: dict[str, str] = Field(default_factory=dict)
 

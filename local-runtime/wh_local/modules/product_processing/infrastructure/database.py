@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -40,7 +40,31 @@ def create_database(database_url: str | None = None) -> ProductProcessingDatabas
     if parsed.drivername == "sqlite":
         _configure_sqlite(engine)
     Base.metadata.create_all(engine)
+    _ensure_columns(engine)
     return ProductProcessingDatabase(engine, sessionmaker(engine, expire_on_commit=False))
+
+
+# 轻量列补齐：老库已建表时 create_all 不会新增列，这里按需 ALTER TABLE 补列。
+_MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "product_processing_drafts": [
+        ("preview_overrides_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ],
+}
+
+
+def _ensure_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    for table, columns in _MIGRATION_COLUMNS.items():
+        if table not in existing_tables:
+            continue
+        existing = {column["name"] for column in inspector.get_columns(table)}
+        with engine.begin() as connection:
+            for name, definition in columns:
+                if name not in existing:
+                    connection.execute(
+                        text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+                    )
 
 
 def _configure_sqlite(engine: Engine) -> None:

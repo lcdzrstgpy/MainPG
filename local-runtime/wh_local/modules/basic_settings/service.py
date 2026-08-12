@@ -75,8 +75,8 @@ def default_system_config() -> dict[str, Any]:
         "ai": {"base_url": PRIMARY_AI_BASE_URL, "model": "gpt-5.6-terra"},
         "image": {
             "base_url": PRIMARY_AI_BASE_URL,
-            "model": "gpt-image-2-1k",
-            "reference_model": "gpt-image-2-1k",
+            "model": "gpt-image-2-2k",
+            "reference_model": "gpt-image-2-2k",
         },
         "backup_image": {"base_url": "", "model": "", "reference_model": ""},
         "cos": {"bucket": "", "region": "ap-guangzhou"},
@@ -86,7 +86,7 @@ def default_system_config() -> dict[str, Any]:
             "text_request_limit": 30,
             "image_request_limit": 15,
             "image_retry_attempts": 3,
-            "image_provider_strategy": "balanced",
+            "image_provider_strategy": "primary_first",
             "provider_backup_share_percent": 0,
             "image_stop_after_billable_failure": True,
             "max_parallel_drafts": 5,
@@ -370,9 +370,14 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
 
 
 def _with_fixed_provider_defaults(config: dict[str, Any]) -> dict[str, Any]:
-    """Keep hidden provider base URLs fixed even when an old local DB has stale values."""
+    """Keep provider defaults fixed even when an old local DB has stale values."""
     config["ai"]["base_url"] = PRIMARY_AI_BASE_URL
     config["image"]["base_url"] = PRIMARY_AI_BASE_URL
+    # 旧本地 DB 可能保存过 1k；产品处理默认要优先使用 2k，加载时自动迁移展示/运行值。
+    if str(config["image"].get("model") or "").strip() in {"", "gpt-image-2", "gpt-image-2-1k"}:
+        config["image"]["model"] = "gpt-image-2-2k"
+    if str(config["image"].get("reference_model") or "").strip() in {"", "gpt-image-2", "gpt-image-2-1k"}:
+        config["image"]["reference_model"] = "gpt-image-2-2k"
     return config
 
 

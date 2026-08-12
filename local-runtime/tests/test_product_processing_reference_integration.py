@@ -68,8 +68,8 @@ def test_title_reference_append_preserves_combined_text_hard_rules() -> None:
 
     assert combined.startswith(prompt.rstrip())
     assert "CONTENT REFERENCE ONLY — TITLE:" in combined
-    assert "Ideal length is 60-130 characters" in combined
-    assert "Hard maximum 180 characters" in combined
+    assert "around 180 English letters" in combined
+    assert "Never exceed 200 letters" in combined
     assert "The title must identify the exact product being sold" in combined
     assert "Product identity accuracy is more important than length or SEO breadth" in combined
     assert "Do not invent material, certification, function, compatibility, quantity, size, scene" in combined
@@ -93,11 +93,11 @@ def test_image_reference_append_preserves_exact_grid_and_product_fidelity_rules(
 
     assert combined.startswith(prompt.rstrip())
     assert "CONTENT REFERENCE ONLY — IMAGE:" in combined
-    assert "Use the reference image as the non-negotiable source of truth" in combined
-    assert "Create one square exact four-panel 2x2 e-commerce grid" in combined
+    assert "ONLY source of truth for the SKU" in combined
+    assert "exact four-panel 2x2 e-commerce grid" in combined
     assert "Keep an exact four-panel 2x2 grid with clean straight dividers" in combined
     assert "Do not change the four-grid structure, divider layout, or split logic" in combined
-    assert "same product type, shape, color, material, pattern, quantity, proportions, structure, and visible details" in combined
+    assert "Lock before generating" in combined
     assert "Do not change the product itself" in combined
 
 
@@ -230,7 +230,7 @@ def test_combined_text_reference_does_not_add_provider_calls(monkeypatch) -> Non
     assert result is not None
     assert len(client.prompts) == 1
     assert "CONTENT REFERENCE ONLY — TITLE:" in client.prompts[0]
-    assert "Hard maximum 180 characters" in client.prompts[0]
+    assert "around 180 English letters" in client.prompts[0]
     assert sum(note.startswith("title_reference:") for note in notes) == 1
 
 

@@ -150,7 +150,77 @@ export interface ProductProcessingOptions {
   skipDuplicates: boolean;
   ipCheck: boolean;
   maxParallelDrafts: number;
+  /** 生图提示词模板：A=标准商品海报，B=高端模特视觉（防比价） */
+  imageTemplate?: 'A' | 'B';
 }
+
+/** 生图提示词模板注册表（对齐后端 IMAGE_TEMPLATES） */
+export interface ImageTemplateOption {
+  id: 'A' | 'B';
+  name: string;
+  description: string;
+}
+
+export type PreviewCoreFields = {
+  sku?: string;
+  declared_price?: number | string | null;
+  suggested_price?: number | string | null;
+  stock?: number | string | null;
+  category_path?: string;
+  category_id?: string;
+  length_cm?: number | string | null;
+  width_cm?: number | string | null;
+  height_cm?: number | string | null;
+  weight_g?: number | string | null;
+};
+
+export type PreviewOverrides = {
+  title?: string;
+  description?: string;
+  main_image?: string;
+  carousel_images?: string[];
+  detail_images?: string[];
+  core_fields?: PreviewCoreFields;
+};
+
+export type PreviewItem = {
+  item_id: number;
+  product_draft_id: number | null;
+  skc: string;
+  status: string;
+  reason: string;
+  title: string;
+  description: string;
+  source_image_urls: string[];
+  carousel_images: string[];
+  main_image: string;
+  detail_images: string[];
+  core_fields: PreviewCoreFields;
+  overrides: PreviewOverrides;
+};
+
+export type PreviewResponse = {
+  task_id: number;
+  task: {
+    id: number;
+    title: string;
+    status: string;
+    total_count: number;
+    success_count: number;
+    failed_count: number;
+    skipped_count: number;
+  };
+  item_count: number;
+  items: PreviewItem[];
+};
+
+export type PreviewExportResponse = {
+  task_id: number;
+  file: string;
+  row_count: number;
+  product_count: number;
+  download: string;
+};
 
 export interface TaskArtifact {
   artifact_id: string;

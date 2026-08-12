@@ -196,7 +196,7 @@ class ProductImageProcessor:
         Splitting happens locally so it does not consume four extra image API calls.
 
         对齐原项目 native_product_engine._split_4grid_to_jpegs / _square_image_to_jpeg_bytes：
-        每格 trim 5% 边距后缩放到 DXM_IMAGE_TARGET_SIZE(800×800)，汇总图居中裁方后缩放到 800×800。
+        每格仅 trim 1% 边距后缩放到 DXM_IMAGE_TARGET_SIZE(800×800)，汇总图居中裁方后缩放到 800×800。
         """
         try:
             from PIL import Image  # type: ignore
@@ -207,13 +207,15 @@ class ProductImageProcessor:
             width, height = source.size
             if width < 2 or height < 2:
                 raise ValueError("image is too small")
-            x_mid, y_mid = width // 2, height // 2
+            # 模型生成的分隔线可能不在正中间：先检测真实分隔线位置再切分，
+            # 避免拆出的单格一边残留分隔线、另一边切掉内容（"边缘没处理好"）。
+            x_split, y_split = _detect_split_guides(source)
             # 四象限：左上 → 右上 → 左下 → 右下（对齐原项目拆图顺序）
             boxes = (
-                (0, 0, x_mid, y_mid),
-                (x_mid, 0, width, y_mid),
-                (0, y_mid, x_mid, height),
-                (x_mid, y_mid, width, height),
+                (0, 0, x_split, y_split),
+                (x_split, 0, width, y_split),
+                (0, y_split, x_split, height),
+                (x_split, y_split, width, height),
             )
             panels = [source.crop(box) for box in boxes]
         except Exception as exc:
@@ -222,7 +224,7 @@ class ProductImageProcessor:
         target_size = DXM_IMAGE_TARGET_SIZE
         result: list[GeneratedMedia] = []
         for index, panel in enumerate(panels, start=1):
-            # 对齐原项目 _trim_grid_panel_margin：裁掉 5% 边距再缩放到 800×800
+            # 裁掉极窄边距去除分隔线残留；不要裁 5%，长条产品和标题区容易被切掉。
             trimmed = _trim_panel_margin(panel)
             resized = trimmed.resize((target_size, target_size), Image.Resampling.LANCZOS)
             content = _image_to_jpeg_bytes(resized)
@@ -328,6 +330,7 @@ class ProductImageProcessor:
                 if single:
                     models = [single]
             reference_model = str(section.get("reference_model") or "").strip()
+            image_size = _normalized_image_size(section.get("image_size"))
             for model in models:
                 providers.append(
                     {
@@ -336,6 +339,7 @@ class ProductImageProcessor:
                         "api_key": api_key,
                         "model": model,
                         "reference_model": reference_model or model,
+                        "image_size": image_size,
                     }
                 )
         return providers
@@ -421,7 +425,7 @@ class ProductImageProcessor:
                 "model": provider["reference_model"] or provider["model"],
                 "prompt": prompt,
                 "n": "1",
-                "size": "1024x1024",
+                "size": _normalized_image_size(provider.get("image_size")),
             },
             files=files,
             timeout=120,
@@ -463,13 +467,82 @@ def _safe_error(error: BaseException) -> str:
     return message[:180] or error.__class__.__name__
 
 
+def _normalized_image_size(value: Any) -> str:
+    """Return a provider-safe square image size; product grids default to 2K for readable split panels."""
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1024x1024", "2048x2048", "4096x4096"}:
+        return normalized
+    return "2048x2048"
+
+
 def _trim_panel_margin(image: Any) -> Any:
-    """裁掉四宫格单格 5% 边距（对齐原项目 _trim_grid_panel_margin）。"""
-    margin_w = int(image.size[0] * 0.05)
-    margin_h = int(image.size[1] * 0.05)
+    """裁掉四宫格单格极窄边距，去分隔线但尽量保留产品和文案安全区。"""
+    margin_w = int(image.size[0] * 0.01)
+    margin_h = int(image.size[1] * 0.01)
     if margin_w > 0 and margin_h > 0 and image.size[0] > margin_w * 2 and image.size[1] > margin_h * 2:
         return image.crop((margin_w, margin_h, image.size[0] - margin_w, image.size[1] - margin_h))
     return image
+
+
+def _detect_split_guides(source: Any) -> tuple[int, int]:
+    """检测四宫格中间横/竖分隔线的实际位置。
+
+    模型生成的四宫格分隔线常偏移正中几个像素；直接用 width//2 切分会在单格
+    边缘残留分隔线（或把邻格内容切进来）。这里在缩略图上找中间 30% 区域内
+    的分隔线：分隔线具备两个特征——内部灰度均匀 + 与两侧内容亮度差异明显。
+    只有两个特征同时满足才采用检测位置，否则回退正中间（不引入切坏风险）。
+
+    返回 (x_split, y_split) 原图像素坐标。
+    """
+
+    def _detect_axis(source: Any, size: int, length: int) -> int:
+        try:
+            import array as _array
+
+            data = _array.array("B", source.tobytes())
+        except Exception:
+            return length // 2
+        lo, hi = int(size * 0.35), int(size * 0.65)
+        step = 6  # 缩略图上的相邻采样间距（约合原图 2%-6%）
+        best_x, best_score = length // 2, None
+        for x in range(lo, hi):
+            left, right = max(lo, x - step), min(hi - 1, x + step)
+            lo_val, hi_val, mean = None, None, 0
+            for index in range(size):
+                value = data[index * size + x]
+                lo_val = value if lo_val is None or value < lo_val else lo_val
+                hi_val = value if hi_val is None or value > hi_val else hi_val
+                mean += value
+            mean /= size
+            left_mean = sum(data[index * size + left] for index in range(size)) / size
+            right_mean = sum(data[index * size + right] for index in range(size)) / size
+            uniformity = hi_val - lo_val
+            side_diff = max(abs(mean - left_mean), abs(mean - right_mean))
+            # 分隔线：内部均匀（uniformity 小）且两侧差异大（side_diff 大）
+            score = uniformity - side_diff * 2
+            if best_score is None or score < best_score:
+                best_score, best_x = score, x
+        # 强证据判定：内部足够均匀 + 两侧差异显著，否则视为无法可靠检测
+        if best_score is not None and best_score < -15:
+            return best_x * length // size
+        return length // 2
+
+    try:
+        from PIL import Image as _Image
+
+        width, height = source.size
+        thumb = source.convert("L").resize((256, 256), _Image.Resampling.LANCZOS)
+    except Exception:
+        return source.size[0] // 2, source.size[1] // 2
+
+    x_split = _detect_axis(thumb, 256, width)
+    y_split = _detect_axis(thumb.transpose(_Image.Transpose.ROTATE_90), 256, height)
+    # 防误判保护：与正中间偏移超过 8% 时回退正中间
+    if abs(x_split - width // 2) > width * 0.08:
+        x_split = width // 2
+    if abs(y_split - height // 2) > height * 0.08:
+        y_split = height // 2
+    return x_split, y_split
 
 
 def _center_crop_to_square(image: Any) -> Any:

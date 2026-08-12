@@ -178,10 +178,21 @@ def _dxm_export_rows(row: dict[str, Any]) -> list[list[Any]]:
 
 
 def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) -> list[Any]:
-    optimized_title = str(row.get("optimized_title") or "").strip()
-    description = str(row.get("description") or "").strip()
+    # 预检覆盖（precheck 页保存的标题/描述/图片/核心字段，用户可改可不改，默认保留生成结果）
+    preview_overrides = row.get("preview_overrides") or {}
+    if not isinstance(preview_overrides, dict):
+        preview_overrides = {}
+    core_fields = preview_overrides.get("core_fields") or {}
+    if not isinstance(core_fields, dict):
+        core_fields = {}
+    override_carousel = _http_urls(preview_overrides.get("carousel_images"))
+    override_main = str(preview_overrides.get("main_image") or "").strip()
+    override_detail = _http_urls(preview_overrides.get("detail_images"))
+
+    optimized_title = str(preview_overrides.get("title") or row.get("optimized_title") or "").strip()
+    description = str(preview_overrides.get("description") or row.get("description") or "").strip()
     skc = str(row.get("skc") or "").strip()
-    sku = str(row.get("sku") or skc).strip()
+    sku = str(core_fields.get("sku") or row.get("sku") or skc).strip()
     main_image_url = str(row.get("image_url") or "").strip()
     source_url = str(row.get("source_url") or "").strip()
     source_image_urls = row.get("source_image_urls") or []
@@ -189,8 +200,8 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     source_attributes = row.get("source_attributes") or []
     cost = row.get("cost")
     category = str(row.get("category") or "").strip()
-    category_path = str(row.get("category_path") or category).strip()
-    category_id = str(row.get("category_id") or "").strip()
+    category_path = str(core_fields.get("category_path") or row.get("category_path") or category).strip()
+    category_id = str(core_fields.get("category_id") or row.get("category_id") or "").strip()
 
     # 变种属性值翻译表（来源中文值 → 目标语言显示名，由 service 的 AI 翻译步骤生成）
     value_translations = row.get("variant_value_translations") or {}
@@ -255,11 +266,16 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
 
     # 四宫格落位（对齐交接文档 §11.3）：预览图/素材图=第1张分图；轮播图=4张分图+完整四宫格总览（总览放最后）。
     # 生成图为本地路径（未上传 COS）时店小秘无法访问，仅 http(s) 生成图才可用，否则回退来源 http 图片。
+    # 预检覆盖优先：用户改过标题/图片后以覆盖值为准，未改则走原生成/回退逻辑。
     generated_carousel = row.get("carousel_image_paths") or []
     grid_summary_path = str(row.get("grid_image_summary_path") or "").strip()
     detail_image_paths = row.get("detail_image_paths") or []
     generated_images = _http_urls(list(generated_carousel) + [grid_summary_path])
-    if generated_images:
+    if override_carousel:
+        carousel = "\n".join(override_carousel)
+        main_image = override_main if _is_http_url(override_main) else override_carousel[0]
+        material_images = main_image
+    elif generated_images:
         carousel = "\n".join(generated_images)
         main_image = generated_images[0]
         material_images = generated_images[0]
@@ -272,7 +288,8 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
             material_images = main_image
 
     # 详情图以 HTML 追加到产品描述（交接文档 §10/§12）；仅追加可外部访问的 http(s) 地址
-    detail_html = "".join(f'<img src="{value}" />' for value in _http_urls(detail_image_paths))
+    detail_sources = override_detail or _http_urls(detail_image_paths)
+    detail_html = "".join(f'<img src="{value}" />' for value in detail_sources)
     if detail_html:
         description = f"{description}\n{detail_html}".strip()
 
@@ -280,10 +297,10 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     dimensions = row.get("product_dimensions") or {}
     if not isinstance(dimensions, dict):
         dimensions = {}
-    length = _export_number(dimensions.get("length_cm"))
-    width = _export_number(dimensions.get("width_cm"))
-    height = _export_number(dimensions.get("height_cm"))
-    weight = _export_number(dimensions.get("weight_g"))
+    length = _export_number(core_fields.get("length_cm") if "length_cm" in core_fields else dimensions.get("length_cm"))
+    width = _export_number(core_fields.get("width_cm") if "width_cm" in core_fields else dimensions.get("width_cm"))
+    height = _export_number(core_fields.get("height_cm") if "height_cm" in core_fields else dimensions.get("height_cm"))
+    weight = _export_number(core_fields.get("weight_g") if "weight_g" in core_fields else dimensions.get("weight_g"))
     package_shape, package_type = _package_export_values(dimensions)
 
     # 店小秘体积重校验兜底：变种属性里的尺寸（如 30*20*10cm，店小秘以此算体积重）
@@ -319,18 +336,22 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
                 height = _export_number(parsed_lwh[2])
                 break
 
-    # 建议售价（对齐原型 _build_dxm_row）：变种建议售价 → 行建议售价 → 来源成本
+    # 建议售价（对齐原型 _build_dxm_row）：变种建议售价 → 行建议售价 → 来源成本；预检核心字段覆盖优先
     suggested_price = variant.get("suggested_price") if variant else None
     if suggested_price in (None, ""):
         suggested_price = row.get("suggested_price")
     if suggested_price in (None, ""):
         suggested_price = cost
+    if core_fields.get("suggested_price") not in (None, ""):
+        suggested_price = core_fields.get("suggested_price")
 
     # 申报价格（对齐原型 _declared_price_for）：
     # 显式申报价 → max(价, 150)；否则 建议售价×4，下限 150；无任何价据 → 150
     declared_price_value = variant.get("declared_price") if variant else None
     if declared_price_value in (None, ""):
         declared_price_value = row.get("declared_price")
+    if core_fields.get("declared_price") not in (None, ""):
+        declared_price_value = core_fields.get("declared_price")
     parsed_declared = _parse_money(declared_price_value)
     if parsed_declared is not None:
         declared_price_value = max(parsed_declared, DECLARED_PRICE_MIN_CNY)
@@ -342,6 +363,8 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     stock = _normalize_stock(variant.get("stock") if variant else None)
     if stock <= 0:
         stock = _normalize_stock(row.get("stock"))
+    if core_fields.get("stock") not in (None, ""):
+        stock = _normalize_stock(core_fields.get("stock"))
 
     return [
         optimized_title,

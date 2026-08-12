@@ -23,6 +23,7 @@ from .schemas import (
     DraftDeleteRequest,
     DraftProcessRequest,
     DraftUpdateRequest,
+    PreviewSaveRequest,
     PromptUpdateRequest,
     RetryTaskRequest,
     extras,
@@ -338,6 +339,57 @@ def create_product_processing_router(
             summary_only=True,
             workspace_id=_workspace(workspace_id),
         )
+
+    # ---- 预检环节（生成表格 → 预检 → 导出最终版 → 导入店小秘）----
+    @router.get("/tasks/{task_id}/preview")
+    def task_preview(
+        task_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(service.task_preview, task_id, workspace_id=_workspace(workspace_id))
+
+    @router.patch("/tasks/{task_id}/preview")
+    def save_preview(
+        task_id: int,
+        body: PreviewSaveRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.save_task_preview,
+            task_id,
+            [item.model_dump() for item in body.items],
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.post("/tasks/{task_id}/preview/images")
+    async def upload_preview_image(
+        task_id: int,
+        request: Request,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        form, file = await _upload_form(request, "image_file")
+        try:
+            draft_id = int(str(form.get("draft_id") or 0) or 0)
+            if draft_id <= 0:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_id is required")
+            return _call(
+                service.upload_preview_image,
+                task_id,
+                draft_id,
+                await file.read(),
+                _filename(file, "preview-image.jpg"),
+                str(getattr(file, "content_type", "") or ""),
+                workspace_id=_workspace(workspace_id),
+            )
+        finally:
+            await file.close()
+
+    @router.post("/tasks/{task_id}/preview/export")
+    def export_preview(
+        task_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(service.export_final_workbook, task_id, workspace_id=_workspace(workspace_id))
 
     @router.post("/tasks/{task_id}/pause")
     def pause_task(

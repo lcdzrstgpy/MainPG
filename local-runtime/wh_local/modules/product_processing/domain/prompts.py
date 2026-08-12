@@ -11,20 +11,35 @@ import re
 from typing import Any
 
 
-TITLE_PROMPT = """You are a TEMU cross-border e-commerce product-title translator and summarizer. Rewrite the source title into a faithful, concise listing title for US and European shoppers.
+TITLE_PROMPT = """You are a TEMU US-station operator with 10 years of experience. Based on the product image I provide, generate ONE English title suitable for Temu US listings.
 
-STRICT RULES:
-1. Full English only, no Chinese characters.
+CORE MISSION (fixed):
+- Build a stable Temu US listing title for HIGH sales volume + HIGH average order value + LOW after-sales.
+- Match US buyer search habits: naturally include real high-traffic, high-conversion search terms that fit the actual product.
+- English title length: around 180 English letters (hard range 160-200). Never exceed 200 letters. Do not pad with filler words.
+- Write from the ACTUAL PRODUCT shown in the image: base the title on the image-derived product understanding below plus verified source facts. This is NOT a literal translation task.
+
+STRICT RULES (fixed):
+1. Full English only, no Chinese characters, no English-Chinese mixing.
 2. The title must identify the exact product being sold. Product identity accuracy is more important than length or SEO breadth.
-3. Ideal length is 60-130 characters; allow up to 160 only when the source has enough real evidence. Hard maximum 180 characters.
-4. Use only title-safe evidence: source product identity, selected SKU/variant facts, verified material evidence, real quantity/model/size facts, and category product nouns that do not conflict with the source title.
-5. Do not use import-only category attributes, fallback values, placeholders, or missing-value labels in the title. Forbidden placeholder examples: Not Applicable, Does Not Apply, N/A, None, Other, Unknown, Default.
-6. Match US/EU shopping habits: clear, specific, easy to scan, not mechanical keyword stuffing.
-7. Do not invent material, certification, function, compatibility, quantity, size, scene, target audience, or claims.
-8. Remove brand, store, manufacturer, supplier, platform, channel, wholesale, hot-sale, in-stock, dropshipping, labeling, and advertising words unless they are the product type itself.
-9. Do not use exaggerated, absolute, comparative, country, region, brand, trademark, IP, or misleading words. Forbidden examples include: best, perfect, guaranteed, medical, certified, official, luxury, premium, FDA, CE, wholesale, free shipping, discount, TEMU, Amazon, eBay, Walmart, Etsy, AliExpress, 1688.
-10. Avoid qualification-sensitive words, especially medical, health care, therapy, treatment, pain relief, skin care, skincare, nursing, baby, infant, toddler, children, and kids.
+3. Write ONE natural long listing title, not a comma-stuffed keyword list. Use this rhythm: main product name + key visible style/material/structure + main function or set contents + practical use scenes. It should read like a Temu US operator wrote it, not like raw SEO tags.
+4. FORBIDDEN CONTENT (zero tolerance): brand names, trademarks, IP/infringing words, logos, manufacturer/supplier/store names, marketplace names (TEMU, Amazon, eBay, Walmart, Etsy, AliExpress, 1688), and any country or region words.
+5. FORBIDDEN VIOLATION WORDS (zero tolerance): violence, discrimination, medical/health-care/therapy/treatment/pain-relief/skin-care/nursing/baby/infant/toddler/children/kids claims, FDA, CE, exaggerated efficacy or absolute claims (best, perfect, guaranteed, certified, official, luxury, premium), free shipping, discount, or any misleading word that could trigger platform review, permission restrictions, or listing-risk controls.
+6. Use only title-safe evidence: the image-derived product understanding, source product identity, selected SKU/variant facts, verified material evidence, real quantity/model/size facts, and category product nouns that do not conflict with the source title.
+7. Do not use import-only category attributes, fallback values, placeholders, or missing-value labels (Not Applicable, Does Not Apply, N/A, None, Other, Unknown, Default).
+8. Do not invent material, certification, function, compatibility, quantity, size, scene, target audience, or claims.
+9. Sensitive but legally salable products must use neutral wording; never change the real product identity just to bypass rules.
+10. Write like a 10-year US operator: fluent, natural, buyer-search-friendly tone; keywords must read naturally, never mechanically stuffed.
+11. When the image-derived product understanding is provided, it is the authoritative visual evidence of the exact product being sold — write the title primarily from it. The source title is supporting evidence only: do not translate it word-for-word, and do not repeat any marketplace noise, promotional words, or shop names from it.
 
+STYLE EXAMPLES (follow the structure, not the exact product facts):
+- Good: Kids Color Block Hooded Ski Jacket and Snow Pants Set, Zip Front Long Sleeve Winter Outdoor Snow Play Outfit, Two Piece Cold Weather Sportswear for Boys and Girls
+- Good: Handheld Steam Iron Garment Steamer, 1000W Dry Wet Dual Use, Non Stick Soleplate, Multi Mode Portable Clothes Iron for Home Fabric Care
+- Bad: Corrugated Shipping Boxes, Brown Kraft Cardboard Cartons, Rectangular Packaging Boxes, Multiple Sizes for Packing, Moving, Storage and Delivery
+- Better for that product type: Brown Corrugated Cardboard Shipping Boxes for Packing, Moving and Storage, Rectangular Kraft Mailer Cartons, Multiple Size Packaging Box Set
+- Avoid repeating the same noun in a row (Boxes, Cartons, Boxes). Use one strong product noun first, then attributes and use scenes.
+
+Image-derived product understanding (from the source main image): {image_derived_title}
 Source title: {title}
 Product category: {category}
 Category path: {category_path}
@@ -46,8 +61,9 @@ STRICT RULES:
 4. Natural fluent English for US consumers. Total 80-150 English words, max 500 characters.
 5. Avoid generic claims, exaggerated words, brands, trademarks, country names, marketplace/platform names, and superlatives.
 6. Do not state a material unless verified material evidence explicitly supplies it.
-7. Use only facts supported by the source title, category, and attributes. Do not invent features.
+7. Use only facts supported by the image-derived product understanding, the source title, category, and attributes. Do not invent features. This is NOT a translation task — never translate the source title or description literally.
 
+Image-derived product understanding (from the source main image): {image_derived_title}
 Product title: {title}
 Product category: {category}
 Category path: {category_path}
@@ -58,20 +74,33 @@ Verified material evidence for description: {verified_material_evidence}
 Output the 5 bullet points directly, one bullet per line, no explanation."""
 
 
-COMBINED_TEXT_PROMPT = """You are a TEMU cross-border e-commerce product title and description editor. Analyze the source title, category, and attributes, then produce a faithful optimized title and a concise description.
+COMBINED_TEXT_PROMPT = """You are a TEMU US-station operator with 10 years of experience. Based on the product image evidence, source title, category, and attributes, produce a faithful optimized title and a concise description for Temu US shoppers.
+
+CORE MISSION (fixed - title):
+- Build a stable Temu US listing title for HIGH sales volume + HIGH average order value + LOW after-sales.
+- Match US buyer search habits: naturally include real high-traffic, high-conversion search terms that fit the actual product.
+- English title length: around 180 English letters (hard range 160-200). Never exceed 200 letters. Do not pad with filler words.
+- Write from the ACTUAL PRODUCT shown in the image: base the title on the image-derived product understanding below plus verified source facts. This is NOT a literal translation task.
 
 TITLE STRICT RULES:
-1. Full English only, no Chinese characters.
+1. Full English only, no Chinese characters, no English-Chinese mixing.
 2. The title must identify the exact product being sold. Product identity accuracy is more important than length or SEO breadth.
-3. Ideal length is 60-130 characters; allow up to 160 only when the source has enough real evidence. Hard maximum 180 characters.
-4. Use only title-safe evidence: source product identity, selected SKU/variant facts, verified material evidence, real quantity/model/size facts, and category product nouns that do not conflict with the source title.
-5. Do not use import-only category attributes, fallback values, placeholders, or missing-value labels in the title. Forbidden placeholder examples: Not Applicable, Does Not Apply, N/A, None, Other, Unknown, Default.
-6. Match US/EU shopping habits: clear, specific, easy to scan, not mechanical keyword stuffing.
-7. Do not invent material, certification, function, compatibility, quantity, size, scene, target audience, or claims.
-8. Remove brand, store, manufacturer, supplier, platform, channel, wholesale, hot-sale, in-stock, dropshipping, labeling, and advertising words unless they are the product type itself.
-9. Do not use exaggerated, absolute, comparative, country, region, brand, trademark, IP, or misleading words. Forbidden examples include: best, perfect, guaranteed, medical, certified, official, luxury, premium, FDA, CE, wholesale, free shipping, discount, TEMU, Amazon, eBay, Walmart, Etsy, AliExpress, 1688.
-10. Avoid qualification-sensitive words, especially medical, health care, therapy, treatment, pain relief, skin care, skincare, nursing, baby, infant, toddler, children, and kids.
-11. Sensitive but legally salable products must use neutral wording; never change the real product identity just to bypass rules.
+3. Write ONE natural long listing title, not a comma-stuffed keyword list. Use this rhythm: main product name + key visible style/material/structure + main function or set contents + practical use scenes. It should read like a Temu US operator wrote it, not like raw SEO tags.
+4. FORBIDDEN CONTENT (zero tolerance): brand names, trademarks, IP/infringing words, logos, manufacturer/supplier/store names, marketplace names (TEMU, Amazon, eBay, Walmart, Etsy, AliExpress, 1688), and any country or region words.
+5. FORBIDDEN VIOLATION WORDS (zero tolerance): violence, discrimination, medical/health-care/therapy/treatment/pain-relief/skin-care/nursing/baby/infant/toddler/children/kids claims, FDA, CE, exaggerated efficacy or absolute claims (best, perfect, guaranteed, certified, official, luxury, premium), free shipping, discount, or any misleading word that could trigger platform review, permission restrictions, or listing-risk controls.
+6. Use only title-safe evidence: the image-derived product understanding, source product identity, selected SKU/variant facts, verified material evidence, real quantity/model/size facts, and category product nouns that do not conflict with the source title.
+7. Do not use import-only category attributes, fallback values, placeholders, or missing-value labels (Not Applicable, Does Not Apply, N/A, None, Other, Unknown, Default).
+8. Do not invent material, certification, function, compatibility, quantity, size, scene, target audience, or claims.
+9. Sensitive but legally salable products must use neutral wording; never change the real product identity just to bypass rules.
+10. Write like a 10-year US operator: fluent, natural, buyer-search-friendly tone; keywords must read naturally, never mechanically stuffed.
+11. When the image-derived product understanding is provided, it is the authoritative visual evidence of the exact product being sold — write the title primarily from it. The source title is supporting evidence only: do not translate it word-for-word, and do not repeat any marketplace noise, promotional words, or shop names from it.
+
+TITLE STYLE EXAMPLES (follow the structure, not the exact product facts):
+- Good: Kids Color Block Hooded Ski Jacket and Snow Pants Set, Zip Front Long Sleeve Winter Outdoor Snow Play Outfit, Two Piece Cold Weather Sportswear for Boys and Girls
+- Good: Handheld Steam Iron Garment Steamer, 1000W Dry Wet Dual Use, Non Stick Soleplate, Multi Mode Portable Clothes Iron for Home Fabric Care
+- Bad: Corrugated Shipping Boxes, Brown Kraft Cardboard Cartons, Rectangular Packaging Boxes, Multiple Sizes for Packing, Moving, Storage and Delivery
+- Better for that product type: Brown Corrugated Cardboard Shipping Boxes for Packing, Moving and Storage, Rectangular Kraft Mailer Cartons, Multiple Size Packaging Box Set
+- Avoid repeating the same noun in a row (Boxes, Cartons, Boxes). Use one strong product noun first, then attributes and use scenes.
 
 DESCRIPTION STRICT RULES:
 1. Output exactly 5 bullet points (Amazon-style five key points). Each point starts with a 2-5 word ALL-CAPS key phrase, then ": " or " - ", then one fluent sentence.
@@ -79,8 +108,9 @@ DESCRIPTION STRICT RULES:
 3. Natural fluent English for US consumers. Total 80-150 English words, max 500 characters.
 4. Avoid generic claims, exaggerated words, brands, trademarks, country names, marketplace/platform names, and superlatives.
 5. Do not state a material unless verified material evidence explicitly supplies it.
-6. Use only facts supported by the source title, category, and attributes. Do not invent features.
+6. Use only facts supported by the image-derived product understanding, the source title, category, and attributes. Do not invent features.
 
+Image-derived product understanding (from the source main image): {image_derived_title}
 Source title: {title}
 Product category: {category}
 Category path: {category_path}
@@ -105,31 +135,95 @@ Return ONLY a JSON object with exactly three keys, no explanation:
 {{"optimized_title": "...", "description": "...", "variant_translations": [{{"raw_value": "exact raw value", "export_value": "translated value"}}]}}"""
 
 
-GRID_IMAGE_PROMPT = """Use the reference image as the non-negotiable source of truth. The product itself must stay the same: same product type, shape, color, material, pattern, quantity, proportions, structure, and visible details. Do not redesign, recolor, simplify, upgrade, replace, or add features to the product.
+GRID_IMAGE_PROMPT = """Role & Core Mission (fixed):
+You are a senior e-commerce visual designer serving TEMU, TikTok Shop, and Amazon US listings. Treat the uploaded reference image(s) as the ONLY source of truth for the SKU. The task is to rebuild a high-click, high-quality, high-conversion commercial visual system WITHOUT changing the product itself (the product body must stay 100% unchanged).
 
-Create one square exact four-panel 2x2 e-commerce grid for: {title}
-Category path: {category_path}
-Value evidence from source: {value_evidence}
+Execution Priority (fixed): SKU accuracy > structure/pattern accuracy > material/color accuracy > commercial composition > background creativity > English selling copy > visual polish.
+
+Product Integrity Constraints (fixed - safety red line):
+- Lock before generating: product silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, text, and digits. Never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure. Do not guess details the reference cannot confirm.
+- Allowed: redesign placement, camera angle, composition, background, lighting, and scene. The product body must never change.
+
+Variable Inputs (batch template - fill per SKU):
+[SKU Category]   : {category_path}
+[Product Name]   : {title}
+[Key Features]   : {value_evidence}
+[Scene Scenario] : {scene_plan}
+[Color Palette]  : {visual_style} / {background_plan}
 Verified material for visible copy: {verified_material_evidence}
 
-Visual formula:
-Product: {product_visual_identity}
-Style: {visual_style}
-Lighting: {lighting_plan}
-Material: {material_plan}
-Background: {background_plan}
-Composition: {composition_plan}
+Global Visual Rules (fixed):
+- Follow the provided quality benchmark: dark or editorial premium scene when suitable, product placed large but never cramped, controlled glow, clear transparent/material edge highlights, polished surface reflections, readable elegant typography, and enough breathing room around the product.
+- Safe composition: effective content covers 72%-88% of each panel; keep 8%-12% inner safe margin on all sides and around the center divider. Avoid large empty areas, but never crop, clip, or let product/text touch panel edges (except a dimension panel may use more whitespace).
+- Differentiated backgrounds: no monotonous cream-white / light-gray / plain white stone. Match the background style to [SKU Category] (walnut wood, micro-cement, editorial, coastal, garden party, glass reflections, etc.) but never compete with the product for the visual center.
+- Brand consistency: keep one cohesive brand tone across the set, but no two panels may look like the same template with a swapped background.
+- English copy rules: only write real confirmable attributes; no exaggeration (no Best, No.1, Perfect, etc.); copy area <= 20% of the panel.
+- Forbidden: Chinese text, brand names, logos, watermarks, infringing elements, AI gibberish, or malformed hands.
 
-Category-specific scene plan:
-{scene_plan}
+Premium feel & material polish (fixed - make every panel look expensive and well-finished):
+- Light is the star: use directional side light or soft window light so the material shows natural luster, subtle highlights, layered shadows and craft detail; never flat, harsh or plasticky lighting.
+- Texture first: deliberately show surface grain, weave, stitching, metal finish, glass refraction, edge polish, transparent thickness, enamel shine, leather pores, ceramic glaze, or wood grain whenever those details are visible in the reference.
+- Gloss & highlight control: add realistic specular highlights, rim light on edges, contact shadows, soft reflections and micro-contrast so the product looks tactile and premium; avoid muddy shadows, dull surfaces, overexposed whites, flat screenshots, plastic-looking renders, or waxy AI texture.
+- Lens & depth realism: use premium product-photography optics (natural perspective, crisp focal product, gentle depth of field only in background/props); the product itself must stay sharp and readable.
+- Tone control: keep one cohesive low-saturation premium palette per set; colors must feel curated, not clashing or garish.
+- Refined props: any prop must look intentional and high-end (real wood, stone, linen, brass, glass, ceramics); no cheap plastic-looking staging.
 
-Video-ready four-panel material plan:
-{video_shot_plan}
+Text & typography rules (fixed - font color, size and placement must be pixel-perfect):
+- Font color must have clear, comfortable contrast against its background and must not clash with the product; prefer elegant tones (deep charcoal, warm off-white, muted gold) and avoid neon or saturated colors.
+- Use one clean, modern typeface per panel; no shadows, outlines, glows, misaligned or overflowing letters; no text overlapping the product body.
+- Keep text small-to-medium, neatly placed in open corner space (never covering key product parts); consistent baseline and spacing; sharp, legible, professionally kerned.
+- Text must be generated as high-resolution vector-like typography, crisp edges, no blur, no ghosting, no JPEG-like softness, no oversized headline cut off by the local split.
+- Every letter must be spelled correctly in English; zero typos, zero gibberish, zero leftover Chinese characters.
 
-Each panel must work both as a standalone marketplace carousel image and as a clean short-video frame.
-Keep an exact four-panel 2x2 grid with clean straight dividers. Do not change the four-grid structure, divider layout, or split logic.
-Official authenticity rules: the sellable product must be complete, sharp, prominent, and unobstructed in every panel. Do not show only a packaging bag unless the product being sold is packaging bags. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
-Strict rules: Differentiate only through style, lighting, background, scene, and composition. Each quadrant must be a different composition/angle/scene; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. No added text overlays, labels, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design. Text rule: any visible text in the generated image must be English only. If the source product or packaging shows Chinese characters or other non-English text, replace it with the equivalent English text or remove it entirely; never reproduce Chinese characters or other non-English text in the generated panels. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
+One square exact four-panel 2x2 e-commerce grid with clean straight dividers, generated for: {title}
+
+Output contract (fixed - preserve existing backend logic):
+- Generate ONE single square image only: a 2x2 four-panel grid. Do NOT generate separate images, do NOT output a carousel, do NOT output a collage with more or fewer panels.
+- This one generated grid image will be split by backend code after generation, so the four equal panels and straight center dividers are mandatory.
+- Important: the single square image is only a transport container. It must look like FOUR fully independent finished listing images placed in a 2x2 layout, not one continuous poster chopped into four pieces.
+
+Grid construction rules (fixed - clean edges after splitting):
+- The horizontal and vertical divider lines must be EXACTLY at the center (50%/50%) of the image, pixel-straight, uniform width (no wider than 1.5% of the image), and one clean uniform color (pure white or very light neutral).
+- All four panels must be exactly equal in size; no content may cross or touch the divider lines.
+- Each panel must work independently when the grid is cut: its own clear subject, its own background, its own lighting, no dangling props, no cropped typography, and no half-composed elements at the panel edges.
+- Keep all product parts, text blocks, callouts, and important props at least 8% away from the panel border and divider; long products must be angled or scaled down enough to stay fully inside the panel.
+- Absolutely forbidden: any global headline, banner, background shape, product, box, prop, shadow, table, frame, or sentence that continues across two or more panels. No half words at panel edges. No shared poster title outside an individual panel.
+- No borders, no double lines, no rounded corners on the outer edge of the grid.
+
+Panel 1 - Hero Image (top-left):
+- Product occupies 75%-85%; 3/4 angle, close-up, staggered arrangement or partial stacking.
+- Place the product slightly off-center (golden-ratio point) so it breathes; keep the full product and every text line inside the safe area, never touching or clipping the panel edges.
+- Side-backlight or premium commercial photography light; emphasize material, structure, thickness, transparency, and edge details.
+- Background clearly different from the plain white template.
+- Copy (fixed format): one complete panel-local headline using "[Product Name]" plus 3-5 short selling points. Keep all copy inside this panel only; no oversized typography.
+
+Panel 2 - Editorial/Detail Image (top-right):
+- Must differ from Panel 1 in at least 3 of: background main color, surface material, angle, arrangement, props, lighting.
+- Style options: Editorial, Modern Classic, Organic Modern, Art Deco, Coastal, etc.
+- Product and effective content cover 65%-80%; the macro/close-up zone must be centered on the single most premium real detail (seam, metal edge, weave, grain).
+- Copy: 3-5 short English facts highlighting surface craft, texture, or visible features. Keep all copy inside this panel only; no giant headline.
+
+Panel 3 - Lifestyle Image (bottom-left):
+- Place the product in a real American home scene matching [SKU Category] (living room, sunroom, Game Night, Brunch, etc.).
+- May add realistic adult hands (must be natural, no deformities), cups, snacks, tablecloth, plants; the product must stay sharp and exactly the original SKU.
+- Lighting: natural window light, afternoon side light, or warm home lighting that wraps the product in soft highlights.
+- Copy: 1-3 short scene phrases (e.g. "Made for [Scene Scenario]"). Keep all copy inside this panel only; no cross-panel slogan.
+
+Panel 4 - Dimension/Extra Image (bottom-right):
+- If the SKU is the core product body itself and real dimensions are explicitly provided in the source evidence, render a professional dimension panel using ONLY those confirmed real measurements (never guess).
+- Otherwise render a fourth clearly different composition (top-down flat lay, extra macro detail, or alternate angle) that keeps brand consistency with the other three panels.
+
+Generate-then-self-check (fixed):
+- Confirm product quantity, silhouette, proportions, structure, color, material, transparency, texture, edges, and accessory count all match the reference.
+- If any SKU error is found, fix the product body first, then adjust background and polish.
+- Final goal: SKU-accurate, instantly recognizable, differentiated backgrounds, full premium composition, matching US consumer taste.
+
+Grid & splitting infrastructure (fixed - do not change):
+- Keep an exact four-panel 2x2 grid with clean straight dividers. Do not change the four-grid structure, divider layout, or split logic.
+- Each panel must be an independent standalone marketplace carousel image with its own complete mini-layout; never merge panels into one continuous scene and never share props, typography, subject, shadow, table surface, or background across panels.
+- Official authenticity rules: the sellable product must be complete, sharp, prominent, and unobstructed in every panel. Do not show only a packaging bag unless the product being sold is packaging bags. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
+- Strict rules: differentiate panels only through style, lighting, background, scene, and composition; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. Added text is allowed ONLY where a panel above explicitly requests short English copy; otherwise no text. No arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design.
+- Text rule: any visible text in the generated image must be English only. If the source product or packaging shows Chinese characters or other non-English text, replace it with the equivalent English text or remove it entirely; never reproduce Chinese characters or other non-English text in the generated panels. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
 
 
 DETAIL_IMAGE_PROMPT = """Use the reference image as the non-negotiable source of truth. Preserve the same product type, shape, color, material, pattern, quantity, proportions, structure, and visible details. Do not redesign or change the product itself.
@@ -210,16 +304,110 @@ JSON schema:
 {{"mappings":[{{"raw_value":"exact input raw value","export_value":"translated shopper-readable value","confidence":"high|medium|low"}}]}}"""
 
 
+GRID_IMAGE_PROMPT_B = """Role & Core Mission (fixed):
+You are a senior visual art director serving TEMU, TikTok Shop, and Amazon US listings. Build on the reference image's model logic but fully upgrade originality. First build a 【character persona + spatial story】 for the product, then shoot it; reject generic studio backgrounds. The final goal: the product looks like an independent designer piece that is hard to reverse-image-search for price comparison.
+
+Core Philosophy (fixed - anti-price-comparison core):
+Execution iron rule: 【anti-price-comparison / uniqueness > character & spatial storytelling > premium material feel > creative composition > product accuracy】. (Product accuracy is still the bottom line, but the visual packaging must be full of story.)
+
+Product Integrity Constraints (fixed - safety red line):
+Lock the reference image's silhouette, proportions, color, material, structure, thickness, and texture before generating. Never add, remove, replace, recolor, resize, stretch, or deform. Redesign the model pose, scene, lighting, props, and composition freely, but the product body must never change.
+
+Variable Inputs (batch template - fill per SKU):
+[SKU Category]     : {category_path}
+[Product Name]     : {title}
+[Key Features]     : {value_evidence}
+[Scene Scenario]   : {scene_plan}
+[Color Palette]    : {visual_style} / {background_plan}
+Verified material for visible copy: {verified_material_evidence}
+
+Self-invented story inputs (create internally per SKU, do not ask the user):
+- [Target Vibe]      : invent a precise mood for this SKU (e.g. quiet intellectual, lazy old-money, avant-garde art, minimalist zen luxury).
+- [Character Persona]: invent a believable persona whose life the scene reflects (e.g. independent curator, traveling writer, architect, gallery owner).
+- [Hero Scene]       : invent one distinctive narrative location (e.g. private art study, end of a light hallway, wabi-sabi living room, penthouse window).
+- [Styling Props]    : invent non-standard private props (e.g. collected art books, one-off ceramics, Belgian linen, natural mineral specimens).
+
+Global Visual Rules (fixed - anti-price-comparison / premium logic):
+- Scene uniqueness: no generic studio backgrounds. Always use the [Hero Scene]; the scene must be narrative and show traces of [Character Persona]'s life.
+- Premium props: props must be non-standard private objects (custom jewelry box, imported bouquet, designer objet, rare fabric) to strengthen an "hard to copy" private premium feel.
+- Composition & cropping: editorial magazine framing (magazine spread, artist portrait); crop "break the frame" - never show the full model, only advanced partial relationships between product and person.
+- Safe composition: keep the sellable product, model-product interaction, and any important prop fully inside each panel with 8%-12% inner safe margin; crop the model creatively if needed, but never crop or clip the product itself.
+- Material emphasis: light must define the product's texture, luster, layers, and craft details; use side light or window light to make the material look expensive.
+- Luxury luster: each panel must show one refined highlight - soft sheen on metal/leather, glass edge light, fabric nap, polished hardware, enamel glow, ceramic glaze, or wood grain catching the light; never flat plastic look; every surface must feel expensive and tactile.
+- Editorial realism: use believable camera optics, natural skin/hand anatomy, cinematic but clean color grading, gentle depth of field, and controlled shadows. Avoid waxy AI skin, generic catalog posing, distorted fingers, muddy low-contrast surfaces, over-smoothed product texture, or fake CGI shine.
+- Detail placement: the single most premium real detail of the SKU must be placed at a clear focal point (macro zone, golden-ratio spot); nothing dangles at the panel edges.
+- Forbidden (strict): no text, logo, brand name, watermark, or distortion in any panel. If any tiny text is unavoidable, it must be English, elegant, perfectly spelled, with clean contrast, and never cover the product.
+
+One square exact four-panel 2x2 e-commerce grid with clean straight dividers, generated for: {title}
+
+Output contract (fixed - preserve existing backend logic):
+- Generate ONE single square image only: a 2x2 four-panel grid. Do NOT generate four separate images, do NOT output a carousel, do NOT output a collage with more or fewer panels.
+- This one generated grid image will be split by backend code after generation, so the four equal panels and straight center dividers are mandatory.
+- Important: the single square image is only a transport container. It must look like FOUR fully independent finished listing/editorial images placed in a 2x2 layout, not one continuous poster chopped into four pieces.
+
+Grid construction rules (fixed - clean edges after splitting):
+- The horizontal and vertical divider lines must be EXACTLY at the center (50%/50%) of the image, pixel-straight, uniform width (no wider than 1.5% of the image), and one clean uniform color (pure white or very light neutral).
+- All four panels must be exactly equal in size; no content may cross or touch the divider lines.
+- Each panel must work independently when the grid is cut: its own clear subject, its own background, its own lighting, no dangling props or half-composed elements at the panel edges.
+- Keep the product at least 8% away from panel borders and dividers; long or thin products must be angled or scaled down enough to avoid any local split/crop loss.
+- Absolutely forbidden: any global headline, banner, background shape, product, model body, prop, shadow, table, frame, or sentence that continues across two or more panels. No half words at panel edges.
+- No borders, no double lines, no rounded corners on the outer edge of the grid.
+
+Panel 1 - Hero Shot (top-left): the best moment the persona wears/uses the SKU.
+- Framing: magazine-cover close-up or medium shot (only collarbone, wrist, side profile), emphasizing the relationship between product and person.
+- Scene & light: locked in the [Hero Scene]; natural window light, afternoon slanting sun, or moody wall lamp for a storytelling feel.
+- Narrative: the visual center stays on the product; ambient light and [Styling Props] must reinforce the [Target Vibe].
+
+Panel 2 - Detail Close-up (top-right): extreme macro of the material texture, luster, edge craft, hardware, or special structure.
+- May include model parts (fingertip touching, collar framing) or a premium fabric backdrop, but the product must occupy >= 80%.
+- Purpose: let buyers see "where the luxury is" and show details that are hard to copy.
+
+Panel 3 - Packaging & Unboxing (bottom-left): the product with its custom packaging, storage, and accessory aesthetics (jewelry box, dust bag, ribbon, care card).
+- Still-life composition (flat lay or 45-degree side angle), background echoing the [Hero Scene] palette, props from [Styling Props]; unboxing must feel ceremonial and premium.
+
+Panel 4 - Alternative Angle or Context (bottom-right): another angle of the product in the scene (back view, hanging, folded, or natural state in a corner).
+- Differentiation: may share the same scene as Panel 1 but must use a clearly different angle (person's POV top-down, or a voyeuristic view from outside the window/door), strengthening the editorial album feel.
+
+Generate-then-self-check (fixed):
+- Product integrity check: confirm the product body (proportions, color, structure) strictly matches the reference - no stretching or deformation.
+- Anti-price-comparison check: strong editorial-magazine feel? Clearly not a plain white-background or generic studio image?
+- Premium material check: are luster and texture fully defined by light, looking worth a higher verification price?
+- Violation check: reconfirm no text, logo, watermark, or AI distortion anywhere.
+
+Grid & splitting infrastructure (fixed - do not change):
+- Keep an exact four-panel 2x2 grid with clean straight dividers. Do not change the four-grid structure, divider layout, or split logic.
+- Each panel must be an independent standalone marketplace carousel image with its own complete mini-layout; never merge panels into one continuous scene and never share props, subject, shadow, table surface, model crop, or background across panels.
+- Official authenticity rules: the sellable product must be complete, sharp, prominent, and unobstructed in every panel. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
+- Strict rules: differentiate panels only through story, style, lighting, scene, and composition; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. No added text overlays, labels, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design.
+- Text rule: any visible text in the generated image must be English only. If the source product or packaging shows Chinese characters or other non-English text, replace it with the equivalent English text or remove it entirely; never reproduce Chinese characters or other non-English text in the generated panels. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
+
+
 DEFAULT_PROMPTS: dict[str, str] = {
     "title": TITLE_PROMPT,
     "desc": DESC_PROMPT,
     "size": SIZE_PROMPT,
     "grid_image": GRID_IMAGE_PROMPT,
+    "grid_image_b": GRID_IMAGE_PROMPT_B,
     "detail_image": DETAIL_IMAGE_PROMPT,
     "image_repair_chinese": IMAGE_REPAIR_CHINESE_PROMPT,
     "combined_text": COMBINED_TEXT_PROMPT,
     "variant_values": VARIANT_VALUE_TRANSLATION_PROMPT,
 }
+
+
+# 生图提示词模板注册表：处理设置里用户勾选 A/B，直观标题区分两套生图逻辑。
+IMAGE_TEMPLATES: list[dict[str, str]] = [
+    {
+        "id": "A",
+        "name": "标准商品海报",
+        "description": "Amazon 高级电商视觉：大主体主图 + 精品展示 + 生活方式场景，含英文卖点文案",
+    },
+    {
+        "id": "B",
+        "name": "高端模特视觉（防比价）",
+        "description": "人设+空间故事叙事、杂志编辑大片感，材质显贵、难以搜图比价，画面无文字",
+    },
+]
 
 
 class _PromptValues(dict):
@@ -250,13 +438,13 @@ def default_image_context(title: str, category: str, *, material_evidence: str =
             or "None. Do not state any material, fabric composition, wood, metal, rattan, plastic, silicone, or similar material term."
         ),
         "product_visual_identity": str(title or "").strip() or "the product in the reference image",
-        "visual_style": "clean, modern, realistic e-commerce marketplace style",
-        "lighting_plan": "bright, even, soft studio lighting with natural color accuracy",
-        "material_plan": "preserve the exact real material and surface texture of the product",
-        "background_plan": "clean, uncluttered background that does not distract from the product",
-        "composition_plan": "product centered, complete, sharp, and prominent; keep at least one panel showing the full product",
-        "scene_plan": "simple lifestyle scene suitable for this product category, using safe neutral props only",
-        "video_shot_plan": "four clearly distinct angles (front, side, detail, lifestyle) that each work as a video frame",
+        "visual_style": "premium realistic e-commerce editorial style, low-saturation curated palette, tactile commercial photography rather than plain studio catalog",
+        "lighting_plan": "directional soft window light or controlled commercial side light with rim highlights, natural shadows, soft reflections, and clear material luster",
+        "material_plan": "preserve the exact real material and surface texture of the product; emphasize visible edge polish, grain, weave, gloss, transparency, stitching, hardware, or surface finish without inventing material",
+        "background_plan": "category-matched premium scene surface such as walnut wood, micro-cement, linen, ceramic, glass reflection, editorial tabletop, or tasteful home setting; never plain white/gray template",
+        "composition_plan": "product complete, sharp, prominent, and premium-framed; use golden-ratio placement, realistic contact shadows, and at least one panel showing the full product",
+        "scene_plan": "high-end lifestyle scene suitable for this product category, using intentional real-world props such as wood, stone, linen, brass, glass, ceramics, plants, or home objects that do not obscure the SKU",
+        "video_shot_plan": "four clearly distinct premium frames (hero, macro detail, lifestyle scene, alternate angle or size/packaging proof) that each work as a standalone carousel image",
         "detail_plan": "one hero scene plus one close-up of the most visible real detail of the product",
     }
 

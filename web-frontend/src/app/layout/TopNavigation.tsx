@@ -12,6 +12,7 @@ export type WorkspaceTab = {
   directionId?: string;
   draftIds?: number[];
   processingOptions?: unknown;
+  taskId?: number;
 };
 
 type TopNavigationProps = {

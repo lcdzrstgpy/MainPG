@@ -24,6 +24,12 @@ const SCOPES: { key: string; label: string }[] = [
   { key: 'qualification', label: '资质' },
 ];
 
+// 生图提示词模板（对齐后端 IMAGE_TEMPLATES：A/B 直观标题区分两套生图逻辑）
+const IMAGE_TEMPLATES: { id: 'A' | 'B'; name: string; description: string }[] = [
+  { id: 'A', name: '标准商品海报', description: 'Amazon 高级电商视觉：大主体主图 + 精品展示 + 生活方式场景，含英文卖点文案' },
+  { id: 'B', name: '高端模特视觉（防比价）', description: '人设+空间故事叙事、杂志编辑大片感，材质显贵、难以搜图比价，画面无文字' },
+];
+
 const FAILURE_CLASS_LABELS: Record<string, string> = {
   technical_retryable: '技术失败可重试',
   configuration_blocked: '配置阻断',
@@ -49,6 +55,8 @@ const AI_CONFIG_HINT =
 type Props = {
   initialDraftIds?: number[];
   initialOptions?: ProductProcessingOptions;
+  /** 任务完成后打开预检页（生成表格 → 预检修改 → 导出最终版） */
+  onOpenPrecheck?: (taskId: number) => void;
 };
 
 function api(): ApiContext {
@@ -76,7 +84,7 @@ function formatDuration(seconds?: number): string {
   return `${secs}秒`;
 }
 
-export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: Props) {
+export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onOpenPrecheck }: Props) {
   const ctx = api();
   const [options, setOptions] = useState<ProductProcessingOptions>(
     initialOptions || {
@@ -89,6 +97,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
       skipDuplicates: false,
       ipCheck: true,
       maxParallelDrafts: 8,
+      imageTemplate: 'A',
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
@@ -189,6 +198,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
           skip_duplicates: options.skipDuplicates,
           ip_check: options.ipCheck,
           max_parallel_drafts: options.maxParallelDrafts,
+          image_template: options.imageTemplate || 'A',
         },
       });
       setBatch(data);
@@ -230,6 +240,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
           skip_duplicates: false,
           ip_check: options.ipCheck,
           max_parallel_drafts: options.maxParallelDrafts,
+          image_template: options.imageTemplate || 'A',
         },
       });
       setBatch(data);
@@ -314,6 +325,21 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
               <label className="verify-scope-check"><input type="checkbox" checked={options.skipDuplicates} onChange={(e) => setOptions((p) => ({ ...p, skipDuplicates: e.target.checked }))} />跳过已处理</label>
               <label className="verify-scope-check"><input type="checkbox" checked={options.ipCheck} onChange={(e) => setOptions((p) => ({ ...p, ipCheck: e.target.checked }))} />侵权词过滤</label>
             </div>
+            <div className="verify-form-row">
+              <span className="verify-scope-label">生图模板：</span>
+              {IMAGE_TEMPLATES.map((template) => (
+                <label key={template.id} className="verify-template-card" title={template.description}>
+                  <input
+                    type="radio"
+                    name="image-template"
+                    checked={(options.imageTemplate || 'A') === template.id}
+                    onChange={() => setOptions((p) => ({ ...p, imageTemplate: template.id }))}
+                  />
+                  <span className="verify-template-name">{template.name}</span>
+                  <span className="verify-template-desc">{template.description}</span>
+                </label>
+              ))}
+            </div>
             <div className="verify-slider-row">
               <span className="verify-scope-label">处理数量：</span>
               <input className="verify-slider" type="range" min={0} max={100} step={1} value={options.maxProducts} onChange={(e) => setOptions((p) => ({ ...p, maxProducts: Number(e.target.value) || 0 }))} />
@@ -387,6 +413,12 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
                     onClick={() => download('video_manifest', `product_video_manifest_task_${batch.task_id}.csv`)}
                     title={batchProcessing ? '处理完成后可下载' : undefined}
                   >下载视频清单</button>
+                  <button
+                    className="primary"
+                    disabled={batchProcessing}
+                    onClick={() => onOpenPrecheck?.(batch.task_id)}
+                    title={batchProcessing ? '处理完成后可进入预检' : '打开预检页：核对标题/图片/字段，修改后导出最终版表格'}
+                  >预检并导出最终版</button>
                 </div>
                 {batchProcessing && (
                   <p className="verify-download-hint">输出文件将在处理完成后生成，请稍候。</p>

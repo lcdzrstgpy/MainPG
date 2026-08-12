@@ -39,6 +39,7 @@ class ProductDraftRow(Base):
     declared_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
     raw_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    preview_overrides_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)
 

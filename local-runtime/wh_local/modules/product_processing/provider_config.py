@@ -26,11 +26,11 @@ TEXT_MODEL = "gpt-5.6-terra"
 # 禁止降级到高价模型（如 gpt-5.4、deepseek-v4-pro）。
 TEXT_MODEL_FALLBACK_ORDER = ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "gemini-3.1-flash-lite-antigravity")
 
-IMAGE_MODEL = "gpt-image-2-1k"
-REFERENCE_IMAGE_MODEL = "gpt-image-2-1k"
-# 图片模型池：同中转多模型之间按请求轮巡（balanced/round_robin），单模型挂掉自动切换。
-IMAGE_MODEL_POOL = ("gpt-image-2-1k", "gpt-image-2-2k")
-IMAGE_SIZE = "1024x1024"
+IMAGE_MODEL = "gpt-image-2-2k"
+REFERENCE_IMAGE_MODEL = "gpt-image-2-2k"
+# 产品处理出图优先质感：默认固定使用 gpt-image-2-2k，避免 balanced 轮巡回 1k。
+IMAGE_MODEL_POOL = ("gpt-image-2-2k",)
+IMAGE_SIZE = "2048x2048"
 IMAGE_QUALITY = "medium"
 
 DEFAULT_AI_TIMEOUT_SECONDS = 60.0

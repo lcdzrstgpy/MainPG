@@ -166,6 +166,23 @@ class ProductProcessingRepository:
             session.flush()
             return self._draft(row)
 
+    def save_draft_preview_overrides(
+        self,
+        draft_id: int,
+        overrides: dict[str, Any],
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any] | None:
+        """保存预检环节的覆盖数据（标题/描述/图片/核心字段），供导出最终版表格时应用。"""
+        with self.database.sessions.begin() as session:
+            row = session.get(ProductDraftRow, draft_id)
+            if row is None or row.workspace_id != workspace_id:
+                return None
+            row.preview_overrides_json = dumps(overrides or {})
+            row.updated_at = utc_now()
+            session.flush()
+            return self._draft(row)
+
     def delete_drafts(self, draft_ids: list[int] | None, workspace_id: str = "local") -> list[int]:
         with self.database.sessions.begin() as session:
             statement = select(ProductDraftRow).where(
@@ -795,6 +812,7 @@ class ProductProcessingRepository:
             "declared_price": row.declared_price,
             "status": row.status,
             "raw_payload": loads(row.raw_payload_json, {}),
+            "preview_overrides": loads(row.preview_overrides_json, {}),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }

@@ -11,6 +11,7 @@ import { ProfitActivityTestPage } from "../../modules/profit_activity/pages/Prof
 import { PriceVerificationPage } from "../../modules/price_verification/pages/PriceVerificationPage";
 import { ProductProcessingVerifyPage } from "../../modules/product_processing/pages/ProductProcessingVerifyPage";
 import { ProductProcessingTaskPage } from "../../modules/product_processing/pages/ProductProcessingTaskPage";
+import { ProductProcessingPrecheckPage } from "../../modules/product_processing/pages/ProductProcessingPrecheckPage";
 import { AiServicePage } from "../../modules/ai_service/pages/AiServicePage";
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
@@ -41,6 +42,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const [priceVerificationMounted, setPriceVerificationMounted] = useState(false);
   const collectionSequence = useRef(0);
   const processingSequence = useRef(0);
+  const precheckSequence = useRef(0);
   const contentRef = useRef<HTMLDivElement>(null);
   const modulesById = useMemo(() => new Map(flatModules.map((module) => [module.id, module])), []);
   const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0];
@@ -172,6 +174,21 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
     setWorkspaceNotice("");
   };
 
+  // 任务完成后的预检入口：打开「预检与导出最终版」页（生成表格 → 预检修改 → 导出最终版 → 导入店小秘）
+  const openProcessingPrecheck = (taskId: number) => {
+    precheckSequence.current += 1;
+    const key = `product-processing-precheck-${precheckSequence.current}`;
+    setTabs((current) => [...current, {
+      key,
+      moduleId: "product_processing_tasks",
+      label: `预检·#${taskId}`,
+      icon: "✓",
+      taskId,
+    }]);
+    setActiveTabKey(key);
+    setWorkspaceNotice("");
+  };
+
   const collectionTabs = tabs.filter((tab) => tab.moduleId === "daily_selection_collection");
   const expandedSidebarModuleIds = tabs.map((tab) => tab.moduleId);
   const sidebarTemporarilyExpanded = sidebarCollapsed && sidebarHovered;
@@ -222,10 +239,15 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
           ))}
           {tabs.filter((tab) => tab.moduleId === "product_processing_tasks").map((tab) => (
             <div key={tab.key} hidden={activeTabKey !== tab.key}>
-              <ProductProcessingTaskPage
-                initialDraftIds={tab.draftIds}
-                initialOptions={tab.processingOptions as ProductProcessingOptions | undefined}
-              />
+              {tab.taskId != null ? (
+                <ProductProcessingPrecheckPage taskId={tab.taskId} />
+              ) : (
+                <ProductProcessingTaskPage
+                  initialDraftIds={tab.draftIds}
+                  initialOptions={tab.processingOptions as ProductProcessingOptions | undefined}
+                  onOpenPrecheck={openProcessingPrecheck}
+                />
+              )}
             </div>
           ))}
           {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "product_processing" && activeModuleId !== "product_processing_tasks" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "ai_service" && activeModuleId !== "basic_settings" && activeModuleId !== "price_verification" && <EmptyModulePage module={activeModule} />}
