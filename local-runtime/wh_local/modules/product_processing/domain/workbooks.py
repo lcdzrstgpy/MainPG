@@ -287,6 +287,7 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
 
     # 店小秘体积重校验兜底：变种属性里的尺寸（如 30*20*10cm，店小秘以此算体积重）
     # 与独立长宽高列取体积重（长×宽×高÷6），重量必须大于体积重，否则导入整行被拒。
+    source_attr_map = source_attributes if isinstance(source_attributes, dict) else {}
     dimensions_texts: list[Any] = []
     if length not in ("", None) and width not in ("", None) and height not in ("", None):
         dimensions_texts.append(f"{length}*{width}*{height}")
@@ -294,11 +295,28 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     if variant is not None:
         variant_attributes = variant.get("attributes") or {}
         if isinstance(variant_attributes, dict):
-            dimensions_texts.extend(variant_attributes.values())
+            for attr_value in variant_attributes.values():
+                dimensions_texts.append(attr_value)
+                # 1688 规格表：变种属性值原文（如【45*50cm】2.5丝，常规款）是规格表 key，
+                # 对应 value（如 "25 20 0.50 250 4"）携带完整 长/宽/高/体积/重量。
+                spec_row = source_attr_map.get(attr_value)
+                if spec_row:
+                    dimensions_texts.append(spec_row)
     if isinstance(source_attributes, dict):
         dimensions_texts.extend(source_attributes.values())
     dimensions_texts.extend(value for _, value in variant_values)
     weight = _weight_meeting_volumetric(weight, dimensions_texts)
+
+    # 长宽高列兜底：AI 未产出 product_dimensions（长宽高缺失）时，从变种/规格表文本
+    # 解析首个三维尺寸填列，保证店小秘 *长/宽/高（cm） 必填列非空。
+    if length == "" or width == "" or height == "":
+        for text in dimensions_texts:
+            parsed_lwh = _parse_dimensions(text)
+            if parsed_lwh is not None:
+                length = _export_number(parsed_lwh[0])
+                width = _export_number(parsed_lwh[1])
+                height = _export_number(parsed_lwh[2])
+                break
 
     # 建议售价（对齐原型 _build_dxm_row）：变种建议售价 → 行建议售价 → 来源成本
     suggested_price = variant.get("suggested_price") if variant else None
@@ -387,27 +405,40 @@ _DIMENSIONS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# 1688 规格表行格式：长 宽 高 体积 重量（如 "25 20 0.50 250 4"，取前三个数为长宽高，单位 cm）
+_SPACED_DIMENSIONS_PATTERN = re.compile(
+    r"(?P<l>\d+(?:\.\d+)?)\s+(?P<w>\d+(?:\.\d+)?)\s+(?P<h>\d+(?:\.\d+)?)"
+)
+
 
 def _parse_dimensions(value: Any) -> tuple[float, float, float] | None:
     """从文本提取 (长, 宽, 高) 厘米；无法识别返回 None。
 
-    单位 mm/毫米 时换算为厘米（÷10），cm/厘米/无单位按厘米处理。
+    支持两种格式：
+    1. 乘号分隔三维尺寸（30*20*10cm / 30×20×10 CM），单位 mm/毫米 时换算为厘米（÷10）。
+    2. 空格分隔的 1688 规格表行（"25 20 0.50 250 4"，前三个数为长/宽/高 cm）。
     1688 变种尺寸属性常以毫米标注（如 34.5cm 商品写 "345*255*55mm"），
     若不换算会把体积重虚大 1000 倍，导致导出重量超出店小秘允许区间。
     """
     if value in (None, ""):
         return None
     match = _DIMENSIONS_PATTERN.search(str(value))
-    if not match:
-        return None
-    length = float(match.group("l"))
-    width = float(match.group("w"))
-    height = float(match.group("h"))
+    if match:
+        length = float(match.group("l"))
+        width = float(match.group("w"))
+        height = float(match.group("h"))
+        unit = (match.group("unit") or "").lower()
+        if unit in {"mm", "毫米"}:
+            length, width, height = length / 10.0, width / 10.0, height / 10.0
+    else:
+        match = _SPACED_DIMENSIONS_PATTERN.search(str(value))
+        if not match:
+            return None
+        length = float(match.group("l"))
+        width = float(match.group("w"))
+        height = float(match.group("h"))
     if length <= 0 or width <= 0 or height <= 0:
         return None
-    unit = (match.group("unit") or "").lower()
-    if unit in {"mm", "毫米"}:
-        length, width, height = length / 10.0, width / 10.0, height / 10.0
     return length, width, height
 
 
