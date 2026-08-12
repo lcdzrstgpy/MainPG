@@ -62,7 +62,7 @@ class OneBoundSourceAdapter:
         self._provider_factory = provider_factory
 
     def search_by_image(
-        self, actor: PriceVerificationActor, tasks: Sequence[SourceSearchTask], *, keyword_search: bool = False
+        self, actor: PriceVerificationActor, tasks: Sequence[SourceSearchTask], *, keyword_search: bool = True
     ) -> dict[str, Any]:
         """Run each task independently so one provider failure remains retriable.
 
@@ -70,9 +70,9 @@ class OneBoundSourceAdapter:
         provider, and provider-side failures surface per task so a single
         upstream hiccup never blocks the rest of the batch.
 
-        ``keyword_search`` optionally adds the translated-title keyword channel;
-        it is off by default so the first run is pure image search (with
-        similarity scores) and the user can opt into title search afterwards.
+        ``keyword_search`` additionally searches the translated title.  The
+        title request can only corroborate an offer returned by image search;
+        it must never turn a text hit into a visual-match candidate.
         """
         if not isinstance(actor, PriceVerificationActor):
             raise TypeError("actor must be PriceVerificationActor")
@@ -115,13 +115,14 @@ class OneBoundSourceAdapter:
             except Exception as error:
                 image_error = _provider_error_message(error)
 
-            # Channel B (optional): translated-title keyword search.  Only runs
-            # when the user opts in, because the Temu title is translated to
-            # Chinese and hits carry no similarity score.
+            # Channel B: translated-title keyword search. OneBound's image
+            # endpoint does not accept title text, so this only corroborates
+            # image hits and never contributes standalone candidates.
             keyword_raw: list[Mapping[str, Any]] = []
             keyword_ok = False
             keyword_error = ""
-            keywords = to_search_keywords(translate_title_to_chinese(task.product_title)) if keyword_search else ""
+            translated_title = translate_title_to_chinese(task.product_title) if keyword_search else ""
+            keywords = to_search_keywords(translated_title)
             # Only run the keyword channel when the title translated into
             # Chinese; a raw-English fallback would search 1688 with the wrong
             # language and return noise.
@@ -145,10 +146,11 @@ class OneBoundSourceAdapter:
 
             merged = _merge_channels(image_raw, keyword_raw, max(int(task.max_candidates or 0), 1))
             if not merged:
-                # A successful search with no hits is a valid empty result; only
-                # fail when every channel errored out.
-                if not image_ok and not keyword_ok:
-                    return _failed_item(task, image_error or keyword_error or _GENERIC_PROVIDER_ERROR, evidence), len(evidence)
+                # A keyword hit is not evidence of a visual match. If image
+                # search failed, make the SKC retriable instead of showing text
+                # matches as candidates.
+                if not image_ok:
+                    return _failed_item(task, image_error or _GENERIC_PROVIDER_ERROR, evidence), len(evidence)
                 return {
                     "task_key": task.task_key,
                     "skc_id": task.skc_id,
@@ -162,7 +164,7 @@ class OneBoundSourceAdapter:
             candidates: list[dict[str, Any]] = []
             # Only the first (most relevant) candidate gets a detail lookup; the
             # rest keep the search payload the provider already returned.
-            for index, (raw_candidate, channel) in enumerate(merged):
+            for index, raw_candidate in enumerate(merged):
                 offer_id = _offer_id(raw_candidate)
                 detailed = dict(raw_candidate)
                 if index == 0 and offer_id:
@@ -172,7 +174,7 @@ class OneBoundSourceAdapter:
                     # the search payload and skip the enrichment.
                     if _result_ok(detail):
                         detailed = {**raw_candidate, **_detail_item(_response(detail))}
-                candidates.append(_safe_candidate(detailed, evidence, channel=channel))
+                candidates.append(_safe_candidate(detailed, evidence, channel="image"))
             return {
                 "task_key": task.task_key,
                 "skc_id": task.skc_id,
@@ -341,29 +343,31 @@ def _merge_channels(
     image_raw: Sequence[Mapping[str, Any]],
     keyword_raw: Sequence[Mapping[str, Any]],
     max_candidates: int,
-) -> list[tuple[Mapping[str, Any], str]]:
-    """Merge image hits ahead of keyword hits, de-duplicated by offer.
+) -> list[Mapping[str, Any]]:
+    """Return only image-search offers, de-duplicated by offer ID.
 
-    The image channel is the primary signal the user asked to keep first (it
-    carries the OB similarity score); the translated-title keyword channel only
-    fills in behind when the user opted into title search.  Each channel keeps
-    its own cap so the keyword supplement is not silently cut off by the image
-    channel filling the shared limit (e.g. five image hits + five keyword hits).
+    A title hit says nothing about whether the product looks the same. When both
+    channels return one offer we keep the image hit and its visual score only.
     """
+    keyword_offer_ids = {
+        _offer_id(candidate)
+        for candidate in keyword_raw
+        if _offer_id(candidate)
+    }
     seen: set[str] = set()
-    merged: list[tuple[Mapping[str, Any], str]] = []
-    for raw, channel in ((image_raw, "image"), (keyword_raw, "keyword")):
-        channel_count = 0
-        for candidate in raw:
-            offer_id = _offer_id(candidate) or _text(candidate.get("title") or candidate.get("item_title"))[:40]
-            if offer_id:
-                if offer_id in seen:
-                    continue
-                seen.add(offer_id)
-            merged.append((candidate, channel))
-            channel_count += 1
-            if channel_count >= max_candidates:
-                break
+    merged: list[Mapping[str, Any]] = []
+    for candidate in image_raw:
+        offer_id = _offer_id(candidate) or _text(candidate.get("title") or candidate.get("item_title"))[:40]
+        if offer_id:
+            if offer_id in seen:
+                continue
+            seen.add(offer_id)
+        item = dict(candidate)
+        if offer_id in keyword_offer_ids:
+            item["title_search_confirmed"] = True
+        merged.append(item)
+        if len(merged) >= max_candidates:
+            break
     return merged
 
 

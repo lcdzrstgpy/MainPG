@@ -10,6 +10,7 @@ import httpx
 
 STATION_BASE_URL = "https://station-88.aicoming.top/v1"
 MAX_RESULT_BYTES = 12 * 1024 * 1024
+_BENCHMARK_PROXY_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 
 
 class StationGatewayError(RuntimeError):
@@ -64,7 +65,10 @@ class StationGateway:
                     yield line
 
     def download_image(self, url: str) -> tuple[bytes, str]:
-        _validate_public_https_url(url)
+        # The local desktop network proxy maps external image CDNs into the
+        # RFC 2544 benchmark range. This exception is deliberately scoped to
+        # result URLs returned by the configured station, not user-provided URLs.
+        _validate_public_https_url(url, allow_benchmark_proxy=True)
         try:
             with self.client.stream("GET", url, follow_redirects=False, timeout=30.0) as response:
                 self._raise_for_status(response)
@@ -110,7 +114,7 @@ class StationGateway:
         raise StationGatewayError(f"AI station HTTP {response.status_code}: {detail}", response.status_code)
 
 
-def _validate_public_https_url(url: str) -> None:
+def _validate_public_https_url(url: str, *, allow_benchmark_proxy: bool = False) -> None:
     parsed = urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise StationGatewayError("generated image URL is not a safe HTTPS URL")
@@ -120,5 +124,5 @@ def _validate_public_https_url(url: str) -> None:
         raise StationGatewayError("generated image host could not be resolved") from exc
     for address in addresses:
         ip = ipaddress.ip_address(address)
-        if not ip.is_global:
+        if not ip.is_global and not (allow_benchmark_proxy and ip in _BENCHMARK_PROXY_NETWORK):
             raise StationGatewayError("generated image URL resolves to a private network")

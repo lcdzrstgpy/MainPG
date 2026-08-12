@@ -77,7 +77,7 @@ class SourcingService:
         provider_factory: Callable[[], Any],
         ranking_mode: str = "similarity",
         skc_ids: Sequence[str] | None = None,
-        keyword_search: bool = False,
+        keyword_search: bool = True,
     ) -> dict[str, Any]:
         """Run the established OB 1688 image-search chain for retained SKCs.
 
@@ -90,8 +90,8 @@ class SourcingService:
 
         ``skc_ids`` restricts the search to the user-selected SKCs; when it is
         ``None`` every retained selection is searched (backward compatible).
-        ``keyword_search`` optionally adds the translated-title keyword channel;
-        it is off by default so the first run is pure image search.
+        ``keyword_search`` adds the translated-title keyword channel by default
+        so every search combines product image and title evidence.
         """
         from .onebound_adapter import OneBoundSourceAdapter
 
@@ -912,7 +912,11 @@ def _apply_batch_ranking(
             continue
         raw_candidates = item.get("all_candidates")
         all_candidates = (
-            [candidate for candidate in raw_candidates if isinstance(candidate, Mapping)]
+            [
+                candidate
+                for candidate in raw_candidates
+                if isinstance(candidate, Mapping) and candidate.get("source_channel") != "keyword"
+            ]
             if isinstance(raw_candidates, list)
             else []
         )
@@ -924,12 +928,7 @@ def _apply_batch_ranking(
         for candidate in ranked_copies:
             candidate["profit"] = _candidate_profit(candidate, site, selling_price)
         item["all_candidates"] = ranked_copies
-        keyword_count = sum(1 for candidate in ranked_copies if candidate.get("source_channel") == "keyword")
-        item["keyword_count"] = keyword_count
-        # The default display stays at 3-5 links; when the user opted into the
-        # title-keyword channel, widen the list so those hits stay visible.
-        display_limit = min(len(ranked_copies), DEFAULT_CANDIDATE_LIMIT + keyword_count * DEFAULT_CANDIDATE_LIMIT) if keyword_count else DEFAULT_CANDIDATE_LIMIT
-        item["ranked_candidates"] = list(ranked_copies[:display_limit])
+        item["ranked_candidates"] = list(ranked_copies[:DEFAULT_CANDIDATE_LIMIT])
         item["candidates"] = [
             candidate
             for candidate in ranked_copies

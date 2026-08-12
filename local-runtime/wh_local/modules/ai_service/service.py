@@ -24,6 +24,33 @@ _IMAGE_SIGNATURES = {
     b"GIF89a": "image/gif",
 }
 
+POD_OUTPUT_SPECS: tuple[dict[str, Any], ...] = (
+    {
+        "kind": "scene",
+        "label": "场景图",
+        "count": 2,
+        "prompt": "生成两张不同的跨境电商商品场景图。突出商品主体与真实使用情境，画面干净、高级、适合商品详情页；不添加水印、品牌 Logo 或不可读文字。",
+    },
+    {
+        "kind": "feature",
+        "label": "功能图",
+        "count": 2,
+        "prompt": "生成两张不同角度的跨境电商商品功能图。用画面清楚呈现材质、结构、使用方式或关键细节；构图干净，突出卖点，不添加水印、品牌 Logo 或不可读文字。",
+    },
+    {
+        "kind": "size",
+        "label": "尺寸图",
+        "count": 1,
+        "prompt": "生成一张跨境电商商品尺寸展示图。以干净白色或浅灰背景清楚展示产品整体比例；仅使用用户提供的尺寸信息，不得臆造数字；不添加水印、品牌 Logo 或不可读文字。",
+    },
+    {
+        "kind": "white",
+        "label": "白底图",
+        "count": 1,
+        "prompt": "生成一张跨境电商商品白底主图。纯白背景，商品居中完整，比例准确，棚拍光线均匀，保留参考图中的商品主体、颜色、材质与细节；不添加文字、道具或水印。",
+    },
+)
+
 
 class AiServiceError(RuntimeError):
     def __init__(self, message: str, status_code: int = 400):
@@ -341,6 +368,205 @@ class AiService:
             **({"image": reference_image} if reference_image else {}),
         }
 
+    def prepare_pod_creations(
+        self,
+        actor: Actor,
+        *,
+        user_prompt: str,
+        asset_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Prepare the four fixed POD deliverable groups.
+
+        POD is intentionally not an open model picker: suppliers need a consistent
+        1K image package, while the operator may provide an image, text, or both.
+        """
+        asset_ids = asset_ids or []
+        image_asset_id = next((asset_id for asset_id in asset_ids if _is_image_type(self._asset(actor, asset_id)["content_type"])), None)
+        reference_image = self.asset_data_url(actor, image_asset_id) if image_asset_id else ""
+        shared_prompt = (
+            "你正在为外贸 POD 商品制作供应商交付图。严格保持同一商品主体、设计图案、颜色和材质的一致性。\n"
+            f"用户输入：{user_prompt.strip()}"
+        )
+        return [
+            {
+                "kind": spec["kind"],
+                "label": spec["label"],
+                "payload": {
+                    "model": "gpt-image-2-1k",
+                    "prompt": f"{shared_prompt}\n\n交付类型：{spec['prompt']}",
+                    "n": spec["count"],
+                    "return_url": True,
+                    "size": "1024x1024",
+                    **({"image": reference_image} if reference_image else {}),
+                },
+            }
+            for spec in POD_OUTPUT_SPECS
+        ]
+
+    def create_pod_creation(
+        self,
+        actor: Actor,
+        conversation_id: str,
+        *,
+        user_prompt: str,
+        asset_ids: list[str],
+    ) -> dict[str, Any]:
+        self._conversation(actor, conversation_id)
+        if self.active_pod_creation(actor, conversation_id):
+            raise AiServiceError("this conversation already has a POD creation in progress", 409)
+        payloads = self.prepare_pod_creations(actor, user_prompt=user_prompt, asset_ids=asset_ids)
+        creation_id = uuid.uuid4().hex
+        now = _now()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO ai_service_creations
+                   (creation_id, conversation_id, workspace_id, owner_user_id, model_id, request_json, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'gpt-image-2-1k', ?, 'running', ?, ?)""",
+                (creation_id, conversation_id, actor.workspace_id, actor.id, _redacted_json({"pod_outputs": payloads}), now, now),
+            )
+            for item in payloads:
+                conn.execute(
+                    """INSERT INTO ai_service_pod_groups
+                       (group_id, creation_id, workspace_id, owner_user_id, kind, label, payload_json, status, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+                    (
+                        uuid.uuid4().hex,
+                        creation_id,
+                        actor.workspace_id,
+                        actor.id,
+                        item["kind"],
+                        item["label"],
+                        json.dumps({
+                            **{key: value for key, value in item["payload"].items() if key != "image"},
+                            "_asset_ids": asset_ids,
+                        }, ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
+        return {"creation_id": creation_id, "conversation_id": conversation_id, "status": "running"}
+
+    def active_pod_creation(self, actor: Actor, conversation_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT creation_id, status FROM ai_service_creations
+                   WHERE conversation_id = ? AND workspace_id = ? AND owner_user_id = ?
+                     AND request_json LIKE '%pod_outputs%' AND status = 'running'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (conversation_id, actor.workspace_id, actor.id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def latest_pod_creation(self, actor: Actor, conversation_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT creation_id FROM ai_service_creations
+                   WHERE conversation_id = ? AND workspace_id = ? AND owner_user_id = ?
+                     AND request_json LIKE '%pod_outputs%'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (conversation_id, actor.workspace_id, actor.id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def pod_creation_status(self, actor: Actor, creation_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            creation = conn.execute(
+                """SELECT creation_id, conversation_id, status, created_at, updated_at
+                   FROM ai_service_creations WHERE creation_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (creation_id, actor.workspace_id, actor.id),
+            ).fetchone()
+            if creation is None:
+                raise AiServiceError("POD creation not found", 404)
+            rows = conn.execute(
+                """SELECT group_id, kind, label, status, output_asset_ids_json, error_message, started_at, finished_at, created_at, updated_at
+                   FROM ai_service_pod_groups WHERE creation_id = ? AND workspace_id = ? AND owner_user_id = ?
+                   ORDER BY CASE kind WHEN 'scene' THEN 1 WHEN 'feature' THEN 2 WHEN 'size' THEN 3 ELSE 4 END""",
+                (creation_id, actor.workspace_id, actor.id),
+            ).fetchall()
+        groups = [{**dict(row), "asset_ids": _asset_ids(row["output_asset_ids_json"])} for row in rows]
+        return {**dict(creation), "groups": groups}
+
+    def start_pod_group(self, actor: Actor, creation_id: str, kind: str) -> dict[str, Any]:
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute(
+                """UPDATE ai_service_pod_groups SET status = 'running', started_at = ?, updated_at = ?, error_message = ''
+                   WHERE creation_id = ? AND workspace_id = ? AND owner_user_id = ? AND kind = ? AND status = 'queued'
+                   RETURNING group_id, kind, label, payload_json""",
+                (now, now, creation_id, actor.workspace_id, actor.id, kind),
+            ).fetchone()
+        if row is None:
+            raise AiServiceError("POD group is not queued", 409)
+        payload = json.loads(row["payload_json"])
+        asset_ids = _asset_ids(json.dumps(payload.pop("_asset_ids", [])))
+        image_asset_id = next((asset_id for asset_id in asset_ids if _is_image_type(self._asset(actor, asset_id)["content_type"])), None)
+        if image_asset_id:
+            payload["image"] = self.asset_data_url(actor, image_asset_id)
+        return {**dict(row), "payload": payload}
+
+    def finish_pod_group(
+        self,
+        actor: Actor,
+        creation_id: str,
+        kind: str,
+        *,
+        status: str,
+        output_asset_ids: list[str] | None = None,
+        error_message: str = "",
+    ) -> None:
+        if status not in {"succeeded", "failed", "interrupted"}:
+            raise AiServiceError("POD group status is invalid")
+        now = _now()
+        with self._connect() as conn:
+            result = conn.execute(
+                """UPDATE ai_service_pod_groups SET status = ?, output_asset_ids_json = ?, error_message = ?, finished_at = ?, updated_at = ?
+                   WHERE creation_id = ? AND workspace_id = ? AND owner_user_id = ? AND kind = ?""",
+                (status, json.dumps(output_asset_ids or []), error_message[:300], now, now, creation_id, actor.workspace_id, actor.id, kind),
+            )
+        if result.rowcount != 1:
+            raise AiServiceError("POD group not found", 404)
+        self._finish_pod_creation_when_settled(actor, creation_id)
+
+    def retry_pod_group(self, actor: Actor, creation_id: str, kind: str) -> dict[str, Any]:
+        now = _now()
+        with self._connect() as conn:
+            result = conn.execute(
+                """UPDATE ai_service_pod_groups SET status = 'queued', output_asset_ids_json = '[]', error_message = '', started_at = '', finished_at = '', updated_at = ?
+                   WHERE creation_id = ? AND workspace_id = ? AND owner_user_id = ? AND kind = ? AND status IN ('failed', 'interrupted')""",
+                (now, creation_id, actor.workspace_id, actor.id, kind),
+            )
+            if result.rowcount != 1:
+                raise AiServiceError("only failed or interrupted POD groups can be retried", 409)
+            conn.execute("UPDATE ai_service_creations SET status = 'running', updated_at = ? WHERE creation_id = ?", (now, creation_id))
+        return {"creation_id": creation_id, "kind": kind, "status": "queued"}
+
+    def mark_interrupted_pod_groups(self) -> int:
+        now = _now()
+        with self._connect() as conn:
+            result = conn.execute(
+                """UPDATE ai_service_pod_groups SET status = 'interrupted', error_message = '本机服务已重启，可重试此组', finished_at = ?, updated_at = ?
+                   WHERE status IN ('queued', 'running')""",
+                (now, now),
+            )
+            conn.execute("UPDATE ai_service_creations SET status = 'failed', updated_at = ? WHERE status = 'running' AND request_json LIKE '%pod_outputs%'", (now,))
+        return result.rowcount
+
+    def _finish_pod_creation_when_settled(self, actor: Actor, creation_id: str) -> None:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT status, output_asset_ids_json FROM ai_service_pod_groups
+                   WHERE creation_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (creation_id, actor.workspace_id, actor.id),
+            ).fetchall()
+            if not rows or any(row["status"] in {"queued", "running"} for row in rows):
+                return
+            output_asset_ids = [asset_id for row in rows for asset_id in _asset_ids(row["output_asset_ids_json"])]
+            overall = "succeeded" if all(row["status"] == "succeeded" for row in rows) else "failed"
+            conn.execute(
+                """UPDATE ai_service_creations SET status = ?, output_asset_ids_json = ?, updated_at = ? WHERE creation_id = ?""",
+                (overall, json.dumps(output_asset_ids), _now(), creation_id),
+            )
+
     def create_creation(self, actor: Actor, conversation_id: str, payload: dict[str, Any]) -> dict[str, str]:
         self._conversation(actor, conversation_id)
         creation_id = uuid.uuid4().hex
@@ -492,6 +718,25 @@ CREATE TABLE IF NOT EXISTS ai_service_creations (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_service_creations_owner
     ON ai_service_creations (workspace_id, owner_user_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS ai_service_pod_groups (
+    group_id TEXT PRIMARY KEY,
+    creation_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    output_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    error_message TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(creation_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_service_pod_groups_owner
+    ON ai_service_pod_groups (creation_id, workspace_id, owner_user_id, status);
 """
 
 
@@ -559,7 +804,11 @@ def _allowed_modes(value: Any) -> list[str]:
 
 
 def _redacted_json(payload: dict[str, Any]) -> str:
-    value = dict(payload)
-    if "image" in value:
-        value["image"] = "local-asset-reference"
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    def redact(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: "local-asset-reference" if key == "image" else redact(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        return value
+
+    return json.dumps(redact(payload), ensure_ascii=False, sort_keys=True)

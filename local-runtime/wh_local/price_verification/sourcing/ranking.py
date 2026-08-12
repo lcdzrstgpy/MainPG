@@ -48,7 +48,6 @@ def rank_candidates_by_mode(
             sorted(
                 items,
                 key=lambda candidate: (
-                    candidate.get("source_channel") == "keyword",
                     -_number(candidate.get("similarity_score")),
                     _number(candidate.get("price")),
                     str(candidate.get("candidate_key") or candidate.get("offer_id") or ""),
@@ -63,3 +62,4 @@ def _number(value: object) -> float:
         return float(value) if value is not None else float("inf")
     except (TypeError, ValueError):
         return float("inf")
+

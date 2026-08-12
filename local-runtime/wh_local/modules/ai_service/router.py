@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -21,6 +23,9 @@ from .web_search import search_context, search_public_web
 def create_router(database_path: Path, asset_root: Path) -> APIRouter:
     router = APIRouter(prefix="/api/ai-service", tags=["ai-service"])
     service = AiService(database_path, asset_root)
+    pod_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ai-pod")
+    pod_references: dict[str, TemporaryReference] = {}
+    pod_references_lock = Lock()
 
     def permitted(actor: Actor, permission: str) -> None:
         require_permission(actor, permission, database_path)
@@ -169,6 +174,41 @@ def create_router(database_path: Path, asset_root: Path) -> APIRouter:
             if gateway is not None:
                 gateway.close()
 
+    @router.post("/pod-creations")
+    def create_pod_images(body: dict[str, Any], actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        """Queue the four fixed POD groups and return without waiting for images."""
+        permitted(actor, "ai_service.create")
+        conversation_id = str(body.get("conversation_id") or "")
+        prompt = str(body.get("prompt") or "").strip()
+        asset_ids = _string_list(body.get("asset_ids"))
+        if not prompt:
+            raise HTTPException(status_code=400, detail="POD product brief is required")
+        if not conversation_id:
+            conversation_id = service.create_conversation(actor, str(body.get("title") or "POD 出图"))["conversation_id"]
+        _call(service.append_message, actor, conversation_id, role="user", content=prompt, asset_ids=asset_ids)
+        creation = _call(service.create_pod_creation, actor, conversation_id, user_prompt=prompt, asset_ids=asset_ids)
+        for kind in ("scene", "feature", "size", "white"):
+            pod_executor.submit(_run_pod_group, service, database_path, actor, creation["creation_id"], kind, pod_references, pod_references_lock)
+        return {**creation, "groups": _call(service.pod_creation_status, actor, creation["creation_id"])["groups"]}
+
+    @router.get("/pod-creations/{creation_id}")
+    def pod_creation_status(creation_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "ai_service.read")
+        return _call(service.pod_creation_status, actor, creation_id)
+
+    @router.get("/conversations/{conversation_id}/pod-creation")
+    def latest_pod_creation(conversation_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "ai_service.read")
+        latest = _call(service.latest_pod_creation, actor, conversation_id)
+        return _call(service.pod_creation_status, actor, latest["creation_id"]) if latest else {"creation_id": "", "groups": []}
+
+    @router.post("/pod-creations/{creation_id}/groups/{kind}/retry")
+    def retry_pod_group(creation_id: str, kind: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "ai_service.create")
+        group = _call(service.retry_pod_group, actor, creation_id, kind)
+        pod_executor.submit(_run_pod_group, service, database_path, actor, creation_id, kind, pod_references, pod_references_lock)
+        return group
+
     @router.post("/messages/stream")
     async def stream_message(request: Request, actor: Actor = Depends(actor_from_authorization)) -> StreamingResponse:
         permitted(actor, "ai_service.create")
@@ -239,6 +279,97 @@ def _stream_station_reply(
         yield f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
     finally:
         gateway.close()
+
+
+def _run_pod_group(
+    service: AiService,
+    database_path: Path,
+    actor: Actor,
+    creation_id: str,
+    kind: str,
+    pod_references: dict[str, TemporaryReference],
+    pod_references_lock: Lock,
+) -> None:
+    """Run one POD group independently so all four can call the station together."""
+    gateway: StationGateway | None = None
+    try:
+        group = service.start_pod_group(actor, creation_id, kind)
+        payload = group["payload"]
+        gateway = _gateway(database_path)
+        try:
+            results = gateway.generate_image(payload)
+        except StationGatewayError as error:
+            asset_ids = _payload_asset_ids(service, actor, creation_id, kind)
+            if error.status_code not in {400, 415, 422} or not asset_ids or not payload.get("image"):
+                raise
+            payload["image"] = _pod_temporary_reference_url(
+                service, database_path, actor, creation_id, asset_ids[0], pod_references, pod_references_lock,
+            )
+            results = gateway.generate_image(payload)
+        output_asset_ids = [_save_result(service, actor, gateway, result)["asset_id"] for result in results]
+        service.finish_pod_group(actor, creation_id, kind, status="succeeded", output_asset_ids=output_asset_ids)
+    except (StationGatewayError, TemporaryReferenceError, AiServiceError) as exc:
+        try:
+            service.finish_pod_group(actor, creation_id, kind, status="failed", error_message=str(exc))
+        except AiServiceError:
+            pass
+    finally:
+        if gateway is not None:
+            gateway.close()
+        _cleanup_pod_reference_when_settled(service, database_path, actor, creation_id, pod_references, pod_references_lock)
+
+
+def _pod_temporary_reference_url(
+    service: AiService,
+    database_path: Path,
+    actor: Actor,
+    creation_id: str,
+    asset_id: str,
+    pod_references: dict[str, TemporaryReference],
+    lock: Lock,
+) -> str:
+    with lock:
+        existing = pod_references.get(creation_id)
+        if existing is not None:
+            return existing.url
+        runtime = SystemConfigService(database_path).get_runtime_config()
+        temporary = TemporaryCosStore(runtime.cos).publish(
+            service.asset_content(actor, asset_id),
+            service.asset_info(actor, asset_id)["content_type"],
+        )
+        pod_references[creation_id] = temporary
+        return temporary.url
+
+
+def _cleanup_pod_reference_when_settled(
+    service: AiService,
+    database_path: Path,
+    actor: Actor,
+    creation_id: str,
+    pod_references: dict[str, TemporaryReference],
+    lock: Lock,
+) -> None:
+    status = service.pod_creation_status(actor, creation_id)
+    if any(group["status"] in {"queued", "running"} for group in status["groups"]):
+        return
+    with lock:
+        temporary = pod_references.pop(creation_id, None)
+    if temporary is not None:
+        TemporaryCosStore(SystemConfigService(database_path).get_runtime_config().cos).delete(temporary)
+
+
+def _payload_asset_ids(service: AiService, actor: Actor, creation_id: str, kind: str) -> list[str]:
+    status = service.pod_creation_status(actor, creation_id)
+    group = next((item for item in status["groups"] if item["kind"] == kind), None)
+    if group is None:
+        return []
+    with service._connect() as conn:
+        row = conn.execute("SELECT payload_json FROM ai_service_pod_groups WHERE group_id = ?", (group["group_id"],)).fetchone()
+    try:
+        value = json.loads(row["payload_json"]).get("_asset_ids", []) if row else []
+    except (TypeError, ValueError):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 
 def _append_delta(chunks: list[str], raw: str) -> None:

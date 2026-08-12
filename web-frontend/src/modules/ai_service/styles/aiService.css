@@ -188,3 +188,35 @@
 [data-theme="diamond"] .ai-tips-card > span {
   color: #f8fafc;
 }
+
+.ai-pod-delivery-card p { margin: 0; color: #3c6d94; font-size: .72rem; font-weight: 800; line-height: 1.55; }
+.ai-pod-delivery-card small { color: #8aa1b4; font-size: .63rem; line-height: 1.45; }
+.ai-pod-output-groups { display: grid; gap: 12px; margin-top: 11px; }
+.ai-pod-output-groups section { display: grid; gap: 6px; }
+.ai-pod-output-groups h3 { margin: 0; color: #3b6585; font-size: .74rem; }
+[data-theme] .ai-pod-delivery-card p, [data-theme] .ai-pod-output-groups h3 { color: var(--ai-text); }
+[data-theme] .ai-pod-delivery-card small { color: var(--ai-text-muted); }
+.ai-pod-job { max-width: 100%; }
+.ai-pod-job .ai-message-body { width: min(640px, 100%); }
+.ai-pod-job-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; color: #31506b; }
+.ai-pod-job-heading b { font-size: .86rem; }
+.ai-pod-job-heading span { color: #7792a7; font-size: .66rem; }
+.ai-pod-job-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.ai-pod-job-group { display: grid; gap: 7px; min-width: 0; padding: 9px; border: 1px solid #dce9f2; border-radius: 10px; background: #fbfdff; }
+.ai-pod-job-group > header { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
+.ai-pod-job-group > header b { color: #365872; font-size: .72rem; }
+.ai-pod-job-group > header span { padding: 3px 5px; border-radius: 5px; color: #6e879a; background: #edf4f8; font-size: .6rem; font-weight: 800; }
+.ai-pod-job-group.is-succeeded > header span { color: #18836f; background: #e8f8f3; }
+.ai-pod-job-group.is-failed > header span, .ai-pod-job-group.is-interrupted > header span { color: #bc5a57; background: #fff0ef; }
+.ai-pod-job-group .ai-generated-grid { margin-top: 0; }
+.ai-pod-job-group .ai-generated-real .ai-generated-card > a:first-child, .ai-pod-job-group .ai-generated-real img { min-height: 78px; }
+.ai-pod-job-progress { display: flex; align-items: center; gap: 4px; min-height: 68px; color: #7893a7; font-size: .67rem; }
+.ai-pod-job-progress i { width: 5px; height: 5px; border-radius: 99px; background: #3186df; animation: ai-dot-bounce .9s infinite alternate; }
+.ai-pod-job-progress i:nth-child(2) { animation-delay: .14s; }.ai-pod-job-progress i:nth-child(3) { animation-delay: .28s; }
+.ai-pod-job-error { display: grid; gap: 5px; min-height: 68px; align-content: center; }
+.ai-pod-job-error small { color: #b55c58; font-size: .62rem; line-height: 1.35; }
+.ai-pod-job-error button { width: fit-content; padding: 5px 7px; border: 1px solid #dfb1ae; border-radius: 6px; color: #b34c48; background: #fff8f7; font-size: .63rem; font-weight: 800; }
+[data-theme] .ai-pod-job-heading, [data-theme] .ai-pod-job-group > header b { color: var(--ai-text); }
+[data-theme] .ai-pod-job-heading span, [data-theme] .ai-pod-job-progress { color: var(--ai-text-muted); }
+[data-theme] .ai-pod-job-group { border-color: var(--ai-border); background: var(--ai-surface-soft); }
+@media (max-width: 720px) { .ai-pod-job-grid { grid-template-columns: 1fr; } }

@@ -152,8 +152,8 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
     <section className="price-verification-panel">
       <div className="price-verification-panel-heading">
         <div>
-          <p className="eyebrow">STEP 02 · CONFIRM</p>
-          <h2>批次报价审核<SectionHelp title="插件采集的 Temu 本页报价（每页最多 50 个 SKC，各 SKC 可含多条 SKU 报价）经 STEP 01 初筛后展示在此。每个 SKC 一行，原申报价与调整后申报价并排对比；勾选需要保留的商品，确认后重组进入下方“待审商品最终确认”。" /></h2>
+          <p className="eyebrow">STEP 02 · SELECT & SEARCH</p>
+          <h2>选择并图搜<SectionHelp title="插件采集的 Temu 本页报价经初筛后展示在此。勾选需要处理的 SKC 后，系统会直接保留商品、复用产品库已有货源，并对未命中的 SKC 同时执行万邦图片搜索和中文标题关键词搜索。" /></h2>
         </div>
       </div>
       <div ref={floatingActionBarSpacerRef} className="price-verification-floating-action-spacer" aria-hidden="true" />
@@ -164,7 +164,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
           <button className="price-verification-danger-button" onClick={() => {
             if (window.confirm(`确认删除选中的 ${selectedCount} 个 SKC？删除后不可恢复。`)) void removeSelected();
           }} disabled={!selectedSkcIds.length || busy || confirming || deletingSelected}>{deletingSelected ? "删除中…" : `删除选中${selectedCount ? `（${selectedCount}）` : ""}`}</button>
-          <button className="price-verification-primary-button" onClick={() => void confirm()} disabled={!selectedSkcIds.length || busy || confirming}>{confirming ? "确认中…" : `确认并进入最终确认${selectedCount ? `（${selectedCount}）` : ""}`}</button>
+          <button className="price-verification-primary-button" onClick={() => void confirm()} disabled={!selectedSkcIds.length || busy || confirming}>{confirming ? "图搜准备中…" : `确认并执行图搜${selectedCount ? `（${selectedCount}）` : ""}`}</button>
         </div>
       </WorkflowActionBar>
 

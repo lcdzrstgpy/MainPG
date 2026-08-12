@@ -17,7 +17,7 @@ type Props = {
   onUnlink: (linkId: number) => Promise<void>;
   onUnselectCandidate: (skcId: string, offerId: string) => Promise<void>;
   onComplete: () => void;
-  onStart: (mode: "similarity" | "price", keywordSearch?: boolean) => void;
+  onStart: (mode: "similarity" | "price") => void;
   matchingCompleted?: boolean;
 };
 
@@ -126,7 +126,6 @@ function sortCandidates(candidates: SourceCandidate[], mode: RankingMode) {
 
 export function SourcingPanel({ preview, batchId, busy, sourceCount, links, selectedCandidates, onLink, onUnlink, onUnselectCandidate, onComplete, onStart, matchingCompleted = false }: Props) {
   const [rankingMode, setRankingMode] = useState<RankingMode>(preview?.ranking_mode ?? "similarity");
-  const [keywordSearch, setKeywordSearch] = useState(false);
   const [weights, setWeights] = useState<Record<string, string>>({});
   const [priceOverrides, setPriceOverrides] = useState<Record<string, string>>({});
   const [profitOverrides, setProfitOverrides] = useState<Record<string, SourceTopProfit | null>>({});
@@ -260,7 +259,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       <div className="pv-source-head">
         <div>
           <p className="pv-eyebrow">STEP 03 · SOURCE</p>
-          <h2>货源匹配<SectionHelp title="对第二板块已保留的 SKC 执行搜索：默认下载商品主图走 OB 1688 图搜（带相似度）；图搜结果不满意时，勾选「包含标题搜索」重跑，商品标题会先自动翻译成中文做关键词搜索，两路结果合并。结果按 SKC 分组，每个 SKC 默认展示前 5 条（通常 3-5 条）；每条候选都按 Temu 调整后申报价核算利润，源价与重量可调（搜索常返回最便宜的引流款，可自行修正后核算）。" /></h2>
+          <h2>货源关联<SectionHelp title="每次搜索均以万邦图片图搜结果为候选依据；商品标题翻译后的中文关键词仅用于辅助确认同一货源，不能单独成为候选。结果按 SKC 分组，每个 SKC 默认展示前 5 条；每条候选均按 Temu 调整后申报价核算利润，源价与重量可调。" /></h2>
         </div>
       </div>
 
@@ -282,7 +281,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
             const item = group.items[0];
             const cap = item?.max_candidates && item.max_candidates > 0 ? item.max_candidates : 10;
             const all = item?.all_candidates?.length ? item.all_candidates : item?.candidates ?? [];
-            const displayLimit = (item?.keyword_count ?? 0) > 0 ? Math.min(10, cap + (item?.keyword_count ?? 0)) : Math.min(CANDIDATE_LIMIT, cap);
+            const displayLimit = Math.min(CANDIDATE_LIMIT, cap);
             const candidates = sortCandidates(all, rankingMode).slice(0, displayLimit);
             const groupLinks = links.filter((link) => link.skc_id === group.skc_id);
             const searchFailed = item?.source_search_status === "failed" || item?.source_search_status === "error";
@@ -296,7 +295,6 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                   </div>
                   <div className="pv-source-group-badges">
                     <em>图搜 {statusText(item?.source_search_status)}</em>
-                    {item?.keyword_count ? <em>标题搜索 {item.keyword_count} 条</em> : null}
                     <em>展示 {candidates.length}/{all.length} 条</em>
                     <em>已关联 1688 {groupLinks.length} 条（下方第四板块）</em>
                     {searchFailed && item?.source_search_error ? <em className="is-error" title={sourceErrorText(item.source_search_error)}>{sourceErrorText(item.source_search_error)}</em> : null}
@@ -313,7 +311,10 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                       const profit = profitOverrides[candKey] ?? candidate.profit ?? null;
                       const priceText = priceOverrides[candKey] !== undefined ? priceOverrides[candKey] : String(selected?.price_cny ?? candidate.promotion_price ?? candidate.price ?? "");
                       const weightText = weights[candKey] ?? String(selected?.weight_kg ?? "0.5");
-                      const metaParts = [candidate.similarity_score !== undefined ? `相似度 ${percentText(candidate.similarity_score)}` : "", candidate.sales !== undefined ? `销量 ${candidate.sales}` : ""].filter(Boolean);
+                      const metaParts = [
+                        candidate.similarity_score !== undefined ? `图片相似度 ${percentText(candidate.similarity_score)}` : "",
+                        candidate.sales !== undefined ? `销量 ${candidate.sales}` : "",
+                      ].filter(Boolean);
                       const rankBadge = index === 0 ? { text: "第1名", cls: "is-top" } : { text: decisionLabel(candidate.source_decision), cls: "is-plain" };
                       return (
                         <div className="pv-source-card" key={`${group.skc_id}-${index}`}>
@@ -326,7 +327,6 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                                 <span className="pv-source-card-title">{candidate.source_title || "候选商品"}</span>
                                 <div className="pv-source-card-meta">
                                   <em className={rankBadge.cls}>{rankBadge.text}</em>
-                                  {candidate.source_channel === "keyword" ? <em className="is-keyword">标题匹配</em> : null}
                                   {metaParts.length ? <small>{metaParts.join(" · ")}</small> : null}
                                 </div>
                               </div>
@@ -385,11 +385,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
           <span className="pv-source-sort-label">候选排序</span>
           <button className={`price-verification-secondary-button${rankingMode === "similarity" ? " is-active" : ""}`} onClick={() => setRankingMode("similarity")} disabled={busy}>按相似度</button>
           <button className={`price-verification-secondary-button${rankingMode === "price" ? " is-active" : ""}`} onClick={() => setRankingMode("price")} disabled={busy}>按价格低→高</button>
-          <label className="pv-source-keyword" title="图搜结果不满意时勾选：把商品标题翻译成中文做 1688 关键词搜索，补充图搜不足">
-            <input type="checkbox" checked={keywordSearch} onChange={(event) => setKeywordSearch(event.target.checked)} disabled={busy} />
-            <span>包含标题搜索</span>
-          </label>
-          <button className="price-verification-primary-button" onClick={() => onStart(rankingMode, keywordSearch)} disabled={busy || (sourceCount ?? 0) === 0} title={(sourceCount ?? 0) === 0 ? "请先在“待审商品最终确认”板块勾选要图搜的 SKC" : undefined}>{busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0} 个 SKC）`}</button>
+          <button className="price-verification-primary-button" onClick={() => onStart(rankingMode)} disabled={busy || (sourceCount ?? 0) === 0} title={(sourceCount ?? 0) === 0 ? "本轮 SKC 均已复用产品库货源" : undefined}>{busy ? "图搜执行中…" : preview ? "重新图搜（图片+标题）" : `执行图搜（${sourceCount ?? 0} 个 SKC）`}</button>
           {selectedCandidates.length > 0 && !matchingCompleted ? <button className="price-verification-secondary-button" onClick={onComplete} disabled={busy}>完成关联（{selectedCandidates.length}）</button> : null}
         </div>
       </WorkflowActionBar>

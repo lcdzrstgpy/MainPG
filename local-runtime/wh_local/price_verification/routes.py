@@ -362,7 +362,7 @@ def register_price_verification_routes(
                 ),
                 ranking_mode=_text(request.get("ranking_mode")) or "similarity",
                 skc_ids=_text_list(request.get("skc_ids")),
-                keyword_search=bool(request.get("keyword_search")),
+                keyword_search=True,
             )
         except HTTPException:
             raise

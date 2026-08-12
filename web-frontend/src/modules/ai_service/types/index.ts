@@ -1,4 +1,4 @@
-export type AiCreationMode = "chat" | "generate" | "edit";
+export type AiCreationMode = "chat" | "generate" | "edit" | "pod";
 
 export type AiModel = {
   id: string;
@@ -30,4 +30,22 @@ export type AiMessage = {
   uploadedImageUrl?: string;
   uploadedDocumentName?: string;
   generatedImageUrls?: string[];
+  generatedImageGroups?: Array<{ label: string; imageUrls: string[] }>;
+};
+
+export type AiPodGroupState = {
+  groupId: string;
+  kind: "scene" | "feature" | "size" | "white";
+  label: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
+  imageUrls: string[];
+  errorMessage: string;
+};
+
+export type AiPodJob = {
+  creationId: string;
+  conversationId: string;
+  createdAt: string;
+  status: string;
+  groups: AiPodGroupState[];
 };

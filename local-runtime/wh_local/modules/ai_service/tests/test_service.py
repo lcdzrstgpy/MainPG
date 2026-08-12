@@ -95,3 +95,64 @@ def test_edit_creation_payload_uses_template_and_local_reference_image(tmp_path:
     assert "严格保留上传商品图" in payload["prompt"]
     assert "浅蓝色渐变背景" in payload["prompt"]
     assert payload["image"].startswith("data:image/png;base64,")
+
+
+def test_pod_payloads_are_fixed_to_1k_and_cover_the_four_output_groups(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    asset = service.save_asset(actor, "design.png", PNG, "image/png")
+
+    payloads = service.prepare_pod_creations(
+        actor,
+        user_prompt="复古猫咪插画，面向美国礼品市场",
+        asset_ids=[asset["asset_id"]],
+    )
+
+    assert [item["kind"] for item in payloads] == ["scene", "feature", "size", "white"]
+    assert {item["payload"]["model"] for item in payloads} == {"gpt-image-2-1k"}
+    assert [item["payload"]["n"] for item in payloads] == [2, 2, 1, 1]
+    assert all("复古猫咪插画" in item["payload"]["prompt"] for item in payloads)
+    assert all(item["payload"]["image"].startswith("data:image/png;base64,") for item in payloads)
+
+
+def test_pod_creation_persists_four_independent_groups_and_retries_only_failed_one(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    conversation = service.create_conversation(actor, "POD 杯垫")
+    creation = service.create_pod_creation(
+        actor,
+        conversation["conversation_id"],
+        user_prompt="复古杯垫，办公室场景",
+        asset_ids=[],
+    )
+
+    status = service.pod_creation_status(actor, creation["creation_id"])
+    assert [group["kind"] for group in status["groups"]] == ["scene", "feature", "size", "white"]
+    assert {group["status"] for group in status["groups"]} == {"queued"}
+
+    service.start_pod_group(actor, creation["creation_id"], "scene")
+    service.finish_pod_group(actor, creation["creation_id"], "scene", status="failed", error_message="station timeout")
+    retried = service.retry_pod_group(actor, creation["creation_id"], "scene")
+
+    assert retried["kind"] == "scene"
+    assert service.pod_creation_status(actor, creation["creation_id"])["groups"][0]["status"] == "queued"
+
+
+def test_only_one_active_pod_creation_is_allowed_per_conversation_and_restart_interrupts_groups(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    conversation = service.create_conversation(actor, "POD 杯垫")
+    creation = service.create_pod_creation(actor, conversation["conversation_id"], user_prompt="杯垫", asset_ids=[])
+
+    try:
+        service.create_pod_creation(actor, conversation["conversation_id"], user_prompt="重复提交", asset_ids=[])
+    except AiServiceError as error:
+        assert error.status_code == 409
+    else:
+        raise AssertionError("an active POD creation must block duplicate submission")
+
+    service.start_pod_group(actor, creation["creation_id"], "scene")
+    assert service.mark_interrupted_pod_groups() == 4
+    states = {group["status"] for group in service.pod_creation_status(actor, creation["creation_id"])["groups"]}
+    assert states == {"interrupted"}
+    assert service.latest_pod_creation(actor, conversation["conversation_id"])["creation_id"] == creation["creation_id"]

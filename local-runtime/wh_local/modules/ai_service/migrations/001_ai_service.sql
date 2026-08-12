@@ -81,3 +81,24 @@ CREATE TABLE IF NOT EXISTS ai_service_creations (
 
 CREATE INDEX IF NOT EXISTS idx_ai_service_creations_owner
     ON ai_service_creations (workspace_id, owner_user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_service_pod_groups (
+    group_id TEXT PRIMARY KEY,
+    creation_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    output_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    error_message TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(creation_id, kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_service_pod_groups_owner
+    ON ai_service_pod_groups (creation_id, workspace_id, owner_user_id, status);

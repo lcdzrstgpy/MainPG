@@ -21,13 +21,17 @@ def normalize_source_candidate(
     if not isinstance(raw_candidate, Mapping):
         raise TypeError("raw_candidate must be a mapping")
     offer_id = _offer_id(raw_candidate)
-    source_url = canonical_source_url(_first_text(raw_candidate, "source_url", "url", "product_url", "detail_url"), offer_id)
+    source_url = canonical_source_url(
+        _first_text(raw_candidate, "source_url", "url", "product_url", "detail_url", "item_url", "offer_url"),
+        offer_id,
+    )
     offer_id = offer_id or offer_id_from_url(source_url)
     title = _first_text(raw_candidate, "source_title", "title", "product_title", "name")
     variants = _variants(raw_candidate)
     price = _number(raw_candidate, "price", "price_cny", "unit_price", "unit_price_cny", "sku_price")
     promotion_price = _number(raw_candidate, "promotion_price", "promotionPrice", "sale_price", "activity_price")
     similarity_score = _turn_head_score(raw_candidate)
+    source_channel = _first_text(raw_candidate, "source_channel") or ""
     moq, moq_status = _moq(raw_candidate)
     freight = _number(raw_candidate, "freight", "freight_cny", "domestic_freight", "domestic_freight_cny")
     weight = _number(raw_candidate, "weight", "weight_kg")
@@ -60,7 +64,7 @@ def normalize_source_candidate(
         "moq_status": moq_status,
         "domestic_freight": freight,
         "weight_kg": weight,
-        "source_channel": _first_text(raw_candidate, "source_channel") or "",
+        "source_channel": source_channel,
         "product_evidence_status": product_status,
         "product_evidence": list(product_evidence),
         "sku_evidence_status": sku_status,
@@ -147,8 +151,10 @@ def _decision(product_status: str, sku_status: str, price: float | None, costs: 
 
 
 def _offer_id(raw: Mapping[str, Any]) -> str:
-    value = _first_text(raw, "offer_id", "offerId", "product_id", "productId")
-    return value or offer_id_from_url(_first_text(raw, "source_url", "url", "product_url", "detail_url"))
+    value = _first_text(raw, "offer_id", "offerId", "product_id", "productId", "num_iid", "item_id", "id")
+    return value or offer_id_from_url(
+        _first_text(raw, "source_url", "url", "product_url", "detail_url", "item_url", "offer_url")
+    )
 
 
 def _variants(raw: Mapping[str, Any]) -> tuple[str, ...]:

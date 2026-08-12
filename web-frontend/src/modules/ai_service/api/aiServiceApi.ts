@@ -28,6 +28,15 @@ export const aiServiceApi = {
   },
   loadAssetUrl: async (assetId: string) => URL.createObjectURL(await httpBlob(`/api/ai-service/assets/${encodeURIComponent(assetId)}`)),
   createImage: (body: Record<string, unknown>) => httpJson<{ asset_ids: string[]; conversation_id: string }>("/api/ai-service/creations", { method: "POST", body }),
+  createPodImages: (body: Record<string, unknown>) => httpJson<{
+    creation_id: string;
+    conversation_id: string;
+    status: string;
+    groups: ApiPodGroup[];
+  }>("/api/ai-service/pod-creations", { method: "POST", body }),
+  podCreationStatus: (creationId: string) => httpJson<ApiPodCreation>(`/api/ai-service/pod-creations/${encodeURIComponent(creationId)}`),
+  latestPodCreation: (conversationId: string) => httpJson<ApiPodCreation>(`/api/ai-service/conversations/${encodeURIComponent(conversationId)}/pod-creation`),
+  retryPodGroup: (creationId: string, kind: string) => httpJson<{ creation_id: string; kind: string; status: string }>(`/api/ai-service/pod-creations/${encodeURIComponent(creationId)}/groups/${encodeURIComponent(kind)}/retry`, { method: "POST" }),
   streamChat: async (body: Record<string, unknown>) => {
     const headers: Record<string, string> = { "content-type": "application/json" };
     const token = getAuthToken();
@@ -62,4 +71,24 @@ export const aiServiceApi = {
     }
     return content;
   },
+};
+
+export type ApiPodGroup = {
+  group_id: string;
+  kind: "scene" | "feature" | "size" | "white";
+  label: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
+  asset_ids: string[];
+  error_message: string;
+  started_at: string;
+  finished_at: string;
+};
+
+export type ApiPodCreation = {
+  creation_id: string;
+  conversation_id: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  groups: ApiPodGroup[];
 };
