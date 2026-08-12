@@ -125,7 +125,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
   const [profitOverrides, setProfitOverrides] = useState<Record<string, SourceTopProfit | null>>({});
   const [profitBusy, setProfitBusy] = useState("");
   const [busyLink, setBusyLink] = useState("");
-  const { actionBarRef, spacerRef } = useFloatingActionBar();
+  const { actionBarRef, spacerRef } = useFloatingActionBar("top");
 
   const itemKey = (item: SourcePreviewItem) => item.skc_id ?? item.quote_key;
   const candidateKeyFor = (skcKey: string, candidate: SourceCandidate | null) =>
@@ -257,6 +257,16 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
         </div>
       </div>
 
+      <div ref={spacerRef} className="price-verification-floating-action-spacer" aria-hidden="true" />
+      <WorkflowActionBar label="货源匹配操作" floating ref={actionBarRef}>
+        <div className="price-verification-action-summary"><span>待图搜</span><strong>{sourceCount ?? 0} 个 SKC</strong></div>
+        <div className="price-verification-action-buttons">
+          <span className="pv-source-sort-label">候选保留万邦排序，首条置于当前展示末尾</span>
+          <button className="price-verification-primary-button" onClick={onStart} disabled={busy || (sourceCount ?? 0) === 0} title={(sourceCount ?? 0) === 0 ? "本轮 SKC 均已复用产品库货源" : undefined}>{busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0} 个 SKC）`}</button>
+          {selectedCandidates.length > 0 && !matchingCompleted ? <button className="price-verification-secondary-button" onClick={onComplete} disabled={busy}>完成关联（{selectedCandidates.length}）</button> : null}
+        </div>
+      </WorkflowActionBar>
+
       {/* 统计 + 排序控件 */}
       <div className="pv-source-stats">
         <div className="pv-source-stat"><span>图搜 SKC</span><strong>{preview?.items.length ?? 0}</strong></div>
@@ -377,15 +387,6 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       ) : (
         <div className="pv-profit-empty">{preview ? "暂无货源候选" : "等待图搜结果"}</div>
       )}
-      <div ref={spacerRef} className="price-verification-floating-action-spacer" aria-hidden="true" />
-      <WorkflowActionBar label="货源匹配操作" floating ref={actionBarRef}>
-        <div className="price-verification-action-summary"><span>待图搜</span><strong>{sourceCount ?? 0} 个 SKC</strong></div>
-        <div className="price-verification-action-buttons">
-          <span className="pv-source-sort-label">候选保留万邦排序，首条置于当前展示末尾</span>
-          <button className="price-verification-primary-button" onClick={onStart} disabled={busy || (sourceCount ?? 0) === 0} title={(sourceCount ?? 0) === 0 ? "本轮 SKC 均已复用产品库货源" : undefined}>{busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0} 个 SKC）`}</button>
-          {selectedCandidates.length > 0 && !matchingCompleted ? <button className="price-verification-secondary-button" onClick={onComplete} disabled={busy}>完成关联（{selectedCandidates.length}）</button> : null}
-        </div>
-      </WorkflowActionBar>
     </section>
   );
 }

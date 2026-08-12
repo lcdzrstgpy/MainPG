@@ -109,6 +109,9 @@ export function PriceVerificationPage() {
       }
       const state = await priceVerificationApi.prepareBatchSourcing(batchId, retained.map((selection) => selection.skc_id));
       setSourceSkcIds(state.selected_skc_ids);
+      // 进入新一轮图搜时，不能继续展示上一轮候选；等本轮接口返回后再回填预览。
+      setSourcingState({ ...state, preview: null, selected_candidates: [] });
+      setSourceLinks([]);
       setActiveStage("sourcing");
       scrollWorkflowTop();
       if (!state.unresolved_skc_ids.length) {
