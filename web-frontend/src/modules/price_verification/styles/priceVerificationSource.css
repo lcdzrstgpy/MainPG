@@ -231,6 +231,11 @@
   background: #fff0f1;
 }
 
+.pv-source-group-badges em.is-audit-success {
+  color: #187252;
+  background: #eaf8f0;
+}
+
 /* ---------- 候选纵向大图列表卡 ---------- */
 .pv-source-cards {
   display: grid;

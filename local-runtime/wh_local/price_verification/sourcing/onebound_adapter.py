@@ -99,8 +99,8 @@ class OneBoundSourceAdapter:
     ) -> tuple[dict[str, Any], int]:
         evidence: list[dict[str, Any]] = []
         try:
-            # Channel A: pure image search.  This is the established primary
-            # channel; it carries the OB similarity score used for ranking.
+            # Channel A: pure image search. This is the only channel allowed
+            # to produce visual-match candidates.
             image_raw: list[Mapping[str, Any]] = []
             image_ok = False
             image_error = ""
@@ -347,7 +347,7 @@ def _merge_channels(
     """Return only image-search offers, de-duplicated by offer ID.
 
     A title hit says nothing about whether the product looks the same. When both
-    channels return one offer we keep the image hit and its visual score only.
+    channels return one offer we keep the image hit only.
     """
     keyword_offer_ids = {
         _offer_id(candidate)
@@ -356,13 +356,17 @@ def _merge_channels(
     }
     seen: set[str] = set()
     merged: list[Mapping[str, Any]] = []
-    for candidate in image_raw:
+    for index, candidate in enumerate(image_raw, start=1):
         offer_id = _offer_id(candidate) or _text(candidate.get("title") or candidate.get("item_title"))[:40]
         if offer_id:
             if offer_id in seen:
                 continue
             seen.add(offer_id)
         item = dict(candidate)
+        # This is the only rank we can safely preserve: the order returned by
+        # OneBound's image endpoint. Do not interpret ``turn_head`` as an image
+        # similarity score; the provider does not document it as one.
+        item["image_search_rank"] = index
         if offer_id in keyword_offer_ids:
             item["title_search_confirmed"] = True
         merged.append(item)

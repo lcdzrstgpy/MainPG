@@ -1,5 +1,7 @@
 from wh_local.price_verification.quote_normalizer import QuoteItem
 from wh_local.price_verification.sourcing.normalizer import normalize_source_candidate
+from wh_local.price_verification.sourcing.ranking import rank_candidates_by_image_order
+from wh_local.price_verification.sourcing.service import _apply_batch_ranking, _preview_keyword_skc_ids, build_source_preview
 
 
 def test_image_search_num_iid_and_item_url_remain_linkable_1688_offer() -> None:
@@ -14,3 +16,158 @@ def test_image_search_num_iid_and_item_url_remain_linkable_1688_offer() -> None:
 
     assert candidate["offer_id"] == "123456789012"
     assert candidate["source_url"] == "https://detail.1688.com/offer/123456789012.html"
+
+
+def test_image_search_turn_head_is_not_exposed_as_picture_similarity() -> None:
+    candidate = normalize_source_candidate(
+        QuoteItem(skc_id="49301259002"),
+        {
+            "num_iid": "123456789012",
+            "item_url": "https://detail.1688.com/offer/123456789012.html",
+            "title": "折叠收纳箱",
+            "turn_head": "17%",
+            "image_search_rank": 2,
+        },
+    )
+
+    assert "similarity_score" not in candidate
+    assert candidate["image_search_rank"] == 2
+
+
+def test_source_preview_rejects_keyword_only_candidates() -> None:
+    preview = build_source_preview(
+        [QuoteItem(skc_id="49301259002")],
+        {
+            "items": [
+                {
+                    "task_key": "49301259002",
+                    "status": "succeeded",
+                    "candidates": [
+                        {
+                            "num_iid": "123456789012",
+                            "item_url": "https://detail.1688.com/offer/123456789012.html",
+                            "title": "标题搜到的错误商品",
+                            "source_channel": "keyword",
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert preview["items"][0]["all_candidates"] == []
+
+
+def test_source_preview_exposes_safe_image_search_audit() -> None:
+    preview = build_source_preview(
+        [QuoteItem(skc_id="49301259002")],
+        {
+            "items": [
+                {
+                    "task_key": "49301259002",
+                    "status": "succeeded",
+                    "candidates": [],
+                    "evidence": [
+                        {
+                            "operation": "download_reference_image",
+                            "response_summary": {
+                                "outcome": "success",
+                                "final_url": "https://img.temu.test/main.jpeg",
+                                "image_size_bytes": 12345,
+                            },
+                        },
+                        {"operation": "upload_img", "response_summary": {"outcome": "success"}},
+                        {
+                            "operation": "item_search_img",
+                            "request_id": "safe-request-id",
+                            "captured_at": "2026-08-12T08:00:00+00:00",
+                            "response_summary": {"outcome": "success"},
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert preview["items"][0]["image_search_audit"] == {
+        "downloaded": True,
+        "uploaded": True,
+        "searched": True,
+        "reference_image_url": "https://img.temu.test/main.jpeg",
+        "image_size_bytes": 12345,
+        "request_id": "safe-request-id",
+        "captured_at": "2026-08-12T08:00:00+00:00",
+    }
+
+
+def test_saved_keyword_candidates_are_marked_for_research() -> None:
+    assert _preview_keyword_skc_ids(
+        {
+            "items": [
+                {
+                    "skc_id": "44980455124",
+                    "all_candidates": [{"source_channel": "keyword"}],
+                }
+            ]
+        }
+    ) == ("44980455124",)
+
+
+def test_image_candidates_keep_onebound_return_order_instead_of_price_order() -> None:
+    ranked = rank_candidates_by_image_order(
+        [
+            {"offer_id": "cheap-but-second", "image_search_rank": 2, "price": 1},
+            {"offer_id": "first-from-onebound", "image_search_rank": 1, "price": 99},
+        ]
+    )
+
+    assert [candidate["offer_id"] for candidate in ranked] == ["first-from-onebound", "cheap-but-second"]
+
+
+def test_title_confirmed_image_candidate_precedes_unconfirmed_onebound_first_result() -> None:
+    ranked = rank_candidates_by_image_order(
+        [
+            {"offer_id": "wrong-category-first", "image_search_rank": 1},
+            {"offer_id": "same-style-confirmed", "image_search_rank": 2, "title_search_confirmed": True},
+        ]
+    )
+
+    assert [candidate["offer_id"] for candidate in ranked] == ["same-style-confirmed", "wrong-category-first"]
+
+
+def test_cross_language_category_mismatch_rejects_pet_bowl_for_bamboo_cooling_mat() -> None:
+    candidate = normalize_source_candidate(
+        QuoteItem(product_title="Bamboo Cooling Mat for Dogs and Cats"),
+        {
+            "num_iid": "123456789012",
+            "item_url": "https://detail.1688.com/offer/123456789012.html",
+            "title": "猫碗陶瓷保护颈椎防打翻猫粮碗实木猫盆猫咪食盆水碗宠物用品",
+            "image_search_rank": 2,
+        },
+    )
+
+    assert candidate["product_evidence_status"] == "conflict"
+    assert candidate["product_evidence"] == ["product_category_mismatch"]
+
+
+def test_ranked_preview_omits_category_conflicts_from_visible_candidates() -> None:
+    preview = {
+        "items": [
+            {
+                "skc_id": "30164074709",
+                "product_title": "Bamboo Cooling Mat for Dogs and Cats",
+                "all_candidates": [
+                    {
+                        "offer_id": "cat-bowl",
+                        "source_title": "猫碗陶瓷保护颈椎防打翻猫粮碗",
+                        "product_evidence_status": "conflict",
+                        "image_search_rank": 1,
+                    }
+                ],
+            }
+        ]
+    }
+
+    ranked = _apply_batch_ranking(preview, selections_by_skc={}, ranking_mode="image_order")
+
+    assert ranked["items"][0]["all_candidates"] == []

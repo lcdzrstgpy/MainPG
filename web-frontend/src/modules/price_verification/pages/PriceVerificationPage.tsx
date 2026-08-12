@@ -116,7 +116,7 @@ export function PriceVerificationPage() {
         setNotice(`已保留 ${retained.length} 个 SKC，全部复用产品库已有货源，无需图搜。`);
         return;
       }
-      const preview = await priceVerificationApi.sourceBatchSelections(batchId, "similarity", state.unresolved_skc_ids);
+      const preview = await priceVerificationApi.sourceBatchSelections(batchId, state.unresolved_skc_ids);
       setSourcingState({ ...state, preview });
       setNotice(failed
         ? `已保留 ${retained.length} 个 SKC，${failed} 个写入草稿池失败；其余 SKC 已完成图片+标题双路图搜。`
@@ -140,11 +140,11 @@ export function PriceVerificationPage() {
     } catch (error) { setNotice(`删除选中报价失败：${errorMessage(error)}`); }
   };
 
-  const startBatchSourcing = async (rankingMode: "similarity" | "price") => {
+  const startBatchSourcing = async () => {
     if (!currentBatchId || !sourcingState.unresolved_skc_ids.length) return;
     setBusyKey("source");
     try {
-      const preview = await priceVerificationApi.sourceBatchSelections(currentBatchId, rankingMode, sourcingState.unresolved_skc_ids);
+      const preview = await priceVerificationApi.sourceBatchSelections(currentBatchId, sourcingState.unresolved_skc_ids);
       setSourcingState((current) => ({ ...current, preview }));
       setNotice(`货源图搜完成，获得 ${preview.counts?.candidate_count ?? 0} 个候选货源。请选择候选后完成入库。`);
     } catch (error) { setNotice(`执行图搜失败：${errorMessage(error)}`); } finally { setBusyKey(""); }
@@ -217,7 +217,7 @@ export function PriceVerificationPage() {
       {activeStage !== "prescreen" && <button type="button" className="price-verification-back-button" onClick={() => openStage(activeStage === "batchReview" ? "prescreen" : "batchReview")}>← 返回上一步</button>}
       {activeStage === "prescreen" && <PrescreenPanel isChecking={loading} totalItems={captureBatches.find((batch) => batch.is_current)?.quote_count ?? 0} totalSkc={captureBatches.find((batch) => batch.is_current)?.skc_count ?? 0} passedItems={batchItems.length} prescreen={prescreen} onPrescreenChange={savePrescreen} onRefresh={() => void refresh()} onContinue={() => openStage("batchReview")} />}
       {activeStage === "batchReview" && <BatchReviewPanel batchId={currentBatchId} items={batchItems} busy={Boolean(busyKey) || loading} onConfirm={(batchId, skcIds, maxCandidates) => stageBatchAndStartSourcing(batchId, skcIds, maxCandidates)} onDelete={(batchId, skcId) => deleteBatchItem(batchId, skcId)} onDeleteSelected={(batchId, skcIds) => deleteBatchItems(batchId, skcIds)} />}
-      {activeStage === "sourcing" && <><SourcingPanel preview={sourcingState.preview} batchId={currentBatchId} busy={Boolean(busyKey) || loading} sourceCount={sourceCount} links={sourceLinks} selectedCandidates={sourcingState.selected_candidates} onLink={(skcId, _offerId, candidate, priceOverride, weightOverride) => selectSourceCandidate(skcId, candidate, priceOverride, weightOverride)} onUnlink={(linkId) => removeSourceLink(linkId)} onUnselectCandidate={(skcId, offerId) => unselectSourceCandidate(skcId, offerId)} onComplete={() => void completeSourcing()} onStart={(mode) => void startBatchSourcing(mode)} matchingCompleted={sourceCount === 0 && sourcingState.preview === null} /><LinkedSourcePanel products={sourcedProducts} /></>}
+      {activeStage === "sourcing" && <><SourcingPanel preview={sourcingState.preview} batchId={currentBatchId} busy={Boolean(busyKey) || loading} sourceCount={sourceCount} links={sourceLinks} selectedCandidates={sourcingState.selected_candidates} onLink={(skcId, _offerId, candidate, priceOverride, weightOverride) => selectSourceCandidate(skcId, candidate, priceOverride, weightOverride)} onUnlink={(linkId) => removeSourceLink(linkId)} onUnselectCandidate={(skcId, offerId) => unselectSourceCandidate(skcId, offerId)} onComplete={() => void completeSourcing()} onStart={() => void startBatchSourcing()} matchingCompleted={sourceCount === 0 && sourcingState.preview === null} /><LinkedSourcePanel products={sourcedProducts} /></>}
     </div></div>
   </div>;
 }

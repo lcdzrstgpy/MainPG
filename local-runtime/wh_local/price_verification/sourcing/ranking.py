@@ -21,40 +21,26 @@ def rank_source_candidates(
     )
 
 
-def rank_candidates_by_mode(
+def rank_candidates_by_image_order(
     candidates: Iterable[Mapping[str, Any]],
-    *,
-    mode: str = "similarity",
 ) -> tuple[Mapping[str, Any], ...]:
-    """Order candidates by the user-selected sorting mode.
+    """Prefer title-corroborated image hits, then keep OneBound's image order.
 
-    ``similarity`` sorts on the OB image-search similarity score (``turn_head``)
-    descending; ``price`` sorts by the cheapest promotion/unit price first.  Any
-    other mode falls back to the established closed-cost ordering.
+    OneBound does not provide a documented visual similarity score. A title hit
+    never becomes a candidate by itself; it only prevents an obviously
+    unrelated image hit from taking first place when an image candidate is also
+    confirmed by the translated Temu title search.
     """
-    items = list(candidates)
-    if mode == "price":
-        return tuple(
-            sorted(
-                items,
-                key=lambda candidate: (
-                    _number(candidate.get("promotion_price") if candidate.get("promotion_price") is not None else candidate.get("price")),
-                    str(candidate.get("candidate_key") or candidate.get("offer_id") or ""),
-                ),
-            )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                not bool(candidate.get("title_search_confirmed")),
+                _number(candidate.get("image_search_rank")),
+                str(candidate.get("candidate_key") or candidate.get("offer_id") or ""),
+            ),
         )
-    if mode == "similarity":
-        return tuple(
-            sorted(
-                items,
-                key=lambda candidate: (
-                    -_number(candidate.get("similarity_score")),
-                    _number(candidate.get("price")),
-                    str(candidate.get("candidate_key") or candidate.get("offer_id") or ""),
-                ),
-            )
-        )
-    return rank_source_candidates(items)
+    )
 
 
 def _number(value: object) -> float:
@@ -62,4 +48,3 @@ def _number(value: object) -> float:
         return float(value) if value is not None else float("inf")
     except (TypeError, ValueError):
         return float("inf")
-

@@ -30,7 +30,7 @@ def normalize_source_candidate(
     variants = _variants(raw_candidate)
     price = _number(raw_candidate, "price", "price_cny", "unit_price", "unit_price_cny", "sku_price")
     promotion_price = _number(raw_candidate, "promotion_price", "promotionPrice", "sale_price", "activity_price")
-    similarity_score = _turn_head_score(raw_candidate)
+    image_search_rank = _positive_int(raw_candidate.get("image_search_rank"))
     source_channel = _first_text(raw_candidate, "source_channel") or ""
     moq, moq_status = _moq(raw_candidate)
     freight = _number(raw_candidate, "freight", "freight_cny", "domestic_freight", "domestic_freight_cny")
@@ -58,7 +58,10 @@ def normalize_source_candidate(
         "sku_attributes": _first_text(raw_candidate, "sku_attributes", "sku_attribute_text", "source_sku_attributes"),
         "price": price,
         "promotion_price": promotion_price,
-        "similarity_score": similarity_score,
+        "image_search_rank": image_search_rank,
+        # A keyword hit may corroborate an image-search candidate, but keyword
+        # results themselves are never included as source candidates.
+        "title_search_confirmed": bool(raw_candidate.get("title_search_confirmed")),
         "sales": _number(raw_candidate, "sales", "sold", "volume"),
         "moq": moq,
         "moq_status": moq_status,
@@ -206,26 +209,14 @@ def _parsed_number(value: object) -> float | None:
     return float(number) if number.is_finite() else None
 
 
-def _turn_head_score(raw: Mapping[str, Any]) -> float:
-    """Parse the OB image-search similarity token (``turn_head`` = "24%") into 0..1."""
-    for key in ("turn_head", "similarity", "match_score", "score"):
-        value = raw.get(key)
-        if value is None:
-            continue
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, (int, float)):
-            number = float(value)
-            if number > 1:
-                number = number / 100
-            return round(min(max(number, 0.0), 1.0), 4)
-        text = str(value).strip().rstrip("%").strip()
-        try:
-            number = float(text)
-        except ValueError:
-            continue
-        return round(min(max(number / 100 if number > 1 else number, 0.0), 1.0), 4)
-    return 0.0
+def _positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _first_text(raw: Mapping[str, Any], *keys: str) -> str:
