@@ -119,6 +119,19 @@ function auditText(item?: SourcePreviewItem) {
   return `图搜链路未完成：${failed.join("、")}`;
 }
 
+function visualAuditText(item?: SourcePreviewItem) {
+  const audit = item?.visual_verification;
+  if (!audit) return "未提供本地验图审计";
+  if ((audit.input_count ?? 0) === 0) return "无候选进入本地验图";
+  if (!audit.reference_available) return "参考图下载或解析失败";
+  const threshold = audit.threshold !== undefined ? ` · 阈值 ${Math.round(audit.threshold * 100)}%` : "";
+  const fallback = audit.fallback_count ? ` · 补位 ${audit.fallback_count}` : "";
+  const distractors = audit.distractor_suppression?.applied
+    ? ` · 已抑制干扰物 ${audit.distractor_suppression.distractor_count ?? 0}`
+    : "";
+  return `本地验图 ${audit.verified_count ?? 0}/${audit.input_count ?? 0}${fallback}${distractors}${threshold}`;
+}
+
 export function SourcingPanel({ preview, batchId, busy, sourceCount, links, selectedCandidates, onLink, onUnlink, onUnselectCandidate, onComplete, onStart, matchingCompleted = false }: Props) {
   const [weights, setWeights] = useState<Record<string, string>>({});
   const [priceOverrides, setPriceOverrides] = useState<Record<string, string>>({});
@@ -261,7 +274,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       <WorkflowActionBar label="货源匹配操作" floating ref={actionBarRef}>
         <div className="price-verification-action-summary"><span>待图搜</span><strong>{sourceCount ?? 0} 个 SKC</strong></div>
         <div className="price-verification-action-buttons">
-          <span className="pv-source-sort-label">候选保留万邦排序，首条置于当前展示末尾</span>
+          <span className="pv-source-sort-label">候选保留万邦排序，首条置于当前展示末尾 · 低于50%时按本地相似度补位</span>
           <button className="price-verification-primary-button" onClick={onStart} disabled={busy || (sourceCount ?? 0) === 0} title={(sourceCount ?? 0) === 0 ? "本轮 SKC 均已复用产品库货源" : undefined}>{busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0} 个 SKC）`}</button>
           {selectedCandidates.length > 0 && !matchingCompleted ? <button className="price-verification-secondary-button" onClick={onComplete} disabled={busy}>完成关联（{selectedCandidates.length}）</button> : null}
         </div>
@@ -304,6 +317,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                   <div className="pv-source-group-badges">
                     <em>图搜 {statusText(item?.source_search_status)}</em>
                     <em className={item?.image_search_audit?.downloaded && item?.image_search_audit?.uploaded && item?.image_search_audit?.searched ? "is-audit-success" : "is-error"} title={item?.image_search_audit?.request_id ? `万邦请求 ${item.image_search_audit.request_id}` : undefined}>{auditText(item)}</em>
+                    <em className={item?.visual_verification?.reference_available && (item.visual_verification.input_count ?? 0) > 0 ? "is-audit-success" : "is-error"}>{visualAuditText(item)}</em>
                     <em>展示 {candidates.length}/{all.length} 条</em>
                     <em>已关联 1688 {groupLinks.length} 条（下方第四板块）</em>
                     {searchFailed && item?.source_search_error ? <em className="is-error" title={sourceErrorText(item.source_search_error)}>{sourceErrorText(item.source_search_error)}</em> : null}
@@ -322,6 +336,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                       const weightText = weights[candKey] ?? String(selected?.weight_kg ?? "0.5");
                       const metaParts = [
                         candidate.image_search_rank ? `万邦图搜第 ${candidate.image_search_rank} 位` : "",
+                        candidate.image_similarity_score != null ? `本地相似度 ${Math.round(candidate.image_similarity_score * 100)}%` : "",
+                        candidate.image_similarity_fallback ? (candidate.image_similarity_score == null ? "万邦顺序兜底" : "低于阈值补位") : "",
                         candidate.sales !== undefined ? `销量 ${candidate.sales}` : "",
                       ].filter(Boolean);
                       return (
