@@ -21,7 +21,6 @@ import type {
   DailySelectionRunSummary,
   SelectionScope,
   SkuRepullState,
-  TargetSite,
 } from "../types";
 import "../styles/daily-selection.css";
 
@@ -33,7 +32,6 @@ type Direction = {
   price: [number, number];
   target: number;
   accent: string;
-  site?: TargetSite;
   custom?: boolean;
   modified?: boolean;
 };
@@ -68,8 +66,6 @@ const DEFAULT_DIRECTIONS: Direction[] = [
 const CUSTOM_DIRECTIONS_KEY = "mainpg.daily-selection.custom-directions";
 const UPDATED_DEFAULT_DIRECTIONS_KEY = "mainpg.daily-selection.updated-default-directions";
 const REMOVED_DEFAULT_DIRECTIONS_KEY = "mainpg.daily-selection.removed-default-directions";
-const SITE_LABELS: Record<TargetSite, string> = { US: "美国站", CO: "哥伦比亚站", EC: "厄瓜多尔站" };
-
 function isStoredDirection(value: unknown): value is Direction {
   if (!value || typeof value !== "object") return false;
   const item = value as Partial<Direction>;
@@ -244,7 +240,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [keywords, setKeywords] = useState(selectedDirection.keywords.join("，"));
   const [referenceImageUrl, setReferenceImageUrl] = useState("");
   const [scope, setScope] = useState<SelectionScope>("divergent");
-  const [site, setSite] = useState<TargetSite>("US");
   const [minPrice, setMinPrice] = useState(String(selectedDirection.price[0]));
   const [maxPrice, setMaxPrice] = useState(String(selectedDirection.price[1]));
   const [minMoq, setMinMoq] = useState("2");
@@ -278,7 +273,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [presetName, setPresetName] = useState("");
   const [presetKeywords, setPresetKeywords] = useState("");
   const [presetAttributes, setPresetAttributes] = useState("");
-  const [presetSite, setPresetSite] = useState<TargetSite>("US");
   const [presetMinPrice, setPresetMinPrice] = useState("3");
   const [presetMaxPrice, setPresetMaxPrice] = useState("50");
   const [presetTarget, setPresetTarget] = useState("16");
@@ -459,7 +453,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   function chooseDirection(direction: Direction) {
     setSelectedDirectionId(direction.id);
     setKeywords(direction.keywords.join("，"));
-    setSite(direction.site ?? "US");
     setMinPrice(String(direction.price[0]));
     setMaxPrice(String(direction.price[1]));
     setTargetCount(String(direction.target));
@@ -469,7 +462,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     setPresetName("");
     setPresetKeywords("");
     setPresetAttributes("");
-    setPresetSite("US");
     setPresetMinPrice("3");
     setPresetMaxPrice("50");
     setPresetTarget("16");
@@ -493,7 +485,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     setPresetName(direction.name);
     setPresetKeywords(direction.keywords.join("，"));
     setPresetAttributes(direction.attributes);
-    setPresetSite(direction.site ?? "US");
     setPresetMinPrice(String(direction.price[0]));
     setPresetMaxPrice(String(direction.price[1]));
     setPresetTarget(String(direction.target));
@@ -533,7 +524,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       price: [parsedMinPrice, parsedMaxPrice],
       target: parsedTarget,
       accent: presetAccent,
-      site: presetSite,
       custom: existingDirection?.custom ?? true,
       modified: existingDirection && !existingDirection.custom ? true : existingDirection?.modified,
     };
@@ -601,7 +591,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       max_api_calls: 200,
       detail_count: 50,
       exclude_risks: excludeRisks,
-      site,
       max_parallel_collect: maxParallelCollect,
     };
     const parsedMinPrice = numberOrUndefined(minPrice);
@@ -817,7 +806,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                     <span className="direction-card-symbol" aria-hidden="true">{direction.name.slice(0, 1)}</span>
                     <div>
                       <div className="direction-card-meta">
-                        <small>{SITE_LABELS[direction.site ?? "US"]}</small>
                         <span className={direction.custom || direction.modified ? "is-custom" : ""}>{direction.custom ? "自定义" : direction.modified ? "已更改" : "系统预设"}</span>
                       </div>
                       <strong>{direction.name}</strong>
@@ -837,7 +825,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 {!deleteMode && !editMode && (
                   <div className="direction-hover-card" id={tooltipId} role="tooltip">
                     <div className="direction-hover-heading">
-                      <span>{SITE_LABELS[direction.site ?? "US"]}{direction.custom ? " · 自定义" : direction.modified ? " · 已更改" : " · 系统预设"}</span>
+                      <span>{direction.custom ? "自定义" : direction.modified ? "已更改" : "系统预设"}</span>
                       <strong>{direction.name}</strong>
                     </div>
                     <dl>
@@ -871,7 +859,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             {presetError && <div className="preset-error">{presetError}</div>}
             <div className="preset-form-grid">
               <label><span>预设名称 <em>必填</em></span><input value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder="例如：手机周边" /></label>
-              <label><span>站点</span><select value={presetSite} onChange={(event) => setPresetSite(event.target.value as TargetSite)}><option value="US">美国站 US</option><option value="CO">哥伦比亚 CO</option><option value="EC">厄瓜多尔 EC</option></select></label>
               <label className="preset-wide"><span>关键词 <em>1–5 个</em></span><input value={presetKeywords} onChange={(event) => setPresetKeywords(event.target.value)} placeholder="多个关键词用逗号分隔" /></label>
               <label className="preset-wide"><span>关注属性 <em>必填</em></span><input value={presetAttributes} onChange={(event) => setPresetAttributes(event.target.value)} placeholder="例如：材质 / 尺寸 / 适配型号" /></label>
               <label><span>最低价格（元）</span><input type="number" min="0" step="0.01" value={presetMinPrice} onChange={(event) => setPresetMinPrice(event.target.value)} /></label>
@@ -953,7 +940,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 <option value="1688+taobao">1688 + 淘宝</option>
               </select>
             </label>
-            <label><span>站点</span><select value={site} onChange={(event) => setSite(event.target.value as TargetSite)}><option value="US">美国站 US</option><option value="CO">哥伦比亚 CO</option><option value="EC">厄瓜多尔 EC</option></select></label>
             <label><span>选品范围</span><select value={scope} onChange={(event) => setScope(event.target.value as SelectionScope)}><option value="divergent">发散相似款</option><option value="exact">精准匹配</option></select></label>
             <label><span>采集数量</span><input type="number" min="1" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
             <label className="field-wide">

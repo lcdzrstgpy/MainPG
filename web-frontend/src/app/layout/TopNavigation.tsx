@@ -29,7 +29,7 @@ type TopNavigationProps = {
 export function TopNavigation({ sidebarPinned, topbarPinned, activeKey, tabs, onToggleSidebar, onToggleTopbarPin, onSelectTab, onCloseTab, onSignOut }: TopNavigationProps) {
   const [closingKeys, setClosingKeys] = useState<string[]>([]);
   const [topbarStuck, setTopbarStuck] = useState(false);
-  const [showThemePanel, setShowThemePanel] = useState(false);
+  const [showThemePanel, setShowThemePanel] = useState(true);
   const topbarRef = useRef<HTMLElement>(null);
   const { theme, setTheme } = useTheme();
 

@@ -2004,6 +2004,14 @@
   color: inherit;
 }
 
+/* Preset keyword chips sit inside a button, so the diamond button contrast
+   guard above would otherwise turn their text white on a light-gray chip. */
+[data-theme="diamond"] .daily-selection-page .direction-card .direction-keywords span {
+  color: #111318 !important;
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
 [data-theme="diamond"] :is(
   .daily-message.is-error,
   .daily-topbar-status.is-error,
@@ -2752,14 +2760,105 @@
    Warm-sun orange citrus effects
    ================================================================ */
 [data-theme="sunset"] .workspace-shell {
+  position: relative;
+  isolation: isolate;
   background-image:
-    radial-gradient(circle, rgba(251, 146, 60, .14) 0 7px, rgba(253, 186, 116, .09) 7px 10px, transparent 11px),
-    radial-gradient(ellipse at 70% 35%, rgba(132, 204, 22, .12) 0 4px, transparent 5px),
-    linear-gradient(135deg, rgba(255, 247, 237, .7), rgba(255, 251, 235, .55));
-  background-position: 16px 22px, 28px 12px, 0 0;
-  background-size: 146px 146px, 146px 146px, 100% 100%;
-  animation: citrus-background-drift 28s linear infinite;
+    radial-gradient(circle at 88% 12%, rgba(251, 146, 60, .18), transparent 26rem),
+    radial-gradient(circle at 9% 82%, rgba(245, 158, 11, .12), transparent 22rem),
+    linear-gradient(135deg, #fff7ed, #fffbeb 58%, #fff4e6);
+  background-position: 0 0, 0 0, 0 0;
+  background-size: 110% 110%, 110% 110%, 100% 100%;
+  animation: none;
 }
+
+[data-theme="sunset"] .workspace-shell::before,
+[data-theme="sunset"] .workspace-shell::after {
+  content: "";
+  position: fixed;
+  z-index: 0;
+  pointer-events: none;
+  display: none;
+}
+
+/* Abstract orange-peel loops: deliberately local and asymmetric so they read
+   as floating citrus accents rather than radial rays across the interface. */
+[data-theme="sunset"] .workspace-shell::before {
+  top: 10%;
+  right: 3%;
+  width: 176px;
+  height: 176px;
+  border: 18px solid rgba(249, 115, 22, .34);
+  border-right-color: rgba(251, 146, 60, .12);
+  border-bottom-color: rgba(253, 186, 116, .48);
+  border-radius: 48% 52% 44% 56% / 55% 42% 58% 45%;
+  background: radial-gradient(ellipse at 36% 30%, rgba(255, 237, 213, .48), transparent 48%);
+  box-shadow: inset 0 0 0 5px rgba(255, 247, 237, .35), 0 0 0 1px rgba(234, 88, 12, .08);
+  animation: citrus-peel-orbit-a 13s ease-in-out infinite;
+}
+
+[data-theme="sunset"] .workspace-shell::after {
+  bottom: 6%;
+  left: 10%;
+  width: 132px;
+  height: 96px;
+  border: 14px solid rgba(245, 158, 11, .28);
+  border-top-color: rgba(255, 237, 213, .52);
+  border-left-color: rgba(251, 146, 60, .14);
+  border-radius: 62% 38% 58% 42% / 44% 58% 42% 56%;
+  background: linear-gradient(145deg, rgba(253, 186, 116, .2), rgba(255, 247, 237, .08));
+  box-shadow: inset 0 0 18px rgba(249, 115, 22, .08);
+  animation: citrus-peel-orbit-b 16s ease-in-out infinite -5s;
+}
+
+[data-theme="sunset"] .workspace-main { position: relative; z-index: 1; }
+[data-theme="sunset"] .sidebar-card { z-index: 1; }
+
+/* The shell accents are mostly hidden by the opaque application cards. Put a
+   second pair on the visible content surface, behind each page's controls. */
+[data-theme="sunset"] .content-card {
+  position: relative;
+  isolation: isolate;
+}
+
+[data-theme="sunset"] .content-card::before,
+[data-theme="sunset"] .content-card::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  display: none;
+}
+
+[data-theme="sunset"] .content-card::before {
+  top: 72px;
+  right: 42px;
+  width: 188px;
+  height: 188px;
+  border: 16px solid rgba(249, 115, 22, .36);
+  border-right-color: rgba(253, 186, 116, .14);
+  border-bottom-color: rgba(245, 158, 11, .48);
+  border-radius: 46% 54% 43% 57% / 58% 42% 58% 42%;
+  opacity: .58;
+  background: radial-gradient(ellipse at 32% 26%, rgba(255, 237, 213, .52), transparent 52%);
+  box-shadow: inset 0 0 0 5px rgba(255, 247, 237, .38), 0 18px 38px rgba(194, 65, 12, .13);
+  animation: citrus-peel-orbit-a 13s ease-in-out infinite;
+}
+
+[data-theme="sunset"] .content-card::after {
+  bottom: 70px;
+  left: 54px;
+  width: 132px;
+  height: 96px;
+  border: 13px solid rgba(245, 158, 11, .34);
+  border-top-color: rgba(255, 237, 213, .56);
+  border-left-color: rgba(251, 146, 60, .16);
+  border-radius: 62% 38% 58% 42% / 44% 58% 42% 56%;
+  opacity: .48;
+  box-shadow: inset 0 0 18px rgba(249, 115, 22, .1), 0 14px 28px rgba(180, 83, 9, .1);
+  animation: citrus-peel-orbit-b 16s ease-in-out infinite -5s;
+}
+
+[data-theme="sunset"] .content-card > * { position: relative; z-index: 1; }
 
 [data-theme="sunset"] :is(
   .page-hero-card,
@@ -2772,16 +2871,18 @@
   .profit-products-head,
   .profit-activity-hero,
   .profit-test-hero
-) {
+  ) {
   background-image:
-    linear-gradient(110deg, transparent 0 38%, rgba(255, 255, 255, 0) 43%, rgba(255, 237, 213, .23) 50%, rgba(255, 255, 255, 0) 57%, transparent 62%),
-    radial-gradient(circle at 16% 30%, rgba(255, 237, 213, .9) 0 2px, transparent 3px),
-    radial-gradient(circle at 79% 68%, rgba(253, 186, 116, .72) 0 2px, transparent 3px),
-    radial-gradient(circle at 91% 20%, rgba(254, 215, 170, .62) 0 1.5px, transparent 3px),
+    radial-gradient(ellipse at 92% 12%, rgba(255, 237, 213, .2) 0 8%, transparent 30%),
+    radial-gradient(ellipse at 78% 92%, rgba(251, 146, 60, .2) 0 9%, transparent 32%),
+    linear-gradient(108deg, transparent 0 36%, rgba(255,255,255,0) 43%, rgba(255, 237, 213, .18) 50%, rgba(255,255,255,0) 57%, transparent 64%),
+    radial-gradient(circle at 18% 28%, rgba(255, 237, 213, .74) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 83% 68%, rgba(254, 215, 170, .52) 0 1.5px, transparent 2.5px),
     var(--theme-hero-gradient) !important;
-  background-repeat: no-repeat, repeat, repeat, repeat, no-repeat !important;
-  background-size: 260% 100%, 151px 127px, 211px 163px, 179px 139px, 100% 100% !important;
-  animation: citrus-hero-splash 11s ease-in-out infinite;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, no-repeat !important;
+  background-size: 100% 100%, 100% 100%, 260% 100%, 173px 137px, 229px 181px, 100% 100% !important;
+  background-position: 0 0, 0 0, 150% 0, 0 0, 18px 8px, 0 0 !important;
+  animation: none;
 }
 
 [data-theme="sunset"] .topbar-card::before,
@@ -2791,19 +2892,36 @@
     radial-gradient(circle at 72% 62%, rgba(253, 186, 116, .62) 0 2px, transparent 3px),
     linear-gradient(108deg, transparent 25%, rgba(251, 146, 60, .06) 36%, rgba(245, 158, 11, .28) 49%, rgba(254, 215, 170, .16) 59%, transparent 72%) !important;
   background-size: 137px 101px, 199px 139px, 240% 100% !important;
-  animation: citrus-chrome-flow 9.5s ease-in-out infinite !important;
+  animation: none !important;
+  opacity: .28;
 }
 
-[data-theme="sunset"] .topbar-card::after,
+/* Tiny citrus slices travel with the periodic glow. They stay invisible
+   between passes and never spin independently. */
+[data-theme="sunset"] .topbar-card::after {
+  inset: 1px;
+  height: auto;
+  border-radius: 20px;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23fb923c' stroke='%23f97316' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='11.5' fill='none' stroke='%23fff7ed' stroke-width='1.2' opacity='.9'/%3E%3Cg stroke='%23fff7ed' stroke-width='1.2' stroke-linecap='round' opacity='.92'%3E%3Cpath d='M16 16V4.5M16 16V27.5M16 16H4.5M16 16H27.5M16 16L7.9 7.9M16 16L24.1 24.1M16 16L24.1 7.9M16 16L7.9 24.1'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='2.3' fill='%23fff7ed' stroke='%23fdba74' stroke-width='.8'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23f59e0b' stroke='%23ea580c' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='11.5' fill='none' stroke='%23fff7ed' stroke-width='1.2' opacity='.9'/%3E%3Cg stroke='%23fff7ed' stroke-width='1.2' stroke-linecap='round' opacity='.92'%3E%3Cpath d='M16 16V4.5M16 16V27.5M16 16H4.5M16 16H27.5M16 16L7.9 7.9M16 16L24.1 24.1M16 16L24.1 7.9M16 16L7.9 24.1'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='2.3' fill='%23fff7ed' stroke='%23fdba74' stroke-width='.8'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-size: 28px 28px, 20px 20px !important;
+  filter: none;
+  animation: citrus-slices-flow-x 9.5s ease-in-out infinite !important;
+}
+
 [data-theme="sunset"] .sidebar-card::after {
-  height: 44px;
-  background:
-    radial-gradient(circle at 20% 64%, rgba(251, 146, 60, .48) 0 2px, transparent 3px),
-    radial-gradient(circle at 66% 40%, rgba(254, 215, 170, .6) 0 1.5px, transparent 3px),
-    radial-gradient(ellipse at 50% 115%, rgba(245, 158, 11, .2) 0 14%, rgba(251, 146, 60, .1) 36%, transparent 68%) !important;
-  background-size: 121px 43px, 181px 51px, 190px 42px !important;
-  filter: blur(.2px);
-  animation: citrus-edge-bubbles 9.5s ease-in-out infinite !important;
+  inset: 1px;
+  height: auto;
+  border-radius: 20px;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23fb923c' stroke='%23f97316' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='11.5' fill='none' stroke='%23fff7ed' stroke-width='1.2' opacity='.9'/%3E%3Cg stroke='%23fff7ed' stroke-width='1.2' stroke-linecap='round' opacity='.92'%3E%3Cpath d='M16 16V4.5M16 16V27.5M16 16H4.5M16 16H27.5M16 16L7.9 7.9M16 16L24.1 24.1M16 16L24.1 7.9M16 16L7.9 24.1'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='2.3' fill='%23fff7ed' stroke='%23fdba74' stroke-width='.8'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23f59e0b' stroke='%23ea580c' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='11.5' fill='none' stroke='%23fff7ed' stroke-width='1.2' opacity='.9'/%3E%3Cg stroke='%23fff7ed' stroke-width='1.2' stroke-linecap='round' opacity='.92'%3E%3Cpath d='M16 16V4.5M16 16V27.5M16 16H4.5M16 16H27.5M16 16L7.9 7.9M16 16L24.1 24.1M16 16L24.1 7.9M16 16L7.9 24.1'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='2.3' fill='%23fff7ed' stroke='%23fdba74' stroke-width='.8'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-size: 27px 27px, 19px 19px !important;
+  filter: none;
+  animation: citrus-slices-flow-y 11s ease-in-out infinite !important;
 }
 
 [data-theme="sunset"] :is(
@@ -2814,7 +2932,15 @@
   .topbar-pin-toggle.is-active,
   .theme-option.is-active
 ) {
-  animation: citrus-pulp-pop 6.4s ease-in-out infinite;
+  animation: none;
+}
+
+/* Keep the small citrus slices, while avoiding full-page repaint work during scroll. */
+[data-theme="sunset"] .dashboard-page::before,
+[data-theme="sunset"] .dashboard-page::after,
+[data-theme="sunset"] .dashboard-page .page-hero-card::before,
+[data-theme="sunset"] .dashboard-page .page-hero-card::after {
+  animation: none;
 }
 
 [data-theme="sunset"] :is(
@@ -2833,15 +2959,45 @@
   box-shadow: 0 0 0 1px rgba(251, 146, 60, .1), 0 16px 32px rgba(180, 83, 9, .14), 0 0 24px rgba(245, 158, 11, .1) !important;
 }
 
-@keyframes citrus-background-drift {
-  from { background-position: 16px 22px, 28px 12px, 0 0; }
-  to { background-position: 162px 168px, 174px 158px, 0 0; }
+@keyframes citrus-ambient-glow {
+  from { background-position: 0 0, 0 0, 0 0; }
+  to { background-position: -22px 14px, 18px -12px, 0 0; }
+}
+
+@keyframes citrus-peel-orbit-a {
+  0% { transform: translate3d(0, 0, 0) rotate(-16deg) scale(.92); }
+  35% { transform: translate3d(-34px, 24px, 0) rotate(42deg) scale(1.04); }
+  68% { transform: translate3d(12px, 52px, 0) rotate(116deg) scale(.98); }
+  100% { transform: translate3d(0, 0, 0) rotate(344deg) scale(.92); }
+}
+
+@keyframes citrus-peel-orbit-b {
+  0% { transform: translate3d(0, 0, 0) rotate(18deg) scale(.95); }
+  42% { transform: translate3d(42px, -28px, 0) rotate(-68deg) scale(1.08); }
+  72% { transform: translate3d(18px, -54px, 0) rotate(-142deg) scale(1); }
+  100% { transform: translate3d(0, 0, 0) rotate(-342deg) scale(.95); }
 }
 
 @keyframes citrus-hero-splash {
-  0%, 30% { background-position: 150% 0, 0 0, 18px 8px, 43px 21px, 0 0; }
-  50%, 64% { background-position: -150% 0, 14px -7px, 2px 18px, 59px 9px, 0 0; }
-  100% { background-position: -150% 0, 0 0, 18px 8px, 43px 21px, 0 0; }
+  0%, 30% { background-position: 0 0, 0 0, 150% 0, 0 0, 18px 8px, 0 0; }
+  50%, 64% { background-position: 2% -2%, -2% 2%, -150% 0, 14px -7px, 2px 18px, 0 0; }
+  100% { background-position: 0 0, 0 0, -150% 0, 0 0, 18px 8px, 0 0; }
+}
+
+@keyframes citrus-slices-flow-x {
+  0%, 8% { opacity: 0; background-position: -12% 30%, -2% 68%; }
+  15% { opacity: .62; }
+  42% { opacity: .76; background-position: 52% 28%, 66% 66%; }
+  62% { opacity: 0; background-position: 112% 34%, 102% 62%; }
+  100% { opacity: 0; background-position: 112% 34%, 102% 62%; }
+}
+
+@keyframes citrus-slices-flow-y {
+  0%, 8% { opacity: 0; background-position: 28% -5%, 72% 3%; }
+  16% { opacity: .58; }
+  45% { opacity: .72; background-position: 30% 50%, 68% 62%; }
+  66% { opacity: 0; background-position: 26% 105%, 74% 98%; }
+  100% { opacity: 0; background-position: 26% 105%, 74% 98%; }
 }
 
 @keyframes citrus-chrome-flow {
@@ -2866,6 +3022,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   [data-theme="sunset"] .workspace-shell,
+  [data-theme="sunset"] .workspace-shell::before,
+  [data-theme="sunset"] .workspace-shell::after,
+  [data-theme="sunset"] .content-card::before,
+  [data-theme="sunset"] .content-card::after,
   [data-theme="sunset"] :is(
     .page-hero-card,
     .settings-hero,

@@ -75,12 +75,14 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
   const [hideSingleSpec, setHideSingleSpec] = useState(false);
   // 历史采集卡片：草稿池底部按钮唤出的历史任务弹层
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyClosing, setHistoryClosing] = useState(false);
   const [historyTasks, setHistoryTasks] = useState<TaskHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const draftListRef = useRef<HTMLDivElement>(null);
   const stickyToolbarRef = useRef<HTMLDivElement>(null);
   const stickySpacerRef = useRef<HTMLDivElement>(null);
+  const historyCloseTimerRef = useRef<number | null>(null);
 
   // 滚动发生在 window（.content-card 的 overflow:auto 会作为 sticky 的滚动祖先但不参与滚动，
   // 导致纯 CSS sticky 永远吸不住）。这里用 JS 做条件吸顶：
@@ -99,11 +101,12 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
         if (rect.bottom > 0) topbarBottom = Math.round(rect.bottom);
       }
       // spacer 在文档流中始终处于工具栏的自然位置：需要吸顶时其顶部已滚到导航栏下沿之下
-      const needStick = spacer.getBoundingClientRect().top <= topbarBottom + 6;
+      const stickyGap = 0;
+      const needStick = spacer.getBoundingClientRect().top <= topbarBottom + stickyGap;
       if (needStick) {
         const contentRect = contentCard?.getBoundingClientRect();
         toolbar.style.position = 'fixed';
-        toolbar.style.top = `${topbarBottom + 6}px`;
+        toolbar.style.top = `${topbarBottom + stickyGap}px`;
         toolbar.style.left = contentRect ? `${Math.round(contentRect.left)}px` : '0px';
         toolbar.style.width = contentRect ? `${Math.round(contentRect.width)}px` : '100%';
         spacer.style.height = `${toolbar.offsetHeight}px`;
@@ -186,7 +189,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
     setHistoryError('');
     try {
       const data = await ppRequest<{ tasks: TaskHistoryItem[] }>(
-        ctx, `${API_BASE}/tasks/history?limit=20`
+        ctx, `${API_BASE}/tasks/history?limit=6`
       );
       setHistoryTasks(data.tasks || []);
     } catch (err) {
@@ -198,14 +201,26 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
   };
 
   const openHistory = () => {
+    if (historyCloseTimerRef.current !== null) {
+      window.clearTimeout(historyCloseTimerRef.current);
+      historyCloseTimerRef.current = null;
+    }
+    setHistoryClosing(false);
     setHistoryOpen(true);
     loadHistory();
   };
 
-  const closeHistory = () => {
-    setHistoryOpen(false);
-    setHistoryTasks([]);
-    setHistoryError('');
+  const closeHistory = (onClosed?: () => void) => {
+    if (historyClosing) return;
+    setHistoryClosing(true);
+    historyCloseTimerRef.current = window.setTimeout(() => {
+      setHistoryOpen(false);
+      setHistoryClosing(false);
+      setHistoryTasks([]);
+      setHistoryError('');
+      historyCloseTimerRef.current = null;
+      onClosed?.();
+    }, 240);
   };
 
   useEffect(() => {
@@ -222,6 +237,12 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyOpen]);
+
+  useEffect(() => () => {
+    if (historyCloseTimerRef.current !== null) {
+      window.clearTimeout(historyCloseTimerRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -843,8 +864,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
       )}
 
       {historyOpen && (
-        <div className="verify-history-layer">
-          <div className="verify-history-mask" onClick={closeHistory} />
+        <div className={`verify-history-layer${historyClosing ? ' is-closing' : ''}`}>
+          <div className="verify-history-mask" onClick={() => closeHistory()} />
           <section className="verify-history-card" role="dialog" aria-modal="true" aria-label="历史采集任务">
             <header className="verify-history-head">
               <div>
@@ -854,7 +875,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
               </div>
               <div className="verify-history-head-acts">
                 <button className="btn-mini" onClick={loadHistory} disabled={historyLoading}><i className="iconfont icon-sync" aria-hidden="true" />刷新</button>
-                <button className="verify-drawer-close" onClick={closeHistory} aria-label="关闭">×</button>
+                <button className="verify-drawer-close" onClick={() => closeHistory()} aria-label="关闭">×</button>
               </div>
             </header>
             {historyError && <div className="verify-message error">{historyError}</div>}
@@ -886,7 +907,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
                       {task.target_site && <span className="verify-history-site">{task.target_site}{task.target_language_label ? ` · ${task.target_language_label}` : ''}</span>}
                       {task.elapsed_seconds !== undefined && <span className="verify-history-elapsed">耗时 {formatHistoryDuration(task.elapsed_seconds)}</span>}
                       <span className="verify-history-date">{new Date(task.created_at).toLocaleString('zh-CN')}</span>
-                      <button className="btn-mini" onClick={() => { closeHistory(); onOpenHistoryTasks?.(); }}>打开任务页</button>
+                      <button className="btn-mini" onClick={() => closeHistory(onOpenHistoryTasks)}>打开任务页</button>
                     </li>
                   ))}
                 </ul>
@@ -894,8 +915,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
             </div>
             {!historyLoading && historyTasks.length > 0 && (
               <footer className="verify-history-foot">
-                <span>仅展示最近 {historyTasks.length} 条，完整列表见任务页。</span>
-                <button className="primary" onClick={() => { closeHistory(); onOpenHistoryTasks?.(); }}>打开完整任务页</button>
+                <span>仅展示最近 6 次，完整列表见任务页。</span>
+                <button className="primary" onClick={() => closeHistory(onOpenHistoryTasks)}>打开完整任务页</button>
               </footer>
             )}
           </section>
