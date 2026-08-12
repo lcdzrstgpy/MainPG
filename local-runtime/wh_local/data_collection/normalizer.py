@@ -85,6 +85,13 @@ def enrich_candidate_with_detail(
         MAX_DETAIL_IMAGES,
     )
     attributes = _mapping_value(detail, ("props", "item_props", "attributes", "properties"))
+    category_path = _text_value(
+        detail,
+        ("cat_name", "category_name", "category_path", "categoryPath", "category", "root_cat_name", "parent_cat_name"),
+    ) or candidate.category_path
+    category_id = _text_value(
+        detail, ("cat_id", "category_id", "leaf_category_id", "cid")
+    ) or candidate.category_id
     variants = _variants_from(detail)
     package_info = _text_value(detail, ("package_info", "package_info_text", "package", "packing"))
     weight = _text_value(detail, ("weight", "weight_text", "item_weight"))
@@ -109,6 +116,8 @@ def enrich_candidate_with_detail(
             "source_detail_image_urls": detail_images,
             "source_attributes": attributes,
             "source_variant_records": variants,
+            "category_path": category_path,
+            "category_id": category_id,
             "package_info_text": package_info,
             "weight_text": weight,
             "freight_cny": freight,
@@ -130,6 +139,8 @@ def enrich_candidate_with_detail(
         source_detail_image_urls=detail_images,
         source_variant_records=variants or candidate.source_variant_records,
         source_attributes=attributes or candidate.source_attributes,
+        category_path=category_path,
+        category_id=category_id,
         price_cny=price,
         min_order_quantity=moq,
         selection_score=candidate.selection_score,

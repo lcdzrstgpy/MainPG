@@ -270,6 +270,8 @@ class DailySelectionCandidate(_ContractModel):
     source_detail_image_urls: tuple[str, ...] = ()
     source_variant_records: tuple[SourceVariantRecord, ...] = ()
     source_attributes: Mapping[str, Any] = Field(default_factory=dict)
+    category_path: str | None = None
+    category_id: str | None = None
     price_cny: Decimal | None = None
     min_order_quantity: int | None = None
     selection_score: Decimal = Decimal("0")

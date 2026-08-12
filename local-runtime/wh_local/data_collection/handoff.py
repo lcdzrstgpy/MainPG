@@ -58,6 +58,8 @@ def build_handoff_payload(candidate: DailySelectionCandidate) -> str:
             "price_cny": candidate.price_cny,
             "freight_cny": candidate.freight_cny,
             "min_order_quantity": candidate.min_order_quantity,
+            "category_path": candidate.category_path,
+            "category_id": candidate.category_id,
         },
         "images": {
             "main": candidate.main_image_url,

@@ -743,6 +743,8 @@ class ProductProcessingService:
             "price_cny": candidate.get("price_cny"),
             "freight_cny": candidate.get("freight_cny"),
             "min_order_quantity": candidate.get("min_order_quantity"),
+            "category_path": str(candidate.get("category_path") or "").strip() or None,
+            "category_id": str(candidate.get("category_id") or "").strip() or None,
             "evidence": payload.get("source_evidence") or [],
             "selection_score": selection.get("selection_score"),
             "selection_reasons": list(selection.get("selection_reasons") or []),
