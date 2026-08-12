@@ -21,41 +21,24 @@ def rank_source_candidates(
     )
 
 
-def rank_candidates_by_mode(
+def rank_candidates_by_image_order(
     candidates: Iterable[Mapping[str, Any]],
-    *,
-    mode: str = "similarity",
 ) -> tuple[Mapping[str, Any], ...]:
-    """Order candidates by the user-selected sorting mode.
+    """Keep OneBound's image-search order after local category filtering.
 
-    ``similarity`` sorts on the OB image-search similarity score (``turn_head``)
-    descending; ``price`` sorts by the cheapest promotion/unit price first.  Any
-    other mode falls back to the established closed-cost ordering.
+    OneBound title search is deliberately not called.  The Temu title is used
+    locally only to remove clear product-category conflicts before this ranker
+    is invoked.
     """
-    items = list(candidates)
-    if mode == "price":
-        return tuple(
-            sorted(
-                items,
-                key=lambda candidate: (
-                    _number(candidate.get("promotion_price") if candidate.get("promotion_price") is not None else candidate.get("price")),
-                    str(candidate.get("candidate_key") or candidate.get("offer_id") or ""),
-                ),
-            )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                _number(candidate.get("image_search_rank")),
+                str(candidate.get("candidate_key") or candidate.get("offer_id") or ""),
+            ),
         )
-    if mode == "similarity":
-        return tuple(
-            sorted(
-                items,
-                key=lambda candidate: (
-                    candidate.get("source_channel") == "keyword",
-                    -_number(candidate.get("similarity_score")),
-                    _number(candidate.get("price")),
-                    str(candidate.get("candidate_key") or candidate.get("offer_id") or ""),
-                ),
-            )
-        )
-    return rank_source_candidates(items)
+    )
 
 
 def _number(value: object) -> float:

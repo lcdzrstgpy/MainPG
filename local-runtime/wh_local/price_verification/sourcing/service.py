@@ -24,8 +24,9 @@ from ..plugin.service import PluginBridgeService
 from ..plugin.shared_gateway import SharedPluginGateway
 from .normalizer import canonical_source_url, normalize_source_candidates
 from .profit_ranking import DEFAULT_CANDIDATE_LIMIT, DEFAULT_WEIGHT_KG, build_candidate_profit
-from .ranking import rank_candidates_by_mode, rank_source_candidates
+from .ranking import rank_candidates_by_image_order
 from .contracts import SourceBrowserImageSearchPayload, SourceSearchTask
+from .identity import evaluate_product_evidence
 from .task_builder import (
     build_batch_sourcing_payload,
     build_retained_source_browser_image_search_payload,
@@ -75,9 +76,8 @@ class SourcingService:
         *,
         batch_id: str,
         provider_factory: Callable[[], Any],
-        ranking_mode: str = "similarity",
+        ranking_mode: str = "image_order",
         skc_ids: Sequence[str] | None = None,
-        keyword_search: bool = False,
     ) -> dict[str, Any]:
         """Run the established OB 1688 image-search chain for retained SKCs.
 
@@ -90,8 +90,8 @@ class SourcingService:
 
         ``skc_ids`` restricts the search to the user-selected SKCs; when it is
         ``None`` every retained selection is searched (backward compatible).
-        ``keyword_search`` optionally adds the translated-title keyword channel;
-        it is off by default so the first run is pure image search.
+        The Temu title stays local and is used only for category-conflict
+        filtering after image search; no title query is sent to OneBound.
         """
         from .onebound_adapter import OneBoundSourceAdapter
 
@@ -115,7 +115,7 @@ class SourcingService:
         unresolved = set(session["unresolved_skc_ids"])
         selections = tuple(item for item in selections if item.skc_id in unresolved)
         if not selections:
-            return {"items": [], "skc_groups": [], "ranking_mode": ranking_mode, "counts": {"candidate_count": 0, "failed_quotes": 0}}
+            return {"items": [], "skc_groups": [], "ranking_mode": "image_order", "counts": {"candidate_count": 0, "failed_quotes": 0}}
         payload = build_batch_sourcing_payload(
             (_selection_sourcing_view(item) for item in selections)
         )
@@ -123,7 +123,7 @@ class SourcingService:
         if not tasks:
             raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
         adapter = OneBoundSourceAdapter(self._repository, provider_factory)
-        result = adapter.search_by_image(actor, tasks, keyword_search=keyword_search)
+        result = adapter.search_by_image(actor, tasks)
         quotes = [task.to_payload() for task in tasks]
         preview = _apply_batch_ranking(
             build_source_preview(quotes, result),
@@ -189,6 +189,36 @@ class SourcingService:
                 session["preview"],
                 {selection.skc_id: selection.main_image_url for selection in selections},
             )
+            # Re-apply the category guard to previews saved before it existed;
+            # otherwise stale candidates such as a pet bowl can remain visible
+            # until the employee manually runs image search again.
+            if isinstance(preview, Mapping):
+                candidate_keys_before = _preview_candidate_keys(preview)
+                preview = _apply_batch_ranking(
+                    dict(preview),
+                    selections_by_skc={selection.skc_id: selection for selection in selections},
+                    ranking_mode="image_order",
+                )
+                preview_updated = preview_updated or candidate_keys_before != _preview_candidate_keys(preview)
+            # Sessions saved by the old implementation can contain standalone
+            # title-query hits. They are not visual matches, so invalidate that
+            # cached preview and put only the affected SKCs back into the image
+            # search queue instead of ever rendering/associating them again.
+            stale_keyword_skc_ids = _preview_keyword_skc_ids(preview)
+            if stale_keyword_skc_ids:
+                unresolved = tuple(dict.fromkeys((*session["unresolved_skc_ids"], *stale_keyword_skc_ids)))
+                selected_candidates = tuple(
+                    candidate
+                    for candidate in session["selected_candidates"]
+                    if _text(candidate.get("skc_id")) not in stale_keyword_skc_ids
+                )
+                session = self._repository.save_batch_sourcing_session(
+                    workspace_id=actor.workspace_id, batch_id=batch_id,
+                    selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=unresolved,
+                    matched_products=session["matched_products"], preview=None,
+                    selected_candidates=selected_candidates,
+                )
+                return session
             # 产品库命中展示每次读取都用耐久的货源关联记录补全，避免早期产品库
             # 只保存 URL 时在 STEP 04 退化成重复的空白“1688 货源”。
             products = self._product_library_products(actor, session["selected_skc_ids"])
@@ -857,8 +887,22 @@ def build_source_preview(
         status = _text(result.get("status")) if result else ("pending" if source_result is None else "failed")
         status = status or "succeeded"
         raw_candidates = result.get("candidates", []) if result else []
+        # A translated-title hit says nothing about visual equivalence. Reject
+        # it before preview construction so saved sessions, retries and every
+        # caller share the same hard boundary.
+        if isinstance(raw_candidates, Sequence) and not isinstance(raw_candidates, (str, bytes)):
+            raw_candidates = [
+                candidate
+                for candidate in raw_candidates
+                if (
+                    isinstance(candidate, Mapping)
+                    and candidate.get("source_channel") != "keyword"
+                    and candidate.get("product_evidence_status") != "conflict"
+                )
+            ]
+        else:
+            raw_candidates = []
         normalized = normalize_source_candidates(quote, raw_candidates, quote_key=quote_key)
-        normalized = list(rank_source_candidates(normalized))
         recommended = [candidate for candidate in normalized if candidate["source_decision"] == "recommended"]
         review = [candidate for candidate in normalized if candidate["source_decision"] == "review"]
         validation = [candidate for candidate in normalized if candidate["source_decision"] == "sku_validation"]
@@ -871,6 +915,7 @@ def build_source_preview(
             "main_image_url": _quote_value(quote, "main_image_url"),
             "source_search_status": item_status,
             "source_search_error": _text(result.get("error")) if result else "",
+            "image_search_audit": _image_search_audit(result),
             "source_decision": item_decision,
             "max_candidates": _quote_candidate_cap(quote),
             "candidates": recommended,
@@ -906,17 +951,30 @@ def _apply_batch_ranking(
     1688 match clears the profit thresholds.  The displayed list is capped at
     ``DEFAULT_CANDIDATE_LIMIT`` (3-5 links) per the sourcing convention.
     """
-    mode = ranking_mode if ranking_mode in {"similarity", "price"} else "similarity"
+    del ranking_mode
     for item in preview.get("items", []):
         if not isinstance(item, dict):
             continue
         raw_candidates = item.get("all_candidates")
+        quote_context = {
+            "product_title": _text(item.get("product_title")),
+            "main_image_url": _text(item.get("main_image_url")),
+        }
         all_candidates = (
-            [candidate for candidate in raw_candidates if isinstance(candidate, Mapping)]
+            [
+                candidate
+                for candidate in raw_candidates
+                if (
+                    isinstance(candidate, Mapping)
+                    and candidate.get("source_channel") != "keyword"
+                    and candidate.get("product_evidence_status") != "conflict"
+                    and evaluate_product_evidence(quote_context, candidate)[0] != "conflict"
+                )
+            ]
             if isinstance(raw_candidates, list)
             else []
         )
-        ranked = rank_candidates_by_mode(all_candidates, mode=mode)
+        ranked = rank_candidates_by_image_order(all_candidates)
         selection = selections_by_skc.get(_text(item.get("skc_id")))
         site = _site_code(selection.site) if selection is not None else ""
         selling_price = _text(selection.adjusted_min) if selection is not None else ""
@@ -924,12 +982,7 @@ def _apply_batch_ranking(
         for candidate in ranked_copies:
             candidate["profit"] = _candidate_profit(candidate, site, selling_price)
         item["all_candidates"] = ranked_copies
-        keyword_count = sum(1 for candidate in ranked_copies if candidate.get("source_channel") == "keyword")
-        item["keyword_count"] = keyword_count
-        # The default display stays at 3-5 links; when the user opted into the
-        # title-keyword channel, widen the list so those hits stay visible.
-        display_limit = min(len(ranked_copies), DEFAULT_CANDIDATE_LIMIT + keyword_count * DEFAULT_CANDIDATE_LIMIT) if keyword_count else DEFAULT_CANDIDATE_LIMIT
-        item["ranked_candidates"] = list(ranked_copies[:display_limit])
+        item["ranked_candidates"] = list(ranked_copies[:DEFAULT_CANDIDATE_LIMIT])
         item["candidates"] = [
             candidate
             for candidate in ranked_copies
@@ -941,9 +994,108 @@ def _apply_batch_ranking(
             "weight_kg": str(DEFAULT_WEIGHT_KG),
         }
         item["top_profit"] = _top_candidate_profit(ranked_copies, selection)
-    preview["ranking_mode"] = mode
+    preview["ranking_mode"] = "image_order"
     preview["candidate_limit"] = DEFAULT_CANDIDATE_LIMIT
     return preview
+
+
+def _image_search_audit(result: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Expose a small, safe proof of the image-search request chain.
+
+    The raw audit remains persisted but may contain provider-specific details.
+    The preview only needs to say whether the reference image was downloaded,
+    uploaded and searched, plus the final validated image URL and safe request
+    correlation/timestamp fields. This intentionally says nothing about visual
+    quality or matching confidence.
+    """
+    evidence = result.get("evidence") if isinstance(result, Mapping) else ()
+    if not isinstance(evidence, Sequence) or isinstance(evidence, (str, bytes)):
+        return {"downloaded": False, "uploaded": False, "searched": False}
+
+    operations: dict[str, Mapping[str, Any]] = {}
+    for entry in evidence:
+        if not isinstance(entry, Mapping):
+            continue
+        operation = _text(entry.get("operation"))
+        if operation and operation not in operations:
+            operations[operation] = entry
+
+    downloaded = operations.get("download_reference_image")
+    uploaded = operations.get("upload_img")
+    searched = operations.get("item_search_img")
+    download_summary = downloaded.get("response_summary") if isinstance(downloaded, Mapping) else {}
+    if not isinstance(download_summary, Mapping):
+        download_summary = {}
+    search_summary = searched.get("response_summary") if isinstance(searched, Mapping) else {}
+    if not isinstance(search_summary, Mapping):
+        search_summary = {}
+    return {
+        "downloaded": _text(download_summary.get("outcome")) == "success",
+        "uploaded": _audit_succeeded(uploaded),
+        "searched": _audit_succeeded(searched),
+        "reference_image_url": _text(download_summary.get("final_url")),
+        "image_size_bytes": _safe_positive_int(download_summary.get("image_size_bytes")),
+        "request_id": _text(search_summary.get("request_id")) or _text(searched.get("request_id") if isinstance(searched, Mapping) else ""),
+        "captured_at": _text(searched.get("captured_at") if isinstance(searched, Mapping) else ""),
+    }
+
+
+def _audit_succeeded(entry: Mapping[str, Any] | None) -> bool:
+    if not isinstance(entry, Mapping):
+        return False
+    summary = entry.get("response_summary")
+    return isinstance(summary, Mapping) and _text(summary.get("outcome")) == "success"
+
+
+def _safe_positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _preview_keyword_skc_ids(preview: Mapping[str, Any] | None) -> tuple[str, ...]:
+    """Return SKCs whose saved preview contains a standalone keyword hit."""
+    if not isinstance(preview, Mapping):
+        return ()
+    items = preview.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return ()
+    invalid: list[str] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        candidates = item.get("all_candidates") or item.get("ranked_candidates") or item.get("candidates")
+        if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
+            continue
+        if any(isinstance(candidate, Mapping) and candidate.get("source_channel") == "keyword" for candidate in candidates):
+            skc_id = _text(item.get("skc_id")) or _text(item.get("quote_key"))
+            if skc_id and skc_id not in invalid:
+                invalid.append(skc_id)
+    return tuple(invalid)
+
+
+def _preview_candidate_keys(preview: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return ordered candidates so cached-preview rule upgrades are detectable."""
+    keys: list[str] = []
+    items = preview.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return ()
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        candidates = item.get("all_candidates")
+        if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
+            continue
+        keys.extend(
+            _text(candidate.get("offer_id")) or _text(candidate.get("candidate_key"))
+            for candidate in candidates
+            if isinstance(candidate, Mapping)
+        )
+    return tuple(keys)
 
 
 def _hydrate_preview_main_images(

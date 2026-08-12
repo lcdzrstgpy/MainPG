@@ -14,10 +14,8 @@ from typing import Any, Protocol
 
 from ..contracts import PriceVerificationActor, redact_sensitive, redact_sensitive_text
 from ..repository import PriceVerificationRepository
-from ...data_collection.criteria import DailySelectionCriteria
 from ...data_collection.contracts import DailySelectionError
 from .contracts import SourceSearchTask
-from .title_translation import to_search_keywords, translate_title_to_chinese
 
 
 _PROVIDER_NAME = "onebound-1688"
@@ -61,18 +59,16 @@ class OneBoundSourceAdapter:
         self._repository = repository
         self._provider_factory = provider_factory
 
-    def search_by_image(
-        self, actor: PriceVerificationActor, tasks: Sequence[SourceSearchTask], *, keyword_search: bool = False
-    ) -> dict[str, Any]:
+    def search_by_image(self, actor: PriceVerificationActor, tasks: Sequence[SourceSearchTask]) -> dict[str, Any]:
         """Run each task independently so one provider failure remains retriable.
 
         There is no daily call budget: every task always executes against the
         provider, and provider-side failures surface per task so a single
         upstream hiccup never blocks the rest of the batch.
 
-        ``keyword_search`` optionally adds the translated-title keyword channel;
-        it is off by default so the first run is pure image search (with
-        similarity scores) and the user can opt into title search afterwards.
+        The Temu title never triggers an external search. It is used later by
+        the local category guard to remove clear conflicts from these image
+        results.
         """
         if not isinstance(actor, PriceVerificationActor):
             raise TypeError("actor must be PriceVerificationActor")
@@ -90,17 +86,15 @@ class OneBoundSourceAdapter:
             )
         items: list[dict[str, Any]] = []
         for task in task_list:
-            item, _ = self._search_task(provider, task, keyword_search=keyword_search)
+            item, _ = self._search_task(provider, task)
             items.append(item)
         return _result_for_items(items)
 
-    def _search_task(
-        self, provider: _OneBoundProvider, task: SourceSearchTask, *, keyword_search: bool = False
-    ) -> tuple[dict[str, Any], int]:
+    def _search_task(self, provider: _OneBoundProvider, task: SourceSearchTask) -> tuple[dict[str, Any], int]:
         evidence: list[dict[str, Any]] = []
         try:
-            # Channel A: pure image search.  This is the established primary
-            # channel; it carries the OB similarity score used for ranking.
+            # Channel A: pure image search. This is the only channel allowed
+            # to produce visual-match candidates.
             image_raw: list[Mapping[str, Any]] = []
             image_ok = False
             image_error = ""
@@ -115,40 +109,13 @@ class OneBoundSourceAdapter:
             except Exception as error:
                 image_error = _provider_error_message(error)
 
-            # Channel B (optional): translated-title keyword search.  Only runs
-            # when the user opts in, because the Temu title is translated to
-            # Chinese and hits carry no similarity score.
-            keyword_raw: list[Mapping[str, Any]] = []
-            keyword_ok = False
-            keyword_error = ""
-            keywords = to_search_keywords(translate_title_to_chinese(task.product_title)) if keyword_search else ""
-            # Only run the keyword channel when the title translated into
-            # Chinese; a raw-English fallback would search 1688 with the wrong
-            # language and return noise.
-            if keywords and _contains_cjk(keywords):
-                try:
-                    keyword_hits = provider.search_keyword(
-                        DailySelectionCriteria(
-                            collection_mode="keyword",
-                            keywords=(keywords,),
-                            target_count=max(int(task.max_candidates or 0), 1),
-                        )
-                    )
-                    evidence.extend(_redacted_audits(keyword_hits))
-                    if _result_ok(keyword_hits):
-                        keyword_ok = True
-                        keyword_raw = _search_items(_response(keyword_hits))
-                    else:
-                        keyword_error = _provider_result_error(keyword_hits)
-                except Exception as error:
-                    keyword_error = _provider_error_message(error)
-
-            merged = _merge_channels(image_raw, keyword_raw, max(int(task.max_candidates or 0), 1))
+            merged = _image_candidates(image_raw, max(int(task.max_candidates or 0), 1))
             if not merged:
-                # A successful search with no hits is a valid empty result; only
-                # fail when every channel errored out.
-                if not image_ok and not keyword_ok:
-                    return _failed_item(task, image_error or keyword_error or _GENERIC_PROVIDER_ERROR, evidence), len(evidence)
+                # A keyword hit is not evidence of a visual match. If image
+                # search failed, make the SKC retriable instead of showing text
+                # matches as candidates.
+                if not image_ok:
+                    return _failed_item(task, image_error or _GENERIC_PROVIDER_ERROR, evidence), len(evidence)
                 return {
                     "task_key": task.task_key,
                     "skc_id": task.skc_id,
@@ -162,7 +129,7 @@ class OneBoundSourceAdapter:
             candidates: list[dict[str, Any]] = []
             # Only the first (most relevant) candidate gets a detail lookup; the
             # rest keep the search payload the provider already returned.
-            for index, (raw_candidate, channel) in enumerate(merged):
+            for index, raw_candidate in enumerate(merged):
                 offer_id = _offer_id(raw_candidate)
                 detailed = dict(raw_candidate)
                 if index == 0 and offer_id:
@@ -172,7 +139,7 @@ class OneBoundSourceAdapter:
                     # the search payload and skip the enrichment.
                     if _result_ok(detail):
                         detailed = {**raw_candidate, **_detail_item(_response(detail))}
-                candidates.append(_safe_candidate(detailed, evidence, channel=channel))
+                candidates.append(_safe_candidate(detailed, evidence, channel="image"))
             return {
                 "task_key": task.task_key,
                 "skc_id": task.skc_id,
@@ -333,37 +300,24 @@ def _offer_id(candidate: Mapping[str, Any]) -> str:
     return ""
 
 
-def _contains_cjk(value: str) -> bool:
-    return any("\u4e00" <= char <= "\u9fff" for char in value)
-
-
-def _merge_channels(
-    image_raw: Sequence[Mapping[str, Any]],
-    keyword_raw: Sequence[Mapping[str, Any]],
-    max_candidates: int,
-) -> list[tuple[Mapping[str, Any], str]]:
-    """Merge image hits ahead of keyword hits, de-duplicated by offer.
-
-    The image channel is the primary signal the user asked to keep first (it
-    carries the OB similarity score); the translated-title keyword channel only
-    fills in behind when the user opted into title search.  Each channel keeps
-    its own cap so the keyword supplement is not silently cut off by the image
-    channel filling the shared limit (e.g. five image hits + five keyword hits).
-    """
+def _image_candidates(image_raw: Sequence[Mapping[str, Any]], max_candidates: int) -> list[Mapping[str, Any]]:
+    """Return OneBound image-search offers, de-duplicated in provider order."""
     seen: set[str] = set()
-    merged: list[tuple[Mapping[str, Any], str]] = []
-    for raw, channel in ((image_raw, "image"), (keyword_raw, "keyword")):
-        channel_count = 0
-        for candidate in raw:
-            offer_id = _offer_id(candidate) or _text(candidate.get("title") or candidate.get("item_title"))[:40]
-            if offer_id:
-                if offer_id in seen:
-                    continue
-                seen.add(offer_id)
-            merged.append((candidate, channel))
-            channel_count += 1
-            if channel_count >= max_candidates:
-                break
+    merged: list[Mapping[str, Any]] = []
+    for index, candidate in enumerate(image_raw, start=1):
+        offer_id = _offer_id(candidate) or _text(candidate.get("title") or candidate.get("item_title"))[:40]
+        if offer_id:
+            if offer_id in seen:
+                continue
+            seen.add(offer_id)
+        item = dict(candidate)
+        # This is the only rank we can safely preserve: the order returned by
+        # OneBound's image endpoint. Do not interpret ``turn_head`` as an image
+        # similarity score; the provider does not document it as one.
+        item["image_search_rank"] = index
+        merged.append(item)
+        if len(merged) >= max_candidates:
+            break
     return merged
 
 

@@ -7,6 +7,7 @@ export type WorkspaceModuleId =
   | "profit_activity"
   | "profit_activity_products"
   | "price_verification"
+  | "ai_service"
   | "basic_settings";
 
 export type WorkspaceModule = {
@@ -34,5 +35,6 @@ export const workspaceModules: WorkspaceModule[] = [
     description: "核算利润、入档并过滤活动",
   },
   { id: "profit_activity_products", label: "产品库", icon: "", iconClass: "iconfont icon-database", description: "查询、批量管理和下载利润活动产品档案" },
+  { id: "ai_service", label: "AI 服务", icon: "", iconClass: "iconfont icon-robot", description: "本地多模态商品创作与图片辅助" },
   { id: "basic_settings", label: "系统配置", icon: "", iconClass: "iconfont icon-setting", description: "管理本地运行参数和服务配置" },
 ];

@@ -11,6 +11,15 @@ from ..quote_normalizer import QuoteItem
 
 _GENERIC_TOKENS = frozenset({"同款", "厂家", "批发", "现货", "新品", "hot", "sale", "new"})
 _COLOUR_TOKENS = frozenset({"红", "蓝", "黑", "白", "黄", "绿", "紫", "粉", "橙", "灰", "棕", "red", "blue", "black", "white", "yellow", "green", "purple", "pink", "orange", "grey", "gray", "brown"})
+_ENGLISH_CATEGORY_TERMS = (
+    (("cooling", "cool"), ("凉", "冰", "冷", "降温", "cooling", "cool")),
+    (("mat",), ("垫", "席", "mat")),
+    (("basket",), ("篮", "筐", "basket")),
+    (("box",), ("箱", "盒", "柜", "box")),
+    (("bag",), ("包", "袋", "bag")),
+    (("rack", "shelf", "stand"), ("架", "展示", "rack", "shelf", "stand")),
+)
+_TOY_TERMS = ("玩具", "摆件", "公仔", "toy", "doll", "figurine", "play")
 
 
 def evaluate_product_evidence(
@@ -35,12 +44,33 @@ def evaluate_product_evidence(
             return "compatible", ("overlapping_product_title",)
         if _compact(quote_title) in _compact(source_title) or _compact(source_title) in _compact(quote_title):
             return "compatible", ("containing_product_title",)
+        if _cross_language_category_mismatch(quote_title, source_title):
+            return "conflict", ("product_category_mismatch",)
         if not _has_shared_language(quote_title, source_title):
             # Chinese 1688 titles cannot be compared with English Temu titles;
             # the absence of overlap is not proof of a different product.
             return "missing", ("cross_language_title_evidence",)
         return "conflict", ("product_title_mismatch",)
     return "missing", ("missing_compatible_product_evidence",)
+
+
+def _cross_language_category_mismatch(quote_title: str, source_title: str) -> bool:
+    """Reject only clear cross-language category conflicts.
+
+    Temu titles are often English while 1688 titles are Chinese.  We keep
+    ambiguous results reviewable, but when the English product class has a
+    direct Chinese equivalent in the candidate title, require every stated
+    class (for example, ``cooling`` + ``mat``) to be present.  This runs for
+    every image hit, not just whichever one OneBound returned first.
+    """
+    if _has_shared_language(quote_title, source_title):
+        return False
+    quote = _compact(quote_title)
+    source = _compact(source_title)
+    if any(term in source for term in _TOY_TERMS) and not any(term in quote for term in _TOY_TERMS):
+        return True
+    required = [aliases for triggers, aliases in _ENGLISH_CATEGORY_TERMS if any(trigger in quote for trigger in triggers)]
+    return bool(required) and any(not any(alias in source for alias in aliases) for aliases in required)
 
 
 def evaluate_sku_evidence(

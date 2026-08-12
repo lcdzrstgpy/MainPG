@@ -8,4 +8,5 @@ python-multipart>=0.0.9
 httpx>=0.27
 requests>=2.32
 certifi>=2024.2.2
+cos-python-sdk-v5>=1.9
 openpyxl>=3.1

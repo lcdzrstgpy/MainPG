@@ -32,6 +32,10 @@ from ..data_collection.plugin_queue import DataCollectionPluginQueue
 from ..data_collection.image_cache import PublicDailySelectionImageCache
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
+from ..modules.ai_service import create_router as create_ai_service_router
+from ..modules.ai_service.service import AiService
+from ..modules.ai_service.temporary_cos import TemporaryCosStore
+from ..modules.basic_settings.service import SystemConfigService
 from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
 from ..modules.product_processing.api.router import create_product_processing_router
 from ..modules.product_processing.domain.models import DailySelectionHandoffEnvelope
@@ -129,6 +133,14 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.include_router(create_customer_router(customer_auth, customer_sessions))
 
     app.include_router(create_basic_settings_router(db_path))
+    ai_service_assets = config.data_dir / "ai-service" / "assets"
+    AiService(db_path, ai_service_assets).mark_interrupted_pod_groups()
+    app.include_router(create_ai_service_router(db_path, ai_service_assets))
+
+    # Normal requests delete transient references immediately. This startup
+    # construction sweep handles objects left by a prior interrupted process.
+    runtime = SystemConfigService(db_path).get_runtime_config()
+    TemporaryCosStore(runtime.cos).cleanup_stale()
     plugin_queue = DataCollectionPluginQueue(db_path)
     product_processing = _product_processing_service(db_path)
     app.include_router(create_product_processing_router(product_processing))

@@ -360,9 +360,8 @@ def register_price_verification_routes(
                 provider_factory=lambda: dependencies.provider_factory(
                     dependencies.provider_config_resolver(actor)
                 ),
-                ranking_mode=_text(request.get("ranking_mode")) or "similarity",
+                ranking_mode="image_order",
                 skc_ids=_text_list(request.get("skc_ids")),
-                keyword_search=bool(request.get("keyword_search")),
             )
         except HTTPException:
             raise
