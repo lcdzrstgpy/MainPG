@@ -11,6 +11,7 @@ import { ProfitActivityTestPage } from "../../modules/profit_activity/pages/Prof
 import { PriceVerificationPage } from "../../modules/price_verification/pages/PriceVerificationPage";
 import { ProductProcessingVerifyPage } from "../../modules/product_processing/pages/ProductProcessingVerifyPage";
 import { ProductProcessingTaskPage } from "../../modules/product_processing/pages/ProductProcessingTaskPage";
+import { AiServicePage } from "../../modules/ai_service/pages/AiServicePage";
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
 
@@ -206,6 +207,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
             </div>
           )}
           {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
+          {activeModuleId === "ai_service" && <AiServicePage />}
           {activeModuleId === "basic_settings" && <BasicSettingsPage />}
           {priceVerificationMounted && (
             <div hidden={activeModuleId !== "price_verification"}>
@@ -226,7 +228,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
               />
             </div>
           ))}
-          {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "product_processing" && activeModuleId !== "product_processing_tasks" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "basic_settings" && activeModuleId !== "price_verification" && <EmptyModulePage module={activeModule} />}
+          {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "product_processing" && activeModuleId !== "product_processing_tasks" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "ai_service" && activeModuleId !== "basic_settings" && activeModuleId !== "price_verification" && <EmptyModulePage module={activeModule} />}
         </div>
       </section>
       <button

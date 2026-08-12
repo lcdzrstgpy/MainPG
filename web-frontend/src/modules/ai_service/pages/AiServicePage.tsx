@@ -1,0 +1,268 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { generatedImageDownloadName } from "../data/assetDownload";
+import { consumeComposerDraft } from "../data/composerDraft";
+import { modelsForMode } from "../data/modelCatalog";
+import type { AiConversation, AiCreationMode, AiCreationTemplate, AiMessage } from "../types";
+import { aiServiceApi } from "../api/aiServiceApi";
+import "../styles/aiService.css";
+
+const modeLabels: Record<AiCreationMode, string> = {
+  chat: "智能对话",
+  generate: "文生图",
+  edit: "商品改图",
+};
+
+const templateIcons = ["icon-image", "icon-camera", "icon-bg-colors", "icon-star"];
+
+function modeIcon(mode: AiCreationMode) {
+  if (mode === "edit") return "icon-edit";
+  if (mode === "generate") return "icon-image";
+  return "icon-comment";
+}
+
+export function AiServicePage() {
+  const [activeConversationId, setActiveConversationId] = useState<string>();
+  const [localConversations, setLocalConversations] = useState<AiConversation[]>([]);
+  const [runtimeTemplates, setRuntimeTemplates] = useState<AiCreationTemplate[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState("deepseek-v4-flash");
+  const [mode, setMode] = useState<AiCreationMode>("chat");
+  const [prompt, setPrompt] = useState("");
+  const [messages, setMessages] = useState<AiMessage[]>([]);
+  const [uploadedImageUrl, setUploadedImageUrl] = useState<string>();
+  const [uploadedImageName, setUploadedImageName] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [remoteConversationId, setRemoteConversationId] = useState<string>();
+  const [uploadedAssetId, setUploadedAssetId] = useState<string>();
+  const [apiStatus, setApiStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [apiError, setApiError] = useState("");
+  const [aspectRatio, setAspectRatio] = useState("1:1");
+  const [sceneStyle, setSceneStyle] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const objectUrlsRef = useRef(new Set<string>());
+
+  const selectableModels = useMemo(() => modelsForMode(mode), [mode]);
+  const selectedModel = useMemo(
+    () => selectableModels.find((model) => model.id === selectedModelId) ?? selectableModels[0],
+    [selectableModels, selectedModelId],
+  );
+
+  useEffect(() => {
+    if (!selectableModels.some((model) => model.id === selectedModelId)) setSelectedModelId(selectableModels[0].id);
+  }, [selectableModels, selectedModelId]);
+
+  useEffect(() => () => {
+    objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    objectUrlsRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    aiServiceApi.bootstrap().then((data) => {
+      setRuntimeTemplates(data.templates.map((template, index) => ({
+        ...template,
+        icon: templateIcons[index % templateIcons.length],
+      })));
+      setLocalConversations(data.conversations.map(toConversation));
+      setApiStatus("ready");
+    }).catch((error) => {
+      setApiStatus("error");
+      setApiError(error instanceof Error ? error.message : "本机 AI 服务未连接");
+    });
+  }, []);
+
+  const selectTemplate = (template: AiCreationTemplate) => {
+    setPrompt(template.prompt);
+    setMode(template.mode);
+  };
+
+  const clearComposerAttachment = (revokePreview = false) => {
+    if (revokePreview && uploadedImageUrl) {
+      URL.revokeObjectURL(uploadedImageUrl);
+      objectUrlsRef.current.delete(uploadedImageUrl);
+    }
+    setUploadedImageUrl(undefined);
+    setUploadedImageName("");
+    setUploadedAssetId(undefined);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const selectImage = async (file?: File) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    if (uploadedImageUrl) {
+      URL.revokeObjectURL(uploadedImageUrl);
+      objectUrlsRef.current.delete(uploadedImageUrl);
+    }
+    const imageUrl = URL.createObjectURL(file);
+    objectUrlsRef.current.add(imageUrl);
+    setUploadedImageUrl(imageUrl);
+    setUploadedImageName(file.name);
+    setUploadedAssetId(undefined);
+    if (apiStatus !== "ready") return;
+    try {
+      const asset = await aiServiceApi.uploadAsset(file);
+      setUploadedAssetId(asset.asset_id);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "图片上传失败，已保留本地预览");
+    }
+  };
+
+  const openNewCreation = () => {
+    setActiveConversationId(undefined);
+    setMessages([]);
+    setPrompt("");
+    setApiError("");
+    clearComposerAttachment(true);
+    setRemoteConversationId(undefined);
+  };
+
+  const selectConversation = async (conversation: AiConversation) => {
+    setActiveConversationId(conversation.id);
+    setRemoteConversationId(conversation.id);
+    setApiError("");
+    try {
+      const history = await aiServiceApi.messages(conversation.id);
+      const restored = await Promise.all(history.messages.map(async (message) => ({
+        id: message.message_id,
+        role: message.role,
+        content: message.content,
+        generatedImageUrls: message.role === "assistant" && message.asset_ids.length
+          ? await Promise.all(message.asset_ids.map(aiServiceApi.loadAssetUrl)) : undefined,
+      })));
+      setMessages(restored);
+      setPrompt("");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "本地会话加载失败");
+    }
+  };
+
+  const generate = async () => {
+    const content = prompt.trim();
+    if (!content || isGenerating) return;
+    if (apiStatus !== "ready") {
+      setApiError("本机 AI 服务尚未连接，无法发送创作请求。");
+      return;
+    }
+    const title = content.length > 18 ? `${content.slice(0, 18)}…` : content;
+    const draft = consumeComposerDraft({
+      prompt: content,
+      imageUrl: uploadedImageUrl,
+      imageName: uploadedImageName,
+      assetId: uploadedAssetId,
+    });
+    const userMessage: AiMessage = { id: `user-${Date.now()}`, role: "user", content: draft.submitted.prompt, ...(draft.submitted.imageUrl ? { uploadedImageUrl: draft.submitted.imageUrl } : {}) };
+    setMessages((current) => [...current, userMessage]);
+    setPrompt(draft.next.prompt);
+    setUploadedImageUrl(draft.next.imageUrl);
+    setUploadedImageName(draft.next.imageName);
+    setUploadedAssetId(draft.next.assetId);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    setIsGenerating(true);
+    setApiError("");
+    try {
+      const conversation = remoteConversationId
+        ? { conversation_id: remoteConversationId }
+        : await aiServiceApi.createConversation(title);
+      setRemoteConversationId(conversation.conversation_id);
+      setActiveConversationId(conversation.conversation_id);
+      setLocalConversations((current) => [
+        { id: conversation.conversation_id, title, preview: modeLabels[mode], time: "刚刚" },
+        ...current.filter((item) => item.id !== conversation.conversation_id),
+      ]);
+      if (mode === "chat") {
+        const reply = await aiServiceApi.streamChat({
+          conversation_id: conversation.conversation_id,
+          content,
+          model_id: selectedModel.id,
+          asset_ids: draft.submitted.assetId ? [draft.submitted.assetId] : [],
+        });
+        setMessages((current) => [...current, { id: `assistant-${Date.now()}`, role: "assistant", content: reply || "模型未返回文字内容。" }]);
+      } else {
+        const template = runtimeTemplates.find((item) => item.mode === mode);
+        if (!template) throw new Error("创作模板仍在加载，请稍后重试。");
+        const result = await aiServiceApi.createImage({
+          conversation_id: conversation.conversation_id,
+          template_id: template.id,
+          model_id: selectedModel.id,
+          prompt: `${content}${sceneStyle ? `\n场景风格：${sceneStyle}` : ""}`,
+          size: imageSizeFor(aspectRatio),
+          asset_ids: draft.submitted.assetId ? [draft.submitted.assetId] : [],
+        });
+        const generatedImageUrls = await Promise.all(result.asset_ids.map(aiServiceApi.loadAssetUrl));
+        setMessages((current) => [...current, {
+          id: `assistant-${Date.now()}`,
+          role: "assistant",
+          content: `已生成 ${result.asset_ids.length} 张商品创作图。`,
+          generatedImageUrls,
+        }]);
+      }
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "创作任务失败");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  return (
+    <section className="ai-service-page" aria-label="AI 服务">
+      <aside className="ai-service-sessions">
+        <div className="ai-service-brand"><span className="iconfont icon-robot-fill" aria-hidden="true" /><div><b>AI 服务</b><span>本地商品创作台</span></div></div>
+        <button className="ai-new-creation" type="button" onClick={openNewCreation}><span className="iconfont icon-plus" aria-hidden="true" /> 新建创作</button>
+        <div className="ai-session-section">
+          <div className="ai-section-heading"><span>创作模板</span></div>
+          <div className="ai-template-list">
+            {runtimeTemplates.map((template) => <button key={template.id} type="button" className="ai-template" onClick={() => selectTemplate(template)}><span className={`iconfont ${template.icon}`} aria-hidden="true" /><span><b>{template.label}</b><small>{template.description}</small></span></button>)}
+            {apiStatus === "loading" && <small className="ai-side-loading">正在加载模板…</small>}
+          </div>
+        </div>
+        <div className="ai-session-section ai-history-section">
+          <div className="ai-section-heading"><span>本地会话</span><small>仅此设备</small></div>
+          <div className="ai-history-list">
+            {localConversations.map((conversation) => <button type="button" key={conversation.id} className={`ai-history-item ${activeConversationId === conversation.id ? "is-active" : ""}`} onClick={() => void selectConversation(conversation)}><span className="iconfont icon-comment" aria-hidden="true" /><span><b>{conversation.title}</b><small>{conversation.preview}</small></span><time>{conversation.time}</time></button>)}
+          </div>
+        </div>
+        <p className="ai-local-note"><span className="iconfont icon-safetycertificate" aria-hidden="true" /> 会话与附件仅保存到本机</p>
+      </aside>
+
+      <main className="ai-service-workspace">
+        <header className="ai-workspace-header"><div><p>AI SERVICE / CREATIVE STUDIO</p><h1>商品创作</h1></div><div className="ai-header-status"><span className="ai-status-dot" /> {apiStatus === "ready" ? "本机服务已连接" : apiStatus === "loading" ? "正在连接本机服务" : "本机服务未连接"}</div></header>
+        <div className="ai-mode-tabs" role="tablist" aria-label="创作模式">
+          {(["chat", "generate", "edit"] as AiCreationMode[]).map((item) => <button key={item} type="button" className={mode === item ? "is-active" : ""} onClick={() => setMode(item)} role="tab" aria-selected={mode === item}><span className={`iconfont ${modeIcon(item)}`} aria-hidden="true" /> {modeLabels[item]}</button>)}
+        </div>
+        <div className={`ai-conversation-flow ${messages.length ? "has-messages" : ""}`}>
+          {!messages.length && <EmptyCreationState mode={mode} />}
+          {messages.map((message) => <article key={message.id} className={`ai-message ai-message-${message.role}`}><span className={`ai-message-avatar iconfont ${message.role === "assistant" ? "icon-robot-fill" : "icon-user"}`} aria-hidden="true" /><div className="ai-message-body"><p>{message.content}</p>{message.uploadedImageUrl && <img className="ai-uploaded-in-message" src={message.uploadedImageUrl} alt="用户上传商品图" />}{message.generatedImageUrls && <GeneratedAssetCards imageUrls={message.generatedImageUrls} />}</div></article>)}
+          {isGenerating && <article className="ai-message ai-message-assistant"><span className="ai-message-avatar iconfont icon-robot-fill" /><div className="ai-generating"><span /><span /><span /> 正在生成…</div></article>}
+        </div>
+        <div className="ai-composer-wrap">
+          {uploadedImageUrl && <div className="ai-upload-preview"><img src={uploadedImageUrl} alt="待创作商品图" /><div><b>{uploadedImageName}</b><span>{uploadedAssetId ? "已保存到本机，将作为商品主体参考图" : "将作为商品主体参考图"}</span></div><button type="button" onClick={() => clearComposerAttachment(true)} aria-label="移除图片">×</button></div>}
+          <div className="ai-composer"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "输入商品创作问题…" : mode === "edit" ? "上传商品图，并描述想替换的背景或场景…" : "描述你想要创作的商品视觉…"} /><div className="ai-composer-actions"><div><input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(event) => void selectImage(event.target.files?.[0])} /><button type="button" className="ai-attach-button" onClick={() => fileInputRef.current?.click()}><span className="iconfont icon-image" /> 图片</button><span className="ai-upload-hint">可拖拽、粘贴或上传商品图</span></div><button type="button" className="ai-generate-button" disabled={!prompt.trim() || isGenerating || apiStatus !== "ready"} onClick={() => void generate()}>{mode === "chat" ? "发送" : "开始创作"}<span className="iconfont icon-arrowright" /></button></div></div>
+        </div>
+        {apiError && <p className="ai-api-error" role="alert">{apiError}</p>}
+      </main>
+
+      <aside className="ai-creation-settings" aria-label="创作参数">
+        <section className="ai-settings-card ai-model-card"><span className="ai-card-kicker">MODEL</span><h2>{mode === "chat" ? "对话模型" : "图片模型"}</h2><label>模型选择<select value={selectedModel.id} onChange={(event) => setSelectedModelId(event.target.value)}>{selectableModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label><p>{selectedModel.description}</p><div className="ai-capability-tags"><span>{modeLabels[mode]}</span></div></section>
+        {mode !== "chat" && <section className="ai-settings-card"><span className="ai-card-kicker">CREATION SETTINGS</span><h2>创作参数</h2><label>画面比例<select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value)}><option>1:1</option><option>4:5</option><option>3:4</option><option>16:9</option></select></label><label>场景风格 <small>可选</small><input value={sceneStyle} onChange={(event) => setSceneStyle(event.target.value)} list="ai-scene-style-suggestions" placeholder="如：新中式茶室、法式复古花园" /><datalist id="ai-scene-style-suggestions"><option value="自然家居" /><option value="纯色影棚" /><option value="轻奢生活方式" /><option value="户外通勤" /><option value="新中式茶室" /><option value="节日促销陈列" /></datalist></label></section>}
+        <section className="ai-settings-card ai-tips-card"><span className="iconfont icon-bulb-fill" /><div><b>商品图创作小贴士</b><p>上传正面、清晰且无遮挡的商品图，换背景和场景图的效果会更稳定。</p></div></section>
+      </aside>
+    </section>
+  );
+}
+
+function EmptyCreationState({ mode }: { mode: AiCreationMode }) {
+  const description = mode === "chat" ? "选择模型后，直接输入商品创作问题。" : mode === "edit" ? "上传商品图，再描述你想替换的背景或场景。" : "描述商品和想要的画面，即可开始生成。";
+  return <div className="ai-empty-creation"><span className={`iconfont ${modeIcon(mode)}`} aria-hidden="true" /><h2>{modeLabels[mode]}</h2><p>{description}</p></div>;
+}
+
+function GeneratedAssetCards({ imageUrls }: { imageUrls: string[] }) {
+  return <div className="ai-generated-grid ai-generated-real" aria-label="生成图片">{imageUrls.map((imageUrl, index) => <article key={imageUrl} className="ai-generated-card"><a href={imageUrl} target="_blank" rel="noreferrer" title="查看原图"><img src={imageUrl} alt={`AI 生成商品图 ${index + 1}`} /></a><a className="ai-download-button" href={imageUrl} download={generatedImageDownloadName(index)}><span className="iconfont icon-download" aria-hidden="true" />下载图片</a></article>)}</div>;
+}
+
+function imageSizeFor(ratio: string) {
+  if (ratio === "1:1") return "1024x1024";
+  return ratio === "16:9" ? "1536x1024" : "1024x1536";
+}
+
+function toConversation(conversation: { conversation_id: string; title: string; updated_at: string }): AiConversation {
+  return { id: conversation.conversation_id, title: conversation.title, preview: "本地会话", time: new Date(conversation.updated_at).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }) };
+}

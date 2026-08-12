@@ -1,0 +1,523 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import re
+import sqlite3
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from ...session import Actor
+from .defaults import DEFAULT_MODELS, DEFAULT_TEMPLATES
+
+
+MAX_ASSET_BYTES = 12 * 1024 * 1024
+_SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+_IMAGE_SIGNATURES = {
+    b"\x89PNG\r\n\x1a\n": "image/png",
+    b"\xff\xd8\xff": "image/jpeg",
+    b"GIF87a": "image/gif",
+    b"GIF89a": "image/gif",
+}
+
+
+class AiServiceError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class AiService:
+    """Owns local AI conversations and private image assets.
+
+    Remote provider calls live in the router/gateway boundary. This service never
+    receives or exposes a provider API key.
+    """
+
+    def __init__(self, database_path: Path, asset_root: Path) -> None:
+        self.database_path = Path(database_path)
+        self.asset_root = Path(asset_root)
+        self.asset_root.mkdir(parents=True, exist_ok=True)
+        self._ensure_schema()
+
+    def bootstrap(self, actor: Actor) -> dict[str, Any]:
+        return {
+            "models": self.model_profiles(),
+            "templates": self.templates(),
+            "conversations": self.list_conversations(actor),
+            "storage": {"mode": "local", "reference_transport": "data_url_with_temporary_cos_fallback"},
+        }
+
+    def model_profiles(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT model_id, display_name, modes_json, reference_transport, sizes_json, default_count
+                   FROM ai_service_model_profiles WHERE enabled = 1 ORDER BY model_id"""
+            ).fetchall()
+        if not rows:
+            return [dict(item) for item in DEFAULT_MODELS]
+        return [{
+            "id": row["model_id"], "name": row["display_name"], "modes": _json_string_list(row["modes_json"]),
+            "reference_transport": row["reference_transport"], "sizes": _json_string_list(row["sizes_json"]),
+            "default_count": row["default_count"],
+        } for row in rows]
+
+    def templates(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT template_id, label, description, mode, default_count, prompt, version
+                   FROM ai_service_templates WHERE enabled = 1 ORDER BY template_id"""
+            ).fetchall()
+        if not rows:
+            return [dict(item) for item in DEFAULT_TEMPLATES]
+        return [{
+            "id": row["template_id"], "label": row["label"], "description": row["description"],
+            "mode": row["mode"], "default_count": row["default_count"], "prompt": row["prompt"], "version": row["version"],
+        } for row in rows]
+
+    def save_model_profiles(self, profiles: list[dict[str, Any]], actor_id: str) -> list[dict[str, Any]]:
+        if not profiles:
+            raise AiServiceError("at least one model profile is required")
+        with self._connect() as conn:
+            conn.execute("UPDATE ai_service_model_profiles SET enabled = 0")
+            for profile in profiles:
+                model_id = str(profile.get("id") or "").strip()
+                modes = _allowed_modes(profile.get("modes"))
+                sizes = _json_string_list(profile.get("sizes"))
+                if not model_id or not modes:
+                    raise AiServiceError("model id and at least one mode are required")
+                conn.execute(
+                    """INSERT INTO ai_service_model_profiles
+                       (model_id, display_name, modes_json, reference_transport, sizes_json, default_count, enabled, updated_by, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                       ON CONFLICT(model_id) DO UPDATE SET display_name=excluded.display_name, modes_json=excluded.modes_json,
+                       reference_transport=excluded.reference_transport, sizes_json=excluded.sizes_json, default_count=excluded.default_count,
+                       enabled=1, updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+                    (model_id, str(profile.get("name") or model_id)[:80], json.dumps(modes),
+                     str(profile.get("reference_transport") or "none"), json.dumps(sizes),
+                     max(1, min(int(profile.get("default_count") or 1), 4)), actor_id, _now()),
+                )
+        return self.model_profiles()
+
+    def save_templates(self, templates: list[dict[str, Any]], actor_id: str) -> list[dict[str, Any]]:
+        if not templates:
+            raise AiServiceError("at least one template is required")
+        with self._connect() as conn:
+            conn.execute("UPDATE ai_service_templates SET enabled = 0")
+            for template in templates:
+                template_id = str(template.get("id") or "").strip()
+                mode = str(template.get("mode") or "")
+                prompt = str(template.get("prompt") or "").strip()
+                if not template_id or mode not in {"generate", "edit"} or not prompt:
+                    raise AiServiceError("template id, mode, and prompt are required")
+                conn.execute(
+                    """INSERT INTO ai_service_templates
+                       (template_id, label, description, mode, default_count, prompt, version, enabled, updated_by, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+                       ON CONFLICT(template_id) DO UPDATE SET label=excluded.label, description=excluded.description,
+                       mode=excluded.mode, default_count=excluded.default_count, prompt=excluded.prompt,
+                       version=ai_service_templates.version + 1, enabled=1, updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+                    (template_id, str(template.get("label") or template_id)[:80], str(template.get("description") or "")[:180], mode,
+                     max(1, min(int(template.get("default_count") or 1), 4)), prompt, actor_id, _now()),
+                )
+        return self.templates()
+
+    def create_conversation(self, actor: Actor, title: str = "新建创作") -> dict[str, str]:
+        conversation_id = uuid.uuid4().hex
+        now = _now()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO ai_service_conversations
+                   (conversation_id, workspace_id, owner_user_id, title, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (conversation_id, actor.workspace_id, actor.id, _clean_title(title), now, now),
+            )
+        return {"conversation_id": conversation_id, "title": _clean_title(title), "created_at": now}
+
+    def list_conversations(self, actor: Actor, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT conversation_id, title, updated_at
+                   FROM ai_service_conversations
+                   WHERE workspace_id = ? AND owner_user_id = ?
+                   ORDER BY updated_at DESC LIMIT ?""",
+                (actor.workspace_id, actor.id, max(1, min(limit, 100))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_conversation(self, actor: Actor, conversation_id: str) -> None:
+        self._conversation(actor, conversation_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT asset_ids_json FROM ai_service_messages
+                   WHERE conversation_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (conversation_id, actor.workspace_id, actor.id),
+            ).fetchall()
+            asset_ids = {asset_id for row in rows for asset_id in _asset_ids(row["asset_ids_json"])}
+            assets = conn.execute(
+                """SELECT relative_path FROM ai_service_assets
+                   WHERE workspace_id = ? AND owner_user_id = ? AND asset_id IN ({})""".format(
+                    ",".join("?" for _ in asset_ids) or "''"
+                ),
+                (actor.workspace_id, actor.id, *asset_ids),
+            ).fetchall()
+            conn.execute("DELETE FROM ai_service_messages WHERE conversation_id = ?", (conversation_id,))
+            conn.execute("DELETE FROM ai_service_creations WHERE conversation_id = ?", (conversation_id,))
+            conn.execute("DELETE FROM ai_service_conversations WHERE conversation_id = ?", (conversation_id,))
+            if asset_ids:
+                conn.execute("DELETE FROM ai_service_assets WHERE asset_id IN ({})".format(",".join("?" for _ in asset_ids)), tuple(asset_ids))
+        for asset in assets:
+            self._asset_path(asset["relative_path"]).unlink(missing_ok=True)
+
+    def list_messages(self, actor: Actor, conversation_id: str) -> list[dict[str, Any]]:
+        self._conversation(actor, conversation_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT message_id, role, content, asset_ids_json, created_at
+                   FROM ai_service_messages
+                   WHERE conversation_id = ? AND workspace_id = ? AND owner_user_id = ?
+                   ORDER BY created_at, rowid""",
+                (conversation_id, actor.workspace_id, actor.id),
+            ).fetchall()
+        return [{**dict(row), "asset_ids": _asset_ids(row["asset_ids_json"])} for row in rows]
+
+    def save_asset(self, actor: Actor, filename: str, content: bytes, content_type: str) -> dict[str, str]:
+        media_type = _validated_image_type(content, content_type)
+        asset_id = uuid.uuid4().hex
+        safe_name = _safe_filename(filename, media_type)
+        relative_path = Path(actor.workspace_id) / actor.id / f"{asset_id}_{safe_name}"
+        target = self.asset_root / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        now = _now()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """INSERT INTO ai_service_assets
+                       (asset_id, workspace_id, owner_user_id, filename, relative_path, content_type, byte_size, sha256, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (asset_id, actor.workspace_id, actor.id, safe_name, relative_path.as_posix(), media_type, len(content), hashlib.sha256(content).hexdigest(), now),
+                )
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return {"asset_id": asset_id, "filename": safe_name, "path": relative_path.as_posix(), "content_type": media_type}
+
+    def asset_content(self, actor: Actor, asset_id: str) -> bytes:
+        asset = self._asset(actor, asset_id)
+        target = self._asset_path(asset["relative_path"])
+        try:
+            return target.read_bytes()
+        except OSError as exc:
+            raise AiServiceError("local asset is unavailable", 404) from exc
+
+    def asset_info(self, actor: Actor, asset_id: str) -> dict[str, Any]:
+        return dict(self._asset(actor, asset_id))
+
+    def delete_asset(self, actor: Actor, asset_id: str) -> None:
+        asset = self._asset(actor, asset_id)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM ai_service_assets WHERE asset_id = ?", (asset_id,))
+        self._asset_path(asset["relative_path"]).unlink(missing_ok=True)
+
+    def append_message(
+        self,
+        actor: Actor,
+        conversation_id: str,
+        *,
+        role: str,
+        content: str,
+        asset_ids: list[str] | None = None,
+    ) -> dict[str, str]:
+        if role not in {"user", "assistant", "system"}:
+            raise AiServiceError("message role is invalid")
+        self._conversation(actor, conversation_id)
+        asset_ids = asset_ids or []
+        for asset_id in asset_ids:
+            self._asset(actor, asset_id)
+        message_id = uuid.uuid4().hex
+        now = _now()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO ai_service_messages
+                   (message_id, conversation_id, workspace_id, owner_user_id, role, content, asset_ids_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (message_id, conversation_id, actor.workspace_id, actor.id, role, content.strip(), json.dumps(asset_ids), now),
+            )
+            conn.execute("UPDATE ai_service_conversations SET updated_at = ? WHERE conversation_id = ?", (now, conversation_id))
+        return {"message_id": message_id, "created_at": now}
+
+    def build_chat_context(self, actor: Actor, conversation_id: str, system_prompt: str) -> list[dict[str, Any]]:
+        self._conversation(actor, conversation_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT role, content, asset_ids_json
+                   FROM ai_service_messages
+                   WHERE conversation_id = ? AND workspace_id = ? AND owner_user_id = ?
+                   ORDER BY created_at, rowid""",
+                (conversation_id, actor.workspace_id, actor.id),
+            ).fetchall()
+        messages = [dict(row) for row in rows]
+        subject_asset = next((asset_id for message in messages for asset_id in _asset_ids(message["asset_ids_json"])), None)
+        context: list[dict[str, Any]] = [{"role": "system", "content": system_prompt.strip()}]
+        if subject_asset:
+            context.append({"role": "user", "content": [
+                {"type": "text", "text": "商品主体参考图"},
+                {"type": "image_url", "image_url": {"url": self.asset_data_url(actor, subject_asset)}},
+            ]})
+        for message in messages[-8:]:
+            # The first reference-only message has already been represented by the subject image.
+            if subject_asset and subject_asset in _asset_ids(message["asset_ids_json"]) and not message["content"]:
+                continue
+            context.append({"role": message["role"], "content": message["content"]})
+        return context
+
+    def asset_data_url(self, actor: Actor, asset_id: str) -> str:
+        asset = self._asset(actor, asset_id)
+        encoded = base64.b64encode(self.asset_content(actor, asset_id)).decode("ascii")
+        return f"data:{asset['content_type']};base64,{encoded}"
+
+    def prepare_creation(
+        self,
+        actor: Actor,
+        *,
+        template_id: str,
+        model_id: str,
+        user_prompt: str,
+        asset_ids: list[str] | None = None,
+        size: str = "1024x1024",
+    ) -> dict[str, Any]:
+        """Build the station image payload from a controlled model/template profile.
+
+        The public API never accepts a reference-image URL. It receives local asset
+        ids and this method chooses the transport declared by the model profile.
+        """
+        template = next((item for item in self.templates() if item["id"] == template_id), None)
+        model = next((item for item in self.model_profiles() if item["id"] == model_id), None)
+        if template is None or model is None or template["mode"] not in model["modes"]:
+            raise AiServiceError("template and model are not compatible")
+        if size not in model["sizes"]:
+            raise AiServiceError("selected image size is not supported")
+        asset_ids = asset_ids or []
+        if template["mode"] == "edit" and not asset_ids:
+            raise AiServiceError("an uploaded product image is required for this template")
+        reference_image = ""
+        if asset_ids:
+            if model["reference_transport"] != "data_url":
+                raise AiServiceError("temporary reference transport is not configured", 503)
+            reference_image = self.asset_data_url(actor, asset_ids[0])
+        prompt = "\n\n".join(part for part in (str(template["prompt"]), user_prompt.strip()) if part)
+        return {
+            "model": model_id,
+            "prompt": prompt,
+            "n": int(template["default_count"]),
+            "return_url": True,
+            "size": size,
+            **({"image": reference_image} if reference_image else {}),
+        }
+
+    def create_creation(self, actor: Actor, conversation_id: str, payload: dict[str, Any]) -> dict[str, str]:
+        self._conversation(actor, conversation_id)
+        creation_id = uuid.uuid4().hex
+        now = _now()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO ai_service_creations
+                   (creation_id, conversation_id, workspace_id, owner_user_id, model_id, request_json, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)""",
+                (creation_id, conversation_id, actor.workspace_id, actor.id, str(payload["model"]), _redacted_json(payload), now, now),
+            )
+        return {"creation_id": creation_id, "status": "running"}
+
+    def finish_creation(
+        self,
+        actor: Actor,
+        creation_id: str,
+        *,
+        status: str,
+        output_asset_ids: list[str] | None = None,
+        error_message: str = "",
+    ) -> None:
+        if status not in {"succeeded", "failed", "cancelled"}:
+            raise AiServiceError("creation status is invalid")
+        with self._connect() as conn:
+            result = conn.execute(
+                """UPDATE ai_service_creations
+                   SET status = ?, output_asset_ids_json = ?, error_message = ?, updated_at = ?
+                   WHERE creation_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (status, json.dumps(output_asset_ids or []), error_message[:300], _now(), creation_id, actor.workspace_id, actor.id),
+            )
+        if result.rowcount != 1:
+            raise AiServiceError("creation not found", 404)
+
+    def _conversation(self, actor: Actor, conversation_id: str) -> sqlite3.Row:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM ai_service_conversations
+                   WHERE conversation_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (conversation_id, actor.workspace_id, actor.id),
+            ).fetchone()
+        if row is None:
+            raise AiServiceError("conversation not found", 404)
+        return row
+
+    def _asset(self, actor: Actor, asset_id: str) -> sqlite3.Row:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM ai_service_assets
+                   WHERE asset_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (asset_id, actor.workspace_id, actor.id),
+            ).fetchone()
+        if row is None:
+            raise AiServiceError("asset not found", 404)
+        return row
+
+    def _asset_path(self, relative_path: str) -> Path:
+        target = (self.asset_root / relative_path).resolve()
+        if self.asset_root.resolve() not in target.parents:
+            raise AiServiceError("asset path is invalid", 400)
+        return target
+
+    def _connect(self) -> sqlite3.Connection:
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.database_path, timeout=30)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as conn:
+            conn.executescript(SCHEMA_SQL)
+
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS ai_service_model_profiles (
+    model_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    modes_json TEXT NOT NULL,
+    reference_transport TEXT NOT NULL DEFAULT 'none',
+    sizes_json TEXT NOT NULL DEFAULT '[]',
+    default_count INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS ai_service_templates (
+    template_id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL,
+    default_count INTEGER NOT NULL DEFAULT 1,
+    prompt TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS ai_service_conversations (
+    conversation_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_service_conversations_owner
+    ON ai_service_conversations (workspace_id, owner_user_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS ai_service_assets (
+    asset_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_service_assets_owner
+    ON ai_service_assets (workspace_id, owner_user_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS ai_service_messages (
+    message_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    asset_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_service_messages_conversation
+    ON ai_service_messages (conversation_id, workspace_id, owner_user_id, created_at);
+CREATE TABLE IF NOT EXISTS ai_service_creations (
+    creation_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    output_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_service_creations_owner
+    ON ai_service_creations (workspace_id, owner_user_id, created_at DESC);
+"""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _clean_title(value: str) -> str:
+    return (value or "新建创作").strip()[:80] or "新建创作"
+
+
+def _safe_filename(value: str, content_type: str) -> str:
+    suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}[content_type]
+    base = _SAFE_FILENAME.sub("-", Path(value or "product-image").stem).strip(".-") or "product-image"
+    return f"{base[:80]}{suffix}"
+
+
+def _validated_image_type(content: bytes, declared_type: str) -> str:
+    if not content or len(content) > MAX_ASSET_BYTES:
+        raise AiServiceError("image must be between 1 byte and 12 MB")
+    detected = next((mime for signature, mime in _IMAGE_SIGNATURES.items() if content.startswith(signature)), None)
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        detected = "image/webp"
+    if detected is None or (declared_type and declared_type != detected):
+        raise AiServiceError("only valid PNG, JPEG, GIF, or WEBP image files are accepted")
+    return detected
+
+
+def _asset_ids(value: str) -> list[str]:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    return [item for item in parsed if isinstance(item, str)] if isinstance(parsed, list) else []
+
+
+def _json_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    return [item for item in parsed if isinstance(item, str)] if isinstance(parsed, list) else []
+
+
+def _allowed_modes(value: Any) -> list[str]:
+    return [item for item in _json_string_list(value) if item in {"chat", "generate", "edit"}]
+
+
+def _redacted_json(payload: dict[str, Any]) -> str:
+    value = dict(payload)
+    if "image" in value:
+        value["image"] = "local-asset-reference"
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)

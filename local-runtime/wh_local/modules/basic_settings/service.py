@@ -14,7 +14,7 @@ from .schemas import SystemConfigUpdate
 
 
 CONFIG_KEY = "system_config"
-PRIMARY_AI_BASE_URL = "https://api.aicoming.top/v1"
+PRIMARY_AI_BASE_URL = "https://station-88.aicoming.top/v1"
 
 # 这些字段不进入普通配置 JSON，避免 GET 接口把密钥明文返回给前端。
 SECRET_FIELDS: tuple[tuple[str, str], ...] = (
@@ -41,12 +41,25 @@ class RuntimeAiConfig:
 
 
 @dataclass(frozen=True)
+class RuntimeCosConfig:
+    bucket: str
+    region: str
+    secret_id: str
+    secret_key: str
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.bucket and self.region and self.secret_id and self.secret_key)
+
+
+@dataclass(frozen=True)
 class RuntimeSystemConfig:
     """Decrypted runtime config consumed inside backend modules, never by frontend."""
 
     text_ai: RuntimeAiConfig
     image_ai: RuntimeAiConfig
     backup_image_ai: RuntimeAiConfig
+    cos: RuntimeCosConfig
     limits: dict[str, Any]
     updates: dict[str, Any]
 
@@ -181,6 +194,12 @@ class SystemConfigService:
                 model=config["backup_image"].get("model", ""),
                 reference_model=config["backup_image"].get("reference_model", ""),
                 api_key=secrets.get(("backup_image", "api_key"), ""),
+            ),
+            cos=RuntimeCosConfig(
+                bucket=config["cos"].get("bucket", ""),
+                region=config["cos"].get("region", ""),
+                secret_id=secrets.get(("cos", "secret_id"), ""),
+                secret_key=secrets.get(("cos", "secret_key"), ""),
             ),
             limits=dict(config["limits"]),
             updates=dict(config["updates"]),

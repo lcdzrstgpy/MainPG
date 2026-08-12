@@ -443,6 +443,15 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 source_image_sync_lease_sql.read_text(encoding="utf-8"),
             )
         )
+    ai_service_sql = root / "modules" / "ai_service" / "migrations" / "001_ai_service.sql"
+    if ai_service_sql.exists():
+        migrations.append(
+            (
+                "ai_service:001_ai_service",
+                "ai_service",
+                ai_service_sql.read_text(encoding="utf-8"),
+            )
+        )
     profit_activity_sql = root / "modules" / "profit_activity" / "migrations" / "001_profit_activity.sql"
     if profit_activity_sql.exists():
         migrations.append(
@@ -578,6 +587,10 @@ DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (
     ("seller_listing.price_confirm", "seller_listing", "price_confirm", "处理核价、调价和价格待确认产品"),
     ("seller_listing.attribute_write", "seller_listing", "attribute_write", "修改产品属性、详情和库存"),
     ("seller_listing.publish", "seller_listing", "publish", "执行或确认产品上架完成"),
+    ("ai_service.read", "ai_service", "read", "查看本地 AI 服务会话和素材"),
+    ("ai_service.create", "ai_service", "create", "发起 AI 对话、上传素材和创建商品图"),
+    ("ai_service.delete", "ai_service", "delete", "删除本人 AI 会话和素材"),
+    ("ai_service.settings_manage", "ai_service", "settings_manage", "维护 AI 模型白名单和创作模板"),
     ("settings.read", "settings", "read", "查看系统配置"),
     ("settings.manage", "settings", "manage", "维护系统配置、密钥和运行参数"),
     ("stores.manage", "stores", "manage", "维护店铺配置和平台站点信息"),
@@ -622,6 +635,9 @@ OPERATOR_PERMISSIONS: frozenset[str] = frozenset(
         "seller_listing.read",
         "seller_listing.price_confirm",
         "seller_listing.attribute_write",
+        "ai_service.read",
+        "ai_service.create",
+        "ai_service.delete",
     }
 )
 
