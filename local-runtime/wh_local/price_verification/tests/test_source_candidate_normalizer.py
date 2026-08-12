@@ -150,7 +150,7 @@ def test_cross_language_category_mismatch_rejects_pet_bowl_for_bamboo_cooling_ma
     assert candidate["product_evidence"] == ["product_category_mismatch"]
 
 
-def test_ranked_preview_omits_category_conflicts_from_visible_candidates() -> None:
+def test_ranked_preview_keeps_category_conflicts_for_fixed_five_review_display() -> None:
     preview = {
         "items": [
             {
@@ -170,4 +170,49 @@ def test_ranked_preview_omits_category_conflicts_from_visible_candidates() -> No
 
     ranked = _apply_batch_ranking(preview, selections_by_skc={}, ranking_mode="image_order")
 
-    assert ranked["items"][0]["all_candidates"] == []
+    candidates = ranked["items"][0]["all_candidates"]
+    assert [candidate["offer_id"] for candidate in candidates] == ["cat-bowl"]
+    assert candidates[0]["product_evidence_status"] == "conflict"
+
+
+def test_ranked_preview_keeps_five_image_hits_even_when_every_title_conflicts() -> None:
+    raw_candidates = [
+        {
+            "num_iid": str(700000000000 + index),
+            "item_url": f"https://detail.1688.com/offer/{700000000000 + index}.html",
+            "title": f"宠物玩具候选{index}",
+            "pic_url": f"https://images.example/candidate-{index}.jpg",
+            "source_channel": "image",
+            "image_search_rank": index,
+            "image_similarity_score": 0.20 - index / 100,
+            "image_similarity_selected": True,
+            "image_similarity_fallback": True,
+        }
+        for index in range(1, 6)
+    ]
+    preview = build_source_preview(
+        [
+            QuoteItem(
+                skc_id="55872375182",
+                product_title="Cute Cartoon Dog Vest, Cooling Breathable Pet Clothing",
+            )
+        ],
+        {
+            "items": [
+                {
+                    "task_key": "55872375182",
+                    "status": "succeeded",
+                    "candidates": raw_candidates,
+                }
+            ]
+        },
+    )
+
+    ranked = _apply_batch_ranking(preview, selections_by_skc={}, ranking_mode="image_order")
+
+    assert len(ranked["items"][0]["all_candidates"]) == 5
+    assert len(ranked["items"][0]["ranked_candidates"]) == 5
+    assert all(
+        candidate["source_decision"] == "no_reliable_source"
+        for candidate in ranked["items"][0]["all_candidates"]
+    )

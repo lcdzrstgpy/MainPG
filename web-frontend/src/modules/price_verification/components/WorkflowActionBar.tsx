@@ -14,8 +14,8 @@ export const WorkflowActionBar = forwardRef<HTMLElement, Props>(function Workflo
   </aside>;
 });
 
-/** Pins an action bar to the workspace bottom once its natural position scrolls away. */
-export function useFloatingActionBar() {
+/** Pins an action bar to a workspace edge once its natural position scrolls away. */
+export function useFloatingActionBar(edge: "bottom" | "top" = "bottom") {
   const actionBarRef = useRef<HTMLElement>(null);
   const spacerRef = useRef<HTMLDivElement>(null);
 
@@ -33,6 +33,7 @@ export function useFloatingActionBar() {
       bar.style.bottom = "";
       bar.style.left = "";
       bar.style.width = "";
+      bar.style.zIndex = "";
       spacer.style.height = "";
       bar.classList.remove("is-stuck");
     };
@@ -51,7 +52,12 @@ export function useFloatingActionBar() {
         stuck = true;
         spacer.style.height = `${bar.offsetHeight}px`;
         bar.style.position = "fixed";
-        bar.style.bottom = "14px";
+        if (edge === "top") {
+          bar.style.top = `${threshold}px`;
+          bar.style.zIndex = "21";
+        } else {
+          bar.style.bottom = "14px";
+        }
         bar.style.left = `${Math.round(rect.left)}px`;
         bar.style.width = `${Math.round(rect.width)}px`;
         bar.classList.add("is-stuck");

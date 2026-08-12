@@ -17,6 +17,8 @@ from ..repository import PriceVerificationRepository
 from ...data_collection.criteria import DailySelectionCriteria
 from ...data_collection.contracts import DailySelectionError
 from .contracts import SourceSearchTask
+from .identity import evaluate_product_evidence
+from .image_similarity import IMAGE_DISPLAY_LIMIT, IMAGE_SEARCH_RECALL_LIMIT, verify_visual_candidates
 from .title_translation import to_search_keywords, translate_title_to_chinese
 
 
@@ -105,7 +107,12 @@ class OneBoundSourceAdapter:
             image_ok = False
             image_error = ""
             try:
-                searched = provider.search_by_image(_ImageSearchCriteria(task.main_image_url))
+                searched = provider.search_by_image(
+                    _ImageSearchCriteria(
+                        task.main_image_url,
+                        target_count=max(IMAGE_SEARCH_RECALL_LIMIT, int(task.max_candidates or 0)),
+                    )
+                )
                 evidence.extend(_redacted_audits(searched))
                 if _result_ok(searched):
                     image_ok = True
@@ -144,7 +151,55 @@ class OneBoundSourceAdapter:
                 except Exception as error:
                     keyword_error = _provider_error_message(error)
 
-            merged = _merge_channels(image_raw, keyword_raw, max(int(task.max_candidates or 0), 1))
+            merged = _merge_channels(
+                image_raw,
+                keyword_raw,
+                max(IMAGE_SEARCH_RECALL_LIMIT, int(task.max_candidates or 0)),
+            )
+            # Never discard an image hit from English-vs-Chinese title evidence
+            # before visual verification.  Marketing attributes such as
+            # "cooling" are too brittle to be hard category gates and could
+            # otherwise reduce a valid 60-result image recall to zero.
+            merged = [
+                _with_title_evidence(task, candidate)
+                for candidate in merged
+            ]
+            verified, visual_audit = verify_visual_candidates(task.main_image_url, merged)
+            visual_audit["title_evidence"] = {
+                status: sum(
+                    candidate.get("title_evidence_status") == status
+                    for candidate in merged
+                )
+                for status in ("compatible", "missing", "conflict")
+            }
+            selected_keys = {_offer_id(candidate) or _candidate_image_url(candidate) for candidate in verified}
+            if len(verified) < IMAGE_DISPLAY_LIMIT:
+                for candidate in merged:
+                    key = _offer_id(candidate) or _candidate_image_url(candidate)
+                    if not key or key in selected_keys:
+                        continue
+                    fallback = dict(candidate)
+                    fallback["image_similarity_score"] = None
+                    fallback["image_similarity_method"] = "onebound-order-fallback"
+                    fallback["image_similarity_verified"] = False
+                    fallback["image_similarity_fallback"] = True
+                    fallback["image_similarity_selected"] = True
+                    fallback["image_similarity_fallback_reason"] = "image_unavailable_or_category_fallback"
+                    verified.append(fallback)
+                    selected_keys.add(key)
+                    visual_audit["fallback_count"] = int(visual_audit.get("fallback_count") or 0) + 1
+                    if len(verified) >= IMAGE_DISPLAY_LIMIT:
+                        break
+            verified.sort(
+                key=lambda candidate: (
+                    bool(candidate.get("image_similarity_fallback")),
+                    -float(candidate.get("image_similarity_score") or 0),
+                    _title_evidence_rank(candidate.get("title_evidence_status")),
+                    not bool(candidate.get("title_search_confirmed")),
+                    int(candidate.get("image_search_rank") or 10**9),
+                )
+            )
+            merged = verified[:max(int(task.max_candidates or 0), 1)]
             if not merged:
                 # A keyword hit is not evidence of a visual match. If image
                 # search failed, make the SKC retriable instead of showing text
@@ -159,6 +214,7 @@ class OneBoundSourceAdapter:
                     "error": "",
                     "candidates": [],
                     "evidence": evidence,
+                    "visual_verification": visual_audit,
                 }, len(evidence)
 
             candidates: list[dict[str, Any]] = []
@@ -174,6 +230,12 @@ class OneBoundSourceAdapter:
                     # the search payload and skip the enrichment.
                     if _result_ok(detail):
                         detailed = {**raw_candidate, **_detail_item(_response(detail))}
+                        # Keep the exact thumbnail that passed local visual
+                        # verification paired with this offer/link.  Detail
+                        # payloads may carry a different gallery image.
+                        verified_image_url = _candidate_image_url(raw_candidate)
+                        if verified_image_url:
+                            detailed["main_image_url"] = verified_image_url
                 candidates.append(_safe_candidate(detailed, evidence, channel="image"))
             return {
                 "task_key": task.task_key,
@@ -183,6 +245,7 @@ class OneBoundSourceAdapter:
                 "error": "",
                 "candidates": candidates,
                 "evidence": evidence,
+                "visual_verification": visual_audit,
             }, len(evidence)
         except Exception as error:
             # Provider exceptions are intentionally opaque: they can contain
@@ -333,6 +396,33 @@ def _offer_id(candidate: Mapping[str, Any]) -> str:
         if match:
             return match.group(1)
     return ""
+
+
+def _candidate_image_url(candidate: Mapping[str, Any]) -> str:
+    for key in ("main_image_url", "image", "image_url", "pic_url", "pic", "picUrl"):
+        value = _text(candidate.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _with_title_evidence(
+    task: SourceSearchTask, candidate: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Attach non-blocking title evidence for audit and tie-breaking only."""
+    status, reasons = evaluate_product_evidence(
+        {"product_title": task.product_title, "main_image_url": task.main_image_url},
+        candidate,
+    )
+    return {
+        **dict(candidate),
+        "title_evidence_status": status,
+        "title_evidence_reasons": list(reasons),
+    }
+
+
+def _title_evidence_rank(value: object) -> int:
+    return {"compatible": 0, "missing": 1, "conflict": 2}.get(_text(value), 1)
 
 
 def _contains_cjk(value: str) -> bool:

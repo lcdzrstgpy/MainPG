@@ -14,10 +14,29 @@ _COLOUR_TOKENS = frozenset({"红", "蓝", "黑", "白", "黄", "绿", "紫", "�
 _ENGLISH_CATEGORY_TERMS = (
     (("cooling", "cool"), ("凉", "冰", "冷", "降温", "cooling", "cool")),
     (("mat",), ("垫", "席", "mat")),
+    (("pad",), ("垫", "片", "pad")),
+    (("bed",), ("床", "窝", "垫", "bed")),
+    (("toy",), ("玩具", "球", "磨牙", "逗猫", "toy")),
+    (("medicine", "drug", "treatment"), ("药", "剂", "滴", "驱虫", "治疗", "medicine", "drug")),
+    (("bowl", "feeder"), ("碗", "盆", "食器", "喂食", "bowl", "feeder")),
+    (("collar",), ("项圈", "颈圈", "collar")),
+    (("leash",), ("牵引", "拉带", "leash")),
+    (("brush", "comb"), ("刷", "梳", "brush", "comb")),
+    (("blanket",), ("毯", "blanket")),
+    (("pillow", "cushion"), ("枕", "靠垫", "坐垫", "pillow", "cushion")),
+    (("cover",), ("罩", "套", "cover")),
     (("basket",), ("篮", "筐", "basket")),
     (("box",), ("箱", "盒", "柜", "box")),
     (("bag",), ("包", "袋", "bag")),
     (("rack", "shelf", "stand"), ("架", "展示", "rack", "shelf", "stand")),
+)
+
+_CONFLICTING_CATEGORY_GROUPS = (
+    ("药", "剂", "滴", "驱虫", "喷剂", "medicine", "drug"),
+    ("玩具", "磨牙", "逗猫", "发声", "漏食", "toy"),
+    ("零食", "冻干", "肉干", "猫条", "狗粮", "猫粮", "food", "snack"),
+    ("碗", "食盆", "水盆", "喂食器", "bowl", "feeder"),
+    ("衣", "服装", "背心", "雨衣", "costume", "shirt", "clothes"),
 )
 
 
@@ -67,7 +86,16 @@ def _cross_language_category_mismatch(quote_title: str, source_title: str) -> bo
     quote = _compact(quote_title)
     source = _compact(source_title)
     required = [aliases for triggers, aliases in _ENGLISH_CATEGORY_TERMS if any(trigger in quote for trigger in triggers)]
-    return bool(required) and any(not any(alias in source for alias in aliases) for aliases in required)
+    if required and any(not any(alias in source for alias in aliases) for aliases in required):
+        return True
+    # Strongly unrelated merchandise nouns are a hard conflict when none of
+    # them occur in the Temu title.  This catches noisy image hits such as pet
+    # medicine, chew toys or food for a cooling mat before any link is exposed.
+    return any(
+        any(alias in source for alias in group)
+        and not any(alias in quote for alias in group)
+        for group in _CONFLICTING_CATEGORY_GROUPS
+    )
 
 
 def evaluate_sku_evidence(

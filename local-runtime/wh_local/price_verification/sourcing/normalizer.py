@@ -59,6 +59,12 @@ def normalize_source_candidate(
         "price": price,
         "promotion_price": promotion_price,
         "image_search_rank": image_search_rank,
+        "image_similarity_score": _number(raw_candidate, "image_similarity_score"),
+        "image_similarity_method": _first_text(raw_candidate, "image_similarity_method"),
+        "image_similarity_verified": bool(raw_candidate.get("image_similarity_verified")),
+        "image_similarity_fallback": bool(raw_candidate.get("image_similarity_fallback")),
+        "image_similarity_selected": bool(raw_candidate.get("image_similarity_selected")),
+        "image_similarity_fallback_reason": _first_text(raw_candidate, "image_similarity_fallback_reason"),
         # A keyword hit may corroborate an image-search candidate, but keyword
         # results themselves are never included as source candidates.
         "title_search_confirmed": bool(raw_candidate.get("title_search_confirmed")),

@@ -24,7 +24,7 @@ def rank_source_candidates(
 def rank_candidates_by_image_order(
     candidates: Iterable[Mapping[str, Any]],
 ) -> tuple[Mapping[str, Any], ...]:
-    """Prefer title-corroborated image hits, then keep OneBound's image order.
+    """Prefer locally verified visual similarity, then title and provider order.
 
     OneBound does not provide a documented visual similarity score. A title hit
     never becomes a candidate by itself; it only prevents an obviously
@@ -35,12 +35,21 @@ def rank_candidates_by_image_order(
         sorted(
             candidates,
             key=lambda candidate: (
+                -_similarity(candidate.get("image_similarity_score")),
                 not bool(candidate.get("title_search_confirmed")),
                 _number(candidate.get("image_search_rank")),
                 str(candidate.get("candidate_key") or candidate.get("offer_id") or ""),
             ),
         )
     )
+
+
+def _similarity(value: object) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return parsed if 0.0 <= parsed <= 1.0 else 0.0
 
 
 def _number(value: object) -> float:

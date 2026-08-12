@@ -28,7 +28,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
   const [deletingSkcId, setDeletingSkcId] = useState("");
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [maxCandidates] = useState(5);
-  const { actionBarRef, spacerRef } = useFloatingActionBar();
+  const { actionBarRef, spacerRef } = useFloatingActionBar("top");
   const selectedSkcIds = useMemo(
     () => items.filter((item) => selected[item.skc_id]).map((item) => item.skc_id),
     [items, selected],
