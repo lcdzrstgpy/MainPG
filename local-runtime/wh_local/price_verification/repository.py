@@ -208,6 +208,7 @@ class SkcSourceLinkRecord(_Record):
     source_title: str = ""
     main_image_url: str = ""
     price_cny: str | None = None
+    weight_kg: str | None = None
     moq: str | None = None
     domestic_freight_cny: str | None = None
     source_decision: str = ""
@@ -254,6 +255,7 @@ class PriceVerificationRepository:
             _ensure_column(connection, "price_verification_skc_source_links", "product_title", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "price_verification_skc_source_links", "site", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "price_verification_skc_source_links", "selling_price", "TEXT")
+            _ensure_column(connection, "price_verification_skc_source_links", "weight_kg", "TEXT")
             connection.execute(
                 """UPDATE price_verification_skc_source_links AS link
                 SET product_title = COALESCE((
@@ -1551,6 +1553,7 @@ class PriceVerificationRepository:
         source_title: str,
         main_image_url: str,
         price_cny: str | None,
+        weight_kg: str | None,
         moq: str | None,
         domestic_freight_cny: str | None,
         source_decision: str,
@@ -1591,12 +1594,12 @@ class PriceVerificationRepository:
                     connection.execute(
                         """INSERT INTO price_verification_skc_source_links
                         (workspace_id, batch_id, skc_id, offer_id, source_url, source_title,
-                         main_image_url, price_cny, moq, domestic_freight_cny, source_decision,
+                         main_image_url, price_cny, weight_kg, moq, domestic_freight_cny, source_decision,
                          note, status, created_at, updated_at, product_title, site, selling_price)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
                         (
                             workspace_id, batch_id, skc_id, offer_id, source_url,
-                            source_title, main_image_url, price_cny, moq,
+                            source_title, main_image_url, price_cny, weight_kg, moq,
                             domestic_freight_cny, source_decision, note, now, now,
                             product_title, site, selling_price,
                         ),
@@ -1605,12 +1608,12 @@ class PriceVerificationRepository:
                     connection.execute(
                         """UPDATE price_verification_skc_source_links
                         SET batch_id = ?, source_url = ?, source_title = ?, main_image_url = ?,
-                            price_cny = ?, moq = ?, domestic_freight_cny = ?,
+                            price_cny = ?, weight_kg = ?, moq = ?, domestic_freight_cny = ?,
                             source_decision = ?, note = ?, status = 'active', updated_at = ?,
                             product_title = ?, site = ?, selling_price = ?
                         WHERE id = ?""",
                         (
-                            batch_id, source_url, source_title, main_image_url, price_cny,
+                            batch_id, source_url, source_title, main_image_url, price_cny, weight_kg,
                             moq, domestic_freight_cny, source_decision, note, now,
                             product_title, site, selling_price,
                             row["id"],

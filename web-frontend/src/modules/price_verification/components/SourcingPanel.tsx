@@ -13,7 +13,7 @@ type Props = {
   sourceCount?: number;
   links: SkcSourceLink[];
   selectedCandidates: SourceCandidateSelection[];
-  onLink: (skcId: string, offerId: string, candidate: SourceCandidate, priceOverride?: string) => Promise<void>;
+  onLink: (skcId: string, offerId: string, candidate: SourceCandidate, priceOverride?: string, weightOverride?: string) => Promise<void>;
   onUnlink: (linkId: number) => Promise<void>;
   onUnselectCandidate: (skcId: string, offerId: string) => Promise<void>;
   onComplete: () => void;
@@ -189,7 +189,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       .then((profit) => setProfitOverrides((current) => ({ ...current, [candKey]: profit })))
       .finally(() => setProfitBusy(""));
     if (isAssociatedCandidate(itemKey(item), candidate)) {
-      void onLink(itemKey(item), offerIdFor(candidate), candidate, rawValue).catch(() => {
+      void onLink(itemKey(item), offerIdFor(candidate), candidate, rawValue, weights[candKey]).catch(() => {
         // 静默失败：关联记录价格保留上次已同步的值
       });
     }
@@ -205,6 +205,11 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     void computeCandidateProfit(item, candidate, parsed, priceOverrides[candKey])
       .then((profit) => setProfitOverrides((current) => ({ ...current, [candKey]: profit })))
       .finally(() => setProfitBusy(""));
+    if (isAssociatedCandidate(itemKey(item), candidate)) {
+      void onLink(itemKey(item), offerIdFor(candidate), candidate, priceOverrides[candKey], rawValue).catch(() => {
+        // 关联记录保留上次已同步的值
+      });
+    }
   };
 
   const linkCandidate = async (group: SourcePreviewSkcGroup, candidate: SourceCandidate) => {
@@ -214,7 +219,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     const candKey = candidateKeyFor(group.skc_id, candidate);
     const adjustedPrice = priceOverrides[candKey] !== undefined && priceOverrides[candKey] !== "" ? priceOverrides[candKey] : undefined;
     try {
-      await onLink(group.skc_id, offerIdFor(candidate), candidate, adjustedPrice);
+      const adjustedWeight = weights[candKey] !== undefined && weights[candKey] !== "" ? weights[candKey] : undefined;
+      await onLink(group.skc_id, offerIdFor(candidate), candidate, adjustedPrice, adjustedWeight);
     } catch {
       // link errors surface only via the row button staying available
     } finally {
@@ -284,6 +290,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
               <div className="pv-source-group" key={group.skc_id}>
                 <div className="pv-source-group-head">
                   <div className="pv-source-group-title">
+                    {item?.main_image_url ? <img className="pv-source-temu-image" src={item.main_image_url} alt="" loading="lazy" referrerPolicy="no-referrer" /> : null}
                     <span className="pv-source-skc-badge">{group.skc_id}</span>
                     <strong>{item?.product_title || "未命名商品"}</strong>
                   </div>
@@ -304,8 +311,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                       const busyKey = `${group.skc_id}:${candidate.source_url ?? ""}`;
                       const candKey = candidateKeyFor(group.skc_id, candidate);
                       const profit = profitOverrides[candKey] ?? candidate.profit ?? null;
-                      const priceText = priceOverrides[candKey] !== undefined ? priceOverrides[candKey] : String(candidate.promotion_price ?? candidate.price ?? "");
-                      const weightText = weights[candKey] ?? "0.5";
+                      const priceText = priceOverrides[candKey] !== undefined ? priceOverrides[candKey] : String(selected?.price_cny ?? candidate.promotion_price ?? candidate.price ?? "");
+                      const weightText = weights[candKey] ?? String(selected?.weight_kg ?? "0.5");
                       const metaParts = [candidate.similarity_score !== undefined ? `相似度 ${percentText(candidate.similarity_score)}` : "", candidate.sales !== undefined ? `销量 ${candidate.sales}` : ""].filter(Boolean);
                       const rankBadge = index === 0 ? { text: "第1名", cls: "is-top" } : { text: decisionLabel(candidate.source_decision), cls: "is-plain" };
                       return (

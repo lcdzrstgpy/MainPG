@@ -182,15 +182,22 @@ class SourcingService:
             workspace_id=actor.workspace_id, batch_id=batch_id
         )
         if session is not None:
+            selections = self._repository.list_batch_selections(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+            preview, preview_updated = _hydrate_preview_main_images(
+                session["preview"],
+                {selection.skc_id: selection.main_image_url for selection in selections},
+            )
             # 产品库命中展示每次读取都用耐久的货源关联记录补全，避免早期产品库
             # 只保存 URL 时在 STEP 04 退化成重复的空白“1688 货源”。
             products = self._product_library_products(actor, session["selected_skc_ids"])
-            if products:
+            if products or preview_updated:
                 session = self._repository.save_batch_sourcing_session(
                     workspace_id=actor.workspace_id, batch_id=batch_id,
                     selected_skc_ids=session["selected_skc_ids"],
                     unresolved_skc_ids=session["unresolved_skc_ids"], matched_products=products,
-                    preview=session["preview"], selected_candidates=session["selected_candidates"],
+                    preview=preview, selected_candidates=session["selected_candidates"],
                 )
             return session
         return {
@@ -206,6 +213,7 @@ class SourcingService:
         skc_id: str,
         candidate: Mapping[str, Any],
         price_cny: object = None,
+        weight_kg: object = None,
     ) -> Mapping[str, Any]:
         actor = _actor(actor)
         session = self.get_batch_sourcing_state(actor, batch_id=batch_id)
@@ -225,6 +233,7 @@ class SourcingService:
             "source_title": _text(candidate.get("source_title")),
             "main_image_url": _text(candidate.get("main_image_url")),
             "price_cny": _nullable_decimal_text(price_cny if price_cny is not None else candidate.get("promotion_price") or candidate.get("price")),
+            "weight_kg": _nullable_positive_decimal_text(weight_kg) or str(DEFAULT_WEIGHT_KG),
             "moq": _nullable_decimal_text(candidate.get("moq")),
             "domestic_freight_cny": _nullable_decimal_text(candidate.get("domestic_freight")),
             "source_decision": _text(candidate.get("source_decision")),
@@ -262,7 +271,7 @@ class SourcingService:
                 offer_id=_required_text(candidate.get("offer_id"), "offer_id"),
                 source_url=_required_text(candidate.get("source_url"), "source_url"),
                 source_title=_text(candidate.get("source_title")), main_image_url=_text(candidate.get("main_image_url")),
-                price_cny=candidate.get("price_cny"), moq=candidate.get("moq"),
+                price_cny=candidate.get("price_cny"), weight_kg=candidate.get("weight_kg"), moq=candidate.get("moq"),
                 domestic_freight_cny=candidate.get("domestic_freight_cny"),
                 source_decision=_text(candidate.get("source_decision")),
             )
@@ -355,6 +364,7 @@ class SourcingService:
         source_title: str = "",
         main_image_url: str = "",
         price_cny: object = None,
+        weight_kg: object = None,
         moq: object = None,
         domestic_freight_cny: object = None,
         source_decision: str = "",
@@ -391,6 +401,7 @@ class SourcingService:
             source_title=_text(source_title),
             main_image_url=_text(main_image_url),
             price_cny=_nullable_decimal_text(price_cny),
+            weight_kg=_nullable_positive_decimal_text(weight_kg),
             moq=_nullable_decimal_text(moq),
             domestic_freight_cny=_nullable_decimal_text(domestic_freight_cny),
             source_decision=_text(source_decision),
@@ -486,7 +497,7 @@ class SourcingService:
                     },
                     site=site,
                     selling_price=selling_price,
-                    weight_kg=DEFAULT_WEIGHT_KG,
+                    weight_kg=link.weight_kg or DEFAULT_WEIGHT_KG,
                 )
                 groups.append(
                     {
@@ -495,6 +506,7 @@ class SourcingService:
                         "main_image_url": link.main_image_url,
                         "offer_id": link.offer_id,
                         "price_cny": link.price_cny,
+                        "weight_kg": link.weight_kg or str(DEFAULT_WEIGHT_KG),
                         "moq": link.moq,
                         "domestic_freight_cny": link.domestic_freight_cny,
                         "source_decision": link.source_decision,
@@ -856,6 +868,7 @@ def build_source_preview(
             "skc_id": _quote_skc(quote),
             "sku_id": _quote_sku(quote),
             "product_title": _quote_value(quote, "product_title"),
+            "main_image_url": _quote_value(quote, "main_image_url"),
             "source_search_status": item_status,
             "source_search_error": _text(result.get("error")) if result else "",
             "source_decision": item_decision,
@@ -931,6 +944,48 @@ def _apply_batch_ranking(
     preview["ranking_mode"] = mode
     preview["candidate_limit"] = DEFAULT_CANDIDATE_LIMIT
     return preview
+
+
+def _hydrate_preview_main_images(
+    preview: Mapping[str, Any] | None, images_by_skc: Mapping[str, str]
+) -> tuple[Mapping[str, Any] | None, bool]:
+    """Backfill Temu images into previews saved before this field was returned."""
+    if not isinstance(preview, Mapping):
+        return preview, False
+    changed = False
+
+    def hydrate(item: Mapping[str, Any], fallback_skc: str = "") -> dict[str, Any]:
+        nonlocal changed
+        copied = dict(item)
+        skc_id = _text(copied.get("skc_id")) or fallback_skc
+        image = _text(images_by_skc.get(skc_id))
+        if image and not _text(copied.get("main_image_url")):
+            copied["main_image_url"] = image
+            changed = True
+        return copied
+
+    result = dict(preview)
+    items = preview.get("items")
+    if isinstance(items, list):
+        result["items"] = [hydrate(item) if isinstance(item, Mapping) else item for item in items]
+    groups = preview.get("skc_groups")
+    if isinstance(groups, list):
+        hydrated_groups: list[Any] = []
+        for group in groups:
+            if not isinstance(group, Mapping):
+                hydrated_groups.append(group)
+                continue
+            copied_group = dict(group)
+            skc_id = _text(copied_group.get("skc_id"))
+            group_items = copied_group.get("items")
+            if isinstance(group_items, list):
+                copied_group["items"] = [
+                    hydrate(item, skc_id) if isinstance(item, Mapping) else item
+                    for item in group_items
+                ]
+            hydrated_groups.append(copied_group)
+        result["skc_groups"] = hydrated_groups
+    return result, changed
 
 
 def _candidate_profit(
@@ -1213,6 +1268,11 @@ def _nullable_decimal_text(value: object) -> str | None:
     return str(number)
 
 
+def _nullable_positive_decimal_text(value: object) -> str | None:
+    number = _decimal(value)
+    return str(number) if number is not None and number > 0 else None
+
+
 def _decimal(value: object) -> Decimal | None:
     """Parse a stored text/float into a finite non-negative Decimal, else None."""
     if value is None or isinstance(value, bool):
@@ -1239,6 +1299,7 @@ def _source_link_response(
         "source_title": record.source_title,
         "main_image_url": record.main_image_url,
         "price_cny": record.price_cny,
+        "weight_kg": record.weight_kg,
         "moq": record.moq,
         "domestic_freight_cny": record.domestic_freight_cny,
         "source_decision": record.source_decision,
@@ -1283,4 +1344,5 @@ def _link_profit(
         },
         site=site,
         selling_price=selling_price,
+        weight_kg=record.weight_kg or DEFAULT_WEIGHT_KG,
     )

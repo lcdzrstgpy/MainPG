@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS price_verification_skc_source_links (
     source_title TEXT NOT NULL DEFAULT '',
     main_image_url TEXT NOT NULL DEFAULT '',
     price_cny TEXT,
+    weight_kg TEXT,
     moq TEXT,
     domestic_freight_cny TEXT,
     source_decision TEXT NOT NULL DEFAULT '',

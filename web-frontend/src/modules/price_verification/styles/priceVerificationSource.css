@@ -171,6 +171,15 @@
   min-width: 0;
 }
 
+.pv-source-temu-image {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 7px;
+  object-fit: cover;
+  background: #edf5f8;
+}
+
 .pv-source-skc-badge {
   flex: none;
   border-radius: 8px;

@@ -403,7 +403,7 @@ def register_price_verification_routes(
         try:
             return sourcing_service.select_batch_source_candidate(
                 actor, batch_id=batch_id, skc_id=_required(request, "skc_id"),
-                candidate=_mapping(request.get("candidate"), "candidate"), price_cny=request.get("price_cny"),
+                candidate=_mapping(request.get("candidate"), "candidate"), price_cny=request.get("price_cny"), weight_kg=request.get("weight_kg"),
             )
         except Exception as error:
             logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
@@ -473,6 +473,7 @@ def register_price_verification_routes(
                 source_title=_text(request.get("source_title")),
                 main_image_url=_text(request.get("main_image_url")),
                 price_cny=request.get("price_cny"),
+                weight_kg=request.get("weight_kg"),
                 moq=request.get("moq"),
                 domestic_freight_cny=request.get("domestic_freight_cny"),
                 source_decision=_text(request.get("source_decision")),
