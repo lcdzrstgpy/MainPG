@@ -165,13 +165,28 @@ def test_cross_language_category_mismatch_rejects_tablecloth_for_cooling_mat() -
     assert candidate["product_evidence"] == ["product_category_mismatch"]
 
 
-def test_cross_language_category_mismatch_rejects_toy_for_pet_sleeping_blanket() -> None:
+def test_cross_language_category_mismatch_does_not_infer_temu_category_from_1688_title() -> None:
     candidate = normalize_source_candidate(
         QuoteItem(product_title="Pet Accessory Dog Sleeping Blanket Winter Warm Pet Bed Mat for Small Dogs"),
         {
             "num_iid": "123456789012",
             "item_url": "https://detail.1688.com/offer/123456789012.html",
             "title": "仿真布垫会叫狗会叫仿真睡狗摆件玩具送人礼品萌物",
+            "image_search_rank": 1,
+        },
+    )
+
+    assert candidate["product_evidence_status"] == "missing"
+    assert candidate["product_evidence"] == ["cross_language_title_evidence"]
+
+
+def test_cross_language_category_mismatch_rejects_non_toy_for_temu_toy() -> None:
+    candidate = normalize_source_candidate(
+        QuoteItem(product_title="Interactive Dog Toy Doll for Small Pets"),
+        {
+            "num_iid": "123456789012",
+            "item_url": "https://detail.1688.com/offer/123456789012.html",
+            "title": "宠物毛毯加厚保暖猫垫子格子地毯法兰绒小型犬被子",
             "image_search_rank": 1,
         },
     )
