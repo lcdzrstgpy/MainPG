@@ -9,6 +9,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from .orm import Base
+from . import dimension_canvas_orm as _dimension_canvas_orm  # noqa: F401
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,12 @@ def create_database(database_url: str | None = None) -> ProductProcessingDatabas
 # 轻量列补齐：老库已建表时 create_all 不会新增列，这里按需 ALTER TABLE 补列。
 _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "product_processing_drafts": [
+        ("preview_revision", "INTEGER NOT NULL DEFAULT 0"),
         ("preview_overrides_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ],
+    "product_processing_dimension_items": [
+        ("render_input_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("rendered_input_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
     ],
 }
 

@@ -8,11 +8,14 @@ import type {
   PreviewResponse,
 } from '../types';
 import '../styles/ProductProcessingVerifyPage.css';
+import { DimensionChangeSetReview } from '../components/DimensionChangeSetReview';
 
 const API_BASE = '/api/product-processing';
 
 type Props = {
   taskId: number;
+  initialChangeSetId?: string;
+  onOpenDimensionItem: (taskId: number, taskItemId: number) => void;
 };
 
 function api(): ApiContext {
@@ -40,7 +43,7 @@ type ItemEdits = {
   core_fields?: PreviewCoreFields;
 };
 
-export function ProductProcessingPrecheckPage({ taskId }: Props) {
+export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOpenDimensionItem }: Props) {
   const ctx = api();
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [edits, setEdits] = useState<Record<number, ItemEdits>>({});
@@ -242,6 +245,8 @@ export function ProductProcessingPrecheckPage({ taskId }: Props) {
         <div className={`verify-message ${error ? 'error' : ''}`}>{error || message}</div>
       )}
 
+      {initialChangeSetId && <DimensionChangeSetReview changeSetId={initialChangeSetId} onChanged={load} />}
+
       <section className="verify-section">
         <div className="verify-section-head">
           <h2>任务 #{preview.task_id} · {preview.task.title}</h2>
@@ -320,13 +325,13 @@ export function ProductProcessingPrecheckPage({ taskId }: Props) {
                   <label>类目ID
                     <input value={edit.core_fields?.category_id ?? item.core_fields.category_id ?? ''} onChange={(e) => setField(draftId, 'category_id', e.target.value)} />
                   </label>
-                  <label>长(cm)
+                  <label>物流包裹长(cm)
                     <input value={edit.core_fields?.length_cm ?? item.core_fields.length_cm ?? ''} onChange={(e) => setField(draftId, 'length_cm', e.target.value)} />
                   </label>
-                  <label>宽(cm)
+                  <label>物流包裹宽(cm)
                     <input value={edit.core_fields?.width_cm ?? item.core_fields.width_cm ?? ''} onChange={(e) => setField(draftId, 'width_cm', e.target.value)} />
                   </label>
-                  <label>高(cm)
+                  <label>物流包裹高(cm)
                     <input value={edit.core_fields?.height_cm ?? item.core_fields.height_cm ?? ''} onChange={(e) => setField(draftId, 'height_cm', e.target.value)} />
                   </label>
                   <label>重量(g)
@@ -337,6 +342,10 @@ export function ProductProcessingPrecheckPage({ taskId }: Props) {
 
               {/* 右列：原图 / 主图 / 轮播图 / 详情图 */}
               <div className="precheck-images">
+                <div className="precheck-dimension-entry">
+                  <div><strong>商品本体尺寸图</strong><span>独立画布制作，不使用上方物流包裹尺寸</span></div>
+                  <button className="btn-mini primary" onClick={() => onOpenDimensionItem(taskId, item.item_id)}>添加尺寸图</button>
+                </div>
                 <div className="precheck-image-block">
                   <span className="precheck-block-title">来源原图（可点击选为替换素材）</span>
                   <div className="precheck-thumbs">

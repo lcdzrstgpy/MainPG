@@ -333,3 +333,24 @@ export type TaskHistoryResponse = {
   tasks: TaskHistoryItem[];
   limit: number;
 };
+
+export type {
+  CanvasItemState,
+  DimensionAnnotation,
+  DimensionAsset,
+  DimensionCanvasBatch,
+  DimensionCanvasItem,
+  DimensionChangeItem,
+  DimensionChangeSet,
+  DimensionEligibilityItem,
+  DimensionKey,
+  DimensionNotification,
+  DimensionProvenance,
+  DimensionTaskEligibility,
+  DimensionValue,
+  EditorState,
+  ImportableDimensionTask,
+  NormalizedPoint,
+  PhysicalDimensions,
+  SaveDimensionItemRequest,
+} from "./dimensionCanvas";

@@ -9,6 +9,8 @@ from typing import Any, Sequence
 
 from openpyxl import Workbook, load_workbook
 
+from .image_slots import apply_slot_overrides
+
 
 # 店小秘导入默认值（对齐原型 native_product_engine 常量）
 DEFAULT_SHIP_DAYS = 2
@@ -186,6 +188,9 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     if not isinstance(core_fields, dict):
         core_fields = {}
     override_carousel = _http_urls(preview_overrides.get("carousel_images"))
+    slot_overrides = preview_overrides.get("image_slot_overrides") or {}
+    if not isinstance(slot_overrides, dict):
+        slot_overrides = {}
     override_main = str(preview_overrides.get("main_image") or "").strip()
     override_detail = _http_urls(preview_overrides.get("detail_images"))
 
@@ -271,7 +276,17 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     grid_summary_path = str(row.get("grid_image_summary_path") or "").strip()
     detail_image_paths = row.get("detail_image_paths") or []
     generated_images = _http_urls(list(generated_carousel) + [grid_summary_path])
-    if override_carousel:
+    if slot_overrides:
+        # 新版尺寸画布以旧版整组人工轮播为基线再覆盖单槽；总览仍保留在末尾。
+        slotted_images = _http_urls(
+            [slot.get("value") for slot in apply_slot_overrides(row, preview_overrides)]
+        )
+        export_images = slotted_images + _http_urls([grid_summary_path])
+        carousel = "\n".join(export_images)
+        main_image = override_main if _is_http_url(override_main) else next(iter(slotted_images), "")
+        material_images = main_image
+    elif override_carousel:
+        # 纯旧版整组轮播图覆盖保持原语义，避免历史预检数据被悄悄追加图片。
         carousel = "\n".join(override_carousel)
         main_image = override_main if _is_http_url(override_main) else override_carousel[0]
         material_images = main_image

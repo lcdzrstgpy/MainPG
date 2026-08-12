@@ -209,9 +209,11 @@ Panel 3 - Lifestyle Image (bottom-left):
 - Lighting: natural window light, afternoon side light, or warm home lighting that wraps the product in soft highlights.
 - Copy: 1-3 short scene phrases (e.g. "Made for [Scene Scenario]"). Keep all copy inside this panel only; no cross-panel slogan.
 
-Panel 4 - Dimension/Extra Image (bottom-right):
-- If the SKU is the core product body itself and real dimensions are explicitly provided in the source evidence, render a professional dimension panel using ONLY those confirmed real measurements (never guess).
-- Otherwise render a fourth clearly different composition (top-down flat lay, extra macro detail, or alternate angle) that keeps brand consistency with the other three panels.
+Panel 4 - Dimension Annotation Background (bottom-right):
+- Create a clean front, side, or top view that is suitable for later deterministic dimension annotation.
+- Keep the complete product sharp and leave 12%-18% clear space around it.
+- Never render measurements, numbers, units, dimension lines, arrows, rulers, scales, labels, or size claims.
+- If no useful orthographic view is possible, create a clean alternate product angle with the same empty safe area.
 
 Generate-then-self-check (fixed):
 - Confirm product quantity, silhouette, proportions, structure, color, material, transparency, texture, edges, and accessory count all match the reference.
@@ -365,8 +367,11 @@ Panel 2 - Detail Close-up (top-right): extreme macro of the material texture, lu
 Panel 3 - Packaging & Unboxing (bottom-left): the product with its custom packaging, storage, and accessory aesthetics (jewelry box, dust bag, ribbon, care card).
 - Still-life composition (flat lay or 45-degree side angle), background echoing the [Hero Scene] palette, props from [Styling Props]; unboxing must feel ceremonial and premium.
 
-Panel 4 - Alternative Angle or Context (bottom-right): another angle of the product in the scene (back view, hanging, folded, or natural state in a corner).
-- Differentiation: may share the same scene as Panel 1 but must use a clearly different angle (person's POV top-down, or a voyeuristic view from outside the window/door), strengthening the editorial album feel.
+Panel 4 - Dimension Annotation Background (bottom-right):
+- Create a clean front, side, or top view that is suitable for later deterministic dimension annotation.
+- Keep the complete product sharp and leave 12%-18% clear space around it.
+- Never render measurements, numbers, units, dimension lines, arrows, rulers, scales, labels, or size claims.
+- If no useful orthographic view is possible, create a clean alternate product angle with the same empty safe area.
 
 Generate-then-self-check (fixed):
 - Product integrity check: confirm the product body (proportions, color, structure) strictly matches the reference - no stretching or deformation.

@@ -8,8 +8,11 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Re
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
+from ..dimension_canvas_service import DimensionCanvasService
 from ..infrastructure.assets import ProductProcessingAssets
 from ..infrastructure.database import create_database
+from ..infrastructure.dimension_canvas_repository import DimensionCanvasRepository
+from ..infrastructure.dimension_renderer import DimensionRenderer
 from ..infrastructure.repository import ProductProcessingRepository
 from ..service import (
     ProductProcessingConflict,
@@ -28,6 +31,7 @@ from .schemas import (
     RetryTaskRequest,
     extras,
 )
+from .dimension_canvas_router import create_dimension_canvas_router
 
 
 def create_product_processing_router(
@@ -44,15 +48,31 @@ def create_product_processing_router(
             ProductProcessingRepository(owned_database),
             ProductProcessingAssets(assets_root),
         )
+    dimension_service = getattr(service, "_dimension_canvas_service", None)
+    owns_dimension_service = dimension_service is None
+    if dimension_service is None:
+        dimension_service = DimensionCanvasService(
+            DimensionCanvasRepository(service.repository.database),
+            service.repository,
+            service.assets,
+            DimensionRenderer(),
+            source_loader=service.load_dimension_source,
+            # Local/static publication only; this adapter never triggers COS.
+            publisher=service.publish_dimension_media,
+        )
+        setattr(service, "_dimension_canvas_service", dimension_service)
     @asynccontextmanager
     async def lifespan(_app):
         try:
             yield
         finally:
+            if owns_dimension_service:
+                dimension_service.close()
             if owned_database is not None:
                 owned_database.dispose()
 
     router = APIRouter(prefix="/product-processing", tags=["product_processing"], lifespan=lifespan)
+    router.include_router(create_dimension_canvas_router(dimension_service))
 
     @router.get("/engine/status")
     def engine_status() -> dict[str, Any]:

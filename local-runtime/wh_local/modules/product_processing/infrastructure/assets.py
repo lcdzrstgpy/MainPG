@@ -72,6 +72,52 @@ class ProductProcessingAssets:
         path.write_bytes(content)
         return path
 
+    def save_dimension_asset(
+        self,
+        content: bytes,
+        *,
+        kind: str,
+        suffix: str,
+        workspace_id: str = "local",
+    ) -> Path:
+        if not content:
+            raise ValueError("dimension asset is empty")
+        safe_suffix = str(suffix or "").lower()
+        if safe_suffix not in {".png", ".jpg", ".jpeg"}:
+            raise ValueError("unsupported dimension asset suffix")
+        digest = hashlib.sha256(content).hexdigest()
+        safe_kind = "master" if kind == "master" else "published"
+        workspace_root = self._dimension_workspace_root(workspace_id)
+        root = (workspace_root / safe_kind / digest[:2]).resolve()
+        if workspace_root != root and workspace_root not in root.parents:
+            raise ValueError("dimension asset path is outside the workspace root")
+        root.mkdir(parents=True, exist_ok=True)
+        path = (root / f"{digest}{safe_suffix}").resolve()
+        if root != path.parent:
+            raise ValueError("dimension asset path is outside the managed root")
+        if not path.exists():
+            path.write_bytes(content)
+        return path
+
+    def require_workspace_dimension_asset(
+        self, raw_path: str, *, workspace_id: str
+    ) -> Path:
+        """Resolve a persisted dimension output inside one workspace namespace.
+
+        Callers must still obtain ``raw_path`` from a workspace-scoped asset row;
+        arbitrary client paths and URLs are not accepted as asset identities.
+        """
+
+        if not raw_path or "://" in raw_path:
+            raise ValueError("dimension asset must be a managed local path")
+        workspace_root = self._dimension_workspace_root(workspace_id)
+        path = Path(raw_path).resolve()
+        if workspace_root != path and workspace_root not in path.parents:
+            raise ValueError("dimension asset is outside the workspace root")
+        if not path.is_file():
+            raise FileNotFoundError("dimension asset does not exist")
+        return path
+
     def write_task_outputs(
         self,
         task_id: int,
@@ -99,6 +145,21 @@ class ProductProcessingAssets:
         if not path.is_file():
             raise FileNotFoundError("product processing file does not exist")
         return path
+
+    def _dimension_workspace_root(self, workspace_id: str) -> Path:
+        workspace_key = hashlib.sha256(
+            str(workspace_id or "").encode("utf-8")
+        ).hexdigest()[:24]
+        root = (
+            self.output_root
+            / "dimension-canvas"
+            / "workspaces"
+            / workspace_key
+        ).resolve()
+        output_root = self.output_root.resolve()
+        if output_root != root and output_root not in root.parents:
+            raise ValueError("dimension workspace path is outside the managed root")
+        return root
 
     @staticmethod
     def _image_suffix(filename: str, content_type: str) -> str:

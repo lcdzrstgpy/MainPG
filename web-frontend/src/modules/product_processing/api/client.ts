@@ -6,6 +6,16 @@ type ApiContext = {
 
 type JsonRequestInit = Omit<RequestInit, "body"> & { body?: unknown };
 
+export class PpRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "PpRequestError";
+    this.status = status;
+  }
+}
+
 function buildUrl(context: ApiContext, path: string): string {
   const base = context.baseUrl.replace(/\/$/, "");
   const normalized = path.startsWith("/") ? path : `/${path}`;
@@ -58,7 +68,7 @@ export async function ppRequest<T>(
         : typeof payload === "string"
         ? payload
         : JSON.stringify(payload);
-    throw new Error(detail || `请求失败: ${response.status}`);
+    throw new PpRequestError(detail || `请求失败: ${response.status}`, response.status);
   }
   return payload as T;
 }
@@ -83,7 +93,7 @@ export async function ppUpload<T>(
         : typeof payload === "string"
         ? payload
         : JSON.stringify(payload);
-    throw new Error(detail || `上传失败: ${response.status}`);
+    throw new PpRequestError(detail || `上传失败: ${response.status}`, response.status);
   }
   return payload as T;
 }

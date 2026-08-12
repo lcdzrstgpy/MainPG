@@ -27,7 +27,9 @@ from .domain.language_contract import (
     language_profile,
     normalize_target_language,
 )
+from .domain.image_slots import DEFAULT_SLOT_IDS, apply_slot_overrides
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
+from .domain.physical_dimensions import extract_physical_dimensions
 from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_issue, strict_external_url_issue
 from .domain.prompts import format_prompt
 from .domain.visual_planner import listing_prompt_context
@@ -611,6 +613,47 @@ class ProductProcessingService:
         )
         return {"images": images, "count": len(images)}
 
+    def load_dimension_source(self, asset: dict[str, Any]) -> bytes:
+        """Materialize only a server-registered canvas asset; never accepts a client path.
+
+        The canvas repository has already proved workspace/item ownership before this
+        adapter is invoked.  Remote sources still pass through the existing SSRF-safe,
+        size-limited public image fetcher and are fetched only when the user renders.
+        """
+        managed_path = self._text(asset.get("managed_path"))
+        if managed_path:
+            return self.assets.require_managed_file(managed_path).read_bytes()
+        source_url = self._text(asset.get("source_url"))
+        if not source_url:
+            raise ValueError("dimension source asset is unavailable")
+        fetched = self._public_image_fetcher(source_url)
+        return bytes(fetched.content)
+
+    def publish_dimension_media(
+        self,
+        content: bytes,
+        task_id: int,
+        draft_id: int,
+        render_revision: int,
+    ) -> dict[str, Any]:
+        """Expose a dimension render only through the configured local media host.
+
+        This adapter never calls COS or a provider.  Without ``WH_MEDIA_BASE_URL``
+        the canvas service keeps using its managed ``/pp-media`` preview URL.
+        """
+        path = self.assets.save_generated_image(
+            task_id,
+            draft_id,
+            f"dimension_r{render_revision}",
+            content,
+            ".jpg",
+        )
+        base = _media_public_base_url()
+        if not base:
+            return {"managed_path": str(path)}
+        relative = path.resolve().relative_to(self.assets.output_root.resolve())
+        return {"url": f"{base}/pp-media/{relative.as_posix()}", "managed_path": str(path)}
+
     def sync_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
         self.get_draft(draft_id, workspace_id)
         ready = failed = 0
@@ -1022,7 +1065,14 @@ class ProductProcessingService:
             saved = (draft or {}).get("preview_overrides") or {}
             if not isinstance(saved, dict):
                 saved = {}
-            items.append(self._preview_item(item, result, saved))
+            items.append(
+                self._preview_item(
+                    item,
+                    result,
+                    saved,
+                    preview_revision=int((draft or {}).get("preview_revision") or 0),
+                )
+            )
         return {
             "task_id": task_id,
             "task": {
@@ -1066,7 +1116,13 @@ class ProductProcessingService:
             )
             if updated is None:
                 raise ProductProcessingNotFound(f"product draft {draft_id} not found")
-            saved_items.append({"product_draft_id": draft_id, "overrides": cleaned})
+            saved_items.append(
+                {
+                    "product_draft_id": draft_id,
+                    "overrides": cleaned,
+                    "preview_revision": int(updated.get("preview_revision") or 0),
+                }
+            )
         return {"task_id": task_id, "saved_count": len(saved_items), "items": saved_items}
 
     def upload_preview_image(
@@ -1163,6 +1219,23 @@ class ProductProcessingService:
             values = [str(value).strip() for value in (overrides.get(key) or []) if str(value or "").strip()]
             if values:
                 cleaned[key] = values
+        image_slot_overrides = overrides.get("image_slot_overrides") or {}
+        if isinstance(image_slot_overrides, dict):
+            slot_patches: dict[str, dict[str, str]] = {}
+            for raw_slot_id, raw_patch in image_slot_overrides.items():
+                slot_id = str(raw_slot_id or "").strip()
+                if slot_id not in DEFAULT_SLOT_IDS or not isinstance(raw_patch, dict):
+                    continue
+                url = str(raw_patch.get("url") or "").strip()
+                if not url.lower().startswith(("http://", "https://")) and not url.startswith("/pp-media/"):
+                    continue
+                patch = {"url": url}
+                asset_id = str(raw_patch.get("asset_id") or "").strip()
+                if asset_id:
+                    patch["asset_id"] = asset_id
+                slot_patches[slot_id] = patch
+            if slot_patches:
+                cleaned["image_slot_overrides"] = slot_patches
         core_fields = overrides.get("core_fields") or {}
         if isinstance(core_fields, dict):
             core: dict[str, Any] = {}
@@ -1181,6 +1254,8 @@ class ProductProcessingService:
         item: dict[str, Any],
         result: dict[str, Any],
         saved: dict[str, Any],
+        *,
+        preview_revision: int = 0,
     ) -> dict[str, Any]:
         core_fields = saved.get("core_fields") or {}
         if not isinstance(core_fields, dict):
@@ -1192,10 +1267,10 @@ class ProductProcessingService:
         title = str(saved.get("title") or result.get("optimized_title") or "").strip()
         description = str(saved.get("description") or result.get("description") or "").strip()
         # 图片：覆盖优先，其次生成结果
-        override_carousel = [str(v).strip() for v in (saved.get("carousel_images") or []) if str(v or "").strip()]
+        slots = apply_slot_overrides(result, saved)
         override_detail = [str(v).strip() for v in (saved.get("detail_images") or []) if str(v or "").strip()]
         override_main = str(saved.get("main_image") or "").strip()
-        carousel_sources = override_carousel or list(result.get("carousel_image_paths") or [])
+        carousel_sources = [str(slot.get("value") or "").strip() for slot in slots if str(slot.get("value") or "").strip()]
         detail_sources = override_detail or list(result.get("detail_image_paths") or [])
         main_source = override_main or (carousel_sources[0] if carousel_sources else "")
         return {
@@ -1210,6 +1285,12 @@ class ProductProcessingService:
             "carousel_images": [self._display_url(value) for value in carousel_sources],
             "main_image": self._display_url(main_source),
             "detail_images": [self._display_url(value) for value in detail_sources],
+            "image_slots": [
+                {**slot, "value": self._display_url(slot.get("value"))}
+                for slot in slots
+            ],
+            "physical_dimensions": result.get("physical_dimensions") or {},
+            "preview_revision": preview_revision,
             "core_fields": {
                 "sku": str(core_fields.get("sku") or result.get("sku") or "").strip(),
                 "declared_price": core_fields.get("declared_price", result.get("declared_price")),
@@ -1659,6 +1740,7 @@ class ProductProcessingService:
         product_dimensions: dict[str, Any] = {}
         if not preflight_only and "product_dimensions" in scope:
             product_dimensions = self._generate_size(raw, optimized_title, category, ai_notes) or {}
+        physical_dimensions = extract_physical_dimensions(raw).model_dump(mode="json")
 
         grid_image_paths: list[str] = []
         grid_summary_path = ""
@@ -1709,6 +1791,17 @@ class ProductProcessingService:
         if detail_image_paths:
             ai_notes.append("detail_images:ai")
 
+        image_manifest: list[dict[str, str]] = []
+        image_roles = (
+            ("carousel.hero", "hero"),
+            ("carousel.detail", "detail"),
+            ("carousel.lifestyle", "lifestyle"),
+            ("carousel.dimension_background", "dimension_background"),
+        )
+        for index, value in enumerate(grid_image_paths):
+            slot_id, role = image_roles[index] if index < len(image_roles) else (f"carousel.extra.{index + 1}", "extra")
+            image_manifest.append({"slot_id": slot_id, "role": role, "value": value})
+
         result = {
             "product_draft_id": draft["id"],
             "candidate_id": raw.get("candidate_id") or draft.get("candidate_id"),
@@ -1731,12 +1824,14 @@ class ProductProcessingService:
             "declared_price": draft.get("declared_price"),
             "suggested_price": draft.get("cost"),
             "product_dimensions": product_dimensions,
+            "physical_dimensions": physical_dimensions,
             "stock": self._source_stock(raw),
             "ship_days": 2,
             "target_site": target_site,
             "target_language": target_language,
             "target_language_label": language_profile(target_language)["label"],
             "carousel_image_paths": grid_image_paths,
+            "image_manifest": image_manifest,
             "grid_image_summary_path": grid_summary_path,
             "detail_image_paths": detail_image_paths,
             "ai_notes": ai_notes,
