@@ -1,0 +1,1201 @@
+.profit-products-page {
+  display: grid;
+  gap: 18px;
+  color: #20364d;
+}
+
+.profit-products-head,
+.profit-products-panel {
+  border: 1px solid #d8e7f2;
+  border-radius: 18px;
+  background: #fbfdff;
+  box-shadow: 0 12px 30px #265d8a0d;
+}
+
+.profit-products-head {
+  min-height: 142px;
+  padding: clamp(24px, 3vw, 34px);
+  border-color: #1b91bd;
+  color: #fff;
+  background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%);
+  box-shadow: 0 14px 34px rgba(12, 91, 139, .18);
+}
+
+.profit-products-head .eyebrow {
+  color: #9de7f3;
+}
+
+.profit-products-head h1 {
+  margin: 7px 0;
+  color: #fff;
+  font-size: clamp(1.9rem, 3vw, 2.65rem);
+  letter-spacing: -.035em;
+}
+
+.profit-products-head p:not(.eyebrow) {
+  margin: 0;
+  color: #d9f1fb;
+  line-height: 1.7;
+}
+
+.profit-products-panel {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.profit-products-filters,
+.profit-products-query,
+.profit-products-pagination {
+  display: grid;
+  gap: 14px;
+}
+
+.profit-products-filters {
+  grid-template-columns: auto minmax(180px, 240px) minmax(150px, 190px);
+  align-items: end;
+}
+
+.profit-site-check-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.profit-products-page .profit-site-check-group label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  border: 1px solid #cfe0eb;
+  border-radius: 11px;
+  padding: 9px 12px;
+  color: #3a5c78;
+  background: #fff;
+  cursor: pointer;
+  font-size: .82rem;
+  font-weight: 850;
+  line-height: 1.2;
+}
+
+.profit-products-page .profit-site-check-group label input {
+  width: auto;
+  margin: 0;
+}
+
+.profit-site-check-group label.is-active {
+  border-color: #0a8cf2;
+  color: #0a8cf2;
+  background: #eefaff;
+}
+
+.profit-products-page .profit-site-master {
+  border-color: #b4d6f2;
+  background: #f1f7fc;
+}
+
+.profit-site-master.is-active {
+  border-color: #0a8cf2;
+  background: #eaf6ff;
+}
+
+.profit-products-page label {
+  display: grid;
+  gap: 7px;
+  color: #526a82;
+  font-size: .82rem;
+  font-weight: 800;
+}
+
+.profit-products-page input,
+.profit-products-page select,
+.profit-products-page textarea {
+  width: 100%;
+  border: 1px solid #cfe0eb;
+  border-radius: 11px;
+  padding: 10px 12px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+}
+
+.profit-products-page textarea {
+  min-height: 118px;
+  resize: vertical;
+}
+
+.profit-products-query {
+  grid-template-columns: minmax(0, 1fr) 220px;
+  align-items: start;
+}
+
+.profit-products-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.profit-products-page button {
+  border: 1px solid #cfe0eb;
+  border-radius: 11px;
+  padding: 10px 14px;
+  color: #2f5878;
+  background: #fff;
+  font-weight: 850;
+}
+
+.profit-products-page button:hover:not(:disabled) {
+  border-color: #82c9ef;
+  box-shadow: 0 8px 18px #188bd61a;
+}
+
+.profit-products-page button:disabled {
+  cursor: not-allowed;
+  color: #9caaba;
+  background: #f5f8fb;
+}
+
+.profit-products-page .primary-button {
+  border: 0;
+  color: white;
+  background: linear-gradient(105deg, #087bf5, #14c8c0);
+}
+
+.profit-products-message {
+  margin: 0;
+  color: #657d94;
+  font-weight: 750;
+}
+
+.profit-products-pagination {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  color: #667d93;
+  font-size: .86rem;
+}
+
+.profit-products-pagination > div {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.profit-products-pagination input {
+  width: 64px;
+  text-align: center;
+}
+
+/* 页码跳转输入框：第 [页] 跳转 */
+.profit-products-pagination .profit-page-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #667d93;
+  font-size: .86rem;
+  font-weight: 750;
+}
+
+.profit-products-pagination .profit-page-jump input {
+  width: 56px;
+}
+
+.profit-source-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #e6f6ff;
+  color: #0e7bb8;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  vertical-align: 1px;
+  border: 1px solid #bfe6fb;
+}
+
+.profit-source-open {
+  border: 1px solid #cfe0eb !important;
+  border-radius: 9px;
+  padding: 6px 10px !important;
+  color: #0a8cf2 !important;
+  background: #f4fbff !important;
+  font-size: 0.8rem !important;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-open:hover {
+  border-color: #82c9ef !important;
+  box-shadow: none !important;
+}
+
+/* 货源侧边栏（产品库「打开」右侧抽屉） */
+.profit-source-drawer-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.profit-source-drawer-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 32, 52, 0.36);
+  backdrop-filter: blur(1px);
+}
+
+.profit-source-drawer {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 94vw);
+  height: 100%;
+  background: #fbfdff;
+  border-left: 1px solid #d8e7f2;
+  box-shadow: -18px 0 48px rgba(23, 61, 92, 0.18);
+  animation: profit-source-drawer-in 0.22s ease-out;
+}
+
+@keyframes profit-source-drawer-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.profit-source-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid #d8e7f2;
+  background: #f4fafd;
+}
+
+.profit-source-drawer-head h2 {
+  margin: 4px 0 8px;
+  color: #172b44;
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+}
+
+.profit-source-drawer-head p:not(.eyebrow) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #6d8399;
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.profit-source-drawer-sep {
+  color: #b4c7d8;
+}
+
+.profit-source-drawer-close {
+  border: 1px solid #cfe0eb;
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  color: #526a82;
+  background: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.profit-source-drawer-close:hover {
+  border-color: #82c9ef;
+  color: #0a8cf2;
+}
+
+/* 抽屉头部右侧操作区：修改货源按钮 + 关闭按钮 并排 */
+.profit-source-drawer-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding-top: 2px;
+}
+
+/* 头部“修改货源”按钮（与关闭按钮同排，置顶） */
+.profit-source-drawer-head .profit-source-edit-button {
+  border-color: #b8d9f2;
+  color: #0a8cf2;
+  background: #fff;
+  box-shadow: 0 6px 14px #188bd61a;
+}
+
+.profit-source-drawer-head .profit-source-edit-button:hover {
+  border-color: #0a8cf2;
+  background: #f2faff;
+}
+
+.profit-source-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px 24px;
+}
+
+.profit-source-drawer-status {
+  margin: 14px 2px;
+  color: #657d94;
+  font-weight: 700;
+}
+
+.profit-source-drawer-status.is-error {
+  color: #b42318;
+  background: #fef3f2;
+  border: 1px solid #fecaca;
+  border-radius: 11px;
+  padding: 10px 12px;
+}
+
+.profit-source-card {
+  border: 1px solid #d8e7f2;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 10px 24px #265d8a0d;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.profit-source-card-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px;
+}
+
+.profit-source-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.profit-source-card-main img,
+.profit-source-card-img-fallback {
+  width: 64px;
+  height: 64px;
+  flex: none;
+  border-radius: 12px;
+  object-fit: cover;
+  border: 1px solid #e2eef6;
+}
+
+/* 货源单图：一条链接一张图，放大便于查看商品规格 */
+.profit-source-card-shot {
+  width: 92px !important;
+  height: 92px !important;
+}
+
+.profit-source-card-img-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #7a93ab;
+  background: #eef6fb;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.profit-source-card-body {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.profit-source-card-title {
+  color: #1c3752;
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.profit-source-card-meta {
+  color: #7a93ab;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.profit-source-card-main b {
+  flex: none;
+  color: #e2434c;
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.profit-source-unlink {
+  align-self: flex-start;
+  flex: none;
+  border: 1px solid #f3c4c9;
+  border-radius: 10px;
+  padding: 7px 10px;
+  color: #b42318;
+  background: #fff6f6;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-unlink:hover:not(:disabled) {
+  border-color: #f28b93;
+  background: #ffecee;
+}
+
+.profit-source-unlink:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* 非核价产品的简化货源卡片：图片 + 链接 + 修改/保存 */
+.profit-source-card-simple .profit-source-card-row {
+  align-items: center;
+}
+
+.profit-source-edit-button {
+  flex: none;
+  border: 1px solid #b8d9f2;
+  border-radius: 9px;
+  padding: 7px 12px;
+  color: #0a8cf2;
+  background: #f2faff;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-edit-button:hover {
+  border-color: #82c9ef;
+  background: #e7f6ff;
+}
+
+.profit-source-card-url {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0a8cf2 !important;
+}
+
+.profit-source-edit-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.profit-source-edit-image {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.profit-source-edit-image-button {
+  display: inline-block;
+  border: 1px solid #cfe0eb;
+  border-radius: 8px;
+  padding: 5px 9px;
+  color: #526a82;
+  background: #fff;
+  font-size: 0.74rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-edit-image-button:hover {
+  border-color: #82c9ef;
+  color: #0a8cf2;
+}
+
+.profit-source-edit-url {
+  display: grid;
+  gap: 5px;
+}
+
+.profit-source-edit-url span {
+  color: #6d8399;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.profit-source-edit-url input {
+  width: 100%;
+  border: 1px solid #cfe0eb;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+}
+
+.profit-source-edit-actions {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 6px;
+  align-self: center;
+}
+
+.profit-source-edit-actions .profit-edit-save,
+.profit-source-edit-actions .profit-edit-cancel {
+  border-radius: 9px;
+  padding: 7px 12px;
+  font-size: 0.8rem;
+}
+
+/* 非核价产品多货源链接编辑面板：新增/删除链接（至少保留一条） */
+.profit-source-drawer-empty {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.profit-source-edit-panel {
+  border: 1px solid #dce9f2;
+  border-radius: 14px;
+  padding: 12px;
+  background: #f6fafd;
+  display: grid;
+  gap: 10px;
+}
+
+.profit-source-edit-rows {
+  display: grid;
+  gap: 10px;
+}
+
+.profit-source-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #e4eef5;
+  border-radius: 12px;
+  padding: 10px;
+  background: #fff;
+}
+
+.profit-source-edit-row .profit-source-edit-main {
+  flex: 1;
+}
+
+.profit-source-remove-row {
+  flex: none;
+  align-self: center;
+  border: 1px solid #f2c9cd;
+  border-radius: 9px;
+  padding: 7px 12px;
+  color: #e24a57;
+  background: #fff7f8;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-remove-row:hover:not(:disabled) {
+  border-color: #ef9aa3;
+  background: #ffecee;
+}
+
+.profit-source-remove-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.profit-source-edit-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.profit-source-add-row {
+  border: 1px dashed #9fc8e8;
+  border-radius: 9px;
+  padding: 8px 14px;
+  color: #0a8cf2;
+  background: #fff;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-add-row:hover {
+  border-color: #0a8cf2;
+  background: #f2faff;
+}
+
+.profit-source-edit-toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-save,
+.profit-source-edit-toolbar-actions .profit-edit-cancel {
+  border-radius: 9px;
+  padding: 7px 14px;
+  font-size: 0.8rem;
+}
+
+/* 导入货源链接的货源组截图（截图1/2/3）与成本 */
+.profit-source-card-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border-top: 1px dashed #dce9f2;
+  background: #f6fafd;
+}
+
+.profit-source-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profit-source-gallery-img {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid #dce9f2;
+  background: #fff;
+}
+
+.profit-source-card-cost {
+  margin-left: auto;
+  color: #1c3752;
+  font-size: 0.8rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.profit-source-card-cost::before {
+  content: "成本 ";
+  color: #6d8399;
+  font-weight: 750;
+}
+
+.profit-source-card-profit {
+  border-top: 1px solid #eef4f9;
+  padding: 12px;
+  background: #f8fbfe;
+}
+
+.profit-source-card-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 0 0 10px;
+}
+
+.profit-source-card-fields > div {
+  display: grid;
+  gap: 5px;
+}
+
+.profit-source-card-fields dt,
+.profit-source-card-result-fields dt {
+  color: #6d8399;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.profit-source-card-fields dd {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #1c3752;
+  font-weight: 800;
+  font-size: 0.86rem;
+}
+
+.profit-source-card-fields input {
+  width: 100%;
+  border: 1px solid #cfe0eb;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+}
+
+.profit-source-card-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #e2eef6;
+}
+
+.profit-source-card-result.is-qualified {
+  border-color: #b6e7cf;
+  background: #f0fdf6;
+}
+
+.profit-source-card-result.is-empty {
+  color: #7a93ab;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.profit-source-card-result-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+}
+
+.profit-source-card-result-fields > div {
+  display: grid;
+  gap: 2px;
+}
+
+.profit-source-card-result-fields dd {
+  margin: 0;
+  color: #1c3752;
+  font-size: 0.86rem;
+  font-weight: 850;
+}
+
+.profit-source-card-result em {
+  flex: none;
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #9d2b2b;
+  background: #fdecec;
+  font-style: normal;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.profit-source-card-result em.is-qualified {
+  color: #087c4a;
+  background: #d9f6e7;
+}
+
+.profit-source-card-result small {
+  color: #0a8cf2;
+  font-weight: 750;
+}
+
+/* 产品库表格编辑单元格与备注列 */
+/* 产品库表格：不做内部垂直滚动，表格随整页滚动；仅保留水平滚动处理超宽列 */
+.profit-table-wrap {
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+}
+
+/* 拖拽平移中才显示抓取光标并禁止选中，平时保持默认光标与文本可复制 */
+.profit-table-wrap.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/* 跟随视口的横向滚动条：sticky 贴在顶部，随时可拖，track 宽度与表格一致 */
+.profit-table-scrollbar {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 12px;
+  margin-top: 10px;
+  background: #f0f5fa;
+  border: 1px solid #e2edf5;
+  border-radius: 6px;
+}
+
+.profit-table-scrollbar-track {
+  height: 1px;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar {
+  height: 12px;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar-thumb {
+  background: #b9cbd9;
+  border-radius: 6px;
+  border: 2px solid #f0f5fa;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #8fa9bd;
+}
+
+/* 水平滚动条：加宽、常显、hover 高亮 */
+.profit-table-wrap::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.profit-table-wrap::-webkit-scrollbar-track {
+  background: #f0f5fa;
+  border-radius: 6px;
+}
+
+.profit-table-wrap::-webkit-scrollbar-thumb {
+  background: #b9cbd9;
+  border-radius: 6px;
+  border: 2px solid #f0f5fa;
+}
+
+.profit-table-wrap::-webkit-scrollbar-thumb:hover {
+  background: #8fa9bd;
+}
+
+.profit-table-wrap::-webkit-scrollbar-corner {
+  background: #f0f5fa;
+}
+
+/* 固定表头克隆：原表头滚出可视区时显示，始终跟随内容区宽度与横向滚动位置 */
+.profit-table-head-sticky {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9;
+  overflow: hidden;
+  display: none;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  background: #f0f6fa;
+  border-bottom: 1px solid #d3e2ee;
+  box-shadow: 0 8px 22px rgba(23, 61, 92, 0.12);
+  /* 仅作视觉参考，不拦截下方表格内容的点击与选择 */
+  pointer-events: none;
+}
+
+.profit-table-head-sticky.is-visible {
+  display: block;
+}
+
+.profit-table-head-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.profit-table-head-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.profit-table-head-sticky .profit-table {
+  margin: 0;
+  border-collapse: collapse;
+  background: transparent;
+}
+
+.profit-table-head-sticky .profit-table th {
+  border-right: 1px solid #d3e2ee;
+  border-bottom: 0;
+  background: #f0f6fa;
+}
+
+.profit-table-head-sticky .profit-table th:last-child {
+  border-right: 0;
+}
+
+/* 行内编辑单元格：输入框 + 保存/撤销按钮（聚焦时显示） */
+.profit-table .profit-edit-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.profit-table .profit-edit-input {
+  flex: 1 1 auto;
+  min-width: 56px;
+  padding: 6px 8px;
+  border: 1px solid #d5e4ee;
+  border-radius: 9px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+  text-align: right;
+  font-weight: 750;
+  font-size: .82rem;
+}
+
+.profit-table .profit-edit-input.profit-edit-text {
+  text-align: left;
+}
+
+.profit-edit-actions {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+}
+
+.profit-edit-actions button {
+  border: 1px solid #cfe0eb;
+  border-radius: 7px;
+  padding: 3px 6px;
+  font-size: .72rem;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.profit-edit-save {
+  color: #fff;
+  border-color: #0a8cf2;
+  background: #0a8cf2;
+}
+
+.profit-edit-cancel {
+  color: #526a82;
+  background: #fff;
+}
+
+.profit-edit-actions button:disabled {
+  cursor: not-allowed;
+  opacity: .6;
+}
+
+/* SKC 对应图单元格 */
+.profit-product-image-cell {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  min-width: 84px;
+}
+
+.profit-product-image,
+.profit-product-image-empty {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid #e2eef6;
+  display: block;
+}
+
+.profit-product-image-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9cb1c3;
+  background: #f4f8fb;
+  font-size: .76rem;
+  font-weight: 750;
+}
+
+.profit-product-image-upload {
+  padding: 4px 10px !important;
+  border-radius: 8px !important;
+  color: #0a8cf2 !important;
+  background: #f2faff !important;
+  font-size: .74rem !important;
+  line-height: 1.3;
+}
+
+.profit-product-image-upload:hover:not(:disabled) {
+  border-color: #82c9ef !important;
+}
+
+.profit-product-image-error {
+  color: #b42318;
+  font-size: .7rem;
+  font-weight: 750;
+}
+
+/* 图片列：标准审核表识别的货源截图缩略图 */
+.profit-source-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 200px;
+}
+
+.profit-source-thumb {
+  width: 52px;
+  height: 52px;
+  border-radius: 9px;
+  object-fit: cover;
+  border: 1px solid #e2eef6;
+  background: #f4f8fb;
+  display: block;
+}
+
+/* 图片列缩略图按钮：点击查看大图 */
+.profit-source-thumb-btn {
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 9px !important;
+  background: none !important;
+  line-height: 0;
+  cursor: zoom-in;
+  box-shadow: none !important;
+}
+
+.profit-source-thumb-btn:hover .profit-source-thumb {
+  border-color: #0a8cf2;
+  box-shadow: 0 0 0 2px #0a8cf21f;
+}
+
+/* 大图预览弹窗 */
+.profit-image-preview-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 22, 36, 0.62);
+  backdrop-filter: blur(2px);
+  padding: 24px;
+}
+
+.profit-image-preview-modal {
+  position: relative;
+  max-width: min(92vw, 960px);
+  max-height: 88vh;
+  display: flex;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 64px rgba(5, 16, 28, 0.4);
+  overflow: hidden;
+}
+
+.profit-image-preview-img {
+  display: block;
+  max-width: min(92vw, 960px);
+  max-height: 88vh;
+  object-fit: contain;
+}
+
+.profit-image-preview-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  width: 36px;
+  height: 36px;
+  border: 0 !important;
+  border-radius: 50% !important;
+  color: #fff !important;
+  background: rgba(13, 32, 52, 0.55) !important;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25) !important;
+}
+
+.profit-image-preview-close:hover {
+  background: rgba(13, 32, 52, 0.8) !important;
+}
+
+.profit-table .profit-edit-input:focus {
+  border-color: #0a8cf2;
+  box-shadow: 0 0 0 3px #0a8cf214;
+}
+
+.profit-table .profit-note-input {
+  flex: 1 1 160px;
+  min-width: 120px;
+}
+
+.profit-table .profit-note-cell {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #526a82;
+  font-size: .82rem;
+}
+
+/* 表头列宽拖拽手柄 */
+.profit-table th {
+  position: relative;
+  border-right: 1px solid #d3e2ee;
+}
+
+.profit-table th:last-child {
+  border-right: 0;
+}
+
+.profit-col-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 10px;
+  height: 100%;
+  z-index: 2;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 列交界处的拖动把手：默认一条细竖条，悬停/拖动时加宽加亮 */
+.profit-col-resizer::after {
+  content: "";
+  width: 3px;
+  height: 44%;
+  min-height: 16px;
+  border-radius: 3px;
+  background: #9db6ca;
+  opacity: 0.85;
+  transition: background 0.15s ease, height 0.15s ease;
+}
+
+.profit-col-resizer:hover::after,
+.profit-col-resizer.is-dragging::after {
+  background: #0a8cf2;
+  height: 62%;
+  min-height: 22px;
+}
+
+.profit-col-resizer:hover,
+.profit-col-resizer.is-dragging {
+  background: rgba(10, 140, 242, 0.12);
+}
+
+@media (max-width: 640px) {
+  .profit-source-card-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .profit-products-filters,
+  .profit-products-query,
+  .profit-products-pagination {
+    grid-template-columns: 1fr;
+  }
+
+  .profit-products-pagination > div {
+    flex-wrap: wrap;
+  }
+}
