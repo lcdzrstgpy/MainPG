@@ -12,6 +12,7 @@ from typing import Any
 
 from ...session import Actor
 from .defaults import DEFAULT_MODELS, DEFAULT_TEMPLATES
+from .materials import extract_local_document
 
 
 MAX_ASSET_BYTES = 12 * 1024 * 1024
@@ -185,7 +186,14 @@ class AiService:
         return [{**dict(row), "asset_ids": _asset_ids(row["asset_ids_json"])} for row in rows]
 
     def save_asset(self, actor: Actor, filename: str, content: bytes, content_type: str) -> dict[str, str]:
-        media_type = _validated_image_type(content, content_type)
+        if _detected_image_type(content):
+            media_type = _validated_image_type(content, content_type)
+            extracted_text = ""
+        else:
+            try:
+                media_type, extracted_text = extract_local_document(filename, content)
+            except ValueError as exc:
+                raise AiServiceError(str(exc)) from exc
         asset_id = uuid.uuid4().hex
         safe_name = _safe_filename(filename, media_type)
         relative_path = Path(actor.workspace_id) / actor.id / f"{asset_id}_{safe_name}"
@@ -197,14 +205,14 @@ class AiService:
             with self._connect() as conn:
                 conn.execute(
                     """INSERT INTO ai_service_assets
-                       (asset_id, workspace_id, owner_user_id, filename, relative_path, content_type, byte_size, sha256, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (asset_id, actor.workspace_id, actor.id, safe_name, relative_path.as_posix(), media_type, len(content), hashlib.sha256(content).hexdigest(), now),
+                       (asset_id, workspace_id, owner_user_id, filename, relative_path, content_type, byte_size, sha256, extracted_text, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (asset_id, actor.workspace_id, actor.id, safe_name, relative_path.as_posix(), media_type, len(content), hashlib.sha256(content).hexdigest(), extracted_text, now),
                 )
         except Exception:
             target.unlink(missing_ok=True)
             raise
-        return {"asset_id": asset_id, "filename": safe_name, "path": relative_path.as_posix(), "content_type": media_type}
+        return {"asset_id": asset_id, "filename": safe_name, "path": relative_path.as_posix(), "content_type": media_type, "kind": "image" if _is_image_type(media_type) else "document"}
 
     def asset_content(self, actor: Actor, asset_id: str) -> bytes:
         asset = self._asset(actor, asset_id)
@@ -260,19 +268,32 @@ class AiService:
                    ORDER BY created_at, rowid""",
                 (conversation_id, actor.workspace_id, actor.id),
             ).fetchall()
-        messages = [dict(row) for row in rows]
-        subject_asset = next((asset_id for message in messages for asset_id in _asset_ids(message["asset_ids_json"])), None)
+        all_messages = [dict(row) for row in rows]
+        messages = all_messages[-8:]
         context: list[dict[str, Any]] = [{"role": "system", "content": system_prompt.strip()}]
+        subject_asset = next((
+            asset_id
+            for message in reversed(all_messages)
+            if message["role"] == "user"
+            for asset_id in reversed(_asset_ids(message["asset_ids_json"]))
+            if _is_image_type(self._asset(actor, asset_id)["content_type"])
+        ), None)
         if subject_asset:
             context.append({"role": "user", "content": [
-                {"type": "text", "text": "商品主体参考图"},
+                {"type": "text", "text": "当前商品主体参考图"},
                 {"type": "image_url", "image_url": {"url": self.asset_data_url(actor, subject_asset)}},
             ]})
-        for message in messages[-8:]:
-            # The first reference-only message has already been represented by the subject image.
-            if subject_asset and subject_asset in _asset_ids(message["asset_ids_json"]) and not message["content"]:
-                continue
-            context.append({"role": message["role"], "content": message["content"]})
+        for message in messages:
+            text_parts = [message["content"]]
+            image_parts: list[dict[str, Any]] = []
+            for asset_id in _asset_ids(message["asset_ids_json"]) if message["role"] == "user" else []:
+                asset = self._asset(actor, asset_id)
+                if _is_image_type(asset["content_type"]):
+                    image_parts.append({"type": "image_url", "image_url": {"url": self.asset_data_url(actor, asset_id)}})
+                elif asset["extracted_text"]:
+                    text_parts.append(f"\n\n本地资料《{asset['filename']}》：\n{asset['extracted_text']}")
+            text = "".join(text_parts).strip()
+            context.append({"role": message["role"], "content": [{"type": "text", "text": text}, *image_parts] if image_parts else text})
         return context
 
     def asset_data_url(self, actor: Actor, asset_id: str) -> str:
@@ -302,13 +323,14 @@ class AiService:
         if size not in model["sizes"]:
             raise AiServiceError("selected image size is not supported")
         asset_ids = asset_ids or []
-        if template["mode"] == "edit" and not asset_ids:
+        image_asset_id = next((asset_id for asset_id in asset_ids if _is_image_type(self._asset(actor, asset_id)["content_type"])), None)
+        if template["mode"] == "edit" and not image_asset_id:
             raise AiServiceError("an uploaded product image is required for this template")
         reference_image = ""
-        if asset_ids:
+        if image_asset_id:
             if model["reference_transport"] != "data_url":
                 raise AiServiceError("temporary reference transport is not configured", 503)
-            reference_image = self.asset_data_url(actor, asset_ids[0])
+            reference_image = self.asset_data_url(actor, image_asset_id)
         prompt = "\n\n".join(part for part in (str(template["prompt"]), user_prompt.strip()) if part)
         return {
             "model": model_id,
@@ -390,6 +412,9 @@ class AiService:
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(SCHEMA_SQL)
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(ai_service_assets)")}
+            if "extracted_text" not in columns:
+                conn.execute("ALTER TABLE ai_service_assets ADD COLUMN extracted_text TEXT NOT NULL DEFAULT ''")
 
 
 SCHEMA_SQL = """
@@ -435,6 +460,7 @@ CREATE TABLE IF NOT EXISTS ai_service_assets (
     content_type TEXT NOT NULL,
     byte_size INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
+    extracted_text TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ai_service_assets_owner
@@ -478,7 +504,12 @@ def _clean_title(value: str) -> str:
 
 
 def _safe_filename(value: str, content_type: str) -> str:
-    suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}[content_type]
+    suffix = {
+        "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp",
+        "text/plain": ".txt", "text/csv": ".csv",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    }[content_type]
     base = _SAFE_FILENAME.sub("-", Path(value or "product-image").stem).strip(".-") or "product-image"
     return f"{base[:80]}{suffix}"
 
@@ -486,12 +517,23 @@ def _safe_filename(value: str, content_type: str) -> str:
 def _validated_image_type(content: bytes, declared_type: str) -> str:
     if not content or len(content) > MAX_ASSET_BYTES:
         raise AiServiceError("image must be between 1 byte and 12 MB")
-    detected = next((mime for signature, mime in _IMAGE_SIGNATURES.items() if content.startswith(signature)), None)
+    detected = _detected_image_type(content)
     if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
         detected = "image/webp"
     if detected is None or (declared_type and declared_type != detected):
         raise AiServiceError("only valid PNG, JPEG, GIF, or WEBP image files are accepted")
     return detected
+
+
+def _detected_image_type(content: bytes) -> str | None:
+    detected = next((mime for signature, mime in _IMAGE_SIGNATURES.items() if content.startswith(signature)), None)
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        detected = "image/webp"
+    return detected
+
+
+def _is_image_type(content_type: str) -> bool:
+    return content_type.startswith("image/")
 
 
 def _asset_ids(value: str) -> list[str]:

@@ -28,5 +28,6 @@ export type AiMessage = {
   role: "user" | "assistant";
   content: string;
   uploadedImageUrl?: string;
+  uploadedDocumentName?: string;
   generatedImageUrls?: string[];
 };

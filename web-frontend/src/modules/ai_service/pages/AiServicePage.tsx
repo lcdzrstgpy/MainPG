@@ -31,14 +31,18 @@ export function AiServicePage() {
   const [messages, setMessages] = useState<AiMessage[]>([]);
   const [uploadedImageUrl, setUploadedImageUrl] = useState<string>();
   const [uploadedImageName, setUploadedImageName] = useState("");
+  const [uploadedDocumentName, setUploadedDocumentName] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [remoteConversationId, setRemoteConversationId] = useState<string>();
   const [uploadedAssetId, setUploadedAssetId] = useState<string>();
+  const [uploadedDocumentAssetId, setUploadedDocumentAssetId] = useState<string>();
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [apiStatus, setApiStatus] = useState<"loading" | "ready" | "error">("loading");
   const [apiError, setApiError] = useState("");
   const [aspectRatio, setAspectRatio] = useState("1:1");
   const [sceneStyle, setSceneStyle] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const documentInputRef = useRef<HTMLInputElement>(null);
   const objectUrlsRef = useRef(new Set<string>());
 
   const selectableModels = useMemo(() => modelsForMode(mode), [mode]);
@@ -86,6 +90,12 @@ export function AiServicePage() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  const clearComposerDocument = () => {
+    setUploadedDocumentName("");
+    setUploadedDocumentAssetId(undefined);
+    if (documentInputRef.current) documentInputRef.current.value = "";
+  };
+
   const selectImage = async (file?: File) => {
     if (!file || !file.type.startsWith("image/")) return;
     if (uploadedImageUrl) {
@@ -106,12 +116,31 @@ export function AiServicePage() {
     }
   };
 
+  const selectDocument = async (file?: File) => {
+    if (!file || !/\.(txt|csv|xlsx|docx)$/i.test(file.name)) {
+      setApiError("文件仅支持 TXT、CSV、XLSX 或 DOCX。");
+      return;
+    }
+    setUploadedDocumentName(file.name);
+    setUploadedDocumentAssetId(undefined);
+    if (apiStatus !== "ready") return;
+    try {
+      const asset = await aiServiceApi.uploadAsset(file);
+      setUploadedDocumentAssetId(asset.asset_id);
+    } catch (error) {
+      clearComposerDocument();
+      setApiError(error instanceof Error ? error.message : "文件上传或本地解析失败");
+    }
+  };
+
   const openNewCreation = () => {
     setActiveConversationId(undefined);
     setMessages([]);
     setPrompt("");
     setApiError("");
     clearComposerAttachment(true);
+    clearComposerDocument();
+    setWebSearchEnabled(false);
     setRemoteConversationId(undefined);
   };
 
@@ -149,13 +178,16 @@ export function AiServicePage() {
       imageName: uploadedImageName,
       assetId: uploadedAssetId,
     });
-    const userMessage: AiMessage = { id: `user-${Date.now()}`, role: "user", content: draft.submitted.prompt, ...(draft.submitted.imageUrl ? { uploadedImageUrl: draft.submitted.imageUrl } : {}) };
+    const documentName = mode === "chat" ? uploadedDocumentName : "";
+    const documentAssetId = mode === "chat" ? uploadedDocumentAssetId : undefined;
+    const userMessage: AiMessage = { id: `user-${Date.now()}`, role: "user", content: draft.submitted.prompt, ...(draft.submitted.imageUrl ? { uploadedImageUrl: draft.submitted.imageUrl } : {}), ...(documentName ? { uploadedDocumentName: documentName } : {}) };
     setMessages((current) => [...current, userMessage]);
     setPrompt(draft.next.prompt);
     setUploadedImageUrl(draft.next.imageUrl);
     setUploadedImageName(draft.next.imageName);
     setUploadedAssetId(draft.next.assetId);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    clearComposerDocument();
     setIsGenerating(true);
     setApiError("");
     try {
@@ -173,7 +205,8 @@ export function AiServicePage() {
           conversation_id: conversation.conversation_id,
           content,
           model_id: selectedModel.id,
-          asset_ids: draft.submitted.assetId ? [draft.submitted.assetId] : [],
+          asset_ids: [draft.submitted.assetId, documentAssetId].filter((assetId): assetId is string => Boolean(assetId)),
+          web_search: webSearchEnabled,
         });
         setMessages((current) => [...current, { id: `assistant-${Date.now()}`, role: "assistant", content: reply || "模型未返回文字内容。" }]);
       } else {
@@ -230,12 +263,13 @@ export function AiServicePage() {
         </div>
         <div className={`ai-conversation-flow ${messages.length ? "has-messages" : ""}`}>
           {!messages.length && <EmptyCreationState mode={mode} />}
-          {messages.map((message) => <article key={message.id} className={`ai-message ai-message-${message.role}`}><span className={`ai-message-avatar iconfont ${message.role === "assistant" ? "icon-robot-fill" : "icon-user"}`} aria-hidden="true" /><div className="ai-message-body"><p>{message.content}</p>{message.uploadedImageUrl && <img className="ai-uploaded-in-message" src={message.uploadedImageUrl} alt="用户上传商品图" />}{message.generatedImageUrls && <GeneratedAssetCards imageUrls={message.generatedImageUrls} />}</div></article>)}
+          {messages.map((message) => <article key={message.id} className={`ai-message ai-message-${message.role}`}><span className={`ai-message-avatar iconfont ${message.role === "assistant" ? "icon-robot-fill" : "icon-user"}`} aria-hidden="true" /><div className="ai-message-body"><p>{message.content}</p>{message.uploadedImageUrl && <img className="ai-uploaded-in-message" src={message.uploadedImageUrl} alt="用户上传图片" />}{message.uploadedDocumentName && <div className="ai-document-in-message"><span className="iconfont icon-file" aria-hidden="true" />已附本地资料：{message.uploadedDocumentName}</div>}{message.generatedImageUrls && <GeneratedAssetCards imageUrls={message.generatedImageUrls} />}</div></article>)}
           {isGenerating && <article className="ai-message ai-message-assistant"><span className="ai-message-avatar iconfont icon-robot-fill" /><div className="ai-generating"><span /><span /><span /> 正在生成…</div></article>}
         </div>
         <div className="ai-composer-wrap">
-          {uploadedImageUrl && <div className="ai-upload-preview"><img src={uploadedImageUrl} alt="待创作商品图" /><div><b>{uploadedImageName}</b><span>{uploadedAssetId ? "已保存到本机，将作为商品主体参考图" : "将作为商品主体参考图"}</span></div><button type="button" onClick={() => clearComposerAttachment(true)} aria-label="移除图片">×</button></div>}
-          <div className="ai-composer"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "输入商品创作问题…" : mode === "edit" ? "上传商品图，并描述想替换的背景或场景…" : "描述你想要创作的商品视觉…"} /><div className="ai-composer-actions"><div><input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(event) => void selectImage(event.target.files?.[0])} /><button type="button" className="ai-attach-button" onClick={() => fileInputRef.current?.click()}><span className="iconfont icon-image" /> 图片</button><span className="ai-upload-hint">可拖拽、粘贴或上传商品图</span></div><button type="button" className="ai-generate-button" disabled={!prompt.trim() || isGenerating || apiStatus !== "ready"} onClick={() => void generate()}>{mode === "chat" ? "发送" : "开始创作"}<span className="iconfont icon-arrowright" /></button></div></div>
+          {uploadedImageUrl && <div className="ai-upload-preview"><img src={uploadedImageUrl} alt="待发送图片" /><div><b>{uploadedImageName}</b><span>{uploadedAssetId ? mode === "chat" ? "已保存到本机，将作为看图资料发送" : "已保存到本机，将作为商品主体参考图" : "正在保存到本机"}</span></div><button type="button" onClick={() => clearComposerAttachment(true)} aria-label="移除图片">×</button></div>}
+          {mode === "chat" && uploadedDocumentName && <div className="ai-upload-preview ai-document-preview"><span className="iconfont icon-file" aria-hidden="true" /><div><b>{uploadedDocumentName}</b><span>{uploadedDocumentAssetId ? "已在本机解析，将作为资料发送" : "正在解析本地资料"}</span></div><button type="button" onClick={clearComposerDocument} aria-label="移除文件">×</button></div>}
+          <div className="ai-composer"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "输入问题；可附图片、资料文件或开启联网搜索…" : mode === "edit" ? "上传商品图，并描述想替换的背景或场景…" : "描述你想要创作的商品视觉…"} /><div className="ai-composer-actions"><div><input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(event) => void selectImage(event.target.files?.[0])} /><button type="button" className="ai-attach-button" onClick={() => fileInputRef.current?.click()}><span className="iconfont icon-image" /> 图片</button>{mode === "chat" && <><input ref={documentInputRef} type="file" accept=".txt,.csv,.xlsx,.docx" hidden onChange={(event) => void selectDocument(event.target.files?.[0])} /><button type="button" className="ai-attach-button" onClick={() => documentInputRef.current?.click()}><span className="iconfont icon-file" /> 文件</button><button type="button" className={`ai-search-toggle ${webSearchEnabled ? "is-on" : ""}`} onClick={() => setWebSearchEnabled((value) => !value)} title="联网搜索公开资料"><span className="iconfont icon-search" />联网搜索</button></>}<span className="ai-upload-hint">{mode === "chat" ? "图片与资料文件可同时附上" : "上传商品图后开始创作"}</span></div><button type="button" className="ai-generate-button" disabled={!prompt.trim() || isGenerating || apiStatus !== "ready"} onClick={() => void generate()}>{mode === "chat" ? "发送" : "开始创作"}<span className="iconfont icon-arrowright" /></button></div></div>
         </div>
         {apiError && <p className="ai-api-error" role="alert">{apiError}</p>}
       </main>

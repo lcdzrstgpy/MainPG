@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS ai_service_assets (
     content_type TEXT NOT NULL,
     byte_size INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
+    extracted_text TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 

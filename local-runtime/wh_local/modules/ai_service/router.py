@@ -15,6 +15,7 @@ from .defaults import DEFAULT_MODELS
 from .gateway import StationGateway, StationGatewayError
 from .service import AiService, AiServiceError
 from .temporary_cos import TemporaryCosStore, TemporaryReference, TemporaryReferenceError
+from .web_search import search_context, search_public_web
 
 
 def create_router(database_path: Path, asset_root: Path) -> APIRouter:
@@ -86,7 +87,7 @@ def create_router(database_path: Path, asset_root: Path) -> APIRouter:
         permitted(actor, "ai_service.create")
         content_length = request.headers.get("content-length")
         if content_length and content_length.isdigit() and int(content_length) > 13 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="image upload is too large")
+            raise HTTPException(status_code=413, detail="uploaded material is too large")
         form = await request.form()
         upload = form.get("file")
         if upload is None or not hasattr(upload, "read"):
@@ -182,6 +183,14 @@ def create_router(database_path: Path, asset_root: Path) -> APIRouter:
         asset_ids = _string_list(body.get("asset_ids"))
         _call(service.append_message, actor, conversation_id, role="user", content=content, asset_ids=asset_ids)
         context = _call(service.build_chat_context, actor, conversation_id, "你是本地商品创作助手，回答应简洁、可执行。")
+        if bool(body.get("web_search")):
+            try:
+                results = search_public_web(content)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            source_context = search_context(results)
+            if source_context:
+                context.append({"role": "user", "content": source_context})
         try:
             gateway = _gateway(database_path)
         except StationGatewayError as exc:
