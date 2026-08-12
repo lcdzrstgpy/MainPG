@@ -67,7 +67,9 @@ def _cross_language_category_mismatch(quote_title: str, source_title: str) -> bo
         return False
     quote = _compact(quote_title)
     source = _compact(source_title)
-    if any(term in source for term in _TOY_TERMS) and not any(term in quote for term in _TOY_TERMS):
+    # Temu 是唯一的类目来源：它明确为 toy/doll 时，1688 候选也必须
+    # 明确是玩具。不能反过来仅凭 1688 标题的“玩具”二字排除候选。
+    if any(term in quote for term in _TOY_TERMS) and not any(term in source for term in _TOY_TERMS):
         return True
     required = [aliases for triggers, aliases in _ENGLISH_CATEGORY_TERMS if any(trigger in quote for trigger in triggers)]
     return bool(required) and any(not any(alias in source for alias in aliases) for aliases in required)
