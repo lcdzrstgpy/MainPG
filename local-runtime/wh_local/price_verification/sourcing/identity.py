@@ -9,7 +9,15 @@ from typing import Any
 from ..quote_normalizer import QuoteItem
 
 
-_GENERIC_TOKENS = frozenset({"同款", "厂家", "批发", "现货", "新品", "hot", "sale", "new"})
+_GENERIC_TOKENS = frozenset(
+    {
+        "同款", "厂家", "批发", "现货", "新品", "热卖", "爆款",
+        "hot", "sale", "new", "women", "woman", "men", "man",
+        "girls", "girl", "boys", "boy", "adult", "kids", "kid",
+        "summer", "winter", "spring", "autumn", "fashion", "style",
+        "large", "small", "mini", "pack", "set",
+    }
+)
 _COLOUR_TOKENS = frozenset({"红", "蓝", "黑", "白", "黄", "绿", "紫", "粉", "橙", "灰", "棕", "red", "blue", "black", "white", "yellow", "green", "purple", "pink", "orange", "grey", "gray", "brown"})
 _ENGLISH_CATEGORY_TERMS = (
     (("cooling", "cool"), ("凉", "冰", "冷", "降温", "cooling", "cool")),
@@ -59,7 +67,11 @@ def evaluate_product_evidence(
     if quote_title and source_title:
         quote_terms = _product_terms(quote_title)
         source_terms = _product_terms(source_title)
-        if quote_terms and source_terms and quote_terms & source_terms:
+        # A single shared title word is category-level evidence at best
+        # ("women", "summer", even "dress"), not proof that two offers are
+        # the same product.  Require two meaningful shared terms unless the
+        # full compact title containment check below succeeds.
+        if len(quote_terms & source_terms) >= 2:
             return "compatible", ("overlapping_product_title",)
         if _compact(quote_title) in _compact(source_title) or _compact(source_title) in _compact(quote_title):
             return "compatible", ("containing_product_title",)
@@ -164,9 +176,8 @@ def _quote_text(quote: QuoteItem | Mapping[str, Any], name: str) -> str:
 
 
 def _product_terms(value: str) -> set[str]:
-    compact = _compact(value)
     return {
-        token for token in re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9]{3,}", compact.casefold())
+        token for token in re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9]{3,}", value.casefold())
         if token not in _GENERIC_TOKENS
     }
 

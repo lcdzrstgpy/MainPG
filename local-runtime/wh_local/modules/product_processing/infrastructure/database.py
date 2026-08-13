@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +50,7 @@ def create_database(database_url: str | None = None) -> ProductProcessingDatabas
         _configure_sqlite(engine)
     Base.metadata.create_all(engine)
     _ensure_columns(engine)
+    _remove_legacy_candidate_unique_constraint(engine)
     return ProductProcessingDatabase(engine, sessionmaker(engine, expire_on_commit=False))
 
 
@@ -178,6 +180,83 @@ def _ensure_columns(engine: Engine) -> None:
             )
 
 
+def _remove_legacy_candidate_unique_constraint(engine: Engine) -> None:
+    """Allow the same source candidate to create one draft per confirmed handoff.
+
+    Older SQLite databases enforced ``UNIQUE(workspace_id, candidate_id)`` at
+    table level. SQLite cannot drop that auto-index directly, so rebuild only
+    this table in one transaction while preserving every column, row and
+    explicit index. Handoff IDs remain unique and are the replay boundary.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    constraint_pattern = re.compile(
+        r",\s*(?:CONSTRAINT\s+[\"`\[]?uq_product_processing_workspace_candidate[\"`\]]?\s+)?"
+        r"UNIQUE\s*\(\s*workspace_id\s*,\s*candidate_id\s*\)",
+        flags=re.IGNORECASE,
+    )
+    with engine.connect() as connection:
+        table_sql = connection.execute(
+            text(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'product_processing_drafts'"
+            )
+        ).scalar_one_or_none()
+        if not table_sql or constraint_pattern.search(str(table_sql)) is None:
+            return
+        explicit_indexes = [
+            str(row[0])
+            for row in connection.execute(
+                text(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE type = 'index' AND tbl_name = 'product_processing_drafts' "
+                    "AND sql IS NOT NULL ORDER BY name"
+                )
+            )
+            if row[0]
+        ]
+        rebuilt_sql, replacements = constraint_pattern.subn("", str(table_sql), count=1)
+        if replacements != 1:
+            raise RuntimeError("failed to remove legacy product draft candidate constraint")
+        temporary_table = "product_processing_drafts__candidate_reentry"
+        rebuilt_sql, replacements = re.subn(
+            r"^CREATE\s+TABLE\s+[\"`\[]?product_processing_drafts[\"`\]]?",
+            f"CREATE TABLE {temporary_table}",
+            rebuilt_sql,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if replacements != 1:
+            raise RuntimeError("failed to prepare product draft table migration")
+        columns = [
+            str(row[1])
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(product_processing_drafts)"
+            )
+        ]
+        quoted_columns = ", ".join(f'"{column}"' for column in columns)
+        connection.commit()
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        connection.commit()
+        try:
+            with connection.begin():
+                connection.exec_driver_sql(rebuilt_sql)
+                connection.exec_driver_sql(
+                    f"INSERT INTO {temporary_table} ({quoted_columns}) "
+                    f"SELECT {quoted_columns} FROM product_processing_drafts"
+                )
+                connection.exec_driver_sql("DROP TABLE product_processing_drafts")
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {temporary_table} RENAME TO product_processing_drafts"
+                )
+                for index_sql in explicit_indexes:
+                    connection.exec_driver_sql(index_sql)
+                violations = connection.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+                if violations:
+                    raise RuntimeError("product draft candidate migration broke foreign keys")
+        finally:
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            connection.commit()
 def _configure_sqlite(engine: Engine) -> None:
     @event.listens_for(engine, "connect")
     def on_connect(connection, _record) -> None:

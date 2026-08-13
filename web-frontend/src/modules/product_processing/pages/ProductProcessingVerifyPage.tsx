@@ -51,7 +51,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
     skipDuplicates: false,
     ipCheck: true,
     maxParallelDrafts: 8,
-    imageGenerationCount: 1,
+    imageGenerationCount: 4,
   });
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -415,20 +415,41 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
     } catch (err) { fail(err); } finally { setLoading(false); }
   };
 
-  const handleProcess = (preflightOnly = false) => {
+  const handleProcess = async (preflightOnly = false) => {
     if (!selectedIds.size) { setError('请先勾选需要处理的草稿'); return; }
     const ids = Array.from(selectedIds);
+    const dirtyTargets = drafts.filter((draft) => selectedIds.has(draft.id) && draftDirty(draft, edits));
+    if (dirtyTargets.length) {
+      setLoading(true);
+      setMessage('');
+      setError('');
+      try {
+        const updated: DraftSummary[] = [];
+        for (const draft of dirtyTargets) {
+          const saved = await saveOneDraft(draft);
+          if (saved) updated.push(saved);
+        }
+        if (updated.length) {
+          setDrafts((prev) => prev.map((draft) => updated.find((item) => item.id === draft.id) || draft));
+          setEdits((prev) => {
+            const next = { ...prev };
+            for (const draft of dirtyTargets) delete next[draft.id];
+            return next;
+          });
+        }
+      } catch (err) {
+        fail(err);
+        setLoading(false);
+        return;
+      }
+      setLoading(false);
+    }
     const processOptions: ProductProcessingOptions = {
       ...options,
       ...(preflightOnly ? { preflightOnly: true } as Partial<ProductProcessingOptions> : {}),
     };
     const opened = onStartProcessing?.(ids, processOptions);
     if (opened === false) return; // 任务面板未打开（如已达上限），草稿保持原样
-    // 提交处理即让勾选草稿从池中消失：本地同步置 processing（后端同样置位），
-    // 处理完成置 processed 保持隐藏，失败回退 draft 后会自动重新出现。
-    setDrafts((prev) => prev.map((d) => (ids.includes(d.id) ? { ...d, status: 'processing' as const } : d)));
-    setSelectedIds(new Set());
-    setEdits((prev) => { const next = { ...prev }; for (const id of ids) delete next[id]; return next; });
   };
 
   return (

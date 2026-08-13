@@ -13,6 +13,7 @@ from ..domain.preview_images import (
     MANIFEST_KEY,
     PreviewImageManifest,
     snapshot_hash as calculate_snapshot_hash,
+    task_item_result_version,
 )
 from .database import ProductProcessingDatabase
 from .orm import (
@@ -886,6 +887,11 @@ class PreviewImageRepository:
                 ProcessingTaskItemRow.task_id == int(task_id)
             )
         ).all()
+        task_items_by_draft = {
+            int(row.product_draft_id): row
+            for row in task_items
+            if row.product_draft_id is not None
+        }
         owned_draft_ids = {
             int(row.product_draft_id)
             for row in task_items
@@ -943,6 +949,16 @@ class PreviewImageRepository:
                     f"preview revision conflict: expected {expected_revision}, "
                     f"current {current_revision}"
                 )
+            item_row = task_items_by_draft.get(draft_id)
+            current_result_version = task_item_result_version(
+                _loads(item_row.result_json, {}) if item_row is not None else {}
+            )
+            if require_complete_finalize:
+                expected_result_version = str(entry.get("expected_result_version") or "").casefold()
+                if expected_result_version != current_result_version:
+                    raise PreviewRevisionConflict(
+                        "task item result version changed before finalization"
+                    )
             raw_overrides = entry.get("overrides")
             overrides = dict(raw_overrides) if isinstance(raw_overrides, Mapping) else {}
             if MANIFEST_KEY in overrides:
@@ -998,6 +1014,7 @@ class PreviewImageRepository:
                 {
                     "product_draft_id": draft_id,
                     "preview_revision": next_revision,
+                    "result_version": current_result_version,
                     "overrides": overrides,
                     "manifest": manifest.as_dict(),
                     "live_asset_ids": list(live_ids),
@@ -1093,6 +1110,57 @@ class PreviewImageRepository:
             value = self._run(row)
             value["claim_token"] = token
             return value
+
+    def recover_interrupted_finalize_runs(self) -> list[dict[str, Any]]:
+        """Requeue process-lost finalizations and release their local leases."""
+
+        with self.database.sessions.begin() as session:
+            now = utc_now()
+            session.execute(
+                update(PreviewFinalizeRunRow)
+                .where(PreviewFinalizeRunRow.status == "publishing")
+                .values(
+                    status="queued",
+                    claim_token="",
+                    claimed_at="",
+                    updated_at=now,
+                )
+            )
+            session.execute(
+                update(PreviewImagePublicationRow)
+                .where(PreviewImagePublicationRow.status == "publishing")
+                .values(
+                    status="publish_failed",
+                    claim_token="",
+                    claimed_at="",
+                    error_code="worker_interrupted",
+                    error_message="application restarted during preview publication",
+                    updated_at=now,
+                )
+            )
+            session.execute(
+                update(PreviewImageAssetRow)
+                .where(PreviewImageAssetRow.availability == "publishing")
+                .values(availability="local", updated_at=now)
+            )
+            session.execute(
+                update(PreviewImageAssetRow)
+                .where(PreviewImageAssetRow.availability == "materializing")
+                .values(
+                    availability="materialize_failed",
+                    materialize_claim_token="",
+                    materialize_claimed_at="",
+                    error_code="worker_interrupted",
+                    error_message="application restarted during preview materialization",
+                    updated_at=now,
+                )
+            )
+            rows = session.scalars(
+                select(PreviewFinalizeRunRow)
+                .where(PreviewFinalizeRunRow.status == "queued")
+                .order_by(PreviewFinalizeRunRow.created_at, PreviewFinalizeRunRow.id)
+            ).all()
+            return [self._run(row) for row in rows]
 
     def renew_finalize_claim(
         self,
@@ -1256,6 +1324,23 @@ class PreviewImageRepository:
                 if draft is None or int(draft.preview_revision or 0) != int(
                     entry.get("preview_revision") or -1
                 ):
+                    row.status = "stale"
+                    row.claim_token = ""
+                    row.claimed_at = ""
+                    row.workbook_path = ""
+                    row.updated_at = utc_now()
+                    session.flush()
+                    return self._run(row)
+                task_item = session.scalar(
+                    select(ProcessingTaskItemRow).where(
+                        ProcessingTaskItemRow.task_id == int(row.task_id),
+                        ProcessingTaskItemRow.product_draft_id
+                        == int(entry.get("product_draft_id") or 0),
+                    )
+                )
+                if task_item is None or task_item_result_version(
+                    _loads(task_item.result_json, {})
+                ) != str(entry.get("result_version") or "").casefold():
                     row.status = "stale"
                     row.claim_token = ""
                     row.claimed_at = ""

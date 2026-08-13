@@ -219,10 +219,6 @@ class QuoteService:
             )
         except PriceVerificationNotFound as error:  # pragma: no cover - defensive
             raise CaptureBatchRequiredError("create or activate a capture batch before collecting") from error
-        # 覆盖式采集：每次新采集替换上一批数据（报价与待审重组），只保留最新一次结果。
-        self._repository.clear_capture_batch_quotes(
-            workspace_id=actor.workspace_id, batch_id=batch.batch_id
-        )
         snapshots = tuple(_quote_snapshot(item, index=index) for index, item in enumerate(quotes))
         content_sha256 = sha256(safe_json_dumps({"page_url": page_url, "capture": safe_capture}).encode("utf-8")).hexdigest()
         return self._repository.append_quote_capture_chunk(

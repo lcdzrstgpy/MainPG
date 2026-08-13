@@ -34,27 +34,43 @@ def test_presentation_only_heading_variants_are_canonicalized_locally() -> None:
     assert normalized == normalize_five_point_description(VALID)
 
 
+def test_partial_points_and_short_copy_are_preserved_instead_of_rejected() -> None:
+    partial = """- Compact Shape: Easy to place on a desk.
+- Daily Use: Suitable for ordinary routines."""
+
+    normalized = normalize_five_point_description(partial)
+
+    assert normalized.splitlines() == [
+        "- COMPACT SHAPE: Easy to place on a desk.",
+        "- DAILY USE: Suitable for ordinary routines.",
+    ]
+
+
+def test_plain_sentences_are_kept_and_extra_points_are_capped_at_five() -> None:
+    value = "\n".join(
+        [
+            "A compact shape fits easily into ordinary storage spaces.",
+            "- VISIBLE FINISH: The smooth blue surface matches the supplied image.",
+            "- SIMPLE HANDLING: The lightweight form is easy to move.",
+            "- DAILY USE: Designed for ordinary everyday routines.",
+            "- NEAT DISPLAY: The clean outline keeps the product easy to recognize.",
+            "- EXTRA DETAIL: This sixth line should not be exported.",
+        ]
+    )
+
+    normalized = normalize_five_point_description(value)
+
+    assert len(normalized.splitlines()) == 5
+    assert normalized.startswith("- PRODUCT DETAIL 1: A compact shape")
+    assert "sixth line" not in normalized
+
+
 @pytest.mark.parametrize(
     ("value", "message"),
     [
-        ("\n".join(VALID.splitlines()[:4]), "exactly five"),
-        (VALID + "\n- EXTRA SELLING DETAIL: Another unsupported line is not allowed in the listing output.", "exactly five"),
-        (VALID.replace("VERIFIED SOLID BUILD", "Verified Solid Build"), "ALL-CAPS"),
         (VALID.replace("regular tabletop sessions", "日常桌面游戏"), "English"),
-        (VALID.replace(VALID.splitlines()[4], VALID.splitlines()[0]), "distinct"),
-        (
-            "\n".join(
-                [
-                    "- FIRST FACT: Small item.",
-                    "- SECOND FACT: Simple use.",
-                    "- THIRD FACT: Neat shape.",
-                    "- FOURTH FACT: Easy handling.",
-                    "- FIFTH FACT: Clear finish.",
-                ]
-            ),
-            "80-150",
-        ),
         (VALID.replace("The confirmed construction", "Source information preserved for operator review. The confirmed construction"), "internal fallback"),
+        ("", "at least one usable"),
     ],
 )
 def test_invalid_descriptions_are_rejected(value: str, message: str) -> None:

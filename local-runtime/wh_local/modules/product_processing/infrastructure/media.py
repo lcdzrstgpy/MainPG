@@ -15,6 +15,7 @@ import re
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
@@ -106,8 +107,15 @@ class ProductImageProcessor:
         # 图片并发限流信号量（对齐原项目 global_image_request_limit / image_workers）：
         # 批次内多商品并行时限制同时在途的图片生成请求数，避免打爆中转 429。
         config = self._config()
-        image_workers = max(1, min(int((config.get("limits") or {}).get("image_workers") or 15), 50))
+        image_workers = max(1, min(int((config.get("limits") or {}).get("image_workers") or 4), 50))
         self._image_semaphore = threading.Semaphore(image_workers)
+        self._reference_cache_limit = max(
+            1,
+            min(int((config.get("limits") or {}).get("reference_download_cache_entries") or 64), 256),
+        )
+        self._reference_cache: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
+        self._reference_downloads: dict[str, threading.Event] = {}
+        self._reference_cache_lock = threading.Lock()
 
     def status(self) -> dict[str, Any]:
         config = self._config()
@@ -130,6 +138,7 @@ class ProductImageProcessor:
         reference_values: Iterable[str],
         layout_scaffold: bool = False,
         image_size: str | None = None,
+        model_override: str | None = None,
     ) -> GeneratedMedia:
         config = self._config()
         providers = self._providers(config)
@@ -144,6 +153,7 @@ class ProductImageProcessor:
                 config,
                 layout_scaffold=layout_scaffold,
                 image_size=image_size,
+                model_override=model_override,
             )
 
     def _generate_with_limits(
@@ -156,6 +166,7 @@ class ProductImageProcessor:
         extra_references: list[tuple[bytes, str, str]] | None = None,
         layout_scaffold: bool = False,
         image_size: str | None = None,
+        model_override: str | None = None,
     ) -> GeneratedMedia:
         default_limit = 1 if stage == "grid_image" else 2
         reference_limit = max(
@@ -194,6 +205,7 @@ class ProductImageProcessor:
                         references,
                         timeout_seconds=request_timeout,
                         image_size=image_size,
+                        reference_model=model_override,
                     )
                     suffix = _suffix_for_content_type(content_type)
                     return GeneratedMedia(
@@ -202,7 +214,7 @@ class ProductImageProcessor:
                         content_type=content_type,
                         suffix=suffix,
                         provider=provider["name"],
-                        model=provider["reference_model"] or provider["model"],
+                        model=model_override or provider["reference_model"] or provider["model"],
                         reference_count=ordinary_reference_count,
                         attempt_count=attempt_count,
                     )
@@ -295,22 +307,44 @@ class ProductImageProcessor:
                     reference_count=media.reference_count,
                 )
             )
-        # 汇总图：居中裁方 + 缩放到 800×800（对齐原项目 _square_image_to_jpeg_bytes）
-        square = _center_crop_to_square(source)
-        summary_resized = square.resize((target_size, target_size), Image.Resampling.LANCZOS)
-        summary_content = _image_to_jpeg_bytes(summary_resized)
-        result.append(
-            GeneratedMedia(
+        result.append(self.compose_grid_summary(result))
+        return result
+
+    def compose_grid_summary(self, parts: Iterable[GeneratedMedia]) -> GeneratedMedia:
+        """Compose four normalized 800px slots into a matching 800px 2x2 summary."""
+        try:
+            from PIL import Image  # type: ignore
+
+            normalized = list(parts)
+            if len(normalized) != 4:
+                raise ValueError("exactly four normalized grid slots are required")
+            canvas = Image.new("RGB", (DXM_IMAGE_TARGET_SIZE * 2, DXM_IMAGE_TARGET_SIZE * 2))
+            for index, part in enumerate(normalized):
+                with Image.open(BytesIO(part.content)) as opened:
+                    image = opened.convert("RGB")
+                    if image.size != (DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE):
+                        raise ValueError("grid slot must be normalized to 800x800")
+                    x = (index % 2) * DXM_IMAGE_TARGET_SIZE
+                    y = (index // 2) * DXM_IMAGE_TARGET_SIZE
+                    canvas.paste(image, (x, y))
+            summary = canvas.resize(
+                (DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE),
+                Image.Resampling.LANCZOS,
+            )
+            return GeneratedMedia(
                 stage="grid_image_summary",
-                content=summary_content,
+                content=_image_to_jpeg_bytes(summary),
                 content_type="image/jpeg",
                 suffix=".jpg",
-                provider=media.provider,
-                model=media.model,
-                reference_count=media.reference_count,
+                provider="local-compose",
+                model="pillow",
+                reference_count=max((part.reference_count for part in normalized), default=0),
+                attempt_count=max((part.attempt_count for part in normalized), default=1),
             )
-        )
-        return result
+        except MediaConfigurationError:
+            raise
+        except Exception as exc:
+            raise MediaProcessingError("normalized grid summary cannot be composed") from exc
 
     def split_two_grid(self, media: GeneratedMedia, *, start_index: int = 1) -> list[GeneratedMedia]:
         """Split one landscape two-panel transport image into two marketplace squares.
@@ -705,7 +739,7 @@ class ProductImageProcessor:
                     errors.append("reference URL is not a safe public HTTP(S) URL")
                     continue
                 try:
-                    content, content_type = _download_reference_image(value)
+                    content, content_type = self._download_reference_image_cached(value)
                 except requests.RequestException as exc:
                     # 1688 来源图偶发防盗链（cbu01.alicdn.com 420）：跳过失败 URL，继续尝试后续来源图
                     errors.append(f"download failed: {_safe_error(exc)}")
@@ -719,6 +753,38 @@ class ProductImageProcessor:
             raise MediaProcessingError(f"reference image download failed{detail}")
         return references
 
+    def _download_reference_image_cached(self, url: str) -> tuple[bytes, str]:
+        """Single-flight, bounded URL-byte cache scoped to this processor instance."""
+        while True:
+            with self._reference_cache_lock:
+                cached = self._reference_cache.get(url)
+                if cached is not None:
+                    self._reference_cache.move_to_end(url)
+                    return cached
+                pending = self._reference_downloads.get(url)
+                if pending is None:
+                    pending = threading.Event()
+                    self._reference_downloads[url] = pending
+                    break
+            pending.wait()
+
+        try:
+            downloaded = _download_reference_image(url)
+        except Exception:
+            with self._reference_cache_lock:
+                self._reference_downloads.pop(url, None)
+                pending.set()
+            raise
+
+        with self._reference_cache_lock:
+            self._reference_cache[url] = downloaded
+            self._reference_cache.move_to_end(url)
+            while len(self._reference_cache) > self._reference_cache_limit:
+                self._reference_cache.popitem(last=False)
+            self._reference_downloads.pop(url, None)
+            pending.set()
+        return downloaded
+
     @staticmethod
     def _request_edit(
         provider: dict[str, str],
@@ -727,6 +793,7 @@ class ProductImageProcessor:
         *,
         timeout_seconds: float = IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS,
         image_size: str | None = None,
+        reference_model: str | None = None,
     ) -> tuple[bytes, str]:
         files: Any
         if len(references) == 1:
@@ -741,7 +808,7 @@ class ProductImageProcessor:
             f"{provider['base_url']}/images/edits",
             headers={"Authorization": f"Bearer {provider['api_key']}"},
             data={
-                "model": provider["reference_model"] or provider["model"],
+                "model": reference_model or provider["reference_model"] or provider["model"],
                 "prompt": prompt,
                 "n": "1",
                 "size": _normalized_image_size(image_size or provider.get("image_size")),

@@ -28,9 +28,11 @@ TEXT_MODEL_FALLBACK_ORDER = ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "g
 
 IMAGE_MODEL = "gpt-image-2-2k"
 REFERENCE_IMAGE_MODEL = "gpt-image-2-2k"
+REFERENCE_IMAGE_MODEL_1K = "gpt-image-2-1k"
 # 产品处理出图优先质感：默认固定使用 gpt-image-2-2k，避免 balanced 轮巡回 1k。
 IMAGE_MODEL_POOL = ("gpt-image-2-2k",)
 IMAGE_SIZE = "2048x2048"
+REFERENCE_IMAGE_SIZE_1K = "1024x1024"
 IMAGE_QUALITY = "medium"
 
 # 运行时模型通常先返回，再由调用方做结构化校验；慢模型不能被客户端过早取消。
@@ -124,6 +126,8 @@ def resolve_ai_provider() -> dict[str, Any]:
         "text_model_fallback_order": fallback,
         "image_model": image_model,
         "reference_image_model": reference_image_model,
+        "reference_image_model_1k": REFERENCE_IMAGE_MODEL_1K,
+        "reference_image_size_1k": REFERENCE_IMAGE_SIZE_1K,
         "image_models": list(IMAGE_MODEL_POOL),
         "image_size": os.environ.get("WH_AI_IMAGE_SIZE", IMAGE_SIZE).strip(),
         "image_quality": os.environ.get("WH_AI_IMAGE_QUALITY", IMAGE_QUALITY).strip(),
@@ -138,6 +142,8 @@ def resolve_ai_provider() -> dict[str, Any]:
                 "api_key": image_api_key,
                 "model": image_model,
                 "reference_model": reference_image_model,
+                "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
+                "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
             }
             if sys_cfg and sys_cfg.image_ai.configured
             else None
@@ -148,6 +154,8 @@ def resolve_ai_provider() -> dict[str, Any]:
                 "api_key": sys_cfg.backup_image_ai.api_key,
                 "model": sys_cfg.backup_image_ai.model,
                 "reference_model": sys_cfg.backup_image_ai.reference_model,
+                "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
+                "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
             }
             if sys_cfg and sys_cfg.backup_image_ai.configured
             else None
@@ -203,6 +211,8 @@ def ai_provider_summary() -> dict[str, Any]:
         "text_model_fallback_order": provider["text_model_fallback_order"],
         "image_model": provider["image_model"],
         "reference_image_model": provider["reference_image_model"],
+        "reference_image_model_1k": provider["reference_image_model_1k"],
+        "reference_image_size_1k": provider["reference_image_size_1k"],
         "image_size": provider["image_size"],
         "image_quality": provider["image_quality"],
         "enabled": bool(provider["api_key"]),

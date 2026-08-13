@@ -174,6 +174,7 @@ def test_finalize_publishes_only_retained_assets_and_replays_idempotently(tmp_pa
         {
             "product_draft_id": draft_id,
             "expected_preview_revision": preview["preview_revision"],
+            "expected_result_version": preview["result_version"],
             "overrides": {
                 "title": preview["title"],
                 "description": preview["description"],
@@ -253,6 +254,7 @@ def test_publication_and_finalize_leases_fence_late_workers(tmp_path: Path) -> N
         {
             "product_draft_id": draft_id,
             "expected_preview_revision": preview["preview_revision"],
+            "expected_result_version": preview["result_version"],
             "overrides": {
                 "title": preview["title"],
                 "description": preview["description"],
@@ -289,6 +291,120 @@ def test_publication_and_finalize_leases_fence_late_workers(tmp_path: Path) -> N
         [{"code": "expected", "message": "expected"}],
     )
     assert failed["status"] == "publish_failed"
+
+
+def test_finalize_snapshot_becomes_stale_when_task_item_result_changes(tmp_path: Path) -> None:
+    service, task, draft_id = _finished_service(tmp_path)
+    asset = service.register_preview_upload(
+        task["id"], draft_id, _jpeg("cyan"), "version.jpg", "image/jpeg", workspace_id="workspace-a"
+    )
+    preview = service.task_preview(task["id"], workspace_id="workspace-a")["items"][0]
+    items = [
+        {
+            "product_draft_id": draft_id,
+            "expected_preview_revision": preview["preview_revision"],
+            "expected_result_version": preview["result_version"],
+            "overrides": {
+                "title": preview["title"],
+                "description": preview["description"],
+                "core_fields": preview["core_fields"],
+                "image_manifest_v2": {
+                    "main_asset_id": asset["id"],
+                    "carousel_asset_ids": [asset["id"]],
+                    "detail_asset_ids": [],
+                    "semantic_asset_ids": {"carousel.hero": asset["id"]},
+                },
+            },
+        }
+    ]
+    started = service.preview_images.begin_finalize(
+        task["id"], items, workspace_id="workspace-a", idempotency_key="result-version", launch=False
+    )
+    claimed = service.preview_images.repository.claim_finalize_run(started["id"], "workspace-a")
+    current = service.repository.get_task(task["id"], "workspace-a")
+    item = current["items"][0]
+    changed_result = {**item["result"], "optimized_title": "Changed After Review"}
+    service.repository.update_item_progress(
+        task["id"],
+        item["id"],
+        status="completed",
+        result=changed_result,
+        workspace_id="workspace-a",
+    )
+
+    completed = service.preview_images.repository.mark_finalize_completed(
+        started["id"],
+        "workspace-a",
+        str(claimed["claim_token"]),
+        workbook_path=str(tmp_path / "must-not-be-used.xlsx"),
+        row_count=1,
+        product_count=1,
+        snapshot=claimed["snapshot"],
+    )
+
+    assert completed["status"] == "stale"
+    assert completed["workbook_ready"] is False
+
+
+def test_startup_requeues_interrupted_finalize_and_releases_publication_lease(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service, task, draft_id = _finished_service(tmp_path)
+    asset = service.register_preview_upload(
+        task["id"], draft_id, _jpeg("magenta"), "restart.jpg", "image/jpeg", workspace_id="workspace-a"
+    )
+    preview = service.task_preview(task["id"], workspace_id="workspace-a")["items"][0]
+    started = service.preview_images.begin_finalize(
+        task["id"],
+        [
+            {
+                "product_draft_id": draft_id,
+                "expected_preview_revision": preview["preview_revision"],
+                "expected_result_version": preview["result_version"],
+                "overrides": {
+                    "title": preview["title"],
+                    "description": preview["description"],
+                    "core_fields": preview["core_fields"],
+                    "image_manifest_v2": {
+                        "main_asset_id": asset["id"],
+                        "carousel_asset_ids": [asset["id"]],
+                        "detail_asset_ids": [],
+                        "semantic_asset_ids": {"carousel.hero": asset["id"]},
+                    },
+                },
+            }
+        ],
+        workspace_id="workspace-a",
+        idempotency_key="restart-finalize",
+        launch=False,
+    )
+    repository = service.preview_images.repository
+    repository.claim_finalize_run(started["id"], "workspace-a")
+    stored_asset = repository.get_asset(asset["id"], "workspace-a")
+    digest = str(stored_asset["content_hash"])
+    repository.claim_publication(
+        "workspace-a",
+        digest,
+        content_type=str(stored_asset["content_type"]),
+        byte_size=int(stored_asset["byte_size"]),
+    )
+    launched: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        service.preview_images,
+        "_launch",
+        lambda run_id, workspace_id: launched.append((run_id, workspace_id)) or True,
+    )
+
+    recovered = service.preview_images.recover_background_work()
+
+    run = repository.get_finalize_run(started["id"], "workspace-a")
+    publication = repository.get_publication("workspace-a", digest)
+    recovered_asset = repository.get_asset(asset["id"], "workspace-a")
+    assert recovered == {"queued": 1, "launched": 1}
+    assert launched == [(started["id"], "workspace-a")]
+    assert run["status"] == "queued" and run["claim_token"] == ""
+    assert publication["status"] == "publish_failed" and publication["claim_token"] == ""
+    assert recovered_asset["availability"] == "local"
 
 
 def test_asset_and_finalize_api_are_workspace_scoped_and_never_use_old_upload_route(tmp_path: Path) -> None:
@@ -334,6 +450,7 @@ def test_asset_and_finalize_api_are_workspace_scoped_and_never_use_old_upload_ro
             {
                 "product_draft_id": draft_id,
                 "expected_preview_revision": preview["preview_revision"],
+                "expected_result_version": preview["result_version"],
                 "overrides": {
                     "title": preview["title"],
                     "description": preview["description"],

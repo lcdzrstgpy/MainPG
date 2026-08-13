@@ -111,6 +111,7 @@ export type Task = {
 export type EngineStatus = {
   available: boolean;
   ready: boolean;
+  unavailable_reasons: string[];
   app_dir: string;
   app_file: string;
   python: string;
@@ -119,7 +120,9 @@ export type EngineStatus = {
   diagnostics: {
     config: Record<string, unknown>;
     tenant_ai_capability: Record<string, unknown>;
+    capabilities: Record<string, { enabled: boolean; ready: boolean; reason: string }>;
     dependencies: Record<string, boolean>;
+    ocr_gate: Record<string, unknown>;
     storage_root: string;
   };
 };
@@ -234,6 +237,7 @@ export type PreviewItem = {
   item_id: number;
   product_draft_id: number | null;
   preview_revision: number;
+  result_version: string;
   exportable: boolean;
   skc: string;
   status: string;

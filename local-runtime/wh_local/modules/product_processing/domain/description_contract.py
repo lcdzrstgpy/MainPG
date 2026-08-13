@@ -1,4 +1,4 @@
-"""Deterministic output contract for English Amazon-style five key points."""
+"""Best-effort normalizer for English Amazon-style selling points."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ _POINT = re.compile(
     r"^([A-Za-z][A-Za-z0-9'-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'-]*){1,4})\s*(?::|-)\s+(.+)$"
 )
 _CHINESE = re.compile(r"[\u3400-\u9fff]")
-_WORD = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9'-]*\b")
 _INTERNAL_FALLBACK = re.compile(r"source information preserved|operator review", re.IGNORECASE)
 
 
@@ -26,13 +25,11 @@ def normalize_five_point_description(value: str) -> str:
     if _CHINESE.search(raw):
         raise DescriptionContractError("description must be English only")
     lines = [line.strip() for line in raw.split("\n") if line.strip()]
-    if len(lines) != 5:
-        raise DescriptionContractError("description must contain exactly five bullet points")
+    if not lines:
+        raise DescriptionContractError("description must contain at least one usable selling point")
 
     normalized: list[str] = []
-    headings: set[str] = set()
-    bodies: set[str] = set()
-    for line in lines:
+    for index, line in enumerate(lines[:5], start=1):
         content = _BULLET_PREFIX.sub("", line, count=1).strip()
         # Models commonly emit Markdown headings, title case, or a full-width colon.
         # These are presentation-only differences, so canonicalize them locally before
@@ -43,20 +40,16 @@ def normalize_five_point_description(value: str) -> str:
         content = re.sub(r"\s+-\s*", " - ", content, count=1)
         match = _POINT.fullmatch(content)
         if match is None:
-            raise DescriptionContractError("each point must start with a 2-5 word ALL-CAPS heading")
-        heading = " ".join(match.group(1).split()).upper()
-        body = " ".join(match.group(2).split())
-        body_key = re.sub(r"[^a-z0-9]+", " ", body.lower()).strip()
-        if heading in headings or body_key in bodies:
-            raise DescriptionContractError("five selling points must be distinct")
-        headings.add(heading)
-        bodies.add(body_key)
+            heading = f"PRODUCT DETAIL {index}"
+            body = " ".join(content.split())
+        else:
+            heading = " ".join(match.group(1).split()).upper()
+            body = " ".join(match.group(2).split())
+        if not body:
+            continue
         normalized.append(f"- {heading}: {body}")
 
+    if not normalized:
+        raise DescriptionContractError("description must contain at least one usable selling point")
     result = "\n".join(normalized)
-    word_count = len(_WORD.findall(result))
-    if not 80 <= word_count <= 150:
-        raise DescriptionContractError("description must contain 80-150 English words")
-    if len(result) > 1000:
-        raise DescriptionContractError("description must not exceed 1000 characters")
     return result

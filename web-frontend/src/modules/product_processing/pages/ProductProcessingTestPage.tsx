@@ -50,7 +50,7 @@ const DEFAULT_OPTIONS: ProductProcessingOptions = {
   skipDuplicates: false,
   ipCheck: true,
   maxParallelDrafts: 8,
-  imageGenerationCount: 1,
+  imageGenerationCount: 4,
 };
 
 function getApiContext(): ApiContext {
@@ -574,9 +574,9 @@ export function ProductProcessingTestPage() {
               value={options.imageGenerationCount}
               onChange={(event) => setOptions((p) => ({ ...p, imageGenerationCount: Number(event.target.value) as 1 | 2 | 4 }))}
             >
-              <option value={1}>单图 × 4（推荐）</option>
+              <option value={1}>单图 × 4（质量优先）</option>
               <option value={2}>双图 × 2</option>
-              <option value={4}>四宫格 × 1</option>
+              <option value={4}>四宫格 × 1（批量推荐）</option>
             </select>
           </label>
         </div>

@@ -14,7 +14,12 @@ from urllib.parse import urlencode, urlsplit
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage
 
 from .domain.policy import is_safe_external_url
-from .domain.preview_images import MANIFEST_KEY, SLOT_INDEX, PreviewImageManifest
+from .domain.preview_images import (
+    MANIFEST_KEY,
+    SLOT_INDEX,
+    PreviewImageManifest,
+    task_item_result_version,
+)
 from .domain.workbooks import (
     _dxm_export_rows,
     create_result_workbook,
@@ -55,6 +60,8 @@ class PreviewImageService:
             public_image_fetcher = fetch_public_image
         self.public_image_fetcher = public_image_fetcher
         self.max_publish_workers = int(max_publish_workers)
+        self._finalize_worker_lock = threading.Lock()
+        self._finalize_workers: dict[tuple[str, str], threading.Thread] = {}
 
     def require_task_draft(self, task_id: int, product_draft_id: int, workspace_id: str) -> None:
         task = self.product_repository.get_task(int(task_id), str(workspace_id))
@@ -404,14 +411,39 @@ class PreviewImageService:
             self._launch(run_id, workspace_id)
         return self._public_run(run)
 
-    def _launch(self, run_id: str, workspace_id: str) -> None:
-        thread = threading.Thread(
-            target=self.run_finalize,
-            kwargs={"run_id": run_id, "workspace_id": workspace_id},
-            name=f"pp-preview-finalize-{run_id}",
-            daemon=True,
+    def _launch(self, run_id: str, workspace_id: str) -> bool:
+        key = (str(workspace_id), str(run_id))
+
+        def execute() -> None:
+            try:
+                self.run_finalize(run_id, workspace_id=workspace_id)
+            finally:
+                with self._finalize_worker_lock:
+                    self._finalize_workers.pop(key, None)
+
+        with self._finalize_worker_lock:
+            current = self._finalize_workers.get(key)
+            if current is not None and current.is_alive():
+                return False
+            thread = threading.Thread(
+                target=execute,
+                name=f"pp-preview-finalize-{run_id}",
+                daemon=True,
+            )
+            self._finalize_workers[key] = thread
+            thread.start()
+        return True
+
+    def recover_background_work(self) -> dict[str, int]:
+        with self._finalize_worker_lock:
+            if any(worker.is_alive() for worker in self._finalize_workers.values()):
+                return {"queued": 0, "launched": 0}
+        queued = self.repository.recover_interrupted_finalize_runs()
+        launched = sum(
+            self._launch(str(run["id"]), str(run["workspace_id"]))
+            for run in queued
         )
-        thread.start()
+        return {"queued": len(queued), "launched": launched}
 
     def run_finalize(self, run_id: str, *, workspace_id: str) -> dict[str, Any]:
         claimed = self.repository.claim_finalize_run(run_id, workspace_id)
@@ -483,7 +515,9 @@ class PreviewImageService:
                     self.repository.mark_finalize_failed(run_id, workspace_id, token, errors)
                 )
 
-            if not self._snapshot_current(snapshot, workspace_id):
+            if not self._snapshot_current(
+                int(claimed["task_id"]), snapshot, workspace_id
+            ):
                 return self._public_run(
                     self.repository.mark_finalize_stale(run_id, workspace_id, token)
                 )
@@ -500,7 +534,9 @@ class PreviewImageService:
             temporary = run_root / f".{token}.xlsx.tmp"
             final = run_root / f"dxm_import_task_{int(claimed['task_id'])}_{token}.xlsx"
             create_result_workbook(rows, temporary)
-            if not self._snapshot_current(snapshot, workspace_id):
+            if not self._snapshot_current(
+                int(claimed["task_id"]), snapshot, workspace_id
+            ):
                 temporary.unlink(missing_ok=True)
                 return self._public_run(
                     self.repository.mark_finalize_stale(run_id, workspace_id, token)
@@ -745,7 +781,20 @@ class PreviewImageService:
             rows.append(result)
         return rows
 
-    def _snapshot_current(self, snapshot: list[dict[str, Any]], workspace_id: str) -> bool:
+    def _snapshot_current(
+        self,
+        task_id: int,
+        snapshot: list[dict[str, Any]],
+        workspace_id: str,
+    ) -> bool:
+        task = self.product_repository.get_task(int(task_id), workspace_id)
+        if task is None:
+            return False
+        items_by_draft = {
+            int(item["product_draft_id"]): item
+            for item in task.get("items") or []
+            if item.get("product_draft_id") is not None
+        }
         for entry in snapshot:
             draft = self.product_repository.get_draft(
                 int(entry.get("product_draft_id") or 0),
@@ -754,6 +803,11 @@ class PreviewImageService:
             if draft is None or int(draft.get("preview_revision") or 0) != int(
                 entry.get("preview_revision") or -1
             ):
+                return False
+            item = items_by_draft.get(int(entry.get("product_draft_id") or 0))
+            if item is None or task_item_result_version(
+                item.get("result") or {}
+            ) != str(entry.get("result_version") or "").casefold():
                 return False
         return True
 

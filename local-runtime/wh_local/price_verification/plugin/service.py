@@ -27,7 +27,7 @@ from ..repository import (
 
 PAIRING_TTL = timedelta(minutes=10)
 COMMAND_LEASE = timedelta(seconds=120)
-_RESULT_STATUSES = frozenset({"running", "succeeded", "failed"})
+_RESULT_STATUSES = frozenset({"sent", "running", "succeeded", "failed"})
 
 
 class PluginAuthenticationError(PermissionError):
@@ -169,6 +169,9 @@ class PluginBridgeService:
         command_id = _required_text(command_id, "command_id")
         if status not in _RESULT_STATUSES:
             raise PriceVerificationContractError("unsupported command status")
+        # Connector v0.1.109 acknowledges receipt with ``sent`` while this
+        # repository calls the active leased state ``running``.
+        status = "running" if status == "sent" else status
         now = _as_utc(self._clock())
         now_text = _timestamp(now)
         lease_expires_at = _timestamp(now + COMMAND_LEASE)

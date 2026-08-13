@@ -127,7 +127,11 @@ async function resolveFinalizeRequest(
   const fingerprint = await hashStableValue({
     workspaceId,
     taskId,
-    desiredState: items.map(({ product_draft_id, overrides }) => ({ product_draft_id, overrides })),
+    desiredState: items.map(({ product_draft_id, expected_result_version, overrides }) => ({
+      product_draft_id,
+      expected_result_version,
+      overrides,
+    })),
   });
   const stored = readSession(storageKey);
   if (stored) {
@@ -326,6 +330,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     return {
       product_draft_id: item.product_draft_id,
       expected_preview_revision: item.preview_revision,
+      expected_result_version: item.result_version,
       overrides: {
         title: edit.title ?? item.title,
         description: edit.description ?? item.description,
@@ -340,6 +345,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     return {
       product_draft_id: item.product_draft_id,
       expected_preview_revision: item.preview_revision,
+      expected_result_version: item.result_version,
       overrides: {
         title: item.title,
         description: item.description,

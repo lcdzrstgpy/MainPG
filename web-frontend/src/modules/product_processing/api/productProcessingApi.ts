@@ -42,6 +42,7 @@ export function retryProductDraftSourceImages(draftId: number): Promise<{ sync: 
 export type PreviewSavePayload = {
   product_draft_id: number;
   expected_preview_revision: number;
+  expected_result_version: string;
   overrides: {
     title: string;
     description: string;

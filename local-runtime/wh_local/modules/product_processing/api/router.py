@@ -63,6 +63,7 @@ def create_product_processing_router(
     @asynccontextmanager
     async def lifespan(_app):
         try:
+            service.recover_background_work()
             yield
         finally:
             if owns_dimension_service:
@@ -336,9 +337,18 @@ def create_product_processing_router(
     @router.get("/tasks/history")
     def task_history(
         limit: int = Query(default=80, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+        date_from: str | None = Query(default=None),
+        date_to: str | None = Query(default=None),
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
-        return service.task_history(limit, _workspace(workspace_id))
+        return service.task_history(
+            limit,
+            _workspace(workspace_id),
+            offset=offset,
+            date_from=date_from,
+            date_to=date_to,
+        )
 
     @router.get("/tasks/{task_id}/outputs")
     def task_outputs(
@@ -531,8 +541,12 @@ def create_product_processing_router(
         body: RetryTaskRequest | None = None,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
-        _ = body
-        return _call(service.retry_attention, task_id, _workspace(workspace_id))
+        return _call(
+            service.retry_attention,
+            task_id,
+            _workspace(workspace_id),
+            draft_ids=body.draft_ids if body else None,
+        )
 
     @router.post("/tasks/{task_id}/clear")
     def clear_task(

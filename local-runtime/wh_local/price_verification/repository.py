@@ -996,6 +996,7 @@ class PriceVerificationRepository:
             raise PriceVerificationContractError("capture must be a mapping")
         chunk_id = _new_id()
         now = _now()
+        normalized_page_url = page_url.strip()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -1008,13 +1009,23 @@ class PriceVerificationRepository:
                     (workspace_id, batch_id, content_sha256),
                 ).fetchone()
                 if existing is None:
+                    # A batch is collected incrementally across pages.  A
+                    # recapture replaces only that page, in the same
+                    # transaction as the new insert, so a failed insert rolls
+                    # the old page back instead of emptying the whole batch.
+                    if normalized_page_url:
+                        connection.execute(
+                            """DELETE FROM price_verification_quote_capture_chunks
+                            WHERE workspace_id = ? AND batch_id = ? AND page_url = ?""",
+                            (workspace_id, batch_id, normalized_page_url),
+                        )
                     connection.execute(
                         """INSERT INTO price_verification_quote_capture_chunks
                         (chunk_id, workspace_id, batch_id, content_sha256, page_url, item_count,
                          capture_json, items_json, captured_at, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
-                            chunk_id, workspace_id, batch_id, content_sha256, page_url.strip(), len(snapshots),
+                            chunk_id, workspace_id, batch_id, content_sha256, normalized_page_url, len(snapshots),
                             safe_json_dumps(capture), safe_json_dumps([json.loads(value) for _, value in snapshots]),
                             captured_at, now,
                         ),

@@ -162,6 +162,7 @@ class DraftProcessRequest(BaseModel):
 
 class RetryTaskRequest(BaseModel):
     plugin_session_id: int | None = None
+    draft_ids: list[int] = Field(default_factory=list)
 
 
 class PreviewImageManifestInput(BaseModel):
@@ -181,6 +182,7 @@ class PreviewDesiredState(BaseModel):
 class PreviewSaveItem(BaseModel):
     product_draft_id: int
     expected_preview_revision: int = Field(ge=0)
+    expected_result_version: str = Field(default="", max_length=64)
     overrides: PreviewDesiredState
 
 
