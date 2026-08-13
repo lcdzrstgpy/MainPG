@@ -12,6 +12,7 @@ venv/
 # IDE
 .vscode/
 .idea/
+.worktrees/
 
 # Local runtime artifacts
 local-runtime/outputs/
