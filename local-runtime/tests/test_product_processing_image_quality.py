@@ -36,6 +36,15 @@ def _grid_bytes(size: int = 2048) -> bytes:
     return buffer.getvalue()
 
 
+def _two_grid_bytes() -> bytes:
+    image = Image.new("RGB", (2048, 1024), "white")
+    image.paste((210, 30, 30), (0, 0, 1016, 1024))
+    image.paste((30, 70, 210), (1032, 0, 2048, 1024))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def _media(content: bytes) -> GeneratedMedia:
     return GeneratedMedia(
         stage="grid_image",
@@ -75,6 +84,19 @@ def test_split_four_grid_rejects_low_resolution_source() -> None:
     processor = ProductImageProcessor(lambda: {})
     with pytest.raises(MediaProcessingError, match="cannot be split"):
         processor.split_four_grid(_media(_grid_bytes(1024)))
+
+
+def test_split_two_grid_preserves_two_landscape_panels() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    parts = processor.split_two_grid(_media(_two_grid_bytes()), start_index=3)
+
+    assert [part.stage for part in parts] == ["grid_image_3", "grid_image_4"]
+    expected = [(210, 30, 30), (30, 70, 210)]
+    for part, color in zip(parts, expected):
+        with Image.open(BytesIO(part.content)) as image:
+            assert image.size == (800, 800)
+            actual = image.convert("RGB").getpixel((400, 400))
+            assert all(abs(value - wanted) <= 4 for value, wanted in zip(actual, color))
 
 
 def test_split_four_grid_rejects_continuous_poster_without_center_dividers() -> None:

@@ -96,6 +96,10 @@ class DraftProcessRequest(BaseModel):
     processing_scope: list[str] = Field(default_factory=list)
     include_product_video: bool = False
     max_parallel_drafts: int = Field(default=1, ge=1, le=20, description="最大并行处理数，1=串行，上限20")
+    image_generation_count: int = Field(
+        default=4,
+        description="单次生图承载的独立图片数：1=单图×4，2=双图×2，4=四宫格×1",
+    )
 
     @field_validator("draft_ids")
     @classmethod
@@ -113,6 +117,13 @@ class DraftProcessRequest(BaseModel):
         if invalid:
             raise ValueError(f"processing_scope 包含非法值: {sorted(invalid)}")
         return list(dict.fromkeys(value))
+
+    @field_validator("image_generation_count")
+    @classmethod
+    def valid_image_generation_count(cls, value: int) -> int:
+        if value not in {1, 2, 4}:
+            raise ValueError("image_generation_count 必须是 1、2 或 4")
+        return value
 
     @model_validator(mode="after")
     def sync_scope_and_legacy_options(self) -> "DraftProcessRequest":

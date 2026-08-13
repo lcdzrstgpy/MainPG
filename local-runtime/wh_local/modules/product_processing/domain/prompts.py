@@ -23,6 +23,63 @@ GRID_RUNTIME_CONTRACT = """NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT:
 - Keep Panel 4 clean for later deterministic dimension annotation."""
 
 
+SINGLE_IMAGE_RUNTIME_CONTRACT = """NON-OVERRIDABLE SINGLE-IMAGE RUNTIME CONTRACT:
+- This request produces exactly ONE standalone 2048 x 2048 marketplace image, not a grid, collage, contact sheet, or multi-panel layout. This runtime layout overrides any earlier four-grid wording.
+- Image role for this request: {panel_role}. Make it a complete finished carousel image with the whole sellable product or verified complete set visible, sharp, unobstructed, and comfortably inside an 8%-12% safe margin.
+- Generate zero added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, or measurement marks. Preserve only markings physically printed on the real product.
+- Do not crop product parts, merge products, invent accessories, or use a continuous poster composition. The result must remain useful by itself after local normalization."""
+
+
+TWO_IMAGE_RUNTIME_CONTRACT = """NON-OVERRIDABLE TWO-IMAGE RUNTIME CONTRACT:
+- This request produces ONE 2048 x 1024 landscape transport image containing exactly TWO equal, independent square marketplace images, placed left and right. This runtime layout overrides any earlier four-grid wording.
+- Put a narrow neutral separator exactly at the 50% vertical center. Keep it clean and straight, but do not add any horizontal divider, outer frame, labels, panel numbers, or other layout graphics.
+- Left image role: {left_panel_role}. Right image role: {right_panel_role}. Each side must show a complete finished product composition, with all sellable product parts within an 8%-12% safe margin. Nothing may cross the center separator.
+- Generate zero added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, or measurement marks. Preserve only markings physically printed on the real product.
+- The two sides will be split locally. Do not make one continuous poster, shared background, shared prop, or shared shadow across both sides."""
+
+
+IMAGE_SET_PROMPT = """You are a senior e-commerce product visual designer. Treat the uploaded reference image(s) as the only source of truth for the sellable SKU.
+
+Create one premium standalone marketplace image for the supplied product. Preserve the exact product identity, silhouette, proportions, color, material, structure, texture, pattern, visible count, and printed product details. You may improve camera angle, composition, lighting, background, and scene, but never add, remove, recolor, reshape, merge, or invent the product or its accessories.
+
+Visual direction:
+- Make the product large, complete, sharp, and immediately recognizable with 8%-12% breathing room around it.
+- Use category-appropriate premium commercial photography: rich but believable materials, natural highlight control, clean contact shadows, realistic perspective, and a differentiated background that supports rather than competes with the SKU.
+- Use only source-supported use scenes and props. Do not make the product tiny, cropped, obscured, blurry, plastic-looking, or misleadingly retouched.
+- Render no added text, logo, watermark, badge, arrow, ruler, measurement, price, label, slogan, or UI. Preserve only real printing physically visible on the product.
+
+Image-derived product understanding: {product_visual_identity}
+Product title: {title}
+Product category: {category_path}
+Verified value evidence: {value_evidence}
+Verified material evidence: {verified_material_evidence}
+Scene plan: {scene_plan}
+Color and background direction: {visual_style} / {background_plan}
+
+Return only the image."""
+
+
+IMAGE_SET_PROMPT_B = """You are a senior editorial e-commerce art director. Treat the uploaded reference image(s) as the only source of truth for the sellable SKU.
+
+Create one premium standalone marketplace image with a distinctive character-and-space story. Preserve the exact product identity, silhouette, proportions, color, material, structure, texture, pattern, visible count, and printed product details. You may change photography, scene, lighting, props, and composition, but never add, remove, recolor, reshape, merge, or invent the product or its accessories.
+
+Visual direction:
+- Build one believable editorial scene rather than a generic plain studio. The product stays complete, sharp, and the visual focal point with 8%-12% breathing room.
+- Use refined but source-compatible styling, realistic material highlights, natural perspective, controlled shadows, and a high-end scene that makes reverse-image comparison less direct without disguising the SKU.
+- Any model, hand, room, or prop supports the product story and never blocks, crops, or changes the product. Do not invent packaging, storage cases, accessories, or claims.
+- Render no added text, logo, watermark, badge, arrow, ruler, measurement, price, label, slogan, or UI. Preserve only real printing physically visible on the product.
+
+Image-derived product understanding: {product_visual_identity}
+Product title: {title}
+Product category: {category_path}
+Verified value evidence: {value_evidence}
+Verified material evidence: {verified_material_evidence}
+Scene plan: {scene_plan}
+Color and background direction: {visual_style} / {background_plan}
+
+Return only the image."""
+
+
 TITLE_PROMPT = """You are a TEMU US-station operator with 10 years of experience. Based on the product image I provide, generate ONE English title suitable for Temu US listings.
 
 CORE MISSION (fixed):
@@ -445,6 +502,8 @@ DEFAULT_PROMPTS: dict[str, str] = {
     "size": SIZE_PROMPT,
     "grid_image": GRID_IMAGE_PROMPT,
     "grid_image_b": GRID_IMAGE_PROMPT_B,
+    "image_set": IMAGE_SET_PROMPT,
+    "image_set_b": IMAGE_SET_PROMPT_B,
     "detail_image": DETAIL_IMAGE_PROMPT,
     "image_repair_chinese": IMAGE_REPAIR_CHINESE_PROMPT,
     "image_repair_grid": GRID_IMAGE_REPAIR_PROMPT,

@@ -34,7 +34,13 @@ from .domain.image_slots import DEFAULT_SLOT_IDS, apply_slot_overrides
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
 from .domain.physical_dimensions import extract_physical_dimensions
 from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_issue, strict_external_url_issue
-from .domain.prompts import DESCRIPTION_REPAIR_PROMPT, GRID_RUNTIME_CONTRACT, format_prompt
+from .domain.prompts import (
+    DESCRIPTION_REPAIR_PROMPT,
+    GRID_RUNTIME_CONTRACT,
+    SINGLE_IMAGE_RUNTIME_CONTRACT,
+    TWO_IMAGE_RUNTIME_CONTRACT,
+    format_prompt,
+)
 from .domain.visual_planner import listing_prompt_context
 from .domain.workbooks import read_product_workbook
 from .infrastructure.assets import ProductProcessingAssets
@@ -200,6 +206,15 @@ def _as_bool(value: Any, *, default: bool = False) -> bool:
     if value in (None, ""):
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _image_generation_count(value: Any, *, default: int = 4) -> int:
+    """Return the supported image count per provider call without breaking legacy jobs."""
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return default
+    return normalized if normalized in {1, 2, 4} else default
 
 
 class ProductProcessingService:
@@ -930,6 +945,8 @@ class ProductProcessingService:
         s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
         # 生图提示词模板：A=标准商品海报（现有），B=高端模特视觉（防比价）。
         s["image_template"] = "B" if str(s.get("image_template") or "A").strip().upper() == "B" else "A"
+        # 兼容未传该字段的历史 API 调用：继续走原有四宫格一次调用。
+        s["image_generation_count"] = _image_generation_count(s.get("image_generation_count"), default=4)
         return s
 
     def process_drafts(
@@ -2057,9 +2074,9 @@ class ProductProcessingService:
         grid_summary_path = ""
         grid_carousel_media: list[Any] = []
         detail_image_paths: list[str] = []
-        # 图片编排（对齐原项目 five-stage：media_sku_local 一次出图 + 详情图本地合成 0 AI）：
-        # 先出四宫格（1 次图像调用 + OCR 重绘≤1 轮），再拿四宫格分图本地拼详情图；
-        # 四宫格不可用或本地合成含中文时才回退 AI 详情图生成。
+        image_generation_count = _image_generation_count(settings.get("image_generation_count"), default=4)
+        # 图片编排：按用户选定的 1 / 2 / 4 次调用，始终凑齐四张轮播图；
+        # 详情图优先由轮播图本地合成，只有本地合成不可用时才回退 AI 详情图生成。
         if need_grid:
             stage_started = time.perf_counter()
             grid_output = self._generate_grid_images(
@@ -2074,6 +2091,7 @@ class ProductProcessingService:
                 ai_notes,
                 vision_subject,
                 image_template=str(settings.get("image_template") or "A"),
+                image_generation_count=image_generation_count,
                 workspace_id=workspace_id,
             )
             record_stage("grid_pipeline", stage_started)
@@ -2083,13 +2101,14 @@ class ProductProcessingService:
             provider_status_classes["four_grid"] = grid_output.provider_status_class
             stage_timings_ms.update(grid_output.stage_timings_ms)
             if not grid_image_paths:
+                image_note_key = "four_grid" if image_generation_count == 4 else "image_set"
                 reason = next(
                     (
                         note.split(":ai-failed: ", 1)[-1]
                         for note in reversed(ai_notes)
-                        if note.startswith("four_grid:ai-failed:")
+                        if note.startswith(f"{image_note_key}:ai-failed:")
                     ),
-                    "生成图未通过四宫格质量门",
+                    "生成图未凑齐四张可用轮播图",
                 )
                 return {
                     **item,
@@ -2098,9 +2117,13 @@ class ProductProcessingService:
                     "status": "attention_required",
                     "reason": reason,
                     "result": {
-                        "error_type": "four_grid_quality_failed",
+                        "error_type": "four_grid_quality_failed" if image_generation_count == 4 else "image_set_generation_failed",
                         "failure_class": "technical_retryable",
-                        "operator_hint": "生成图含跨区内容、显著 AI 文字或分辨率不合格，已阻止写入店小秘；请重试图片阶段",
+                        "operator_hint": (
+                            "四宫格含跨区内容、显著 AI 文字或分辨率不合格，已阻止写入店小秘；请切换为单图×4或重试图片阶段"
+                            if image_generation_count == 4
+                            else "单图/双图模式未生成完整四张轮播图；系统已只补失败槽位，请重试图片阶段"
+                        ),
                         "retryable": True,
                         "ai_notes": ai_notes,
                         "provider_attempts": provider_attempts,
@@ -2139,7 +2162,7 @@ class ProductProcessingService:
                 )
                 record_stage("detail_generation", stage_started)
         if grid_image_paths:
-            ai_notes.append("four_grid:ai")
+            ai_notes.append(f"image_set:{image_generation_count}:ai")
         if detail_image_paths:
             ai_notes.append("detail_images:ai")
 
@@ -2168,6 +2191,7 @@ class ProductProcessingService:
             "source_url": source_url,
             "source_platform": raw.get("source_platform") or raw.get("platform") or "",
             "source_image_urls": source_image_urls,
+            "image_generation_count": image_generation_count,
             "source_detail_image_urls": source_detail_image_urls,
             "source_attributes": raw.get("source_attributes") or [],
             "source_variant_records": raw.get("source_variant_records") or [],
@@ -2546,21 +2570,32 @@ class ProductProcessingService:
         ai_notes: list[str] | None = None,
         vision_subject: str = "",
         image_template: str = "A",
+        image_generation_count: int = 4,
         workspace_id: str = "local",
     ) -> GridImageOutput:
-        """按原型逻辑生成 2x2 四宫格并本地拆分为 4 张轮播图 + 1 张汇总图。"""
+        """Generate four carousel images with a selectable 1/2/4-image transport layout."""
         if not _ai_enabled() or not reference_urls:
             return GridImageOutput()
         media_types = _media_types()
         if not media_types:
             return GridImageOutput()
         processor_cls, media_config_error, media_error = media_types
+        image_generation_count = _image_generation_count(image_generation_count, default=4)
+        note_key = "four_grid" if image_generation_count == 4 else "image_set"
         attempt_count = 0
-        provider_status_class = ""
+        provider_status_class = "success"
         grid_timings_ms: dict[str, int] = {}
+        parts: list[Any] = []
+        failed_slots: list[tuple[int, str]] = []
+        slot_recovery_used = False
         try:
             processor = self._media_processor()
-            prompt_key = "grid_image_b" if str(image_template).strip().upper() == "B" else "grid_image"
+            is_b_template = str(image_template).strip().upper() == "B"
+            prompt_key = (
+                ("grid_image_b" if is_b_template else "grid_image")
+                if image_generation_count == 4
+                else ("image_set_b" if is_b_template else "image_set")
+            )
             template = self._effective_prompt(prompt_key)
             contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)
             context = listing_prompt_context(raw, title=optimized_title, category=category)
@@ -2569,57 +2604,174 @@ class ProductProcessingService:
             prompt = format_prompt(contracted, title=optimized_title, **context)
             reference = select_image_reference(raw, title=optimized_title, category=category)
             prompt = append_content_reference(prompt, reference, kind="image")
-            # 用户自定义提示词和参考库可以改变风格，但不能覆盖拆图/无 AI 文字运行合同。
-            prompt = f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}"
             self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
-            is_b_template = str(image_template).strip().upper() == "B"
+
+            panel_roles = (
+                "Hero product image",
+                "Alternate complete product angle with one real visible detail",
+                "Credible lifestyle product image",
+                "Clean dimension annotation background",
+            )
+
+            def single_prompt(role: str) -> str:
+                return f"{prompt.rstrip()}\n\n{format_prompt(SINGLE_IMAGE_RUNTIME_CONTRACT, panel_role=role)}"
+
+            def two_image_prompt(left_role: str, right_role: str) -> str:
+                return f"{prompt.rstrip()}\n\n{format_prompt(TWO_IMAGE_RUNTIME_CONTRACT, left_panel_role=left_role, right_panel_role=right_role)}"
+
+            def generate_one(
+                image_prompt: str,
+                *,
+                image_size: str | None = None,
+                layout_scaffold: bool = False,
+            ) -> Any:
+                kwargs: dict[str, Any] = {
+                    "stage": "grid_image",
+                    "prompt": image_prompt,
+                    "reference_values": reference_urls,
+                }
+                if image_size:
+                    kwargs["image_size"] = image_size
+                if layout_scaffold:
+                    kwargs["layout_scaffold"] = True
+                return processor.generate(**kwargs)
+
+            def record_media(media: Any) -> None:
+                nonlocal attempt_count, provider_status_class
+                attempt_count += max(1, int(getattr(media, "attempt_count", 1) or 1))
+                status_class = str(getattr(media, "provider_status_class", "success") or "success")
+                if status_class != "success":
+                    provider_status_class = status_class
+
             generation_started = time.perf_counter()
-            try:
-                if is_b_template:
-                    media = processor.generate(
-                        stage="grid_image",
-                        prompt=prompt,
-                        reference_values=reference_urls,
-                        layout_scaffold=True,
+            if image_generation_count == 4:
+                # The legacy one-call transport grid keeps its stronger divider/OCR gate.
+                media = generate_one(
+                    f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}",
+                    layout_scaffold=is_b_template,
+                )
+                record_media(media)
+                validation_started = time.perf_counter()
+                try:
+                    media = self._repair_until_clean(
+                        processor,
+                        "grid_image",
+                        "four_grid",
+                        media,
+                        reference_urls,
+                        ai_notes,
+                        allow_paid_repair=not is_b_template,
                     )
+                    parts = processor.split_four_grid(media)
+                finally:
+                    grid_timings_ms["grid_validation_ms"] = max(
+                        0,
+                        round((time.perf_counter() - validation_started) * 1000),
+                    )
+            else:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                validation_started = time.perf_counter()
+                if image_generation_count == 2:
+                    primary_jobs = (
+                        (1, panel_roles[0], panel_roles[1]),
+                        (3, panel_roles[2], panel_roles[3]),
+                    )
+
+                    def generate_pair(start_index: int, left_role: str, right_role: str) -> tuple[Any, list[Any]]:
+                        media = generate_one(
+                            two_image_prompt(left_role, right_role),
+                            image_size="2048x1024",
+                        )
+                        return media, processor.split_two_grid(media, start_index=start_index)
+
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        futures = {
+                            executor.submit(generate_pair, start, left, right): (start, left, right)
+                            for start, left, right in primary_jobs
+                        }
+                        for future in as_completed(futures):
+                            start, left, right = futures[future]
+                            try:
+                                media, generated_parts = future.result()
+                                record_media(media)
+                                parts.extend(generated_parts)
+                            except (media_config_error, media_error, ValueError, OSError) as exc:
+                                attempt_count += max(0, int(getattr(exc, "attempt_count", 0) or 0))
+                                failed_slots.extend(((start, left), (start + 1, right)))
+                                self._note_ai_failure(ai_notes, note_key, _ai_error_reason(exc))
                 else:
-                    media = processor.generate(stage="grid_image", prompt=prompt, reference_values=reference_urls)
-            finally:
-                grid_timings_ms["grid_generation_ms"] = max(
-                    0,
-                    round((time.perf_counter() - generation_started) * 1000),
-                )
-            attempt_count = max(0, int(getattr(media, "attempt_count", 1) or 1))
-            provider_status_class = str(getattr(media, "provider_status_class", "success") or "success")
-            # OCR 质量门：四宫格禁止模型写字；显著中英文排版都会触发一次定向修复。
-            validation_started = time.perf_counter()
-            try:
-                media = self._repair_until_clean(
-                    processor,
-                    "grid_image",
-                    "four_grid",
-                    media,
-                    reference_urls,
-                    ai_notes,
-                    allow_paid_repair=not is_b_template,
-                )
-                parts = processor.split_four_grid(media)
-            finally:
+                    def generate_standalone(slot: int, role: str) -> tuple[Any, Any]:
+                        media = generate_one(single_prompt(role))
+                        return media, processor.normalize_standalone_image(media, stage=f"grid_image_{slot}")
+
+                    with ThreadPoolExecutor(max_workers=4) as executor:
+                        futures = {
+                            executor.submit(generate_standalone, slot, role): (slot, role)
+                            for slot, role in enumerate(panel_roles, start=1)
+                        }
+                        for future in as_completed(futures):
+                            slot, role = futures[future]
+                            try:
+                                media, generated_part = future.result()
+                                record_media(media)
+                                parts.append(generated_part)
+                            except (media_config_error, media_error, ValueError, OSError) as exc:
+                                attempt_count += max(0, int(getattr(exc, "attempt_count", 0) or 0))
+                                failed_slots.append((slot, role))
+                                self._note_ai_failure(ai_notes, note_key, _ai_error_reason(exc))
+
+                # A bad two-panel canvas, or one failed single call, only regenerates its
+                # own carousel slot. This keeps the fast path parallel without discarding
+                # the usable images that have already completed.
+                if failed_slots:
+                    slot_recovery_used = True
+                    def regenerate_slot(slot: int, role: str) -> tuple[Any, Any]:
+                        media = generate_one(single_prompt(role))
+                        return media, processor.normalize_standalone_image(media, stage=f"grid_image_{slot}")
+
+                    retry_failures: list[tuple[int, str]] = []
+                    with ThreadPoolExecutor(max_workers=min(4, len(failed_slots))) as executor:
+                        futures = {
+                            executor.submit(regenerate_slot, slot, role): (slot, role)
+                            for slot, role in failed_slots
+                        }
+                        for future in as_completed(futures):
+                            slot, role = futures[future]
+                            try:
+                                media, generated_part = future.result()
+                                record_media(media)
+                                parts.append(generated_part)
+                            except (media_config_error, media_error, ValueError, OSError) as exc:
+                                attempt_count += max(0, int(getattr(exc, "attempt_count", 0) or 0))
+                                retry_failures.append((slot, role))
+                                self._note_ai_failure(ai_notes, note_key, _ai_error_reason(exc))
+                    failed_slots = retry_failures
+
                 grid_timings_ms["grid_validation_ms"] = max(
                     0,
                     round((time.perf_counter() - validation_started) * 1000),
                 )
+                if failed_slots or len(parts) != 4:
+                    raise ValueError("image set did not produce four usable carousel images")
+            grid_timings_ms["grid_generation_ms"] = max(
+                0,
+                round((time.perf_counter() - generation_started) * 1000),
+            )
         except (media_config_error, media_error, ValueError, OSError) as exc:
             attempt_count = max(attempt_count, int(getattr(exc, "attempt_count", 0) or 0))
-            provider_status_class = str(
-                getattr(exc, "status_class", "") or provider_status_class or "failed"
-            )
-            self._note_ai_failure(ai_notes, "four_grid", _ai_error_reason(exc))
+            provider_status_class = str(getattr(exc, "status_class", "") or "failed")
+            self._note_ai_failure(ai_notes, note_key, _ai_error_reason(exc))
             return GridImageOutput(
                 attempt_count=attempt_count,
                 provider_status_class=provider_status_class,
                 stage_timings_ms=grid_timings_ms,
             )
+        if image_generation_count != 4 and slot_recovery_used:
+            provider_status_class = "recovered_slot_retry"
+        parts.sort(
+            key=lambda value: int(match.group(1)) if (match := re.fullmatch(r"grid_image_(\d+)", str(getattr(value, "stage", "")))) else 99
+        )
         carousel: list[str] = []
         carousel_media: list[Any] = []
         summary_path = ""

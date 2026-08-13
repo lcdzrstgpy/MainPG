@@ -30,6 +30,12 @@ const IMAGE_TEMPLATES: { id: 'A' | 'B'; name: string; description: string }[] = 
   { id: 'B', name: '高端模特视觉（防比价）', description: '人设+空间故事叙事、杂志编辑大片感，材质显贵、难以搜图比价，画面无文字' },
 ];
 
+const IMAGE_GENERATION_OPTIONS: { count: 1 | 2 | 4; name: string; description: string }[] = [
+  { count: 1, name: '单图 × 4（推荐）', description: '4 次并发生图，不拆分，成图最稳' },
+  { count: 2, name: '双图 × 2', description: '2 次并发生图，每次拆成两张，速度与稳定性平衡' },
+  { count: 4, name: '四宫格 × 1', description: '仅 1 次调用后拆四张，最省调用但更依赖分格效果' },
+];
+
 const FAILURE_CLASS_LABELS: Record<string, string> = {
   technical_retryable: '技术失败可重试',
   configuration_blocked: '配置阻断',
@@ -98,6 +104,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
       ipCheck: true,
       maxParallelDrafts: 8,
       imageTemplate: 'A',
+      imageGenerationCount: 1,
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
@@ -199,6 +206,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
           ip_check: options.ipCheck,
           max_parallel_drafts: options.maxParallelDrafts,
           image_template: options.imageTemplate || 'A',
+          image_generation_count: options.imageGenerationCount ?? 1,
         },
       });
       setBatch(data);
@@ -241,6 +249,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
           ip_check: options.ipCheck,
           max_parallel_drafts: options.maxParallelDrafts,
           image_template: options.imageTemplate || 'A',
+          image_generation_count: options.imageGenerationCount ?? 1,
         },
       });
       setBatch(data);
@@ -337,6 +346,21 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
                   />
                   <span className="verify-template-name">{template.name}</span>
                   <span className="verify-template-desc">{template.description}</span>
+                </label>
+              ))}
+            </div>
+            <div className="verify-form-row">
+              <span className="verify-scope-label">单次生图：</span>
+              {IMAGE_GENERATION_OPTIONS.map((option) => (
+                <label key={option.count} className="verify-template-card" title={option.description}>
+                  <input
+                    type="radio"
+                    name="image-generation-count"
+                    checked={(options.imageGenerationCount ?? 1) === option.count}
+                    onChange={() => setOptions((p) => ({ ...p, imageGenerationCount: option.count }))}
+                  />
+                  <span className="verify-template-name">{option.name}</span>
+                  <span className="verify-template-desc">{option.description}</span>
                 </label>
               ))}
             </div>

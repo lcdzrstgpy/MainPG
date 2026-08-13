@@ -129,6 +129,7 @@ class ProductImageProcessor:
         prompt: str,
         reference_values: Iterable[str],
         layout_scaffold: bool = False,
+        image_size: str | None = None,
     ) -> GeneratedMedia:
         config = self._config()
         providers = self._providers(config)
@@ -142,6 +143,7 @@ class ProductImageProcessor:
                 providers,
                 config,
                 layout_scaffold=layout_scaffold,
+                image_size=image_size,
             )
 
     def _generate_with_limits(
@@ -153,6 +155,7 @@ class ProductImageProcessor:
         config: dict[str, Any],
         extra_references: list[tuple[bytes, str, str]] | None = None,
         layout_scaffold: bool = False,
+        image_size: str | None = None,
     ) -> GeneratedMedia:
         default_limit = 1 if stage == "grid_image" else 2
         reference_limit = max(
@@ -190,6 +193,7 @@ class ProductImageProcessor:
                         prompt,
                         references,
                         timeout_seconds=request_timeout,
+                        image_size=image_size,
                     )
                     suffix = _suffix_for_content_type(content_type)
                     return GeneratedMedia(
@@ -307,6 +311,80 @@ class ProductImageProcessor:
             )
         )
         return result
+
+    def split_two_grid(self, media: GeneratedMedia, *, start_index: int = 1) -> list[GeneratedMedia]:
+        """Split one landscape two-panel transport image into two marketplace squares.
+
+        Unlike the legacy four-grid path, this deliberately uses a light structural
+        contract: a compliant landscape canvas and a deterministic center cut. The
+        two-image mode exists to improve output yield, so it must not inherit the
+        stricter four-grid OCR and divider gates.
+        """
+        try:
+            from PIL import Image  # type: ignore
+
+            source = Image.open(BytesIO(media.content)).convert("RGB")
+            width, height = source.size
+            center = width // 2
+            aspect_ratio = width / max(height, 1)
+            if (
+                height < DXM_IMAGE_TARGET_SIZE
+                or center < DXM_IMAGE_TARGET_SIZE
+                or not 1.8 <= aspect_ratio <= 2.2
+            ):
+                raise ValueError("two-image source must be a landscape canvas with two usable square halves")
+            panels = (
+                source.crop((0, 0, center, height)),
+                source.crop((center, 0, width, height)),
+            )
+            result: list[GeneratedMedia] = []
+            for offset, panel in enumerate(panels):
+                square = _center_crop_to_square(panel)
+                resized = square.resize((DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE), Image.Resampling.LANCZOS)
+                result.append(
+                    GeneratedMedia(
+                        stage=f"grid_image_{start_index + offset}",
+                        content=_image_to_jpeg_bytes(resized),
+                        content_type="image/jpeg",
+                        suffix=".jpg",
+                        provider="local-split",
+                        model="pillow",
+                        reference_count=media.reference_count,
+                        attempt_count=media.attempt_count,
+                        provider_status_class=media.provider_status_class,
+                    )
+                )
+            return result
+        except MediaConfigurationError:
+            raise
+        except Exception as exc:
+            raise MediaProcessingError("generated two-image layout cannot be split") from exc
+
+    def normalize_standalone_image(self, media: GeneratedMedia, *, stage: str) -> GeneratedMedia:
+        """Normalize one independently generated product image for carousel use."""
+        try:
+            from PIL import Image  # type: ignore
+
+            source = Image.open(BytesIO(media.content)).convert("RGB")
+            if min(source.size) < DXM_IMAGE_TARGET_SIZE:
+                raise ValueError("standalone source is too small for marketplace output")
+            square = _center_crop_to_square(source)
+            resized = square.resize((DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE), Image.Resampling.LANCZOS)
+            return GeneratedMedia(
+                stage=stage,
+                content=_image_to_jpeg_bytes(resized),
+                content_type="image/jpeg",
+                suffix=".jpg",
+                provider="local-normalize",
+                model="pillow",
+                reference_count=media.reference_count,
+                attempt_count=media.attempt_count,
+                provider_status_class=media.provider_status_class,
+            )
+        except MediaConfigurationError:
+            raise
+        except Exception as exc:
+            raise MediaProcessingError("generated standalone image cannot be normalized") from exc
 
     @staticmethod
     def validate_four_grid(media: GeneratedMedia) -> None:
@@ -648,6 +726,7 @@ class ProductImageProcessor:
         references: list[tuple[bytes, str, str]],
         *,
         timeout_seconds: float = IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS,
+        image_size: str | None = None,
     ) -> tuple[bytes, str]:
         files: Any
         if len(references) == 1:
@@ -665,7 +744,7 @@ class ProductImageProcessor:
                 "model": provider["reference_model"] or provider["model"],
                 "prompt": prompt,
                 "n": "1",
-                "size": _normalized_image_size(provider.get("image_size")),
+                "size": _normalized_image_size(image_size or provider.get("image_size")),
             },
             files=files,
             timeout=max(1.0, min(float(timeout_seconds), IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS)),
@@ -725,7 +804,7 @@ def _retry_class(error: BaseException) -> str:
 def _normalized_image_size(value: Any) -> str:
     """Return a provider-safe square image size; product grids default to 2K for readable split panels."""
     normalized = str(value or "").strip().lower()
-    if normalized in {"1024x1024", "2048x2048", "4096x4096"}:
+    if normalized in {"1024x1024", "2048x2048", "4096x4096", "2048x1024", "1024x2048"}:
         return normalized
     return "2048x2048"
 

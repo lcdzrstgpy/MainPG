@@ -50,6 +50,7 @@ const DEFAULT_OPTIONS: ProductProcessingOptions = {
   skipDuplicates: false,
   ipCheck: true,
   maxParallelDrafts: 8,
+  imageGenerationCount: 1,
 };
 
 function getApiContext(): ApiContext {
@@ -343,6 +344,7 @@ export function ProductProcessingTestPage() {
     formData.append('processing_scope', options.processingScope.join(','));
     formData.append('qualification_mode', options.qualificationMode);
     formData.append('include_product_video', String(options.includeProductVideo));
+    formData.append('image_generation_count', String(options.imageGenerationCount));
     try {
       const data = await ppUpload<TaskOutputsResponse>(api, `${API_BASE}/import`, formData);
       setCurrentTask(data);
@@ -378,6 +380,7 @@ export function ProductProcessingTestPage() {
         include_product_video: options.includeProductVideo,
         skip_duplicates: options.skipDuplicates,
         ip_check: options.ipCheck,
+        image_generation_count: options.imageGenerationCount,
       };
       const data = await ppRequest<TaskOutputsResponse>(api, `${API_BASE}/drafts/process`, {
         body,
@@ -563,6 +566,17 @@ export function ProductProcessingTestPage() {
             >
               <option value="standard">标准</option>
               <option value="strict">严格</option>
+            </select>
+          </label>
+          <label>
+            单次生图
+            <select
+              value={options.imageGenerationCount}
+              onChange={(event) => setOptions((p) => ({ ...p, imageGenerationCount: Number(event.target.value) as 1 | 2 | 4 }))}
+            >
+              <option value={1}>单图 × 4（推荐）</option>
+              <option value={2}>双图 × 2</option>
+              <option value={4}>四宫格 × 1</option>
             </select>
           </label>
         </div>
