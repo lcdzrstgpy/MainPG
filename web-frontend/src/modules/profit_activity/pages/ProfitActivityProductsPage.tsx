@@ -24,6 +24,14 @@ const editFieldLabels: Record<"selling_price" | "cost_price" | "weight_kg" | "no
 };
 
 const productKey = (item: ProfitActivityProduct) => `${item.site || item.site_code || "US"}-${item.skc}`;
+const productIdText = (item: ProfitActivityProduct) => item.product_id ?? item.skc;
+const productCreatedTime = (item: ProfitActivityProduct) => {
+  const value = Date.parse(item.created_at || item.updated_at || "");
+  return Number.isFinite(value) ? value : 0;
+};
+const sortProductsByCreatedDesc = (items: ProfitActivityProduct[]) => [...items].sort((left, right) => (
+  productCreatedTime(right) - productCreatedTime(left) || (right.id ?? 0) - (left.id ?? 0)
+));
 
 // 产品库跨挂载缓存：切换页面再返回时立即展示上次数据，避免每次空表 + 重新等待查询
 type LibraryPageSize = (typeof pageSizeOptions)[number];
@@ -112,10 +120,12 @@ export function ProfitActivityProductsPage() {
       }
     });
     if (failures.length) setMessage(`部分站点查询失败：${failures.join("；")}`);
-    if (sourceFilter === "all") return results;
-    return results.filter((item) => sourceFilter === "price_verification"
-      ? item.source_type === "price_verification"
-      : item.source_type !== "price_verification");
+    const filtered = sourceFilter === "all"
+      ? results
+      : results.filter((item) => sourceFilter === "price_verification"
+        ? item.source_type === "price_verification"
+        : item.source_type !== "price_verification");
+    return sortProductsByCreatedDesc(filtered);
   };
 
   const queryProducts = () => withBusy("查询产品", async () => {
@@ -433,6 +443,16 @@ export function ProfitActivityProductsPage() {
     setMessage(`删除完成，后端确认删除 ${deleted} 个产品。`);
   });
 
+  const copySelectedProductIds = () => withBusy("复制商品ID", async () => {
+    const ids = products
+      .filter((product) => selected.has(productKey(product)))
+      .map(productIdText)
+      .filter(Boolean);
+    if (!ids.length) return;
+    await navigator.clipboard.writeText(ids.join("\n"));
+    setMessage(`已复制 ${ids.length} 个商品ID。`);
+  });
+
   const downloadCatalog = () => withBusy("下载产品档案", async () => {
     if (!sites.size) throw new Error("请至少勾选一个站点。");
     await downloadProfitActivityCatalog({ sites: [...sites], scope });
@@ -540,7 +560,7 @@ export function ProfitActivityProductsPage() {
                   <tr key={key}>
                     <td><input type="checkbox" checked={selected.has(key)} onChange={(event) => setSelected(toggleSet(selected, key, event.target.checked))} /></td>
                     <td>{siteLabels[(item.site || item.site_code || "US") as ProfitActivitySite]}</td>
-                    <td>{item.product_id ?? item.skc}{item.source_type === "price_verification" && <em className="profit-source-badge" title="来自核价及货源板块自动入库">核价</em>}</td>
+                    <td>{productIdText(item)}{item.source_type === "price_verification" && <em className="profit-source-badge" title="来自核价及货源板块自动入库">核价</em>}</td>
                     <td><ProductImageCell item={item} onChanged={refreshProducts} /></td>
                     <td><EditableCell type="number" value={typeof item.selling_price === "number" ? String(item.selling_price) : ""} onSave={(value) => saveProductField(item, "selling_price", value)} /></td>
                     <td><EditableCell type="number" value={typeof item.cost_price === "number" ? String(item.cost_price) : ""} onSave={(value) => saveProductField(item, "cost_price", value)} /></td>
@@ -563,6 +583,7 @@ export function ProfitActivityProductsPage() {
           <div className="profit-products-pagination-summary">
             <span>共 {products.length} 条，当前第 {safePage} / {totalPages} 页</span>
             <button onClick={togglePageSelected} disabled={!pageProducts.length}>{pageSelected ? "取消本页" : "全选本页"}</button>
+            <button onClick={copySelectedProductIds} disabled={!selectedCount || !!busy}>复制已选商品ID</button>
             <button className="danger-button" onClick={deleteSelected} disabled={!selectedCount || !!busy}>删除已选 {selectedCount}</button>
             <button onClick={downloadCatalog} disabled={!!busy}>下载产品档案</button>
             <label className="profit-products-page-size">每页
