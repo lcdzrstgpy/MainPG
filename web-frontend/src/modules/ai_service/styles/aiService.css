@@ -220,3 +220,8 @@
 [data-theme] .ai-pod-job-heading span, [data-theme] .ai-pod-job-progress { color: var(--ai-text-muted); }
 [data-theme] .ai-pod-job-group { border-color: var(--ai-border); background: var(--ai-surface-soft); }
 @media (max-width: 720px) { .ai-pod-job-grid { grid-template-columns: 1fr; } }
+
+@media (min-width: 791px) {
+  .ai-history-section { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+  .ai-history-list { min-height: 0; overflow-y: auto; }
+}
