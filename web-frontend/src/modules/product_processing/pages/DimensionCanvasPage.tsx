@@ -403,15 +403,18 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
   return (
     <div className="dimension-page" ref={rootRef} tabIndex={-1}>
       <header className="dimension-commandbar">
-        <div>
+        <div className="dimension-command-copy">
           <span className="dimension-eyebrow">PRODUCT PROCESSING · DETERMINISTIC CANVAS</span>
-          <h1>尺寸画布</h1>
+          <div className="dimension-title-row">
+            <span className="dimension-title-icon iconfont icon-column-width" aria-hidden="true" />
+            <h1>尺寸画布</h1>
+          </div>
           <p>商品本体尺寸与箭头由结构化数据绘制；物流包裹尺寸不会进入画布。</p>
         </div>
         <div className="dimension-command-actions">
-          <button onClick={() => setImportOpen(true)}>导入已完成任务</button>
-          <button onClick={() => void loadBatches()}>刷新历史批次</button>
-          {batch && <button className="primary" onClick={submitReview} disabled={busy !== "" || !batch.items.some((item) => item.state === "completed")}>{busy === "review" ? "交回中…" : "交回审核"}</button>}
+          <button onClick={() => setImportOpen(true)}><i className="iconfont icon-upload" aria-hidden="true" />导入已完成任务</button>
+          <button onClick={() => void loadBatches()}><i className="iconfont icon-sync" aria-hidden="true" />刷新历史批次</button>
+          {batch && <button className="primary" onClick={submitReview} disabled={busy !== "" || !batch.items.some((item) => item.state === "completed")}><i className="iconfont icon-check-circle" aria-hidden="true" />{busy === "review" ? "交回中…" : "交回审核"}</button>}
         </div>
       </header>
 
@@ -422,10 +425,10 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
       {!batch ? (
         <div className="dimension-landing-grid">
           <section className="dimension-empty-card">
-            <span aria-hidden="true">↔</span>
+            <span className="dimension-empty-icon iconfont icon-column-width" aria-hidden="true" />
             <h2>{loading ? "正在加载尺寸画布…" : "从单商品或批量任务开始"}</h2>
             <p>在预检商品卡点击“添加尺寸图”，或导入已完成任务。页面刷新后草稿仍可继续。</p>
-            <button className="primary" onClick={() => setImportOpen(true)}>导入已完成任务</button>
+            <button className="primary" onClick={() => setImportOpen(true)}><i className="iconfont icon-upload" aria-hidden="true" />导入已完成任务</button>
           </section>
           <section className="dimension-history">
             <header><h2>历史批次</h2><span>{batches.length} 个</span></header>

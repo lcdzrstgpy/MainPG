@@ -58,6 +58,30 @@
   margin-bottom: 14px;
 }
 
+.dimension-command-copy {
+  min-width: 0;
+}
+
+.dimension-title-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-top: 4px;
+}
+
+.dimension-title-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--theme-module-border-strong);
+  border-radius: 10px;
+  background: var(--theme-module-surface-soft);
+  color: var(--theme-primary);
+  font-size: 20px;
+}
+
 .dimension-commandbar h1,
 .dimension-commandbar p,
 .dimension-modal h2,
@@ -66,7 +90,7 @@
 }
 
 .dimension-commandbar h1 {
-  margin-top: 4px;
+  margin-top: 0;
   font-size: 28px;
 }
 
@@ -92,6 +116,20 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.dimension-command-actions button,
+.dimension-empty-card > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.dimension-command-actions button .iconfont,
+.dimension-empty-card > button .iconfont {
+  font-size: 15px;
+  line-height: 1;
 }
 
 .dimension-page button,
