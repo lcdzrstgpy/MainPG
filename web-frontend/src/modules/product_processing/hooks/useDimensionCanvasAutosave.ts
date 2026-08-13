@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getDimensionItem } from "../api/dimensionCanvasApi";
-import { PpRequestError } from "../api/client";
+import {
+  adoptSafeServerRevision,
+  autosaveBaselineFromItem,
+  DimensionCanvasAutosaveConflict,
+  persistentEditorSignature,
+  saveWithOneSafeRevisionRebase,
+  type DimensionCanvasAutosaveBaseline,
+} from "../data/dimensionCanvasAutosaveModel";
 import type {
   DimensionCanvasItem,
   EditorState,
@@ -15,17 +22,6 @@ type QueuedSave = {
   editor: EditorState;
 };
 
-function persistentSignature(editor: EditorState): string {
-  return JSON.stringify({
-    selectedAssetId: editor.selectedAssetId,
-    targetSlotId: editor.targetSlotId,
-    dimensions: editor.dimensions,
-    annotations: editor.annotations,
-    displayUnit: editor.displayUnit,
-    customValueCm: editor.customValueCm,
-  });
-}
-
 export function useDimensionCanvasAutosave(
   item: DimensionCanvasItem | null,
   editor: EditorState,
@@ -36,11 +32,13 @@ export function useDimensionCanvasAutosave(
   error: string;
   conflictItem: DimensionCanvasItem | null;
   savedItem: DimensionCanvasItem | null;
+  retryable: boolean;
 } {
   const [state, setState] = useState<AutosaveState>("idle");
   const [error, setError] = useState("");
   const [conflictItem, setConflictItem] = useState<DimensionCanvasItem | null>(null);
   const [savedItem, setSavedItem] = useState<DimensionCanvasItem | null>(null);
+  const [retryable, setRetryable] = useState(false);
   const timerRef = useRef<number | null>(null);
   const itemIdRef = useRef("");
   const revisionRef = useRef(0);
@@ -50,11 +48,12 @@ export function useDimensionCanvasAutosave(
   const lastSignatureRef = useRef("");
   const blockedRef = useRef(false);
   const saveRef = useRef(save);
+  const baselineRef = useRef<DimensionCanvasAutosaveBaseline | null>(null);
 
   saveRef.current = save;
 
-  const buildRequest = (snapshot: EditorState): SaveDimensionItemRequest => ({
-    expected_revision: revisionRef.current,
+  const buildRequest = (snapshot: EditorState, expectedRevision: number): SaveDimensionItemRequest => ({
+    expected_revision: expectedRevision,
     selected_source_asset_id: snapshot.selectedAssetId,
     target_slot_id: snapshot.targetSlotId,
     physical_dimensions: snapshot.dimensions,
@@ -72,30 +71,44 @@ export function useDimensionCanvasAutosave(
     if (!queued || !itemIdRef.current || inFlightRef.current) return;
     queuedRef.current = null;
     inFlightRef.current = true;
+    const requestItemId = itemIdRef.current;
+    const requestSave = saveRef.current;
+    const baseline = baselineRef.current;
+    if (!baseline || baseline.itemId !== requestItemId) {
+      inFlightRef.current = false;
+      return;
+    }
     let failed = false;
     setState("saving");
     setError("");
+    setRetryable(false);
     try {
-      const saved = await saveRef.current(buildRequest(queued.editor));
+      const outcome = await saveWithOneSafeRevisionRebase({
+        baseline: { ...baseline, itemRevision: revisionRef.current },
+        editor: queued.editor,
+        saveAtRevision: (snapshot, expectedRevision) => requestSave(buildRequest(snapshot, expectedRevision)),
+        loadRemote: () => getDimensionItem(requestItemId),
+      });
+      if (itemIdRef.current !== requestItemId) return;
+      const saved = outcome.saved;
       revisionRef.current = saved.itemRevision;
+      baselineRef.current = outcome.baseline;
       if (queued.generation === generationRef.current) {
         setSavedItem(saved);
         setState("saved");
         setConflictItem(null);
       }
     } catch (cause) {
+      if (itemIdRef.current !== requestItemId) return;
       failed = true;
       blockedRef.current = true;
-      const message = cause instanceof Error ? cause.message : String(cause);
-      if (cause instanceof PpRequestError && cause.status === 409) {
-        try {
-          const remote = await getDimensionItem(itemIdRef.current);
-          setConflictItem(remote);
-        } catch {
-          setConflictItem(null);
-        }
+      if (cause instanceof DimensionCanvasAutosaveConflict) {
+        setConflictItem(cause.remoteItem);
+        setRetryable(false);
         setError("预检或画布版本已变化。本地编辑仍保留，请刷新对比后再保存，系统不会静默覆盖。" );
       } else {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setRetryable(true);
         setError(message || "自动保存失败，本地编辑仍保留");
       }
       setState("error");
@@ -116,25 +129,35 @@ export function useDimensionCanvasAutosave(
     }
     itemIdRef.current = item.id;
     revisionRef.current = item.itemRevision;
+    baselineRef.current = autosaveBaselineFromItem(item);
     generationRef.current = 0;
     queuedRef.current = null;
-    lastSignatureRef.current = persistentSignature(item.editor);
+    lastSignatureRef.current = persistentEditorSignature(item.editor);
     setState("idle");
     setError("");
     setConflictItem(null);
     setSavedItem(null);
+    setRetryable(false);
     blockedRef.current = false;
     if (timerRef.current != null) window.clearTimeout(timerRef.current);
   }, [item?.id]);
 
   useEffect(() => {
+    if (!item || item.id !== itemIdRef.current || !baselineRef.current) return;
+    const adopted = adoptSafeServerRevision(baselineRef.current, item);
+    if (!adopted || adopted.itemRevision <= baselineRef.current.itemRevision) return;
+    baselineRef.current = adopted;
+    revisionRef.current = Math.max(revisionRef.current, adopted.itemRevision);
+  }, [item?.editor, item?.id, item?.itemRevision, item?.sourcePreviewRevision]);
+
+  useEffect(() => {
     if (!item || item.id !== itemIdRef.current) return;
-    const signature = persistentSignature(editor);
+    const signature = persistentEditorSignature(editor);
     if (signature === lastSignatureRef.current) return;
     lastSignatureRef.current = signature;
     generationRef.current += 1;
     queuedRef.current = { generation: generationRef.current, editor };
-    blockedRef.current = false;
+    if (blockedRef.current) return;
     setState("saving");
     if (timerRef.current != null) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
@@ -151,12 +174,16 @@ export function useDimensionCanvasAutosave(
   }, []);
 
   const retry = useCallback(() => {
-    if (!item) return;
+    if (!item || !retryable) return;
+    blockedRef.current = false;
     generationRef.current += 1;
     queuedRef.current = { generation: generationRef.current, editor };
     setConflictItem(null);
+    setRetryable(false);
+    setState("saving");
+    setError("");
     void flush();
-  }, [editor, flush, item]);
+  }, [editor, flush, item, retryable]);
 
-  return { state, retry, error, conflictItem, savedItem };
+  return { state, retry, error, conflictItem, savedItem, retryable };
 }

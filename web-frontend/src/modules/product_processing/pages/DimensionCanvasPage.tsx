@@ -415,7 +415,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
         </div>
       </header>
 
-      {(error || autosave.error) && <div className="dimension-banner is-error">{error || `画布草稿保存失败：${autosave.error}`}{autosave.state === "error" && <button onClick={autosave.retry}>重试保存</button>}</div>}
+      {(error || autosave.error) && <div className="dimension-banner is-error">{error || `画布草稿保存失败：${autosave.error}`}{autosave.state === "error" && autosave.retryable && <button onClick={autosave.retry}>重试保存</button>}</div>}
       {message && <div className="dimension-banner is-success">{message}</div>}
       {autosave.conflictItem && <div className="dimension-banner is-warning">预检基线或画布版本已更新。本地编辑已保留，远端版本 #{autosave.conflictItem.itemRevision} 未覆盖当前画布。</div>}
 
