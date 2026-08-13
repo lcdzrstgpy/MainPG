@@ -155,7 +155,7 @@ export interface ProductProcessingOptions {
   maxParallelDrafts: number;
   /** 生图提示词模板：A=标准商品海报，B=高端模特视觉（防比价） */
   imageTemplate?: 'A' | 'B';
-  /** 单次 API 调用承载的独立商品图数：1=单图×4，2=双图×2，4=四宫格×1 */
+  /** 历史/API 兼容字段；新前端任务固定发送 4，不再向用户暴露。 */
   imageGenerationCount?: 1 | 2 | 4;
 }
 

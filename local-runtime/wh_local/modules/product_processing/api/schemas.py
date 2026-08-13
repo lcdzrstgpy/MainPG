@@ -74,7 +74,7 @@ class DraftProcessRequest(BaseModel):
     category_preflight_only: bool = False
     force_new_task: bool = False
     plugin_session_id: int | None = None
-    # 精品模式：勾选的草稿走「4 张独立完整单图」流程（不做四宫格裁剪），其余逻辑一致
+    # 精品模式：勾选草稿走「1 张 4K 四宫格、本地拆成 4 张高清图」流程，其余逻辑一致
     premium_draft_ids: list[int] = []
     # 强制入库：用户对失败/待确认草稿点击「我已知晓，仍要入库」后重新提交时带上。
     # 图片质量门不再阻断（回退来源图继续走完流水线），预审环节可人工修正信息。
@@ -103,7 +103,7 @@ class DraftProcessRequest(BaseModel):
     max_parallel_drafts: int = Field(default=1, ge=1, le=20, description="最大并行处理数，1=串行，上限20")
     image_generation_count: int = Field(
         default=4,
-        description="单次生图承载的独立图片数：1=单图×4，2=双图×2，4=四宫格×1",
+        description="旧客户端兼容字段；当前固定为 4，普通与精品均一次生成四宫格后本地拆分",
     )
 
     @field_validator("draft_ids")

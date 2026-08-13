@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Select, and_, func, or_, select, update
+from sqlalchemy import Select, and_, delete, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from .database import ProductProcessingDatabase
@@ -15,6 +15,7 @@ from .orm import (
     DailySelectionHandoffReceiptRow,
     DailySelectionIntakeRow,
     EnginePromptRow,
+    ProcessingStageReceiptRow,
     ProcessingTaskItemRow,
     ProcessingTaskRow,
     ProductDraftRow,
@@ -626,6 +627,139 @@ class ProductProcessingRepository:
             task.updated_at = utc_now()
             return True
 
+    def load_stage_receipt(
+        self,
+        task_id: int,
+        item_id: int,
+        stage: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any] | None:
+        stage_name = str(stage).strip()
+        if not stage_name:
+            return None
+        with self.database.sessions() as session:
+            try:
+                self._require_workspace_task_item(
+                    session,
+                    task_id=task_id,
+                    item_id=item_id,
+                    workspace_id=workspace_id,
+                )
+            except LookupError:
+                return None
+            row = session.scalar(
+                select(ProcessingStageReceiptRow).where(
+                    ProcessingStageReceiptRow.workspace_id == workspace_id,
+                    ProcessingStageReceiptRow.task_item_id == item_id,
+                    ProcessingStageReceiptRow.stage == stage_name,
+                )
+            )
+            return self._stage_receipt(row) if row is not None else None
+
+    def upsert_stage_receipt(
+        self,
+        task_id: int,
+        item_id: int,
+        stage: str,
+        *,
+        input_hash: str,
+        output_data: Any,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        stage_name = str(stage).strip()
+        stable_input_hash = str(input_hash).strip()
+        if not stage_name or not stable_input_hash:
+            raise ValueError("stage and input_hash are required")
+        with self.database.sessions.begin() as session:
+            task, _item = self._require_workspace_task_item(
+                session,
+                task_id=task_id,
+                item_id=item_id,
+                workspace_id=workspace_id,
+            )
+            row = session.scalar(
+                select(ProcessingStageReceiptRow).where(
+                    ProcessingStageReceiptRow.workspace_id == task.workspace_id,
+                    ProcessingStageReceiptRow.task_item_id == item_id,
+                    ProcessingStageReceiptRow.stage == stage_name,
+                )
+            )
+            now = utc_now()
+            if row is None:
+                row = ProcessingStageReceiptRow(
+                    workspace_id=task.workspace_id,
+                    task_item_id=item_id,
+                    stage=stage_name,
+                    input_hash=stable_input_hash,
+                    output_json=dumps(output_data),
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+                session.flush()
+            else:
+                row.input_hash = stable_input_hash
+                row.output_json = dumps(output_data)
+                row.updated_at = now
+            return self._stage_receipt(row)
+
+    def delete_invalid_stage_receipt(
+        self,
+        task_id: int,
+        item_id: int,
+        stage: str,
+        *,
+        expected_input_hash: str,
+        workspace_id: str = "local",
+    ) -> bool:
+        stage_name = str(stage).strip()
+        with self.database.sessions.begin() as session:
+            self._require_workspace_task_item(
+                session,
+                task_id=task_id,
+                item_id=item_id,
+                workspace_id=workspace_id,
+            )
+            result = session.execute(
+                delete(ProcessingStageReceiptRow).where(
+                    ProcessingStageReceiptRow.workspace_id == workspace_id,
+                    ProcessingStageReceiptRow.task_item_id == item_id,
+                    ProcessingStageReceiptRow.stage == stage_name,
+                    ProcessingStageReceiptRow.input_hash != str(expected_input_hash).strip(),
+                )
+            )
+            return bool(result.rowcount)
+
+    def delete_downstream_stage_receipts(
+        self,
+        task_id: int,
+        item_id: int,
+        downstream_stages: Iterable[str],
+        *,
+        workspace_id: str = "local",
+    ) -> int:
+        stage_names = list(
+            dict.fromkeys(str(stage).strip() for stage in downstream_stages if str(stage).strip())
+        )
+        if not stage_names:
+            return 0
+        with self.database.sessions.begin() as session:
+            self._require_workspace_task_item(
+                session,
+                task_id=task_id,
+                item_id=item_id,
+                workspace_id=workspace_id,
+            )
+            result = session.execute(
+                delete(ProcessingStageReceiptRow).where(
+                    ProcessingStageReceiptRow.workspace_id == workspace_id,
+                    ProcessingStageReceiptRow.task_item_id == item_id,
+                    ProcessingStageReceiptRow.stage.in_(stage_names),
+                )
+            )
+            return int(result.rowcount or 0)
+
     def clear_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any] | None:
         with self.database.sessions.begin() as session:
             task = session.get(ProcessingTaskRow, task_id)
@@ -1012,6 +1146,22 @@ class ProductProcessingRepository:
         )
 
     @staticmethod
+    def _require_workspace_task_item(
+        session,
+        *,
+        task_id: int,
+        item_id: int,
+        workspace_id: str,
+    ) -> tuple[ProcessingTaskRow, ProcessingTaskItemRow]:
+        task = session.get(ProcessingTaskRow, task_id)
+        if task is None or task.workspace_id != workspace_id:
+            raise LookupError("product processing task not found")
+        item = session.get(ProcessingTaskItemRow, item_id)
+        if item is None or item.task_id != task_id:
+            raise LookupError("product processing task item not found")
+        return task, item
+
+    @staticmethod
     def _draft(row: ProductDraftRow) -> dict[str, Any]:
         return {
             "id": row.id,
@@ -1053,6 +1203,19 @@ class ProductProcessingRepository:
             "status": row.status,
             "reason": row.reason,
             "result": loads(row.result_json, {}),
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    def _stage_receipt(row: ProcessingStageReceiptRow) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "workspace_id": row.workspace_id,
+            "task_item_id": row.task_item_id,
+            "stage": row.stage,
+            "input_hash": row.input_hash,
+            "output": loads(row.output_json, None),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }

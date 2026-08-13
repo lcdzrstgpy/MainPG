@@ -1123,9 +1123,14 @@ class ProductProcessingService:
 
         def _run() -> None:
             try:
-                # 预热 OCR 引擎（首次加载 2-5s），避免首个草稿在图片质检时等待模型加载
+                # OCR 首次加载可耗时数秒。让它与前置文本/远程生图并行预热；
+                # 真正质检若先到仍会由 OCR 内部单例锁等待，质量合同不变。
                 if ocr_gate_enabled():
-                    ocr_diagnostics()
+                    threading.Thread(
+                        target=ocr_diagnostics,
+                        daemon=True,
+                        name=f"pp-ocr-warm-{task_id}",
+                    ).start()
                 self._execute_task(task_id, workspace_id)
             except Exception as exc:
                 try:
@@ -2099,16 +2104,66 @@ class ProductProcessingService:
             and "detail_images" in scope
             and _as_bool(settings.get("ai_media_opt_in"), default=True)
         )
-        # 精品模式：用户从草稿池勾选的「精品处理」链接，图片走 4 张独立完整单图
-        # （不裁剪、不分格，细节保留度更高），其余环节（标题/描述/详情图/导出）一致。
+        # 精品模式：用户从草稿池勾选的链接走一次 4K 四宫格并本地高清拆分；
+        # 其余标题、描述、详情图与导出合同保持一致。
         premium_mode = int(draft["id"]) in {int(x) for x in (settings.get("premium_draft_ids") or [])}
         vision_subject = ""
         vision_preliminary_title = ""
         combined_variant_translations: dict[str, str] = {}
         product_dimensions: dict[str, Any] = {}
+        task_item_id = int(item.get("item_id") or 0)
+        supports_stage_receipts = all(
+            callable(getattr(self.repository, method, None))
+            for method in (
+                "load_stage_receipt",
+                "upsert_stage_receipt",
+                "delete_invalid_stage_receipt",
+                "delete_downstream_stage_receipts",
+            )
+        )
+        structured_receipt_input = (
+            self._processing_stage_input_hash(
+                "structured_text",
+                {
+                    "draft_id": int(draft["id"]),
+                    "title": title,
+                    "category": category,
+                    "raw": self._canonical_prompt_evidence(raw),
+                    "target_site": target_site,
+                    "target_language": target_language,
+                    "scope": sorted(scope),
+                },
+            )
+            if supports_stage_receipts
+            else ""
+        )
+        structured_receipt: dict[str, Any] | None = None
+        if task_item_id and supports_stage_receipts:
+            structured_receipt = self.repository.load_stage_receipt(
+                task_id,
+                task_item_id,
+                "structured_text",
+                workspace_id=workspace_id,
+            )
+            if structured_receipt and structured_receipt.get("input_hash") != structured_receipt_input:
+                self.repository.delete_invalid_stage_receipt(
+                    task_id,
+                    task_item_id,
+                    "structured_text",
+                    expected_input_hash=structured_receipt_input,
+                    workspace_id=workspace_id,
+                )
+                self.repository.delete_downstream_stage_receipts(
+                    task_id,
+                    task_item_id,
+                    ["images"],
+                    workspace_id=workspace_id,
+                )
+                structured_receipt = None
         if not preflight_only:
             local_title = title
             local_desc = description
+            combined: dict[str, Any] | None = None
             translations: dict[str, str] = {}
             description_candidate = ""
             description_contract_error = ""
@@ -2124,7 +2179,13 @@ class ProductProcessingService:
                 source_image_urls and (need_grid or need_detail or needs_title)
             )
             variant_values = self._unique_variant_values(raw)
-            if needs_title or needs_desc or needs_dimensions or variant_values:
+            receipt_output = structured_receipt.get("output") if structured_receipt else None
+            if isinstance(receipt_output, dict):
+                combined = dict(receipt_output)
+                ai_notes.append("structured_text:receipt-hit")
+                provider_attempts["combined_text"] = 0
+                provider_status_classes["combined_text"] = "receipt_hit"
+            elif needs_title or needs_desc or needs_dimensions or variant_values:
                 stage_started = time.perf_counter()
                 note_start = len(ai_notes)
                 try:
@@ -2170,26 +2231,35 @@ class ProductProcessingService:
                     )
                     else "success"
                 )
-                if combined:
-                    vision_subject = self._text(combined.get("vision_subject"))
-                    vision_preliminary_title = self._text(
-                        combined.get("vision_preliminary_title")
+                if combined and task_item_id and supports_stage_receipts:
+                    self.repository.upsert_stage_receipt(
+                        task_id,
+                        task_item_id,
+                        "structured_text",
+                        input_hash=structured_receipt_input,
+                        output_data=combined,
+                        workspace_id=workspace_id,
                     )
-                    if vision_subject:
-                        ai_notes.append("subject_identity:combined")
-                    if combined.get("title") and needs_title:
-                        local_title = self._normalized_title(combined["title"])
-                        needs_title = False
-                    if combined.get("description") and needs_desc:
-                        local_desc = combined["description"]
-                        needs_desc = False
-                    description_candidate = str(combined.get("description_candidate") or "")
-                    description_contract_error = str(combined.get("description_contract_error") or "")
-                    if combined.get("variant_translations"):
-                        translations = combined["variant_translations"]
-                    if needs_dimensions:
-                        product_dimensions = dict(combined.get("product_dimensions") or {})
-                    ai_notes.append("text:ai-combined")
+            if isinstance(combined, dict):
+                vision_subject = self._text(combined.get("vision_subject"))
+                vision_preliminary_title = self._text(
+                    combined.get("vision_preliminary_title")
+                )
+                if vision_subject:
+                    ai_notes.append("subject_identity:combined")
+                if combined.get("title") and needs_title:
+                    local_title = self._normalized_title(combined["title"])
+                    needs_title = False
+                if combined.get("description") and needs_desc:
+                    local_desc = combined["description"]
+                    needs_desc = False
+                description_candidate = str(combined.get("description_candidate") or "")
+                description_contract_error = str(combined.get("description_contract_error") or "")
+                if combined.get("variant_translations"):
+                    translations = combined["variant_translations"]
+                if needs_dimensions:
+                    product_dimensions = dict(combined.get("product_dimensions") or {})
+                ai_notes.append("text:ai-combined")
             # Old cached entries and providers without image input may omit the visual
             # fields. Repair only that field; do not repeat the full structured call.
             if needs_visual_identity and not vision_subject:
@@ -2328,6 +2398,23 @@ class ProductProcessingService:
                     },
                 }
 
+        if not preflight_only and task_item_id and supports_stage_receipts:
+            self.repository.upsert_stage_receipt(
+                task_id,
+                task_item_id,
+                "structured_text",
+                input_hash=structured_receipt_input,
+                output_data={
+                    "title": optimized_title,
+                    "description": description,
+                    "variant_translations": combined_variant_translations,
+                    "vision_subject": vision_subject,
+                    "vision_preliminary_title": vision_preliminary_title,
+                    "product_dimensions": product_dimensions,
+                },
+                workspace_id=workspace_id,
+            )
+
         # The structured call established product identity and listing text. Start
         # media now while narrow variant/dimension repairs continue on this thread.
         # Media uses a private notes buffer so merge order remains deterministic.
@@ -2344,23 +2431,39 @@ class ProductProcessingService:
 
             media_executor = ThreadPoolExecutor(max_workers=1)
             media_stage_started = time.perf_counter()
-            if need_grid and not premium_mode:
-                grid_future = media_executor.submit(
-                    self._generate_grid_images,
-                    task_id,
-                    draft["id"],
-                    raw,
-                    optimized_title,
-                    category,
-                    source_image_urls,
-                    target_language,
-                    target_site,
-                    media_ai_notes,
-                    vision_subject,
-                    image_template=str(settings.get("image_template") or "A"),
-                    image_generation_count=image_generation_count,
-                    workspace_id=workspace_id,
-                )
+            if need_grid:
+                if premium_mode:
+                    grid_future = media_executor.submit(
+                        self._generate_premium_images,
+                        task_id,
+                        draft["id"],
+                        raw,
+                        optimized_title,
+                        category,
+                        source_image_urls,
+                        target_language,
+                        target_site,
+                        media_ai_notes,
+                        vision_subject,
+                        workspace_id=workspace_id,
+                    )
+                else:
+                    grid_future = media_executor.submit(
+                        self._generate_grid_images,
+                        task_id,
+                        draft["id"],
+                        raw,
+                        optimized_title,
+                        category,
+                        source_image_urls,
+                        target_language,
+                        target_site,
+                        media_ai_notes,
+                        vision_subject,
+                        image_template=str(settings.get("image_template") or "A"),
+                        image_generation_count=image_generation_count,
+                        workspace_id=workspace_id,
+                    )
             elif need_detail:
                 direct_detail_future = media_executor.submit(
                     self._generate_detail_images,
@@ -2381,7 +2484,6 @@ class ProductProcessingService:
         # combined 文本调用已并入翻译时直接复用（省一次独立 AI 调用）；否则按需单独调用。
         # 尺寸/变种翻译均为独立 AI 调用，与下方图片编排并行执行，缩短单条流水线总耗时。
         variant_value_translations: dict[str, str] = {}
-        product_dimensions: dict[str, Any] = {}
         side_pool: Any = None
         side_futures: dict[str, Any] = {}
         if not preflight_only:
@@ -2408,7 +2510,14 @@ class ProductProcessingService:
                         ai_notes,
                         only_values=missing_variant_values,
                     )
-            if "product_dimensions" in scope:
+            dimensions_complete = all(
+                self._number(product_dimensions.get(key)) is not None
+                and float(self._number(product_dimensions.get(key)) or 0) > 0
+                for key in ("length_cm", "width_cm", "height_cm", "weight_g")
+            )
+            if "product_dimensions" in scope and dimensions_complete:
+                ai_notes.append("product_dimensions:combined")
+            elif "product_dimensions" in scope:
                 side_futures["dimensions"] = side_pool.submit(
                     self._generate_size,
                     raw,
@@ -2422,26 +2531,11 @@ class ProductProcessingService:
         grid_summary_path = ""
         grid_carousel_media: list[Any] = []
         detail_image_paths: list[str] = []
-        # 图片编排：按用户选定的 1 / 2 / 4 次调用，始终凑齐四张轮播图；
+        # 图片编排与尺寸/规格补全并行。普通新任务固定一张四宫格，历史任务仍兼容
+        # 旧的 1 / 2 / 4 设置；精品任务由专用单次 4K 四宫格流水线处理。
         # 详情图优先由轮播图本地合成，只有本地合成不可用时才回退 AI 详情图生成。
         if need_grid:
-            if premium_mode:
-                stage_started = time.perf_counter()
-                grid_output = self._generate_premium_images(
-                    task_id,
-                    draft["id"],
-                    raw,
-                    optimized_title,
-                    category,
-                    source_image_urls,
-                    target_language,
-                    target_site,
-                    ai_notes,
-                    vision_subject,
-                    workspace_id=workspace_id,
-                )
-                record_stage("grid_pipeline", stage_started)
-            elif grid_future is not None:
+            if grid_future is not None:
                 try:
                     grid_output = grid_future.result()
                 finally:
@@ -2473,14 +2567,31 @@ class ProductProcessingService:
             provider_attempts["four_grid"] = grid_output.attempt_count
             provider_status_classes["four_grid"] = grid_output.provider_status_class
             stage_timings_ms.update(grid_output.stage_timings_ms)
-            if not grid_image_paths:
-                # 质量门/拆图失败不再阻断（用户要求）：回退来源图继续走完流水线，
-                # 预审环节可人工修正图片/信息；失败原因留痕便于复核。
-                ai_notes.append(
-                    "premium_images:force_import_acknowledged"
-                    if premium_mode
-                    else "four_grid:force_import_acknowledged"
-                )
+            if len(grid_image_paths) != 4:
+                # Success means four real carousel images. Never turn a split or
+                # generation failure into a misleading completed result, even when
+                # an older task payload contains force-import compatibility flags.
+                if side_pool is not None:
+                    side_pool.shutdown(wait=True, cancel_futures=True)
+                    side_pool = None
+                mode_label = "精品4K" if premium_mode else "普通四宫格"
+                return {
+                    **item,
+                    "title": optimized_title,
+                    "image_url": image_url,
+                    "status": "failed",
+                    "reason": f"{mode_label}未生成4张可用轮播图",
+                    "result": {
+                        "error_type": "image_grid_incomplete",
+                        "failure_class": "technical_retryable",
+                        "operator_hint": "已阻止缺图结果进入预检；请重试或检查图片模型实际输出尺寸",
+                        "retryable": True,
+                        "ai_notes": ai_notes,
+                        "provider_attempts": provider_attempts,
+                        "provider_status_classes": provider_status_classes,
+                        "stage_timings_ms": timing_snapshot(),
+                    },
+                }
         if need_detail:
             if grid_image_paths:
                 stage_started = time.perf_counter()
@@ -3124,22 +3235,15 @@ class ProductProcessingService:
                 # Generate the economical 2K transport grid once.  Validation happens
                 # after the deterministic split so one bad quadrant never redraws the
                 # three usable quadrants.
-                media = generate_one(
-                    f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}",
-                    layout_scaffold=True,
-                )
+                grid_prompt = f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}"
+                media = generate_one(grid_prompt, layout_scaffold=True)
                 record_media(media)
                 validation_started = time.perf_counter()
                 try:
-                    try:
-                        split_parts = processor.split_four_grid(media)
-                    except (media_config_error, media_error, ValueError, OSError) as exc:
-                        # When the transport grid itself cannot be split, no quadrant
-                        # can be trusted. Recover the four roles with parallel 1K calls
-                        # instead of paying for another slow 2K redraw.
-                        failed_slots = list(enumerate(panel_roles, start=1))
-                        split_parts = []
-                        self._note_ai_failure(ai_notes, note_key, _ai_error_reason(exc))
+                    # Scaffolded square transport is split deterministically at the
+                    # exact center. Never redraw the whole 2K image for a local split
+                    # concern; only identified bad slots may use the 1K repair path.
+                    split_parts = processor.split_four_grid(media)
 
                     summary_parts = [
                         part
@@ -3374,12 +3478,7 @@ class ProductProcessingService:
         vision_subject: str = "",
         workspace_id: str = "local",
     ) -> GridImageOutput:
-        """精品模式：分 4 次并行生成 4 张独立完整单图（不裁剪、不分割）。
-
-        每一张对应正常四宫格的 hero/detail/lifestyle/维度背景四个构图角色，但均为
-        完整大图，细节保留度高于 1/4 面板；提示词沿用正常模式的质感/字体/安全规则
-        （仅把「2x2 网格」换成「单张完整图」）。任一张失败则整组失败，与四宫格一致。
-        """
+        """精品模式：一次 4K 四宫格，本地拆成四张不降采样的高清轮播图。"""
         if not _ai_enabled() or not reference_urls:
             return GridImageOutput()
         media_types = _media_types()
@@ -3387,7 +3486,6 @@ class ProductProcessingService:
             return GridImageOutput()
         _, media_config_error, media_error = media_types
         processor = self._media_processor()
-        # 精品模式 1K 出图：单张 1024×1024（gpt-image-2-1k，速度快、成本低）；四宫格才用 2K。
         premium_image_model = PREMIUM_IMAGE_MODEL
         premium_image_size = PREMIUM_IMAGE_SIZE
         try:
@@ -3402,103 +3500,186 @@ class ProductProcessingService:
         if vision_subject:
             context["product_visual_identity"] = vision_subject
         reference = select_image_reference(raw, title=optimized_title, category=category)
-        base_prompt = append_content_reference(contracted, reference, kind="image")
+        panel_roles = "\n".join(
+            f"  {index}. {instruction}"
+            for index, (_role, instruction) in enumerate(_PREMIUM_PANEL_ROLES, start=1)
+        )
+        base_prompt = format_prompt(
+            contracted,
+            title=optimized_title,
+            panel_roles=panel_roles,
+            **context,
+        )
+        base_prompt = append_content_reference(base_prompt, reference, kind="image")
         self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
         attempt_count = 0
-        provider_status_class = ""
+        provider_status_class = "success"
         timings_ms: dict[str, int] = {}
-
-        def _clean(value: Any) -> Any:
-            """OCR 质量门（软性）：仅中文检出触发定向重绘（最多 N 轮，默认 1 轮）；
-            显著 AI 文字/产品印刷大字符（prominent）不重绘——重绘提示词要求保留产品设计，
-            对这类字符大概率无效且每次重绘都是一次完整生图（分钟级），直接放行留痕省时间。"""
-            if not ocr_gate_enabled():
-                return value
-            inspection = inspect_visible_text(value.content)
-            if inspection is None:
-                return value
-            reparables = list(dict.fromkeys(inspection.get("chinese", [])))
-            others = list(dict.fromkeys(inspection.get("prominent", [])))
-            rounds = 0
-            while reparables and rounds < max_repair_rounds():
-                rounds += 1
-                try:
-                    value = processor.repair_generated(
-                        stage="premium_image",
-                        prompt=self._effective_prompt("image_repair_chinese"),
-                        prior_content=value.content,
-                        prior_content_type=value.content_type,
-                        reference_values=reference_urls,
-                        image_size=premium_image_size,
-                        model=premium_image_model,
-                    )
-                except (media_config_error, media_error, ValueError, OSError) as exc:
-                    if ai_notes is not None:
-                        ai_notes.append("premium_images:chinese_repair_failed")
-                    break
-                inspection = inspect_visible_text(value.content) or {}
-                reparables = list(dict.fromkeys(inspection.get("chinese", [])))
-                others = list(dict.fromkeys(inspection.get("prominent", [])))
-            if ai_notes is not None:
-                note = "premium_images:chinese_unresolved" if (reparables or others) else "premium_images:ocr_passed"
-                if note not in ai_notes:
-                    ai_notes.append(note)
-            return value
-
-        def _render_one(role: str, role_instruction: str) -> Any:
-            nonlocal attempt_count, provider_status_class
-            prompt = format_prompt(base_prompt, title=optimized_title, panel_role=role_instruction, **context)
-            stage_started = time.perf_counter()
+        parts: list[Any] = []
+        last_error: BaseException | None = None
+        generation_started = time.perf_counter()
+        # One paid 4K transport call only. The fixed scaffold plus exact 50/50
+        # local crop owns layout correctness; validation must never redraw all
+        # four panels and discard a valid first result.
+        for whole_attempt in range(1):
             try:
                 media = processor.generate(
                     stage="premium_image",
-                    prompt=prompt,
+                    prompt=base_prompt,
                     reference_values=reference_urls,
+                    layout_scaffold=True,
                     image_size=premium_image_size,
                     model_override=premium_image_model,
                 )
-            finally:
-                timings_ms[f"premium_{role}_ms"] = max(0, round((time.perf_counter() - stage_started) * 1000))
-            attempt_count += max(0, int(getattr(media, "attempt_count", 1) or 1))
-            status = str(getattr(media, "provider_status_class", "success") or "success")
-            if provider_status_class in ("", "success"):
-                provider_status_class = status
-            return _clean(media)
+                attempt_count += max(1, int(getattr(media, "attempt_count", 1) or 1))
+                status = str(getattr(media, "provider_status_class", "success") or "success")
+                if status != "success":
+                    provider_status_class = status
+                validation_started = time.perf_counter()
+                split_parts = processor.split_premium_four_grid(media)
+                carousel_parts = [
+                    part
+                    for part in split_parts
+                    if re.fullmatch(r"premium_image_[1-4]", str(getattr(part, "stage", "")))
+                ]
+                summary_parts = [
+                    part
+                    for part in split_parts
+                    if str(getattr(part, "stage", "")) == "premium_image_summary"
+                ]
+                if len(carousel_parts) != 4 or len(summary_parts) != 1:
+                    raise ValueError("premium four-grid split did not produce four panels and one summary")
+                if ocr_gate_enabled():
+                    from concurrent.futures import ThreadPoolExecutor
 
-        results: dict[str, Any] = {}
-        errors: list[str] = []
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+                    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="pp-premium-ocr") as pool:
+                        inspections = list(
+                            pool.map(
+                                lambda part: inspect_visible_text(
+                                    bytes(getattr(part, "content", b""))
+                                ),
+                                carousel_parts,
+                            )
+                        )
+                    # OCR is diagnostic here: printed symbols and branding belong to
+                    # many real products (for example mahjong tiles). It must not
+                    # discard four geometrically valid panels or trigger another 4K
+                    # call. The generation prompt remains text-free by default.
+                    # Native product printing (mahjong symbols, labels, logos) is
+                    # valid content. Only banner-sized overlay copy is considered a
+                    # bad slot. Repair that slot alone with the fast 1K model; never
+                    # redraw the other three valid premium panels.
+                    failed_slots = [
+                        slot
+                        for slot, inspection in enumerate(inspections, start=1)
+                        if inspection is not None and bool(inspection.get("prominent"))
+                    ]
+                    if failed_slots:
+                        from concurrent.futures import as_completed
 
-        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="pp-premium") as pool:
-            futures = {
-                pool.submit(_render_one, role, instruction): role for role, instruction in _PREMIUM_PANEL_ROLES
-            }
-            for future in as_completed(futures):
-                role = futures[future]
-                try:
-                    results[role] = future.result()
-                except (media_config_error, media_error, ValueError, OSError) as exc:
-                    errors.append(f"{role}: {_ai_error_reason(exc)}")
-        if errors or len(results) != len(_PREMIUM_PANEL_ROLES):
-            if ai_notes is not None:
-                self._note_ai_failure(
-                    ai_notes, "premium_images", "; ".join(errors) or "premium image generation failed"
+                        if ai_notes is not None:
+                            ai_notes.append(
+                                "premium_images:slot_1k_repair:"
+                                + ",".join(str(slot) for slot in failed_slots)
+                            )
+
+                        def repair_premium_slot(slot: int) -> tuple[int, Any, Any]:
+                            role = _PREMIUM_PANEL_ROLES[slot - 1][1]
+                            replacement = processor.generate(
+                                stage=f"premium_image_{slot}",
+                                prompt=(
+                                    "Create ONE square premium ecommerce product image. "
+                                    f"Required panel role: {role}. Preserve the exact product identity, "
+                                    "shape, material, color and visible accessories from the references. "
+                                    "Show one complete product composition only. Add no title, caption, "
+                                    "badge, dimensions, watermark, logo or decorative text."
+                                ),
+                                reference_values=reference_urls,
+                                image_size="1024x1024",
+                                model_override="gpt-image-2-1k",
+                            )
+                            normalized = processor.normalize_standalone_image(
+                                replacement,
+                                stage=f"premium_image_{slot}",
+                            )
+                            return slot, replacement, normalized
+
+                        with ThreadPoolExecutor(
+                            max_workers=min(4, len(failed_slots)),
+                            thread_name_prefix="pp-premium-repair",
+                        ) as pool:
+                            futures = {
+                                pool.submit(repair_premium_slot, slot): slot
+                                for slot in failed_slots
+                            }
+                            for future in as_completed(futures):
+                                slot = futures[future]
+                                try:
+                                    _, replacement, normalized = future.result()
+                                    attempt_count += max(
+                                        1,
+                                        int(getattr(replacement, "attempt_count", 1) or 1),
+                                    )
+                                    carousel_parts[slot - 1] = normalized
+                                except (media_config_error, media_error, ValueError, OSError) as exc:
+                                    # Keep the correctly split original slot if its
+                                    # targeted repair fails; do not turn the entire
+                                    # product into a retry loop or attention state.
+                                    self._note_ai_failure(
+                                        ai_notes,
+                                        f"premium_slot_{slot}",
+                                        _ai_error_reason(exc),
+                                    )
+                    issues_found = any(inspection is None for inspection in inspections)
+                    if ai_notes is not None:
+                        ai_notes.append(
+                            "premium_images:ocr_unavailable"
+                            if issues_found
+                            else "premium_images:ocr_passed"
+                        )
+                timings_ms["premium_grid_validation_ms"] = max(
+                    0,
+                    round((time.perf_counter() - validation_started) * 1000),
                 )
+                carousel_parts.sort(key=lambda part: int(str(part.stage).rsplit("_", 1)[-1]))
+                parts = [*carousel_parts, summary_parts[0]]
+                break
+            except (media_config_error, media_error, ValueError, OSError) as exc:
+                attempt_count += max(0, int(getattr(exc, "attempt_count", 0) or 0))
+                last_error = exc
+        timings_ms["premium_grid_generation_ms"] = max(
+            0,
+            round((time.perf_counter() - generation_started) * 1000),
+        )
+        if not parts:
+            self._note_ai_failure(
+                ai_notes,
+                "premium_images",
+                _ai_error_reason(last_error or ValueError("premium image generation failed")),
+            )
             return GridImageOutput(
                 attempt_count=attempt_count,
-                provider_status_class=provider_status_class or "failed",
+                provider_status_class="failed",
                 stage_timings_ms=timings_ms,
             )
-        parts = [results[role] for role, _ in _PREMIUM_PANEL_ROLES]
         persist_started = time.perf_counter()
         published = self._persist_media_for_preview(parts, task_id, draft_id, workspace_id)
         timings_ms["persist_ms"] = max(0, round((time.perf_counter() - persist_started) * 1000))
+        carousel: list[str] = []
+        summary_path = ""
+        carousel_media: list[Any] = []
+        for part, value in zip(parts, published):
+            if part.stage == "premium_image_summary":
+                summary_path = str(value)
+            else:
+                carousel.append(str(value))
+                carousel_media.append(part)
         return GridImageOutput(
-            tuple(str(value) for value in published),
-            "",
-            tuple(parts),
+            tuple(carousel),
+            summary_path,
+            tuple(carousel_media),
             attempt_count,
-            provider_status_class or "success",
+            provider_status_class,
             timings_ms,
         )
 
@@ -3874,6 +4055,28 @@ class ProductProcessingService:
         }
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _processing_stage_input_hash(self, stage: str, input_data: Any) -> str:
+        """Fingerprint retry receipts without changing the existing shared cache contract."""
+        provider = resolve_ai_provider()
+        payload = {
+            "version": _STAGE_CACHE_VERSION,
+            "stage": str(stage or ""),
+            "input": input_data if input_data is not None else {},
+            "model": str(provider.get("text_model") or ""),
+            "fallback_order": list(provider.get("text_model_fallback_order") or ()),
+            "title_prompt": self._effective_prompt("title"),
+            "description_prompt": self._effective_prompt("desc"),
+            "combined_prompt": self._effective_prompt("combined_text"),
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _load_ai_stage_cache(self, stage: str, cache_key: str) -> Any:
         """读取阶段级 AI 缓存；命中返回输出对象，否则 None。缓存异常不影响主流程。"""
@@ -4403,7 +4606,7 @@ class ProductProcessingService:
                 # 图片模型池：同中转多模型轮巡（对齐原型 _provider_order 游标轮巡）
                 "image_models": list(provider.get("image_models") or ()),
                 "image_size": provider.get("image_size") or "2048x2048",
-                # 精品模式 1K 出图：单张 1024×1024，速度快、成本低（只有四宫格才用 2K）
+                # 精品模式：一次生成 4096×4096 四宫格，再本地拆成四张约 2048×2048 高清图
                 "premium_image_model": provider.get("premium_image_model") or PREMIUM_IMAGE_MODEL,
                 "premium_image_size": provider.get("premium_image_size") or PREMIUM_IMAGE_SIZE,
             }

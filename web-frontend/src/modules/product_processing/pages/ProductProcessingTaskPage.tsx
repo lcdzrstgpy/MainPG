@@ -30,12 +30,6 @@ const IMAGE_TEMPLATES: { id: 'A' | 'B'; name: string; description: string }[] = 
   { id: 'B', name: '高端模特视觉（防比价）', description: '人设+空间故事叙事、杂志编辑大片感，材质显贵、难以搜图比价，画面无文字' },
 ];
 
-const IMAGE_GENERATION_OPTIONS: { count: 1 | 2 | 4; name: string; description: string }[] = [
-  { count: 1, name: '单图 × 4', description: '4 次并发生图，不拆分，质量优先但耗时更长' },
-  { count: 2, name: '双图 × 2', description: '2 次并发生图，每次拆成两张，速度与稳定性平衡' },
-  { count: 4, name: '四宫格 × 1（推荐）', description: '1 次2K调用拆四张；仅失败槽使用1K补图，批量最快' },
-];
-
 const FAILURE_CLASS_LABELS: Record<string, string> = {
   technical_retryable: '技术失败可重试',
   configuration_blocked: '配置阻断',
@@ -60,7 +54,7 @@ const AI_CONFIG_HINT =
 
 type Props = {
   initialDraftIds?: number[];
-  /** 精品模式草稿：走 4 张独立完整单图（不裁剪四宫格），其余处理逻辑一致 */
+  /** 精品模式草稿：一次 4K 四宫格，本地拆成四张高清独立图 */
   initialPremiumDraftIds?: number[];
   initialOptions?: ProductProcessingOptions;
   /** 任务完成后打开预检页（生成表格 → 预检修改 → 导出最终版） */
@@ -106,7 +100,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
       ipCheck: true,
       maxParallelDrafts: 8,
       imageTemplate: 'A',
-      imageGenerationCount: 4,
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
@@ -223,7 +216,8 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
       ip_check: options.ipCheck,
       max_parallel_drafts: options.maxParallelDrafts,
       image_template: options.imageTemplate || 'A',
-      image_generation_count: options.imageGenerationCount ?? 4,
+      // 兼容旧 API 字段；新任务统一走四宫格策略，不再由用户选择。
+      image_generation_count: 4,
     };
     const signature = JSON.stringify(body);
     if (!startRequestRef.current || startRequestRef.current.signature !== signature) {
@@ -400,21 +394,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
                 </label>
               ))}
             </div>
-            <div className="verify-form-row">
-              <span className="verify-scope-label">单次生图：</span>
-              {IMAGE_GENERATION_OPTIONS.map((option) => (
-                <label key={option.count} className="verify-template-card" title={option.description}>
-                  <input
-                    type="radio"
-                    name="image-generation-count"
-                    checked={(options.imageGenerationCount ?? 4) === option.count}
-                    onChange={() => setOptions((p) => ({ ...p, imageGenerationCount: option.count }))}
-                  />
-                  <span className="verify-template-name">{option.name}</span>
-                  <span className="verify-template-desc">{option.description}</span>
-                </label>
-              ))}
-            </div>
             <div className="verify-slider-row">
               <span className="verify-scope-label">处理数量：</span>
               <input className="verify-slider" type="range" min={0} max={100} step={1} value={options.maxProducts} onChange={(e) => setOptions((p) => ({ ...p, maxProducts: Number(e.target.value) || 0 }))} />
@@ -429,7 +408,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
               <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
               <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
               {!!initialPremiumDraftIds?.length && (
-                <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条：4 张独立完整单图（不裁剪）</span>
+                <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条：一次 4K 四宫格，拆为 4 张高清图</span>
               )}
             </div>
           </section>

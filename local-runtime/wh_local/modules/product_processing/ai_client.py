@@ -23,6 +23,9 @@ AI_USER_AGENT = "MainPG-ProductProcessing/1.0"
 KEY_HAS_NO_ROUTE_PROVIDERS = "key_has_no_route_providers"
 HTTP_POOL_CONNECTIONS = 4
 HTTP_POOL_MAXSIZE = 8
+ROUTE_PROBE_FOLLOWER_WAIT_SECONDS = 0.25
+MODEL_TRANSIENT_FAILURE_THRESHOLD = 2
+MODEL_COOLDOWN_SECONDS = 30.0
 
 # 进程内共享的有界连接池。Authorization 始终按请求传入，不写入 Session
 # 默认头；响应读取后立即关闭归还连接，也不保存响应对象或正文。
@@ -36,18 +39,6 @@ _HTTP_ADAPTER = requests.adapters.HTTPAdapter(
 _HTTP_SESSION.mount("https://", _HTTP_ADAPTER)
 _HTTP_SESSION.mount("http://", _HTTP_ADAPTER)
 _HTTP_CAPACITY = threading.BoundedSemaphore(HTTP_POOL_MAXSIZE)
-
-
-def _is_route_config_error(exc: AiProviderError) -> bool:
-    """判断 4xx 是否属于「该 key 未配置可路由商家」类路由配置错误。
-
-    这类错误与具体模型的路由绑定有关：换下一个模型可能就有可用商家路由，
-    因此允许继续走降级链，而不是让整单失败。
-    """
-    if exc.status_code != 400:
-        return False
-    message = str(exc)
-    return "key_has_no_route_providers" in message or "has_no_route_providers" in message
 
 
 class AiProviderError(RuntimeError):
@@ -98,6 +89,8 @@ class AiClient:
         # the first structured no-route response instead of repeating the same 400.
         self._route_states: dict[str, str] = {}
         self._route_condition = threading.Condition()
+        self._model_transient_failures: dict[str, int] = {}
+        self._model_cooldown_until: dict[str, float] = {}
 
     def chat(self, messages: list[dict[str, Any]], *, model: str | None = None) -> str:
         """调用 chat/completions，返回首个 assistant 文本。
@@ -115,14 +108,11 @@ class AiClient:
             remaining_seconds = deadline - time.monotonic()
             if remaining_seconds <= 0:
                 break
+            if self._is_model_cooling_down(candidate):
+                all_attempts_no_route = False
+                continue
             attempted_count += 1
             route_claim = self._claim_model_route(candidate, remaining_seconds)
-            if route_claim is None:
-                all_attempts_no_route = False
-                last_non_no_route_error = AiProviderError(
-                    f"timed out waiting for route probe for model {candidate}"
-                )
-                continue
             if not route_claim:
                 last_error = AiProviderError(
                     f"AI provider has no route for model {candidate}",
@@ -142,7 +132,9 @@ class AiClient:
                     timeout=min(self.text_timeout_seconds, remaining_seconds),
                 )
                 self._mark_model_route(candidate, available=True)
-                return str(data["choices"][0]["message"]["content"] or "").strip()
+                content = str(data["choices"][0]["message"]["content"] or "").strip()
+                self._record_model_success(candidate)
+                return content
             except (KeyError, IndexError, TypeError) as exc:
                 self._mark_model_route(candidate, available=True)
                 raise AiProviderError(f"unexpected chat response: {data}") from exc
@@ -153,6 +145,7 @@ class AiClient:
                 if not no_route:
                     all_attempts_no_route = False
                     last_non_no_route_error = exc
+                    self._record_transient_model_failure(candidate, exc)
                 status = getattr(exc, "status_code", None)
                 if status is not None and 400 <= status < 500 and status != 429:
                     if no_route:
@@ -169,14 +162,21 @@ class AiClient:
             raise last_non_no_route_error
         raise AiProviderError("text generation exceeded its total timeout budget")
 
-    def _claim_model_route(self, model: str, timeout_seconds: float) -> bool | None:
-        """Single-flight a route: True=call, False=unavailable, None=wait timeout."""
-        deadline = time.monotonic() + max(0.001, timeout_seconds)
+    def _claim_model_route(self, model: str, timeout_seconds: float) -> bool:
+        """Briefly single-flight an unknown route, then let healthy slow calls fan out."""
+        wait_seconds = min(
+            max(0.0, timeout_seconds),
+            ROUTE_PROBE_FOLLOWER_WAIT_SECONDS,
+        )
+        deadline = time.monotonic() + wait_seconds
         with self._route_condition:
             while self._route_states.get(model) == "probing":
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    return None
+                    # The first call is slow rather than a fast structured no-route.
+                    # Continue with the same configured model without speculative
+                    # cancellation or output racing.
+                    return True
                 self._route_condition.wait(timeout=remaining)
             state = self._route_states.get(model)
             if state == "unavailable":
@@ -186,8 +186,43 @@ class AiClient:
             self._route_states[model] = "probing"
             return True
 
+    def _is_model_cooling_down(self, model: str) -> bool:
+        with self._route_condition:
+            cooldown_until = self._model_cooldown_until.get(model, 0.0)
+            if cooldown_until <= time.monotonic():
+                self._model_cooldown_until.pop(model, None)
+                return False
+            return True
+
+    def _record_transient_model_failure(
+        self,
+        model: str,
+        error: AiProviderError,
+    ) -> None:
+        if not _is_transient_model_failure(error):
+            return
+        with self._route_condition:
+            failures = self._model_transient_failures.get(model, 0) + 1
+            self._model_transient_failures[model] = failures
+            if failures >= MODEL_TRANSIENT_FAILURE_THRESHOLD:
+                self._model_cooldown_until[model] = (
+                    time.monotonic() + MODEL_COOLDOWN_SECONDS
+                )
+
+    def _record_model_success(self, model: str) -> None:
+        with self._route_condition:
+            self._model_transient_failures.pop(model, None)
+            self._model_cooldown_until.pop(model, None)
+
     def _mark_model_route(self, model: str, *, available: bool) -> None:
         with self._route_condition:
+            current = self._route_states.get(model)
+            # A follower may fan out after the brief probe window and establish a
+            # healthy route before the original probe finishes.  A late no-route
+            # response from that original request must not overwrite newer success.
+            if not available and current == "available":
+                self._route_condition.notify_all()
+                return
             self._route_states[model] = "available" if available else "unavailable"
             self._route_condition.notify_all()
 
@@ -307,3 +342,11 @@ def _provider_error_code(body: str) -> str:
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", code):
             return code
     return ""
+
+
+def _is_transient_model_failure(error: AiProviderError) -> bool:
+    status = error.status_code
+    if status == 429 or (status is not None and status >= 500):
+        return True
+    cause = error.__cause__
+    return isinstance(cause, (requests.Timeout, TimeoutError))

@@ -51,11 +51,10 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
     skipDuplicates: false,
     ipCheck: true,
     maxParallelDrafts: 8,
-    imageGenerationCount: 4,
   });
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  // 精品模式：勾选后该草稿走「4 张独立完整单图」（不裁剪四宫格），其余逻辑一致
+  // 精品模式：勾选后该草稿走一次 4K 四宫格，本地拆成四张高清独立图。
   const [premiumIds, setPremiumIds] = useState<Set<number>>(new Set());
   const [expandedId, setExpandedId] = useState<number | null>(null);
   // SKU 管理抽屉：当前正在管理的草稿 id（null 表示关闭）
@@ -638,13 +637,13 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
                   <label className="pool-check">
                     <input type="checkbox" checked={isSelected} onChange={onSelect} />
                   </label>
-                  {/* 精品模式：独立于「选中处理」的勾选入口，走 4 张独立完整单图（不裁剪四宫格） */}
+                  {/* 精品模式：独立于「选中处理」的勾选入口，走一次 4K 四宫格并本地拆成四张高清图。 */}
                   <div className="pool-premium">
                     <button
                       type="button"
                       className={`premium-toggle ${isPremium ? 'active' : ''}`}
                       onClick={() => togglePremium(draft.id)}
-                      title={isPremium ? '取消精品：恢复四宫格处理' : '精品处理：4 张独立完整单图（不裁剪四宫格），其余逻辑一致'}
+                      title={isPremium ? '取消精品：恢复普通 2K 四宫格' : '精品处理：一次 4K 四宫格，本地拆成四张高清独立图'}
                     ><i className="iconfont icon-gem" aria-hidden="true" />{isPremium ? '已选精品' : '精品'}</button>
                   </div>
                   <div className="pool-thumb" onClick={onSelect}>
@@ -795,7 +794,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
 
       <section className="verify-quickbar">
         <div className="verify-actions">
-          {premiumIds.size > 0 && <span className="verify-premium-hint"><i className="iconfont icon-gem" aria-hidden="true" />精品 {premiumIds.size} 条·4 张独立单图不裁剪</span>}
+          {premiumIds.size > 0 && <span className="verify-premium-hint"><i className="iconfont icon-gem" aria-hidden="true" />精品 {premiumIds.size} 条·1 张 4K 四宫格拆成 4 张高清图</span>}
           <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
           <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
           <button onClick={openSkuBatch} disabled={!selectedIds.size}><i className="iconfont icon-barcode" aria-hidden="true" />批量管理 SKU</button>
