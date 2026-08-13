@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
+import time
 from typing import Any
 
+from wh_local.data_collection.provider import OneBound1688Provider, ProviderCallResult
 from wh_local.price_verification.contracts import PriceVerificationActor
 from wh_local.price_verification.repository import PriceVerificationRepository
 from wh_local.price_verification.sourcing.contracts import SourceSearchTask
 from wh_local.price_verification.sourcing.onebound_adapter import OneBoundSourceAdapter
+from wh_local.price_verification.sourcing import onebound_adapter
 
 
 @dataclass
@@ -202,3 +206,190 @@ def test_complete_search_payload_skips_redundant_detail_request(monkeypatch: Any
 
     assert len(result["items"][0]["candidates"]) == 5
     assert provider.detail_calls == 0
+
+
+def test_adapter_passes_provider_reference_bytes_to_visual_verification(monkeypatch: Any) -> None:
+    provider = _Provider()
+    reference_content = b"reference-image-bytes"
+    legacy_calls = 0
+
+    def legacy_search(criteria: object) -> _Result:
+        nonlocal legacy_calls
+        legacy_calls += 1
+        return _Result(response={})
+
+    original_search = provider.search_by_image
+    provider.search_by_image = legacy_search  # type: ignore[method-assign]
+    provider.search_by_image_with_reference = lambda criteria: (  # type: ignore[attr-defined]
+        original_search(criteria),
+        reference_content,
+    )
+
+    def verify(
+        reference_url: str,
+        candidates: list[dict[str, Any]],
+        *,
+        reference_content: bytes,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        assert reference_url == "https://images.example/temu.jpg"
+        assert reference_content == b"reference-image-bytes"
+        output = [dict(candidate) for candidate in candidates]
+        for item in output:
+            item.update(
+                image_similarity_score=0.9,
+                image_similarity_method="test",
+                image_similarity_verified=True,
+                image_similarity_fallback=False,
+            )
+        return output, {"reference_available": True, "reference_reused": True}
+
+    monkeypatch.setattr(
+        "wh_local.price_verification.sourcing.onebound_adapter.verify_visual_candidates",
+        verify,
+    )
+    repository = object.__new__(PriceVerificationRepository)
+    adapter = OneBoundSourceAdapter(repository, lambda: provider)
+    task = SourceSearchTask(
+        task_key="skc-reuse",
+        skc_id="skc-reuse",
+        main_image_url="https://images.example/temu.jpg",
+        source_quote_keys=("quote-reuse",),
+        product_title="Pet mat",
+        max_candidates=5,
+    )
+
+    result = adapter.search_by_image(
+        PriceVerificationActor(workspace_id="workspace", actor_id="employee"),
+        (task,),
+        keyword_search=False,
+    )
+
+    assert len(result["items"][0]["candidates"]) == 5
+    assert legacy_calls == 0
+    assert result["items"][0]["visual_verification"]["reference_reused"] is True
+
+
+def test_production_provider_downloads_reference_once_and_returns_same_bytes() -> None:
+    provider = object.__new__(OneBound1688Provider)
+    provider._enabled = True
+    reference_content = b"safe-fetched-reference"
+    download_calls = 0
+    uploaded_contents: list[bytes] = []
+    searched_result = ProviderCallResult(response={"items": {"item": []}}, audits=())
+
+    def download(reference_url: str) -> tuple[bytes, object, None]:
+        nonlocal download_calls
+        download_calls += 1
+        assert reference_url == "https://images.example/temu.jpg"
+        return reference_content, object(), None
+
+    def upload(content: bytes, audit: object) -> ProviderCallResult:
+        uploaded_contents.append(content)
+        return ProviderCallResult(response={"items": {"imgid": "image-id"}}, audits=())
+
+    provider._download_reference_image = download  # type: ignore[method-assign]
+    provider._upload_reference_content = upload  # type: ignore[method-assign]
+    provider._search_by_uploaded_image = (  # type: ignore[method-assign]
+        lambda criteria, uploaded: searched_result
+    )
+    criteria = type(
+        "Criteria",
+        (),
+        {
+            "collection_mode": "image",
+            "reference_image_url": "https://images.example/temu.jpg",
+        },
+    )()
+
+    result, returned_content = provider.search_by_image_with_reference(criteria)
+
+    assert result is searched_result
+    assert download_calls == 1
+    assert uploaded_contents == [reference_content]
+    assert returned_content is reference_content
+
+
+def test_adapter_runs_two_skcs_concurrently_and_preserves_input_order(monkeypatch: Any) -> None:
+    repository = object.__new__(PriceVerificationRepository)
+    adapter = OneBoundSourceAdapter(repository, lambda: _Provider())
+    barrier = threading.Barrier(2, timeout=2)
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def run(task: SourceSearchTask, *, keyword_search: bool) -> dict[str, Any]:
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        barrier.wait()
+        time.sleep(0.01 if task.skc_id == "skc-1" else 0.02)
+        with lock:
+            active -= 1
+        return {
+            "task_key": task.task_key,
+            "skc_id": task.skc_id,
+            "source_quote_keys": list(task.source_quote_keys),
+            "status": "succeeded",
+            "error": "",
+            "candidates": [],
+            "evidence": [],
+        }
+
+    monkeypatch.setattr(onebound_adapter, "_recommended_skc_parallelism", lambda: 2)
+    monkeypatch.setattr(adapter, "_search_task_with_new_provider", run)
+    tasks = tuple(
+        SourceSearchTask(
+            task_key=f"skc-{index}",
+            skc_id=f"skc-{index}",
+            main_image_url=f"https://images.example/{index}.jpg",
+            source_quote_keys=(f"quote-{index}",),
+            product_title="Pet mat",
+            max_candidates=5,
+        )
+        for index in (1, 2)
+    )
+
+    result = adapter.search_by_image(
+        PriceVerificationActor(workspace_id="workspace", actor_id="employee"),
+        tasks,
+        keyword_search=False,
+    )
+
+    assert maximum_active == 2
+    assert [item["skc_id"] for item in result["items"]] == ["skc-1", "skc-2"]
+
+
+def test_low_spec_machine_uses_one_skc_worker(monkeypatch: Any) -> None:
+    monkeypatch.setattr(onebound_adapter.os, "cpu_count", lambda: 4)
+    monkeypatch.setattr(
+        onebound_adapter,
+        "_total_physical_memory_bytes",
+        lambda: 16 * 1024**3,
+    )
+
+    assert onebound_adapter._recommended_skc_parallelism() == 1
+
+    monkeypatch.setattr(onebound_adapter.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(
+        onebound_adapter,
+        "_total_physical_memory_bytes",
+        lambda: 7 * 1024**3,
+    )
+
+    assert onebound_adapter._recommended_skc_parallelism() == 1
+
+
+def test_rate_limit_or_timeout_evidence_requests_serial_fallback() -> None:
+    items = [
+        {
+            "evidence": [
+                {"response_summary": {"outcome": "rate_limited"}},
+            ]
+        }
+    ]
+
+    assert onebound_adapter._requires_serial_fallback(items) is True
+    assert onebound_adapter._requires_serial_fallback(
+        [{"evidence": [{"response_summary": {"outcome": "success"}}]}]
+    ) is False

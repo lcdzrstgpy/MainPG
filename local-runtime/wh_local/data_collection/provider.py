@@ -1,8 +1,9 @@
 """Minimal, auditable OneBound provider for 1688 daily selection.
 
 The transport is deliberately injected so callers can use a deterministic fake in
-tests.  ``UrllibTransport`` is only the production default; this module never
-retains downloaded image bytes beyond encoding the upload request.
+tests.  ``UrllibTransport`` is only the production default; downloaded image
+bytes remain request-local and may be handed directly to immediate local
+verification, but never enter provider responses, audits, or persistence.
 """
 
 from __future__ import annotations
@@ -300,11 +301,15 @@ class OneBound1688Provider:
         downloaded, download_audit, error = self._download_reference_image(reference_image_url)
         if error is not None:
             return ProviderCallResult(response={}, audits=(download_audit,), error=error)
-        try:
-            encoded_image = base64.b64encode(downloaded).decode("ascii")
-        finally:
-            # Drop the raw bytes before any API response, audit, or error is created.
-            del downloaded
+        assert downloaded is not None
+        return self._upload_reference_content(downloaded, download_audit)
+
+    def _upload_reference_content(
+        self,
+        downloaded: bytes,
+        download_audit: ApiEvidence,
+    ) -> ProviderCallResult:
+        encoded_image = base64.b64encode(downloaded).decode("ascii")
         return self._api_call(
             "upload_img",
             {"cache": "no"},
@@ -321,6 +326,41 @@ class OneBound1688Provider:
         if not self._enabled:
             return self._local_error("item_search_img", "provider_disabled", "provider is disabled")
         uploaded = self.upload_reference_image(criteria.reference_image_url)
+        return self._search_by_uploaded_image(criteria, uploaded)
+
+    def search_by_image_with_reference(
+        self,
+        criteria: DailySelectionCriteria,
+    ) -> tuple[ProviderCallResult, bytes | None]:
+        """Search by image and return the already-fetched reference in memory.
+
+        The bytes are deliberately kept outside ``ProviderCallResult`` so they
+        cannot enter provider audits, API responses, or persistence.  The price
+        verification caller releases them after local visual verification.
+        """
+        if criteria.collection_mode != "image" or criteria.reference_image_url is None:
+            return self._local_error(
+                "item_search_img", "invalid_request", "image criteria are required"
+            ), None
+        if not self._enabled:
+            return self._local_error(
+                "item_search_img", "provider_disabled", "provider is disabled"
+            ), None
+        downloaded, download_audit, error = self._download_reference_image(
+            criteria.reference_image_url
+        )
+        if error is not None:
+            return ProviderCallResult(response={}, audits=(download_audit,), error=error), None
+        assert downloaded is not None
+        uploaded = self._upload_reference_content(downloaded, download_audit)
+        searched = self._search_by_uploaded_image(criteria, uploaded)
+        return searched, downloaded
+
+    def _search_by_uploaded_image(
+        self,
+        criteria: DailySelectionCriteria,
+        uploaded: ProviderCallResult,
+    ) -> ProviderCallResult:
         if not uploaded.ok:
             return uploaded
         image_id = self._image_id_from_upload_response(uploaded.response)
