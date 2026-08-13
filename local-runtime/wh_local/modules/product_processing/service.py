@@ -8,7 +8,9 @@ import os
 import re
 import sys
 import threading
+import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,7 @@ from .domain.language_contract import (
     language_profile,
     normalize_target_language,
 )
+from .domain.description_contract import DescriptionContractError, normalize_five_point_description
 from .domain.image_slots import DEFAULT_SLOT_IDS, apply_slot_overrides
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
 from .domain.physical_dimensions import extract_physical_dimensions
@@ -127,6 +130,11 @@ def _ai_error_reason(exc: Exception) -> str:
     return message[:200] if message else type(exc).__name__
 
 
+def _is_non_retryable_provider_4xx(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    return isinstance(status_code, int) and 400 <= status_code < 500 and status_code != 429
+
+
 def _media_types() -> tuple:
     """Lazily import the image adapter; requests/Pillow are optional at import time."""
     global _MEDIA_TYPES
@@ -153,6 +161,29 @@ class ProductProcessingConflict(RuntimeError):
 
 class MediaUnavailableError(RuntimeError):
     """Image processing dependencies are missing."""
+
+
+class ListingTextConfigurationError(RuntimeError):
+    """A provider-side 4xx cannot be repaired by another listing-text stage."""
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class GridImageOutput:
+    carousel_urls: tuple[str, ...] = ()
+    summary_url: str = ""
+    carousel_media: tuple[Any, ...] = ()
+    attempt_count: int = 0
+    provider_status_class: str = ""
+    stage_timings_ms: dict[str, int] = field(default_factory=dict)
+
+    def __iter__(self):
+        # Keep existing direct-call tests and integrations source compatible.
+        yield list(self.carousel_urls)
+        yield self.summary_url
 
 
 def _as_bool(value: Any, *, default: bool = False) -> bool:
@@ -1566,6 +1597,19 @@ class ProductProcessingService:
         *,
         task_id: int,
     ) -> dict[str, Any]:
+        processing_started = time.perf_counter()
+        stage_timings_ms: dict[str, int] = {}
+
+        def record_stage(stage: str, started_at: float) -> None:
+            key = stage if stage.endswith("_ms") else f"{stage}_ms"
+            stage_timings_ms[key] = max(0, round((time.perf_counter() - started_at) * 1000))
+
+        def timing_snapshot() -> dict[str, int]:
+            return {
+                **stage_timings_ms,
+                "total_processing_ms": max(0, round((time.perf_counter() - processing_started) * 1000)),
+            }
+
         if draft is None or draft["status"] == "deleted":
             return {
                 **item,
@@ -1576,6 +1620,7 @@ class ProductProcessingService:
                     "failure_class": "technical_retryable",
                     "operator_hint": "草稿不存在或已被删除",
                     "retryable": True,
+                    "stage_timings_ms": timing_snapshot(),
                 },
             }
         raw = draft["raw_payload"]
@@ -1596,6 +1641,7 @@ class ProductProcessingService:
                     "failure_class": "configuration_blocked",
                     "operator_hint": "补充标题和主图后重试",
                     "retryable": True,
+                    "stage_timings_ms": timing_snapshot(),
                 },
             }
 
@@ -1627,6 +1673,7 @@ class ProductProcessingService:
                     "failure_class": failure_class,
                     "operator_hint": issue.operator_hint,
                     "retryable": failure_class in {"technical_retryable", "configuration_blocked"},
+                    "stage_timings_ms": timing_snapshot(),
                 },
             }
 
@@ -1644,6 +1691,8 @@ class ProductProcessingService:
         source_attributes = self._source_attributes_text(raw)
 
         ai_notes: list[str] = []
+        provider_attempts: dict[str, int] = {}
+        provider_status_classes: dict[str, str] = {}
         optimized_title = title
         description = self._text(draft.get("description") or raw.get("description"))
         need_grid = (
@@ -1667,65 +1716,171 @@ class ProductProcessingService:
                 (need_grid or need_detail)
                 or ("title" in scope and settings.get("title_optimize", True))
             ):
+                stage_started = time.perf_counter()
                 vision_subject, vision_preliminary_title = self._identify_subject(
                     source_image_urls[0], title, category, ai_notes
                 )
+                record_stage("subject_identity", stage_started)
 
             local_title = title
             local_desc = description
             translations: dict[str, str] = {}
             needs_title = "title" in scope and settings.get("title_optimize", True)
-            needs_desc = "details" in scope and not local_desc
+            # Selecting description processing means regenerate it from the active operator prompt;
+            # do not silently preserve an arbitrary source description.
+            needs_desc = "details" in scope
             if needs_title and needs_desc:
-                combined = self._generate_combined_text(
-                    title,
-                    category,
-                    raw,
-                    target_language,
-                    target_site,
-                    ai_notes,
-                    image_derived_title=vision_preliminary_title,
+                stage_started = time.perf_counter()
+                note_start = len(ai_notes)
+                try:
+                    combined = self._generate_combined_text(
+                        title,
+                        category,
+                        raw,
+                        target_language,
+                        target_site,
+                        ai_notes,
+                        image_derived_title=vision_preliminary_title,
+                    )
+                except ListingTextConfigurationError as exc:
+                    record_stage("combined_text", stage_started)
+                    return {
+                        **item,
+                        "title": local_title,
+                        "image_url": image_url,
+                        "status": "attention_required",
+                        "reason": str(exc),
+                        "result": {
+                            "error_type": "text_provider_configuration",
+                            "failure_class": "configuration_blocked",
+                            "operator_hint": "文本模型返回不可重试的 4xx；请检查模型路由、密钥或请求配置后重试",
+                            "retryable": True,
+                            "ai_notes": ai_notes,
+                            "provider_attempts": {"combined_text": 1},
+                            "provider_status_classes": {"combined_text": "non_retryable_4xx"},
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
+                record_stage("combined_text", stage_started)
+                provider_attempts["combined_text"] = (
+                    0 if "text:cache-hit" in ai_notes[note_start:] else 1
+                )
+                provider_status_classes["combined_text"] = (
+                    "output_contract_failed"
+                    if any(
+                        note.startswith("description_contract:ai-failed:")
+                        for note in ai_notes[note_start:]
+                    )
+                    else "success"
                 )
                 if combined:
                     if combined.get("title"):
                         local_title = self._normalized_title(combined["title"])
+                        needs_title = False
                     if combined.get("description"):
                         local_desc = combined["description"]
+                        needs_desc = False
                     if combined.get("variant_translations"):
                         translations = combined["variant_translations"]
                     ai_notes.append("text:ai-combined")
-                    needs_title = needs_desc = False
             if needs_title:
-                generated_title = self._generate_title(
-                    title,
-                    category,
-                    raw,
-                    target_language,
-                    target_site,
-                    ai_notes,
-                    image_derived_title=vision_preliminary_title,
+                stage_started = time.perf_counter()
+                try:
+                    generated_title = self._generate_title(
+                        title,
+                        category,
+                        raw,
+                        target_language,
+                        target_site,
+                        ai_notes,
+                        image_derived_title=vision_preliminary_title,
+                    )
+                except ListingTextConfigurationError as exc:
+                    record_stage("title_generation", stage_started)
+                    return {
+                        **item,
+                        "title": local_title,
+                        "image_url": image_url,
+                        "status": "attention_required",
+                        "reason": str(exc),
+                        "result": {
+                            "error_type": "text_provider_configuration",
+                            "failure_class": "configuration_blocked",
+                            "operator_hint": "文本模型返回不可重试的 4xx；请检查模型路由、密钥或请求配置后重试",
+                            "retryable": True,
+                            "ai_notes": ai_notes,
+                            "provider_attempts": {"title_generation": 1},
+                            "provider_status_classes": {"title_generation": "non_retryable_4xx"},
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
+                record_stage("title_generation", stage_started)
+                provider_attempts["title_generation"] = 1
+                provider_status_classes["title_generation"] = (
+                    "success" if generated_title else "failed"
                 )
                 if generated_title:
                     local_title = generated_title
                     ai_notes.append("title:ai")
             if needs_desc:
-                generated_desc = self._generate_description(
-                    local_title,
-                    category,
-                    raw,
-                    target_language,
-                    target_site,
-                    ai_notes,
-                    image_derived_title=vision_preliminary_title,
+                stage_started = time.perf_counter()
+                try:
+                    generated_desc = self._generate_description(
+                        local_title,
+                        category,
+                        raw,
+                        target_language,
+                        target_site,
+                        ai_notes,
+                        image_derived_title=vision_preliminary_title,
+                    )
+                except ListingTextConfigurationError as exc:
+                    record_stage("description_repair", stage_started)
+                    return {
+                        **item,
+                        "title": local_title,
+                        "image_url": image_url,
+                        "status": "attention_required",
+                        "reason": str(exc),
+                        "result": {
+                            "error_type": "text_provider_configuration",
+                            "failure_class": "configuration_blocked",
+                            "operator_hint": "文本模型返回不可重试的 4xx；请检查模型路由、密钥或请求配置后重试",
+                            "retryable": True,
+                            "ai_notes": ai_notes,
+                            "provider_attempts": {"description_repair": 1},
+                            "provider_status_classes": {"description_repair": "non_retryable_4xx"},
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
+                record_stage("description_repair", stage_started)
+                provider_attempts["description_repair"] = 1
+                provider_status_classes["description_repair"] = (
+                    "success" if generated_desc else "failed"
                 )
                 if generated_desc:
                     local_desc = generated_desc
                     ai_notes.append("details:ai")
+                    needs_desc = False
+            if "details" in scope and needs_desc:
+                return {
+                    **item,
+                    "title": local_title,
+                    "image_url": image_url,
+                    "status": "attention_required",
+                    "reason": "产品描述未通过 Amazon 五点结构校验",
+                    "result": {
+                        "error_type": "description_contract_unmet",
+                        "failure_class": "technical_retryable",
+                        "operator_hint": "描述必须是 5 条不重复的英文要点（80-150 词）；已阻止劣质占位描述进入店小秘",
+                        "retryable": True,
+                        "ai_notes": ai_notes,
+                        "provider_attempts": provider_attempts,
+                        "provider_status_classes": provider_status_classes,
+                        "stage_timings_ms": timing_snapshot(),
+                    },
+                }
             optimized_title, description, combined_variant_translations = local_title, local_desc, translations
-
-        if not description:
-            # AI 未启用或生成失败时保留旧模板兜底，避免导入表描述为空
-            description = f"{optimized_title}. Source information preserved for operator review."
 
         # 目标语言强制校验：AI 启用时不允许把未翻译标题/描述导出（对齐原型“已阻止导出”行为）
         if not preflight_only and _ai_enabled():
@@ -1745,6 +1900,9 @@ class ProductProcessingService:
                         "operator_hint": "AI 输出未通过目标语言校验（标题/描述仍含其他语言文本），请重试或检查 AI 配置",
                         "retryable": True,
                         "ai_notes": ai_notes,
+                        "provider_attempts": provider_attempts,
+                        "provider_status_classes": provider_status_classes,
+                        "stage_timings_ms": timing_snapshot(),
                     },
                 }
 
@@ -1752,6 +1910,7 @@ class ProductProcessingService:
         # combined 文本调用已并入翻译时直接复用（省一次独立 AI 调用）；否则按需单独调用。
         variant_value_translations: dict[str, str] = {}
         if not preflight_only:
+            stage_started = time.perf_counter()
             if combined_variant_translations:
                 variant_value_translations = combined_variant_translations
                 ai_notes.append("variant_values:combined")
@@ -1759,20 +1918,25 @@ class ProductProcessingService:
                 variant_value_translations = self._translate_variant_values(
                     raw, optimized_title, target_language, target_site, ai_notes
                 )
+            record_stage("variant_translation", stage_started)
 
         product_dimensions: dict[str, Any] = {}
         if not preflight_only and "product_dimensions" in scope:
+            stage_started = time.perf_counter()
             product_dimensions = self._generate_size(raw, optimized_title, category, ai_notes) or {}
+            record_stage("product_dimensions", stage_started)
         physical_dimensions = extract_physical_dimensions(raw).model_dump(mode="json")
 
         grid_image_paths: list[str] = []
         grid_summary_path = ""
+        grid_carousel_media: list[Any] = []
         detail_image_paths: list[str] = []
         # 图片编排（对齐原项目 five-stage：media_sku_local 一次出图 + 详情图本地合成 0 AI）：
         # 先出四宫格（1 次图像调用 + OCR 重绘≤1 轮），再拿四宫格分图本地拼详情图；
         # 四宫格不可用或本地合成含中文时才回退 AI 详情图生成。
         if need_grid:
-            grid_image_paths, grid_summary_path = self._generate_grid_images(
+            stage_started = time.perf_counter()
+            grid_output = self._generate_grid_images(
                 task_id,
                 draft["id"],
                 raw,
@@ -1785,6 +1949,12 @@ class ProductProcessingService:
                 vision_subject,
                 image_template=str(settings.get("image_template") or "A"),
             )
+            record_stage("grid_pipeline", stage_started)
+            grid_image_paths, grid_summary_path = grid_output
+            grid_carousel_media = list(grid_output.carousel_media)
+            provider_attempts["four_grid"] = grid_output.attempt_count
+            provider_status_classes["four_grid"] = grid_output.provider_status_class
+            stage_timings_ms.update(grid_output.stage_timings_ms)
             if not grid_image_paths:
                 reason = next(
                     (
@@ -1806,20 +1976,26 @@ class ProductProcessingService:
                         "operator_hint": "生成图含跨区内容、显著 AI 文字或分辨率不合格，已阻止写入店小秘；请重试图片阶段",
                         "retryable": True,
                         "ai_notes": ai_notes,
+                        "provider_attempts": provider_attempts,
+                        "provider_status_classes": provider_status_classes,
+                        "stage_timings_ms": timing_snapshot(),
                     },
                 }
         if need_detail:
             if grid_image_paths:
+                stage_started = time.perf_counter()
                 detail_image_paths = self._generate_detail_images_local(
                     task_id,
                     draft["id"],
-                    grid_image_paths,
+                    grid_carousel_media or grid_image_paths,
                     optimized_title,
                     category,
                     target_language,
                     ai_notes,
                 )
+                record_stage("local_detail", stage_started)
             if not detail_image_paths:
+                stage_started = time.perf_counter()
                 detail_image_paths = self._generate_detail_images(
                     task_id,
                     draft["id"],
@@ -1832,6 +2008,7 @@ class ProductProcessingService:
                     ai_notes,
                     vision_subject,
                 )
+                record_stage("detail_generation", stage_started)
         if grid_image_paths:
             ai_notes.append("four_grid:ai")
         if detail_image_paths:
@@ -1881,6 +2058,9 @@ class ProductProcessingService:
             "grid_image_summary_path": grid_summary_path,
             "detail_image_paths": detail_image_paths,
             "ai_notes": ai_notes,
+            "provider_attempts": provider_attempts,
+            "provider_status_classes": provider_status_classes,
+            "stage_timings_ms": timing_snapshot(),
             "preview_overrides": draft.get("preview_overrides") or {},
             "selection_run_id": draft.get("selection_run_id"),
             "selection_keyword": raw.get("selection_keyword") or "",
@@ -1966,10 +2146,24 @@ class ProductProcessingService:
         template = self._effective_prompt("combined_text")
         contracted = apply_language_contract_to_prompt(template, "combined_text", target_language, target_site)
         context = listing_prompt_context(raw, title=source_title, category=category)
+        description_template = self._effective_prompt("desc")
+        description_contracted = apply_language_contract_to_prompt(
+            description_template,
+            "desc",
+            target_language,
+            target_site,
+        )
+        description_instructions = format_prompt(
+            description_contracted,
+            title=source_title,
+            image_derived_title=image_derived_title,
+            **context,
+        )
         prompt = format_prompt(
             contracted,
             title=source_title,
             image_derived_title=image_derived_title,
+            description_instructions=description_instructions,
             variant_options=variant_options_text,
             target_language_name=profile.get("ai_language", target_language),
             language_code=target_language,
@@ -1987,8 +2181,22 @@ class ProductProcessingService:
         cache_key = self._ai_stage_cache_key("combined_text", prompt=prompt, input_data=input_data)
         cached = self._load_ai_stage_cache("combined_text", cache_key)
         if cached is not None:
-            ai_notes.append("text:cache-hit")
-            return cached if isinstance(cached, dict) else None
+            if isinstance(cached, dict) and cached.get("title"):
+                try:
+                    ensure_target_language_result("标题", cached.get("title"), target_language)
+                    cached_description = normalize_five_point_description(cached.get("description") or "")
+                    ensure_target_language_result("详情", cached_description, target_language)
+                except (DescriptionContractError, ValueError) as exc:
+                    self._note_ai_failure(ai_notes, "description_contract", _ai_error_reason(exc))
+                    cached_description = ""
+                if ai_notes is not None:
+                    ai_notes.append("text:cache-hit")
+                return {
+                    "title": self._normalized_title(cached["title"]),
+                    "description": cached_description,
+                    "variant_translations": cached.get("variant_translations") or {},
+                }
+            return None
         try:
             text = self._ai_client().chat(self._text_messages(prompt, image_derived_title=image_derived_title))
             data = _extract_json_object(text)
@@ -1996,17 +2204,31 @@ class ProductProcessingService:
                 self._note_ai_failure(ai_notes, "text", "combined 输出未包含可用的 optimized_title")
                 return None
             ensure_target_language_result("标题", data.get("optimized_title"), target_language)
-            ensure_target_language_result("详情", data.get("description"), target_language)
+            description = ""
+            try:
+                description = normalize_five_point_description(data.get("description") or "")
+                ensure_target_language_result("详情", description, target_language)
+            except (DescriptionContractError, ValueError) as exc:
+                self._note_ai_failure(ai_notes, "description_contract", _ai_error_reason(exc))
             result = {
                 "title": self._normalized_title(data["optimized_title"]),
-                "description": self._normalized_description(data.get("description") or ""),
+                "description": description,
                 "variant_translations": self._combined_variant_translations(data, variant_values),
             }
-            self._save_ai_stage_cache(
-                "combined_text", cache_key, output_data=result, prompt=prompt, input_data=input_data
-            )
+            if description:
+                self._save_ai_stage_cache(
+                    "combined_text", cache_key, output_data=result, prompt=prompt, input_data=input_data
+                )
             return result
-        except (AiProviderError, ValueError, OSError) as exc:
+        except AiProviderError as exc:
+            self._note_ai_failure(ai_notes, "text", _ai_error_reason(exc))
+            if _is_non_retryable_provider_4xx(exc):
+                raise ListingTextConfigurationError(
+                    _ai_error_reason(exc),
+                    status_code=exc.status_code,
+                ) from exc
+            return None
+        except (ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "text", _ai_error_reason(exc))
             return None
 
@@ -2047,7 +2269,15 @@ class ProductProcessingService:
             text = self._ai_client().chat(self._text_messages(prompt, image_derived_title=image_derived_title))
             ensure_target_language_result("标题", text, target_language)
             return self._normalized_title(text)
-        except (AiProviderError, ValueError, OSError) as exc:
+        except AiProviderError as exc:
+            self._note_ai_failure(ai_notes, "title", _ai_error_reason(exc))
+            if _is_non_retryable_provider_4xx(exc):
+                raise ListingTextConfigurationError(
+                    _ai_error_reason(exc),
+                    status_code=exc.status_code,
+                ) from exc
+            return ""
+        except (ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "title", _ai_error_reason(exc))
             return ""
 
@@ -2072,8 +2302,16 @@ class ProductProcessingService:
         try:
             text = self._ai_client().chat(self._text_messages(prompt, image_derived_title=image_derived_title))
             ensure_target_language_result("详情", text, target_language)
-            return self._normalized_description(text)
-        except (AiProviderError, ValueError, OSError) as exc:
+            return normalize_five_point_description(text)
+        except AiProviderError as exc:
+            self._note_ai_failure(ai_notes, "details", _ai_error_reason(exc))
+            if _is_non_retryable_provider_4xx(exc):
+                raise ListingTextConfigurationError(
+                    _ai_error_reason(exc),
+                    status_code=exc.status_code,
+                ) from exc
+            return ""
+        except (DescriptionContractError, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "details", _ai_error_reason(exc))
             return ""
 
@@ -2152,14 +2390,17 @@ class ProductProcessingService:
         ai_notes: list[str] | None = None,
         vision_subject: str = "",
         image_template: str = "A",
-    ) -> tuple[list[str], str]:
+    ) -> GridImageOutput:
         """按原型逻辑生成 2x2 四宫格并本地拆分为 4 张轮播图 + 1 张汇总图。"""
         if not _ai_enabled() or not reference_urls:
-            return [], ""
+            return GridImageOutput()
         media_types = _media_types()
         if not media_types:
-            return [], ""
+            return GridImageOutput()
         processor_cls, media_config_error, media_error = media_types
+        attempt_count = 0
+        provider_status_class = ""
+        grid_timings_ms: dict[str, int] = {}
         try:
             processor = self._media_processor()
             prompt_key = "grid_image_b" if str(image_template).strip().upper() == "B" else "grid_image"
@@ -2174,16 +2415,63 @@ class ProductProcessingService:
             # 用户自定义提示词和参考库可以改变风格，但不能覆盖拆图/无 AI 文字运行合同。
             prompt = f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}"
             self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
-            media = processor.generate(stage="grid_image", prompt=prompt, reference_values=reference_urls)
+            is_b_template = str(image_template).strip().upper() == "B"
+            generation_started = time.perf_counter()
+            try:
+                if is_b_template:
+                    media = processor.generate(
+                        stage="grid_image",
+                        prompt=prompt,
+                        reference_values=reference_urls,
+                        layout_scaffold=True,
+                    )
+                else:
+                    media = processor.generate(stage="grid_image", prompt=prompt, reference_values=reference_urls)
+            finally:
+                grid_timings_ms["grid_generation_ms"] = max(
+                    0,
+                    round((time.perf_counter() - generation_started) * 1000),
+                )
+            attempt_count = max(0, int(getattr(media, "attempt_count", 1) or 1))
+            provider_status_class = str(getattr(media, "provider_status_class", "success") or "success")
             # OCR 质量门：四宫格禁止模型写字；显著中英文排版都会触发一次定向修复。
-            media = self._repair_until_clean(processor, "grid_image", "four_grid", media, reference_urls, ai_notes)
-            parts = processor.split_four_grid(media)
+            validation_started = time.perf_counter()
+            try:
+                media = self._repair_until_clean(
+                    processor,
+                    "grid_image",
+                    "four_grid",
+                    media,
+                    reference_urls,
+                    ai_notes,
+                    allow_paid_repair=not is_b_template,
+                )
+                parts = processor.split_four_grid(media)
+            finally:
+                grid_timings_ms["grid_validation_ms"] = max(
+                    0,
+                    round((time.perf_counter() - validation_started) * 1000),
+                )
         except (media_config_error, media_error, ValueError, OSError) as exc:
+            attempt_count = max(attempt_count, int(getattr(exc, "attempt_count", 0) or 0))
+            provider_status_class = str(
+                getattr(exc, "status_class", "") or provider_status_class or "failed"
+            )
             self._note_ai_failure(ai_notes, "four_grid", _ai_error_reason(exc))
-            return [], ""
+            return GridImageOutput(
+                attempt_count=attempt_count,
+                provider_status_class=provider_status_class,
+                stage_timings_ms=grid_timings_ms,
+            )
         carousel: list[str] = []
+        carousel_media: list[Any] = []
         summary_path = ""
+        publish_started = time.perf_counter()
         published = self._publish_media(processor, parts, task_id, draft_id)
+        grid_timings_ms["publish_ms"] = max(
+            0,
+            round((time.perf_counter() - publish_started) * 1000),
+        )
         if not any(str(value).startswith(("http://", "https://")) for value in published):
             self._note_media_unconfigured(ai_notes, "four_grid")
         for part, value in zip(parts, published):
@@ -2191,7 +2479,15 @@ class ProductProcessingService:
                 summary_path = str(value)
             elif part.stage.startswith("grid_image_"):
                 carousel.append(str(value))
-        return carousel[:4], summary_path
+                carousel_media.append(part)
+        return GridImageOutput(
+            tuple(carousel[:4]),
+            summary_path,
+            tuple(carousel_media[:4]),
+            attempt_count,
+            provider_status_class,
+            grid_timings_ms,
+        )
 
     def _generate_detail_images(
         self,
@@ -2238,7 +2534,7 @@ class ProductProcessingService:
         self,
         task_id: int,
         draft_id: int,
-        source_values: list[str],
+        source_values: list[Any],
         optimized_title: str,
         category: str,
         target_language: str,
@@ -2289,10 +2585,16 @@ class ProductProcessingService:
             return []
 
     @staticmethod
-    def _local_source_bytes(value: str) -> bytes | None:
+    def _local_source_bytes(value: Any) -> bytes | None:
         """读取本地路径或 http(s) 图片字节（供本地合成详情图用）；失败返回 None。"""
         if not value:
             return None
+        if isinstance(value, bytes):
+            return value
+        content = getattr(value, "content", None)
+        if isinstance(content, bytes):
+            return content
+        value = str(value)
         if Path(value).is_file():
             try:
                 return Path(value).read_bytes()
@@ -2308,7 +2610,7 @@ class ProductProcessingService:
 
     @staticmethod
     def _compose_local_detail_image(
-        source_values: list[str],
+        source_values: list[Any],
         title: str,
         category: str,
         target_language: str,
@@ -2478,6 +2780,8 @@ class ProductProcessingService:
         media: Any,
         reference_urls: list[str],
         ai_notes: list[str] | None = None,
+        *,
+        allow_paid_repair: bool = True,
     ) -> Any:
         """Run deterministic text/structure gates, repair once on failure, then revalidate."""
         # 四宫格会直接进入店小秘，运行环境开关不得绕过显著文字门。
@@ -2510,6 +2814,10 @@ class ProductProcessingService:
             if ai_notes is not None:
                 ai_notes.append(f"{note_key}:ocr_passed")
             return media
+        if not allow_paid_repair:
+            if ai_notes is not None:
+                ai_notes.append(f"{note_key}:quality_unresolved")
+            raise ValueError("四宫格未通过文字、结构或独立性质量门；B 模板已停止付费重绘")
         rounds = 0
         while found and rounds < max_repair_rounds():
             rounds += 1

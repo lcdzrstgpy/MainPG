@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 import requests
 
 from ..domain.policy import is_safe_external_url
+from .grid_layout import build_grid_scaffold, extract_grid_panels, locate_split_guides
 
 # 模块级连接池：复用 TCP/TLS 握手与 HTTP 连接，避免每个请求新建连接（图片生成/参考图下载高频调用）。
 _SESSION = requests.Session()
@@ -60,9 +61,18 @@ class MediaConfigurationError(RuntimeError):
 class MediaProcessingError(RuntimeError):
     """图片处理失败；``status_code`` 携带中转返回的 HTTP 状态码（429 时用于退避重试）。"""
 
-    def __init__(self, message: str, *, status_code: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        attempt_count: int = 0,
+        status_class: str = "",
+    ):
         super().__init__(message)
         self.status_code = status_code
+        self.attempt_count = attempt_count
+        self.status_class = status_class
 
 
 @dataclass(frozen=True)
@@ -74,6 +84,8 @@ class GeneratedMedia:
     provider: str
     model: str
     reference_count: int
+    attempt_count: int = 1
+    provider_status_class: str = "success"
 
 
 class ProductImageProcessor:
@@ -111,13 +123,21 @@ class ProductImageProcessor:
         stage: str,
         prompt: str,
         reference_values: Iterable[str],
+        layout_scaffold: bool = False,
     ) -> GeneratedMedia:
         config = self._config()
         providers = self._providers(config)
         if not providers:
             raise MediaConfigurationError("image provider is not configured")
         with self._image_semaphore:
-            return self._generate_with_limits(stage, prompt, reference_values, providers, config)
+            return self._generate_with_limits(
+                stage,
+                prompt,
+                reference_values,
+                providers,
+                config,
+                layout_scaffold=layout_scaffold,
+            )
 
     def _generate_with_limits(
         self,
@@ -127,6 +147,7 @@ class ProductImageProcessor:
         providers: list[dict[str, str]],
         config: dict[str, Any],
         extra_references: list[tuple[bytes, str, str]] | None = None,
+        layout_scaffold: bool = False,
     ) -> GeneratedMedia:
         default_limit = 1 if stage == "grid_image" else 2
         reference_limit = max(
@@ -140,12 +161,33 @@ class ProductImageProcessor:
         references.extend(self._load_references(reference_values, limit=reference_limit))
         if not references:
             raise MediaProcessingError("a confirmed source image is required for image processing")
+        ordinary_reference_count = len(references)
+        if layout_scaffold:
+            scaffold = build_grid_scaffold(references[0][0])
+            references = [(scaffold, "fixed-four-grid-layout.png", "image/png"), *references]
         retries = max(1, min(int((config.get("limits") or {}).get("image_retry_attempts") or 3), 5))
         errors: list[str] = []
+        attempt_count = 0
+        grid_deadline = time.monotonic() + 150.0 if stage == "grid_image" else None
+        max_total_attempts = min(retries, 2) if stage == "grid_image" else retries * max(1, len(providers))
         for provider in self._provider_order(providers, config):
             for attempt in range(1, retries + 1):
+                if attempt_count >= max_total_attempts:
+                    break
+                request_timeout = 120.0
+                if grid_deadline is not None:
+                    remaining_seconds = grid_deadline - time.monotonic()
+                    if remaining_seconds <= 1.0:
+                        break
+                    request_timeout = min(request_timeout, remaining_seconds)
+                attempt_count += 1
                 try:
-                    content, content_type = self._request_edit(provider, prompt, references)
+                    content, content_type = self._request_edit(
+                        provider,
+                        prompt,
+                        references,
+                        timeout_seconds=request_timeout,
+                    )
                     suffix = _suffix_for_content_type(content_type)
                     return GeneratedMedia(
                         stage=stage,
@@ -154,14 +196,31 @@ class ProductImageProcessor:
                         suffix=suffix,
                         provider=provider["name"],
                         model=provider["reference_model"] or provider["model"],
-                        reference_count=len(references),
+                        reference_count=ordinary_reference_count,
+                        attempt_count=attempt_count,
                     )
                 except (requests.RequestException, TimeoutError, ValueError, MediaProcessingError) as exc:
                     errors.append(f"{provider['name']} attempt {attempt}: {_safe_error(exc)}")
-                    # 429 限流：指数退避后重试，避免立即重撞限流阈值
-                    if getattr(exc, "status_code", None) == 429:
-                        time.sleep(min(2 ** attempt, 10))
-        raise MediaProcessingError("; ".join(errors) or "image provider request failed")
+                    status_class = _retry_class(exc)
+                    if status_class in {"non_retryable_4xx", "unknown_outcome_timeout", "non_retryable_local"}:
+                        raise MediaProcessingError(
+                            "; ".join(errors),
+                            status_code=getattr(exc, "status_code", None),
+                            attempt_count=attempt_count,
+                            status_class=status_class,
+                        ) from exc
+                    if status_class == "rate_limited":
+                        delay = min(2 ** attempt, 10)
+                        if grid_deadline is not None and time.monotonic() + delay >= grid_deadline:
+                            break
+                        time.sleep(delay)
+            if attempt_count >= max_total_attempts:
+                break
+        raise MediaProcessingError(
+            "; ".join(errors) or "image provider request failed",
+            attempt_count=attempt_count,
+            status_class="retry_budget_exhausted",
+        )
 
     def repair_generated(
         self,
@@ -208,20 +267,8 @@ class ProductImageProcessor:
         try:
             self.validate_four_grid(media)
             source = Image.open(BytesIO(media.content)).convert("RGB")
-            width, height = source.size
-            # 生成合同明确规定 50%/50% 切线。自适应追逐模型画出的假分隔线会把切点
-            # 偏移最多数十像素并切入邻格；固定中心切分，只移除中心极窄安全带。
-            x_split, y_split = width // 2, height // 2
-            gutter_x = max(1, int(width * 0.004))
-            gutter_y = max(1, int(height * 0.004))
-            # 四象限：左上 → 右上 → 左下 → 右下（对齐原项目拆图顺序）
-            boxes = (
-                (0, 0, x_split - gutter_x, y_split - gutter_y),
-                (x_split + gutter_x, 0, width, y_split - gutter_y),
-                (0, y_split + gutter_y, x_split - gutter_x, height),
-                (x_split + gutter_x, y_split + gutter_y, width, height),
-            )
-            panels = [source.crop(box) for box in boxes]
+            guides = locate_split_guides(source)
+            panels = extract_grid_panels(source, guides)
         except Exception as exc:
             raise MediaProcessingError("generated four-grid image cannot be split") from exc
 
@@ -270,8 +317,7 @@ class ProductImageProcessor:
                 raise ValueError("four-grid source must be at least 1800px on each edge")
             if abs(width - height) / max(width, height) > 0.02:
                 raise ValueError("four-grid source must be square")
-            if not _has_centered_uniform_dividers(source):
-                raise ValueError("four-grid center dividers are missing, shifted, or discontinuous")
+            locate_split_guides(source)
         except MediaConfigurationError:
             raise
         except Exception as exc:
@@ -511,6 +557,8 @@ class ProductImageProcessor:
         provider: dict[str, str],
         prompt: str,
         references: list[tuple[bytes, str, str]],
+        *,
+        timeout_seconds: float = 120.0,
     ) -> tuple[bytes, str]:
         files: Any
         if len(references) == 1:
@@ -531,7 +579,7 @@ class ProductImageProcessor:
                 "size": _normalized_image_size(provider.get("image_size")),
             },
             files=files,
-            timeout=120,
+            timeout=max(1.0, min(float(timeout_seconds), 120.0)),
         )
         try:
             if not response.ok:
@@ -568,6 +616,21 @@ class ProductImageProcessor:
 def _safe_error(error: BaseException) -> str:
     message = str(error).replace("\n", " ").strip()
     return message[:180] or error.__class__.__name__
+
+
+def _retry_class(error: BaseException) -> str:
+    status = getattr(error, "status_code", None)
+    if status in {400, 401, 403, 404}:
+        return "non_retryable_4xx"
+    if status == 429:
+        return "rate_limited"
+    if status is not None and 500 <= status < 600:
+        return "server_error"
+    if isinstance(error, (requests.Timeout, TimeoutError)):
+        return "unknown_outcome_timeout"
+    if isinstance(error, requests.ConnectionError):
+        return "connection_error"
+    return "non_retryable_local"
 
 
 def _normalized_image_size(value: Any) -> str:

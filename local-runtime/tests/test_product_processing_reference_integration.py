@@ -202,7 +202,15 @@ class _CapturingTextClient:
         return json.dumps(
             {
                 "optimized_title": "Insulated Travel Mug Stainless Steel 500 ml",
-                "description": "A travel mug with source-supported stainless steel construction and 500 ml capacity.",
+                "description": "\n".join(
+                    [
+                        "- VERIFIED STEEL BUILD: Confirmed stainless steel construction supports dependable everyday drink service while preserving the source-supported product identity and clean travel mug shape.",
+                        "- PRACTICAL DRINK USE: The mug is suited to routine beverage use at a desk, during a commute, or in other ordinary daily settings.",
+                        "- CONFIRMED CAPACITY SIZE: The verified 500 ml capacity provides a clear volume reference without adding unsupported dimensions or package claims.",
+                        "- SIMPLE DAILY HANDLING: The straightforward mug format is easy to place, carry, and incorporate into a regular beverage routine with normal care.",
+                        "- USEFUL PORTABLE FORMAT: Its travel-oriented form combines the confirmed capacity and construction in one practical item for supported on-the-go use.",
+                    ]
+                ),
                 "variant_translations": [],
             }
         )
@@ -237,12 +245,21 @@ def test_combined_text_reference_does_not_add_provider_calls(monkeypatch) -> Non
 class _CapturingImageProcessor:
     def __init__(self) -> None:
         self.prompts: list[str] = []
+        self.layout_scaffold_values: list[bool] = []
 
-    def generate(self, *, stage: str, prompt: str, reference_values: list[str]) -> SimpleNamespace:
+    def generate(
+        self,
+        *,
+        stage: str,
+        prompt: str,
+        reference_values: list[str],
+        layout_scaffold: bool = False,
+    ) -> SimpleNamespace:
         assert stage == "grid_image"
         assert reference_values == ["https://example.com/source.jpg"]
         self.prompts.append(prompt)
-        return SimpleNamespace(stage=stage, content=b"image", content_type="image/png")
+        self.layout_scaffold_values.append(layout_scaffold)
+        return SimpleNamespace(stage=stage, content=b"image", content_type="image/png", attempt_count=1)
 
     @staticmethod
     def split_four_grid(media: SimpleNamespace) -> list[SimpleNamespace]:
@@ -293,3 +310,49 @@ def test_grid_image_reference_does_not_add_provider_calls(monkeypatch) -> None:
     assert len(carousel) == 4
     assert summary.endswith("grid_image_summary.png")
     assert sum(note.startswith("image_reference:") for note in notes) == 1
+
+
+def test_b_grid_uses_fixed_scaffold_and_disables_paid_repair(monkeypatch) -> None:
+    service = object.__new__(ProductProcessingService)
+    service.repository = _PromptRepository()
+    processor = _CapturingImageProcessor()
+    repair_options: list[bool] = []
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(service_module, "_media_types", lambda: (object, RuntimeError, ValueError))
+    monkeypatch.setattr(service, "_media_processor", lambda: processor)
+
+    def repair(*args, **kwargs):
+        repair_options.append(kwargs["allow_paid_repair"])
+        return args[3]
+
+    monkeypatch.setattr(service, "_repair_until_clean", repair)
+    monkeypatch.setattr(
+        service,
+        "_publish_media",
+        lambda _processor, parts, _task_id, _draft_id: [
+            f"https://example.com/{part.stage}.png" for part in parts
+        ],
+    )
+
+    output = service._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Insulated Travel Mug Stainless Steel 500 ml",
+        "Kitchen & Dining",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        [],
+        image_template="B",
+    )
+
+    assert processor.layout_scaffold_values == [True]
+    assert repair_options == [False]
+    assert output.attempt_count == 1
+    assert output.provider_status_class == "success"
+    assert output.stage_timings_ms.keys() >= {
+        "grid_generation_ms",
+        "grid_validation_ms",
+        "publish_ms",
+    }

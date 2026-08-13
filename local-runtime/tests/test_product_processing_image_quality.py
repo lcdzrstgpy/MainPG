@@ -6,6 +6,7 @@ from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
+import requests
 from PIL import Image
 
 from wh_local.modules.product_processing import service as service_module
@@ -88,15 +89,161 @@ def test_split_four_grid_rejects_continuous_poster_without_center_dividers() -> 
         processor.split_four_grid(_media(buffer.getvalue()))
 
 
-def test_split_four_grid_rejects_shifted_separator() -> None:
+def test_split_four_grid_accepts_one_small_shifted_separator_as_local_fallback() -> None:
     image = Image.new("RGB", (2048, 2048), (34, 72, 118))
     image.paste((235, 235, 235), (1060, 0, 1072, 2048))
     image.paste((235, 235, 235), (0, 1060, 2048, 1072))
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     processor = ProductImageProcessor(lambda: {})
-    with pytest.raises(MediaProcessingError, match="cannot be split"):
-        processor.split_four_grid(_media(buffer.getvalue()))
+    assert len(processor.split_four_grid(_media(buffer.getvalue()))) == 5
+
+
+def _image_provider_config(source_path, *, retries: int = 3):
+    return {
+        "image": {
+            "base_url": "https://provider.example/v1",
+            "api_key": "configured",
+            "model": "gpt-image-test",
+            "reference_model": "gpt-image-test",
+            "image_size": "2048x2048",
+        },
+        "limits": {"image_retry_attempts": retries},
+        "source_path": str(source_path),
+    }
+
+
+def test_image_http_400_is_not_retried(monkeypatch, tmp_path) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(_grid_bytes())
+    calls = 0
+
+    def fail(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise MediaProcessingError("bad request", status_code=400)
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(fail))
+    processor = ProductImageProcessor(lambda: _image_provider_config(source))
+    with pytest.raises(MediaProcessingError) as caught:
+        processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
+    assert calls == 1
+    assert caught.value.status_class == "non_retryable_4xx"
+    assert caught.value.attempt_count == 1
+
+
+def test_image_timeout_with_unknown_outcome_is_not_retried(monkeypatch, tmp_path) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(_grid_bytes())
+    calls = 0
+
+    def fail(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise requests.Timeout("provider timed out")
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(fail))
+    processor = ProductImageProcessor(lambda: _image_provider_config(source))
+    with pytest.raises(MediaProcessingError) as caught:
+        processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
+    assert calls == 1
+    assert caught.value.status_class == "unknown_outcome_timeout"
+
+
+def test_image_early_500_retries_only_once(monkeypatch, tmp_path) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(_grid_bytes())
+    calls = 0
+
+    def respond(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise MediaProcessingError("server error", status_code=500)
+        return _grid_bytes(), "image/png"
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(respond))
+    processor = ProductImageProcessor(lambda: _image_provider_config(source))
+    media = processor.generate(
+        stage="grid_image",
+        prompt="contract",
+        reference_values=[str(source)],
+        layout_scaffold=True,
+    )
+    assert calls == 2
+    assert media.attempt_count == 2
+    assert media.reference_count == 1
+
+
+def test_second_grid_attempt_uses_only_the_remaining_150_second_budget(monkeypatch, tmp_path) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(_grid_bytes())
+    clock = [0.0]
+    request_timeouts: list[float] = []
+
+    def respond(*_args, **kwargs):
+        request_timeouts.append(float(kwargs["timeout_seconds"]))
+        if len(request_timeouts) == 1:
+            clock[0] = 125.0
+            raise MediaProcessingError("server error", status_code=500)
+        return _grid_bytes(), "image/png"
+
+    monkeypatch.setattr(
+        "wh_local.modules.product_processing.infrastructure.media.time.monotonic",
+        lambda: clock[0],
+    )
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(respond))
+    processor = ProductImageProcessor(lambda: _image_provider_config(source))
+
+    media = processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
+
+    assert media.attempt_count == 2
+    assert request_timeouts == [120.0, 25.0]
+
+
+def test_b_grid_quality_failure_never_triggers_a_paid_repair(monkeypatch) -> None:
+    class _Processor:
+        repair_calls = 0
+
+        @staticmethod
+        def validate_four_grid(_media) -> None:
+            return None
+
+        def repair_generated(self, **_kwargs):
+            self.repair_calls += 1
+            return _media(_grid_bytes())
+
+    service = object.__new__(service_module.ProductProcessingService)
+    processor = _Processor()
+    monkeypatch.setattr(
+        service_module,
+        "inspect_visible_text",
+        lambda _content: {"chinese": [], "prominent": ["FACTORY DIRECT"]},
+    )
+    monkeypatch.setattr(service_module, "_media_types", lambda: (object, RuntimeError, ValueError))
+
+    with pytest.raises(ValueError, match="停止付费重绘"):
+        service._repair_until_clean(
+            processor,
+            "grid_image",
+            "four_grid",
+            _media(_grid_bytes()),
+            ["https://example.com/source.jpg"],
+            [],
+            allow_paid_repair=False,
+        )
+
+    assert processor.repair_calls == 0
+
+
+def test_local_detail_reads_split_media_bytes_without_redownloading(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service_module,
+        "fetch_public_image",
+        lambda *_args, **_kwargs: pytest.fail("split media must not be downloaded from COS"),
+    )
+    media = _media(_grid_bytes())
+    assert service_module.ProductProcessingService._local_source_bytes(media) == media.content
 
 
 def test_ocr_inspection_flags_large_added_copy_but_not_small_product_mark(monkeypatch) -> None:

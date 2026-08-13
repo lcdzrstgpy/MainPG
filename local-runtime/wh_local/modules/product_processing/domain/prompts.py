@@ -12,8 +12,11 @@ from typing import Any
 
 
 GRID_RUNTIME_CONTRACT = """NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT:
-- Output one square 2x2 transport grid with exact 50% horizontal and vertical cut boundaries.
-- Draw one continuous, neutral light-gray separator centered on each cut boundary, 0.4%-0.8% of the full image wide. The two separators must be straight, uniform, and uninterrupted from edge to edge.
+- Output one 2048 x 2048 square 2x2 transport grid using the supplied fixed-layout scaffold as a structural constraint.
+- Keep the vertical separator at x=1016..1031 and the horizontal separator at y=1016..1031. Preserve both as continuous neutral light-gray bands, straight, uniform, and uninterrupted from edge to edge.
+- Keep Panel 1 inside x=0..1015, y=0..1015; Panel 2 inside x=1032..2047, y=0..1015; Panel 3 inside x=0..1015, y=1032..2047; Panel 4 inside x=1032..2047, y=1032..2047.
+- Do not render these coordinates, panel numbers, instructions, guides, or any other text into the image.
+- Draw no second full-height or full-width divider, inset frame, nested collage border, split-panel line, or internal grid inside any quadrant.
 - Each quadrant is a complete standalone product photo. No subject, prop, shadow, surface, background shape, or typography may cross a cut boundary.
 - Show the complete sellable product or verified complete set in every quadrant; no pure macro crop and no hidden or invented parts.
 - Generate zero added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, or measurement marks. No copy is added after splitting either.
@@ -67,7 +70,7 @@ STRICT RULES:
 2. Example structure:
    DURABLE MATERIAL - This product is built with sturdy ABS plastic, designed to withstand everyday use.
 3. Cover five distinct angles: material/build quality, function or usage scenario, size/capacity, easy care or convenience, and one practical detail that adds value. Do not repeat the same selling point in two bullets.
-4. Natural fluent English for US consumers. Total 80-150 English words, max 500 characters.
+4. Natural fluent English for US consumers. Total 80-150 English words, max 1000 characters.
 5. Avoid generic claims, exaggerated words, brands, trademarks, country names, marketplace/platform names, and superlatives.
 6. Do not state a material unless verified material evidence explicitly supplies it.
 7. Use only facts supported by the image-derived product understanding, the source title, category, and attributes. Do not invent features. This is NOT a translation task — never translate the source title or description literally.
@@ -111,10 +114,13 @@ TITLE STYLE EXAMPLES (follow the structure, not the exact product facts):
 - Better for that product type: Brown Corrugated Cardboard Shipping Boxes for Packing, Moving and Storage, Rectangular Kraft Mailer Cartons, Multiple Size Packaging Box Set
 - Avoid repeating the same noun in a row (Boxes, Cartons, Boxes). Use one strong product noun first, then attributes and use scenes.
 
+Operator-configured product description instructions (apply their factual and style rules; the final response format below remains JSON):
+{description_instructions}
+
 DESCRIPTION STRICT RULES:
 1. Output exactly 5 bullet points (Amazon-style five key points). Each point starts with a 2-5 word ALL-CAPS key phrase, then ": " or " - ", then one fluent sentence.
 2. Cover five distinct angles: material/build quality, function or usage scenario, size/capacity, easy care or convenience, and one practical detail that adds value. Do not repeat the same selling point in two bullets.
-3. Natural fluent English for US consumers. Total 80-150 English words, max 500 characters.
+3. Natural fluent English for US consumers. Total 80-150 English words, max 1000 characters.
 4. Avoid generic claims, exaggerated words, brands, trademarks, country names, marketplace/platform names, and superlatives.
 5. Do not state a material unless verified material evidence explicitly supplies it.
 6. Use only facts supported by the image-derived product understanding, the source title, category, and attributes. Do not invent features.
@@ -376,8 +382,8 @@ Panel 1 - Hero Shot (top-left): the best moment the persona wears/uses the SKU.
 - Scene & light: locked in the [Hero Scene]; natural window light, afternoon slanting sun, or moody wall lamp for a storytelling feel.
 - Narrative: the visual center stays on the product; ambient light and [Styling Props] must reinforce the [Target Vibe].
 
-Panel 2 - Complete Product + Detail Inset (top-right): show the complete product at 55%-70% plus at most one small inset close-up of a real material, edge, hardware, or structure detail.
-- A pure macro crop without the complete sellable product is forbidden. The inset must stay fully inside this panel and must not cross the center boundary.
+Panel 2 - Complete Product + Integrated Detail (top-right): show the complete product at 55%-70% and emphasize one real material, edge, hardware, or structure detail through camera angle, lighting, or depth of field inside one unified scene.
+- A pure macro crop without the complete sellable product is forbidden. Do not add an inset frame, split-panel border, nested collage, or second divider inside this panel.
 
 Panel 3 - Credible Lifestyle (bottom-left): show the complete product in a believable use or display context supported by the source category.
 - Do not invent packaging, storage cases, accessories, cards, ribbons, or set contents that are absent from the reference.
