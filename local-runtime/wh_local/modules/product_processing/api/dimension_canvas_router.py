@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
 from ..dimension_canvas_service import (
@@ -215,6 +216,28 @@ def create_dimension_canvas_router(service: DimensionCanvasService) -> APIRouter
             notification_id,
             workspace_id=_workspace(workspace_id),
         )
+
+    @router.get("/assets/{asset_id}/image")
+    def dimension_asset_image(
+        asset_id: str,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ):
+        """Browser-facing same-origin image proxy for canvas assets.
+
+        外部图床素材（如 1688 防盗链图）由后端下载并缓存到本地后返回，
+        浏览器不再直连外部域名，避免图片空白或一直加载。
+        """
+        try:
+            path = _call(
+                service.dimension_asset_image_path,
+                asset_id,
+                workspace_id=_workspace(workspace_id),
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:  # download/IO failures surface as a transient 502
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"dimension asset unavailable: {exc}") from exc
+        return FileResponse(path, filename=path.name)
 
     return router
 
