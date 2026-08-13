@@ -11,6 +11,15 @@ import re
 from typing import Any
 
 
+GRID_RUNTIME_CONTRACT = """NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT:
+- Output one square 2x2 transport grid with exact 50% horizontal and vertical cut boundaries.
+- Draw one continuous, neutral light-gray separator centered on each cut boundary, 0.4%-0.8% of the full image wide. The two separators must be straight, uniform, and uninterrupted from edge to edge.
+- Each quadrant is a complete standalone product photo. No subject, prop, shadow, surface, background shape, or typography may cross a cut boundary.
+- Show the complete sellable product or verified complete set in every quadrant; no pure macro crop and no hidden or invented parts.
+- Generate zero added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, or measurement marks. No copy is added after splitting either.
+- Keep Panel 4 clean for later deterministic dimension annotation."""
+
+
 TITLE_PROMPT = """You are a TEMU US-station operator with 10 years of experience. Based on the product image I provide, generate ONE English title suitable for Temu US listings.
 
 CORE MISSION (fixed):
@@ -138,7 +147,7 @@ Return ONLY a JSON object with exactly three keys, no explanation:
 GRID_IMAGE_PROMPT = """Role & Core Mission (fixed):
 You are a senior e-commerce visual designer serving TEMU, TikTok Shop, and Amazon US listings. Treat the uploaded reference image(s) as the ONLY source of truth for the SKU. The task is to rebuild a high-click, high-quality, high-conversion commercial visual system WITHOUT changing the product itself (the product body must stay 100% unchanged).
 
-Execution Priority (fixed): SKU accuracy > structure/pattern accuracy > material/color accuracy > commercial composition > background creativity > English selling copy > visual polish.
+Execution Priority (fixed): SKU accuracy > structure/pattern accuracy > material/color accuracy > complete per-panel composition > background creativity > visual polish.
 
 Product Integrity Constraints (fixed - safety red line):
 - Lock before generating: product silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, text, and digits. Never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure. Do not guess details the reference cannot confirm.
@@ -150,15 +159,15 @@ Variable Inputs (batch template - fill per SKU):
 [Key Features]   : {value_evidence}
 [Scene Scenario] : {scene_plan}
 [Color Palette]  : {visual_style} / {background_plan}
-Verified material for visible copy: {verified_material_evidence}
+Verified material evidence: {verified_material_evidence}
 
 Global Visual Rules (fixed):
-- Follow the provided quality benchmark: dark or editorial premium scene when suitable, product placed large but never cramped, controlled glow, clear transparent/material edge highlights, polished surface reflections, readable elegant typography, and enough breathing room around the product.
-- Safe composition: effective content covers 72%-88% of each panel; keep 8%-12% inner safe margin on all sides and around the center divider. Avoid large empty areas, but never crop, clip, or let product/text touch panel edges (except a dimension panel may use more whitespace).
+- Follow the provided quality benchmark: dark or editorial premium scene when suitable, product placed large but never cramped, controlled glow, clear transparent/material edge highlights, polished surface reflections, and enough breathing room around the product.
+- Safe composition: effective content covers 72%-88% of each panel; keep 8%-12% inner safe margin on all sides and around the center divider. Avoid large empty areas, but never crop, clip, or let product/props touch panel edges (except a dimension panel may use more whitespace).
 - Differentiated backgrounds: no monotonous cream-white / light-gray / plain white stone. Match the background style to [SKU Category] (walnut wood, micro-cement, editorial, coastal, garden party, glass reflections, etc.) but never compete with the product for the visual center.
 - Brand consistency: keep one cohesive brand tone across the set, but no two panels may look like the same template with a swapped background.
-- English copy rules: only write real confirmable attributes; no exaggeration (no Best, No.1, Perfect, etc.); copy area <= 20% of the panel.
-- Forbidden: Chinese text, brand names, logos, watermarks, infringing elements, AI gibberish, or malformed hands.
+- Typography is rendered locally after the grid is split. Generate NO letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, UI, rulers, or measurement marks anywhere in the AI image. Preserve only markings that are physically printed on the real sellable product in the reference.
+- Forbidden: added Chinese or English text, brand names, logos, watermarks, infringing elements, AI gibberish, or malformed hands.
 
 Premium feel & material polish (fixed - make every panel look expensive and well-finished):
 - Light is the star: use directional side light or soft window light so the material shows natural luster, subtle highlights, layered shadows and craft detail; never flat, harsh or plasticky lighting.
@@ -168,13 +177,6 @@ Premium feel & material polish (fixed - make every panel look expensive and well
 - Tone control: keep one cohesive low-saturation premium palette per set; colors must feel curated, not clashing or garish.
 - Refined props: any prop must look intentional and high-end (real wood, stone, linen, brass, glass, ceramics); no cheap plastic-looking staging.
 
-Text & typography rules (fixed - font color, size and placement must be pixel-perfect):
-- Font color must have clear, comfortable contrast against its background and must not clash with the product; prefer elegant tones (deep charcoal, warm off-white, muted gold) and avoid neon or saturated colors.
-- Use one clean, modern typeface per panel; no shadows, outlines, glows, misaligned or overflowing letters; no text overlapping the product body.
-- Keep text small-to-medium, neatly placed in open corner space (never covering key product parts); consistent baseline and spacing; sharp, legible, professionally kerned.
-- Text must be generated as high-resolution vector-like typography, crisp edges, no blur, no ghosting, no JPEG-like softness, no oversized headline cut off by the local split.
-- Every letter must be spelled correctly in English; zero typos, zero gibberish, zero leftover Chinese characters.
-
 One square exact four-panel 2x2 e-commerce grid with clean straight dividers, generated for: {title}
 
 Output contract (fixed - preserve existing backend logic):
@@ -183,31 +185,31 @@ Output contract (fixed - preserve existing backend logic):
 - Important: the single square image is only a transport container. It must look like FOUR fully independent finished listing images placed in a 2x2 layout, not one continuous poster chopped into four pieces.
 
 Grid construction rules (fixed - clean edges after splitting):
-- The horizontal and vertical divider lines must be EXACTLY at the center (50%/50%) of the image, pixel-straight, uniform width (no wider than 1.5% of the image), and one clean uniform color (pure white or very light neutral).
+- The horizontal and vertical cut boundaries must be EXACTLY at the center (50%/50%) of the image. Draw a neutral light-gray separator on both boundaries, 0.4%-0.8% of the full image wide, straight, uniform, and uninterrupted from edge to edge. This separator is mandatory and is validated before splitting.
 - All four panels must be exactly equal in size; no content may cross or touch the divider lines.
-- Each panel must work independently when the grid is cut: its own clear subject, its own background, its own lighting, no dangling props, no cropped typography, and no half-composed elements at the panel edges.
-- Keep all product parts, text blocks, callouts, and important props at least 8% away from the panel border and divider; long products must be angled or scaled down enough to stay fully inside the panel.
+- Each panel must work independently when the grid is cut: its own clear subject, its own background, its own lighting, no dangling props, and no half-composed elements at the panel edges.
+- Keep all product parts and important props at least 8% away from the panel border and divider; long products must be angled or scaled down enough to stay fully inside the panel.
 - Absolutely forbidden: any global headline, banner, background shape, product, box, prop, shadow, table, frame, or sentence that continues across two or more panels. No half words at panel edges. No shared poster title outside an individual panel.
 - No borders, no double lines, no rounded corners on the outer edge of the grid.
 
 Panel 1 - Hero Image (top-left):
-- Product occupies 75%-85%; 3/4 angle, close-up, staggered arrangement or partial stacking.
-- Place the product slightly off-center (golden-ratio point) so it breathes; keep the full product and every text line inside the safe area, never touching or clipping the panel edges.
+- Show the complete sellable product or complete verified set; no cropped parts and no partial stacking that hides quantity or structure. Product occupies 68%-82% with a balanced marketplace hero composition.
+- Place the product slightly off-center so it breathes; keep the full product inside the safe area, never touching or clipping the panel edges.
 - Side-backlight or premium commercial photography light; emphasize material, structure, thickness, transparency, and edge details.
 - Background clearly different from the plain white template.
-- Copy (fixed format): one complete panel-local headline using "[Product Name]" plus 3-5 short selling points. Keep all copy inside this panel only; no oversized typography.
+- No AI-generated copy. No headline, fact card, or typography is added after splitting.
 
 Panel 2 - Editorial/Detail Image (top-right):
 - Must differ from Panel 1 in at least 3 of: background main color, surface material, angle, arrangement, props, lighting.
 - Style options: Editorial, Modern Classic, Organic Modern, Art Deco, Coastal, etc.
-- Product and effective content cover 65%-80%; the macro/close-up zone must be centered on the single most premium real detail (seam, metal edge, weave, grain).
-- Copy: 3-5 short English facts highlighting surface craft, texture, or visible features. Keep all copy inside this panel only; no giant headline.
+- Keep the complete product visible at 55%-70%, plus at most one small inset close-up of a real detail. A pure macro crop without the complete product is forbidden.
+- No AI-generated copy or labels.
 
 Panel 3 - Lifestyle Image (bottom-left):
 - Place the product in a real American home scene matching [SKU Category] (living room, sunroom, Game Night, Brunch, etc.).
 - May add realistic adult hands (must be natural, no deformities), cups, snacks, tablecloth, plants; the product must stay sharp and exactly the original SKU.
 - Lighting: natural window light, afternoon side light, or warm home lighting that wraps the product in soft highlights.
-- Copy: 1-3 short scene phrases (e.g. "Made for [Scene Scenario]"). Keep all copy inside this panel only; no cross-panel slogan.
+- Keep the complete product unobstructed and prominent. No AI-generated copy or scene phrase.
 
 Panel 4 - Dimension Annotation Background (bottom-right):
 - Create a clean front, side, or top view that is suitable for later deterministic dimension annotation.
@@ -224,8 +226,8 @@ Grid & splitting infrastructure (fixed - do not change):
 - Keep an exact four-panel 2x2 grid with clean straight dividers. Do not change the four-grid structure, divider layout, or split logic.
 - Each panel must be an independent standalone marketplace carousel image with its own complete mini-layout; never merge panels into one continuous scene and never share props, typography, subject, shadow, table surface, or background across panels.
 - Official authenticity rules: the sellable product must be complete, sharp, prominent, and unobstructed in every panel. Do not show only a packaging bag unless the product being sold is packaging bags. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
-- Strict rules: differentiate panels only through style, lighting, background, scene, and composition; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. Added text is allowed ONLY where a panel above explicitly requests short English copy; otherwise no text. No arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design.
-- Text rule: any visible text in the generated image must be English only. If the source product or packaging shows Chinese characters or other non-English text, replace it with the equivalent English text or remove it entirely; never reproduce Chinese characters or other non-English text in the generated panels. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
+- Strict rules: differentiate panels only through style, lighting, background, scene, and composition; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. Generate no added text, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design.
+- Final text rule: zero AI-added visible text. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
 
 
 DETAIL_IMAGE_PROMPT = """Use the reference image as the non-negotiable source of truth. Preserve the same product type, shape, color, material, pattern, quantity, proportions, structure, and visible details. Do not redesign or change the product itself.
@@ -233,7 +235,7 @@ DETAIL_IMAGE_PROMPT = """Use the reference image as the non-negotiable source of
 Create one square e-commerce detail poster for: {title}
 Category path: {category_path}
 Value evidence from source: {value_evidence}
-Verified material for visible copy: {verified_material_evidence}
+Verified material evidence: {verified_material_evidence}
 
 Visual formula:
 Product: {product_visual_identity}
@@ -262,6 +264,20 @@ IMAGE_REPAIR_CHINESE_PROMPT = """The attached image is a product photo generated
 - The corrected image must contain zero Chinese characters.
 
 Output only the corrected image."""
+
+
+GRID_IMAGE_REPAIR_PROMPT = """The attached image is an exact 2x2 product grid, but it failed the marketplace split-quality gate because it contains AI-added typography or a continuous cross-panel poster layout.
+
+Repair the existing grid without changing the real sellable product:
+- Remove every AI-added headline, sentence, label, number, slogan, badge, logo, watermark, arrow, ruler, and UI mark. Preserve only markings physically printed on the real product in the source reference.
+- Keep four equal standalone product photos with exact cut boundaries at 50% horizontal and 50% vertical.
+- Draw a neutral light-gray separator on both exact center boundaries, 0.4%-0.8% of the full image wide, straight, uniform, and uninterrupted from edge to edge.
+- No product, prop, shadow, table surface, background shape, or text may cross a cut boundary.
+- Every panel must show the complete sellable product or verified complete set, sharp and unobstructed. A detail view may use one small inset only when the complete product remains visible.
+- Panel 1 is a balanced, product-dominant marketplace hero image. Do not write into it.
+- Panel 4 remains clean and text-free for deterministic dimension annotations.
+
+Output only the repaired square grid image."""
 
 
 SIZE_PROMPT = """Estimate realistic shipping package dimensions and weight for this TEMU product from structured text evidence.
@@ -321,7 +337,7 @@ Variable Inputs (batch template - fill per SKU):
 [Key Features]     : {value_evidence}
 [Scene Scenario]   : {scene_plan}
 [Color Palette]    : {visual_style} / {background_plan}
-Verified material for visible copy: {verified_material_evidence}
+Verified material evidence: {verified_material_evidence}
 
 Self-invented story inputs (create internally per SKU, do not ask the user):
 - [Target Vibe]      : invent a precise mood for this SKU (e.g. quiet intellectual, lazy old-money, avant-garde art, minimalist zen luxury).
@@ -338,7 +354,7 @@ Global Visual Rules (fixed - anti-price-comparison / premium logic):
 - Luxury luster: each panel must show one refined highlight - soft sheen on metal/leather, glass edge light, fabric nap, polished hardware, enamel glow, ceramic glaze, or wood grain catching the light; never flat plastic look; every surface must feel expensive and tactile.
 - Editorial realism: use believable camera optics, natural skin/hand anatomy, cinematic but clean color grading, gentle depth of field, and controlled shadows. Avoid waxy AI skin, generic catalog posing, distorted fingers, muddy low-contrast surfaces, over-smoothed product texture, or fake CGI shine.
 - Detail placement: the single most premium real detail of the SKU must be placed at a clear focal point (macro zone, golden-ratio spot); nothing dangles at the panel edges.
-- Forbidden (strict): no text, logo, brand name, watermark, or distortion in any panel. If any tiny text is unavoidable, it must be English, elegant, perfectly spelled, with clean contrast, and never cover the product.
+- Forbidden (strict): no AI-added text, logo, brand name, watermark, label, badge, number, slogan, arrow, ruler, or distortion in any panel. Preserve only markings physically printed on the real sellable product.
 
 One square exact four-panel 2x2 e-commerce grid with clean straight dividers, generated for: {title}
 
@@ -348,7 +364,7 @@ Output contract (fixed - preserve existing backend logic):
 - Important: the single square image is only a transport container. It must look like FOUR fully independent finished listing/editorial images placed in a 2x2 layout, not one continuous poster chopped into four pieces.
 
 Grid construction rules (fixed - clean edges after splitting):
-- The horizontal and vertical divider lines must be EXACTLY at the center (50%/50%) of the image, pixel-straight, uniform width (no wider than 1.5% of the image), and one clean uniform color (pure white or very light neutral).
+- The horizontal and vertical cut boundaries must be EXACTLY at the center (50%/50%) of the image. A clean uniform separator may be used, but it must be no wider than 0.8% of the full image.
 - All four panels must be exactly equal in size; no content may cross or touch the divider lines.
 - Each panel must work independently when the grid is cut: its own clear subject, its own background, its own lighting, no dangling props or half-composed elements at the panel edges.
 - Keep the product at least 8% away from panel borders and dividers; long or thin products must be angled or scaled down enough to avoid any local split/crop loss.
@@ -360,12 +376,11 @@ Panel 1 - Hero Shot (top-left): the best moment the persona wears/uses the SKU.
 - Scene & light: locked in the [Hero Scene]; natural window light, afternoon slanting sun, or moody wall lamp for a storytelling feel.
 - Narrative: the visual center stays on the product; ambient light and [Styling Props] must reinforce the [Target Vibe].
 
-Panel 2 - Detail Close-up (top-right): extreme macro of the material texture, luster, edge craft, hardware, or special structure.
-- May include model parts (fingertip touching, collar framing) or a premium fabric backdrop, but the product must occupy >= 80%.
-- Purpose: let buyers see "where the luxury is" and show details that are hard to copy.
+Panel 2 - Complete Product + Detail Inset (top-right): show the complete product at 55%-70% plus at most one small inset close-up of a real material, edge, hardware, or structure detail.
+- A pure macro crop without the complete sellable product is forbidden. The inset must stay fully inside this panel and must not cross the center boundary.
 
-Panel 3 - Packaging & Unboxing (bottom-left): the product with its custom packaging, storage, and accessory aesthetics (jewelry box, dust bag, ribbon, care card).
-- Still-life composition (flat lay or 45-degree side angle), background echoing the [Hero Scene] palette, props from [Styling Props]; unboxing must feel ceremonial and premium.
+Panel 3 - Credible Lifestyle (bottom-left): show the complete product in a believable use or display context supported by the source category.
+- Do not invent packaging, storage cases, accessories, cards, ribbons, or set contents that are absent from the reference.
 
 Panel 4 - Dimension Annotation Background (bottom-right):
 - Create a clean front, side, or top view that is suitable for later deterministic dimension annotation.
@@ -384,7 +399,7 @@ Grid & splitting infrastructure (fixed - do not change):
 - Each panel must be an independent standalone marketplace carousel image with its own complete mini-layout; never merge panels into one continuous scene and never share props, subject, shadow, table surface, model crop, or background across panels.
 - Official authenticity rules: the sellable product must be complete, sharp, prominent, and unobstructed in every panel. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
 - Strict rules: differentiate panels only through story, style, lighting, scene, and composition; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. No added text overlays, labels, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design.
-- Text rule: any visible text in the generated image must be English only. If the source product or packaging shows Chinese characters or other non-English text, replace it with the equivalent English text or remove it entirely; never reproduce Chinese characters or other non-English text in the generated panels. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
+- Final text rule: zero AI-added visible text. Preserve only markings physically printed on the real sellable product. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
 
 
 DEFAULT_PROMPTS: dict[str, str] = {
@@ -395,6 +410,7 @@ DEFAULT_PROMPTS: dict[str, str] = {
     "grid_image_b": GRID_IMAGE_PROMPT_B,
     "detail_image": DETAIL_IMAGE_PROMPT,
     "image_repair_chinese": IMAGE_REPAIR_CHINESE_PROMPT,
+    "image_repair_grid": GRID_IMAGE_REPAIR_PROMPT,
     "combined_text": COMBINED_TEXT_PROMPT,
     "variant_values": VARIANT_VALUE_TRANSLATION_PROMPT,
 }
@@ -405,7 +421,7 @@ IMAGE_TEMPLATES: list[dict[str, str]] = [
     {
         "id": "A",
         "name": "标准商品海报",
-        "description": "Amazon 高级电商视觉：大主体主图 + 精品展示 + 生活方式场景，含英文卖点文案",
+        "description": "高级电商视觉：四张独立完整构图，画面零新增文字，避免拆图裁字",
     },
     {
         "id": "B",

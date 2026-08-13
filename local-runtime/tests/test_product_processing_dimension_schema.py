@@ -24,7 +24,12 @@ def test_dimension_canvas_schema_and_preview_revision_exist() -> None:
         for column in inspector.get_columns("product_processing_dimension_items")
     }
     assert "preview_revision" in draft_columns
-    assert {"render_input_hash", "rendered_input_hash"}.issubset(item_columns)
+    assert {
+        "render_input_hash",
+        "rendered_input_hash",
+        "publish_claim_token",
+        "publish_claimed_at",
+    }.issubset(item_columns)
 
     database.dispose()
 

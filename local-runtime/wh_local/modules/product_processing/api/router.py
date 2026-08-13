@@ -57,7 +57,8 @@ def create_product_processing_router(
             service.assets,
             DimensionRenderer(),
             source_loader=service.load_dimension_source,
-            # Local/static publication only; this adapter never triggers COS.
+            # Rendering stays local while editing; the adapter publishes the final
+            # content-addressed image to COS only when the user submits for review.
             publisher=service.publish_dimension_media,
         )
         setattr(service, "_dimension_canvas_service", dimension_service)

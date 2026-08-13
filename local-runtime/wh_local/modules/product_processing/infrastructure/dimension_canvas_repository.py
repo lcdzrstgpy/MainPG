@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from ..domain.policy import is_safe_external_url
 from .database import ProductProcessingDatabase
 from .dimension_canvas_orm import (
     DimensionCanvasAssetRow,
@@ -25,6 +28,13 @@ class StaleCanvasRevision(RuntimeError):
 
 class CanvasStateConflict(RuntimeError):
     pass
+
+
+_PUBLISH_LEASE_SECONDS = 180
+
+
+def _publish_lease_cutoff() -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=_PUBLISH_LEASE_SECONDS)).isoformat()
 
 
 def _dumps(value: Any) -> str:
@@ -276,6 +286,149 @@ class DimensionCanvasRepository:
             session.flush()
             return self._asset(row)
 
+    def mark_asset_published(
+        self,
+        asset_id: str,
+        item_id: str,
+        workspace_id: str,
+        *,
+        public_url: str,
+        claim_token: str,
+    ) -> dict[str, Any]:
+        """Persist a server-published URL; client-local paths never enter this seam."""
+        normalized = str(public_url or "").strip()
+        if not normalized.lower().startswith("https://") or not is_safe_external_url(normalized):
+            raise ValueError("published dimension asset URL must be public HTTPS")
+        with self.database.sessions.begin() as session:
+            row = session.scalar(
+                select(DimensionCanvasAssetRow).where(
+                    DimensionCanvasAssetRow.id == asset_id,
+                    DimensionCanvasAssetRow.item_id == item_id,
+                    DimensionCanvasAssetRow.workspace_id == workspace_id,
+                )
+            )
+            if row is None:
+                raise LookupError("dimension canvas asset not found")
+            if row.role != "rendered_dimension":
+                raise CanvasStateConflict("only rendered dimension assets may be published")
+            existing = str(row.source_url or "").strip()
+            if existing and existing != normalized:
+                raise CanvasStateConflict("dimension asset already has a different published URL")
+            row.source_url = normalized
+            row.availability = "published"
+            claimed = session.execute(
+                update(DimensionCanvasItemRow)
+                .where(
+                    DimensionCanvasItemRow.id == item_id,
+                    DimensionCanvasItemRow.workspace_id == workspace_id,
+                    DimensionCanvasItemRow.render_asset_id == asset_id,
+                    DimensionCanvasItemRow.state == "publishing",
+                    DimensionCanvasItemRow.publish_claim_token == str(claim_token),
+                )
+                .values(
+                    state="completed",
+                    publish_claim_token="",
+                    publish_claimed_at="",
+                    error_code="",
+                    error_message="",
+                    updated_at=utc_now(),
+                )
+            )
+            if claimed.rowcount != 1:
+                raise CanvasStateConflict("dimension publish claim changed concurrently")
+            session.flush()
+            return self._asset(row)
+
+    def claim_item_publish(
+        self,
+        item_id: str,
+        render_asset_id: str,
+        render_revision: int,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        """Atomically claim one COS upload across processes using the item state."""
+        with self.database.sessions.begin() as session:
+            # A crashed worker's lease can be reclaimed by the next submit request;
+            # active claims are never cleared merely because another service starts.
+            session.execute(
+                update(DimensionCanvasItemRow)
+                .where(
+                    DimensionCanvasItemRow.id == item_id,
+                    DimensionCanvasItemRow.workspace_id == workspace_id,
+                    DimensionCanvasItemRow.state == "publishing",
+                    DimensionCanvasItemRow.publish_claimed_at < _publish_lease_cutoff(),
+                )
+                .values(
+                    state="completed",
+                    publish_claim_token="",
+                    publish_claimed_at="",
+                    error_code="dimension_publish_lease_expired",
+                    error_message="expired COS publication lease was reclaimed",
+                    updated_at=utc_now(),
+                )
+            )
+            claim_token = uuid4().hex
+            result = session.execute(
+                update(DimensionCanvasItemRow)
+                .where(
+                    DimensionCanvasItemRow.id == item_id,
+                    DimensionCanvasItemRow.workspace_id == workspace_id,
+                    DimensionCanvasItemRow.state == "completed",
+                    DimensionCanvasItemRow.render_asset_id == render_asset_id,
+                    DimensionCanvasItemRow.render_revision == int(render_revision),
+                )
+                .values(
+                    state="publishing",
+                    publish_claim_token=claim_token,
+                    publish_claimed_at=utc_now(),
+                    error_code="",
+                    error_message="",
+                    updated_at=utc_now(),
+                )
+            )
+            if result.rowcount != 1:
+                raise CanvasStateConflict("dimension image is already publishing or changed")
+            row = session.scalar(
+                select(DimensionCanvasAssetRow).where(
+                    DimensionCanvasAssetRow.id == render_asset_id,
+                    DimensionCanvasAssetRow.item_id == item_id,
+                    DimensionCanvasAssetRow.workspace_id == workspace_id,
+                )
+            )
+            if row is None or row.availability not in {"local", "published"}:
+                raise CanvasStateConflict("rendered dimension asset is not publishable")
+            return {**self._asset(row), "_publish_claim_token": claim_token}
+
+    def release_item_publish(
+        self,
+        item_id: str,
+        render_asset_id: str,
+        workspace_id: str,
+        *,
+        claim_token: str,
+        error_message: str,
+    ) -> None:
+        """Make an unsuccessful publication retryable without re-rendering."""
+        with self.database.sessions.begin() as session:
+            session.execute(
+                update(DimensionCanvasItemRow)
+                .where(
+                    DimensionCanvasItemRow.id == item_id,
+                    DimensionCanvasItemRow.workspace_id == workspace_id,
+                    DimensionCanvasItemRow.render_asset_id == render_asset_id,
+                    DimensionCanvasItemRow.state == "publishing",
+                    DimensionCanvasItemRow.publish_claim_token == str(claim_token),
+                )
+                .values(
+                    state="completed",
+                    publish_claim_token="",
+                    publish_claimed_at="",
+                    error_code="dimension_publish_failed",
+                    error_message=str(error_message)[:500],
+                    updated_at=utc_now(),
+                )
+            )
+
     def save_item(
         self,
         item_id: str,
@@ -294,6 +447,8 @@ class DimensionCanvasRepository:
                 raise StaleCanvasRevision(
                     f"expected revision {expected_revision}, current {row.item_revision}"
                 )
+            if row.state == "publishing":
+                raise CanvasStateConflict("dimension image is being published")
             if "selected_source_asset_id" in patch:
                 asset_id = str(patch.get("selected_source_asset_id") or "")
                 if asset_id:
@@ -520,7 +675,23 @@ class DimensionCanvasRepository:
             if workspace_id is not None:
                 statement = statement.where(DimensionCanvasItemRow.workspace_id == workspace_id)
             result = session.execute(statement.values(**values))
-            return int(result.rowcount or 0)
+            publishing = update(DimensionCanvasItemRow).where(DimensionCanvasItemRow.state == "publishing")
+            if workspace_id is not None:
+                publishing = publishing.where(DimensionCanvasItemRow.workspace_id == workspace_id)
+            publishing = publishing.where(
+                DimensionCanvasItemRow.publish_claimed_at < _publish_lease_cutoff()
+            )
+            recovered_publish = session.execute(
+                publishing.values(
+                    state="completed",
+                    publish_claim_token="",
+                    publish_claimed_at="",
+                    error_code="dimension_publish_interrupted",
+                    error_message="COS publication stopped before completion; retry review submission",
+                    updated_at=utc_now(),
+                )
+            )
+            return int(result.rowcount or 0) + int(recovered_publish.rowcount or 0)
 
     def create_change_set(
         self,
@@ -560,17 +731,34 @@ class DimensionCanvasRepository:
             by_id = {row.id: row for row in items}
             if set(by_id) != set(requested):
                 raise CanvasStateConflict("completed canvas items changed before review submission")
-            change_set = DimensionCanvasChangeSetRow(
-                id=str(uuid4()),
-                workspace_id=workspace_id,
-                batch_id=batch_id,
-                source_task_id=batch.source_task_id,
-                status="pending_review",
-                idempotency_key=idempotency_key,
-                counts_json=_dumps({"item_count": len(requested), "accepted_count": 0, "conflict_count": 0}),
+            change_set_id = str(uuid5(NAMESPACE_URL, f"dimension-change-set:{workspace_id}:{idempotency_key}"))
+            inserted = session.execute(
+                sqlite_insert(DimensionCanvasChangeSetRow)
+                .values(
+                    id=change_set_id,
+                    workspace_id=workspace_id,
+                    batch_id=batch_id,
+                    source_task_id=batch.source_task_id,
+                    status="pending_review",
+                    idempotency_key=idempotency_key,
+                    counts_json=_dumps(
+                        {"item_count": len(requested), "accepted_count": 0, "conflict_count": 0}
+                    ),
+                    created_at=utc_now(),
+                    accepted_at="",
+                )
+                .on_conflict_do_nothing(index_elements=["workspace_id", "idempotency_key"])
             )
-            session.add(change_set)
-            session.flush()
+            change_set = session.scalar(
+                select(DimensionCanvasChangeSetRow).where(
+                    DimensionCanvasChangeSetRow.workspace_id == workspace_id,
+                    DimensionCanvasChangeSetRow.idempotency_key == idempotency_key,
+                )
+            )
+            if change_set is None:
+                raise CanvasStateConflict("review submission claim could not be loaded")
+            if inserted.rowcount != 1:
+                return self._change_set_with_items(session, change_set)
             for item_id in requested:
                 item = by_id[item_id]
                 settings = _loads(item.canvas_settings_json, {})
@@ -586,6 +774,13 @@ class DimensionCanvasRepository:
                 )
                 if replacement is None:
                     raise CanvasStateConflict("rendered asset not found")
+                replacement_url = str(replacement.source_url or "").strip()
+                if (
+                    replacement.availability != "published"
+                    or not replacement_url.lower().startswith("https://")
+                    or not is_safe_external_url(replacement_url)
+                ):
+                    raise CanvasStateConflict("rendered asset is not published to a public HTTPS image host")
                 draft = session.scalar(
                     select(ProductDraftRow).where(
                         ProductDraftRow.id == item.product_draft_id,
@@ -594,6 +789,8 @@ class DimensionCanvasRepository:
                 )
                 if draft is None:
                     raise LookupError("product draft not found")
+                if int(draft.preview_revision or 0) != int(item.source_preview_revision or 0):
+                    raise CanvasStateConflict("product preview changed after dimension canvas import")
                 base_slot, base_dimensions = self._current_review_inputs(session, item, draft)
                 base_asset = {
                     "slot": base_slot,
@@ -668,7 +865,12 @@ class DimensionCanvasRepository:
             if canvas_item is None or draft is None:
                 raise LookupError("dimension change target not found")
             base = _loads(change_item.base_asset_json, {})
-            current_slot, current_dimensions = self._current_review_inputs(session, canvas_item, draft)
+            current_slot, current_dimensions = self._current_review_inputs(
+                session,
+                canvas_item,
+                draft,
+                target_slot_id=change_item.target_slot_id,
+            )
             conflict: dict[str, Any] = {}
             if _hash(current_slot) != str(base.get("slot_hash") or ""):
                 conflict["target_slot"] = "changed"
@@ -693,9 +895,13 @@ class DimensionCanvasRepository:
             )
             if managed_asset is None or managed_asset.role != "rendered_dimension":
                 raise CanvasStateConflict("replacement asset is not a managed canvas render")
-            replacement_value = str(managed_asset.source_url or managed_asset.managed_path or "")
-            if not replacement_value:
-                raise CanvasStateConflict("replacement asset has no managed value")
+            replacement_value = str(managed_asset.source_url or "").strip()
+            if (
+                managed_asset.availability != "published"
+                or not replacement_value.lower().startswith("https://")
+                or not is_safe_external_url(replacement_value)
+            ):
+                raise CanvasStateConflict("replacement asset is not published to a public HTTPS image host")
             overrides = _loads(draft.preview_overrides_json, {})
             patches = dict(overrides.get("image_slot_overrides") or {})
             patches[change_item.target_slot_id] = {
@@ -871,19 +1077,22 @@ class DimensionCanvasRepository:
         session,
         item: DimensionCanvasItemRow,
         draft: ProductDraftRow,
+        *,
+        target_slot_id: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        slot_id = str(target_slot_id or item.target_slot_id)
         result = self._task_result(session, item)
         overrides = _loads(draft.preview_overrides_json, {})
-        slot_patch = dict((overrides.get("image_slot_overrides") or {}).get(item.target_slot_id) or {})
+        slot_patch = dict((overrides.get("image_slot_overrides") or {}).get(slot_id) or {})
         if slot_patch:
             slot = slot_patch
         else:
             slot = {}
             for entry in result.get("image_manifest") or []:
-                if isinstance(entry, dict) and str(entry.get("slot_id") or "") == item.target_slot_id:
+                if isinstance(entry, dict) and str(entry.get("slot_id") or "") == slot_id:
                     slot = {"url": str(entry.get("value") or "")}
                     break
-            if not slot and item.target_slot_id == "carousel.dimension_background":
+            if not slot and slot_id == "carousel.dimension_background":
                 values = result.get("carousel_image_paths") or []
                 if len(values) > 3:
                     slot = {"url": str(values[3] or "")}

@@ -287,6 +287,9 @@ def test_grid_image_reference_does_not_add_provider_calls(monkeypatch) -> None:
     assert len(processor.prompts) == 1
     assert "CONTENT REFERENCE ONLY — IMAGE:" in processor.prompts[0]
     assert "exact four-panel 2x2" in processor.prompts[0]
+    assert processor.prompts[0].rstrip().endswith(
+        "Keep Panel 4 clean for later deterministic dimension annotation."
+    )
     assert len(carousel) == 4
     assert summary.endswith("grid_image_summary.png")
     assert sum(note.startswith("image_reference:") for note in notes) == 1

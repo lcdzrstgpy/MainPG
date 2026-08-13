@@ -58,6 +58,8 @@ class DimensionCanvasItemRow(Base):
     render_input_hash: Mapped[str] = mapped_column(String(64), default="")
     rendered_input_hash: Mapped[str] = mapped_column(String(64), default="")
     render_asset_id: Mapped[str] = mapped_column(String(36), default="")
+    publish_claim_token: Mapped[str] = mapped_column(String(64), default="")
+    publish_claimed_at: Mapped[str] = mapped_column(String(64), default="")
     error_code: Mapped[str] = mapped_column(String(64), default="")
     error_message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)

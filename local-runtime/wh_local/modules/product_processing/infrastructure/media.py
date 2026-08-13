@@ -9,7 +9,9 @@ credential values in task results.
 from __future__ import annotations
 
 import base64
+import hashlib
 import mimetypes
+import re
 import threading
 import time
 import uuid
@@ -41,8 +43,9 @@ _SESSION.headers.update(
 # 对齐原项目 native_product_engine.DXM_IMAGE_TARGET_SIZE = 800
 # 店小秘导入要求图片不小于 800×800，拆分后每格缩放到该尺寸。
 DXM_IMAGE_TARGET_SIZE = 800
-# 对齐原项目 native_product_engine.IMAGE_JPEG_QUALITY = 90
-DXM_IMAGE_JPEG_QUALITY = 90
+# 四宫格由 2048px 拆为 1024px 象限后再缩至 800px；使用 94 + 4:4:4，
+# 保留商品边缘、透明材质和本地排版细节，避免默认 4:2:0 二次损失。
+DXM_IMAGE_JPEG_QUALITY = 94
 
 # 图片 provider 轮巡游标（对齐原项目 native_product_engine._PROVIDER_CURSORS）：
 # 进程内全局共享、线程锁保护，按"每次图片请求"取模轮转起始 provider，实现负载均衡。
@@ -203,19 +206,20 @@ class ProductImageProcessor:
         except ModuleNotFoundError as exc:
             raise MediaConfigurationError("Pillow is required for four-grid image processing") from exc
         try:
+            self.validate_four_grid(media)
             source = Image.open(BytesIO(media.content)).convert("RGB")
             width, height = source.size
-            if width < 2 or height < 2:
-                raise ValueError("image is too small")
-            # 模型生成的分隔线可能不在正中间：先检测真实分隔线位置再切分，
-            # 避免拆出的单格一边残留分隔线、另一边切掉内容（"边缘没处理好"）。
-            x_split, y_split = _detect_split_guides(source)
+            # 生成合同明确规定 50%/50% 切线。自适应追逐模型画出的假分隔线会把切点
+            # 偏移最多数十像素并切入邻格；固定中心切分，只移除中心极窄安全带。
+            x_split, y_split = width // 2, height // 2
+            gutter_x = max(1, int(width * 0.004))
+            gutter_y = max(1, int(height * 0.004))
             # 四象限：左上 → 右上 → 左下 → 右下（对齐原项目拆图顺序）
             boxes = (
-                (0, 0, x_split, y_split),
-                (x_split, 0, width, y_split),
-                (0, y_split, x_split, height),
-                (x_split, y_split, width, height),
+                (0, 0, x_split - gutter_x, y_split - gutter_y),
+                (x_split + gutter_x, 0, width, y_split - gutter_y),
+                (0, y_split + gutter_y, x_split - gutter_x, height),
+                (x_split + gutter_x, y_split + gutter_y, width, height),
             )
             panels = [source.crop(box) for box in boxes]
         except Exception as exc:
@@ -224,9 +228,7 @@ class ProductImageProcessor:
         target_size = DXM_IMAGE_TARGET_SIZE
         result: list[GeneratedMedia] = []
         for index, panel in enumerate(panels, start=1):
-            # 裁掉极窄边距去除分隔线残留；不要裁 5%，长条产品和标题区容易被切掉。
-            trimmed = _trim_panel_margin(panel)
-            resized = trimmed.resize((target_size, target_size), Image.Resampling.LANCZOS)
+            resized = panel.resize((target_size, target_size), Image.Resampling.LANCZOS)
             content = _image_to_jpeg_bytes(resized)
             result.append(
                 GeneratedMedia(
@@ -255,6 +257,25 @@ class ProductImageProcessor:
             )
         )
         return result
+
+    @staticmethod
+    def validate_four_grid(media: GeneratedMedia) -> None:
+        """Fail closed unless a 2K square has validated exact-center divider evidence."""
+        try:
+            from PIL import Image  # type: ignore
+
+            source = Image.open(BytesIO(media.content)).convert("RGB")
+            width, height = source.size
+            if min(width, height) < 1800:
+                raise ValueError("four-grid source must be at least 1800px on each edge")
+            if abs(width - height) / max(width, height) > 0.02:
+                raise ValueError("four-grid source must be square")
+            if not _has_centered_uniform_dividers(source):
+                raise ValueError("four-grid center dividers are missing, shifted, or discontinuous")
+        except MediaConfigurationError:
+            raise
+        except Exception as exc:
+            raise MediaProcessingError("generated four-grid structure failed validation") from exc
 
     def upload_to_cos(
         self,
@@ -297,6 +318,88 @@ class ProductImageProcessor:
             client.put_object(Bucket=bucket, Key=key, Body=media.content, ContentType=media.content_type)
         except Exception as exc:
             raise MediaProcessingError(f"COS upload failed: {_safe_error(exc)}") from exc
+        return f"https://{bucket}.cos.{region}.myqcloud.com/{key}"
+
+    def upload_content_addressed_to_cos(
+        self,
+        media: GeneratedMedia,
+        *,
+        namespace: str,
+        content_hash: str,
+    ) -> str:
+        """Publish one immutable image under a deterministic COS key.
+
+        Dimension-canvas review uses this path so repeated submit/recovery checks the
+        same object instead of creating UUID-keyed duplicates. A timeout with unknown
+        outcome is reconciled with ``HEAD`` before it is reported as failed.
+        """
+        digest = hashlib.sha256(media.content).hexdigest()
+        expected = str(content_hash or "").strip().lower()
+        if expected and expected != digest:
+            raise MediaProcessingError("dimension media content hash mismatch")
+        config = self._config()
+        cos = dict(config.get("cos") or {})
+        required = ("bucket", "region", "secret_id", "secret_key")
+        if not all(str(cos.get(key) or "").strip() for key in required):
+            raise MediaConfigurationError("COS is not configured")
+        try:
+            from qcloud_cos import CosConfig, CosS3Client  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise MediaConfigurationError("COS SDK is not installed") from exc
+        bucket = str(cos["bucket"]).strip()
+        region = str(cos["region"]).strip()
+        prefix = str(
+            (config.get("updates") or {}).get("cos_prefix")
+            or (config.get("limits") or {}).get("cos_prefix")
+            or "product-processing"
+        ).strip("/")
+        safe_namespace = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(namespace or "dimension")).strip("-")[:48]
+        suffix = media.suffix if media.suffix in {".jpg", ".jpeg", ".png", ".webp"} else ".jpg"
+        key = "/".join(
+            part
+            for part in (
+                prefix or "product-processing",
+                "dimension-canvas",
+                safe_namespace or "workspace",
+                digest[:2],
+                f"{digest}{suffix}",
+            )
+            if part
+        )
+        client = CosS3Client(
+            CosConfig(
+                Region=region,
+                SecretId=str(cos["secret_id"]),
+                SecretKey=str(cos["secret_key"]),
+                Timeout=60,
+            )
+        )
+
+        def exists() -> bool:
+            try:
+                client.head_object(Bucket=bucket, Key=key)
+                return True
+            except Exception as exc:
+                status_getter = getattr(exc, "get_status_code", None)
+                status = status_getter() if callable(status_getter) else getattr(exc, "status_code", None)
+                if str(status or "") == "404":
+                    return False
+                raise MediaProcessingError(f"COS object check failed: {_safe_error(exc)}") from exc
+
+        if not exists():
+            try:
+                client.put_object(
+                    Bucket=bucket,
+                    Key=key,
+                    Body=media.content,
+                    ContentType=media.content_type,
+                )
+            except Exception as exc:
+                try:
+                    if not exists():
+                        raise MediaProcessingError(f"COS upload failed: {_safe_error(exc)}") from exc
+                except MediaProcessingError:
+                    raise
         return f"https://{bucket}.cos.{region}.myqcloud.com/{key}"
 
     def _config(self) -> dict[str, Any]:
@@ -475,74 +578,37 @@ def _normalized_image_size(value: Any) -> str:
     return "2048x2048"
 
 
-def _trim_panel_margin(image: Any) -> Any:
-    """裁掉四宫格单格极窄边距，去分隔线但尽量保留产品和文案安全区。"""
-    margin_w = int(image.size[0] * 0.01)
-    margin_h = int(image.size[1] * 0.01)
-    if margin_w > 0 and margin_h > 0 and image.size[0] > margin_w * 2 and image.size[1] > margin_h * 2:
-        return image.crop((margin_w, margin_h, image.size[0] - margin_w, image.size[1] - margin_h))
-    return image
+def _has_centered_uniform_dividers(source: Any) -> bool:
+    """Require deterministic 50/50 separator evidence before destructive splitting.
 
-
-def _detect_split_guides(source: Any) -> tuple[int, int]:
-    """检测四宫格中间横/竖分隔线的实际位置。
-
-    模型生成的四宫格分隔线常偏移正中几个像素；直接用 width//2 切分会在单格
-    边缘残留分隔线（或把邻格内容切进来）。这里在缩略图上找中间 30% 区域内
-    的分隔线：分隔线具备两个特征——内部灰度均匀 + 与两侧内容亮度差异明显。
-    只有两个特征同时满足才采用检测位置，否则回退正中间（不引入切坏风险）。
-
-    返回 (x_split, y_split) 原图像素坐标。
+    A continuous poster can be text-free yet still look plausible at 2K; blindly cutting it
+    produces the exact broken panels reported by users.  The generation contract therefore
+    requires two neutral light-gray separators.  We inspect only the narrow center bands and
+    fail closed when either band is textured, dark, strongly colored, or discontinuous.
     """
-
-    def _detect_axis(source: Any, size: int, length: int) -> int:
-        try:
-            import array as _array
-
-            data = _array.array("B", source.tobytes())
-        except Exception:
-            return length // 2
-        lo, hi = int(size * 0.35), int(size * 0.65)
-        step = 6  # 缩略图上的相邻采样间距（约合原图 2%-6%）
-        best_x, best_score = length // 2, None
-        for x in range(lo, hi):
-            left, right = max(lo, x - step), min(hi - 1, x + step)
-            lo_val, hi_val, mean = None, None, 0
-            for index in range(size):
-                value = data[index * size + x]
-                lo_val = value if lo_val is None or value < lo_val else lo_val
-                hi_val = value if hi_val is None or value > hi_val else hi_val
-                mean += value
-            mean /= size
-            left_mean = sum(data[index * size + left] for index in range(size)) / size
-            right_mean = sum(data[index * size + right] for index in range(size)) / size
-            uniformity = hi_val - lo_val
-            side_diff = max(abs(mean - left_mean), abs(mean - right_mean))
-            # 分隔线：内部均匀（uniformity 小）且两侧差异大（side_diff 大）
-            score = uniformity - side_diff * 2
-            if best_score is None or score < best_score:
-                best_score, best_x = score, x
-        # 强证据判定：内部足够均匀 + 两侧差异显著，否则视为无法可靠检测
-        if best_score is not None and best_score < -15:
-            return best_x * length // size
-        return length // 2
-
     try:
-        from PIL import Image as _Image
+        from PIL import ImageStat  # type: ignore
 
         width, height = source.size
-        thumb = source.convert("L").resize((256, 256), _Image.Resampling.LANCZOS)
-    except Exception:
-        return source.size[0] // 2, source.size[1] // 2
+        half_band_x = max(2, int(width * 0.002))
+        half_band_y = max(2, int(height * 0.002))
+        vertical = source.crop((width // 2 - half_band_x, 0, width // 2 + half_band_x, height))
+        horizontal = source.crop((0, height // 2 - half_band_y, width, height // 2 + half_band_y))
 
-    x_split = _detect_axis(thumb, 256, width)
-    y_split = _detect_axis(thumb.transpose(_Image.Transpose.ROTATE_90), 256, height)
-    # 防误判保护：与正中间偏移超过 8% 时回退正中间
-    if abs(x_split - width // 2) > width * 0.08:
-        x_split = width // 2
-    if abs(y_split - height // 2) > height * 0.08:
-        y_split = height // 2
-    return x_split, y_split
+        def uniform_neutral_light(band: Any) -> bool:
+            sample = band.resize((max(4, band.width), 256)) if band.height > band.width else band.resize((256, max(4, band.height)))
+            stats = ImageStat.Stat(sample.convert("RGB"))
+            means = [float(value) for value in stats.mean]
+            deviations = [float(value) for value in stats.stddev]
+            return (
+                min(means) >= 165
+                and max(means) - min(means) <= 28
+                and max(deviations) <= 18
+            )
+
+        return uniform_neutral_light(vertical) and uniform_neutral_light(horizontal)
+    except Exception:
+        return False
 
 
 def _center_crop_to_square(image: Any) -> Any:
@@ -555,9 +621,15 @@ def _center_crop_to_square(image: Any) -> Any:
 
 
 def _image_to_jpeg_bytes(image: Any) -> bytes:
-    """PIL Image → JPEG bytes, quality=DXM_IMAGE_JPEG_QUALITY（对齐原项目 _image_to_jpeg_bytes）。"""
+    """PIL Image → high-detail JPEG bytes for 800px marketplace images."""
     buffer = BytesIO()
-    image.save(buffer, format="JPEG", quality=DXM_IMAGE_JPEG_QUALITY, optimize=True)
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=DXM_IMAGE_JPEG_QUALITY,
+        subsampling=0,
+        optimize=True,
+    )
     return buffer.getvalue()
 
 

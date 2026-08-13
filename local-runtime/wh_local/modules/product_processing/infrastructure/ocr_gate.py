@@ -5,7 +5,7 @@
 OCR 是后置验证器，不是第一变换器（§15 确定性验证 → AI 修复 → 确定性复验）。
 
 开关与配置：
-- ``WH_PRODUCT_OCR_GATE=0`` 关闭质检（测试/演示用）；
+- ``WH_PRODUCT_OCR_GATE=0`` 仅关闭兼容详情图质检；生产四宫格始终 fail-closed；
 - ``WH_PRODUCT_OCR_MAX_REPAIRS`` 控制最大重绘轮数（默认 1，对齐原项目 five-stage 的
   ``max_grid_attempts=1``：检出中文最多定向重绘一轮，避免图像 API 被反复消耗）。
 
@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 # CJK 统一表意文字 + 扩展A（覆盖简体/繁体/日韩汉字）
@@ -77,10 +78,12 @@ def _ensure_onnx_dll_searchable() -> None:
         pass
 
 
-def detect_chinese_text(content: bytes) -> list[str] | None:
-    """返回图片中识别出的中文文本列表；无中文返回空列表；OCR 不可用返回 None。
+def inspect_visible_text(content: bytes) -> dict[str, list[str]] | None:
+    """一次 OCR 同时返回中文和显著排版文字，避免四宫格重复推理。
 
-    RapidOCR 结果每行为 ``[box, text, score]``；仅保留含汉字的文本行。
+    ``prominent`` 只命中足够大的字框，用来拦截模型生成的海报标题/卖点；
+    商品本体上的细小型号、花纹或数字不会仅因被 OCR 识别就被删除。
+    OCR 不可用返回 ``None``，由调用方按自身质量合同决定是否阻断。
     """
     engine = _get_engine()
     if engine is None:
@@ -89,20 +92,51 @@ def detect_chinese_text(content: bytes) -> list[str] | None:
         import numpy as np  # type: ignore
         from PIL import Image  # type: ignore
 
-        array = np.array(Image.open(io.BytesIO(content)).convert("RGB"))
+        opened = Image.open(io.BytesIO(content)).convert("RGB")
+        width, height = opened.size
+        array = np.array(opened)
         result, _elapse = engine(array)
     except Exception:
         return None
-    texts: list[str] = []
+    chinese: list[str] = []
+    prominent: list[str] = []
     if not result:
-        return texts
+        return {"chinese": chinese, "prominent": prominent}
     for line in result:
         if not isinstance(line, (list, tuple)) or len(line) < 2:
             continue
         text = str(line[1] or "").strip()
-        if text and _CJK_RE.search(text):
-            texts.append(text)
-    return texts
+        if not text:
+            continue
+        score = float(line[2]) if len(line) > 2 and isinstance(line[2], (int, float)) else 1.0
+        if score < 0.45:
+            continue
+        if _CJK_RE.search(text):
+            chinese.append(text)
+        box = line[0] if line else None
+        try:
+            xs = [float(point[0]) for point in box]
+            ys = [float(point[1]) for point in box]
+            box_width = max(xs) - min(xs)
+            box_height = max(ys) - min(ys)
+        except (TypeError, ValueError, IndexError):
+            continue
+        searchable = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff]+", "", text)
+        width_ratio = box_width / max(width, 1)
+        height_ratio = box_height / max(height, 1)
+        if (
+            len(searchable) >= 6 and height_ratio >= 0.025 and width_ratio >= 0.08
+        ) or (
+            len(searchable) >= 3 and (width_ratio >= 0.22 or height_ratio >= 0.06)
+        ):
+            prominent.append(text)
+    return {"chinese": chinese, "prominent": prominent}
+
+
+def detect_chinese_text(content: bytes) -> list[str] | None:
+    """返回图片中识别出的中文文本列表；无中文返回空列表；OCR 不可用返回 None。"""
+    inspection = inspect_visible_text(content)
+    return None if inspection is None else inspection["chinese"]
 
 
 def ocr_diagnostics() -> dict[str, Any]:

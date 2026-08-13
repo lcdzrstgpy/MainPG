@@ -54,6 +54,8 @@ _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "product_processing_dimension_items": [
         ("render_input_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ("rendered_input_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("publish_claim_token", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("publish_claimed_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
     ],
 }
 

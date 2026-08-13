@@ -8,6 +8,7 @@ from typing import Any, Callable, Literal
 
 from pydantic import ValidationError
 
+from .domain.policy import is_safe_external_url
 from .domain.physical_dimensions import PhysicalDimensions
 from .infrastructure.assets import ProductProcessingAssets
 from .infrastructure.dimension_canvas_repository import (
@@ -28,7 +29,7 @@ class DimensionCanvasConflict(RuntimeError):
 
 
 class DimensionCanvasService:
-    """Local-only orchestration for dimension canvas editing and review."""
+    """Local editing/rendering plus explicit public handoff for dimension images."""
 
     def __init__(
         self,
@@ -37,7 +38,7 @@ class DimensionCanvasService:
         assets: ProductProcessingAssets,
         renderer: DimensionRenderer,
         source_loader: Callable[[dict[str, Any]], bytes] | None = None,
-        publisher: Callable[[bytes, int, int, int], dict[str, Any]] | None = None,
+        publisher: Callable[[bytes, int, int, int, str, str], dict[str, Any]] | None = None,
         *,
         max_workers: int = 3,
     ):
@@ -48,8 +49,8 @@ class DimensionCanvasService:
         self.assets = assets
         self.renderer = renderer
         self.source_loader = source_loader or self._load_local_source
-        # Supplying a publisher is an explicit integration opt-in. Default never
-        # touches COS, a provider, or the network.
+        # Rendering/autosave never publish. A supplied publisher is called only by
+        # submit_review for the latest immutable render.
         self.publisher = publisher
         self.executor = ThreadPoolExecutor(
             max_workers=max_workers,
@@ -57,6 +58,8 @@ class DimensionCanvasService:
         )
         self._futures: dict[str, Future[None]] = {}
         self._futures_lock = threading.Lock()
+        self._publish_locks: dict[str, threading.Lock] = {}
+        self._publish_locks_guard = threading.Lock()
         self.canvas_repository.recover_rendering_items()
 
     def import_preview_item(
@@ -248,6 +251,14 @@ class DimensionCanvasService:
             raise ValueError("batch has no completed dimension items")
         identities: list[str] = []
         for item in sorted(completed, key=lambda value: value["id"]):
+            draft = self.product_repository.get_draft(
+                int(item["product_draft_id"]),
+                workspace_id=workspace_id,
+            )
+            if draft is None:
+                raise DimensionCanvasNotFound("product draft not found")
+            if int(draft.get("preview_revision") or 0) != int(item.get("source_preview_revision") or 0):
+                raise DimensionCanvasConflict("商品预检图在导入尺寸画布后已更新，请重新导入后再交回")
             asset = self.canvas_repository.get_asset(
                 item["render_asset_id"],
                 item["id"],
@@ -255,6 +266,7 @@ class DimensionCanvasService:
             )
             if asset is None:
                 raise DimensionCanvasConflict("rendered asset not found")
+            asset = self._publish_render_asset(item, asset, workspace_id)
             identities.append(
                 f"{item['id']}:{item['render_revision']}:{asset.get('content_hash') or asset['id']}"
             )
@@ -388,22 +400,14 @@ class DimensionCanvasService:
                 suffix=".jpg",
                 workspace_id=workspace_id,
             )
-            published: dict[str, Any] = {}
-            if self.publisher is not None:
-                published = self.publisher(
-                    output.jpeg_bytes,
-                    int(item["task_id"]),
-                    int(item["product_draft_id"]),
-                    render_revision,
-                ) or {}
             rendered_asset = {
-                "source_url": str(published.get("url") or published.get("source_url") or ""),
+                "source_url": "",
                 "managed_path": str(output_path),
                 "content_hash": str(output.content_hash),
                 "width": int(output.width),
                 "height": int(output.height),
                 "content_type": "image/jpeg",
-                "availability": "published" if published.get("url") else "local",
+                "availability": "local",
                 "master_path": str(master_path),
             }
             self.canvas_repository.finish_render(
@@ -447,7 +451,7 @@ class DimensionCanvasService:
     def _sanitize_change_item(self, item: dict[str, Any]) -> dict[str, Any]:
         base = dict(item.get("base_asset") or {})
         replacement = dict(item.get("replacement_asset") or {})
-        old_url = str((base.get("slot") or {}).get("url") or "")
+        old_url = self._safe_preview_value(str((base.get("slot") or {}).get("url") or ""))
         new_url = self._asset_preview_url(
             replacement,
             product_draft_id=int(item.get("product_draft_id") or 0),
@@ -464,7 +468,7 @@ class DimensionCanvasService:
 
     def _asset_preview_url(self, asset: dict[str, Any], *, product_draft_id: int = 0) -> str:
         source_url = str(asset.get("source_url") or "").strip()
-        if source_url:
+        if source_url and self._is_public_dimension_url(source_url):
             return source_url
         managed_path = str(asset.get("managed_path") or "").strip()
         if managed_path:
@@ -476,6 +480,117 @@ class DimensionCanvasService:
         if product_draft_id > 0 and str(asset.get("role") or "") in {"source", "task_source"}:
             return f"/api/product-processing/drafts/{product_draft_id}/image"
         return ""
+
+    def _publish_render_asset(
+        self,
+        item: dict[str, Any],
+        asset: dict[str, Any],
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        """Publish the latest local render exactly at review handoff, then persist URL."""
+        source_url = str(asset.get("source_url") or "").strip()
+        if asset.get("availability") == "published" and self._is_public_dimension_url(source_url):
+            return asset
+        if self.publisher is None:
+            raise DimensionCanvasConflict("COS 图床未配置，尺寸图无法交回审核")
+        asset_id = str(asset.get("id") or "")
+        with self._publish_locks_guard:
+            publish_lock = self._publish_locks.setdefault(asset_id, threading.Lock())
+        with publish_lock:
+            current = self.canvas_repository.get_asset(asset_id, item["id"], workspace_id)
+            if current is None:
+                raise DimensionCanvasConflict("rendered asset not found")
+            current_url = str(current.get("source_url") or "").strip()
+            if current.get("availability") == "published" and self._is_public_dimension_url(current_url):
+                return current
+            try:
+                current = self.canvas_repository.claim_item_publish(
+                    item["id"],
+                    asset_id,
+                    int(item["render_revision"]),
+                    workspace_id,
+                )
+            except CanvasStateConflict as exc:
+                latest = self.canvas_repository.get_asset(asset_id, item["id"], workspace_id)
+                latest_url = str((latest or {}).get("source_url") or "").strip()
+                if latest and latest.get("availability") == "published" and self._is_public_dimension_url(latest_url):
+                    return latest
+                raise DimensionCanvasConflict(str(exc)) from exc
+            claim_token = str(current.pop("_publish_claim_token", ""))
+            if not claim_token:
+                raise DimensionCanvasConflict("dimension publish claim token is missing")
+            current_url = str(current.get("source_url") or "").strip()
+            if current.get("availability") == "published" and self._is_public_dimension_url(current_url):
+                return self.canvas_repository.mark_asset_published(
+                    asset_id,
+                    item["id"],
+                    workspace_id,
+                    public_url=current_url,
+                    claim_token=claim_token,
+                )
+            managed_path = str(current.get("managed_path") or "")
+            if not managed_path:
+                self.canvas_repository.release_item_publish(
+                    item["id"],
+                    asset_id,
+                    workspace_id,
+                    claim_token=claim_token,
+                    error_message="local render is missing",
+                )
+                raise DimensionCanvasConflict("尺寸图本地成图不存在，无法发布")
+            try:
+                content = self.assets.require_workspace_dimension_asset(
+                    managed_path,
+                    workspace_id=workspace_id,
+                ).read_bytes()
+                result = self.publisher(
+                    content,
+                    int(item["task_id"]),
+                    int(item["product_draft_id"]),
+                    int(item["render_revision"]),
+                    str(current.get("content_hash") or ""),
+                    workspace_id,
+                ) or {}
+            except Exception as exc:
+                reason = str(exc).replace("\n", " ").strip()[:240] or type(exc).__name__
+                self.canvas_repository.release_item_publish(
+                    item["id"], asset_id, workspace_id, claim_token=claim_token, error_message=reason
+                )
+                raise DimensionCanvasConflict(f"尺寸图 COS 上传失败：{reason}") from exc
+            public_url = str(result.get("url") or result.get("source_url") or "").strip()
+            if not self._is_public_dimension_url(public_url):
+                self.canvas_repository.release_item_publish(
+                    item["id"],
+                    asset_id,
+                    workspace_id,
+                    claim_token=claim_token,
+                    error_message="publisher returned a non-public URL",
+                )
+                raise DimensionCanvasConflict("尺寸图 COS 上传未返回公开 HTTPS 地址")
+            try:
+                return self.canvas_repository.mark_asset_published(
+                    asset_id,
+                    item["id"],
+                    workspace_id,
+                    public_url=public_url,
+                    claim_token=claim_token,
+                )
+            except (LookupError, CanvasStateConflict) as exc:
+                self.canvas_repository.release_item_publish(
+                    item["id"], asset_id, workspace_id, claim_token=claim_token, error_message=str(exc)
+                )
+                raise DimensionCanvasConflict(str(exc)) from exc
+
+    @staticmethod
+    def _is_public_dimension_url(value: str) -> bool:
+        return str(value or "").strip().lower().startswith("https://") and is_safe_external_url(value)
+
+    @staticmethod
+    def _safe_preview_value(value: str) -> str:
+        normalized = str(value or "").strip()
+        if normalized.startswith("/pp-media/"):
+            return normalized
+        return normalized if is_safe_external_url(normalized) else ""
 
     def _load_local_source(self, asset: dict[str, Any]) -> bytes:
         managed_path = str(asset.get("managed_path") or "")
@@ -544,8 +659,8 @@ class DimensionCanvasService:
             raise ValueError("canvas_settings must be an object")
         if "target_slot_id" in cleaned:
             slot = str(cleaned["target_slot_id"] or "")
-            if slot and not slot.startswith("carousel."):
-                raise ValueError("target_slot_id must be a carousel slot")
+            if slot and slot != "carousel.dimension_background":
+                raise ValueError("target_slot_id must be the dimension background slot")
             cleaned["target_slot_id"] = slot
         return cleaned
 

@@ -31,11 +31,17 @@ from .domain.image_slots import DEFAULT_SLOT_IDS, apply_slot_overrides
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
 from .domain.physical_dimensions import extract_physical_dimensions
 from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_issue, strict_external_url_issue
-from .domain.prompts import format_prompt
+from .domain.prompts import GRID_RUNTIME_CONTRACT, format_prompt
 from .domain.visual_planner import listing_prompt_context
 from .domain.workbooks import read_product_workbook
 from .infrastructure.assets import ProductProcessingAssets
-from .infrastructure.ocr_gate import detect_chinese_text, max_repair_rounds, ocr_diagnostics, ocr_gate_enabled
+from .infrastructure.ocr_gate import (
+    detect_chinese_text,
+    inspect_visible_text,
+    max_repair_rounds,
+    ocr_diagnostics,
+    ocr_gate_enabled,
+)
 from .infrastructure.repository import ProductProcessingRepository
 from .provider_config import resolve_ai_provider
 
@@ -635,24 +641,41 @@ class ProductProcessingService:
         task_id: int,
         draft_id: int,
         render_revision: int,
+        content_hash: str,
+        workspace_id: str,
     ) -> dict[str, Any]:
-        """Expose a dimension render only through the configured local media host.
+        """Publish a finalized dimension render once under a content-addressed COS key.
 
-        This adapter never calls COS or a provider.  Without ``WH_MEDIA_BASE_URL``
-        the canvas service keeps using its managed ``/pp-media`` preview URL.
+        The canvas keeps local managed previews while editing. This adapter is called
+        only when the user submits the latest render back for review; it never falls
+        back to a local path because Dianxiaomi requires a public image URL.
         """
-        path = self.assets.save_generated_image(
-            task_id,
-            draft_id,
-            f"dimension_r{render_revision}",
-            content,
-            ".jpg",
+        media_types = _media_types()
+        if not media_types:
+            raise MediaUnavailableError("图片处理依赖缺失：无法发布尺寸图")
+        from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
+
+        digest = hashlib.sha256(content).hexdigest()
+        if content_hash and digest != str(content_hash).strip().lower():
+            raise ValueError("dimension render hash mismatch")
+        namespace = hashlib.sha256(str(workspace_id).encode("utf-8")).hexdigest()[:20]
+        media = GeneratedMedia(
+            stage=f"dimension_r{int(render_revision)}",
+            content=bytes(content),
+            content_type="image/jpeg",
+            suffix=".jpg",
+            provider="dimension-canvas",
+            model="pillow",
+            reference_count=1,
         )
-        base = _media_public_base_url()
-        if not base:
-            return {"managed_path": str(path)}
-        relative = path.resolve().relative_to(self.assets.output_root.resolve())
-        return {"url": f"{base}/pp-media/{relative.as_posix()}", "managed_path": str(path)}
+        url = self._media_processor().upload_content_addressed_to_cos(
+            media,
+            namespace=namespace,
+            content_hash=digest,
+        )
+        if not url.lower().startswith("https://") or not is_safe_external_url(url):
+            raise ValueError("COS returned a non-public dimension image URL")
+        return {"url": url, "provider": "cos", "content_hash": digest}
 
     def sync_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
         self.get_draft(draft_id, workspace_id)
@@ -1762,6 +1785,29 @@ class ProductProcessingService:
                 vision_subject,
                 image_template=str(settings.get("image_template") or "A"),
             )
+            if not grid_image_paths:
+                reason = next(
+                    (
+                        note.split(":ai-failed: ", 1)[-1]
+                        for note in reversed(ai_notes)
+                        if note.startswith("four_grid:ai-failed:")
+                    ),
+                    "生成图未通过四宫格质量门",
+                )
+                return {
+                    **item,
+                    "title": optimized_title,
+                    "image_url": image_url,
+                    "status": "attention_required",
+                    "reason": reason,
+                    "result": {
+                        "error_type": "four_grid_quality_failed",
+                        "failure_class": "technical_retryable",
+                        "operator_hint": "生成图含跨区内容、显著 AI 文字或分辨率不合格，已阻止写入店小秘；请重试图片阶段",
+                        "retryable": True,
+                        "ai_notes": ai_notes,
+                    },
+                }
         if need_detail:
             if grid_image_paths:
                 detail_image_paths = self._generate_detail_images_local(
@@ -2125,9 +2171,11 @@ class ProductProcessingService:
             prompt = format_prompt(contracted, title=optimized_title, **context)
             reference = select_image_reference(raw, title=optimized_title, category=category)
             prompt = append_content_reference(prompt, reference, kind="image")
+            # 用户自定义提示词和参考库可以改变风格，但不能覆盖拆图/无 AI 文字运行合同。
+            prompt = f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}"
             self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
             media = processor.generate(stage="grid_image", prompt=prompt, reference_values=reference_urls)
-            # OCR 质量门：检出中文 → 定向重绘为英文（本地 OCR 后置验证器，对齐原型）
+            # OCR 质量门：四宫格禁止模型写字；显著中英文排版都会触发一次定向修复。
             media = self._repair_until_clean(processor, "grid_image", "four_grid", media, reference_urls, ai_notes)
             parts = processor.split_four_grid(media)
         except (media_config_error, media_error, ValueError, OSError) as exc:
@@ -2431,46 +2479,64 @@ class ProductProcessingService:
         reference_urls: list[str],
         ai_notes: list[str] | None = None,
     ) -> Any:
-        """OCR 质量门：生成后本地检出中文 → 把该图回传模型定向重绘（中文换成英文），最多 N 轮。
-
-        对齐交接文档 §11.4/§15：OCR 是后置验证器，走「确定性验证 → AI 修复 → 确定性复验」。
-        检出中文后保留商品与构图，仅把文字替换为英文；重绘失败或仍含中文时保留最后一次
-        生成图并记 ai_note，不回退来源图（来源图必带中文促销文案，更差）。
-        """
-        if not ocr_gate_enabled():
-            return media
-        chinese = detect_chinese_text(media.content)
-        if chinese is None:
-            return media
-        if not chinese:
-            if ai_notes is not None:
-                ai_notes.append(f"{note_key}:ocr_passed")
+        """Run deterministic text/structure gates, repair once on failure, then revalidate."""
+        # 四宫格会直接进入店小秘，运行环境开关不得绕过显著文字门。
+        if note_key != "four_grid" and not ocr_gate_enabled():
             return media
         media_types = _media_types()
         if not media_types:
+            if note_key == "four_grid":
+                raise ValueError("四宫格确定性质检不可用")
             return media
         _, media_config_error, media_error = media_types
+
+        def inspect(value: Any) -> list[str]:
+            inspection = inspect_visible_text(value.content)
+            if inspection is None:
+                if note_key == "four_grid":
+                    raise ValueError("四宫格 OCR 质量门不可用，已阻止未验证生成图")
+                return []
+            found = list(inspection["chinese"])
+            if note_key == "four_grid":
+                found.extend(inspection["prominent"])
+                try:
+                    processor.validate_four_grid(value)
+                except (media_config_error, media_error, ValueError, OSError):
+                    found.append("grid_structure_invalid")
+            return list(dict.fromkeys(found))
+
+        found = inspect(media)
+        if not found:
+            if ai_notes is not None:
+                ai_notes.append(f"{note_key}:ocr_passed")
+            return media
         rounds = 0
-        while chinese and rounds < max_repair_rounds():
+        while found and rounds < max_repair_rounds():
             rounds += 1
             try:
                 media = processor.repair_generated(
                     stage=stage,
-                    prompt=self._effective_prompt("image_repair_chinese"),
+                    prompt=self._effective_prompt(
+                        "image_repair_grid" if note_key == "four_grid" else "image_repair_chinese"
+                    ),
                     prior_content=media.content,
                     prior_content_type=media.content_type,
                     reference_values=reference_urls,
                 )
             except (media_config_error, media_error, ValueError, OSError) as exc:
                 if ai_notes is not None:
-                    ai_notes.append(f"{note_key}:chinese_repair_failed")
+                    ai_notes.append(f"{note_key}:quality_repair_failed")
+                if note_key == "four_grid":
+                    raise ValueError("四宫格文字或结构修复失败") from exc
                 return media
-            chinese = detect_chinese_text(media.content)
+            found = inspect(media)
         if ai_notes is not None:
-            if chinese:
-                ai_notes.append(f"{note_key}:chinese_unresolved")
+            if found:
+                ai_notes.append(f"{note_key}:quality_unresolved")
             else:
-                ai_notes.append(f"{note_key}:chinese_repaired")
+                ai_notes.append(f"{note_key}:quality_repaired")
+        if found and note_key == "four_grid":
+            raise ValueError("四宫格仍含显著 AI 文字或无有效中心分隔，已阻止拆图")
         return media
 
     def _effective_prompt(self, key: str) -> str:
@@ -2895,7 +2961,8 @@ class ProductProcessingService:
             }
         # COS 图床：gitignored 本地配置 cos.local.json 优先，环境变量 WH_COS_* 可覆盖。
         # 对齐原型出图保存逻辑——生成图上传 COS 转外链后写进导入表，店小秘可直接读取。
-        # 安装包场景：cos.local.json 随程序一起分发（源码/可执行同目录/打包资源），零配置生效。
+        # 已配置安装可从程序目录读取 gitignored 本地配置；公开安装包不携带密钥，
+        # 新安装需由系统设置或环境变量提供 COS 凭据。
         cos_config: dict[str, Any] = {}
         for local_cos in _cos_local_config_paths():
             try:
@@ -2921,13 +2988,14 @@ class ProductProcessingService:
         # 系统配置优先于 cos.local.json（通过 BasicSettings Web UI 管理）
         sys_cos = provider.get("_sys_cos")
         if sys_cos and sys_cos.get("bucket") and sys_cos.get("region"):
-            sys_cos_secret = {}  # COS 密钥在 basic_settings 的 secret_values 中，_media_config_provider 暂不读取
-            if bucket and region and secret_id and secret_key:
-                sys_cos_secret = cos_config  # 优先用 cos.local.json/env 的密钥
+            # resolve_ai_provider 只在后端内部携带解密密钥；公开 provider summary 会剔除。
+            sys_secret_id = str(sys_cos.get("secret_id") or secret_id).strip()
+            sys_secret_key = str(sys_cos.get("secret_key") or secret_key).strip()
             cos_config = {
                 "bucket": sys_cos["bucket"],
                 "region": sys_cos["region"],
-                **sys_cos_secret,
+                "secret_id": sys_secret_id,
+                "secret_key": sys_secret_key,
             }
         sys_backup = provider.get("_sys_backup_image_ai")
         backup_image = (

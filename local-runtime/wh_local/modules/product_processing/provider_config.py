@@ -102,8 +102,17 @@ def resolve_ai_provider() -> dict[str, Any]:
 
     fallback = list(TEXT_MODEL_FALLBACK_ORDER)
 
-    # 读取 COS 系统配置公开字段（bucket/region），密钥由 _media_config_provider 处理
-    sys_cos: dict[str, str] = _try_system_cos_public()
+    # 解密后的 COS 配置仅作为后端内部运行时数据传给图片发布器；安全摘要不会回显它。
+    sys_cos: dict[str, str] = (
+        {
+            "bucket": str(sys_cfg.cos.bucket).strip(),
+            "region": str(sys_cfg.cos.region).strip(),
+            "secret_id": str(sys_cfg.cos.secret_id).strip(),
+            "secret_key": str(sys_cfg.cos.secret_key).strip(),
+        }
+        if sys_cfg and sys_cfg.cos.configured
+        else _try_system_cos_public()
+    )
 
     return {
         "provider": AI_PROVIDER,

@@ -10,6 +10,7 @@ from typing import Any, Sequence
 from openpyxl import Workbook, load_workbook
 
 from .image_slots import apply_slot_overrides
+from .policy import is_safe_external_url
 
 
 # 店小秘导入默认值（对齐原型 native_product_engine 常量）
@@ -63,8 +64,8 @@ HEADER_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def _is_http_url(value: Any) -> bool:
-    """店小秘图片列只接受 http(s) 外部地址；本地生成图（未上传 COS）不可写进导入表。"""
-    return str(value or "").strip().lower().startswith(("http://", "https://"))
+    """店小秘图片列只接受无凭据、非本机/内网的公开 HTTP(S) 地址。"""
+    return is_safe_external_url(str(value or "").strip())
 
 
 def _http_urls(values: Any) -> list[str]:
