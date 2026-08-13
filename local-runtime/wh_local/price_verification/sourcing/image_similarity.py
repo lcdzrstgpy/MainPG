@@ -11,11 +11,13 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from functools import lru_cache
 from io import BytesIO
-import math
+import os
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from ...data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
@@ -28,7 +30,9 @@ IMAGE_DISPLAY_LIMIT = 5
 IMAGE_SIMILARITY_METHOD = "local-phash-dhash-color-v1"
 _FETCH_TIMEOUT_SECONDS = 8.0
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
-_MAX_WORKERS = 6
+# Image downloads are I/O-bound. Scale gently on faster machines while keeping
+# a conservative floor/cap so low-memory packaged clients remain responsive.
+_MAX_WORKERS = min(12, max(6, (os.cpu_count() or 2) * 2))
 
 
 ImageFetcher = Callable[[str], FetchedPublicImage]
@@ -215,22 +219,18 @@ def _features(image: Image.Image) -> _VisualFeatures:
 
 
 def _low_frequency_dct(pixels: list[int], *, size: int, output_size: int) -> list[float]:
-    coefficients: list[float] = []
-    cosines = [
-        [math.cos(math.pi * (2 * position + 1) * frequency / (2 * size)) for position in range(size)]
-        for frequency in range(output_size)
-    ]
-    for vertical in range(output_size):
-        for horizontal in range(output_size):
-            value = 0.0
-            for y in range(size):
-                vertical_cosine = cosines[vertical][y]
-                row = y * size
-                value += vertical_cosine * sum(
-                    pixels[row + x] * cosines[horizontal][x] for x in range(size)
-                )
-            coefficients.append(value)
-    return coefficients
+    image = np.asarray(pixels, dtype=np.float64).reshape(size, size)
+    cosines = _dct_cosines(size, output_size)
+    # Equivalent to the former nested-loop formula C @ image @ C.T, but NumPy
+    # executes it in optimized native code instead of Python for every pixel.
+    return (cosines @ image @ cosines.T).reshape(-1).tolist()
+
+
+@lru_cache(maxsize=4)
+def _dct_cosines(size: int, output_size: int) -> np.ndarray:
+    positions = np.arange(size, dtype=np.float64)
+    frequencies = np.arange(output_size, dtype=np.float64)[:, None]
+    return np.cos(np.pi * (2.0 * positions + 1.0) * frequencies / (2.0 * size))
 
 
 def _feature_similarity(left: _VisualFeatures, right: _VisualFeatures) -> float:

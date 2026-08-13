@@ -19,6 +19,7 @@ class _Result:
 class _Provider:
     def __init__(self) -> None:
         self.image_target_count = 0
+        self.detail_calls = 0
 
     def search_by_image(self, criteria: object) -> _Result:
         self.image_target_count = int(getattr(criteria, "target_count"))
@@ -43,6 +44,7 @@ class _Provider:
         return _Result(response={"items": {"item": []}})
 
     def get_item_detail(self, offer_id: str) -> _Result:
+        self.detail_calls += 1
         assert offer_id == "111111"
         return _Result(
             response={
@@ -150,3 +152,53 @@ def test_title_conflicts_do_not_empty_visual_recall(monkeypatch: Any) -> None:
     assert item["visual_verification"]["input_count"] == 5
     assert sum(item["visual_verification"]["title_evidence"].values()) == 5
     assert len(item["candidates"]) == 5
+
+
+def test_complete_search_payload_skips_redundant_detail_request(monkeypatch: Any) -> None:
+    provider = _Provider()
+    original_search = provider.search_by_image
+
+    def complete_search(criteria: object) -> _Result:
+        result = original_search(criteria)
+        for item in result.response["items"]["item"]:
+            item["price"] = "6.80"
+        return result
+
+    provider.search_by_image = complete_search  # type: ignore[method-assign]
+
+    def verify(reference_url: str, candidates: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        output = []
+        for candidate in candidates:
+            item = dict(candidate)
+            item.update(
+                image_similarity_score=0.75,
+                image_similarity_method="test",
+                image_similarity_verified=True,
+                image_similarity_fallback=False,
+            )
+            output.append(item)
+        return output, {"reference_available": True, "verified_count": 5, "input_count": 5}
+
+    monkeypatch.setattr(
+        "wh_local.price_verification.sourcing.onebound_adapter.verify_visual_candidates",
+        verify,
+    )
+    repository = object.__new__(PriceVerificationRepository)
+    adapter = OneBoundSourceAdapter(repository, lambda: provider)
+    task = SourceSearchTask(
+        task_key="skc-fast",
+        skc_id="skc-fast",
+        main_image_url="https://images.example/temu.jpg",
+        source_quote_keys=("quote-fast",),
+        product_title="Pet mat",
+        max_candidates=5,
+    )
+
+    result = adapter.search_by_image(
+        PriceVerificationActor(workspace_id="workspace", actor_id="employee"),
+        (task,),
+        keyword_search=False,
+    )
+
+    assert len(result["items"][0]["candidates"]) == 5
+    assert provider.detail_calls == 0
