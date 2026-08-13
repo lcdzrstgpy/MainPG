@@ -1,7 +1,7 @@
 from io import BytesIO
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from pydantic import ValidationError
 
 from wh_local.modules.product_processing.infrastructure.assets import (
@@ -11,6 +11,8 @@ from wh_local.modules.product_processing.infrastructure.dimension_renderer impor
     DimensionAnnotation,
     DimensionRenderRequest,
     DimensionRenderer,
+    _FONT_PATH,
+    _fit_label_inside_safe_margin,
     _format_dimension,
 )
 
@@ -72,6 +74,94 @@ def test_renderer_nudges_edge_label_inside_safe_margin() -> None:
 
 
 @pytest.mark.parametrize(
+    "label",
+    [
+        (0.0, 0.5),
+        (1.0, 0.5),
+        (0.5, 0.0),
+        (0.5, 1.0),
+        (0.0, 0.0),
+        (1.0, 1.0),
+    ],
+)
+def test_renderer_accepts_labels_at_canvas_edges(
+    label: tuple[float, float],
+) -> None:
+    output = DimensionRenderer().render(
+        DimensionRenderRequest(
+            source_bytes=_source_bytes(),
+            annotations=[_length_annotation(label=label)],
+        )
+    )
+
+    assert output.width == 2000
+    assert output.height == 2000
+    assert output.content_hash
+
+
+def test_label_fitting_preserves_center_and_clamps_edge() -> None:
+    image = Image.new("RGB", (2000, 2000), "white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.truetype(str(_FONT_PATH), 88)
+
+    centered = _fit_label_inside_safe_margin(
+        draw,
+        (1000, 1000),
+        "10 cm",
+        font=font,
+        stroke_width=5,
+        size=2000,
+    )
+    edge = _fit_label_inside_safe_margin(
+        draw,
+        (0, 1000),
+        "10 cm",
+        font=font,
+        stroke_width=5,
+        size=2000,
+    )
+
+    assert centered == (1000, 1000)
+    assert 0 < edge[0] < 1000
+    assert edge[1] == 1000
+
+
+@pytest.mark.parametrize(
+    "label",
+    [(-0.001, 0.5), (1.001, 0.5), (float("nan"), 0.5), (float("inf"), 0.5)],
+)
+def test_renderer_rejects_labels_outside_normalized_canvas(
+    label: tuple[float, float],
+) -> None:
+    request = DimensionRenderRequest(
+        source_bytes=_source_bytes(),
+        annotations=[_length_annotation(label=label)],
+    )
+
+    with pytest.raises(ValueError, match="dimension_coordinate_invalid"):
+        DimensionRenderer().render(request)
+
+
+def test_label_fitting_rejects_text_larger_than_canvas() -> None:
+    class OversizedDraw:
+        @staticmethod
+        def textbbox(*_args, **_kwargs) -> tuple[int, int, int, int]:
+            return (-1, 0, 2100, 100)
+
+    font = ImageFont.truetype(str(_FONT_PATH), 88)
+
+    with pytest.raises(ValueError, match="dimension_label_outside_safe_margin"):
+        _fit_label_inside_safe_margin(
+            OversizedDraw(),
+            (1000, 1000),
+            "oversized",
+            font=font,
+            stroke_width=5,
+            size=2000,
+        )
+
+
+@pytest.mark.parametrize(
     ("render_request", "error_code"),
     [
         (
@@ -84,13 +174,6 @@ def test_renderer_nudges_edge_label_inside_safe_margin() -> None:
                 annotations=[_length_annotation(value_cm=0)],
             ),
             "dimension_value_invalid",
-        ),
-        (
-            DimensionRenderRequest(
-                source_bytes=_source_bytes(),
-                annotations=[_length_annotation(label=(0.01, 0.5))],
-            ),
-            "dimension_label_outside_safe_margin",
         ),
     ],
 )

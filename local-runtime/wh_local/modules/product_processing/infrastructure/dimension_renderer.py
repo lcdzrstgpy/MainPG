@@ -12,7 +12,7 @@ from pydantic import BaseModel, StrictBytes
 
 
 _FONT_PATH = Path("C:/Windows/Fonts/segoeuib.ttf")
-_SAFE_MARGIN_RATIO = 0.05
+_EXPORT_PADDING_RATIO = 0.005
 _MAX_SOURCE_BYTES = 25 * 1024 * 1024
 _MAX_SOURCE_PIXELS = 40_000_000
 _MAX_ANNOTATIONS = 32
@@ -118,11 +118,6 @@ class DimensionRenderer:
                     for value in point
                 ):
                     raise ValueError("dimension_coordinate_invalid")
-            if not all(
-                _SAFE_MARGIN_RATIO <= value <= 1 - _SAFE_MARGIN_RATIO
-                for value in annotation.label
-            ):
-                raise ValueError("dimension_label_outside_safe_margin")
             distance = math.hypot(
                 annotation.end[0] - annotation.start[0],
                 annotation.end[1] - annotation.start[1],
@@ -256,7 +251,7 @@ def _fit_label_inside_safe_margin(
         anchor="mm",
         stroke_width=stroke_width,
     )
-    safe = round(size * _SAFE_MARGIN_RATIO)
+    safe = max(stroke_width + 1, round(size * _EXPORT_PADDING_RATIO))
     usable = size - (safe * 2)
     if bounds[2] - bounds[0] > usable or bounds[3] - bounds[1] > usable:
         raise ValueError("dimension_label_outside_safe_margin")
