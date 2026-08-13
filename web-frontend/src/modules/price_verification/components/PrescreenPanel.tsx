@@ -58,14 +58,14 @@ export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, 
         <span>初筛结果</span>
         <strong>{passedItems} 个 SKC</strong>
         <small>{thresholdActive ? `申报价 > ${prescreen?.min_adjusted_price_cny}；` : "未设置门槛；"}进入 STEP 02{filteredCount > 0 ? `，过滤 ${filteredCount} 个` : ""}</small>
+        <WorkflowActionBar label="数据初筛操作">
+          <div className="price-verification-action-buttons">
+            <button className="price-verification-text-action" onClick={onRefresh} disabled={isChecking}>{isChecking ? "正在刷新…" : "↻ 刷新"}</button>
+            <button className="price-verification-text-action" onClick={() => void save()} disabled={isChecking || saving}>{saving ? "保存中…" : "仅保存"}</button>
+            <button className="price-verification-text-action" onClick={() => void saveAndContinue()} disabled={isChecking || saving || !totalSkc}>{saving ? "保存中…" : "保存并进入批次审核"}</button>
+          </div>
+        </WorkflowActionBar>
       </div>
     </div>
-    <WorkflowActionBar label="数据初筛操作">
-      <div className="price-verification-action-buttons">
-        <button className="price-verification-text-action" onClick={onRefresh} disabled={isChecking}>{isChecking ? "正在刷新…" : "↻ 刷新"}</button>
-        <button className="price-verification-text-action" onClick={() => void save()} disabled={isChecking || saving}>{saving ? "保存中…" : "仅保存"}</button>
-        <button className="price-verification-text-action" onClick={() => void saveAndContinue()} disabled={isChecking || saving || !totalSkc}>{saving ? "保存中…" : "保存并进入批次审核"}</button>
-      </div>
-    </WorkflowActionBar>
   </section>;
 }
