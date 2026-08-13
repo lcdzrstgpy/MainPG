@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { priceVerificationApi } from "../api/priceVerificationApi";
 import type { SkcSourceLink, SourceCandidate, SourceCandidateSelection, SourcePreview, SourcePreviewItem, SourcePreviewSkcGroup, SourceTopProfit } from "../types";
 import { SectionHelp } from "./SectionHelp";
-import { WorkflowActionBar, useFloatingActionBar } from "./WorkflowActionBar";
 import "../styles/priceVerificationSource.css";
 
 type Props = {
@@ -138,7 +137,10 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
   const [profitOverrides, setProfitOverrides] = useState<Record<string, SourceTopProfit | null>>({});
   const [profitBusy, setProfitBusy] = useState("");
   const [busyLink, setBusyLink] = useState("");
-  const { actionBarRef, spacerRef } = useFloatingActionBar("top");
+  const sourceRunButtonRef = useRef<HTMLButtonElement>(null);
+  const [showRefloatButton, setShowRefloatButton] = useState(false);
+  const canRunSourceSearch = !busy && (sourceCount ?? 0) > 0;
+  const canRefloatSourceSearch = Boolean(preview) && canRunSourceSearch;
 
   const itemKey = (item: SourcePreviewItem) => item.skc_id ?? item.quote_key;
   const candidateKeyFor = (skcKey: string, candidate: SourceCandidate | null) =>
@@ -149,6 +151,29 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     setPriceOverrides({});
     setWeights({});
   }, [preview]);
+
+  useEffect(() => {
+    const contentCard = document.querySelector<HTMLElement>(".content-card");
+    const updateRefloatVisibility = () => {
+      const button = sourceRunButtonRef.current;
+      if (!button || !canRefloatSourceSearch) {
+        setShowRefloatButton(false);
+        return;
+      }
+      const topbarBottom = document.querySelector<HTMLElement>(".topbar-card")?.getBoundingClientRect().bottom ?? 0;
+      setShowRefloatButton(button.getBoundingClientRect().bottom <= topbarBottom + 8);
+    };
+
+    window.addEventListener("scroll", updateRefloatVisibility, { passive: true });
+    contentCard?.addEventListener("scroll", updateRefloatVisibility, { passive: true });
+    window.addEventListener("resize", updateRefloatVisibility);
+    updateRefloatVisibility();
+    return () => {
+      window.removeEventListener("scroll", updateRefloatVisibility);
+      contentCard?.removeEventListener("scroll", updateRefloatVisibility);
+      window.removeEventListener("resize", updateRefloatVisibility);
+    };
+  }, [canRefloatSourceSearch, preview]);
 
   const computeCandidateProfit = async (item: SourcePreviewItem, candidate: SourceCandidate, weightKg: number, priceOverride?: string): Promise<SourceTopProfit | null> => {
     if (!batchId) return null;
@@ -268,17 +293,11 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
           <p className="pv-eyebrow">STEP 03 · SOURCE</p>
           <h2>货源关联<SectionHelp title="每次搜索均以万邦图片图搜结果为候选依据；商品标题翻译后的中文关键词仅用于辅助确认同一货源，不能单独成为候选。结果按 SKC 分组，每个 SKC 默认展示前 5 条；每条候选均按 Temu 调整后申报价核算利润，源价与重量可调。" /></h2>
         </div>
-      </div>
-
-      <div ref={spacerRef} className="price-verification-floating-action-spacer" aria-hidden="true" />
-      <WorkflowActionBar label="货源匹配操作" floating ref={actionBarRef}>
-        <div className="price-verification-action-summary"><span>待图搜</span><strong>{sourceCount ?? 0} 个 SKC</strong></div>
-        <div className="price-verification-action-buttons">
-          <span className="pv-source-sort-label">候选保留万邦排序，首条置于当前展示末尾 · 低于50%时按本地相似度补位</span>
-          <button className="price-verification-primary-button" onClick={onStart} disabled={busy || (sourceCount ?? 0) === 0} title={(sourceCount ?? 0) === 0 ? "本轮 SKC 均已复用产品库货源" : undefined}>{busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0} 个 SKC）`}</button>
+        <div className="pv-source-head-actions">
+          <button ref={sourceRunButtonRef} className="pv-source-run-button" onClick={onStart} disabled={!canRunSourceSearch}>{busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0}）`}</button>
           {selectedCandidates.length > 0 && !matchingCompleted ? <button className="price-verification-secondary-button" onClick={onComplete} disabled={busy}>完成关联（{selectedCandidates.length}）</button> : null}
         </div>
-      </WorkflowActionBar>
+      </div>
 
       {/* 统计 + 排序控件 */}
       <div className="pv-source-stats">
@@ -304,8 +323,6 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
             const candidates = rankedCandidates.length > 1
               ? [...rankedCandidates.slice(1), rankedCandidates[0]]
               : rankedCandidates;
-            const groupLinks = links.filter((link) => link.skc_id === group.skc_id);
-            const searchFailed = item?.source_search_status === "failed" || item?.source_search_status === "error";
             return (
               <div className="pv-source-group" key={group.skc_id}>
                 <div className="pv-source-group-head">
@@ -313,14 +330,6 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                     {item?.main_image_url ? <img className="pv-source-temu-image" src={item.main_image_url} alt="" loading="lazy" referrerPolicy="no-referrer" /> : null}
                     <span className="pv-source-skc-badge">{group.skc_id}</span>
                     <strong>{item?.product_title || "未命名商品"}</strong>
-                  </div>
-                  <div className="pv-source-group-badges">
-                    <em>图搜 {statusText(item?.source_search_status)}</em>
-                    <em className={item?.image_search_audit?.downloaded && item?.image_search_audit?.uploaded && item?.image_search_audit?.searched ? "is-audit-success" : "is-error"} title={item?.image_search_audit?.request_id ? `万邦请求 ${item.image_search_audit.request_id}` : undefined}>{auditText(item)}</em>
-                    <em className={item?.visual_verification?.reference_available && (item.visual_verification.input_count ?? 0) > 0 ? "is-audit-success" : "is-error"}>{visualAuditText(item)}</em>
-                    <em>展示 {candidates.length}/{all.length} 条</em>
-                    <em>已关联 1688 {groupLinks.length} 条（下方第四板块）</em>
-                    {searchFailed && item?.source_search_error ? <em className="is-error" title={sourceErrorText(item.source_search_error)}>{sourceErrorText(item.source_search_error)}</em> : null}
                   </div>
                 </div>
                 {candidates.length ? (
@@ -403,6 +412,16 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       ) : (
         <div className="pv-profit-empty">{preview ? "暂无货源候选" : "等待图搜结果"}</div>
       )}
+      <button
+        type="button"
+        className={`pv-source-refloat-button ${showRefloatButton ? "is-visible" : ""}`}
+        onClick={onStart}
+        disabled={!canRunSourceSearch}
+        tabIndex={showRefloatButton ? 0 : -1}
+        aria-label="重新图搜"
+      >
+        {busy ? "图搜执行中…" : "重新图搜"}
+      </button>
     </section>
   );
 }
