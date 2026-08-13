@@ -315,6 +315,17 @@ class DimensionCanvasRepository:
             )
             return self._asset(row) if row else None
 
+    def find_asset(self, asset_id: str, workspace_id: str) -> dict[str, Any] | None:
+        """Look up one canvas asset by id across items (server-side image proxy)."""
+        with self.database.sessions() as session:
+            row = session.scalar(
+                select(DimensionCanvasAssetRow).where(
+                    DimensionCanvasAssetRow.id == asset_id,
+                    DimensionCanvasAssetRow.workspace_id == workspace_id,
+                )
+            )
+            return self._asset(row) if row else None
+
     def materialize_asset(
         self,
         asset_id: str,

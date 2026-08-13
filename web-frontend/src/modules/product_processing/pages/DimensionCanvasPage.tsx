@@ -27,6 +27,7 @@ import {
 } from "../data/dimensionCanvasModel";
 import { useDimensionCanvasAutosave } from "../hooks/useDimensionCanvasAutosave";
 import type {
+  DimensionAsset,
   DimensionCanvasBatch,
   DimensionCanvasItem,
   DimensionKey,
@@ -55,6 +56,21 @@ const UNIT_OPTIONS: Array<{ value: DimensionUnit; label: string }> = [
   { value: "in", label: "英寸 (in)" },
   { value: "ft", label: "英尺 (ft)" },
 ];
+
+function CanvasAssetThumb({ asset }: { asset: DimensionAsset }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <span className="dimension-asset-thumb-failed">加载失败</span>;
+  if (!asset.previewUrl) return <span>待加载</span>;
+  return (
+    <img
+      src={asset.previewUrl}
+      alt={asset.role}
+      draggable={false}
+      onDragStart={(event) => event.preventDefault()}
+      onError={() => setFailed(true)}
+    />
+  );
+}
 
 export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrecheck }: Props) {
   const [batches, setBatches] = useState<DimensionCanvasBatch[]>([]);
@@ -448,7 +464,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               <div className="dimension-asset-list">
                 {currentItem.assets.map((asset) => (
                   <button key={asset.id} className={editor.selectedAssetId === asset.id ? "is-active" : ""} onClick={() => updateEditor({ ...editor, selectedAssetId: asset.id })} disabled={asset.availability === "failed"}>
-                    {asset.previewUrl ? <img src={asset.previewUrl} alt={asset.role} draggable={false} onDragStart={(event) => event.preventDefault()} /> : <span>待加载</span>}
+                    {asset.previewUrl ? <CanvasAssetThumb asset={asset} /> : <span>待加载</span>}
                     <small>{asset.role}</small>
                   </button>
                 ))}
