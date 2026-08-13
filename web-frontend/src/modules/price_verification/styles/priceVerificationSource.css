@@ -1,13 +1,13 @@
 /* STEP 03 · 货源匹配 新布局（纵向大图列表卡 + 字段卡底部编辑行） */
 
-.pv-source-panel {
+.pv-source-workspace {
   display: grid;
   gap: 16px;
-  border: 1px solid #d8e7f2;
-  border-radius: 18px;
-  padding: 20px;
-  background: #fbfdff;
-  box-shadow: 0 12px 30px #265d8a0d;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 /* ---------- 头部 ---------- */
@@ -18,12 +18,16 @@
   gap: 16px;
 }
 
-.pv-source-head .pv-eyebrow {
+.pv-source-head .price-verification-source-eyebrow {
   margin: 0 0 6px;
-  color: #0a8cf2;
+}
+
+.pv-source-head .price-verification-source-eyebrow small {
+  margin-left: 10px;
+  color: var(--theme-text-secondary, #6d8399);
   font-size: .68rem;
-  font-weight: 850;
-  letter-spacing: .14em;
+  font-weight: 650;
+  letter-spacing: 0;
 }
 
 .pv-source-head h2 {
@@ -36,6 +40,28 @@
 }
 
 .pv-source-head-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+
+.pv-source-inline-stats {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  color: var(--theme-text-secondary, #6d8399);
+  font-size: .74rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.pv-source-inline-stats span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.pv-source-inline-stats strong {
+  color: var(--theme-module-primary-strong, #0a8cf2);
+  font-size: 1.05rem;
+  line-height: 1;
+}
 
 .pv-source-run-button {
   flex: none;
@@ -59,7 +85,7 @@
   opacity: .55;
 }
 
-@media (max-width:700px) { .pv-source-head { align-items:flex-start; flex-direction:column; } .pv-source-head-actions { justify-content:flex-start; } }
+@media (max-width:700px) { .pv-source-head { align-items:flex-start; flex-direction:column; } .pv-source-head-actions { justify-content:flex-start; } .pv-source-inline-stats { flex-wrap:wrap; white-space:normal; } }
 
 .pv-source-refloat-button {
   position: fixed;
@@ -176,20 +202,23 @@
 }
 
 /* ---------- SKC 分组 ---------- */
-.pv-source-group {
+.pv-source-result-stack {
   display: grid;
-  gap: 10px;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--theme-module-surface-soft, #edf7ff) 74%, transparent);
 }
 
-.pv-source-group-head {
+.pv-source-result-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
-  border: 1px solid #d8e7f2;
-  border-radius: 12px;
-  background: linear-gradient(120deg, #f2f9ff, #f8fcff);
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--theme-module-surface, #fff) 92%, transparent);
 }
 
 .pv-source-group-title {
@@ -268,29 +297,33 @@
 /* ---------- 候选纵向大图列表卡 ---------- */
 .pv-source-cards {
   display: grid;
-  gap: 10px;
+  grid-template-columns: 1fr;
+  gap: 9px;
 }
 
 .pv-source-card {
   display: grid;
-  grid-template-columns: 84px minmax(0, 1fr);
+  grid-template-columns: 112px minmax(0, 1fr);
   gap: 14px;
-  padding: 14px;
-  border: 1px solid #e2edf3;
-  border-radius: 13px;
-  background: #fff;
-  transition: border-color .15s ease, box-shadow .15s ease;
+  padding: 12px;
+  border: 0;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--theme-module-surface, #fff) 94%, transparent);
+  box-shadow: 0 7px 18px rgba(38, 93, 138, .07);
+  transition: background .16s ease, box-shadow .16s ease, transform .16s ease;
 }
 
 .pv-source-card:hover {
-  border-color: #b4d6f2;
-  box-shadow: 0 10px 22px rgba(38, 93, 138, .09);
+  border-color: transparent;
+  background: var(--theme-module-surface, #fff);
+  box-shadow: 0 11px 24px rgba(38, 93, 138, .11);
+  transform: translateY(-1px);
 }
 
 .pv-source-card-media {
   display: block;
-  width: 84px;
-  height: 84px;
+  width: 112px;
+  height: 112px;
   overflow: hidden;
   border-radius: 10px;
   background: #edf5f8;
@@ -305,19 +338,20 @@
 
 .pv-source-card-main {
   display: grid;
-  gap: 10px;
+  grid-template-columns: minmax(240px, .72fr) minmax(440px, 1.28fr) auto;
+  align-items: center;
+  gap: 14px;
   min-width: 0;
 }
 
 .pv-source-card-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  display: contents;
 }
 
 .pv-source-card-info {
   display: grid;
+  grid-column: 1;
+  grid-row: 1;
   gap: 5px;
   min-width: 0;
 }
@@ -328,7 +362,7 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
   color: #20364d;
-  font-size: .9rem;
+  font-size: .88rem;
   font-weight: 800;
   line-height: 1.45;
 }
@@ -370,6 +404,8 @@
 
 .pv-source-card-side {
   display: flex;
+  grid-column: 3;
+  grid-row: 1;
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
@@ -381,7 +417,7 @@
   padding: 6px 11px;
   color: #0a6fce;
   background: #eaf6ff;
-  font-size: 1.02rem;
+  font-size: .94rem;
   font-weight: 900;
   white-space: nowrap;
 }
@@ -415,37 +451,39 @@
 }
 
 /* ---------- 利润核算区 ---------- */
-.pv-profit-box {
+.pv-source-profit-summary {
   display: grid;
-  gap: 10px;
-  border: 1px solid #e2edf3;
-  border-radius: 11px;
-  padding: 12px 14px;
-  background: #f8fcff;
+  grid-column: 2;
+  grid-row: 1;
+  gap: 6px;
+  border: 0;
+  border-radius: 12px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--theme-module-surface-soft, #f2f8fc) 84%, transparent);
 }
 
 .pv-profit-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px 14px;
+  gap: 4px 10px;
   margin: 0;
 }
 
 .pv-profit-grid > div {
   display: grid;
-  gap: 3px;
+  gap: 1px;
 }
 
 .pv-profit-grid dt {
   color: #8197a8;
-  font-size: .68rem;
+  font-size: .62rem;
   font-weight: 750;
 }
 
 .pv-profit-grid dd {
   margin: 0;
   color: #20364d;
-  font-size: .86rem;
+  font-size: .8rem;
   font-weight: 850;
 }
 
@@ -461,34 +499,34 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px 16px;
-  padding-top: 10px;
+  gap: 6px 10px;
+  padding-top: 6px;
   border-top: 1px dashed #dbe7f0;
 }
 
 .pv-profit-edit-field {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
   color: #526a82;
-  font-size: .76rem;
+  font-size: .7rem;
   font-weight: 800;
 }
 
 .pv-profit-edit-field input {
-  width: 76px;
+  width: 62px;
   border: 1px solid #cfe0eb;
   border-radius: 8px;
-  padding: 6px 8px;
+  padding: 4px 6px;
   color: #18334d;
   background: #fff;
   outline-color: #13a9f2;
-  font-size: .82rem;
+  font-size: .76rem;
 }
 
 .pv-profit-edit-field small {
   color: #8197a8;
-  font-size: .72rem;
+  font-size: .68rem;
   font-weight: 650;
 }
 
@@ -561,6 +599,18 @@
   .pv-source-card-media {
     width: 64px;
     height: 64px;
+  }
+
+  .pv-source-card-main {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .pv-source-card-info,
+  .pv-source-card-side,
+  .pv-source-profit-summary {
+    grid-column: auto;
+    grid-row: auto;
   }
 
   .pv-profit-grid {

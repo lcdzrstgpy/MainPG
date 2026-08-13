@@ -1,41 +1,51 @@
 .dashboard-stats-section {
   display: grid;
-  gap: 14px;
+  gap: 4px;
 }
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
 }
 
 .stats-card {
   position: relative;
   display: grid;
-  gap: 6px;
-  min-height: 150px;
-  padding: 18px 20px;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  grid-template-rows: auto auto auto;
+  column-gap: 12px;
+  row-gap: 3px;
+  align-content: center;
+  min-height: 92px;
+  padding: 7px 18px 8px;
   overflow: hidden;
-  border: 1px solid #dce9f2;
-  border-radius: 15px;
-  background: #fbfdff;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: #203b56;
   text-align: left;
-  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+  transition: background .18s ease, transform .18s ease;
+}
+
+.stats-card + .stats-card {
+  border-left: 0;
 }
 
 .stats-card:hover {
-  transform: translateY(-2px);
-  border-color: #a7dafa;
-  box-shadow: 0 10px 22px rgba(32, 91, 132, .13);
+  background: color-mix(in srgb, var(--theme-module-surface, #fbfdff) 58%, transparent);
+  transform: translateY(-1px);
 }
 
 .stats-icon {
   display: grid;
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  align-self: center;
   place-items: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 11px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
   background: linear-gradient(145deg, #e3f5ff, #e6fbf6);
   color: #0d7fba;
   font-size: 1.25rem;
@@ -43,14 +53,18 @@
 }
 
 .stats-label {
-  margin-top: 6px;
+  grid-column: 1;
+  grid-row: 1;
+  margin-top: 2px;
   color: #5c7590;
   font-size: .84rem;
   font-weight: 750;
 }
 
 .stats-value {
-  font-size: 2rem;
+  grid-column: 1;
+  grid-row: 2;
+  font-size: 1.55rem;
   line-height: 1.05;
   letter-spacing: -.03em;
   color: #0b3f66;
@@ -58,6 +72,196 @@
 }
 
 .stats-note {
+  grid-column: 1;
+  grid-row: 3;
   color: #93a5b8;
   font-size: .76rem;
+}
+
+/* 首页：保留信息和操作，移除重复卡片容器以缩短首屏。 */
+.dashboard-page {
+  gap: 10px;
+}
+
+.content-card:has(.dashboard-page) {
+  padding-top: 20px;
+  padding-bottom: 20px;
+}
+
+.dashboard-page .page-hero-card {
+  display: grid;
+  align-content: center;
+  min-height: 166px;
+  padding: 16px clamp(28px, 3vw, 48px);
+}
+
+.dashboard-page .brand-logo-hero {
+  width: clamp(118px, 9vw, 150px);
+  margin-bottom: 5px;
+}
+
+.dashboard-page .page-hero-card h1 {
+  margin: 3px 0 0;
+  font-size: clamp(1.72rem, 2.25vw, 2.25rem);
+}
+
+.dashboard-page .section-heading {
+  align-items: flex-end;
+  min-height: 54px;
+}
+
+.dashboard-page .section-heading > div {
+  display: grid;
+  gap: 9px;
+}
+
+.dashboard-page .section-heading .eyebrow {
+  color: var(--theme-text-muted, #6b88a8);
+  font-size: .68rem;
+  letter-spacing: .09em;
+  line-height: 1;
+}
+
+.dashboard-page .section-heading h2 {
+  margin: 0;
+  font-size: 1.48rem;
+  line-height: 1.08;
+  letter-spacing: -.025em;
+}
+
+.dashboard-page .shortcut-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  margin-top: 3px;
+}
+
+.dashboard-page .shortcut-card {
+  min-height: 86px;
+  gap: 3px;
+  padding: 7px 18px 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  transition: background .18s ease, transform .18s ease;
+}
+
+.dashboard-page .shortcut-card + .shortcut-card {
+  border-left: 0;
+}
+
+.dashboard-page .shortcut-card:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--theme-module-surface, #fbfdff) 58%, transparent);
+  box-shadow: none;
+  transform: translateY(-1px);
+}
+
+.dashboard-page .shortcut-card span {
+  min-height: 0;
+  line-height: 1.45;
+  font-size: .82rem;
+}
+
+.dashboard-page .shortcut-card b {
+  margin-top: auto;
+}
+
+.dashboard-page :is(.shortcut-card, .stats-card) {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+[data-theme="diamond"] .dashboard-page :is(.shortcut-card, .stats-card) + :is(.shortcut-card, .stats-card) {
+  border-left: 0 !important;
+}
+
+[data-theme="diamond"] .dashboard-page :is(.shortcut-card, .stats-card):hover {
+  background: rgba(255, 255, 255, .04) !important;
+}
+
+/* 主题的通用 hover 边框不应用在首页的无框信息项上。 */
+.dashboard-page :is(.shortcut-card, .stats-card):hover {
+  border-color: transparent !important;
+  border-top-color: transparent !important;
+  border-left-color: transparent !important;
+  box-shadow: none !important;
+}
+
+/* 大范围漂浮光斑会穿过文字区，视觉上像跳帧；首页改为稳定背景。 */
+.dashboard-page::before,
+.dashboard-page::after,
+.dashboard-meteor,
+.dashboard-meteor.is-two,
+.dashboard-meteor.is-three,
+.dashboard-page .page-hero-card::before,
+.dashboard-page .page-hero-card::after {
+  animation: none;
+}
+
+.dashboard-page::before {
+  top: 42%;
+  right: 12%;
+  width: 300px;
+  height: 230px;
+  opacity: .1;
+}
+
+.dashboard-page::after,
+.dashboard-meteor {
+  display: none;
+}
+
+@media (max-width: 1180px) {
+  .dashboard-page .shortcut-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-page .shortcut-card:nth-child(odd) {
+    border-left: 0 !important;
+  }
+
+  .dashboard-page .shortcut-card:nth-child(n + 3) {
+    border-top: 0;
+  }
+
+  [data-theme="diamond"] .dashboard-page .shortcut-card:nth-child(n + 3) {
+    border-top: 0 !important;
+  }
+}
+
+@media (max-width: 800px) {
+  .dashboard-page .page-hero-card {
+    min-height: 154px;
+    padding: 22px;
+  }
+
+  .dashboard-page .shortcut-grid,
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-page .shortcut-card + .shortcut-card,
+  .stats-card + .stats-card {
+    border-top: 0;
+    border-left: 0;
+  }
+
+  [data-theme="diamond"] .dashboard-page :is(.shortcut-card, .stats-card) + :is(.shortcut-card, .stats-card) {
+    border-top: 0 !important;
+  }
+
+  .dashboard-page .shortcut-card {
+    min-height: 86px;
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .stats-card {
+    min-height: 92px;
+    padding-right: 8px;
+    padding-left: 8px;
+  }
 }

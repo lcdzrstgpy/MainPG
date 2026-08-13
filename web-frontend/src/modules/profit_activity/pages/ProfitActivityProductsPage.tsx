@@ -15,6 +15,7 @@ import "../styles/profitActivityProducts.css";
 const siteLabels: Record<ProfitActivitySite, string> = { US: "美区", CO: "哥伦比亚", EC: "厄瓜多尔" };
 const allSites: ProfitActivitySite[] = ["US", "CO", "EC"];
 const pageSizeOptions = [10, 50, 100] as const;
+type ProductSourceFilter = "manual" | "price_verification" | "all";
 const editFieldLabels: Record<"selling_price" | "cost_price" | "weight_kg" | "note", string> = {
   selling_price: "售价",
   cost_price: "成本",
@@ -37,8 +38,8 @@ const productLibraryCache: {
 
 export function ProfitActivityProductsPage() {
   const [sites, setSites] = useState<Set<ProfitActivitySite>>(() => new Set(productLibraryCache.sites ?? allSites));
-  const masterRef = useRef<HTMLInputElement>(null);
-  const [scope, setScope] = useState<ProfitActivityScope>(productLibraryCache.scope ?? "default");
+  const [scope] = useState<ProfitActivityScope>(productLibraryCache.scope ?? "default");
+  const [sourceFilter, setSourceFilter] = useState<ProductSourceFilter>("all");
   const [querySkcs, setQuerySkcs] = useState(productLibraryCache.querySkcs ?? "");
   const [products, setProducts] = useState<ProfitActivityProduct[]>(productLibraryCache.products ?? []);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -72,13 +73,6 @@ export function ProfitActivityProductsPage() {
   );
   const selectedCount = selected.size;
   const pageSelected = pageProducts.length > 0 && pageProducts.every((item) => selected.has(productKey(item)));
-  const allSitesChecked = sites.size === allSites.length;
-  const someSitesChecked = sites.size > 0 && !allSitesChecked;
-
-  useEffect(() => {
-    if (masterRef.current) masterRef.current.indeterminate = someSitesChecked;
-  }, [someSitesChecked]);
-
   // 页码输入框与当前页保持同步（翻页按钮/查询刷新后同步显示），但不打断输入过程
   useEffect(() => {
     setPageInput(String(safePage));
@@ -118,7 +112,10 @@ export function ProfitActivityProductsPage() {
       }
     });
     if (failures.length) setMessage(`部分站点查询失败：${failures.join("；")}`);
-    return results;
+    if (sourceFilter === "all") return results;
+    return results.filter((item) => sourceFilter === "price_verification"
+      ? item.source_type === "price_verification"
+      : item.source_type !== "price_verification");
   };
 
   const queryProducts = () => withBusy("查询产品", async () => {
@@ -399,19 +396,6 @@ export function ProfitActivityProductsPage() {
     setTableDragging(false);
   };
 
-  const toggleSite = (item: ProfitActivitySite, checked: boolean) => {
-    setSites((current) => {
-      const next = new Set(current);
-      if (checked) next.add(item);
-      else next.delete(item);
-      return next;
-    });
-  };
-
-  const toggleAllSites = () => {
-    setSites(allSitesChecked ? new Set() : new Set(allSites));
-  };
-
   const togglePageSelected = () => {
     setSelected((current) => {
       const next = new Set(current);
@@ -491,32 +475,31 @@ export function ProfitActivityProductsPage() {
         </div>
       </section>
 
-      <section className="profit-products-panel">
-        <div className="profit-products-filters">
-          <div className="profit-site-check-group">
-            <label className={`profit-site-master ${allSitesChecked ? "is-active" : ""}`}>
-              <input ref={masterRef} type="checkbox" checked={allSitesChecked} onChange={toggleAllSites} />
-              <span>全选</span>
-            </label>
-            {allSites.map((item) => (
-              <label key={item} className={`profit-site-check ${sites.has(item) ? "is-active" : ""}`}>
-                <input type="checkbox" checked={sites.has(item)} onChange={(event) => toggleSite(item, event.target.checked)} />
-                <span>{siteLabels[item]}</span>
-              </label>
-            ))}
-          </div>
-          <label>查询范围<select value={scope} onChange={(event) => setScope(event.target.value as ProfitActivityScope)}><option value="default">本人 + 核价入库</option><option value="company">查本公司在档产品</option></select></label>
-          <label>每页条数<select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value) as typeof pageSize); setPage(1); }}>{pageSizeOptions.map((value) => <option key={value} value={value}>每页 {value} 条</option>)}</select></label>
-        </div>
-
-        <div className="profit-products-query">
-          <textarea value={querySkcs} onChange={(event) => setQuerySkcs(event.target.value)} placeholder="输入商品ID，支持 SKU、SKC、SPU；可用换行、空格、逗号批量查询；留空展示当前权限可见产品" />
-          <div className="profit-products-actions">
-            <button className="primary-button" onClick={queryProducts} disabled={!!busy}>查询产品</button>
-            <button onClick={togglePageSelected} disabled={!pageProducts.length}>{pageSelected ? "取消本页" : "全选本页"}</button>
-            <button className="danger-button" onClick={deleteSelected} disabled={!selectedCount || !!busy}>删除已选 {selectedCount}</button>
-            <button onClick={downloadCatalog} disabled={!!busy}>下载产品档案</button>
-          </div>
+      <section className="profit-products-workspace">
+        <div className="profit-products-search-bar">
+          <label className="profit-products-search-field">
+            <span>SKC 查询</span>
+            <textarea value={querySkcs} onChange={(event) => setQuerySkcs(event.target.value)} placeholder="输入 SKU、SKC、SPU；多条可用空格、逗号或换行分隔" />
+          </label>
+          <label className="profit-products-select-field">
+            <span>地区</span>
+            <select
+              value={sites.size === 1 ? [...sites][0] : "all"}
+              onChange={(event) => setSites(event.target.value === "all" ? new Set(allSites) : new Set([event.target.value as ProfitActivitySite]))}
+            >
+              <option value="all">全部站点</option>
+              {allSites.map((item) => <option key={item} value={item}>{siteLabels[item]}</option>)}
+            </select>
+          </label>
+          <label className="profit-products-select-field">
+            <span>查询范围</span>
+            <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as ProductSourceFilter)}>
+              <option value="manual">手动</option>
+              <option value="price_verification">核价</option>
+              <option value="all">核价 + 手动</option>
+            </select>
+          </label>
+          <button className="primary-button profit-products-query-button" onClick={queryProducts} disabled={!!busy}>查询产品</button>
         </div>
         <p className="profit-products-message">{busy || message.split("\n").map((line, index) => (<span key={index}>{line}<br /></span>))}</p>
 
@@ -577,8 +560,18 @@ export function ProfitActivityProductsPage() {
         </div>
 
         <div className="profit-products-pagination">
-          <span>共 {products.length} 条，当前第 {safePage} / {totalPages} 页</span>
-          <div>
+          <div className="profit-products-pagination-summary">
+            <span>共 {products.length} 条，当前第 {safePage} / {totalPages} 页</span>
+            <button onClick={togglePageSelected} disabled={!pageProducts.length}>{pageSelected ? "取消本页" : "全选本页"}</button>
+            <button className="danger-button" onClick={deleteSelected} disabled={!selectedCount || !!busy}>删除已选 {selectedCount}</button>
+            <button onClick={downloadCatalog} disabled={!!busy}>下载产品档案</button>
+            <label className="profit-products-page-size">每页
+              <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value) as typeof pageSize); setPage(1); }}>
+                {pageSizeOptions.map((value) => <option key={value} value={value}>{value} 条</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="profit-products-page-controls">
             <button onClick={() => setPage(1)} disabled={safePage <= 1}>首页</button>
             <button onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={safePage <= 1}>上一页</button>
             <label className="profit-page-jump">第

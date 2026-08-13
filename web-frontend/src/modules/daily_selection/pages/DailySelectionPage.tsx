@@ -257,6 +257,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [targetCount, setTargetCount] = useState(String(selectedDirection.target));
   const [excludeRisks, setExcludeRisks] = useState(true);
   const [maxParallelCollect, setMaxParallelCollect] = useState(6);
+  const [advancedCollectionOpen, setAdvancedCollectionOpen] = useState(false);
   const [runs, setRuns] = useState<DailySelectionRunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<DailySelectionRun | null>(null);
   const [selectedCandidates, setSelectedCandidates] = useState<string[]>([]);
@@ -944,7 +945,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             ))}
           </div>
 
-          <div className="collection-fields">
+          <div className={`collection-primary-fields ${mode === "image" ? "is-image-mode" : ""}`}>
             <label>
               <span>采集平台</span>
               <select value={platform} onChange={(event) => setPlatform(event.target.value as CollectionPlatform)}>
@@ -956,16 +957,28 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             <label><span>站点</span><select value={site} onChange={(event) => setSite(event.target.value as TargetSite)}><option value="US">美国站 US</option><option value="CO">哥伦比亚 CO</option><option value="EC">厄瓜多尔 EC</option></select></label>
             <label><span>选品范围</span><select value={scope} onChange={(event) => setScope(event.target.value as SelectionScope)}><option value="divergent">发散相似款</option><option value="exact">精准匹配</option></select></label>
             <label><span>采集数量</span><input type="number" min="1" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
-            <label className="field-wide">
+            <label className="collection-keyword-field">
               <span>采集关键词 <em>{mode === "keyword" ? "必填" : "作为图片描述标签"}</em></span>
               <input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="多个关键词用逗号分隔，最多 5 个" />
             </label>
             {mode === "image" && (
-              <label className="field-wide">
+              <label className="collection-reference-field">
                 <span>参考图 URL <em>必填</em></span>
                 <input type="url" value={referenceImageUrl} onChange={(event) => setReferenceImageUrl(event.target.value)} placeholder="https://example.com/product.jpg" />
               </label>
             )}
+          </div>
+
+          <div className="collection-advanced-header">
+            <span>更多筛选、并发与风险规则</span>
+            <button type="button" className={advancedCollectionOpen ? "is-open" : ""} aria-expanded={advancedCollectionOpen} onClick={() => setAdvancedCollectionOpen((value) => !value)}>
+              {advancedCollectionOpen ? "收起高级设置" : "高级设置"}
+            </button>
+          </div>
+
+          <div className={`collection-advanced-collapse ${advancedCollectionOpen ? "is-open" : ""}`}>
+            <div className="collection-advanced-collapse-inner">
+              <div className="collection-fields collection-advanced-fields">
             <label><span>最低价格（元）</span><input type="number" min="0" step="0.01" value={minPrice} onChange={(event) => setMinPrice(event.target.value)} /></label>
             <label><span>最高价格（元）</span><input type="number" min="0" step="0.01" value={maxPrice} onChange={(event) => setMaxPrice(event.target.value)} /></label>
             <label><span>起订量上限（件）</span><input type="number" min="1" value={minMoq} onChange={(event) => setMinMoq(event.target.value)} /></label>
@@ -980,6 +993,13 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               <input type="range" min={1} max={10} step={1} value={maxParallelCollect} onChange={(event) => setMaxParallelCollect(Number(event.target.value) || 1)} />
               <em>{maxParallelCollect} 线程{maxParallelCollect <= 1 ? '（串行）' : ''}</em>
             </label>
+              </div>
+              <label className="risk-switch">
+                <input type="checkbox" checked={excludeRisks} onChange={(event) => setExcludeRisks(event.target.checked)} />
+                <span aria-hidden="true" />
+                自动排除高风险候选
+              </label>
+            </div>
           </div>
 
           {platform !== "1688" && (
@@ -989,11 +1009,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             </div>
           )}
 
-          <label className="risk-switch">
-            <input type="checkbox" checked={excludeRisks} onChange={(event) => setExcludeRisks(event.target.checked)} />
-            <span aria-hidden="true" />
-            自动排除高风险候选
-          </label>
           <div className="collection-actions">
             <span>{platform === "1688" ? "1688 每批最多调用 200 次 API，并在预算内尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。" : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
             <div className="collection-submit-area">

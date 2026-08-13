@@ -5,7 +5,7 @@
 }
 
 .profit-products-head,
-.profit-products-panel {
+.profit-products-workspace {
   border: 1px solid #d8e7f2;
   border-radius: 18px;
   background: #fbfdff;
@@ -38,66 +38,40 @@
   line-height: 1.7;
 }
 
-.profit-products-panel {
+.profit-products-workspace {
   display: grid;
   gap: 16px;
   padding: 18px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
-.profit-products-filters,
-.profit-products-query,
 .profit-products-pagination {
   display: grid;
   gap: 14px;
 }
 
-.profit-products-filters {
-  grid-template-columns: auto minmax(180px, 240px) minmax(150px, 190px);
+.profit-products-search-bar {
+  --profit-search-control-height: 44px;
+  display: grid;
+  grid-template-columns: minmax(300px, 1.65fr) minmax(164px, .78fr) minmax(180px, .9fr) minmax(156px, .68fr);
   align-items: end;
+  gap: 14px;
 }
 
-.profit-site-check-group {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+.profit-products-search-field,
+.profit-products-select-field {
+  min-width: 0;
 }
 
-.profit-products-page .profit-site-check-group label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  border: 1px solid #cfe0eb;
-  border-radius: 11px;
-  padding: 9px 12px;
-  color: #3a5c78;
-  background: #fff;
-  cursor: pointer;
-  font-size: .82rem;
-  font-weight: 850;
-  line-height: 1.2;
-}
-
-.profit-products-page .profit-site-check-group label input {
-  width: auto;
-  margin: 0;
-}
-
-.profit-site-check-group label.is-active {
-  border-color: #0a8cf2;
-  color: #0a8cf2;
-  background: #eefaff;
-}
-
-.profit-products-page .profit-site-master {
-  border-color: #b4d6f2;
-  background: #f1f7fc;
-}
-
-.profit-site-master.is-active {
-  border-color: #0a8cf2;
-  background: #eaf6ff;
+.profit-products-search-bar textarea,
+.profit-products-search-bar select,
+.profit-products-search-bar .profit-products-query-button {
+  box-sizing: border-box;
+  height: var(--profit-search-control-height);
+  min-height: var(--profit-search-control-height);
 }
 
 .profit-products-page label {
@@ -120,19 +94,11 @@
   outline-color: #13a9f2;
 }
 
-.profit-products-page textarea {
-  min-height: 118px;
-  resize: vertical;
-}
-
-.profit-products-query {
-  grid-template-columns: minmax(0, 1fr) 220px;
-  align-items: start;
-}
-
-.profit-products-actions {
-  display: grid;
-  gap: 10px;
+.profit-products-search-field textarea {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  resize: none;
+  line-height: 1.25;
 }
 
 .profit-products-page button {
@@ -161,6 +127,10 @@
   background: linear-gradient(105deg, #087bf5, #14c8c0);
 }
 
+.profit-products-page .profit-products-query-button {
+  padding-inline: 22px;
+}
+
 .profit-products-message {
   margin: 0;
   color: #657d94;
@@ -170,14 +140,44 @@
 .profit-products-pagination {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  padding-top: 6px;
   color: #667d93;
   font-size: .86rem;
 }
 
-.profit-products-pagination > div {
+.profit-products-pagination-summary,
+.profit-products-page-controls {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.profit-products-pagination-summary > span {
+  margin-right: 4px;
+  color: #526a82;
+  font-weight: 800;
+}
+
+.profit-products-pagination-summary button {
+  padding: 7px 10px;
+  font-size: .8rem;
+}
+
+.profit-products-pagination .profit-products-page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 3px;
+  color: #667d93;
+  white-space: nowrap;
+}
+
+.profit-products-pagination .profit-products-page-size select {
+  width: auto;
+  min-width: 76px;
+  padding: 7px 26px 7px 9px;
+  font-size: .8rem;
 }
 
 .profit-products-pagination input {
@@ -1189,13 +1189,30 @@
 }
 
 @media (max-width: 900px) {
-  .profit-products-filters,
-  .profit-products-query,
+  .profit-products-search-bar,
   .profit-products-pagination {
     grid-template-columns: 1fr;
   }
 
-  .profit-products-pagination > div {
-    flex-wrap: wrap;
+  .profit-products-search-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .profit-products-query-button {
+    grid-column: span 2;
+  }
+
+  .profit-products-page-controls {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 560px) {
+  .profit-products-search-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .profit-products-query-button {
+    grid-column: auto;
   }
 }
