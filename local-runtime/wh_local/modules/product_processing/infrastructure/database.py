@@ -7,8 +7,11 @@ from pathlib import Path
 from sqlalchemy import Engine, create_engine, event, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from .orm import Base
+from . import dimension_canvas_orm as _dimension_canvas_orm  # noqa: F401
+from . import preview_image_orm as _preview_image_orm  # noqa: F401
 
 
 @dataclass(frozen=True)
@@ -36,7 +39,12 @@ def create_database(database_url: str | None = None) -> ProductProcessingDatabas
     url = database_url or os.getenv("PRODUCT_PROCESSING_DATABASE_URL") or default_database_url()
     parsed = make_url(url)
     connect_args = {"check_same_thread": False} if parsed.drivername == "sqlite" else {}
-    engine = create_engine(url, future=True, connect_args=connect_args)
+    engine_options: dict[str, object] = {"future": True, "connect_args": connect_args}
+    if parsed.drivername == "sqlite" and (parsed.database in {None, "", ":memory:"}):
+        # Finalization uses worker threads; an in-memory SQLite database must share
+        # one connection or each worker observes an unrelated empty schema.
+        engine_options["poolclass"] = StaticPool
+    engine = create_engine(url, **engine_options)
     if parsed.drivername == "sqlite":
         _configure_sqlite(engine)
     Base.metadata.create_all(engine)
@@ -47,7 +55,70 @@ def create_database(database_url: str | None = None) -> ProductProcessingDatabas
 # 轻量列补齐：老库已建表时 create_all 不会新增列，这里按需 ALTER TABLE 补列。
 _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "product_processing_drafts": [
+        ("preview_revision", "INTEGER NOT NULL DEFAULT 0"),
         ("preview_overrides_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ],
+    "product_processing_dimension_items": [
+        ("render_input_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("rendered_input_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("publish_claim_token", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("publish_claimed_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
+    ],
+    "product_processing_preview_image_assets": [
+        ("workspace_id", "VARCHAR(255) NOT NULL DEFAULT 'local'"),
+        ("task_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("product_draft_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("origin", "VARCHAR(32) NOT NULL DEFAULT 'source'"),
+        ("source_asset_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("identity_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("access_token", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("managed_path", "TEXT NOT NULL DEFAULT ''"),
+        ("source_url", "TEXT NOT NULL DEFAULT ''"),
+        ("content_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("content_type", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("byte_size", "INTEGER NOT NULL DEFAULT 0"),
+        ("width", "INTEGER NOT NULL DEFAULT 0"),
+        ("height", "INTEGER NOT NULL DEFAULT 0"),
+        ("availability", "VARCHAR(32) NOT NULL DEFAULT 'materializing'"),
+        ("public_url", "TEXT NOT NULL DEFAULT ''"),
+        ("error_code", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("error_message", "TEXT NOT NULL DEFAULT ''"),
+        ("materialize_claim_token", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("materialize_claimed_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("created_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("updated_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
+    ],
+    "product_processing_preview_publications": [
+        ("status", "VARCHAR(32) NOT NULL DEFAULT 'pending'"),
+        ("public_url", "TEXT NOT NULL DEFAULT ''"),
+        ("content_type", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("byte_size", "INTEGER NOT NULL DEFAULT 0"),
+        ("claim_token", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("claimed_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("error_code", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("error_message", "TEXT NOT NULL DEFAULT ''"),
+        ("created_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("updated_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
+    ],
+    "product_processing_preview_finalize_runs": [
+        ("workspace_id", "VARCHAR(255) NOT NULL DEFAULT 'local'"),
+        ("task_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("idempotency_key", "VARCHAR(255) NOT NULL DEFAULT ''"),
+        ("request_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("snapshot_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("snapshot_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("status", "VARCHAR(32) NOT NULL DEFAULT 'queued'"),
+        ("total_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("published_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("failed_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("errors_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("claim_token", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("claimed_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("workbook_path", "TEXT NOT NULL DEFAULT ''"),
+        ("row_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("product_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("created_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("updated_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
     ],
 }
 
@@ -65,6 +136,46 @@ def _ensure_columns(engine: Engine) -> None:
                     connection.execute(
                         text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
                     )
+    if (
+        engine.dialect.name == "sqlite"
+        and "product_processing_preview_image_assets" in existing_tables
+    ):
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE product_processing_preview_image_assets "
+                    "SET access_token = lower(hex(randomblob(24))) "
+                    "WHERE access_token = ''"
+                )
+            )
+    if (
+        engine.dialect.name == "sqlite"
+        and "product_processing_preview_finalize_runs" in existing_tables
+    ):
+        # Older preview-finalization experiments had snapshot identity only.
+        # Backfill deterministic keys before adding the request-key boundary.
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE product_processing_preview_finalize_runs "
+                    "SET idempotency_key = 'snapshot:' || snapshot_hash "
+                    "WHERE idempotency_key = ''"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE product_processing_preview_finalize_runs "
+                    "SET request_hash = snapshot_hash WHERE request_hash = ''"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_preview_finalize_idempotency_legacy "
+                    "ON product_processing_preview_finalize_runs "
+                    "(workspace_id, task_id, idempotency_key)"
+                )
+            )
 
 
 def _configure_sqlite(engine: Engine) -> None:

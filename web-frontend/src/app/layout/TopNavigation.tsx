@@ -13,6 +13,10 @@ export type WorkspaceTab = {
   draftIds?: number[];
   processingOptions?: unknown;
   taskId?: number;
+  dimensionBatchId?: string;
+  dimensionItemId?: string;
+  returnTaskId?: number;
+  dimensionChangeSetId?: string;
 };
 
 type TopNavigationProps = {

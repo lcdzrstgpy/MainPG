@@ -9,7 +9,9 @@ credential values in task results.
 from __future__ import annotations
 
 import base64
+import hashlib
 import mimetypes
+import re
 import threading
 import time
 import uuid
@@ -23,6 +25,7 @@ from urllib.parse import urlsplit
 import requests
 
 from ..domain.policy import is_safe_external_url
+from .grid_layout import build_grid_scaffold, extract_grid_panels, locate_split_guides
 
 # 模块级连接池：复用 TCP/TLS 握手与 HTTP 连接，避免每个请求新建连接（图片生成/参考图下载高频调用）。
 _SESSION = requests.Session()
@@ -41,8 +44,9 @@ _SESSION.headers.update(
 # 对齐原项目 native_product_engine.DXM_IMAGE_TARGET_SIZE = 800
 # 店小秘导入要求图片不小于 800×800，拆分后每格缩放到该尺寸。
 DXM_IMAGE_TARGET_SIZE = 800
-# 对齐原项目 native_product_engine.IMAGE_JPEG_QUALITY = 90
-DXM_IMAGE_JPEG_QUALITY = 90
+# 四宫格由 2048px 拆为 1024px 象限后再缩至 800px；使用 94 + 4:4:4，
+# 保留商品边缘、透明材质和本地排版细节，避免默认 4:2:0 二次损失。
+DXM_IMAGE_JPEG_QUALITY = 94
 
 # 图片 provider 轮巡游标（对齐原项目 native_product_engine._PROVIDER_CURSORS）：
 # 进程内全局共享、线程锁保护，按"每次图片请求"取模轮转起始 provider，实现负载均衡。
@@ -57,9 +61,18 @@ class MediaConfigurationError(RuntimeError):
 class MediaProcessingError(RuntimeError):
     """图片处理失败；``status_code`` 携带中转返回的 HTTP 状态码（429 时用于退避重试）。"""
 
-    def __init__(self, message: str, *, status_code: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        attempt_count: int = 0,
+        status_class: str = "",
+    ):
         super().__init__(message)
         self.status_code = status_code
+        self.attempt_count = attempt_count
+        self.status_class = status_class
 
 
 @dataclass(frozen=True)
@@ -71,6 +84,8 @@ class GeneratedMedia:
     provider: str
     model: str
     reference_count: int
+    attempt_count: int = 1
+    provider_status_class: str = "success"
 
 
 class ProductImageProcessor:
@@ -108,13 +123,21 @@ class ProductImageProcessor:
         stage: str,
         prompt: str,
         reference_values: Iterable[str],
+        layout_scaffold: bool = False,
     ) -> GeneratedMedia:
         config = self._config()
         providers = self._providers(config)
         if not providers:
             raise MediaConfigurationError("image provider is not configured")
         with self._image_semaphore:
-            return self._generate_with_limits(stage, prompt, reference_values, providers, config)
+            return self._generate_with_limits(
+                stage,
+                prompt,
+                reference_values,
+                providers,
+                config,
+                layout_scaffold=layout_scaffold,
+            )
 
     def _generate_with_limits(
         self,
@@ -124,6 +147,7 @@ class ProductImageProcessor:
         providers: list[dict[str, str]],
         config: dict[str, Any],
         extra_references: list[tuple[bytes, str, str]] | None = None,
+        layout_scaffold: bool = False,
     ) -> GeneratedMedia:
         default_limit = 1 if stage == "grid_image" else 2
         reference_limit = max(
@@ -137,12 +161,33 @@ class ProductImageProcessor:
         references.extend(self._load_references(reference_values, limit=reference_limit))
         if not references:
             raise MediaProcessingError("a confirmed source image is required for image processing")
+        ordinary_reference_count = len(references)
+        if layout_scaffold:
+            scaffold = build_grid_scaffold(references[0][0])
+            references = [(scaffold, "fixed-four-grid-layout.png", "image/png"), *references]
         retries = max(1, min(int((config.get("limits") or {}).get("image_retry_attempts") or 3), 5))
         errors: list[str] = []
+        attempt_count = 0
+        grid_deadline = time.monotonic() + 150.0 if stage == "grid_image" else None
+        max_total_attempts = min(retries, 2) if stage == "grid_image" else retries * max(1, len(providers))
         for provider in self._provider_order(providers, config):
             for attempt in range(1, retries + 1):
+                if attempt_count >= max_total_attempts:
+                    break
+                request_timeout = 120.0
+                if grid_deadline is not None:
+                    remaining_seconds = grid_deadline - time.monotonic()
+                    if remaining_seconds <= 1.0:
+                        break
+                    request_timeout = min(request_timeout, remaining_seconds)
+                attempt_count += 1
                 try:
-                    content, content_type = self._request_edit(provider, prompt, references)
+                    content, content_type = self._request_edit(
+                        provider,
+                        prompt,
+                        references,
+                        timeout_seconds=request_timeout,
+                    )
                     suffix = _suffix_for_content_type(content_type)
                     return GeneratedMedia(
                         stage=stage,
@@ -151,14 +196,31 @@ class ProductImageProcessor:
                         suffix=suffix,
                         provider=provider["name"],
                         model=provider["reference_model"] or provider["model"],
-                        reference_count=len(references),
+                        reference_count=ordinary_reference_count,
+                        attempt_count=attempt_count,
                     )
                 except (requests.RequestException, TimeoutError, ValueError, MediaProcessingError) as exc:
                     errors.append(f"{provider['name']} attempt {attempt}: {_safe_error(exc)}")
-                    # 429 限流：指数退避后重试，避免立即重撞限流阈值
-                    if getattr(exc, "status_code", None) == 429:
-                        time.sleep(min(2 ** attempt, 10))
-        raise MediaProcessingError("; ".join(errors) or "image provider request failed")
+                    status_class = _retry_class(exc)
+                    if status_class in {"non_retryable_4xx", "unknown_outcome_timeout", "non_retryable_local"}:
+                        raise MediaProcessingError(
+                            "; ".join(errors),
+                            status_code=getattr(exc, "status_code", None),
+                            attempt_count=attempt_count,
+                            status_class=status_class,
+                        ) from exc
+                    if status_class == "rate_limited":
+                        delay = min(2 ** attempt, 10)
+                        if grid_deadline is not None and time.monotonic() + delay >= grid_deadline:
+                            break
+                        time.sleep(delay)
+            if attempt_count >= max_total_attempts:
+                break
+        raise MediaProcessingError(
+            "; ".join(errors) or "image provider request failed",
+            attempt_count=attempt_count,
+            status_class="retry_budget_exhausted",
+        )
 
     def repair_generated(
         self,
@@ -203,30 +265,17 @@ class ProductImageProcessor:
         except ModuleNotFoundError as exc:
             raise MediaConfigurationError("Pillow is required for four-grid image processing") from exc
         try:
+            self.validate_four_grid(media)
             source = Image.open(BytesIO(media.content)).convert("RGB")
-            width, height = source.size
-            if width < 2 or height < 2:
-                raise ValueError("image is too small")
-            # 模型生成的分隔线可能不在正中间：先检测真实分隔线位置再切分，
-            # 避免拆出的单格一边残留分隔线、另一边切掉内容（"边缘没处理好"）。
-            x_split, y_split = _detect_split_guides(source)
-            # 四象限：左上 → 右上 → 左下 → 右下（对齐原项目拆图顺序）
-            boxes = (
-                (0, 0, x_split, y_split),
-                (x_split, 0, width, y_split),
-                (0, y_split, x_split, height),
-                (x_split, y_split, width, height),
-            )
-            panels = [source.crop(box) for box in boxes]
+            guides = locate_split_guides(source)
+            panels = extract_grid_panels(source, guides)
         except Exception as exc:
             raise MediaProcessingError("generated four-grid image cannot be split") from exc
 
         target_size = DXM_IMAGE_TARGET_SIZE
         result: list[GeneratedMedia] = []
         for index, panel in enumerate(panels, start=1):
-            # 裁掉极窄边距去除分隔线残留；不要裁 5%，长条产品和标题区容易被切掉。
-            trimmed = _trim_panel_margin(panel)
-            resized = trimmed.resize((target_size, target_size), Image.Resampling.LANCZOS)
+            resized = panel.resize((target_size, target_size), Image.Resampling.LANCZOS)
             content = _image_to_jpeg_bytes(resized)
             result.append(
                 GeneratedMedia(
@@ -255,6 +304,24 @@ class ProductImageProcessor:
             )
         )
         return result
+
+    @staticmethod
+    def validate_four_grid(media: GeneratedMedia) -> None:
+        """Fail closed unless a 2K square has validated exact-center divider evidence."""
+        try:
+            from PIL import Image  # type: ignore
+
+            source = Image.open(BytesIO(media.content)).convert("RGB")
+            width, height = source.size
+            if min(width, height) < 1800:
+                raise ValueError("four-grid source must be at least 1800px on each edge")
+            if abs(width - height) / max(width, height) > 0.02:
+                raise ValueError("four-grid source must be square")
+            locate_split_guides(source)
+        except MediaConfigurationError:
+            raise
+        except Exception as exc:
+            raise MediaProcessingError("generated four-grid structure failed validation") from exc
 
     def upload_to_cos(
         self,
@@ -298,6 +365,174 @@ class ProductImageProcessor:
         except Exception as exc:
             raise MediaProcessingError(f"COS upload failed: {_safe_error(exc)}") from exc
         return f"https://{bucket}.cos.{region}.myqcloud.com/{key}"
+
+    def upload_content_addressed_to_cos(
+        self,
+        media: GeneratedMedia,
+        *,
+        namespace: str,
+        content_hash: str,
+        collection: str = "dimension-canvas",
+    ) -> str:
+        """Publish one immutable image under a deterministic COS key.
+
+        The caller supplies a stable collection and workspace namespace so repeated
+        submit/recovery checks the same object instead of creating UUID-keyed
+        duplicates. A timeout with unknown outcome is reconciled with ``HEAD`` before
+        it is reported as failed.
+        """
+        digest = hashlib.sha256(media.content).hexdigest()
+        expected = str(content_hash or "").strip().lower()
+        if expected and expected != digest:
+            raise MediaProcessingError("dimension media content hash mismatch")
+        config = self._config()
+        cos = dict(config.get("cos") or {})
+        required = ("bucket", "region", "secret_id", "secret_key")
+        if not all(str(cos.get(key) or "").strip() for key in required):
+            raise MediaConfigurationError("COS is not configured")
+        try:
+            from qcloud_cos import CosConfig, CosS3Client  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise MediaConfigurationError("COS SDK is not installed") from exc
+        bucket = str(cos["bucket"]).strip()
+        region = str(cos["region"]).strip()
+        prefix = str(
+            (config.get("updates") or {}).get("cos_prefix")
+            or (config.get("limits") or {}).get("cos_prefix")
+            or "product-processing"
+        ).strip("/")
+        safe_namespace = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(namespace or "dimension")).strip("-")[:48]
+        safe_collection = re.sub(
+            r"[^a-zA-Z0-9_-]+", "-", str(collection or "preview-final")
+        ).strip("-")[:48]
+        suffix = media.suffix if media.suffix in {".jpg", ".jpeg", ".png", ".webp"} else ".jpg"
+        key = "/".join(
+            part
+            for part in (
+                prefix or "product-processing",
+                safe_collection or "preview-final",
+                safe_namespace or "workspace",
+                digest[:2],
+                f"{digest}{suffix}",
+            )
+            if part
+        )
+        client = CosS3Client(
+            CosConfig(
+                Region=region,
+                SecretId=str(cos["secret_id"]),
+                SecretKey=str(cos["secret_key"]),
+                Timeout=60,
+            )
+        )
+
+        def exists() -> bool:
+            try:
+                response = client.head_object(Bucket=bucket, Key=key) or {}
+                metadata_hash = str(
+                    response.get("x-cos-meta-sha256")
+                    or response.get("X-Cos-Meta-Sha256")
+                    or (response.get("Metadata") or {}).get("sha256")
+                    or ""
+                ).strip().lower()
+                length = str(
+                    response.get("Content-Length")
+                    or response.get("content-length")
+                    or ""
+                ).strip()
+                media_type = str(
+                    response.get("Content-Type")
+                    or response.get("content-type")
+                    or ""
+                ).split(";", 1)[0].strip().lower()
+                return (
+                    metadata_hash == digest
+                    and (not length or length == str(len(media.content)))
+                    and (not media_type or media_type == media.content_type.lower())
+                )
+            except Exception as exc:
+                status_getter = getattr(exc, "get_status_code", None)
+                status = status_getter() if callable(status_getter) else getattr(exc, "status_code", None)
+                if str(status or "") == "404":
+                    return False
+                raise MediaProcessingError(f"COS object check failed: {_safe_error(exc)}") from exc
+
+        if not exists():
+            try:
+                client.put_object(
+                    Bucket=bucket,
+                    Key=key,
+                    Body=media.content,
+                    ContentType=media.content_type,
+                    Metadata={"x-cos-meta-sha256": digest},
+                )
+            except Exception as exc:
+                try:
+                    if not exists():
+                        raise MediaProcessingError(f"COS upload failed: {_safe_error(exc)}") from exc
+                except MediaProcessingError:
+                    raise
+            if not exists():
+                raise MediaProcessingError("COS object verification failed after upload")
+        return f"https://{bucket}.cos.{region}.myqcloud.com/{key}"
+
+    def is_configured_cos_url(self, url: str, *, require_public: bool = False) -> bool:
+        """Return true only for an existing object in this configured COS bucket.
+
+        Merely looking like a public URL is insufficient: legacy URLs are reused by
+        the preview finalizer only after the configured bucket and object key have
+        both been verified server-side.
+        """
+        value = str(url or "").strip()
+        parsed = urlsplit(value)
+        config = self._config()
+        cos = dict(config.get("cos") or {})
+        bucket = str(cos.get("bucket") or "").strip()
+        region = str(cos.get("region") or "").strip()
+        secret_id = str(cos.get("secret_id") or "").strip()
+        secret_key = str(cos.get("secret_key") or "").strip()
+        expected_host = f"{bucket}.cos.{region}.myqcloud.com".lower()
+        object_key = parsed.path.lstrip("/")
+        if (
+            parsed.scheme.lower() != "https"
+            or str(parsed.hostname or "").lower() != expected_host
+            or not object_key
+            or not all((bucket, region, secret_id, secret_key))
+        ):
+            return False
+        try:
+            from qcloud_cos import CosConfig, CosS3Client  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise MediaConfigurationError("COS SDK is not installed") from exc
+        client = CosS3Client(
+            CosConfig(
+                Region=region,
+                SecretId=secret_id,
+                SecretKey=secret_key,
+                Timeout=60,
+            )
+        )
+        try:
+            client.head_object(Bucket=bucket, Key=object_key)
+        except Exception as exc:
+            status_getter = getattr(exc, "get_status_code", None)
+            status = status_getter() if callable(status_getter) else getattr(exc, "status_code", None)
+            if str(status or "") == "404":
+                return False
+            raise MediaProcessingError(f"COS object check failed: {_safe_error(exc)}") from exc
+        if not require_public:
+            return True
+        # Dianxiaomi fetches without our COS credentials. Verify that the canonical
+        # URL itself is anonymously readable and reject redirects to avoid changing
+        # the trusted host after validation.
+        try:
+            response = _SESSION.head(value, allow_redirects=False, timeout=(3, 8))
+        except requests.RequestException as exc:
+            raise MediaProcessingError(f"COS public access check failed: {_safe_error(exc)}") from exc
+        if not 200 <= response.status_code < 300:
+            return False
+        media_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        return not media_type or media_type in {"image/jpeg", "image/png", "image/webp"}
 
     def _config(self) -> dict[str, Any]:
         value = self._config_provider()
@@ -408,6 +643,8 @@ class ProductImageProcessor:
         provider: dict[str, str],
         prompt: str,
         references: list[tuple[bytes, str, str]],
+        *,
+        timeout_seconds: float = 120.0,
     ) -> tuple[bytes, str]:
         files: Any
         if len(references) == 1:
@@ -428,7 +665,7 @@ class ProductImageProcessor:
                 "size": _normalized_image_size(provider.get("image_size")),
             },
             files=files,
-            timeout=120,
+            timeout=max(1.0, min(float(timeout_seconds), 120.0)),
         )
         try:
             if not response.ok:
@@ -467,6 +704,21 @@ def _safe_error(error: BaseException) -> str:
     return message[:180] or error.__class__.__name__
 
 
+def _retry_class(error: BaseException) -> str:
+    status = getattr(error, "status_code", None)
+    if status in {400, 401, 403, 404}:
+        return "non_retryable_4xx"
+    if status == 429:
+        return "rate_limited"
+    if status is not None and 500 <= status < 600:
+        return "server_error"
+    if isinstance(error, (requests.Timeout, TimeoutError)):
+        return "unknown_outcome_timeout"
+    if isinstance(error, requests.ConnectionError):
+        return "connection_error"
+    return "non_retryable_local"
+
+
 def _normalized_image_size(value: Any) -> str:
     """Return a provider-safe square image size; product grids default to 2K for readable split panels."""
     normalized = str(value or "").strip().lower()
@@ -475,74 +727,37 @@ def _normalized_image_size(value: Any) -> str:
     return "2048x2048"
 
 
-def _trim_panel_margin(image: Any) -> Any:
-    """裁掉四宫格单格极窄边距，去分隔线但尽量保留产品和文案安全区。"""
-    margin_w = int(image.size[0] * 0.01)
-    margin_h = int(image.size[1] * 0.01)
-    if margin_w > 0 and margin_h > 0 and image.size[0] > margin_w * 2 and image.size[1] > margin_h * 2:
-        return image.crop((margin_w, margin_h, image.size[0] - margin_w, image.size[1] - margin_h))
-    return image
+def _has_centered_uniform_dividers(source: Any) -> bool:
+    """Require deterministic 50/50 separator evidence before destructive splitting.
 
-
-def _detect_split_guides(source: Any) -> tuple[int, int]:
-    """检测四宫格中间横/竖分隔线的实际位置。
-
-    模型生成的四宫格分隔线常偏移正中几个像素；直接用 width//2 切分会在单格
-    边缘残留分隔线（或把邻格内容切进来）。这里在缩略图上找中间 30% 区域内
-    的分隔线：分隔线具备两个特征——内部灰度均匀 + 与两侧内容亮度差异明显。
-    只有两个特征同时满足才采用检测位置，否则回退正中间（不引入切坏风险）。
-
-    返回 (x_split, y_split) 原图像素坐标。
+    A continuous poster can be text-free yet still look plausible at 2K; blindly cutting it
+    produces the exact broken panels reported by users.  The generation contract therefore
+    requires two neutral light-gray separators.  We inspect only the narrow center bands and
+    fail closed when either band is textured, dark, strongly colored, or discontinuous.
     """
-
-    def _detect_axis(source: Any, size: int, length: int) -> int:
-        try:
-            import array as _array
-
-            data = _array.array("B", source.tobytes())
-        except Exception:
-            return length // 2
-        lo, hi = int(size * 0.35), int(size * 0.65)
-        step = 6  # 缩略图上的相邻采样间距（约合原图 2%-6%）
-        best_x, best_score = length // 2, None
-        for x in range(lo, hi):
-            left, right = max(lo, x - step), min(hi - 1, x + step)
-            lo_val, hi_val, mean = None, None, 0
-            for index in range(size):
-                value = data[index * size + x]
-                lo_val = value if lo_val is None or value < lo_val else lo_val
-                hi_val = value if hi_val is None or value > hi_val else hi_val
-                mean += value
-            mean /= size
-            left_mean = sum(data[index * size + left] for index in range(size)) / size
-            right_mean = sum(data[index * size + right] for index in range(size)) / size
-            uniformity = hi_val - lo_val
-            side_diff = max(abs(mean - left_mean), abs(mean - right_mean))
-            # 分隔线：内部均匀（uniformity 小）且两侧差异大（side_diff 大）
-            score = uniformity - side_diff * 2
-            if best_score is None or score < best_score:
-                best_score, best_x = score, x
-        # 强证据判定：内部足够均匀 + 两侧差异显著，否则视为无法可靠检测
-        if best_score is not None and best_score < -15:
-            return best_x * length // size
-        return length // 2
-
     try:
-        from PIL import Image as _Image
+        from PIL import ImageStat  # type: ignore
 
         width, height = source.size
-        thumb = source.convert("L").resize((256, 256), _Image.Resampling.LANCZOS)
-    except Exception:
-        return source.size[0] // 2, source.size[1] // 2
+        half_band_x = max(2, int(width * 0.002))
+        half_band_y = max(2, int(height * 0.002))
+        vertical = source.crop((width // 2 - half_band_x, 0, width // 2 + half_band_x, height))
+        horizontal = source.crop((0, height // 2 - half_band_y, width, height // 2 + half_band_y))
 
-    x_split = _detect_axis(thumb, 256, width)
-    y_split = _detect_axis(thumb.transpose(_Image.Transpose.ROTATE_90), 256, height)
-    # 防误判保护：与正中间偏移超过 8% 时回退正中间
-    if abs(x_split - width // 2) > width * 0.08:
-        x_split = width // 2
-    if abs(y_split - height // 2) > height * 0.08:
-        y_split = height // 2
-    return x_split, y_split
+        def uniform_neutral_light(band: Any) -> bool:
+            sample = band.resize((max(4, band.width), 256)) if band.height > band.width else band.resize((256, max(4, band.height)))
+            stats = ImageStat.Stat(sample.convert("RGB"))
+            means = [float(value) for value in stats.mean]
+            deviations = [float(value) for value in stats.stddev]
+            return (
+                min(means) >= 165
+                and max(means) - min(means) <= 28
+                and max(deviations) <= 18
+            )
+
+        return uniform_neutral_light(vertical) and uniform_neutral_light(horizontal)
+    except Exception:
+        return False
 
 
 def _center_crop_to_square(image: Any) -> Any:
@@ -555,9 +770,15 @@ def _center_crop_to_square(image: Any) -> Any:
 
 
 def _image_to_jpeg_bytes(image: Any) -> bytes:
-    """PIL Image → JPEG bytes, quality=DXM_IMAGE_JPEG_QUALITY（对齐原项目 _image_to_jpeg_bytes）。"""
+    """PIL Image → high-detail JPEG bytes for 800px marketplace images."""
     buffer = BytesIO()
-    image.save(buffer, format="JPEG", quality=DXM_IMAGE_JPEG_QUALITY, optimize=True)
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=DXM_IMAGE_JPEG_QUALITY,
+        subsampling=0,
+        optimize=True,
+    )
     return buffer.getvalue()
 
 

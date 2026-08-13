@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,11 +17,22 @@ from .schemas import ArchiveRequest, FilterRequest, SettingsUpdateRequest
 from ....session import Actor, actor_from_bearer_token, actor_has_permission, require_permission
 from ....config import default_config
 from ....db import connect
+from ....price_verification.repository import PriceVerificationRepository
 
 
 def create_profit_activity_router(service: ProfitActivityService, database_path: Path | None = None) -> APIRouter:
     """Router contract for the complete Profit Activity screen."""
     router = APIRouter(prefix="/profit-activity", tags=["profit_activity"])
+
+    def delete_product_and_source_links(skc: str, site: Literal["US", "CO", "EC"], actor: Actor, *, allow_company_delete: bool) -> dict[str, Any]:
+        result = service.delete_product(skc, site, actor, allow_company_delete=allow_company_delete)
+        if result.get("status") == "deleted" and database_path is not None:
+            PriceVerificationRepository(database_path).soft_remove_skc_source_links_for_skc(
+                workspace_id=actor.workspace_id,
+                skc_id=skc,
+                now=_local_iso(datetime.now(timezone.utc)),
+            )
+        return result
 
     def profit_activity_actor(
         authorization: str | None = Header(default=None),
@@ -221,14 +233,14 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
     @router.delete("/products/{skc}")
     def delete_product(skc: str, site: Literal["US", "CO", "EC"] = "US", owner_user_id: int | None = None, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.delete", database_path)
-        return service.delete_product(skc, site, actor, allow_company_delete=actor_has_permission(actor, "profit_activity.company_delete", database_path))
+        return delete_product_and_source_links(skc, site, actor, allow_company_delete=actor_has_permission(actor, "profit_activity.company_delete", database_path))
 
     @router.delete("/products")
     async def delete_products(request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.delete", database_path)
         payload = await request.json()
         site = str(payload.get("site") or "US")
-        results = [service.delete_product(str(skc), site, actor, allow_company_delete=actor_has_permission(actor, "profit_activity.company_delete", database_path)) for skc in payload.get("skcs", [])]
+        results = [delete_product_and_source_links(str(skc), site, actor, allow_company_delete=actor_has_permission(actor, "profit_activity.company_delete", database_path)) for skc in payload.get("skcs", [])]
         return {"deleted": sum(item["status"] == "deleted" for item in results), "results": results}
 
     @router.get("/products/{skc}/image")
@@ -538,4 +550,3 @@ def _run_response(run, decisions=None) -> dict[str, Any]:
             for item in decisions
         ]
     return result
-

@@ -18,7 +18,7 @@ const SITES = [
 const SCOPES: { key: string; label: string }[] = [
   { key: 'title', label: '标题' },
   { key: 'details', label: '详情' },
-  { key: 'product_dimensions', label: '产品尺寸' },
+  { key: 'product_dimensions', label: '物流包裹尺寸/重量' },
   { key: 'four_grid', label: '四宫格' },
   { key: 'detail_images', label: '详情图' },
   { key: 'qualification', label: '资质' },

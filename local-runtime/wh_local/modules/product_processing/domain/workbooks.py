@@ -9,6 +9,9 @@ from typing import Any, Sequence
 
 from openpyxl import Workbook, load_workbook
 
+from .image_slots import apply_slot_overrides
+from .policy import is_safe_external_url
+
 
 # 店小秘导入默认值（对齐原型 native_product_engine 常量）
 DEFAULT_SHIP_DAYS = 2
@@ -61,12 +64,23 @@ HEADER_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def _is_http_url(value: Any) -> bool:
-    """店小秘图片列只接受 http(s) 外部地址；本地生成图（未上传 COS）不可写进导入表。"""
-    return str(value or "").strip().lower().startswith(("http://", "https://"))
+    """店小秘图片列只接受无凭据、非本机/内网的公开 HTTP(S) 地址。"""
+    return is_safe_external_url(str(value or "").strip())
 
 
 def _http_urls(values: Any) -> list[str]:
     return [str(value).strip() for value in (values or []) if _is_http_url(value)]
+
+
+def require_final_public_image_urls(values: list[str]) -> list[str]:
+    """Fail closed when a final workbook still contains a local/private image."""
+    normalized = [str(value or "").strip() for value in values]
+    if any(
+        not value.lower().startswith("https://") or not is_safe_external_url(value)
+        for value in normalized
+    ):
+        raise ValueError("final workbook images must be public HTTPS URLs")
+    return normalized
 
 
 def read_product_workbook(filename: str, content: bytes) -> list[dict[str, Any]]:
@@ -186,6 +200,9 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     if not isinstance(core_fields, dict):
         core_fields = {}
     override_carousel = _http_urls(preview_overrides.get("carousel_images"))
+    slot_overrides = preview_overrides.get("image_slot_overrides") or {}
+    if not isinstance(slot_overrides, dict):
+        slot_overrides = {}
     override_main = str(preview_overrides.get("main_image") or "").strip()
     override_detail = _http_urls(preview_overrides.get("detail_images"))
 
@@ -271,7 +288,17 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     grid_summary_path = str(row.get("grid_image_summary_path") or "").strip()
     detail_image_paths = row.get("detail_image_paths") or []
     generated_images = _http_urls(list(generated_carousel) + [grid_summary_path])
-    if override_carousel:
+    if slot_overrides:
+        # 新版尺寸画布以旧版整组人工轮播为基线再覆盖单槽；总览仍保留在末尾。
+        slotted_images = _http_urls(
+            [slot.get("value") for slot in apply_slot_overrides(row, preview_overrides)]
+        )
+        export_images = slotted_images + _http_urls([grid_summary_path])
+        carousel = "\n".join(export_images)
+        main_image = override_main if _is_http_url(override_main) else next(iter(slotted_images), "")
+        material_images = main_image
+    elif override_carousel:
+        # 纯旧版整组轮播图覆盖保持原语义，避免历史预检数据被悄悄追加图片。
         carousel = "\n".join(override_carousel)
         main_image = override_main if _is_http_url(override_main) else override_carousel[0]
         material_images = main_image
@@ -288,7 +315,13 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
             material_images = main_image
 
     # 详情图以 HTML 追加到产品描述（交接文档 §10/§12）；仅追加可外部访问的 http(s) 地址
-    detail_sources = override_detail or _http_urls(detail_image_paths)
+    # Presence is semantic: an explicit empty array means the operator removed
+    # every detail image and must never resurrect generated legacy values.
+    detail_sources = (
+        override_detail
+        if "detail_images" in preview_overrides
+        else _http_urls(detail_image_paths)
+    )
     detail_html = "".join(f'<img src="{value}" />' for value in detail_sources)
     if detail_html:
         description = f"{description}\n{detail_html}".strip()

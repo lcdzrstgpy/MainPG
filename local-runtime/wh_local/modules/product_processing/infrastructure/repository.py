@@ -34,6 +34,14 @@ def loads(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
+class StalePreviewRevision(RuntimeError):
+    """Raised when a canvas result targets an older precheck revision."""
+
+
+class PreviewSlotConflict(StalePreviewRevision):
+    """Raised when the target image slot changed after canvas import."""
+
+
 class ProductProcessingRepository:
     SOURCE_IMAGE_SYNC_LEASE = timedelta(minutes=5)
 
@@ -171,6 +179,7 @@ class ProductProcessingRepository:
         draft_id: int,
         overrides: dict[str, Any],
         *,
+        expected_revision: int | None = None,
         workspace_id: str = "local",
     ) -> dict[str, Any] | None:
         """保存预检环节的覆盖数据（标题/描述/图片/核心字段），供导出最终版表格时应用。"""
@@ -178,9 +187,85 @@ class ProductProcessingRepository:
             row = session.get(ProductDraftRow, draft_id)
             if row is None or row.workspace_id != workspace_id:
                 return None
-            row.preview_overrides_json = dumps(overrides or {})
-            row.updated_at = utc_now()
+            current_revision = int(row.preview_revision or 0)
+            if expected_revision is not None and current_revision != int(expected_revision):
+                raise StalePreviewRevision(
+                    f"preview revision conflict: expected {expected_revision}, current {current_revision}"
+                )
+            serialized = dumps(overrides or {})
+            if row.preview_overrides_json != serialized:
+                row.preview_overrides_json = serialized
+                row.preview_revision = current_revision + 1
+                row.updated_at = utc_now()
             session.flush()
+            return self._draft(row)
+
+    def apply_dimension_slot_patch(
+        self,
+        draft_id: int,
+        *,
+        target_slot: str,
+        patch: dict[str, Any],
+        base_slot_value: str,
+        workspace_id: str = "local",
+    ) -> dict[str, Any] | None:
+        """Atomically merge one reviewed dimension image into the latest preview overrides.
+
+        Unrelated title/description edits are retained.  A legacy whole-carousel edit or
+        a newer edit of the same semantic slot is rejected instead of being overwritten.
+        """
+        slot_indexes = {
+            "carousel.hero": 0,
+            "carousel.detail": 1,
+            "carousel.lifestyle": 2,
+            "carousel.dimension_background": 3,
+        }
+        if target_slot not in slot_indexes or not str(patch.get("url") or "").strip():
+            raise ValueError("invalid dimension image slot patch")
+        with self.database.sessions.begin() as session:
+            row = session.get(ProductDraftRow, draft_id)
+            if row is None or row.workspace_id != workspace_id:
+                return None
+            overrides = loads(row.preview_overrides_json, {})
+            if not isinstance(overrides, dict):
+                overrides = {}
+            current_slot_value = str(base_slot_value or "").strip()
+            legacy = overrides.get("carousel_images") or []
+            if isinstance(legacy, list) and slot_indexes[target_slot] < len(legacy):
+                current_slot_value = str(legacy[slot_indexes[target_slot]] or "").strip()
+            slot_overrides = overrides.get("image_slot_overrides") or {}
+            if not isinstance(slot_overrides, dict):
+                slot_overrides = {}
+            current_patch = slot_overrides.get(target_slot) or {}
+            if isinstance(current_patch, dict) and str(current_patch.get("url") or "").strip():
+                current_slot_value = str(current_patch["url"]).strip()
+            if current_slot_value != str(base_slot_value or "").strip():
+                raise PreviewSlotConflict("target image slot changed after dimension canvas import")
+
+            next_patch = {"url": str(patch["url"]).strip()}
+            asset_id = str(patch.get("asset_id") or "").strip()
+            if asset_id:
+                next_patch["asset_id"] = asset_id
+            next_overrides = dict(overrides)
+            next_overrides["image_slot_overrides"] = {**slot_overrides, target_slot: next_patch}
+            current_revision = int(row.preview_revision or 0)
+            updated = session.execute(
+                update(ProductDraftRow)
+                .where(
+                    ProductDraftRow.id == draft_id,
+                    ProductDraftRow.workspace_id == workspace_id,
+                    ProductDraftRow.preview_revision == current_revision,
+                )
+                .values(
+                    preview_overrides_json=dumps(next_overrides),
+                    preview_revision=current_revision + 1,
+                    updated_at=utc_now(),
+                )
+            )
+            if updated.rowcount != 1:
+                raise StalePreviewRevision("preview changed while accepting dimension image")
+            session.expire(row)
+            session.refresh(row)
             return self._draft(row)
 
     def delete_drafts(self, draft_ids: list[int] | None, workspace_id: str = "local") -> list[int]:
@@ -813,6 +898,7 @@ class ProductProcessingRepository:
             "status": row.status,
             "raw_payload": loads(row.raw_payload_json, {}),
             "preview_overrides": loads(row.preview_overrides_json, {}),
+            "preview_revision": int(row.preview_revision or 0),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }

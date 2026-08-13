@@ -4,7 +4,7 @@
 构建步骤（见 build_installer.ps1）：
     1. 先执行 web-frontend 的 `npm run build` 生成 dist；
     2. `python -m PyInstaller workbench.spec --noconfirm --clean`；
-    3. 把 gitignored 的 cos.local.json / onebound.local.json 复制到 dist\\MainPG 目录；
+    3. 复制图标，但绝不复制 gitignored 的本地凭据、数据库或用户产物；
     4. 压缩 dist\\MainPG 得到安装包 zip。
 
 关键打包点：
@@ -25,7 +25,7 @@ binaries: list = []
 hiddenimports: list = []
 
 # 第三方包完整收集（datas/binaries/hiddenimports）
-for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "openpyxl"):
+for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "openpyxl", "PIL"):
     _d, _b, _h = collect_all(_pkg)
     datas += _d
     binaries += _b
@@ -34,6 +34,7 @@ for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "op
 # 运行期按 Path(__file__) 相对位置读取的迁移 SQL（必须按原目录结构打进包）
 for _rel in (
     "wh_local/data_collection/migrations",
+    "wh_local/modules/ai_service/migrations",
     "wh_local/modules/product_processing/migrations",
     "wh_local/modules/profit_activity/migrations",
     "wh_local/price_verification/migrations",
@@ -50,6 +51,12 @@ if _frontend_dist.is_dir():
     datas.append((str(_frontend_dist), "web-frontend/dist"))
 else:
     print("[workbench.spec] WARNING: web-frontend/dist 不存在，请先执行 npm run build")
+
+# Optional low-resource distractor detector (person/cat/dog). Missing model is
+# safe at runtime, but official builds include it for reference-image cleanup.
+_distractor_models = ROOT / "wh_local" / "price_verification" / "sourcing" / "models"
+if _distractor_models.is_dir():
+    datas.append((str(_distractor_models), "wh_local/price_verification/sourcing/models"))
 
 a = Analysis(
     [str(ROOT / "run_workbench.py")],
