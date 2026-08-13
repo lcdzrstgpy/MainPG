@@ -243,6 +243,70 @@
   cursor: pointer;
 }
 
+/* 精品模式开关：4 张独立完整单图（不裁剪四宫格），适合精细化产品 */
+.pool-premium {
+  flex-shrink: 0;
+  padding-top: 40px;
+  display: grid;
+  place-items: center;
+}
+
+.premium-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 999px;
+  background: #f6f8fa;
+  color: #6b7280;
+  font-size: 0.62rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.premium-toggle .iconfont {
+  font-size: 0.72rem;
+}
+
+.premium-toggle:hover {
+  border-color: rgba(212, 164, 32, 0.55);
+  color: #a87f0f;
+}
+
+.premium-toggle.active {
+  border-color: transparent;
+  background: linear-gradient(100deg, #e7b83c, #d4a420);
+  color: #fff;
+  box-shadow: 0 3px 8px rgba(212, 164, 32, 0.3);
+}
+
+.pool-card.premium {
+  border-color: rgba(212, 164, 32, 0.65);
+  box-shadow: 0 0 0 1px rgba(212, 164, 32, 0.35), 0 4px 14px rgba(212, 164, 32, 0.16);
+}
+
+.pool-premium-tag {
+  flex-shrink: 0;
+  padding: 1px 9px;
+  border-radius: 999px;
+  color: #fff;
+  background: linear-gradient(100deg, #e7b83c, #d4a420);
+  font-size: 0.64rem;
+  font-weight: 850;
+  box-shadow: 0 3px 8px rgba(212, 164, 32, 0.28);
+}
+
+.verify-premium-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #a87f0f;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
 /* ── 主图 100x100 ── */
 .pool-thumb {
   flex-shrink: 0;
@@ -907,6 +971,25 @@
   background: #0a8fca;
   border-color: #0a8fca;
   color: #fff;
+}
+
+/* 失败表操作列：重新处理 + 我已知晓，仍要入库 并排 */
+.verify-table .verify-row-actions {
+  display: inline-flex;
+  gap: 6px;
+  margin-top: 0;
+  justify-content: flex-start;
+}
+
+.btn-mini.force-import {
+  color: #b8860b;
+  border-color: #e8d9a8;
+  background: #fffdf5;
+}
+
+.btn-mini.force-import:hover:not(:disabled) {
+  background: #fdf6e0;
+  box-shadow: 0 4px 10px rgba(184, 134, 11, 0.12);
 }
 
 .verify-pagination {

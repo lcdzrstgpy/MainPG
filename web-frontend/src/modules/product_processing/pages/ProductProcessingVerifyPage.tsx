@@ -20,7 +20,7 @@ type DraftEdit = {
 };
 
 type Props = {
-  onStartProcessing?: (draftIds: number[], options: ProductProcessingOptions) => boolean;
+  onStartProcessing?: (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[]) => boolean;
   onOpenHistoryTasks?: () => void;
 };
 
@@ -55,6 +55,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
   });
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // 精品模式：勾选后该草稿走「4 张独立完整单图」（不裁剪四宫格），其余逻辑一致
+  const [premiumIds, setPremiumIds] = useState<Set<number>>(new Set());
   const [expandedId, setExpandedId] = useState<number | null>(null);
   // SKU 管理抽屉：当前正在管理的草稿 id（null 表示关闭）
   const [skuDrawerDraftId, setSkuDrawerDraftId] = useState<number | null>(null);
@@ -259,6 +261,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
   const selectAll = () => setSelectedIds(new Set(pageDrafts.slice(0, 100).map((d) => d.id)));
   const clearSelection = () => setSelectedIds(new Set());
 
+  // 精品模式勾选：可独立于「选中处理」勾选，两者互不影响；取消选中处理不清除精品标记
+  const togglePremium = (id: number) => {
+    setPremiumIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); }
+      else { next.add(id); }
+      return next;
+    });
+  };
+
   const beginEdit = (draft: DraftSummary) => {
     const raw = draft.raw_payload || {};
     setExpandedId((current) => (current === draft.id ? null : draft.id));
@@ -407,8 +419,18 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
           for (const id of ids) next.delete(id);
           return next;
         });
+        setPremiumIds((prev) => {
+          const next = new Set(prev);
+          for (const id of ids) next.delete(id);
+          return next;
+        });
       } else {
         setSelectedIds(new Set());
+        setPremiumIds((prev) => {
+          const next = new Set(prev);
+          for (const id of ids) next.delete(id);
+          return next;
+        });
       }
       await refresh();
       notify(`已移除 ${ids.length} 条草稿`);
@@ -448,8 +470,20 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
       ...options,
       ...(preflightOnly ? { preflightOnly: true } as Partial<ProductProcessingOptions> : {}),
     };
-    const opened = onStartProcessing?.(ids, processOptions);
+    // 精品标记只对本次选中的草稿生效（被取消选中的精品标记暂留，方便下次一并处理）
+    const premiumIdsInSelection = Array.from(premiumIds).filter((id) => ids.includes(id));
+    const opened = onStartProcessing?.(ids, processOptions, premiumIdsInSelection);
     if (opened === false) return; // 任务面板未打开（如已达上限），草稿保持原样
+    // 提交处理即让勾选草稿从池中消失：本地同步置 processing（后端同样置位），
+    // 处理完成置 processed 保持隐藏，失败回退 draft 后会自动重新出现。
+    setDrafts((prev) => prev.map((d) => (ids.includes(d.id) ? { ...d, status: 'processing' as const } : d)));
+    setSelectedIds(new Set());
+    setPremiumIds((prev) => {
+      const next = new Set(prev);
+      for (const id of premiumIdsInSelection) next.delete(id);
+      return next;
+    });
+    setEdits((prev) => { const next = { ...prev }; for (const id of ids) delete next[id]; return next; });
   };
 
   return (
@@ -491,6 +525,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
           <div className="verify-pool-stats">
             <span><i className="iconfont icon-appstore" aria-hidden="true" />待处理 <strong>{selectableDrafts.length}</strong></span>
             <span><i className="iconfont icon-check-circle" aria-hidden="true" />已选 <strong>{selectedIds.size}</strong></span>
+            <span><i className="iconfont icon-gem" aria-hidden="true" />精品 <strong>{premiumIds.size}</strong></span>
             <span><i className="iconfont icon-file-text" aria-hidden="true" />本页 <strong>{pageDrafts.length}</strong></span>
             {(skuCountFilter > 1 || hideSingleSpec || viewMode === 'selected') && (
               <span><i className="iconfont icon-filter" aria-hidden="true" />筛选后 <strong>{totalDrafts}</strong></span>
@@ -596,12 +631,22 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
             const copy = (t: string) => { navigator.clipboard.writeText(t).catch(() => undefined); };
             const onSelect = () => toggleDraft(draft.id);
             const isSelected = selectedIds.has(draft.id);
+            const isPremium = premiumIds.has(draft.id);
             return (
-              <article key={draft.id} className={`pool-card ${isSelected ? 'selected' : ''}`}>
+              <article key={draft.id} className={`pool-card ${isSelected ? 'selected' : ''} ${isPremium ? 'premium' : ''}`}>
                 <div className="pool-card-body">
                   <label className="pool-check">
                     <input type="checkbox" checked={isSelected} onChange={onSelect} />
                   </label>
+                  {/* 精品模式：独立于「选中处理」的勾选入口，走 4 张独立完整单图（不裁剪四宫格） */}
+                  <div className="pool-premium">
+                    <button
+                      type="button"
+                      className={`premium-toggle ${isPremium ? 'active' : ''}`}
+                      onClick={() => togglePremium(draft.id)}
+                      title={isPremium ? '取消精品：恢复四宫格处理' : '精品处理：4 张独立完整单图（不裁剪四宫格），其余逻辑一致'}
+                    ><i className="iconfont icon-gem" aria-hidden="true" />{isPremium ? '已选精品' : '精品'}</button>
+                  </div>
                   <div className="pool-thumb" onClick={onSelect}>
                     {imgUrl ? (
                       <img src={imgUrl} alt="" referrerPolicy="no-referrer" />
@@ -614,6 +659,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
                     <div className="pool-title-row">
                       <strong title={displayTitle}>{displayTitle}</strong>
                       {isSelected && <span className="pool-selected-tag"><i className="iconfont icon-check" aria-hidden="true" />已选</span>}
+                      {isPremium && <span className="pool-premium-tag"><i className="iconfont icon-gem" aria-hidden="true" />精品</span>}
                       <div className="pool-inline-acts">
                         <button className="btn-mini" onClick={() => copy(displayTitle)}><i className="iconfont icon-file-copy" aria-hidden="true" />复制</button>
                         <button className="btn-mini" onClick={() => beginEdit(draft)}><i className="iconfont icon-edit" aria-hidden="true" />{isExpanded ? '收起' : '编辑'}</button>
@@ -749,6 +795,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
 
       <section className="verify-quickbar">
         <div className="verify-actions">
+          {premiumIds.size > 0 && <span className="verify-premium-hint"><i className="iconfont icon-gem" aria-hidden="true" />精品 {premiumIds.size} 条·4 张独立单图不裁剪</span>}
           <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
           <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
           <button onClick={openSkuBatch} disabled={!selectedIds.size}><i className="iconfont icon-barcode" aria-hidden="true" />批量管理 SKU</button>

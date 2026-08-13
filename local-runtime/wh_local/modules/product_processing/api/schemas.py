@@ -74,6 +74,11 @@ class DraftProcessRequest(BaseModel):
     category_preflight_only: bool = False
     force_new_task: bool = False
     plugin_session_id: int | None = None
+    # 精品模式：勾选的草稿走「4 张独立完整单图」流程（不做四宫格裁剪），其余逻辑一致
+    premium_draft_ids: list[int] = []
+    # 强制入库：用户对失败/待确认草稿点击「我已知晓，仍要入库」后重新提交时带上。
+    # 图片质量门不再阻断（回退来源图继续走完流水线），预审环节可人工修正信息。
+    force_import_draft_ids: list[int] = []
     # 旧版布尔开关（向后兼容）
     title_optimize: bool = True
     description: bool = True

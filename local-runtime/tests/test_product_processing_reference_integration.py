@@ -118,6 +118,7 @@ def test_service_has_exactly_four_narrow_content_reference_integration_points() 
         "_generate_title": "select_title_reference",
         "_generate_grid_images": "select_image_reference",
         "_generate_detail_images": "select_image_reference",
+        "_generate_premium_images": "select_image_reference",
     }
 
     for method_name, selector_name in expected.items():
@@ -147,11 +148,16 @@ def test_service_has_exactly_four_narrow_content_reference_integration_points() 
 
     assert integration_owners == {
         "select_title_reference": ["_generate_combined_text", "_generate_title"],
-        "select_image_reference": ["_generate_grid_images", "_generate_detail_images"],
+        "select_image_reference": [
+            "_generate_grid_images",
+            "_generate_premium_images",
+            "_generate_detail_images",
+        ],
         "append_content_reference": [
             "_generate_combined_text",
             "_generate_title",
             "_generate_grid_images",
+            "_generate_premium_images",
             "_generate_detail_images",
         ],
     }
@@ -311,6 +317,8 @@ def test_grid_image_reference_does_not_add_provider_calls(monkeypatch) -> None:
     assert processor.prompts[0].rstrip().endswith(
         "Keep Panel 4 clean for later deterministic dimension annotation."
     )
+    # A 模板与 B 模板一致使用固定 2x2 scaffold，保证四等分 + 直线分隔线的结构遵循度
+    assert processor.layout_scaffold_values == [True]
     assert len(carousel) == 4
     assert summary.endswith("grid_image_summary.png")
     assert sum(note.startswith("image_reference:") for note in notes) == 1
@@ -365,3 +373,172 @@ def test_b_grid_uses_fixed_scaffold_and_disables_paid_repair(monkeypatch) -> Non
         "grid_validation_ms",
         "persist_ms",
     }
+
+
+class _CapturingPremiumImageProcessor:
+    """精品模式 mock：记录 4 次单张生成调用，不触发任何网络/OCR。"""
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+        self.stages: list[str] = []
+        self.image_sizes: list[str | None] = []
+        self.models: list[str | None] = []
+
+    def generate(
+        self,
+        *,
+        stage: str,
+        prompt: str,
+        reference_values: list[str],
+        layout_scaffold: bool = False,
+        image_size: str | None = None,
+        model_override: str | None = None,
+    ) -> SimpleNamespace:
+        assert stage == "premium_image"
+        self.prompts.append(prompt)
+        self.stages.append(stage)
+        self.image_sizes.append(image_size)
+        self.models.append(model_override)
+        return SimpleNamespace(
+            stage=stage,
+            content=b"image",
+            content_type="image/png",
+            attempt_count=1,
+            provider_status_class="success",
+        )
+
+    def repair_generated(
+        self,
+        *,
+        stage: str,
+        prompt: str,
+        prior_content: bytes,
+        prior_content_type: str,
+        reference_values: list[str],
+        image_size: str | None = None,
+        model: str | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            stage=stage,
+            content=prior_content,
+            content_type=prior_content_type,
+            attempt_count=1,
+            provider_status_class="success",
+        )
+
+
+class _FailingPremiumImageProcessor(_CapturingPremiumImageProcessor):
+    """第 N 次生成抛错的 mock，用于验证「任一张失败整组失败」。"""
+
+    def __init__(self, fail_after: int) -> None:
+        super().__init__()
+        self.fail_after = fail_after
+
+    def generate(
+        self,
+        *,
+        stage: str,
+        prompt: str,
+        reference_values: list[str],
+        layout_scaffold: bool = False,
+        image_size: str | None = None,
+        model_override: str | None = None,
+    ) -> SimpleNamespace:
+        if len(self.prompts) >= self.fail_after:
+            raise ValueError("simulated premium generation failure")
+        return super().generate(
+            stage=stage,
+            prompt=prompt,
+            reference_values=reference_values,
+            layout_scaffold=layout_scaffold,
+            image_size=image_size,
+            model_override=model_override,
+        )
+
+
+def _premium_service(monkeypatch, processor) -> ProductProcessingService:
+    service = object.__new__(ProductProcessingService)
+    service.repository = _PromptRepository()
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(service_module, "_media_types", lambda: (object, RuntimeError, ValueError))
+    monkeypatch.setattr(service_module, "ocr_gate_enabled", lambda: False)
+    monkeypatch.setattr(service, "_media_processor", lambda: processor)
+    monkeypatch.setattr(
+        service,
+        "_media_config_provider",
+        lambda: {"image": {"premium_image_model": "gpt-image-2-1k", "premium_image_size": "1024x1024"}},
+    )
+    monkeypatch.setattr(
+        service,
+        "_persist_media_for_preview",
+        lambda parts, _task_id, _draft_id, _workspace_id: [
+            f"https://example.com/premium_{index}.png" for index in range(len(parts))
+        ],
+    )
+    return service
+
+
+def test_premium_images_generates_four_full_single_images(monkeypatch) -> None:
+    """精品模式：分 4 次（并行）生成 4 张独立完整单图，无裁剪、无汇总图。"""
+    processor = _CapturingPremiumImageProcessor()
+    service = _premium_service(monkeypatch, processor)
+    notes: list[str] = []
+
+    output = service._generate_premium_images(
+        1,
+        2,
+        _raw(),
+        "Insulated Travel Mug Stainless Steel 500 ml",
+        "Kitchen & Dining",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        notes,
+    )
+
+    assert len(processor.prompts) == 4
+    assert len(processor.stages) == 4
+    assert processor.stages == ["premium_image"] * 4
+    # 精品 4 张独立单图走 1K 模型（1024×1024、gpt-image-2-1k），只有四宫格才用 2K
+    assert processor.image_sizes == ["1024x1024"] * 4
+    assert processor.models == ["gpt-image-2-1k"] * 4
+    assert output.summary_url == ""  # 精品模式无四宫格汇总图
+    assert len(output.carousel_urls) == 4
+    assert all(url.startswith("https://example.com/premium_") for url in output.carousel_urls)
+    joined = " ".join(processor.prompts)
+    joined_lower = joined.lower()
+    assert "four-panel" not in joined  # 非四宫格布局
+    # 模板明确「禁止」分格/分隔线/拼贴（否定义，非要求存在分隔线）
+    assert "do not split into panels" in joined_lower
+    assert "do not add divider lines" in joined_lower
+    # 每张都要求「单张完整商品图」：4 次调用各出现一次
+    assert joined_lower.count("single complete square product image") == 4
+    # 四个构图角色各一次（hero/detail/lifestyle/orthographic）
+    assert sum("hero shot:" in p.lower() for p in processor.prompts) == 1
+    assert sum("editorial/detail shot" in p.lower() for p in processor.prompts) == 1
+    assert sum("lifestyle scene" in p.lower() for p in processor.prompts) == 1
+    assert sum("clean front, side, or top view" in p.lower() for p in processor.prompts) == 1
+    assert sum(note.startswith("image_reference:") for note in notes) == 1
+
+
+def test_premium_images_fails_as_a_group_when_any_single_image_fails(monkeypatch) -> None:
+    """任一张单图失败 → 整组失败（与四宫格整组回退一致）。"""
+    processor = _FailingPremiumImageProcessor(fail_after=2)
+    service = _premium_service(monkeypatch, processor)
+    notes: list[str] = []
+
+    output = service._generate_premium_images(
+        1,
+        2,
+        _raw(),
+        "Insulated Travel Mug Stainless Steel 500 ml",
+        "Kitchen & Dining",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        notes,
+    )
+
+    assert output.carousel_urls == ()
+    assert output.summary_url == ""
+    assert any(note.startswith("premium_images:ai-failed:") for note in notes)

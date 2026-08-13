@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor

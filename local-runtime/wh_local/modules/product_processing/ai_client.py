@@ -15,6 +15,7 @@ from typing import Any
 
 import requests
 
+from .infrastructure.rate_limit import global_ai_request_limiter
 from .provider_config import DEFAULT_AI_TIMEOUT_SECONDS, resolve_ai_provider
 
 
@@ -35,6 +36,18 @@ _HTTP_ADAPTER = requests.adapters.HTTPAdapter(
 _HTTP_SESSION.mount("https://", _HTTP_ADAPTER)
 _HTTP_SESSION.mount("http://", _HTTP_ADAPTER)
 _HTTP_CAPACITY = threading.BoundedSemaphore(HTTP_POOL_MAXSIZE)
+
+
+def _is_route_config_error(exc: AiProviderError) -> bool:
+    """判断 4xx 是否属于「该 key 未配置可路由商家」类路由配置错误。
+
+    这类错误与具体模型的路由绑定有关：换下一个模型可能就有可用商家路由，
+    因此允许继续走降级链，而不是让整单失败。
+    """
+    if exc.status_code != 400:
+        return False
+    message = str(exc)
+    return "key_has_no_route_providers" in message or "has_no_route_providers" in message
 
 
 class AiProviderError(RuntimeError):
@@ -74,7 +87,7 @@ class AiClient:
         self.image_quality = provider["image_quality"]
         self.timeout_seconds = float(provider.get("timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS))
         self.text_timeout_seconds = float(provider.get("text_timeout_seconds", 300.0))
-        # 兼容调用方未提供总预算的旧配置：保留原本“每个候选各自等待”的量级；
+        # 兼容调用方未提供总预算的旧配置：保留原本"每个候选各自等待"的量级；
         # 新配置则把整条降级链限制在明确总预算内，慢主模型不会被 25 秒误取消。
         self.text_total_timeout_seconds = float(
             provider.get("text_total_timeout_seconds", self.text_timeout_seconds * 4)
@@ -228,6 +241,8 @@ class AiClient:
         timeout: float | None = None,
     ) -> dict[str, Any]:
         effective_timeout = float(timeout if timeout is not None else self.timeout_seconds)
+        # 全局速率限制：先取令牌再拿连接，避免多任务叠加时短窗口内请求量过大。
+        global_ai_request_limiter().acquire()
         deadline = time.monotonic() + effective_timeout
         if not _HTTP_CAPACITY.acquire(timeout=effective_timeout):
             raise AiProviderError("AI provider connection pool timed out")

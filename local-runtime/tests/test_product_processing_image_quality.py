@@ -17,6 +17,7 @@ from wh_local.modules.product_processing import provider_config as provider_conf
 from wh_local.modules.product_processing.domain.prompts import (
     GRID_IMAGE_PROMPT,
     GRID_IMAGE_PROMPT_B,
+    GRID_IMAGE_REPAIR_PROMPT,
     GRID_RUNTIME_CONTRACT,
 )
 from wh_local.modules.product_processing.domain.workbooks import _http_urls
@@ -104,7 +105,8 @@ def test_split_two_grid_preserves_two_landscape_panels() -> None:
             assert all(abs(value - wanted) <= 4 for value, wanted in zip(actual, color))
 
 
-def test_split_four_grid_rejects_continuous_poster_without_center_dividers() -> None:
+def test_split_four_grid_falls_back_to_center_when_no_divider_evidence() -> None:
+    # 无分隔线证据时回退正中切分（面板独立性校验只在面板内出现完整长分隔线时拒绝）。
     image = Image.new("RGB", (2048, 2048), (40, 80, 120))
     for x in range(2048):
         color = (40 + x // 16, 80, 120)
@@ -112,8 +114,8 @@ def test_split_four_grid_rejects_continuous_poster_without_center_dividers() -> 
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     processor = ProductImageProcessor(lambda: {})
-    with pytest.raises(MediaProcessingError, match="cannot be split"):
-        processor.split_four_grid(_media(buffer.getvalue()))
+    parts = processor.split_four_grid(_media(buffer.getvalue()))
+    assert len(parts) == 5
 
 
 def test_split_four_grid_accepts_one_small_shifted_separator_as_local_fallback() -> None:
@@ -384,18 +386,22 @@ def test_b_grid_quality_failure_never_triggers_a_paid_repair(monkeypatch) -> Non
     )
     monkeypatch.setattr(service_module, "_media_types", lambda: (object, RuntimeError, ValueError))
 
-    with pytest.raises(ValueError, match="停止付费重绘"):
-        service._repair_until_clean(
-            processor,
-            "grid_image",
-            "four_grid",
-            _media(_grid_bytes()),
-            ["https://example.com/source.jpg"],
-            [],
-            allow_paid_repair=False,
-        )
+    # 质量门为软性：B 模板禁止付费重绘，检出问题只留痕 quality_unresolved，不再 raise 阻断，
+    # 图片整组失败由 _process_one 回退来源图继续（用户要求不卡流程）。
+    notes: list[str] = []
+    result = service._repair_until_clean(
+        processor,
+        "grid_image",
+        "four_grid",
+        _media(_grid_bytes()),
+        ["https://example.com/source.jpg"],
+        notes,
+        allow_paid_repair=False,
+    )
 
     assert processor.repair_calls == 0
+    assert result is not None
+    assert "four_grid:quality_unresolved" in notes
 
 
 def test_local_detail_reads_split_media_bytes_without_redownloading(monkeypatch) -> None:
@@ -413,8 +419,11 @@ def test_ocr_inspection_flags_large_added_copy_but_not_small_product_mark(monkey
         def __call__(self, _array):
             return (
                 [
-                    [[[100, 120], [1000, 120], [1000, 260], [100, 260]], "FACTORY DIRECT", 0.99],
+                    # 跨面板海报横幅：高 220px(10.7%)、宽 900px(44%) → prominent
+                    [[[100, 120], [1000, 120], [1000, 340], [100, 340]], "FACTORY DIRECT", 0.99],
+                    # 产品本体小标记：宽 100px(4.9%) → 不拦
                     [[[1500, 1500], [1600, 1500], [1600, 1530], [1500, 1530]], "JOKER", 0.98],
+                    # 中文硬拦截（不受 prominent 放宽影响）
                     [[[100, 1700], [260, 1700], [260, 1740], [100, 1740]], "麻将", 0.97],
                 ],
                 None,
@@ -451,6 +460,37 @@ def test_ocr_inference_uses_dedicated_two_worker_gate(monkeypatch) -> None:
 
     assert results == [{"chinese": [], "prominent": []}] * 5
     assert maximum == 2
+
+
+def test_ocr_inspection_ignores_large_print_on_product_face(monkeypatch) -> None:
+    """麻将牌这类「产品本体印刷大字符」不得被误判为 AI 显著文字：
+    字符再大，只要宽度局限在单面板内（<30%），就不再触发 prominent，避免重绘死循环。"""
+    class _Engine:
+        def __call__(self, _array):
+            return (
+                [
+                    # 牌面数字：高 200px(9.8%) 但宽仅 400px(19.5%) → 产品印刷标记，放过
+                    [[[800, 900], [1200, 900], [1200, 1100], [800, 1100]], "1234567890", 0.99],
+                ],
+                None,
+            )
+
+    monkeypatch.setattr(ocr_gate, "_get_engine", lambda: _Engine())
+    inspection = ocr_gate.inspect_visible_text(_grid_bytes())
+    assert inspection is not None
+    assert inspection["prominent"] == []
+    assert inspection["chinese"] == []
+
+
+def test_grid_repair_prompt_preserves_product_print_and_replaces_chinese() -> None:
+    """重绘提示词不得自相矛盾：只删 AI 添加的跨面板文字；
+    产品本体印刷字符/图案是设计（保留），产品本体印刷中文则换成英文。"""
+    assert "Remove ONLY AI-added cross-panel headlines" in GRID_IMAGE_REPAIR_PROMPT
+    assert "spans two or more panels must be deleted" in GRID_IMAGE_REPAIR_PROMPT
+    assert "are PRODUCT DESIGN and must be kept" in GRID_IMAGE_REPAIR_PROMPT
+    assert "mahjong tile faces" in GRID_IMAGE_REPAIR_PROMPT
+    assert "replace that printed text with the equivalent English text" in GRID_IMAGE_REPAIR_PROMPT
+    assert "never reproduce Chinese characters" in GRID_IMAGE_REPAIR_PROMPT
 
 
 def test_dianxiaomi_image_filter_rejects_local_and_private_urls() -> None:

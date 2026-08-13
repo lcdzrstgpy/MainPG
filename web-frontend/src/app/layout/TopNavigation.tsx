@@ -11,6 +11,7 @@ export type WorkspaceTab = {
   iconClass?: string;
   directionId?: string;
   draftIds?: number[];
+  premiumDraftIds?: number[];
   processingOptions?: unknown;
   taskId?: number;
   dimensionBatchId?: string;

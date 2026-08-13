@@ -360,16 +360,18 @@ IMAGE_REPAIR_CHINESE_PROMPT = """The attached image is a product photo generated
 Output only the corrected image."""
 
 
-GRID_IMAGE_REPAIR_PROMPT = """The attached image is an exact 2x2 product grid, but it failed the marketplace split-quality gate because it contains AI-added typography or a continuous cross-panel poster layout.
+GRID_IMAGE_REPAIR_PROMPT = """The attached image is an exact 2x2 product grid, but it failed the marketplace split-quality gate because it contains AI-added typography, a continuous cross-panel poster layout, or printed Chinese characters on the product itself.
 
 Repair the existing grid without changing the real sellable product:
-- Remove every AI-added headline, sentence, label, number, slogan, badge, logo, watermark, arrow, ruler, and UI mark. Preserve only markings physically printed on the real product in the source reference.
+- Remove ONLY AI-added cross-panel headlines, slogans, badges, logos, watermarks, arrows, rulers, and UI marks that were NOT printed on the real product. A headline that spans two or more panels must be deleted entirely.
 - Keep four equal standalone product photos with exact cut boundaries at 50% horizontal and 50% vertical.
 - Draw a neutral light-gray separator on both exact center boundaries, 0.4%-0.8% of the full image wide, straight, uniform, and uninterrupted from edge to edge.
 - No product, prop, shadow, table surface, background shape, or text may cross a cut boundary.
 - Every panel must show the complete sellable product or verified complete set, sharp and unobstructed. A detail view may use one small inset only when the complete product remains visible.
 - Panel 1 is a balanced, product-dominant marketplace hero image. Do not write into it.
 - Panel 4 remains clean and text-free for deterministic dimension annotations.
+- Characters, numbers, and patterns physically printed on the real sellable product (e.g. mahjong tile faces, game labels, engraved marks) are PRODUCT DESIGN and must be kept exactly as they appear on the product.
+- If the product itself is printed with Chinese characters or any non-English text, replace that printed text with the equivalent English text or remove it entirely; never reproduce Chinese characters in the repaired image.
 
 Output only the repaired square grid image."""
 
@@ -496,6 +498,53 @@ Grid & splitting infrastructure (fixed - do not change):
 - Final text rule: zero AI-added visible text. Preserve only markings physically printed on the real sellable product. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
 
 
+PREMIUM_IMAGE_PROMPT = """Role & Core Mission (fixed):
+You are a senior e-commerce visual designer serving TEMU, TikTok Shop, and Amazon US listings. Treat the uploaded reference image(s) as the ONLY source of truth for the SKU. Rebuild ONE single full-resolution listing image with premium commercial quality, WITHOUT changing the product itself (the product body must stay 100% unchanged).
+
+Execution Priority (fixed): SKU accuracy > structure/pattern accuracy > material/color accuracy > complete product composition > background creativity > visual polish.
+
+Product Integrity Constraints (fixed - safety red line):
+- Lock before generating: product silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, text, and digits. Never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure. Do not guess details the reference cannot confirm.
+- Allowed: redesign placement, camera angle, composition, background, lighting, and scene. The product body must never change.
+
+Variable Inputs (batch template - fill per SKU):
+[SKU Category]   : {category_path}
+[Product Name]   : {title}
+[Key Features]   : {value_evidence}
+[Scene Scenario] : {scene_plan}
+[Color Palette]  : {visual_style} / {background_plan}
+Verified material evidence: {verified_material_evidence}
+
+Global Visual Rules (fixed):
+- Follow the provided quality benchmark: dark or editorial premium scene when suitable, product placed large but never cramped, controlled glow, clear transparent/material edge highlights, polished surface reflections, and enough breathing room around the product.
+- Safe composition: effective content covers 72%-88% of the frame; keep 8%-12% inner safe margin on all sides. Avoid large empty areas, but never crop, clip, or let product/props touch frame edges.
+- Background: never a monotonous cream-white / light-gray / plain white stone. Match the background style to [SKU Category] but never compete with the product for the visual center.
+- Typography: generate NO letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, UI, rulers, or measurement marks anywhere in the image. Preserve only markings that are physically printed on the real sellable product in the reference.
+- Forbidden: added Chinese or English text, brand names, logos, watermarks, infringing elements, AI gibberish, or malformed hands.
+
+Premium feel & material polish (fixed - make the image look expensive and well-finished):
+- Light is the star: use directional side light or soft window light so the material shows natural luster, subtle highlights, layered shadows and craft detail; never flat, harsh or plasticky lighting.
+- Texture first: deliberately show surface grain, weave, stitching, metal finish, glass refraction, edge polish, transparent thickness, enamel shine, leather pores, ceramic glaze, or wood grain whenever those details are visible in the reference.
+- Gloss & highlight control: add realistic specular highlights, rim light on edges, contact shadows, soft reflections and micro-contrast so the product looks tactile and premium; avoid muddy shadows, dull surfaces, overexposed whites, flat screenshots, plastic-looking renders, or waxy AI texture.
+- Lens & depth realism: use premium product-photography optics (natural perspective, crisp focal product, gentle depth of field only in background/props); the product itself must stay sharp and readable.
+- Tone control: keep one cohesive low-saturation premium palette; colors must feel curated, not clashing or garish.
+- Refined props: any prop must look intentional and high-end (real wood, stone, linen, brass, glass, ceramics); no cheap plastic-looking staging.
+
+Single full image instruction (fixed - no grid, no cropping):
+- Generate ONE single complete square product image only. Do NOT split into panels, do NOT add divider lines, do NOT imitate a collage or a 2x2 grid layout.
+- Keep the full sellable product complete, sharp, prominent, and unobstructed inside the single frame; no cropped parts and no partial stacking that hides quantity or structure.
+- {panel_role}
+
+Generate-then-self-check (fixed):
+- Confirm product quantity, silhouette, proportions, structure, color, material, transparency, texture, edges, and accessory count all match the reference.
+- If any SKU error is found, fix the product body first, then adjust background and polish.
+- Final goal: SKU-accurate, instantly recognizable, premium composition, matching US consumer taste.
+
+Official authenticity rules (fixed): the sellable product must be complete, sharp, prominent, and unobstructed. Do not show only a packaging bag unless the product being sold is packaging bags. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
+- Strict rules: do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. Generate no added text, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design.
+- Final text rule: zero AI-added visible text. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
+
+
 DEFAULT_PROMPTS: dict[str, str] = {
     "title": TITLE_PROMPT,
     "desc": DESC_PROMPT,
@@ -504,6 +553,7 @@ DEFAULT_PROMPTS: dict[str, str] = {
     "grid_image_b": GRID_IMAGE_PROMPT_B,
     "image_set": IMAGE_SET_PROMPT,
     "image_set_b": IMAGE_SET_PROMPT_B,
+    "premium_image": PREMIUM_IMAGE_PROMPT,
     "detail_image": DETAIL_IMAGE_PROMPT,
     "image_repair_chinese": IMAGE_REPAIR_CHINESE_PROMPT,
     "image_repair_grid": GRID_IMAGE_REPAIR_PROMPT,

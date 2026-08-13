@@ -60,6 +60,8 @@ const AI_CONFIG_HINT =
 
 type Props = {
   initialDraftIds?: number[];
+  /** 精品模式草稿：走 4 张独立完整单图（不裁剪四宫格），其余处理逻辑一致 */
+  initialPremiumDraftIds?: number[];
   initialOptions?: ProductProcessingOptions;
   /** 任务完成后打开预检页（生成表格 → 预检修改 → 导出最终版） */
   onOpenPrecheck?: (taskId: number) => void;
@@ -90,7 +92,7 @@ function formatDuration(seconds?: number): string {
   return `${secs}秒`;
 }
 
-export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onOpenPrecheck }: Props) {
+export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck }: Props) {
   const ctx = api();
   const [options, setOptions] = useState<ProductProcessingOptions>(
     initialOptions || {
@@ -235,12 +237,13 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
     setMessage('');
     setError('');
     try {
+      const premiumIds = (initialPremiumDraftIds || []).filter((id) => initialDraftIds.includes(id));
       const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/drafts/process`, {
-        body,
+        body: { ...body, premium_draft_ids: premiumIds },
         headers: { 'Idempotency-Key': startRequestRef.current.key },
       });
       setBatch(data);
-      notify(data.message || '批次已提交');
+      notify(premiumIds.length ? data.message || `批次已提交（含 ${premiumIds.length} 条精品单图）` : (data.message || '批次已提交'));
     } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
   };
 
@@ -272,6 +275,38 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
       notify(data.message || `已提交 ${draftIds.length} 个失败项重新处理`);
       loadHistory(1);
     } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
+  };
+
+  // 强制入库：用户「我已知晓，仍要入库」——图片质量门不再阻断，回退来源图继续走完流水线，
+  // 预审环节可人工修正图片/信息
+  const forceImportFailed = async (draftIds: number[]) => {
+    if (!draftIds.length) return;
+    setLoading(true);
+    setMessage('');
+    setError('');
+    try {
+      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/drafts/process`, {
+        body: {
+          title: '失败项强制入库',
+          draft_ids: draftIds,
+          force_import_draft_ids: draftIds,
+          max_products: 0,
+          async_mode: true,
+          target_site: options.targetSite,
+          target_language: options.targetLanguage,
+          processing_scope: options.processingScope,
+          qualification_mode: options.qualificationMode,
+          include_product_video: options.includeProductVideo,
+          skip_duplicates: false,
+          ip_check: options.ipCheck,
+          max_parallel_drafts: options.maxParallelDrafts,
+          image_template: options.imageTemplate || 'A',
+        },
+      });
+      setBatch(data);
+      notify(data.message || `已提交 ${draftIds.length} 个失败项强制入库`);
+      loadHistory(1);
+    } catch (err) { fail(err); } finally { setLoading(false); }
   };
 
   const historyTotalPages = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
@@ -393,6 +428,9 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
             <div className="verify-actions">
               <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
               <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
+              {!!initialPremiumDraftIds?.length && (
+                <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条：4 张独立完整单图（不裁剪）</span>
+              )}
             </div>
           </section>
 
@@ -479,6 +517,12 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
                     onClick={() => retryFailed(failureItems.map((item) => item.product_draft_id).filter((id): id is number => id != null))}
                     title={batchProcessing ? '当前批次处理中，完成后可重试' : undefined}
                   ><i className="iconfont icon-rocket" aria-hidden="true" />重试全部失败（{failureItems.length}）</button>
+                  <button
+                    className="btn-mini force-import"
+                    disabled={loading || batchProcessing}
+                    onClick={() => forceImportFailed(failureItems.map((item) => item.product_draft_id).filter((id): id is number => id != null))}
+                    title={batchProcessing ? '当前批次处理中，完成后可操作' : '我已知道生成图质量问题，仍要提交入库（回退来源图，预审可修改）'}
+                  ><i className="iconfont icon-check-circle" aria-hidden="true" />全部知晓入库（{failureItems.length}）</button>
                 </span>
               </div>
               {hasAiConfigIssue && (
@@ -501,12 +545,22 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
                         <td>{result.retryable ? '是' : '否'}</td>
                         <td>
                           {draftId != null ? (
-                            <button
-                              className="btn-mini primary"
-                              disabled={loading || batchProcessing}
-                              onClick={() => retryFailed([draftId])}
-                              title="以该草稿重新提交处理流水线"
-                            >重新处理</button>
+                            <span className="verify-row-actions">
+                              <button
+                                className="btn-mini primary"
+                                disabled={loading || batchProcessing}
+                                onClick={() => retryFailed([draftId])}
+                                title="以该草稿重新提交处理流水线"
+                              >重新处理</button>
+                              {result.retryable && (
+                                <button
+                                  className="btn-mini force-import"
+                                  disabled={loading || batchProcessing}
+                                  onClick={() => forceImportFailed([draftId])}
+                                  title="我已知道生成图质量问题，仍要提交入库（回退来源图，预审可修改）"
+                                >我已知晓，仍要入库</button>
+                              )}
+                            </span>
                           ) : ('-')}
                         </td>
                       </tr>

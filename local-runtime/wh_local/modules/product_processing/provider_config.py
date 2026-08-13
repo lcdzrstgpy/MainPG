@@ -34,6 +34,10 @@ IMAGE_MODEL_POOL = ("gpt-image-2-2k",)
 IMAGE_SIZE = "2048x2048"
 REFERENCE_IMAGE_SIZE_1K = "1024x1024"
 IMAGE_QUALITY = "medium"
+# 精品模式（4 张独立完整单图）走 1K 模型：单张 1024×1024，速度快、成本低；
+# 只有四宫格（1 张 2x2 大图）才允许 2K 及以上。
+PREMIUM_IMAGE_MODEL = "gpt-image-2-1k"
+PREMIUM_IMAGE_SIZE = "1024x1024"
 
 # 运行时模型通常先返回，再由调用方做结构化校验；慢模型不能被客户端过早取消。
 # 文本单候选最多等 5 分钟，整条降级链最多 6 分钟，避免四个候选串行等待 20 分钟。
@@ -103,6 +107,8 @@ def resolve_ai_provider() -> dict[str, Any]:
     ).strip()
     image_model = IMAGE_MODEL
     reference_image_model = REFERENCE_IMAGE_MODEL
+    premium_image_model = PREMIUM_IMAGE_MODEL
+    premium_image_size = PREMIUM_IMAGE_SIZE
 
     fallback = list(TEXT_MODEL_FALLBACK_ORDER)
 
@@ -131,6 +137,9 @@ def resolve_ai_provider() -> dict[str, Any]:
         "image_models": list(IMAGE_MODEL_POOL),
         "image_size": os.environ.get("WH_AI_IMAGE_SIZE", IMAGE_SIZE).strip(),
         "image_quality": os.environ.get("WH_AI_IMAGE_QUALITY", IMAGE_QUALITY).strip(),
+        # 精品模式 1K 出图配置（环境变量可覆盖，便于运营按中转实际价格调整）
+        "premium_image_model": os.environ.get("WH_AI_PREMIUM_IMAGE_MODEL", premium_image_model).strip(),
+        "premium_image_size": os.environ.get("WH_AI_PREMIUM_IMAGE_SIZE", premium_image_size).strip(),
         "timeout_seconds": DEFAULT_AI_TIMEOUT_SECONDS,
         "text_timeout_seconds": TEXT_AI_TIMEOUT_SECONDS,
         "text_total_timeout_seconds": TEXT_AI_TOTAL_TIMEOUT_SECONDS,

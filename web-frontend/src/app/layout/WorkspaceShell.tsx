@@ -203,7 +203,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
     setWorkspaceNotice("");
   };
 
-  const openProcessingTask = (draftIds: number[], options: ProductProcessingOptions) => {
+  const openProcessingTask = (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[] = []) => {
     const openPanelCount = tabs.filter((tab) => tab.moduleId === "product_processing_tasks").length;
     if (openPanelCount >= MAX_PROCESSING_PANELS) {
       setWorkspaceNotice(`最多同时打开 ${MAX_PROCESSING_PANELS} 个处理任务，请先关闭一个再继续。`);
@@ -212,12 +212,14 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
 
     processingSequence.current += 1;
     const key = `product-processing-tasks-${processingSequence.current}`;
+    const premiumCount = premiumDraftIds.length;
     setTabs((current) => [...current, {
       key,
       moduleId: "product_processing_tasks",
-      label: `处理·${draftIds.length}项`,
+      label: `处理·${draftIds.length}项${premiumCount ? `·精品${premiumCount}` : ''}`,
       icon: "⚙",
       draftIds,
+      premiumDraftIds,
       processingOptions: options,
     }]);
     setActiveTabKey(key);
@@ -368,6 +370,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
               ) : (
                 <ProductProcessingTaskPage
                   initialDraftIds={tab.draftIds}
+                  initialPremiumDraftIds={tab.premiumDraftIds}
                   initialOptions={tab.processingOptions as ProductProcessingOptions | undefined}
                   onOpenPrecheck={openProcessingPrecheck}
                 />

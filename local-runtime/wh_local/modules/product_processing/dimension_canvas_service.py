@@ -99,7 +99,7 @@ class DimensionCanvasService:
 
     def importable_tasks(self, *, workspace_id: str) -> list[dict[str, Any]]:
         allowed = {"completed", "failed", "partial_failure", "completed_with_attention"}
-        tasks = self.product_repository.list_tasks(200, workspace_id)
+        tasks, _total = self.product_repository.list_tasks(200, workspace_id)
         return [
             {
                 "id": task["id"],

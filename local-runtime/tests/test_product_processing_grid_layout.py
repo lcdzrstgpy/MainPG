@@ -10,6 +10,7 @@ from wh_local.modules.product_processing.infrastructure.grid_layout import (
     GridLayoutError,
     GridSplitGuides,
     build_grid_scaffold,
+    center_split_guides,
     extract_grid_panels,
     locate_split_guides,
     validate_panel_independence,
@@ -76,6 +77,26 @@ def test_panel_with_internal_long_divider_is_rejected() -> None:
     panel.paste((244, 244, 244), (164, 0, 170, 1016))
     with pytest.raises(GridLayoutError, match="internal divider"):
         validate_panel_independence(panel)
+
+
+def test_center_split_guides_fall_back_to_exact_center() -> None:
+    content = _grid()
+    guides = center_split_guides(content)
+    assert guides == GridSplitGuides(1024, 1025, 1024, 1025, "adaptive")
+
+
+def test_no_divider_grid_splits_at_center_with_independent_panels() -> None:
+    # 无分隔线证据的 2K 图：回退正中切分后四个面板各自独立，可正常出图。
+    image = Image.new("RGB", (2048, 2048), (210, 30, 30))
+    image.paste((30, 180, 50), (1024, 0, 2048, 1024))
+    image.paste((30, 70, 210), (0, 1024, 1024, 2048))
+    image.paste((220, 180, 30), (1024, 1024, 2048, 2048))
+    with pytest.raises(GridLayoutError, match="four-grid dividers"):
+        locate_split_guides(_png(image))
+    guides = center_split_guides(_png(image))
+    panels = extract_grid_panels(_png(image), guides)
+    assert len(panels) == 4
+    assert all(panel.size[0] == panel.size[1] and 1023 <= panel.size[0] <= 1024 for panel in panels)
 
 
 def test_normal_panel_with_product_edges_is_not_rejected() -> None:

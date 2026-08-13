@@ -60,7 +60,7 @@ from .infrastructure.preview_image_repository import (
     PreviewRevisionConflict,
 )
 from .preview_image_service import PreviewImageService
-from .provider_config import resolve_ai_provider
+from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai_provider
 
 _MEDIA_TYPES: tuple | None = None
 
@@ -201,6 +201,42 @@ class GridImageOutput:
         yield self.summary_url
 
 
+# 精品模式四个构图角色（对齐正常四宫格的 hero/detail/lifestyle/维度背景语义，
+# 但每张都是完整大图，细节保留度高于 1/4 面板）。
+_PREMIUM_PANEL_ROLES = [
+    (
+        "hero",
+        "Composition - Hero shot: show the complete sellable product or complete verified set; no cropped parts and "
+        "no partial stacking that hides quantity or structure. Product occupies 68%-82% of the frame with a balanced "
+        "marketplace hero composition. Place the product slightly off-center so it breathes; keep the full product "
+        "inside the safe area. Use side-backlight or premium commercial photography light and emphasize material, "
+        "structure, thickness, transparency, and edge details. Background clearly different from plain white.",
+    ),
+    (
+        "detail",
+        "Composition - Editorial/Detail shot: keep the complete product visible at 55%-70% of the frame, plus at most "
+        "one small inset close-up of a real detail (a pure macro crop without the complete product is forbidden). "
+        "Style options: Editorial, Modern Classic, Organic Modern, Art Deco, Coastal. Make it clearly different from "
+        "the hero shot in at least 3 of: background main color, surface material, angle, arrangement, props, lighting.",
+    ),
+    (
+        "lifestyle",
+        "Composition - Lifestyle scene: place the product in a real American home scene matching the SKU category "
+        "(living room, sunroom, Game Night, Brunch, etc.). You may add realistic adult hands (natural, no deformities), "
+        "cups, snacks, tablecloth, or plants; the product must stay sharp and exactly the original SKU. Lighting: "
+        "natural window light, afternoon side light, or warm home lighting that wraps the product in soft highlights. "
+        "Keep the complete product unobstructed and prominent.",
+    ),
+    (
+        "orthographic",
+        "Composition - Clean front, side, or top view: create an orthographic-style angle suitable for later "
+        "deterministic dimension annotation. Keep the complete product sharp and leave 12%-18% clear space around it. "
+        "Never render measurements, numbers, units, dimension lines, arrows, rulers, scales, labels, or size claims. "
+        "If no useful orthographic view is possible, create a clean alternate product angle with the same empty safe area.",
+    ),
+]
+
+
 def _as_bool(value: Any, *, default: bool = False) -> bool:
     """Coerce form/JSON booleans (including string 'true'/'false') into bool."""
     if isinstance(value, bool):
@@ -217,6 +253,20 @@ def _image_generation_count(value: Any, *, default: int = 4) -> int:
     except (TypeError, ValueError):
         return default
     return normalized if normalized in {1, 2, 4} else default
+
+
+def _max_concurrent_tasks() -> int:
+    """进程内最多同时执行的产品处理任务数（默认 1=任务串行排队）。
+
+    多任务并发（历史恢复任务 + 新提交任务）会在短时间窗口内向 AI 中转商
+    叠加打出大量请求，被供应商判定为攻击。任务串行不丢功能，只是排队。
+    """
+    raw = os.environ.get("WH_PRODUCT_MAX_CONCURRENT_TASKS", "")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 1
+    return max(1, min(value, 8))
 
 
 class ProductProcessingService:
@@ -236,6 +286,8 @@ class ProductProcessingService:
         self._submission_lock = threading.RLock()
         self._task_worker_lock = threading.Lock()
         self._task_workers: dict[tuple[str, int], threading.Thread] = {}
+        # 任务级串行闸门：限制同时执行的任务数，避免旧任务与新任务并发叠加打爆 AI 供应商。
+        self._task_execution_gate = threading.BoundedSemaphore(_max_concurrent_tasks())
         self.preview_images = PreviewImageService(
             PreviewImageRepository(repository.database),
             repository,
@@ -1682,6 +1734,11 @@ class ProductProcessingService:
             )
 
     def _execute_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
+        """任务执行统一入口：先过任务级串行闸门，避免多任务并发叠加打爆 AI 供应商。"""
+        with self._task_execution_gate:
+            return self._execute_task_impl(task_id, workspace_id)
+
+    def _execute_task_impl(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
         task = self._require_task(task_id, workspace_id)
         if task["status"] == "paused":
             return task
@@ -2042,6 +2099,9 @@ class ProductProcessingService:
             and "detail_images" in scope
             and _as_bool(settings.get("ai_media_opt_in"), default=True)
         )
+        # 精品模式：用户从草稿池勾选的「精品处理」链接，图片走 4 张独立完整单图
+        # （不裁剪、不分格，细节保留度更高），其余环节（标题/描述/详情图/导出）一致。
+        premium_mode = int(draft["id"]) in {int(x) for x in (settings.get("premium_draft_ids") or [])}
         vision_subject = ""
         vision_preliminary_title = ""
         combined_variant_translations: dict[str, str] = {}
@@ -2234,7 +2294,7 @@ class ProductProcessingService:
                     "result": {
                         "error_type": "description_content_unavailable",
                         "failure_class": "technical_retryable",
-                        "operator_hint": "未获得任何可用的英文产品介绍；系统已尝试修复，请重新处理",
+                        "operator_hint": "描述仅需为英文要点且不重复（已阻止空/占位/含中文描述进入店小秘）",
                         "retryable": True,
                         "ai_notes": ai_notes,
                         "provider_attempts": provider_attempts,
@@ -2284,7 +2344,7 @@ class ProductProcessingService:
 
             media_executor = ThreadPoolExecutor(max_workers=1)
             media_stage_started = time.perf_counter()
-            if need_grid:
+            if need_grid and not premium_mode:
                 grid_future = media_executor.submit(
                     self._generate_grid_images,
                     task_id,
@@ -2301,7 +2361,7 @@ class ProductProcessingService:
                     image_generation_count=image_generation_count,
                     workspace_id=workspace_id,
                 )
-            else:
+            elif need_detail:
                 direct_detail_future = media_executor.submit(
                     self._generate_detail_images,
                     task_id,
@@ -2319,19 +2379,28 @@ class ProductProcessingService:
 
         # 变种属性值翻译（对齐原型 VARIANT_VALUE_TRANSLATION_PROMPT）：来源中文规格值 → 目标语言可读显示名。
         # combined 文本调用已并入翻译时直接复用（省一次独立 AI 调用）；否则按需单独调用。
+        # 尺寸/变种翻译均为独立 AI 调用，与下方图片编排并行执行，缩短单条流水线总耗时。
         variant_value_translations: dict[str, str] = {}
+        product_dimensions: dict[str, Any] = {}
+        side_pool: Any = None
+        side_futures: dict[str, Any] = {}
         if not preflight_only:
-            stage_started = time.perf_counter()
-            variant_values = self._unique_variant_values(raw)
-            missing_variant_values = [
-                value for value in variant_values if value not in combined_variant_translations
-            ]
+            from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+            side_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pp-side")
+            side_futures["_started"] = time.perf_counter()
             if combined_variant_translations:
                 variant_value_translations.update(combined_variant_translations)
                 ai_notes.append("variant_values:combined")
-            if missing_variant_values:
-                variant_value_translations.update(
-                    self._translate_variant_values(
+            else:
+                missing_variant_values = [
+                    value
+                    for value in self._unique_variant_values(raw)
+                    if value not in variant_value_translations
+                ]
+                if missing_variant_values:
+                    side_futures["variants"] = side_pool.submit(
+                        self._translate_variant_values,
                         raw,
                         optimized_title,
                         target_language,
@@ -2339,23 +2408,14 @@ class ProductProcessingService:
                         ai_notes,
                         only_values=missing_variant_values,
                     )
+            if "product_dimensions" in scope:
+                side_futures["dimensions"] = side_pool.submit(
+                    self._generate_size,
+                    raw,
+                    optimized_title,
+                    category,
+                    ai_notes,
                 )
-            record_stage("variant_translation", stage_started)
-
-        if not preflight_only and "product_dimensions" in scope:
-            stage_started = time.perf_counter()
-            dimensions_complete = all(
-                self._number(product_dimensions.get(key)) not in (None, 0)
-                for key in ("length_cm", "width_cm", "height_cm", "weight_g")
-            )
-            if dimensions_complete:
-                ai_notes.append("product_dimensions:combined")
-            else:
-                repaired_dimensions = self._generate_size(
-                    raw, optimized_title, category, ai_notes
-                ) or {}
-                product_dimensions = {**product_dimensions, **repaired_dimensions}
-            record_stage("product_dimensions", stage_started)
         physical_dimensions = extract_physical_dimensions(raw).model_dump(mode="json")
 
         grid_image_paths: list[str] = []
@@ -2365,7 +2425,23 @@ class ProductProcessingService:
         # 图片编排：按用户选定的 1 / 2 / 4 次调用，始终凑齐四张轮播图；
         # 详情图优先由轮播图本地合成，只有本地合成不可用时才回退 AI 详情图生成。
         if need_grid:
-            if grid_future is not None:
+            if premium_mode:
+                stage_started = time.perf_counter()
+                grid_output = self._generate_premium_images(
+                    task_id,
+                    draft["id"],
+                    raw,
+                    optimized_title,
+                    category,
+                    source_image_urls,
+                    target_language,
+                    target_site,
+                    ai_notes,
+                    vision_subject,
+                    workspace_id=workspace_id,
+                )
+                record_stage("grid_pipeline", stage_started)
+            elif grid_future is not None:
                 try:
                     grid_output = grid_future.result()
                 finally:
@@ -2398,36 +2474,13 @@ class ProductProcessingService:
             provider_status_classes["four_grid"] = grid_output.provider_status_class
             stage_timings_ms.update(grid_output.stage_timings_ms)
             if not grid_image_paths:
-                image_note_key = "four_grid" if image_generation_count == 4 else "image_set"
-                reason = next(
-                    (
-                        note.split(":ai-failed: ", 1)[-1]
-                        for note in reversed(ai_notes)
-                        if note.startswith(f"{image_note_key}:ai-failed:")
-                    ),
-                    "生成图未凑齐四张可用轮播图",
+                # 质量门/拆图失败不再阻断（用户要求）：回退来源图继续走完流水线，
+                # 预审环节可人工修正图片/信息；失败原因留痕便于复核。
+                ai_notes.append(
+                    "premium_images:force_import_acknowledged"
+                    if premium_mode
+                    else "four_grid:force_import_acknowledged"
                 )
-                return {
-                    **item,
-                    "title": optimized_title,
-                    "image_url": image_url,
-                    "status": "attention_required",
-                    "reason": reason,
-                    "result": {
-                        "error_type": "four_grid_quality_failed" if image_generation_count == 4 else "image_set_generation_failed",
-                        "failure_class": "technical_retryable",
-                        "operator_hint": (
-                            "四宫格含跨区内容、显著 AI 文字或分辨率不合格，已阻止写入店小秘；请切换为单图×4或重试图片阶段"
-                            if image_generation_count == 4
-                            else "单图/双图模式未生成完整四张轮播图；系统已只补失败槽位，请重试图片阶段"
-                        ),
-                        "retryable": True,
-                        "ai_notes": ai_notes,
-                        "provider_attempts": provider_attempts,
-                        "provider_status_classes": provider_status_classes,
-                        "stage_timings_ms": timing_snapshot(),
-                    },
-                }
         if need_detail:
             if grid_image_paths:
                 stage_started = time.perf_counter()
@@ -2469,9 +2522,31 @@ class ProductProcessingService:
                     )
                     record_stage("detail_generation", stage_started)
         if grid_image_paths:
-            ai_notes.append(f"image_set:{image_generation_count}:ai")
+            ai_notes.append(
+                "premium_images:ai"
+                if premium_mode
+                else f"image_set:{image_generation_count}:ai"
+            )
         if detail_image_paths:
             ai_notes.append("detail_images:ai")
+
+        # 收集并行侧任务结果（图片编排期间尺寸/变种翻译早已完成，此处通常无等待）
+        try:
+            if "variants" in side_futures:
+                try:
+                    variant_value_translations = side_futures["variants"].result() or {}
+                except Exception:
+                    variant_value_translations = {}
+                record_stage("variant_translation", side_futures["_started"])
+            if "dimensions" in side_futures:
+                try:
+                    product_dimensions = side_futures["dimensions"].result() or {}
+                except Exception:
+                    product_dimensions = {}
+                record_stage("product_dimensions", side_futures["_started"])
+        finally:
+            if side_pool is not None:
+                side_pool.shutdown(wait=True)
 
         image_manifest: list[dict[str, str]] = []
         image_roles = (
@@ -3285,6 +3360,148 @@ class ProductProcessingService:
             grid_timings_ms,
         )
 
+    def _generate_premium_images(
+        self,
+        task_id: int,
+        draft_id: int,
+        raw: dict[str, Any],
+        optimized_title: str,
+        category: str,
+        reference_urls: list[str],
+        target_language: str,
+        target_site: str,
+        ai_notes: list[str] | None = None,
+        vision_subject: str = "",
+        workspace_id: str = "local",
+    ) -> GridImageOutput:
+        """精品模式：分 4 次并行生成 4 张独立完整单图（不裁剪、不分割）。
+
+        每一张对应正常四宫格的 hero/detail/lifestyle/维度背景四个构图角色，但均为
+        完整大图，细节保留度高于 1/4 面板；提示词沿用正常模式的质感/字体/安全规则
+        （仅把「2x2 网格」换成「单张完整图」）。任一张失败则整组失败，与四宫格一致。
+        """
+        if not _ai_enabled() or not reference_urls:
+            return GridImageOutput()
+        media_types = _media_types()
+        if not media_types:
+            return GridImageOutput()
+        _, media_config_error, media_error = media_types
+        processor = self._media_processor()
+        # 精品模式 1K 出图：单张 1024×1024（gpt-image-2-1k，速度快、成本低）；四宫格才用 2K。
+        premium_image_model = PREMIUM_IMAGE_MODEL
+        premium_image_size = PREMIUM_IMAGE_SIZE
+        try:
+            _image_cfg = (self._media_config_provider().get("image") or {})
+            premium_image_model = str(_image_cfg.get("premium_image_model") or "").strip() or PREMIUM_IMAGE_MODEL
+            premium_image_size = str(_image_cfg.get("premium_image_size") or "").strip() or PREMIUM_IMAGE_SIZE
+        except Exception:
+            pass
+        template = self._effective_prompt("premium_image")
+        contracted = apply_language_contract_to_prompt(template, "premium_image", target_language, target_site)
+        context = listing_prompt_context(raw, title=optimized_title, category=category)
+        if vision_subject:
+            context["product_visual_identity"] = vision_subject
+        reference = select_image_reference(raw, title=optimized_title, category=category)
+        base_prompt = append_content_reference(contracted, reference, kind="image")
+        self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
+        attempt_count = 0
+        provider_status_class = ""
+        timings_ms: dict[str, int] = {}
+
+        def _clean(value: Any) -> Any:
+            """OCR 质量门（软性）：仅中文检出触发定向重绘（最多 N 轮，默认 1 轮）；
+            显著 AI 文字/产品印刷大字符（prominent）不重绘——重绘提示词要求保留产品设计，
+            对这类字符大概率无效且每次重绘都是一次完整生图（分钟级），直接放行留痕省时间。"""
+            if not ocr_gate_enabled():
+                return value
+            inspection = inspect_visible_text(value.content)
+            if inspection is None:
+                return value
+            reparables = list(dict.fromkeys(inspection.get("chinese", [])))
+            others = list(dict.fromkeys(inspection.get("prominent", [])))
+            rounds = 0
+            while reparables and rounds < max_repair_rounds():
+                rounds += 1
+                try:
+                    value = processor.repair_generated(
+                        stage="premium_image",
+                        prompt=self._effective_prompt("image_repair_chinese"),
+                        prior_content=value.content,
+                        prior_content_type=value.content_type,
+                        reference_values=reference_urls,
+                        image_size=premium_image_size,
+                        model=premium_image_model,
+                    )
+                except (media_config_error, media_error, ValueError, OSError) as exc:
+                    if ai_notes is not None:
+                        ai_notes.append("premium_images:chinese_repair_failed")
+                    break
+                inspection = inspect_visible_text(value.content) or {}
+                reparables = list(dict.fromkeys(inspection.get("chinese", [])))
+                others = list(dict.fromkeys(inspection.get("prominent", [])))
+            if ai_notes is not None:
+                note = "premium_images:chinese_unresolved" if (reparables or others) else "premium_images:ocr_passed"
+                if note not in ai_notes:
+                    ai_notes.append(note)
+            return value
+
+        def _render_one(role: str, role_instruction: str) -> Any:
+            nonlocal attempt_count, provider_status_class
+            prompt = format_prompt(base_prompt, title=optimized_title, panel_role=role_instruction, **context)
+            stage_started = time.perf_counter()
+            try:
+                media = processor.generate(
+                    stage="premium_image",
+                    prompt=prompt,
+                    reference_values=reference_urls,
+                    image_size=premium_image_size,
+                    model_override=premium_image_model,
+                )
+            finally:
+                timings_ms[f"premium_{role}_ms"] = max(0, round((time.perf_counter() - stage_started) * 1000))
+            attempt_count += max(0, int(getattr(media, "attempt_count", 1) or 1))
+            status = str(getattr(media, "provider_status_class", "success") or "success")
+            if provider_status_class in ("", "success"):
+                provider_status_class = status
+            return _clean(media)
+
+        results: dict[str, Any] = {}
+        errors: list[str] = []
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="pp-premium") as pool:
+            futures = {
+                pool.submit(_render_one, role, instruction): role for role, instruction in _PREMIUM_PANEL_ROLES
+            }
+            for future in as_completed(futures):
+                role = futures[future]
+                try:
+                    results[role] = future.result()
+                except (media_config_error, media_error, ValueError, OSError) as exc:
+                    errors.append(f"{role}: {_ai_error_reason(exc)}")
+        if errors or len(results) != len(_PREMIUM_PANEL_ROLES):
+            if ai_notes is not None:
+                self._note_ai_failure(
+                    ai_notes, "premium_images", "; ".join(errors) or "premium image generation failed"
+                )
+            return GridImageOutput(
+                attempt_count=attempt_count,
+                provider_status_class=provider_status_class or "failed",
+                stage_timings_ms=timings_ms,
+            )
+        parts = [results[role] for role, _ in _PREMIUM_PANEL_ROLES]
+        persist_started = time.perf_counter()
+        published = self._persist_media_for_preview(parts, task_id, draft_id, workspace_id)
+        timings_ms["persist_ms"] = max(0, round((time.perf_counter() - persist_started) * 1000))
+        return GridImageOutput(
+            tuple(str(value) for value in published),
+            "",
+            tuple(parts),
+            attempt_count,
+            provider_status_class or "success",
+            timings_ms,
+        )
+
     def _generate_detail_images(
         self,
         task_id: int,
@@ -3575,43 +3792,46 @@ class ProductProcessingService:
         *,
         allow_paid_repair: bool = True,
     ) -> Any:
-        """Run deterministic text/structure gates, repair once on failure, then revalidate."""
-        # 四宫格会直接进入店小秘，运行环境开关不得绕过显著文字门。
-        if note_key != "four_grid" and not ocr_gate_enabled():
+        """Run deterministic text/structure gates, repair once on failure, then revalidate.
+
+        质量门为软性：检出问题先尝试定向重绘，仍不合格只留痕（quality_unresolved），
+        不阻断流水线——图片整组失败时由 _process_one 回退来源图继续（用户要求不再卡流程）。
+        """
+        if not ocr_gate_enabled():
             return media
         media_types = _media_types()
         if not media_types:
-            if note_key == "four_grid":
-                raise ValueError("四宫格确定性质检不可用")
             return media
         _, media_config_error, media_error = media_types
 
-        def inspect(value: Any) -> list[str]:
+        def inspect(value: Any) -> tuple[list[str], list[str]]:
+            """返回 (可重绘问题, 不可重绘问题)。中文走重绘；显著 AI 文字/产品印刷大字符、
+            结构问题不重绘（重绘大概率无效且烧时间），直接放行留痕。"""
             inspection = inspect_visible_text(value.content)
             if inspection is None:
-                if note_key == "four_grid":
-                    raise ValueError("四宫格 OCR 质量门不可用，已阻止未验证生成图")
-                return []
-            found = list(inspection["chinese"])
+                return [], []
+            reparables = list(dict.fromkeys(inspection["chinese"]))
+            others: list[str] = []
             if note_key == "four_grid":
-                found.extend(inspection["prominent"])
+                others.extend(inspection["prominent"])
                 try:
                     processor.validate_four_grid(value)
                 except (media_config_error, media_error, ValueError, OSError):
-                    found.append("grid_structure_invalid")
-            return list(dict.fromkeys(found))
+                    others.append("grid_structure_invalid")
+            return reparables, list(dict.fromkeys(others))
 
-        found = inspect(media)
-        if not found:
+        reparables, others = inspect(media)
+        if not reparables and not others:
             if ai_notes is not None:
                 ai_notes.append(f"{note_key}:ocr_passed")
             return media
-        if not allow_paid_repair:
+        if not allow_paid_repair or not reparables:
+            # 仅不可重绘问题（产品印刷字符/结构/横幅）或禁用重绘：留痕放行，不阻断
             if ai_notes is not None:
                 ai_notes.append(f"{note_key}:quality_unresolved")
-            raise ValueError("四宫格未通过文字、结构或独立性质量门；B 模板已停止付费重绘")
+            return media
         rounds = 0
-        while found and rounds < max_repair_rounds():
+        while reparables and rounds < max_repair_rounds():
             rounds += 1
             try:
                 media = processor.repair_generated(
@@ -3626,17 +3846,13 @@ class ProductProcessingService:
             except (media_config_error, media_error, ValueError, OSError) as exc:
                 if ai_notes is not None:
                     ai_notes.append(f"{note_key}:quality_repair_failed")
-                if note_key == "four_grid":
-                    raise ValueError("四宫格文字或结构修复失败") from exc
                 return media
-            found = inspect(media)
+            reparables, others = inspect(media)
         if ai_notes is not None:
-            if found:
+            if reparables or others:
                 ai_notes.append(f"{note_key}:quality_unresolved")
             else:
                 ai_notes.append(f"{note_key}:quality_repaired")
-        if found and note_key == "four_grid":
-            raise ValueError("四宫格仍含显著 AI 文字或无有效中心分隔，已阻止拆图")
         return media
 
     def _effective_prompt(self, key: str) -> str:
@@ -4187,6 +4403,9 @@ class ProductProcessingService:
                 # 图片模型池：同中转多模型轮巡（对齐原型 _provider_order 游标轮巡）
                 "image_models": list(provider.get("image_models") or ()),
                 "image_size": provider.get("image_size") or "2048x2048",
+                # 精品模式 1K 出图：单张 1024×1024，速度快、成本低（只有四宫格才用 2K）
+                "premium_image_model": provider.get("premium_image_model") or PREMIUM_IMAGE_MODEL,
+                "premium_image_size": provider.get("premium_image_size") or PREMIUM_IMAGE_SIZE,
             }
         # COS 图床：gitignored 本地配置 cos.local.json 优先，环境变量 WH_COS_* 可覆盖。
         # 对齐原型出图保存逻辑——生成图上传 COS 转外链后写进导入表，店小秘可直接读取。

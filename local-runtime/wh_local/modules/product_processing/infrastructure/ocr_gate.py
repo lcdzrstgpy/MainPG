@@ -6,8 +6,8 @@ OCR 是后置验证器，不是第一变换器（§15 确定性验证 → AI 修
 
 开关与配置：
 - ``WH_PRODUCT_OCR_GATE=0`` 仅关闭兼容详情图质检；生产四宫格始终 fail-closed；
-- ``WH_PRODUCT_OCR_MAX_REPAIRS`` 控制最大重绘轮数（默认 1，对齐原项目 five-stage 的
-  ``max_grid_attempts=1``：检出中文最多定向重绘一轮，避免图像 API 被反复消耗）。
+- ``WH_PRODUCT_OCR_MAX_REPAIRS`` 控制最大重绘轮数（默认 2：首轮失败后允许再重绘一次，
+  覆盖「产品本体印刷中文/字符」等难以一次修净的场景）。
 
 OCR 库未安装或推理失败时返回 ``None``，表示"无法判断"，调用方跳过质检、不阻断流水线。
 """
@@ -136,10 +136,14 @@ def inspect_visible_text(content: bytes) -> dict[str, list[str]] | None:
         searchable = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff]+", "", text)
         width_ratio = box_width / max(width, 1)
         height_ratio = box_height / max(height, 1)
+        # 显著文字只拦「跨面板海报横幅级」超大排版（高度≥8% 且宽度≥30%，或高度≥12%）。
+        # 单面板内的产品印刷标记（牌面数字/字母、型号、花纹）宽度通常 < 25%，
+        # 即便字大也不会命中，避免把产品本体设计误判为 AI 文字导致重绘死循环；
+        # 中文仍由 chinese 硬拦截，不在此处放宽。
         if (
-            len(searchable) >= 6 and height_ratio >= 0.025 and width_ratio >= 0.08
+            len(searchable) >= 6 and height_ratio >= 0.08 and width_ratio >= 0.30
         ) or (
-            len(searchable) >= 3 and (width_ratio >= 0.22 or height_ratio >= 0.06)
+            len(searchable) >= 6 and height_ratio >= 0.12
         ):
             prominent.append(text)
     return {"chinese": chinese, "prominent": prominent}

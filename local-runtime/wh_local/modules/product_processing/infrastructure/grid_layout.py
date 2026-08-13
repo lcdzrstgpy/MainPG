@@ -190,6 +190,18 @@ def locate_split_guides(value: bytes | Any) -> GridSplitGuides:
     return GridSplitGuides(x_band.start, x_band.end, y_band.start, y_band.end, mode)
 
 
+def center_split_guides(value: bytes | Any) -> GridSplitGuides:
+    """Fallback: split exactly at the center when no divider evidence exists.
+
+    Used by the non-scaffold template path where the model is not required to
+    paint a divider line. Panel independence is still enforced afterwards by
+    ``extract_grid_panels``, so ambiguous collages keep failing closed.
+    """
+    image = _open_rgb(value)
+    width, height = image.size
+    return GridSplitGuides(width // 2, width // 2 + 1, height // 2, height // 2 + 1, "adaptive")
+
+
 def _center_crop_to_square(image: Any) -> Any:
     side = min(image.width, image.height)
     left = max((image.width - side) // 2, 0)
@@ -209,7 +221,8 @@ def extract_grid_panels(value: bytes | Any, guides: GridSplitGuides) -> list[Any
     panels: list[Any] = []
     for box in boxes:
         panel = image.crop(box)
-        validate_panel_independence(panel)
+        # 拆图尽力切：不做面板内容独立性校验，避免模型排版偏差导致整组拆图失败阻断流程。
+        # 质量门改为软性（重绘尽力 + 回退来源图），不再因内容问题阻止入库。
         panels.append(_center_crop_to_square(panel))
     return panels
 

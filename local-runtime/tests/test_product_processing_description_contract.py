@@ -22,55 +22,49 @@ def test_valid_five_points_are_normalized_without_rewriting_content() -> None:
     assert all(line.startswith("- ") for line in normalized.splitlines())
 
 
-def test_presentation_only_heading_variants_are_canonicalized_locally() -> None:
-    lines = []
-    for index, line in enumerate(normalize_five_point_description(VALID).splitlines(), start=1):
-        content = line.removeprefix("- ")
-        heading, body = content.split(":", maxsplit=1)
-        lines.append(f"{index}. **{heading.title()}**：{body.strip()}")
-
-    normalized = normalize_five_point_description("\n".join(lines))
-
-    assert normalized == normalize_five_point_description(VALID)
+def test_four_points_with_mixed_case_headings_are_accepted() -> None:
+    """适当放松：少于 5 条 + 非全大写标题不再判失败。"""
+    four = "\n".join(VALID.splitlines()[:4]).replace("VERIFIED SOLID BUILD", "Verified Solid Build")
+    normalized = normalize_five_point_description(four)
+    assert normalized.count("\n") == 3
+    assert normalized.startswith("- Verified Solid Build: ")
 
 
-def test_partial_points_and_short_copy_are_preserved_instead_of_rejected() -> None:
-    partial = """- Compact Shape: Easy to place on a desk.
-- Daily Use: Suitable for ordinary routines."""
-
-    normalized = normalize_five_point_description(partial)
-
-    assert normalized.splitlines() == [
-        "- COMPACT SHAPE: Easy to place on a desk.",
-        "- DAILY USE: Suitable for ordinary routines.",
-    ]
+def test_three_points_are_accepted() -> None:
+    normalized = normalize_five_point_description("\n".join(VALID.splitlines()[:3]))
+    assert normalized.count("\n") == 2
 
 
-def test_plain_sentences_are_kept_and_extra_points_are_capped_at_five() -> None:
-    value = "\n".join(
+def test_points_without_heading_separators_are_accepted() -> None:
+    """适当放松：无标题分隔符的纯要点行也接受（不再强制 heading: body 结构）。"""
+    plain = "\n".join(
         [
-            "A compact shape fits easily into ordinary storage spaces.",
-            "- VISIBLE FINISH: The smooth blue surface matches the supplied image.",
-            "- SIMPLE HANDLING: The lightweight form is easy to move.",
-            "- DAILY USE: Designed for ordinary everyday routines.",
-            "- NEAT DISPLAY: The clean outline keeps the product easy to recognize.",
-            "- EXTRA DETAIL: This sixth line should not be exported.",
+            "First selling point is about the sturdy construction used for regular sessions.",
+            "Second point covers the comfortable square surface for tile placement at home.",
+            "Third point mentions the practical table coverage for relaxed game nights.",
+            "Fourth point describes simple daily handling after the play area is cleared.",
         ]
     )
+    normalized = normalize_five_point_description(plain)
+    assert normalized.count("\n") == 3
+    assert all(line.startswith("- ") for line in normalized.splitlines())
 
-    normalized = normalize_five_point_description(value)
 
-    assert len(normalized.splitlines()) == 5
-    assert normalized.startswith("- PRODUCT DETAIL 1: A compact shape")
-    assert "sixth line" not in normalized
+def test_two_points_are_accepted_after_loosening() -> None:
+    """最简校验：行数/词数不再限制，2 条也接受。"""
+    two = "\n".join(VALID.splitlines()[:2])
+    normalized = normalize_five_point_description(two)
+    assert normalized.count("\n") == 1
+    assert all(line.startswith("- ") for line in normalized.splitlines())
 
 
 @pytest.mark.parametrize(
     ("value", "message"),
     [
-        (VALID.replace("regular tabletop sessions", "日常桌面游戏"), "English"),
-        (VALID.replace("The confirmed construction", "Source information preserved for operator review. The confirmed construction"), "internal fallback"),
         ("", "at least one usable"),
+        (VALID.replace("regular tabletop sessions", "日常桌面游戏"), "English"),
+        (VALID.replace(VALID.splitlines()[4], VALID.splitlines()[0]), "distinct"),
+        (VALID.replace("The confirmed construction", "Source information preserved for operator review. The confirmed construction"), "internal fallback"),
     ],
 )
 def test_invalid_descriptions_are_rejected(value: str, message: str) -> None:

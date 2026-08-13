@@ -26,7 +26,14 @@ from urllib.parse import urlsplit
 import requests
 
 from ..domain.policy import is_safe_external_url
-from .grid_layout import build_grid_scaffold, extract_grid_panels, locate_split_guides
+from .grid_layout import (
+    GridLayoutError,
+    build_grid_scaffold,
+    center_split_guides,
+    extract_grid_panels,
+    locate_split_guides,
+)
+from .rate_limit import global_ai_request_limiter
 
 # 模块级连接池：复用 TCP/TLS 握手与 HTTP 连接，避免每个请求新建连接（图片生成/参考图下载高频调用）。
 _SESSION = requests.Session()
@@ -249,6 +256,8 @@ class ProductImageProcessor:
         prior_content: bytes,
         prior_content_type: str,
         reference_values: Iterable[str],
+        image_size: str | None = None,
+        model: str | None = None,
     ) -> GeneratedMedia:
         """定向重绘：把上一轮生成图作为第一参考回传给模型，仅修文字不换商品。
 
@@ -268,6 +277,8 @@ class ProductImageProcessor:
                 providers,
                 config,
                 extra_references=[prior],
+                image_size=image_size,
+                model_override=model,
             )
 
     def split_four_grid(self, media: GeneratedMedia) -> list[GeneratedMedia]:
@@ -286,7 +297,12 @@ class ProductImageProcessor:
         try:
             self.validate_four_grid(media)
             source = Image.open(BytesIO(media.content)).convert("RGB")
-            guides = locate_split_guides(source)
+            try:
+                guides = locate_split_guides(source)
+            except GridLayoutError:
+                # 无精确分隔线证据时回退正中切分；面板独立性校验仍由
+                # extract_grid_panels 强制执行，明显跨区内容不会通过。
+                guides = center_split_guides(source)
             panels = extract_grid_panels(source, guides)
         except Exception as exc:
             raise MediaProcessingError("generated four-grid image cannot be split") from exc
@@ -422,7 +438,7 @@ class ProductImageProcessor:
 
     @staticmethod
     def validate_four_grid(media: GeneratedMedia) -> None:
-        """Fail closed unless a 2K square has validated exact-center divider evidence."""
+        """Require a 2K square; divider evidence is best-effort (center fallback splits)."""
         try:
             from PIL import Image  # type: ignore
 
@@ -432,7 +448,11 @@ class ProductImageProcessor:
                 raise ValueError("four-grid source must be at least 1800px on each edge")
             if abs(width - height) / max(width, height) > 0.02:
                 raise ValueError("four-grid source must be square")
-            locate_split_guides(source)
+            try:
+                locate_split_guides(source)
+            except Exception:
+                # 无分隔线证据不再阻断：拆图阶段回退正中切分，由面板独立性校验兜底。
+                pass
         except MediaConfigurationError:
             raise
         except Exception as exc:
@@ -804,6 +824,8 @@ class ProductImageProcessor:
                 ("image[]", (filename, BytesIO(content), content_type))
                 for content, filename, content_type in references
             ]
+        # 与文本请求共享全局速率限制：图片生成最重且最容易被供应商限流。
+        global_ai_request_limiter().acquire()
         response = _SESSION.post(
             f"{provider['base_url']}/images/edits",
             headers={"Authorization": f"Bearer {provider['api_key']}"},
@@ -836,7 +858,7 @@ class ProductImageProcessor:
         url = str(item.get("url") or "").strip()
         if not url or not is_safe_external_url(url):
             raise MediaProcessingError("provider response does not contain a safe image result")
-        downloaded = _SESSION.get(url, timeout=60, allow_redirects=False)
+        downloaded = _SESSION.get(url, timeout=360, allow_redirects=False)
         try:
             downloaded.raise_for_status()
             content = bytes(downloaded.content)

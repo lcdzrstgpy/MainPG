@@ -552,3 +552,60 @@ def test_dimension_repair_runs_in_parallel_with_grid_generation(monkeypatch) -> 
 
     assert result["status"] == "completed"
     assert result["result"]["product_dimensions"]["weight_g"] == 300
+
+
+def test_process_grid_quality_failure_falls_back_to_source_images(monkeypatch) -> None:
+    """四宫格质量门/拆图失败默认不再阻断：回退来源图继续走完流水线（completed），
+    失败原因留痕 ai_notes，预审环节可人工修正。"""
+    service = _process_service(monkeypatch)
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(
+        service,
+        "_generate_combined_text",
+        lambda *args, **kwargs: {
+            "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
+            "description": VALID_DESCRIPTION,
+            "variant_translations": {},
+        },
+    )
+    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(),  # 空输出 = 质量门/拆图失败
+    )
+
+    result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
+
+    assert result["status"] == "completed"
+    assert result["result"]["carousel_image_paths"] == []  # 回退来源图
+    assert "four_grid:force_import_acknowledged" in result["result"]["ai_notes"]
+
+
+def test_process_force_import_bypasses_grid_quality_gate(monkeypatch) -> None:
+    """「我已知晓，仍要入库」：四宫格质量门失败不再阻断，回退来源图继续走完流水线，
+    失败原因留痕 ai_notes，预审环节可人工修正。"""
+    service = _process_service(monkeypatch)
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(
+        service,
+        "_generate_combined_text",
+        lambda *args, **kwargs: {
+            "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
+            "description": VALID_DESCRIPTION,
+            "variant_translations": {},
+        },
+    )
+    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(),  # 空输出 = 质量门失败
+    )
+
+    settings = {**_settings(), "force_import_draft_ids": [7]}
+    result = service._process_one({"id": 1}, _draft(), settings, False, task_id=12)
+
+    assert result["status"] == "completed"
+    assert result["result"]["carousel_image_paths"] == []  # 回退来源图
+    assert "four_grid:force_import_acknowledged" in result["result"]["ai_notes"]
