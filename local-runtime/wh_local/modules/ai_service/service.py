@@ -6,7 +6,7 @@ import json
 import re
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +166,7 @@ class AiService:
         return {"conversation_id": conversation_id, "title": _clean_title(title), "created_at": now}
 
     def list_conversations(self, actor: Actor, limit: int = 50) -> list[dict[str, Any]]:
+        self.purge_expired_conversations(actor)
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT conversation_id, title, updated_at
@@ -176,15 +177,42 @@ class AiService:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def purge_expired_conversations(self, actor: Actor, now: datetime | None = None) -> int:
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=7)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT conversation_id FROM ai_service_conversations
+                   WHERE workspace_id = ? AND owner_user_id = ? AND created_at < ?""",
+                (actor.workspace_id, actor.id, cutoff.isoformat(timespec="seconds")),
+            ).fetchall()
+        for row in rows:
+            self.delete_conversation(actor, row["conversation_id"])
+        return len(rows)
+
     def delete_conversation(self, actor: Actor, conversation_id: str) -> None:
         self._conversation(actor, conversation_id)
         with self._connect() as conn:
-            rows = conn.execute(
+            message_rows = conn.execute(
                 """SELECT asset_ids_json FROM ai_service_messages
                    WHERE conversation_id = ? AND workspace_id = ? AND owner_user_id = ?""",
                 (conversation_id, actor.workspace_id, actor.id),
             ).fetchall()
-            asset_ids = {asset_id for row in rows for asset_id in _asset_ids(row["asset_ids_json"])}
+            creation_rows = conn.execute(
+                """SELECT creation_id, output_asset_ids_json FROM ai_service_creations
+                   WHERE conversation_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (conversation_id, actor.workspace_id, actor.id),
+            ).fetchall()
+            pod_rows = conn.execute(
+                """SELECT groups.output_asset_ids_json FROM ai_service_pod_groups AS groups
+                   JOIN ai_service_creations AS creations ON creations.creation_id = groups.creation_id
+                   WHERE creations.conversation_id = ? AND creations.workspace_id = ? AND creations.owner_user_id = ?""",
+                (conversation_id, actor.workspace_id, actor.id),
+            ).fetchall()
+            asset_ids = {
+                asset_id
+                for row in [*message_rows, *creation_rows, *pod_rows]
+                for asset_id in _asset_ids(row["asset_ids_json"] if "asset_ids_json" in row.keys() else row["output_asset_ids_json"])
+            }
             assets = conn.execute(
                 """SELECT relative_path FROM ai_service_assets
                    WHERE workspace_id = ? AND owner_user_id = ? AND asset_id IN ({})""".format(
@@ -193,6 +221,12 @@ class AiService:
                 (actor.workspace_id, actor.id, *asset_ids),
             ).fetchall()
             conn.execute("DELETE FROM ai_service_messages WHERE conversation_id = ?", (conversation_id,))
+            conn.execute(
+                """DELETE FROM ai_service_pod_groups WHERE creation_id IN (
+                       SELECT creation_id FROM ai_service_creations WHERE conversation_id = ? AND workspace_id = ? AND owner_user_id = ?
+                   )""",
+                (conversation_id, actor.workspace_id, actor.id),
+            )
             conn.execute("DELETE FROM ai_service_creations WHERE conversation_id = ?", (conversation_id,))
             conn.execute("DELETE FROM ai_service_conversations WHERE conversation_id = ?", (conversation_id,))
             if asset_ids:

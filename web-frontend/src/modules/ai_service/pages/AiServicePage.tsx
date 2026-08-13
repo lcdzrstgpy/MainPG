@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ClipboardEvent, KeyboardEvent } from "react";
 
 import { generatedImageDownloadName } from "../data/assetDownload";
+import { pastedImageFile, shouldSendOnEnter } from "../data/chatComposerEvents";
 import { consumeComposerDraft } from "../data/composerDraft";
 import { modelsForMode } from "../data/modelCatalog";
 import type { AiConversation, AiCreationMode, AiCreationTemplate, AiMessage, AiPodJob } from "../types";
@@ -35,6 +37,7 @@ export function AiServicePage() {
   const [uploadedImageName, setUploadedImageName] = useState("");
   const [uploadedDocumentName, setUploadedDocumentName] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [remoteConversationId, setRemoteConversationId] = useState<string>();
   const [uploadedAssetId, setUploadedAssetId] = useState<string>();
   const [uploadedDocumentAssetId, setUploadedDocumentAssetId] = useState<string>();
@@ -46,6 +49,8 @@ export function AiServicePage() {
   const [podJob, setPodJob] = useState<AiPodJob>();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
+  const conversationFlowRef = useRef<HTMLDivElement>(null);
+  const imageUploadVersionRef = useRef(0);
   const objectUrlsRef = useRef(new Set<string>());
 
   const selectableModels = useMemo(() => modelsForMode(mode), [mode]);
@@ -70,6 +75,12 @@ export function AiServicePage() {
   }, [podJob?.creationId, podJob?.status]);
 
   useEffect(() => {
+    const flow = conversationFlowRef.current;
+    if (!flow) return;
+    flow.scrollTo({ top: flow.scrollHeight, behavior: "smooth" });
+  }, [messages, isGenerating, podJob]);
+
+  useEffect(() => {
     aiServiceApi.bootstrap().then((data) => {
       setRuntimeTemplates(data.templates.map((template, index) => ({
         ...template,
@@ -89,6 +100,8 @@ export function AiServicePage() {
   };
 
   const clearComposerAttachment = (revokePreview = false) => {
+    imageUploadVersionRef.current += 1;
+    setIsUploadingImage(false);
     if (revokePreview && uploadedImageUrl) {
       URL.revokeObjectURL(uploadedImageUrl);
       objectUrlsRef.current.delete(uploadedImageUrl);
@@ -107,6 +120,8 @@ export function AiServicePage() {
 
   const selectImage = async (file?: File) => {
     if (!file || !file.type.startsWith("image/")) return;
+    const uploadVersion = imageUploadVersionRef.current + 1;
+    imageUploadVersionRef.current = uploadVersion;
     if (uploadedImageUrl) {
       URL.revokeObjectURL(uploadedImageUrl);
       objectUrlsRef.current.delete(uploadedImageUrl);
@@ -117,11 +132,16 @@ export function AiServicePage() {
     setUploadedImageName(file.name);
     setUploadedAssetId(undefined);
     if (apiStatus !== "ready") return;
+    setIsUploadingImage(true);
     try {
       const asset = await aiServiceApi.uploadAsset(file);
+      if (imageUploadVersionRef.current !== uploadVersion) return;
       setUploadedAssetId(asset.asset_id);
     } catch (error) {
+      if (imageUploadVersionRef.current !== uploadVersion) return;
       setApiError(error instanceof Error ? error.message : "图片上传失败，已保留本地预览");
+    } finally {
+      if (imageUploadVersionRef.current === uploadVersion) setIsUploadingImage(false);
     }
   };
 
@@ -211,9 +231,23 @@ export function AiServicePage() {
     }
   };
 
+  const handleChatPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (mode !== "chat") return;
+    const image = pastedImageFile(event.clipboardData.items);
+    if (!image) return;
+    event.preventDefault();
+    void selectImage(image);
+  };
+
+  const handleChatKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mode !== "chat" || !shouldSendOnEnter(event.nativeEvent)) return;
+    event.preventDefault();
+    void generate();
+  };
+
   const generate = async () => {
     const content = prompt.trim();
-    if (!content || isGenerating) return;
+    if (!content || isGenerating || isUploadingImage) return;
     if (apiStatus !== "ready") {
       setApiError("本机 AI 服务尚未连接，无法发送创作请求。");
       return;
@@ -315,7 +349,7 @@ export function AiServicePage() {
         <div className="ai-mode-tabs" role="tablist" aria-label="创作模式">
           {(["chat", "generate", "edit", "pod"] as AiCreationMode[]).map((item) => <button key={item} type="button" className={mode === item ? "is-active" : ""} onClick={() => setMode(item)} role="tab" aria-selected={mode === item}><span className={`iconfont ${modeIcon(item)}`} aria-hidden="true" /> {modeLabels[item]}</button>)}
         </div>
-        <div className={`ai-conversation-flow ${messages.length ? "has-messages" : ""}`}>
+        <div ref={conversationFlowRef} className={`ai-conversation-flow ${messages.length ? "has-messages" : ""}`}>
           {!messages.length && <EmptyCreationState mode={mode} />}
           {messages.map((message) => <article key={message.id} className={`ai-message ai-message-${message.role}`}><span className={`ai-message-avatar iconfont ${message.role === "assistant" ? "icon-robot-fill" : "icon-user"}`} aria-hidden="true" /><div className="ai-message-body"><p>{message.content}</p>{message.uploadedImageUrl && <img className="ai-uploaded-in-message" src={message.uploadedImageUrl} alt="用户上传图片" />}{message.uploadedDocumentName && <div className="ai-document-in-message"><span className="iconfont icon-file" aria-hidden="true" />已附本地资料：{message.uploadedDocumentName}</div>}{message.generatedImageGroups && <GeneratedAssetCards groups={message.generatedImageGroups} />}{message.generatedImageUrls && <GeneratedAssetCards imageUrls={message.generatedImageUrls} />}</div></article>)}
           {podJob && <PodJobCard job={podJob} onRetry={retryPodGroup} />}
@@ -324,7 +358,7 @@ export function AiServicePage() {
         <div className="ai-composer-wrap">
           {uploadedImageUrl && <div className="ai-upload-preview"><img src={uploadedImageUrl} alt="待发送图片" /><div><b>{uploadedImageName}</b><span>{uploadedAssetId ? mode === "chat" ? "已保存到本机，将作为看图资料发送" : "已保存到本机，将作为商品主体参考图" : "正在保存到本机"}</span></div><button type="button" onClick={() => clearComposerAttachment(true)} aria-label="移除图片">×</button></div>}
           {mode === "chat" && uploadedDocumentName && <div className="ai-upload-preview ai-document-preview"><span className="iconfont icon-file" aria-hidden="true" /><div><b>{uploadedDocumentName}</b><span>{uploadedDocumentAssetId ? "已在本机解析，将作为资料发送" : "正在解析本地资料"}</span></div><button type="button" onClick={clearComposerDocument} aria-label="移除文件">×</button></div>}
-          <div className="ai-composer"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "输入问题；可附图片、资料文件或开启联网搜索…" : mode === "edit" ? "上传商品图，并描述想替换的背景或场景…" : mode === "pod" ? "描述商品、目标市场、卖点或尺寸；可附一张商品 / 设计参考图…" : "描述你想要创作的商品视觉…"} /><div className="ai-composer-actions"><div><input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(event) => void selectImage(event.target.files?.[0])} /><button type="button" className="ai-attach-button" onClick={() => fileInputRef.current?.click()}><span className="iconfont icon-image" /> 图片</button>{mode === "chat" && <><input ref={documentInputRef} type="file" accept=".txt,.csv,.xlsx,.docx" hidden onChange={(event) => void selectDocument(event.target.files?.[0])} /><button type="button" className="ai-attach-button" onClick={() => documentInputRef.current?.click()}><span className="iconfont icon-file" /> 文件</button><button type="button" className={`ai-search-toggle ${webSearchEnabled ? "is-on" : ""}`} onClick={() => setWebSearchEnabled((value) => !value)} title="联网搜索公开资料"><span className="iconfont icon-search" />联网搜索</button></>}<span className="ai-upload-hint">{mode === "chat" ? "图片与资料文件可同时附上" : mode === "pod" ? "可单独输入文字，也可附商品或设计图" : "上传商品图后开始创作"}</span></div><button type="button" className="ai-generate-button" disabled={!prompt.trim() || isGenerating || apiStatus !== "ready"} onClick={() => void generate()}>{mode === "chat" ? "发送" : mode === "pod" ? "生成 6 图" : "开始创作"}<span className="iconfont icon-arrowright" /></button></div></div>
+          <div className="ai-composer"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onPaste={handleChatPaste} onKeyDown={handleChatKeyDown} placeholder={mode === "chat" ? "输入问题；可附图片、资料文件或开启联网搜索…" : mode === "edit" ? "上传商品图，并描述想替换的背景或场景…" : mode === "pod" ? "描述商品、目标市场、卖点或尺寸；可附一张商品 / 设计参考图…" : "描述你想要创作的商品视觉…"} /><div className="ai-composer-actions"><div><input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(event) => void selectImage(event.target.files?.[0])} /><button type="button" className="ai-attach-button" onClick={() => fileInputRef.current?.click()}><span className="iconfont icon-image" /> 图片</button>{mode === "chat" && <><input ref={documentInputRef} type="file" accept=".txt,.csv,.xlsx,.docx" hidden onChange={(event) => void selectDocument(event.target.files?.[0])} /><button type="button" className="ai-attach-button" onClick={() => documentInputRef.current?.click()}><span className="iconfont icon-file" /> 文件</button><button type="button" className={`ai-search-toggle ${webSearchEnabled ? "is-on" : ""}`} onClick={() => setWebSearchEnabled((value) => !value)} title="联网搜索公开资料"><span className="iconfont icon-search" />联网搜索</button></>}<span className="ai-upload-hint">{mode === "chat" ? "图片与资料文件可同时附上" : mode === "pod" ? "可单独输入文字，也可附商品或设计图" : "上传商品图后开始创作"}</span></div><button type="button" className="ai-generate-button" disabled={!prompt.trim() || isGenerating || isUploadingImage || apiStatus !== "ready"} onClick={() => void generate()}>{mode === "chat" ? "发送" : mode === "pod" ? "生成 6 图" : "开始创作"}<span className="iconfont icon-arrowright" /></button></div></div>
         </div>
         {apiError && <p className="ai-api-error" role="alert">{apiError}</p>}
       </main>
