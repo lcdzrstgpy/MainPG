@@ -194,7 +194,16 @@ class DimensionRenderer:
         size = canvas.width
         start = _pixel_point(annotation.start, size)
         end = _pixel_point(annotation.end, size)
-        label_point = _pixel_point(annotation.label, size)
+        label = _format_dimension(annotation.value_cm, annotation.unit)
+        stroke_width = max(2, round(size * 0.0025))
+        label_point = _fit_label_inside_safe_margin(
+            draw,
+            _pixel_point(annotation.label, size),
+            label,
+            font=font,
+            stroke_width=stroke_width,
+            size=size,
+        )
         color, contrast = _annotation_colors(canvas, label_point, annotation.style)
         line_width = max(4, round(size * 0.0045))
         arrow_length = max(18, round(size * 0.022))
@@ -218,23 +227,6 @@ class DimensionRenderer:
             fill=color,
         )
 
-        label = _format_dimension(annotation.value_cm, annotation.unit)
-        stroke_width = max(2, round(size * 0.0025))
-        bounds = draw.textbbox(
-            label_point,
-            label,
-            font=font,
-            anchor="mm",
-            stroke_width=stroke_width,
-        )
-        safe = round(size * _SAFE_MARGIN_RATIO)
-        if (
-            bounds[0] < safe
-            or bounds[1] < safe
-            or bounds[2] > size - safe
-            or bounds[3] > size - safe
-        ):
-            raise ValueError("dimension_label_outside_safe_margin")
         draw.text(
             label_point,
             label,
@@ -244,6 +236,49 @@ class DimensionRenderer:
             stroke_width=stroke_width,
             stroke_fill=contrast,
         )
+
+
+def _fit_label_inside_safe_margin(
+    draw: ImageDraw.ImageDraw,
+    point: tuple[int, int],
+    label: str,
+    *,
+    font: ImageFont.FreeTypeFont,
+    stroke_width: int,
+    size: int,
+) -> tuple[int, int]:
+    """Move only the label center by the minimum pixels needed for safe output."""
+
+    bounds = draw.textbbox(
+        point,
+        label,
+        font=font,
+        anchor="mm",
+        stroke_width=stroke_width,
+    )
+    safe = round(size * _SAFE_MARGIN_RATIO)
+    usable = size - (safe * 2)
+    if bounds[2] - bounds[0] > usable or bounds[3] - bounds[1] > usable:
+        raise ValueError("dimension_label_outside_safe_margin")
+
+    offset_x = max(safe - bounds[0], min(0, size - safe - bounds[2]))
+    offset_y = max(safe - bounds[1], min(0, size - safe - bounds[3]))
+    adjusted = point[0] + offset_x, point[1] + offset_y
+    adjusted_bounds = draw.textbbox(
+        adjusted,
+        label,
+        font=font,
+        anchor="mm",
+        stroke_width=stroke_width,
+    )
+    if (
+        adjusted_bounds[0] < safe
+        or adjusted_bounds[1] < safe
+        or adjusted_bounds[2] > size - safe
+        or adjusted_bounds[3] > size - safe
+    ):
+        raise ValueError("dimension_label_outside_safe_margin")
+    return adjusted
 
 
 def _pixel_point(point: tuple[float, float], size: int) -> tuple[int, int]:

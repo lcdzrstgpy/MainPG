@@ -1,4 +1,4 @@
-import { useRef, type WheelEvent } from "react";
+import { useEffect, useRef } from "react";
 
 import type { DimensionCanvasItem } from "../types/dimensionCanvas";
 
@@ -25,22 +25,46 @@ const STATE_LABELS: Record<string, string> = {
   skipped: "已跳过",
 };
 
-export function DimensionCanvasQueue({ items, activeItemId, onSelect, onPrevious, onNext, onRetryRender }: Props) {
-  const lastWheelAt = useRef(0);
+const RENDER_ERROR_LABELS: Record<string, string> = {
+  dimension_label_outside_safe_margin: "尺寸文字太靠边",
+  dimension_annotation_too_short: "尺寸线太短",
+  dimension_source_invalid: "底图不可用",
+};
 
-  const handleWheel = (event: WheelEvent<HTMLElement>) => {
-    if (Math.abs(event.deltaY) < 12) return;
-    event.preventDefault();
-    const now = Date.now();
-    if (now - lastWheelAt.current < 220) return;
-    lastWheelAt.current = now;
-    if (event.deltaY > 0) onNext();
-    else onPrevious();
-  };
+function itemStateLabel(item: DimensionCanvasItem): string {
+  const state = STATE_LABELS[item.state] ?? item.state;
+  if (item.state !== "render_retryable") return state;
+  const detail = RENDER_ERROR_LABELS[item.errorMessage];
+  return detail ? `${state} · ${detail}` : state;
+}
+
+export function DimensionCanvasQueue({ items, activeItemId, onSelect, onPrevious, onNext, onRetryRender }: Props) {
+  const queueRef = useRef<HTMLElement>(null);
+  const lastWheelAt = useRef(0);
+  const previousRef = useRef(onPrevious);
+  const nextRef = useRef(onNext);
+  previousRef.current = onPrevious;
+  nextRef.current = onNext;
+
+  useEffect(() => {
+    const queue = queueRef.current;
+    if (!queue) return;
+    const handleWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) < 12) return;
+      event.preventDefault();
+      const now = Date.now();
+      if (now - lastWheelAt.current < 220) return;
+      lastWheelAt.current = now;
+      if (event.deltaY > 0) nextRef.current();
+      else previousRef.current();
+    };
+    queue.addEventListener("wheel", handleWheel, { passive: false });
+    return () => queue.removeEventListener("wheel", handleWheel);
+  }, []);
 
   const activeIndex = Math.max(0, items.findIndex((item) => item.id === activeItemId));
   return (
-    <aside className="dimension-queue" onWheel={handleWheel} aria-label="商品队列">
+    <aside ref={queueRef} className="dimension-queue" aria-label="商品队列">
       <div className="dimension-queue-head">
         <div>
           <strong>商品队列</strong>
@@ -61,7 +85,7 @@ export function DimensionCanvasQueue({ items, activeItemId, onSelect, onPrevious
             <span className={`dimension-state-dot state-${item.state}`} aria-hidden="true" />
             <span className="dimension-queue-copy">
               <strong>{item.skc || `商品 #${item.productDraftId}`}</strong>
-              <small>{STATE_LABELS[item.state] ?? item.state}</small>
+              <small>{itemStateLabel(item)}</small>
             </span>
             {item.state === "render_retryable" && (
               <span

@@ -51,6 +51,26 @@ def test_renderer_outputs_crisp_2000_square() -> None:
     assert len(output.master_png_bytes) > len(source)
 
 
+def test_renderer_nudges_edge_label_inside_safe_margin() -> None:
+    request = DimensionRenderRequest(
+        source_bytes=_source_bytes(),
+        annotations=[
+            _length_annotation(
+                value_cm=13,
+                start=(0.94, 0.36),
+                end=(0.94, 0.74),
+                label=(0.9443, 0.50),
+            )
+        ],
+    )
+
+    output = DimensionRenderer().render(request)
+    rendered = Image.open(BytesIO(output.jpeg_bytes))
+
+    assert rendered.size == (2000, 2000)
+    assert output.content_hash
+
+
 @pytest.mark.parametrize(
     ("render_request", "error_code"),
     [
