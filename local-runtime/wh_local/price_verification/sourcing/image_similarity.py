@@ -20,19 +20,22 @@ from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from ...config import default_config
 from ...data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 from .distractor_suppression import suppress_distractors
+from .image_feature_cache import ImageFeatureCache
 
 
 IMAGE_SEARCH_RECALL_LIMIT = 60
 IMAGE_SIMILARITY_THRESHOLD = 0.50
 IMAGE_DISPLAY_LIMIT = 5
 IMAGE_SIMILARITY_METHOD = "local-phash-dhash-color-v1"
+IMAGE_FEATURE_CACHE_TTL_DAYS = 3
 _FETCH_TIMEOUT_SECONDS = 8.0
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
-# Image downloads are I/O-bound. Scale gently on faster machines while keeping
-# a conservative floor/cap so low-memory packaged clients remain responsive.
-_MAX_WORKERS = min(12, max(6, (os.cpu_count() or 2) * 2))
+# Two SKCs may now verify candidates concurrently. Keep each SKC at six image
+# workers or fewer so a packaged low-memory client is not flooded with threads.
+_MAX_WORKERS = min(6, max(2, os.cpu_count() or 2))
 
 
 ImageFetcher = Callable[[str], FetchedPublicImage]
@@ -53,9 +56,11 @@ def verify_visual_candidates(
     reference_image_url: str,
     candidates: Sequence[Mapping[str, Any]],
     *,
+    reference_content: bytes | None = None,
     fetcher: ImageFetcher | None = None,
     threshold: float = IMAGE_SIMILARITY_THRESHOLD,
     minimum_results: int = IMAGE_DISPLAY_LIMIT,
+    feature_cache: ImageFeatureCache | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Return scored candidates, filling to the required display count when possible.
 
@@ -65,6 +70,7 @@ def verify_visual_candidates(
     marked as fallbacks. Download/decode failures remain excluded.
     """
     active_fetcher = fetcher or _safe_fetch
+    reference_reused = reference_content is not None
     input_candidates = [dict(candidate) for candidate in candidates]
     audit: dict[str, Any] = {
         "method": IMAGE_SIMILARITY_METHOD,
@@ -75,13 +81,17 @@ def verify_visual_candidates(
         "rejected_count": 0,
         "unavailable_count": 0,
         "reference_available": False,
+        "reference_reused": reference_reused,
+        "feature_cache_hit_count": 0,
+        "feature_cache_miss_count": 0,
     }
     if not reference_image_url or not input_candidates:
         audit["unavailable_count"] = len(input_candidates)
         return [], audit
 
     try:
-        reference_content = active_fetcher(reference_image_url).content
+        if reference_content is None:
+            reference_content = active_fetcher(reference_image_url).content
         suppressed_content, distractor_audit = suppress_distractors(reference_content)
         # When suppression succeeds, do not keep the original dog/person-heavy
         # representation in the max-score pool; otherwise the distractor could
@@ -95,7 +105,8 @@ def verify_visual_candidates(
 
     passing: list[dict[str, Any]] = []
     fallback: list[dict[str, Any]] = []
-    results: dict[int, tuple[float, str] | None] = {}
+    results: dict[int, tuple[float, str, bool] | None] = {}
+    active_cache = feature_cache if feature_cache is not None else _default_feature_cache()
     with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(input_candidates))) as executor:
         futures = {
             executor.submit(
@@ -104,6 +115,7 @@ def verify_visual_candidates(
                 tuple(reference),
                 _candidate_image_url(candidate),
                 active_fetcher,
+                active_cache,
             ): index
             for index, candidate in enumerate(input_candidates)
         }
@@ -119,7 +131,8 @@ def verify_visual_candidates(
         if result is None:
             audit["unavailable_count"] += 1
             continue
-        score, method = result
+        score, method, cache_hit = result
+        audit["feature_cache_hit_count" if cache_hit else "feature_cache_miss_count"] += 1
         candidate["image_similarity_score"] = round(score, 4)
         candidate["image_similarity_method"] = method
         candidate["image_similarity_verified"] = score >= threshold
@@ -152,14 +165,27 @@ def _score_candidate(
     reference: tuple[_VisualFeatures, ...],
     candidate_url: str,
     fetcher: ImageFetcher,
-) -> tuple[float, str] | None:
+    feature_cache: ImageFeatureCache | None,
+) -> tuple[float, str, bool] | None:
     if not candidate_url:
         return None
     if _canonical_image_url(reference_url) == _canonical_image_url(candidate_url):
-        return 1.0, "exact-image-url"
-    candidate = _feature_variants(fetcher(candidate_url).content)
+        return 1.0, "exact-image-url", False
+    canonical_url = _canonical_image_url(candidate_url)
+    cached = feature_cache.load(canonical_url) if feature_cache is not None else None
+    cache_hit = cached is not None
+    if cached is not None:
+        try:
+            candidate = _deserialize_feature_variants(cached)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            cached = None
+            cache_hit = False
+    if cached is None:
+        candidate = _feature_variants(fetcher(candidate_url).content)
+        if feature_cache is not None:
+            feature_cache.store(canonical_url, _serialize_feature_variants(candidate))
     score = max(_feature_similarity(left, right) for left in reference for right in candidate)
-    return score, IMAGE_SIMILARITY_METHOD
+    return score, IMAGE_SIMILARITY_METHOD, cache_hit
 
 
 def _feature_variants(content: bytes) -> tuple[_VisualFeatures, ...]:
@@ -216,6 +242,43 @@ def _features(image: Image.Image) -> _VisualFeatures:
         perceptual_hash_bits=64,
         colour_histogram=colour_histogram,
     )
+
+
+def _serialize_feature_variants(values: Sequence[_VisualFeatures]) -> list[dict[str, Any]]:
+    return [
+        {
+            "average_hash": str(value.average_hash),
+            "average_hash_bits": value.average_hash_bits,
+            "difference_hash": str(value.difference_hash),
+            "difference_hash_bits": value.difference_hash_bits,
+            "perceptual_hash": str(value.perceptual_hash),
+            "perceptual_hash_bits": value.perceptual_hash_bits,
+            "colour_histogram": list(value.colour_histogram),
+        }
+        for value in values
+    ]
+
+
+def _deserialize_feature_variants(values: Sequence[Mapping[str, Any]]) -> tuple[_VisualFeatures, ...]:
+    output: list[_VisualFeatures] = []
+    for value in values:
+        histogram = value.get("colour_histogram")
+        if not isinstance(histogram, list) or len(histogram) != 64:
+            raise ValueError("invalid cached colour histogram")
+        output.append(
+            _VisualFeatures(
+                average_hash=int(value["average_hash"]),
+                average_hash_bits=int(value["average_hash_bits"]),
+                difference_hash=int(value["difference_hash"]),
+                difference_hash_bits=int(value["difference_hash_bits"]),
+                perceptual_hash=int(value["perceptual_hash"]),
+                perceptual_hash_bits=int(value["perceptual_hash_bits"]),
+                colour_histogram=tuple(float(item) for item in histogram),
+            )
+        )
+    if not output:
+        raise ValueError("cached feature variants are empty")
+    return tuple(output)
 
 
 def _low_frequency_dct(pixels: list[int], *, size: int, output_size: int) -> list[float]:
@@ -283,3 +346,16 @@ def _safe_fetch(url: str) -> FetchedPublicImage:
         max_bytes=_MAX_IMAGE_BYTES,
         timeout_seconds=_FETCH_TIMEOUT_SECONDS,
     )
+
+
+@lru_cache(maxsize=1)
+def _default_feature_cache() -> ImageFeatureCache | None:
+    try:
+        root = default_config().data_dir / "price-verification" / "image-feature-cache"
+        return ImageFeatureCache(
+            root,
+            feature_method=IMAGE_SIMILARITY_METHOD,
+            ttl_seconds=IMAGE_FEATURE_CACHE_TTL_DAYS * 24 * 60 * 60,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
