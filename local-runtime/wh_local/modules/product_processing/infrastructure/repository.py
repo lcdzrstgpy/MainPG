@@ -63,7 +63,7 @@ class ProductProcessingRepository:
                 select(ProductDraftRow).where(
                     ProductDraftRow.workspace_id == workspace_id,
                     ProductDraftRow.candidate_id == candidate_id,
-                )
+                ).order_by(ProductDraftRow.id.desc()).limit(1)
             )
             return self._draft(row) if row else None
 
@@ -151,8 +151,10 @@ class ProductProcessingRepository:
                     ProductDraftRow.workspace_id == workspace_id,
                 )
             ).all()
+            now = utc_now()
             for row in rows:
                 row.status = status
+                row.updated_at = now
             return [row.id for row in rows]
 
     def update_draft(
@@ -339,16 +341,138 @@ class ProductProcessingRepository:
                 return None
             return self._task(row) if row else None
 
-    def list_tasks(self, limit: int, workspace_id: str = "local") -> list[dict[str, Any]]:
+    def list_tasks(
+        self,
+        limit: int,
+        workspace_id: str = "local",
+        *,
+        offset: int = 0,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
         with self.database.sessions() as session:
+            filters = [ProcessingTaskRow.workspace_id == workspace_id]
+            if date_from:
+                filters.append(ProcessingTaskRow.created_at >= f"{date_from}T00:00:00")
+            if date_to:
+                filters.append(ProcessingTaskRow.created_at <= f"{date_to}T23:59:59.999999")
+            total = int(
+                session.scalar(select(func.count()).select_from(ProcessingTaskRow).where(*filters)) or 0
+            )
             rows = session.scalars(
                 select(ProcessingTaskRow)
                 .options(selectinload(ProcessingTaskRow.items))
-                .where(ProcessingTaskRow.workspace_id == workspace_id)
+                .where(*filters)
                 .order_by(ProcessingTaskRow.created_at.desc(), ProcessingTaskRow.id.desc())
+                .offset(max(0, int(offset)))
                 .limit(limit)
             ).all()
-            return [self._task(row) for row in rows]
+            return [self._task(row) for row in rows], total
+
+    def queued_tasks(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        with self.database.sessions() as session:
+            statement = (
+                select(ProcessingTaskRow)
+                .options(selectinload(ProcessingTaskRow.items))
+                .where(ProcessingTaskRow.status == "queued")
+                .order_by(ProcessingTaskRow.id)
+            )
+            if workspace_id is not None:
+                statement = statement.where(ProcessingTaskRow.workspace_id == workspace_id)
+            return [self._task(row) for row in session.scalars(statement).all()]
+
+    def recover_interrupted_tasks(self) -> list[dict[str, Any]]:
+        """Turn process-lost running work into an explicit retryable terminal state."""
+        recovered: list[tuple[int, str]] = []
+        with self.database.sessions.begin() as session:
+            tasks = session.scalars(
+                select(ProcessingTaskRow)
+                .options(selectinload(ProcessingTaskRow.items))
+                .where(ProcessingTaskRow.status == "running")
+            ).all()
+            now = utc_now()
+            for task in tasks:
+                for item in task.items:
+                    if item.status not in {"pending", "running"}:
+                        continue
+                    item.status = "failed"
+                    item.reason = "应用重启中断处理；上次调用结果不确定，请人工重试"
+                    item.result_json = dumps(
+                        {
+                            "failure_class": "technical_retryable",
+                            "retryable": True,
+                            "operator_hint": "确认服务稳定后重试；系统不会自动重复付费调用",
+                            "error_type": "worker_interrupted",
+                        }
+                    )
+                    item.updated_at = now
+                    if item.product_draft_id is not None:
+                        draft = session.get(ProductDraftRow, item.product_draft_id)
+                        if draft is not None and draft.workspace_id == task.workspace_id and draft.status == "processing":
+                            draft.status = "draft"
+                            draft.updated_at = now
+                statuses = [item.status for item in task.items]
+                task.success_count = sum(value == "completed" for value in statuses)
+                task.skipped_count = sum(value == "skipped" for value in statuses)
+                task.failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
+                task.status = "failed" if task.success_count == 0 else "partial_failure"
+                task.updated_at = now
+                recovered.append((task.id, task.workspace_id))
+        return [task for task_id, workspace in recovered if (task := self.get_task(task_id, workspace)) is not None]
+
+    def claim_task_execution(self, task_id: int, workspace_id: str = "local") -> bool:
+        with self.database.sessions.begin() as session:
+            changed = session.execute(
+                update(ProcessingTaskRow)
+                .where(
+                    ProcessingTaskRow.id == task_id,
+                    ProcessingTaskRow.workspace_id == workspace_id,
+                    ProcessingTaskRow.status == "queued",
+                )
+                .values(status="running", updated_at=utc_now())
+            )
+            return changed.rowcount == 1
+
+    def fail_task_execution(self, task_id: int, reason: str, workspace_id: str = "local") -> dict[str, Any] | None:
+        """Fail only unfinished items and restore their drafts after an executor crash."""
+        with self.database.sessions.begin() as session:
+            task = session.scalar(
+                select(ProcessingTaskRow)
+                .options(selectinload(ProcessingTaskRow.items))
+                .where(
+                    ProcessingTaskRow.id == task_id,
+                    ProcessingTaskRow.workspace_id == workspace_id,
+                )
+            )
+            if task is None:
+                return None
+            now = utc_now()
+            for item in task.items:
+                if item.status not in {"pending", "running"}:
+                    continue
+                item.status = "failed"
+                item.reason = str(reason)[:240]
+                item.result_json = dumps(
+                    {
+                        "failure_class": "technical_retryable",
+                        "retryable": True,
+                        "operator_hint": "后台执行异常，修复原因后可重试",
+                        "error_type": "executor_failed",
+                    }
+                )
+                item.updated_at = now
+                if item.product_draft_id is not None:
+                    draft = session.get(ProductDraftRow, item.product_draft_id)
+                    if draft is not None and draft.workspace_id == workspace_id and draft.status == "processing":
+                        draft.status = "draft"
+                        draft.updated_at = now
+            statuses = [item.status for item in task.items]
+            task.success_count = sum(value == "completed" for value in statuses)
+            task.skipped_count = sum(value == "skipped" for value in statuses)
+            task.failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
+            task.status = "failed" if task.success_count == 0 else "partial_failure"
+            task.updated_at = now
+        return self.get_task(task_id, workspace_id)
 
     def set_task_status(self, task_id: int, status: str, workspace_id: str = "local") -> dict[str, Any] | None:
         with self.database.sessions.begin() as session:
@@ -379,7 +503,6 @@ class ProductProcessingRepository:
                     select(ProcessingTaskItemRow).where(ProcessingTaskItemRow.task_id == task_id)
                 ).all()
             }
-            success_count = failed_count = skipped_count = 0
             now = utc_now()
             for result in item_results:
                 item = items[int(result["item_id"])]
@@ -391,12 +514,10 @@ class ProductProcessingRepository:
                 item.image_url = str(result.get("image_url") or item.image_url)
                 item.result_json = dumps(result.get("result") or {})
                 item.updated_at = now
-                if item.status == "completed":
-                    success_count += 1
-                elif item.status == "skipped":
-                    skipped_count += 1
-                else:
-                    failed_count += 1
+            statuses = [item.status for item in items.values()]
+            success_count = sum(value == "completed" for value in statuses)
+            skipped_count = sum(value == "skipped" for value in statuses)
+            failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
             task.success_count = success_count
             task.failed_count = failed_count
             task.skipped_count = skipped_count
@@ -442,7 +563,7 @@ class ProductProcessingRepository:
                     return "success"
                 if current == "skipped":
                     return "skipped"
-                if current in (None, "", "pending"):
+                if current in (None, "", "pending", "running"):
                     return None
                 return "failed"
 
@@ -473,19 +594,34 @@ class ProductProcessingRepository:
             task.updated_at = utc_now()
         return self.get_task(task_id, workspace_id)
 
-    def reset_failed_items(self, task_id: int, workspace_id: str = "local") -> bool:
+    def reset_failed_items(
+        self,
+        task_id: int,
+        workspace_id: str = "local",
+        *,
+        draft_ids: list[int] | None = None,
+    ) -> bool:
         with self.database.sessions.begin() as session:
             task = session.get(ProcessingTaskRow, task_id)
             if task is None or task.workspace_id != workspace_id:
                 return False
-            for item in session.scalars(
-                select(ProcessingTaskItemRow).where(
+            item_query = select(ProcessingTaskItemRow).where(
                     ProcessingTaskItemRow.task_id == task_id,
                     ProcessingTaskItemRow.status.in_(["failed", "attention_required"]),
                 )
-            ):
+            if draft_ids:
+                item_query = item_query.where(ProcessingTaskItemRow.product_draft_id.in_(draft_ids))
+            for item in session.scalars(item_query):
                 item.status = "pending"
                 item.reason = ""
+                item.result_json = "{}"
+                item.updated_at = utc_now()
+            statuses = session.scalars(
+                select(ProcessingTaskItemRow.status).where(ProcessingTaskItemRow.task_id == task_id)
+            ).all()
+            task.success_count = sum(value == "completed" for value in statuses)
+            task.skipped_count = sum(value == "skipped" for value in statuses)
+            task.failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
             task.status = "queued"
             task.updated_at = utc_now()
             return True

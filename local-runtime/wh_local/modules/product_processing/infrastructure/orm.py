@@ -16,9 +16,6 @@ class Base(DeclarativeBase):
 
 class ProductDraftRow(Base):
     __tablename__ = "product_processing_drafts"
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "candidate_id", name="uq_product_processing_workspace_candidate"),
-    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     workspace_id: Mapped[str] = mapped_column(String(255), default="local", index=True)

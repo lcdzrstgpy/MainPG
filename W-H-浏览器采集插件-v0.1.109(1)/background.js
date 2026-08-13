@@ -31,6 +31,7 @@ const PRODUCT_BATCH_LIST_SCAN_LIMIT = 200;
 const PRODUCT_BATCH_LIST_SCROLL_MAX_PASSES = 12;
 const PRODUCT_BATCH_LIST_SCROLL_WAIT_MS = 650;
 const SOURCE_IMAGE_SEARCH_TASK_LIMIT = 50;
+const PRICE_QUOTE_DOM_ROW_LIMIT = 500;
 const SOURCE_IMAGE_SEARCH_CANDIDATE_LIMIT = 20;
 const SOURCE_IMAGE_SEARCH_WAIT_MS = 4200;
 const SOURCE_IMAGE_SEARCH_UPLOAD_WAIT_MS = 5200;
@@ -841,9 +842,6 @@ async function executeCommand(baseUrl, sessionToken, command) {
     if (command?.command_type === "source_browser_image_search") {
       sourceBrowserCancelledCommands.delete(command.id);
     }
-    if (command?.command_type === "source_browser_image_search") {
-      await postResult(baseUrl, sessionToken, command.id, "sent", sourceBrowserClaimedResult(command));
-    }
     const timeoutMs = resolvePluginCommandTimeoutMs(command);
     const result = await withTimeout(
       runCommand(baseUrl, sessionToken, command),
@@ -880,30 +878,6 @@ async function executeCommand(baseUrl, sessionToken, command) {
       sourceBrowserCancelledCommands.delete(command.id);
     }
   }
-}
-
-function sourceBrowserClaimedResult(command) {
-  const payload = command?.payload || {};
-  const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
-  const detailSkuValidation = payload.capture_strategy === "source_detail_sku_validation";
-  const temaishujuBackground = !detailSkuValidation && (payload.capture_strategy === "temaishuju_background_image_search" || payload.provider === "temaishuju");
-  const sourceTaskWorkerCount = resolveSourceTaskWorkerCount(payload, tasks.length, temaishujuBackground || detailSkuValidation);
-  const capturedAt = new Date().toISOString();
-  return {
-    command_type: "source_browser_image_search",
-    status: "sent",
-    statusText: `插件已领取货源任务，准备执行：0/${tasks.length}`,
-    items: [],
-    counts: sourceBrowserCounts([], tasks.length),
-    source_task_worker_count: sourceTaskWorkerCount,
-    safety: {
-      read_only: true,
-      no_product_draft_write: true,
-      no_supplier_write_actions: true,
-      no_api_token: true
-    },
-    capturedAt
-  };
 }
 
 function resolveSourceBrowserCommandTimeoutMs(command) {
@@ -4149,7 +4123,15 @@ async function runTemuPriceQuoteDiscoveryCommand(command) {
     && batchPopupAction?.ok === false
     && records.length === 0;
   const requirePriceDialog = command.payload?.auto_open_batch_popup !== false && !allowLifecycleDomFallback;
-  const dom = await extractPriceQuoteDomSnapshot(tab.id, { requirePriceDialog });
+  const dom = await extractPriceQuoteDomSnapshot(tab.id, { requirePriceDialog, rowLimit: PRICE_QUOTE_DOM_ROW_LIMIT });
+  if (dom.row_truncated) {
+    return {
+      ok: false,
+      error: "price_quote_dom_row_limit_exceeded",
+      statusText: dom.truncation_error,
+      dom,
+    };
+  }
   const matchedCount = records.length + (dom.rows?.length || 0);
   return {
     ok: true,
@@ -4221,8 +4203,15 @@ async function captureCurrentTemuPriceQuotePage(sourceTab) {
   const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const rawRecords = await getProbeCaptures(tab.id, "temu_price_quote_discovery", since, 50);
   const records = rawRecords.filter(isPriceQuoteDiscoveryNetworkRecord).slice(0, 50);
-  const extractedDom = await extractPriceQuoteDomSnapshot(tab.id, { requirePriceDialog: false });
-  const dom = { ...extractedDom, rows: Array.isArray(extractedDom?.rows) ? extractedDom.rows.slice(0, 50) : [] };
+  const dom = await extractPriceQuoteDomSnapshot(tab.id, { requirePriceDialog: false, rowLimit: PRICE_QUOTE_DOM_ROW_LIMIT });
+  if (dom.row_truncated) {
+    return {
+      ok: false,
+      error: "price_quote_dom_row_limit_exceeded",
+      statusText: dom.truncation_error,
+      help: "请缩小当前页展示数量后重新采集，插件不会静默丢弃超限 SKU。",
+    };
+  }
   const capture = {
     captures: { network: { matched_count: records.length, records } },
     dom,
@@ -8894,6 +8883,7 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
   return executeMainWorld(tabId, [options], async (opts = {}) => {
     const now = new Date().toISOString();
     const requirePriceDialog = Boolean(opts?.requirePriceDialog);
+    const rowLimit = Math.max(1, Math.min(Number(opts?.rowLimit || 500), 1000));
     const dialogSelector = "[role='dialog'], .ant-modal, .ant-drawer, .semi-modal, .modal, .drawer, [class*='modal'], [class*='dialog'], [class*='drawer']";
     const priceDialogTextRe = /批量查看并确认申报价格|查看并确认申报价格|调整后申报价格|新申报价格|原申报价格|申请调整更新申报价格/;
     const visible = (element) => {
@@ -9046,8 +9036,7 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
         }
       }
       const gridRows = Array.from(scope.querySelectorAll("[role='row'], .ant-table-row, .semi-table-row, .table-row"))
-        .filter(visible)
-        .slice(0, 80);
+        .filter(visible);
       for (const row of gridRows) {
         if (row.closest("table")) continue;
         const cells = Array.from(row.querySelectorAll("[role='cell'], .ant-table-cell, .semi-table-cell, td, th"))
@@ -9079,8 +9068,7 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
           if (!/(申报价格|价格申报|待卖家确认|待供应商确认)/.test(value)) return false;
           if (!/(skc|sku|货号|spu|\d{8,})/i.test(value)) return false;
           return Boolean(element.querySelector("img")) || /¥|￥|元|\d+(?:\.\d+)?/.test(value);
-        })
-        .slice(0, 80);
+        });
       for (const row of genericRows) {
         const directChildren = Array.from(row.children).filter(visible);
         const cellNodes = directChildren.length >= 2 ? directChildren : [row];
@@ -9108,8 +9096,15 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
     }
     for (const { element, top } of originalScrollTops) element.scrollTop = top;
     const imageCount = new Set(rows.flatMap((row) => row.images || [])).size;
+    const rowTruncated = rows.length > rowLimit;
     return {
-      rows: rows.slice(0, 120),
+      rows: rows.slice(0, rowLimit),
+      total_row_count: rows.length,
+      row_limit: rowLimit,
+      row_truncated: rowTruncated,
+      truncation_error: rowTruncated
+        ? `当前页识别到 ${rows.length} 行核价 SKU，超过安全上限 ${rowLimit} 行；本次未入库，请缩小当前页数量后重试。`
+        : "",
       table_count: tableCount,
       image_count: imageCount,
       dialog_present: dialogScopes.length > 0,

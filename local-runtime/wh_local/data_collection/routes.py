@@ -22,7 +22,7 @@ from .repository import (
     DailySelectionRunNotFound,
     DailySelectionRunSummary,
 )
-from .handoff import DailySelectionHandoff
+from .handoff import DailySelectionConfirmResult, DailySelectionHandoff
 from .normalizer import sanitize_raw_payload
 from .plugin_queue import DataCollectionPluginQueue, PluginCommand
 from .service import (
@@ -81,7 +81,7 @@ class PluginResultRequest(BaseModel):
 
     session_token: str = Field(min_length=1)
     command_id: int = Field(ge=1)
-    status: str = Field(pattern="^(running|succeeded|failed)$")
+    status: str = Field(pattern="^(sent|running|succeeded|failed)$")
     result: Mapping[str, Any] = Field(default_factory=dict)
 
 
@@ -496,14 +496,14 @@ def register_daily_selection_routes(
 
     @router.post(
         "/desktop/daily-selection/runs/{run_id}/confirm",
-        response_model=list[DailySelectionHandoff],
+        response_model=DailySelectionConfirmResult,
     )
     def confirm(
         background_tasks: BackgroundTasks,
         run_id: str,
         request: DailySelectionConfirmRequest,
         actor: DailySelectionActor = Depends(actor_dependency),
-    ) -> tuple[DailySelectionHandoff, ...]:
+    ) -> DailySelectionConfirmResult:
         try:
             handoffs = service.confirm_candidates(
                 actor=actor,
@@ -513,7 +513,13 @@ def register_daily_selection_routes(
             if handoff_consumer is None:
                 # The handoff is durable and remains pending; a host may inject
                 # a dedicated consumer when product processing is deployed.
-                return handoffs
+                return DailySelectionConfirmResult(
+                    handoffs=handoffs,
+                    selected_count=len(handoffs),
+                    created_count=0,
+                    replayed_count=0,
+                    pending_count=len(handoffs),
+                )
             try:
                 consumed = handoff_consumer(handoffs)
             except Exception as error:
@@ -532,7 +538,14 @@ def register_daily_selection_routes(
                 _schedule_source_image_sync(
                     plugin_draft_writer, background_tasks, draft, actor.workspace_id
                 )
-            return service.mark_handoffs_consumed(actor=actor, handoffs=handoffs)
+            acknowledged = service.mark_handoffs_consumed(actor=actor, handoffs=handoffs)
+            return DailySelectionConfirmResult(
+                handoffs=acknowledged,
+                selected_count=len(handoffs),
+                created_count=int(consumed.get("created") or 0),
+                replayed_count=int(consumed.get("replayed") or 0),
+                pending_count=0,
+            )
         except DailySelectionRunNotFound as error:
             raise _run_not_found(error) from error
         except DailySelectionCandidateNotConfirmable as error:

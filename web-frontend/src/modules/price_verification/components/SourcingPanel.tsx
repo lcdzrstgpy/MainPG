@@ -17,8 +17,13 @@ type Props = {
   onUnselectCandidate: (skcId: string, offerId: string) => Promise<void>;
   onComplete: () => void;
   onStart: () => void;
+  onError: (message: string) => void;
   matchingCompleted?: boolean;
 };
+
+function actionError(error: unknown) {
+  return error instanceof Error ? error.message : String(error || "请求失败");
+}
 
 const CANDIDATE_LIMIT = 5;
 
@@ -131,7 +136,7 @@ function visualAuditText(item?: SourcePreviewItem) {
   return `本地验图 ${audit.verified_count ?? 0}/${audit.input_count ?? 0}${fallback}${distractors}${threshold}`;
 }
 
-export function SourcingPanel({ preview, batchId, busy, sourceCount, links, selectedCandidates, onLink, onUnlink, onUnselectCandidate, onComplete, onStart, matchingCompleted = false }: Props) {
+export function SourcingPanel({ preview, batchId, busy, sourceCount, links, selectedCandidates, onLink, onUnlink, onUnselectCandidate, onComplete, onStart, onError, matchingCompleted = false }: Props) {
   const [weights, setWeights] = useState<Record<string, string>>({});
   const [priceOverrides, setPriceOverrides] = useState<Record<string, string>>({});
   const [profitOverrides, setProfitOverrides] = useState<Record<string, SourceTopProfit | null>>({});
@@ -220,8 +225,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       .then((profit) => setProfitOverrides((current) => ({ ...current, [candKey]: profit })))
       .finally(() => setProfitBusy(""));
     if (isAssociatedCandidate(itemKey(item), candidate)) {
-      void onLink(itemKey(item), offerIdFor(candidate), candidate, rawValue, weights[candKey]).catch(() => {
-        // 静默失败：关联记录价格保留上次已同步的值
+      void onLink(itemKey(item), offerIdFor(candidate), candidate, rawValue, weights[candKey]).catch((error) => {
+        onError(`候选源价同步失败：${actionError(error)}。当前输入未丢失，请重试。`);
       });
     }
   };
@@ -237,8 +242,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       .then((profit) => setProfitOverrides((current) => ({ ...current, [candKey]: profit })))
       .finally(() => setProfitBusy(""));
     if (isAssociatedCandidate(itemKey(item), candidate)) {
-      void onLink(itemKey(item), offerIdFor(candidate), candidate, priceOverrides[candKey], rawValue).catch(() => {
-        // 关联记录保留上次已同步的值
+      void onLink(itemKey(item), offerIdFor(candidate), candidate, priceOverrides[candKey], rawValue).catch((error) => {
+        onError(`候选重量同步失败：${actionError(error)}。当前输入未丢失，请重试。`);
       });
     }
   };
@@ -252,8 +257,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     try {
       const adjustedWeight = weights[candKey] !== undefined && weights[candKey] !== "" ? weights[candKey] : undefined;
       await onLink(group.skc_id, offerIdFor(candidate), candidate, adjustedPrice, adjustedWeight);
-    } catch {
-      // link errors surface only via the row button staying available
+    } catch (error) {
+      onError(`关联失败：${actionError(error)}。该候选未标记为完成，请重试。`);
     } finally {
       setBusyLink("");
     }
@@ -263,6 +268,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     setBusyLink(key);
     try {
       await onUnlink(linkId);
+    } catch (error) {
+      onError(`解除关联失败：${actionError(error)}。请刷新核对后重试。`);
     } finally {
       setBusyLink("");
     }
@@ -272,6 +279,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     setBusyLink(key);
     try {
       await onUnselectCandidate(skcId, offerId);
+    } catch (error) {
+      onError(`撤回候选失败：${actionError(error)}。请刷新核对后重试。`);
     } finally {
       setBusyLink("");
     }

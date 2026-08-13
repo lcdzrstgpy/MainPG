@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -10,6 +13,7 @@ import requests
 from PIL import Image
 
 from wh_local.modules.product_processing import service as service_module
+from wh_local.modules.product_processing import provider_config as provider_config_module
 from wh_local.modules.product_processing.domain.prompts import (
     GRID_IMAGE_PROMPT,
     GRID_IMAGE_PROMPT_B,
@@ -17,6 +21,7 @@ from wh_local.modules.product_processing.domain.prompts import (
 )
 from wh_local.modules.product_processing.domain.workbooks import _http_urls
 from wh_local.modules.product_processing.infrastructure import ocr_gate
+from wh_local.modules.product_processing.infrastructure import media as media_module
 from wh_local.modules.product_processing.infrastructure.media import (
     GeneratedMedia,
     MediaProcessingError,
@@ -31,6 +36,15 @@ def _grid_bytes(size: int = 2048) -> bytes:
     image.paste((30, 180, 50), (half + 8, 0, size, half - 8))
     image.paste((30, 70, 210), (0, half + 8, half - 8, size))
     image.paste((220, 180, 30), (half + 8, half + 8, size, size))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _two_grid_bytes() -> bytes:
+    image = Image.new("RGB", (2048, 1024), "white")
+    image.paste((210, 30, 30), (0, 0, 1016, 1024))
+    image.paste((30, 70, 210), (1032, 0, 2048, 1024))
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
@@ -77,6 +91,19 @@ def test_split_four_grid_rejects_low_resolution_source() -> None:
         processor.split_four_grid(_media(_grid_bytes(1024)))
 
 
+def test_split_two_grid_preserves_two_landscape_panels() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    parts = processor.split_two_grid(_media(_two_grid_bytes()), start_index=3)
+
+    assert [part.stage for part in parts] == ["grid_image_3", "grid_image_4"]
+    expected = [(210, 30, 30), (30, 70, 210)]
+    for part, color in zip(parts, expected):
+        with Image.open(BytesIO(part.content)) as image:
+            assert image.size == (800, 800)
+            actual = image.convert("RGB").getpixel((400, 400))
+            assert all(abs(value - wanted) <= 4 for value, wanted in zip(actual, color))
+
+
 def test_split_four_grid_rejects_continuous_poster_without_center_dividers() -> None:
     image = Image.new("RGB", (2048, 2048), (40, 80, 120))
     for x in range(2048):
@@ -106,6 +133,7 @@ def _image_provider_config(source_path, *, retries: int = 3):
             "api_key": "configured",
             "model": "gpt-image-test",
             "reference_model": "gpt-image-test",
+            "reference_model_1k": "gpt-image-test-1k",
             "image_size": "2048x2048",
         },
         "limits": {"image_retry_attempts": retries},
@@ -175,7 +203,7 @@ def test_image_early_500_retries_only_once(monkeypatch, tmp_path) -> None:
     assert media.reference_count == 1
 
 
-def test_second_grid_attempt_uses_only_the_remaining_150_second_budget(monkeypatch, tmp_path) -> None:
+def test_second_grid_attempt_uses_only_the_remaining_total_timeout_budget(monkeypatch, tmp_path) -> None:
     source = tmp_path / "source.png"
     source.write_bytes(_grid_bytes())
     clock = [0.0]
@@ -184,7 +212,7 @@ def test_second_grid_attempt_uses_only_the_remaining_150_second_budget(monkeypat
     def respond(*_args, **kwargs):
         request_timeouts.append(float(kwargs["timeout_seconds"]))
         if len(request_timeouts) == 1:
-            clock[0] = 125.0
+            clock[0] = 625.0
             raise MediaProcessingError("server error", status_code=500)
         return _grid_bytes(), "image/png"
 
@@ -198,7 +226,141 @@ def test_second_grid_attempt_uses_only_the_remaining_150_second_budget(monkeypat
     media = processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
 
     assert media.attempt_count == 2
-    assert request_timeouts == [120.0, 25.0]
+    assert request_timeouts == [600.0, 35.0]
+
+
+def test_failed_slot_model_override_does_not_change_regular_2k_grid_profile(monkeypatch, tmp_path) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(_grid_bytes())
+    calls: list[dict[str, str | None]] = []
+
+    def respond(_provider, _prompt, _references, **kwargs):
+        calls.append(
+            {
+                "reference_model": kwargs.get("reference_model"),
+                "image_size": kwargs.get("image_size"),
+            }
+        )
+        return _grid_bytes(), "image/png"
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(respond))
+    processor = ProductImageProcessor(lambda: _image_provider_config(source))
+
+    one_k = processor.generate(
+        stage="grid_image_3",
+        prompt="fill failed slot",
+        reference_values=[str(source)],
+        image_size="1024x1024",
+        model_override="gpt-image-test-1k",
+    )
+    two_k = processor.generate(
+        stage="grid_image",
+        prompt="regular four grid",
+        reference_values=[str(source)],
+    )
+
+    assert one_k.model == "gpt-image-test-1k"
+    assert two_k.model == "gpt-image-test"
+    assert calls == [
+        {"reference_model": "gpt-image-test-1k", "image_size": "1024x1024"},
+        {"reference_model": None, "image_size": None},
+    ]
+
+
+def test_compose_grid_summary_uses_replaced_normalized_slots() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    colors = [(210, 30, 30), (30, 180, 50), (30, 70, 210), (220, 180, 30)]
+    parts: list[GeneratedMedia] = []
+    for index, color in enumerate(colors, start=1):
+        image = Image.new("RGB", (800, 800), color)
+        buffer = BytesIO()
+        image.save(buffer, format="JPEG", quality=94, subsampling=0)
+        parts.append(
+            GeneratedMedia(
+                stage=f"grid_image_{index}",
+                content=buffer.getvalue(),
+                content_type="image/jpeg",
+                suffix=".jpg",
+                provider="test",
+                model="test",
+                reference_count=1,
+            )
+        )
+
+    summary = processor.compose_grid_summary(parts)
+
+    assert summary.stage == "grid_image_summary"
+    assert summary.content_type == "image/jpeg"
+    with Image.open(BytesIO(summary.content)) as image:
+        assert image.size == (800, 800)
+        samples = [image.convert("RGB").getpixel(point) for point in ((200, 200), (600, 200), (200, 600), (600, 600))]
+    for actual, expected in zip(samples, colors):
+        assert all(abs(value - wanted) <= 5 for value, wanted in zip(actual, expected))
+
+
+def test_reference_download_cache_single_flights_concurrent_reads(monkeypatch) -> None:
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def download(_url: str) -> tuple[bytes, str]:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        time.sleep(0.04)
+        return b"same-image", "image/jpeg"
+
+    monkeypatch.setattr(media_module, "_download_reference_image", download)
+    processor = ProductImageProcessor(lambda: {"limits": {"reference_download_cache_entries": 2}})
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(
+            pool.map(
+                lambda _index: processor._load_references(["https://example.com/source.jpg"], limit=1),
+                range(4),
+            )
+        )
+
+    assert calls == 1
+    assert [result[0][0] for result in results] == [b"same-image"] * 4
+
+
+def test_reference_download_cache_is_bounded_and_does_not_cache_failures(monkeypatch) -> None:
+    calls: dict[str, int] = {}
+
+    def download(url: str) -> tuple[bytes, str]:
+        calls[url] = calls.get(url, 0) + 1
+        if url.endswith("flaky.jpg") and calls[url] == 1:
+            raise requests.ConnectionError("temporary")
+        return url.encode(), "image/jpeg"
+
+    monkeypatch.setattr(media_module, "_download_reference_image", download)
+    processor = ProductImageProcessor(lambda: {"limits": {"reference_download_cache_entries": 1}})
+    flaky = "https://example.com/flaky.jpg"
+    first = "https://example.com/first.jpg"
+    second = "https://example.com/second.jpg"
+
+    with pytest.raises(MediaProcessingError, match="download failed"):
+        processor._load_references([flaky], limit=1)
+    assert processor._load_references([flaky], limit=1)[0][0] == flaky.encode()
+    processor._load_references([first], limit=1)
+    processor._load_references([second], limit=1)
+    processor._load_references([first], limit=1)
+
+    assert calls[flaky] == 2
+    assert calls[first] == 2
+    assert calls[second] == 1
+
+
+def test_provider_config_exposes_explicit_1k_reference_profile(monkeypatch) -> None:
+    monkeypatch.setattr(provider_config_module, "_try_system_runtime_config", lambda: None)
+    monkeypatch.setenv("WH_AI_API_KEY", "configured")
+
+    provider = provider_config_module.resolve_ai_provider()
+
+    assert provider["reference_image_model"] == "gpt-image-2-2k"
+    assert provider["image_size"] == "2048x2048"
+    assert provider["reference_image_model_1k"] == "gpt-image-2-1k"
+    assert provider["reference_image_size_1k"] == "1024x1024"
 
 
 def test_b_grid_quality_failure_never_triggers_a_paid_repair(monkeypatch) -> None:
@@ -263,6 +425,32 @@ def test_ocr_inspection_flags_large_added_copy_but_not_small_product_mark(monkey
     assert inspection is not None
     assert inspection["prominent"] == ["FACTORY DIRECT"]
     assert inspection["chinese"] == ["麻将"]
+
+
+def test_ocr_inference_uses_dedicated_two_worker_gate(monkeypatch) -> None:
+    active = 0
+    maximum = 0
+    lock = threading.Lock()
+
+    class _Engine:
+        def __call__(self, _array):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+            time.sleep(0.04)
+            with lock:
+                active -= 1
+            return [], None
+
+    monkeypatch.setattr(ocr_gate, "_get_engine", lambda: _Engine())
+    monkeypatch.setattr(ocr_gate, "_OCR_INFERENCE_SEMAPHORE", threading.BoundedSemaphore(2))
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        results = list(pool.map(lambda _index: ocr_gate.inspect_visible_text(_grid_bytes()), range(5)))
+
+    assert results == [{"chinese": [], "prominent": []}] * 5
+    assert maximum == 2
 
 
 def test_dianxiaomi_image_filter_rejects_local_and_private_urls() -> None:

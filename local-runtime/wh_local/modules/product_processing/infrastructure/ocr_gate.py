@@ -30,6 +30,17 @@ _ENGINE_LOCK = threading.Lock()
 _ENGINE_ERROR: str | None = None
 
 
+def _ocr_worker_limit() -> int:
+    try:
+        value = int(os.environ.get("WH_PRODUCT_OCR_WORKERS", "2").strip())
+    except (TypeError, ValueError):
+        return 2
+    return max(1, min(value, 2))
+
+
+_OCR_INFERENCE_SEMAPHORE = threading.BoundedSemaphore(_ocr_worker_limit())
+
+
 def ocr_gate_enabled() -> bool:
     return os.environ.get("WH_PRODUCT_OCR_GATE", "1").strip() not in {"0", "false", "no", "off"}
 
@@ -92,10 +103,11 @@ def inspect_visible_text(content: bytes) -> dict[str, list[str]] | None:
         import numpy as np  # type: ignore
         from PIL import Image  # type: ignore
 
-        opened = Image.open(io.BytesIO(content)).convert("RGB")
-        width, height = opened.size
-        array = np.array(opened)
-        result, _elapse = engine(array)
+        with _OCR_INFERENCE_SEMAPHORE:
+            opened = Image.open(io.BytesIO(content)).convert("RGB")
+            width, height = opened.size
+            array = np.array(opened)
+            result, _elapse = engine(array)
     except Exception:
         return None
     chinese: list[str] = []

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import type {
   ProductProcessingOptions,
@@ -26,8 +26,14 @@ const SCOPES: { key: string; label: string }[] = [
 
 // 生图提示词模板（对齐后端 IMAGE_TEMPLATES：A/B 直观标题区分两套生图逻辑）
 const IMAGE_TEMPLATES: { id: 'A' | 'B'; name: string; description: string }[] = [
-  { id: 'A', name: '标准商品海报', description: 'Amazon 高级电商视觉：大主体主图 + 精品展示 + 生活方式场景，含英文卖点文案' },
+  { id: 'A', name: '标准商品海报', description: 'Amazon 高级电商视觉：大主体主图 + 精品展示 + 生活方式场景，画面不新增文字' },
   { id: 'B', name: '高端模特视觉（防比价）', description: '人设+空间故事叙事、杂志编辑大片感，材质显贵、难以搜图比价，画面无文字' },
+];
+
+const IMAGE_GENERATION_OPTIONS: { count: 1 | 2 | 4; name: string; description: string }[] = [
+  { count: 1, name: '单图 × 4', description: '4 次并发生图，不拆分，质量优先但耗时更长' },
+  { count: 2, name: '双图 × 2', description: '2 次并发生图，每次拆成两张，速度与稳定性平衡' },
+  { count: 4, name: '四宫格 × 1（推荐）', description: '1 次2K调用拆四张；仅失败槽使用1K补图，批量最快' },
 ];
 
 const FAILURE_CLASS_LABELS: Record<string, string> = {
@@ -98,6 +104,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
       ipCheck: true,
       maxParallelDrafts: 8,
       imageTemplate: 'A',
+      imageGenerationCount: 4,
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
@@ -109,6 +116,9 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const startInFlightRef = useRef(false);
+  const startRequestRef = useRef<{ signature: string; key: string } | null>(null);
+  const pollGenerationRef = useRef(0);
 
   const failureItems = useMemo(
     () => batch?.items.filter(
@@ -167,47 +177,75 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
     if (!batch) return;
     const running = ['queued', 'running', 'paused'];
     if (!running.includes(batch.task.status)) return;
-    const timer = setInterval(async () => {
+    const generation = ++pollGenerationRef.current;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    const poll = async () => {
       try {
         const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/outputs`);
+        if (stopped || pollGenerationRef.current !== generation) return;
         setBatch(data);
-        if (!running.includes(data.task.status)) { clearInterval(timer); loadHistory(1); }
-      } catch { clearInterval(timer); }
-    }, 1000);
-    return () => clearInterval(timer);
+        if (!running.includes(data.task.status)) {
+          loadHistory(1);
+          return;
+        }
+      } catch (err) {
+        if (stopped || pollGenerationRef.current !== generation) return;
+        fail(err);
+      }
+      timer = setTimeout(poll, 1000);
+    };
+    timer = setTimeout(poll, 1000);
+    return () => {
+      stopped = true;
+      pollGenerationRef.current += 1;
+      if (timer) clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batch?.task_id, batch?.task.status]);
 
   const startBatch = async () => {
     if (!initialDraftIds?.length) { setError('没有可处理的草稿'); return; }
+    if (startInFlightRef.current || batchProcessing) return;
+    const body = {
+      title: '产品处理任务',
+      draft_ids: initialDraftIds.slice(0, options.maxProducts || 100),
+      max_products: options.maxProducts,
+      async_mode: true,
+      target_site: options.targetSite,
+      target_language: options.targetLanguage,
+      processing_scope: options.processingScope,
+      qualification_mode: options.qualificationMode,
+      include_product_video: options.includeProductVideo,
+      skip_duplicates: options.skipDuplicates,
+      ip_check: options.ipCheck,
+      max_parallel_drafts: options.maxParallelDrafts,
+      image_template: options.imageTemplate || 'A',
+      image_generation_count: options.imageGenerationCount ?? 4,
+    };
+    const signature = JSON.stringify(body);
+    if (!startRequestRef.current || startRequestRef.current.signature !== signature) {
+      startRequestRef.current = {
+        signature,
+        key: globalThis.crypto?.randomUUID?.() || `pp-${Date.now()}-${Math.random()}`,
+      };
+    }
+    startInFlightRef.current = true;
     setLoading(true);
     setMessage('');
     setError('');
     try {
       const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/drafts/process`, {
-        body: {
-          title: '产品处理任务',
-          draft_ids: initialDraftIds.slice(0, options.maxProducts || 100),
-          max_products: options.maxProducts,
-          async_mode: true,
-          target_site: options.targetSite,
-          target_language: options.targetLanguage,
-          processing_scope: options.processingScope,
-          qualification_mode: options.qualificationMode,
-          include_product_video: options.includeProductVideo,
-          skip_duplicates: options.skipDuplicates,
-          ip_check: options.ipCheck,
-          max_parallel_drafts: options.maxParallelDrafts,
-          image_template: options.imageTemplate || 'A',
-        },
+        body,
+        headers: { 'Idempotency-Key': startRequestRef.current.key },
       });
       setBatch(data);
       notify(data.message || '批次已提交');
-    } catch (err) { fail(err); } finally { setLoading(false); }
+    } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
   };
 
   const clearBatch = async () => {
-    if (!batch) return;
+    if (!batch || batchProcessing) return;
     try {
       await ppRequest(ctx, `${API_BASE}/tasks/${batch.task_id}/clear`, { body: {} });
       setBatch(null); loadHistory(1); notify('已清空当前任务');
@@ -221,32 +259,19 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
 
   // 重新处理失败/待确认项：以这些草稿为新的批次重新走处理流水线（async_mode 后台执行）
   const retryFailed = async (draftIds: number[]) => {
-    if (!draftIds.length) return;
+    if (!draftIds.length || !batch || batchProcessing || startInFlightRef.current) return;
+    startInFlightRef.current = true;
     setLoading(true);
     setMessage('');
     setError('');
     try {
-      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/drafts/process`, {
-        body: {
-          title: '失败项重新处理',
-          draft_ids: draftIds,
-          max_products: 0,
-          async_mode: true,
-          target_site: options.targetSite,
-          target_language: options.targetLanguage,
-          processing_scope: options.processingScope,
-          qualification_mode: options.qualificationMode,
-          include_product_video: options.includeProductVideo,
-          skip_duplicates: false,
-          ip_check: options.ipCheck,
-          max_parallel_drafts: options.maxParallelDrafts,
-          image_template: options.imageTemplate || 'A',
-        },
+      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/retry-attention`, {
+        body: { draft_ids: draftIds },
       });
       setBatch(data);
       notify(data.message || `已提交 ${draftIds.length} 个失败项重新处理`);
       loadHistory(1);
-    } catch (err) { fail(err); } finally { setLoading(false); }
+    } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
   };
 
   const historyTotalPages = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
@@ -340,6 +365,21 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
                 </label>
               ))}
             </div>
+            <div className="verify-form-row">
+              <span className="verify-scope-label">单次生图：</span>
+              {IMAGE_GENERATION_OPTIONS.map((option) => (
+                <label key={option.count} className="verify-template-card" title={option.description}>
+                  <input
+                    type="radio"
+                    name="image-generation-count"
+                    checked={(options.imageGenerationCount ?? 4) === option.count}
+                    onChange={() => setOptions((p) => ({ ...p, imageGenerationCount: option.count }))}
+                  />
+                  <span className="verify-template-name">{option.name}</span>
+                  <span className="verify-template-desc">{option.description}</span>
+                </label>
+              ))}
+            </div>
             <div className="verify-slider-row">
               <span className="verify-scope-label">处理数量：</span>
               <input className="verify-slider" type="range" min={0} max={100} step={1} value={options.maxProducts} onChange={(e) => setOptions((p) => ({ ...p, maxProducts: Number(e.target.value) || 0 }))} />
@@ -351,8 +391,8 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions, onO
               <span className="verify-slider-value">{options.maxParallelDrafts} 线程{options.maxParallelDrafts <= 1 ? '（串行）' : ''}</span>
             </div>
             <div className="verify-actions">
-              <button className="primary" onClick={() => startBatch()} disabled={loading || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
-              <button onClick={clearBatch} disabled={!batch}>清空任务</button>
+              <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
+              <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
             </div>
           </section>
 

@@ -1,6 +1,6 @@
 import type {
   DailySelectionCriteria,
-  DailySelectionHandoff,
+  DailySelectionConfirmResult,
   DailySelectionRun,
   DailySelectionRunSummary,
   SkuRepullState,
@@ -22,7 +22,7 @@ export function getSelectionRun(runId: string): Promise<DailySelectionRun> {
   return apiRequest(`/desktop/daily-selection/runs/${encodeURIComponent(runId)}`);
 }
 
-export function confirmCandidates(runId: string, candidateIds: string[]): Promise<DailySelectionHandoff[]> {
+export function confirmCandidates(runId: string, candidateIds: string[]): Promise<DailySelectionConfirmResult> {
   return apiRequest(`/desktop/daily-selection/runs/${encodeURIComponent(runId)}/confirm`, {
     method: "POST",
     body: JSON.stringify({ candidate_ids: candidateIds }),

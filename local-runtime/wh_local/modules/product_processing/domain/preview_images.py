@@ -136,3 +136,16 @@ def snapshot_hash(entries: Sequence[Mapping[str, Any]]) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def task_item_result_version(value: Any) -> str:
+    """Return a deterministic version for one persisted task-item result."""
+
+    payload = json.dumps(
+        value if isinstance(value, Mapping) else {},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

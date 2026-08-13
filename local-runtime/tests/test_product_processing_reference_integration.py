@@ -264,11 +264,11 @@ class _CapturingImageProcessor:
     @staticmethod
     def split_four_grid(media: SimpleNamespace) -> list[SimpleNamespace]:
         return [
-            SimpleNamespace(stage="grid_image_1"),
-            SimpleNamespace(stage="grid_image_2"),
-            SimpleNamespace(stage="grid_image_3"),
-            SimpleNamespace(stage="grid_image_4"),
-            SimpleNamespace(stage="grid_image_summary"),
+            SimpleNamespace(stage="grid_image_1", content=b"one"),
+            SimpleNamespace(stage="grid_image_2", content=b"two"),
+            SimpleNamespace(stage="grid_image_3", content=b"three"),
+            SimpleNamespace(stage="grid_image_4", content=b"four"),
+            SimpleNamespace(stage="grid_image_summary", content=b"summary"),
         ]
 
 
@@ -279,7 +279,11 @@ def test_grid_image_reference_does_not_add_provider_calls(monkeypatch) -> None:
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(service_module, "_media_types", lambda: (object, RuntimeError, ValueError))
     monkeypatch.setattr(service, "_media_processor", lambda: processor)
-    monkeypatch.setattr(service, "_repair_until_clean", lambda *args, **kwargs: args[3])
+    monkeypatch.setattr(
+        service_module,
+        "inspect_visible_text",
+        lambda _content: {"chinese": [], "prominent": []},
+    )
     monkeypatch.setattr(
         service,
         "_persist_media_for_preview",
@@ -320,6 +324,11 @@ def test_b_grid_uses_fixed_scaffold_and_disables_paid_repair(monkeypatch) -> Non
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(service_module, "_media_types", lambda: (object, RuntimeError, ValueError))
     monkeypatch.setattr(service, "_media_processor", lambda: processor)
+    monkeypatch.setattr(
+        service_module,
+        "inspect_visible_text",
+        lambda _content: {"chinese": [], "prominent": []},
+    )
 
     def repair(*args, **kwargs):
         repair_options.append(kwargs["allow_paid_repair"])
@@ -348,7 +357,7 @@ def test_b_grid_uses_fixed_scaffold_and_disables_paid_repair(monkeypatch) -> Non
     )
 
     assert processor.layout_scaffold_values == [True]
-    assert repair_options == [False]
+    assert repair_options == []
     assert output.attempt_count == 1
     assert output.provider_status_class == "success"
     assert output.stage_timings_ms.keys() >= {

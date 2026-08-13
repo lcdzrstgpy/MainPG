@@ -111,6 +111,7 @@ export type Task = {
 export type EngineStatus = {
   available: boolean;
   ready: boolean;
+  unavailable_reasons: string[];
   app_dir: string;
   app_file: string;
   python: string;
@@ -119,7 +120,9 @@ export type EngineStatus = {
   diagnostics: {
     config: Record<string, unknown>;
     tenant_ai_capability: Record<string, unknown>;
+    capabilities: Record<string, { enabled: boolean; ready: boolean; reason: string }>;
     dependencies: Record<string, boolean>;
+    ocr_gate: Record<string, unknown>;
     storage_root: string;
   };
 };
@@ -152,6 +155,8 @@ export interface ProductProcessingOptions {
   maxParallelDrafts: number;
   /** 生图提示词模板：A=标准商品海报，B=高端模特视觉（防比价） */
   imageTemplate?: 'A' | 'B';
+  /** 单次 API 调用承载的独立商品图数：1=单图×4，2=双图×2，4=四宫格×1 */
+  imageGenerationCount?: 1 | 2 | 4;
 }
 
 /** 生图提示词模板注册表（对齐后端 IMAGE_TEMPLATES） */
@@ -232,6 +237,7 @@ export type PreviewItem = {
   item_id: number;
   product_draft_id: number | null;
   preview_revision: number;
+  result_version: string;
   exportable: boolean;
   skc: string;
   status: string;
