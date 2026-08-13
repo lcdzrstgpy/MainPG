@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -38,9 +39,13 @@ class AiClient:
         self.image_size = provider["image_size"]
         self.image_quality = provider["image_quality"]
         self.timeout_seconds = float(provider.get("timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS))
-        # 差异化超时：文本 25s 快速失败落降级链；图片 90s 留足生成时间。
-        self.text_timeout_seconds = float(provider.get("text_timeout_seconds", 25.0))
-        self.image_timeout_seconds = float(provider.get("image_timeout_seconds", 90.0))
+        self.text_timeout_seconds = float(provider.get("text_timeout_seconds", 300.0))
+        # 兼容调用方未提供总预算的旧配置：保留原本“每个候选各自等待”的量级；
+        # 新配置则把整条降级链限制在明确总预算内，慢主模型不会被 25 秒误取消。
+        self.text_total_timeout_seconds = float(
+            provider.get("text_total_timeout_seconds", self.text_timeout_seconds * 4)
+        )
+        self.image_timeout_seconds = float(provider.get("image_timeout_seconds", 600.0))
 
     def chat(self, messages: list[dict[str, Any]], *, model: str | None = None) -> str:
         """调用 chat/completions，返回首个 assistant 文本。
@@ -49,14 +54,23 @@ class AiClient:
         才依次尝试后续模型，业务 4xx 直接失败，避免无意义的等待与调用。
         """
         last_error: AiProviderError | None = None
-        for candidate in self._text_model_chain(model):
+        candidates = self._text_model_chain(model)
+        deadline = time.monotonic() + max(self.text_timeout_seconds, self.text_total_timeout_seconds)
+        for candidate in candidates:
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                break
             payload = {
                 "model": candidate,
                 "messages": messages,
                 "temperature": 0.7,
             }
             try:
-                data = self._post("/chat/completions", payload, timeout=self.text_timeout_seconds)
+                data = self._post(
+                    "/chat/completions",
+                    payload,
+                    timeout=min(self.text_timeout_seconds, remaining_seconds),
+                )
                 return str(data["choices"][0]["message"]["content"] or "").strip()
             except (KeyError, IndexError, TypeError) as exc:
                 raise AiProviderError(f"unexpected chat response: {data}") from exc
@@ -66,7 +80,7 @@ class AiClient:
                 if status is not None and 400 <= status < 500 and status != 429:
                     raise  # 业务级 4xx（参数/鉴权错误）重试其他模型也无意义，直接失败
                 continue
-        raise last_error or AiProviderError("no text model candidate available")
+        raise last_error or AiProviderError("text generation exceeded its total timeout budget")
 
     def _text_model_chain(self, model: str | None) -> list[str]:
         """主模型（显式指定 > 配置文本模型）加 fallback 链，去重保序。"""

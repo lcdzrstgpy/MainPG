@@ -33,11 +33,13 @@ IMAGE_MODEL_POOL = ("gpt-image-2-2k",)
 IMAGE_SIZE = "2048x2048"
 IMAGE_QUALITY = "medium"
 
-DEFAULT_AI_TIMEOUT_SECONDS = 60.0
-# 差异化超时：文本生成快，缩短等待让失败快速落回降级链；图片编辑耗时长，保留充足时间。
-# 避免慢模型/挂起请求把整批任务拖成 4×60s。
-TEXT_AI_TIMEOUT_SECONDS = 25.0
-IMAGE_AI_TIMEOUT_SECONDS = 90.0
+# 运行时模型通常先返回，再由调用方做结构化校验；慢模型不能被客户端过早取消。
+# 文本单候选最多等 5 分钟，整条降级链最多 6 分钟，避免四个候选串行等待 20 分钟。
+# 2K 参考图编辑实测可超过 3 分钟，因此单次图片请求保留 10 分钟。
+DEFAULT_AI_TIMEOUT_SECONDS = 300.0
+TEXT_AI_TIMEOUT_SECONDS = 300.0
+TEXT_AI_TOTAL_TIMEOUT_SECONDS = 360.0
+IMAGE_AI_TIMEOUT_SECONDS = 600.0
 
 # 应用组合根（create_app 中注入），指向 BasicSettings 使用的 SQLite 数据库。
 _system_config_db_path: str | None = None
@@ -127,6 +129,7 @@ def resolve_ai_provider() -> dict[str, Any]:
         "image_quality": os.environ.get("WH_AI_IMAGE_QUALITY", IMAGE_QUALITY).strip(),
         "timeout_seconds": DEFAULT_AI_TIMEOUT_SECONDS,
         "text_timeout_seconds": TEXT_AI_TIMEOUT_SECONDS,
+        "text_total_timeout_seconds": TEXT_AI_TOTAL_TIMEOUT_SECONDS,
         "image_timeout_seconds": IMAGE_AI_TIMEOUT_SECONDS,
         # 系统配置附加信息（供 _media_config_provider 使用）
         "_sys_image_ai": (

@@ -11,6 +11,10 @@ import httpx
 STATION_BASE_URL = "https://station-88.aicoming.top/v1"
 MAX_RESULT_BYTES = 12 * 1024 * 1024
 _BENCHMARK_PROXY_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+# 普通 JSON 响应给模型 5 分钟；流式请求允许任意两次 chunk 之间最多空闲 10 分钟。
+# 连接、写入和连接池仍有明确较短上限，避免网络故障无限挂起。
+STATION_REQUEST_TIMEOUT = httpx.Timeout(connect=15.0, read=300.0, write=60.0, pool=30.0)
+STATION_STREAM_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=30.0)
 
 
 class StationGatewayError(RuntimeError):
@@ -26,7 +30,7 @@ class StationGateway:
         if not api_key.strip():
             raise StationGatewayError("AI service API key is not configured", 503)
         self.api_key = api_key.strip()
-        self.client = client or httpx.Client(timeout=httpx.Timeout(90.0, connect=15.0))
+        self.client = client or httpx.Client(timeout=STATION_REQUEST_TIMEOUT)
         self._owns_client = client is None
 
     def close(self) -> None:
@@ -58,6 +62,7 @@ class StationGateway:
             f"{STATION_BASE_URL}/chat/completions",
             headers=headers,
             json={"model": model, "messages": messages, "stream": True},
+            timeout=STATION_STREAM_TIMEOUT,
         ) as response:
             self._raise_for_status(response)
             for line in response.iter_lines():

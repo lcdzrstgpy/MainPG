@@ -175,7 +175,7 @@ def test_image_early_500_retries_only_once(monkeypatch, tmp_path) -> None:
     assert media.reference_count == 1
 
 
-def test_second_grid_attempt_uses_only_the_remaining_150_second_budget(monkeypatch, tmp_path) -> None:
+def test_second_grid_attempt_uses_only_the_remaining_total_timeout_budget(monkeypatch, tmp_path) -> None:
     source = tmp_path / "source.png"
     source.write_bytes(_grid_bytes())
     clock = [0.0]
@@ -184,7 +184,7 @@ def test_second_grid_attempt_uses_only_the_remaining_150_second_budget(monkeypat
     def respond(*_args, **kwargs):
         request_timeouts.append(float(kwargs["timeout_seconds"]))
         if len(request_timeouts) == 1:
-            clock[0] = 125.0
+            clock[0] = 625.0
             raise MediaProcessingError("server error", status_code=500)
         return _grid_bytes(), "image/png"
 
@@ -198,7 +198,7 @@ def test_second_grid_attempt_uses_only_the_remaining_150_second_budget(monkeypat
     media = processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
 
     assert media.attempt_count == 2
-    assert request_timeouts == [120.0, 25.0]
+    assert request_timeouts == [600.0, 35.0]
 
 
 def test_b_grid_quality_failure_never_triggers_a_paid_repair(monkeypatch) -> None:

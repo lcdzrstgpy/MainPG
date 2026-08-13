@@ -48,6 +48,11 @@ DXM_IMAGE_TARGET_SIZE = 800
 # 保留商品边缘、透明材质和本地排版细节，避免默认 4:2:0 二次损失。
 DXM_IMAGE_JPEG_QUALITY = 94
 
+# 2K 图像编辑的真实生成时间常超过 120 秒。请求和整条生成流程分别保留充足预算，
+# 同时用总预算限制失败后的重试，避免批处理无限占住图片并发槽。
+IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS = 600.0
+IMAGE_GENERATION_TOTAL_TIMEOUT_SECONDS = 660.0
+
 # 图片 provider 轮巡游标（对齐原项目 native_product_engine._PROVIDER_CURSORS）：
 # 进程内全局共享、线程锁保护，按"每次图片请求"取模轮转起始 provider，实现负载均衡。
 _PROVIDER_CURSOR_LOCK = threading.Lock()
@@ -168,18 +173,16 @@ class ProductImageProcessor:
         retries = max(1, min(int((config.get("limits") or {}).get("image_retry_attempts") or 3), 5))
         errors: list[str] = []
         attempt_count = 0
-        grid_deadline = time.monotonic() + 150.0 if stage == "grid_image" else None
+        generation_deadline = time.monotonic() + IMAGE_GENERATION_TOTAL_TIMEOUT_SECONDS
         max_total_attempts = min(retries, 2) if stage == "grid_image" else retries * max(1, len(providers))
         for provider in self._provider_order(providers, config):
             for attempt in range(1, retries + 1):
                 if attempt_count >= max_total_attempts:
                     break
-                request_timeout = 120.0
-                if grid_deadline is not None:
-                    remaining_seconds = grid_deadline - time.monotonic()
-                    if remaining_seconds <= 1.0:
-                        break
-                    request_timeout = min(request_timeout, remaining_seconds)
+                remaining_seconds = generation_deadline - time.monotonic()
+                if remaining_seconds <= 1.0:
+                    break
+                request_timeout = min(IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS, remaining_seconds)
                 attempt_count += 1
                 try:
                     content, content_type = self._request_edit(
@@ -211,7 +214,7 @@ class ProductImageProcessor:
                         ) from exc
                     if status_class == "rate_limited":
                         delay = min(2 ** attempt, 10)
-                        if grid_deadline is not None and time.monotonic() + delay >= grid_deadline:
+                        if time.monotonic() + delay >= generation_deadline:
                             break
                         time.sleep(delay)
             if attempt_count >= max_total_attempts:
@@ -644,7 +647,7 @@ class ProductImageProcessor:
         prompt: str,
         references: list[tuple[bytes, str, str]],
         *,
-        timeout_seconds: float = 120.0,
+        timeout_seconds: float = IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS,
     ) -> tuple[bytes, str]:
         files: Any
         if len(references) == 1:
@@ -665,7 +668,7 @@ class ProductImageProcessor:
                 "size": _normalized_image_size(provider.get("image_size")),
             },
             files=files,
-            timeout=max(1.0, min(float(timeout_seconds), 120.0)),
+            timeout=max(1.0, min(float(timeout_seconds), IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS)),
         )
         try:
             if not response.ok:
