@@ -192,11 +192,11 @@ def test_single_item_import_materializes_registered_asset_renders_and_submits(se
     repeated = service.submit_review(completed["batch_id"], workspace_id="local")
     assert change_set["item_count"] == 1
     assert repeated["id"] == change_set["id"]
-    assert len(publisher_calls) == 1
+    assert publisher_calls == []
     hydrated = service.get_item(completed["id"], workspace_id="local")
     rendered = next(asset for asset in hydrated["assets"] if asset["role"] == "rendered_dimension")
-    assert rendered["preview_url"].startswith("https://bucket.cos.")
-    assert change_set["items"][0]["new_image_url"].startswith("https://bucket.cos.")
+    assert rendered["preview_url"].startswith("/pp-media/")
+    assert change_set["items"][0]["new_image_url"].startswith("/pp-media/")
 
 
 def test_user_upload_is_registered_once_and_available_as_local_preview(service_fixture) -> None:
@@ -266,7 +266,7 @@ def test_redraw_uses_new_render_revision_and_new_change_set_key(service_fixture)
     second_set = service.submit_review(second["batch_id"], workspace_id="local")
     assert second["render_revision"] == first["render_revision"] + 1
     assert second_set["idempotency_key"] != first_set["idempotency_key"]
-    assert len(publisher_calls) == 2
+    assert publisher_calls == []
 
 
 def test_accept_conflict_does_not_silently_overwrite_target_slot(service_fixture) -> None:
@@ -310,7 +310,9 @@ def test_accept_merges_only_target_slot_and_preserves_legacy_carousel(service_fi
     overrides = after["preview_overrides"]
     assert overrides["carousel_images"] == ["one.jpg", "two.jpg", "three.jpg", "old.jpg"]
     assert overrides["title"] == "keep"
-    assert set(overrides["image_slot_overrides"]) == {"carousel.dimension_background"}
+    manifest = overrides["image_manifest_v2"]
+    assert manifest["carousel_asset_ids"][3]
+    assert "image_slot_overrides" not in overrides
 
 
 def test_submit_review_blocks_when_preview_changed_after_canvas_import(service_fixture) -> None:
@@ -345,35 +347,14 @@ def test_submit_review_blocks_when_preview_changed_after_canvas_import(service_f
     assert publisher_calls == []
 
 
-def test_submit_review_rechecks_preview_revision_after_cos_upload(service_fixture) -> None:
-    database, product, repository, service, _calls, publisher_calls = service_fixture
+def test_submit_review_never_calls_cos_publisher(service_fixture) -> None:
+    database, _product, repository, service, _calls, publisher_calls = service_fixture
     seeded = _seed(database)
     completed = _complete(service, seeded)
-
-    def mutating_publisher(
-        content: bytes,
-        task_id: int,
-        draft_id: int,
-        render_revision: int,
-        content_hash: str,
-        workspace_id: str,
-    ) -> dict:
-        publisher_calls.append({"content_hash": content_hash})
-        draft = product.get_draft(draft_id, workspace_id=workspace_id)
-        assert draft is not None
-        product.save_draft_preview_overrides(
-            draft_id,
-            {"image_slot_overrides": {"carousel.dimension_background": {"url": "manual-during-upload.jpg"}}},
-            expected_revision=draft["preview_revision"],
-            workspace_id=workspace_id,
-        )
-        return {"url": f"https://bucket.cos.ap-guangzhou.myqcloud.com/dimension/{content_hash}.jpg"}
-
-    service.publisher = mutating_publisher
-    with pytest.raises(DimensionCanvasConflict, match="preview changed"):
-        service.submit_review(completed["batch_id"], workspace_id="local")
-    assert len(publisher_calls) == 1
-    assert repository.list_notifications("local") == []
+    change_set = service.submit_review(completed["batch_id"], workspace_id="local")
+    assert publisher_calls == []
+    assert change_set["items"][0]["new_image_url"].startswith("/pp-media/")
+    assert repository.list_notifications("local")
 
 
 def test_database_publish_claim_prevents_duplicate_cos_upload(service_fixture) -> None:
@@ -467,13 +448,12 @@ def test_expired_publish_lease_is_reclaimed_and_old_worker_cannot_finish(service
     assert published["availability"] == "published"
 
 
-def test_submit_review_rejects_non_public_publisher_url(service_fixture) -> None:
+def test_submit_review_ignores_legacy_publisher_and_keeps_render_local(service_fixture) -> None:
     database, _product, repository, service, _calls, _publisher_calls = service_fixture
     seeded = _seed(database)
     completed = _complete(service, seeded)
-    service.publisher = lambda *_args: {"url": "http://127.0.0.1:8010/pp-media/dimension.jpg"}
-    with pytest.raises(DimensionCanvasConflict, match="公开 HTTPS"):
-        service.submit_review(completed["batch_id"], workspace_id="local")
+    change_set = service.submit_review(completed["batch_id"], workspace_id="local")
+    assert change_set["items"][0]["new_image_url"].startswith("/pp-media/")
     asset = repository.get_asset(completed["render_asset_id"], completed["id"], "local")
     assert asset is not None
     assert asset["availability"] == "local"

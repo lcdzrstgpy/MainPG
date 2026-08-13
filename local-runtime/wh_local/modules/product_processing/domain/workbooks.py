@@ -72,6 +72,17 @@ def _http_urls(values: Any) -> list[str]:
     return [str(value).strip() for value in (values or []) if _is_http_url(value)]
 
 
+def require_final_public_image_urls(values: list[str]) -> list[str]:
+    """Fail closed when a final workbook still contains a local/private image."""
+    normalized = [str(value or "").strip() for value in values]
+    if any(
+        not value.lower().startswith("https://") or not is_safe_external_url(value)
+        for value in normalized
+    ):
+        raise ValueError("final workbook images must be public HTTPS URLs")
+    return normalized
+
+
 def read_product_workbook(filename: str, content: bytes) -> list[dict[str, Any]]:
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
@@ -304,7 +315,13 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
             material_images = main_image
 
     # 详情图以 HTML 追加到产品描述（交接文档 §10/§12）；仅追加可外部访问的 http(s) 地址
-    detail_sources = override_detail or _http_urls(detail_image_paths)
+    # Presence is semantic: an explicit empty array means the operator removed
+    # every detail image and must never resurrect generated legacy values.
+    detail_sources = (
+        override_detail
+        if "detail_images" in preview_overrides
+        else _http_urls(detail_image_paths)
+    )
     detail_html = "".join(f'<img src="{value}" />' for value in detail_sources)
     if detail_html:
         description = f"{description}\n{detail_html}".strip()

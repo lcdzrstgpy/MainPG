@@ -26,6 +26,7 @@ from .schemas import (
     DraftDeleteRequest,
     DraftProcessRequest,
     DraftUpdateRequest,
+    PreviewFinalizeRequest,
     PreviewSaveRequest,
     PromptUpdateRequest,
     RetryTaskRequest,
@@ -57,9 +58,6 @@ def create_product_processing_router(
             service.assets,
             DimensionRenderer(),
             source_loader=service.load_dimension_source,
-            # Rendering stays local while editing; the adapter publishes the final
-            # content-addressed image to COS only when the user submits for review.
-            publisher=service.publish_dimension_media,
         )
         setattr(service, "_dimension_canvas_service", dimension_service)
     @asynccontextmanager
@@ -382,35 +380,136 @@ def create_product_processing_router(
             workspace_id=_workspace(workspace_id),
         )
 
-    @router.post("/tasks/{task_id}/preview/images")
-    async def upload_preview_image(
+    @router.get("/preview/assets/{asset_id}/content", response_model=None)
+    def preview_asset_content(
+        asset_id: str,
+        workspace_id: str = Query(...),
+        expires: int = Query(..., gt=0),
+        signature: str = Query(..., min_length=32, max_length=128),
+        request_workspace: str | None = Header(default=None, alias="X-Workspace-ID"),
+    ) -> FileResponse:
+        workspace = _workspace(workspace_id)
+        if request_workspace is not None and _workspace(request_workspace) != workspace:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "preview image asset not found")
+        try:
+            path, media_type = service.preview_images.preview_asset_content(
+                asset_id,
+                workspace_id=workspace,
+                expires=expires,
+                signature=signature,
+            )
+        except (LookupError, OSError, ValueError):
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "preview image asset not found",
+            ) from None
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "private, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @router.post("/tasks/{task_id}/preview/assets")
+    async def upload_preview_assets(
         task_id: int,
         request: Request,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
-        form, file = await _upload_form(request, "image_file")
+        form = await request.form()
         try:
             draft_id = int(str(form.get("draft_id") or 0) or 0)
-            if draft_id <= 0:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_id is required")
-            return _call(
-                service.upload_preview_image,
-                task_id,
-                draft_id,
-                await file.read(),
-                _filename(file, "preview-image.jpg"),
-                str(getattr(file, "content_type", "") or ""),
-                workspace_id=_workspace(workspace_id),
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_id is required") from exc
+        files = [value for value in form.getlist("image_files") if hasattr(value, "read")]
+        if draft_id <= 0 or not files:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "draft_id and image_files are required",
             )
+        if len(files) > 20:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "at most 20 images may be uploaded")
+        assets: list[dict[str, Any]] = []
+        try:
+            for upload in files:
+                assets.append(
+                    _call(
+                        service.register_preview_upload,
+                        task_id,
+                        draft_id,
+                        await _read_limited_upload(upload),
+                        _filename(upload, "preview-image.jpg"),
+                        str(getattr(upload, "content_type", "") or ""),
+                        workspace_id=_workspace(workspace_id),
+                    )
+                )
         finally:
-            await file.close()
+            for upload in files:
+                await upload.close()
+        return {"assets": assets}
 
-    @router.post("/tasks/{task_id}/preview/export")
-    def export_preview(
+    @router.post(
+        "/tasks/{task_id}/preview/finalize",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def finalize_preview(
         task_id: int,
+        body: PreviewFinalizeRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.begin_preview_finalize,
+            task_id,
+            [item.model_dump() for item in body.items],
+            workspace_id=_workspace(workspace_id),
+            idempotency_key=str(idempotency_key or "").strip(),
+        )
+
+    @router.get("/tasks/{task_id}/preview/finalize/{run_id}")
+    def preview_finalize_status(
+        task_id: int,
+        run_id: str,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
-        return _call(service.export_final_workbook, task_id, workspace_id=_workspace(workspace_id))
+        return _call(
+            service.preview_finalize_status,
+            task_id,
+            run_id,
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.post(
+        "/tasks/{task_id}/preview/finalize/{run_id}/retry",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def retry_preview_finalize(
+        task_id: int,
+        run_id: str,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.retry_preview_finalize,
+            task_id,
+            run_id,
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.get("/tasks/{task_id}/preview/finalize/{run_id}/download")
+    def download_preview_finalize(
+        task_id: int,
+        run_id: str,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ):
+        path = _call(
+            service.preview_finalize_download_path,
+            task_id,
+            run_id,
+            workspace_id=_workspace(workspace_id),
+        )
+        return FileResponse(path, filename=path.name, media_type=_download_media_type(path))
 
     @router.post("/tasks/{task_id}/pause")
     def pause_task(
@@ -486,6 +585,14 @@ async def _upload_form(request: Request, field: str):
     if file is None or not hasattr(file, "read"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{field} is required")
     return dict(form_data), file
+
+
+async def _read_limited_upload(file: Any, limit: int = 25 * 1024 * 1024) -> bytes:
+    """Read at most the preview image contract plus one byte, never unbounded."""
+    content = await file.read(limit + 1)
+    if len(content) > limit:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "preview image exceeds 25 MiB")
+    return bytes(content)
 
 
 def _filename(file: Any, fallback: str) -> str:

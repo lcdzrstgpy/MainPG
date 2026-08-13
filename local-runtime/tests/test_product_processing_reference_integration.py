@@ -282,8 +282,8 @@ def test_grid_image_reference_does_not_add_provider_calls(monkeypatch) -> None:
     monkeypatch.setattr(service, "_repair_until_clean", lambda *args, **kwargs: args[3])
     monkeypatch.setattr(
         service,
-        "_publish_media",
-        lambda _processor, parts, _task_id, _draft_id: [
+        "_persist_media_for_preview",
+        lambda parts, _task_id, _draft_id, _workspace_id: [
             f"https://example.com/{part.stage}.png" for part in parts
         ],
     )
@@ -328,8 +328,8 @@ def test_b_grid_uses_fixed_scaffold_and_disables_paid_repair(monkeypatch) -> Non
     monkeypatch.setattr(service, "_repair_until_clean", repair)
     monkeypatch.setattr(
         service,
-        "_publish_media",
-        lambda _processor, parts, _task_id, _draft_id: [
+        "_persist_media_for_preview",
+        lambda parts, _task_id, _draft_id, _workspace_id: [
             f"https://example.com/{part.stage}.png" for part in parts
         ],
     )
@@ -354,5 +354,5 @@ def test_b_grid_uses_fixed_scaffold_and_disables_paid_repair(monkeypatch) -> Non
     assert output.stage_timings_ms.keys() >= {
         "grid_generation_ms",
         "grid_validation_ms",
-        "publish_ms",
+        "persist_ms",
     }

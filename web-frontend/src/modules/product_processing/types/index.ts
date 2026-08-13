@@ -174,6 +174,51 @@ export type PreviewCoreFields = {
   weight_g?: number | string | null;
 };
 
+export type PreviewImageOrigin = "source" | "generated" | "dimension" | "upload";
+
+export type PreviewImageAsset = {
+  id: string;
+  origin: PreviewImageOrigin;
+  preview_url: string;
+  publication_status:
+    | "local"
+    | "materializing"
+    | "ready"
+    | "publishing"
+    | "published"
+    | "publish_failed";
+  public_url: string | null;
+  width: number;
+  height: number;
+};
+
+export type PreviewImageManifest = {
+  main_asset_id: string;
+  carousel_asset_ids: string[];
+  detail_asset_ids: string[];
+  semantic_asset_ids: Record<string, string>;
+};
+
+export type PreviewFinalizeRun = {
+  id: string;
+  task_id: number;
+  status: "queued" | "publishing" | "publish_failed" | "stale" | "completed";
+  total_count: number;
+  published_count: number;
+  failed_count: number;
+  errors: Array<{
+    asset_id: string;
+    product_draft_id: number;
+    code: string;
+    message: string;
+  }>;
+  workbook_ready: boolean;
+  file: string;
+  row_count: number;
+  product_count: number;
+  download: string;
+};
+
 export type PreviewOverrides = {
   title?: string;
   description?: string;
@@ -186,6 +231,8 @@ export type PreviewOverrides = {
 export type PreviewItem = {
   item_id: number;
   product_draft_id: number | null;
+  preview_revision: number;
+  exportable: boolean;
   skc: string;
   status: string;
   reason: string;
@@ -197,6 +244,8 @@ export type PreviewItem = {
   detail_images: string[];
   core_fields: PreviewCoreFields;
   overrides: PreviewOverrides;
+  assets: PreviewImageAsset[];
+  image_manifest: PreviewImageManifest;
 };
 
 export type PreviewResponse = {

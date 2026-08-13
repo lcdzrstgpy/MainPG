@@ -372,12 +372,14 @@ class ProductImageProcessor:
         *,
         namespace: str,
         content_hash: str,
+        collection: str = "dimension-canvas",
     ) -> str:
         """Publish one immutable image under a deterministic COS key.
 
-        Dimension-canvas review uses this path so repeated submit/recovery checks the
-        same object instead of creating UUID-keyed duplicates. A timeout with unknown
-        outcome is reconciled with ``HEAD`` before it is reported as failed.
+        The caller supplies a stable collection and workspace namespace so repeated
+        submit/recovery checks the same object instead of creating UUID-keyed
+        duplicates. A timeout with unknown outcome is reconciled with ``HEAD`` before
+        it is reported as failed.
         """
         digest = hashlib.sha256(media.content).hexdigest()
         expected = str(content_hash or "").strip().lower()
@@ -400,12 +402,15 @@ class ProductImageProcessor:
             or "product-processing"
         ).strip("/")
         safe_namespace = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(namespace or "dimension")).strip("-")[:48]
+        safe_collection = re.sub(
+            r"[^a-zA-Z0-9_-]+", "-", str(collection or "preview-final")
+        ).strip("-")[:48]
         suffix = media.suffix if media.suffix in {".jpg", ".jpeg", ".png", ".webp"} else ".jpg"
         key = "/".join(
             part
             for part in (
                 prefix or "product-processing",
-                "dimension-canvas",
+                safe_collection or "preview-final",
                 safe_namespace or "workspace",
                 digest[:2],
                 f"{digest}{suffix}",
@@ -423,8 +428,28 @@ class ProductImageProcessor:
 
         def exists() -> bool:
             try:
-                client.head_object(Bucket=bucket, Key=key)
-                return True
+                response = client.head_object(Bucket=bucket, Key=key) or {}
+                metadata_hash = str(
+                    response.get("x-cos-meta-sha256")
+                    or response.get("X-Cos-Meta-Sha256")
+                    or (response.get("Metadata") or {}).get("sha256")
+                    or ""
+                ).strip().lower()
+                length = str(
+                    response.get("Content-Length")
+                    or response.get("content-length")
+                    or ""
+                ).strip()
+                media_type = str(
+                    response.get("Content-Type")
+                    or response.get("content-type")
+                    or ""
+                ).split(";", 1)[0].strip().lower()
+                return (
+                    metadata_hash == digest
+                    and (not length or length == str(len(media.content)))
+                    and (not media_type or media_type == media.content_type.lower())
+                )
             except Exception as exc:
                 status_getter = getattr(exc, "get_status_code", None)
                 status = status_getter() if callable(status_getter) else getattr(exc, "status_code", None)
@@ -439,6 +464,7 @@ class ProductImageProcessor:
                     Key=key,
                     Body=media.content,
                     ContentType=media.content_type,
+                    Metadata={"x-cos-meta-sha256": digest},
                 )
             except Exception as exc:
                 try:
@@ -446,7 +472,67 @@ class ProductImageProcessor:
                         raise MediaProcessingError(f"COS upload failed: {_safe_error(exc)}") from exc
                 except MediaProcessingError:
                     raise
+            if not exists():
+                raise MediaProcessingError("COS object verification failed after upload")
         return f"https://{bucket}.cos.{region}.myqcloud.com/{key}"
+
+    def is_configured_cos_url(self, url: str, *, require_public: bool = False) -> bool:
+        """Return true only for an existing object in this configured COS bucket.
+
+        Merely looking like a public URL is insufficient: legacy URLs are reused by
+        the preview finalizer only after the configured bucket and object key have
+        both been verified server-side.
+        """
+        value = str(url or "").strip()
+        parsed = urlsplit(value)
+        config = self._config()
+        cos = dict(config.get("cos") or {})
+        bucket = str(cos.get("bucket") or "").strip()
+        region = str(cos.get("region") or "").strip()
+        secret_id = str(cos.get("secret_id") or "").strip()
+        secret_key = str(cos.get("secret_key") or "").strip()
+        expected_host = f"{bucket}.cos.{region}.myqcloud.com".lower()
+        object_key = parsed.path.lstrip("/")
+        if (
+            parsed.scheme.lower() != "https"
+            or str(parsed.hostname or "").lower() != expected_host
+            or not object_key
+            or not all((bucket, region, secret_id, secret_key))
+        ):
+            return False
+        try:
+            from qcloud_cos import CosConfig, CosS3Client  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise MediaConfigurationError("COS SDK is not installed") from exc
+        client = CosS3Client(
+            CosConfig(
+                Region=region,
+                SecretId=secret_id,
+                SecretKey=secret_key,
+                Timeout=60,
+            )
+        )
+        try:
+            client.head_object(Bucket=bucket, Key=object_key)
+        except Exception as exc:
+            status_getter = getattr(exc, "get_status_code", None)
+            status = status_getter() if callable(status_getter) else getattr(exc, "status_code", None)
+            if str(status or "") == "404":
+                return False
+            raise MediaProcessingError(f"COS object check failed: {_safe_error(exc)}") from exc
+        if not require_public:
+            return True
+        # Dianxiaomi fetches without our COS credentials. Verify that the canonical
+        # URL itself is anonymously readable and reject redirects to avoid changing
+        # the trusted host after validation.
+        try:
+            response = _SESSION.head(value, allow_redirects=False, timeout=(3, 8))
+        except requests.RequestException as exc:
+            raise MediaProcessingError(f"COS public access check failed: {_safe_error(exc)}") from exc
+        if not 200 <= response.status_code < 300:
+            return False
+        media_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        return not media_type or media_type in {"image/jpeg", "image/png", "image/webp"}
 
     def _config(self) -> dict[str, Any]:
         value = self._config_provider()

@@ -153,13 +153,32 @@ class RetryTaskRequest(BaseModel):
     plugin_session_id: int | None = None
 
 
+class PreviewImageManifestInput(BaseModel):
+    main_asset_id: str = ""
+    carousel_asset_ids: list[str] = Field(default_factory=list)
+    detail_asset_ids: list[str] = Field(default_factory=list)
+    semantic_asset_ids: dict[str, str] = Field(default_factory=dict)
+
+
+class PreviewDesiredState(BaseModel):
+    title: str
+    description: str
+    core_fields: dict[str, Any] = Field(default_factory=dict)
+    image_manifest_v2: PreviewImageManifestInput
+
+
 class PreviewSaveItem(BaseModel):
     product_draft_id: int
-    overrides: dict[str, Any] = Field(default_factory=dict)
+    expected_preview_revision: int = Field(ge=0)
+    overrides: PreviewDesiredState
 
 
 class PreviewSaveRequest(BaseModel):
     items: list[PreviewSaveItem] = Field(default_factory=list)
+
+
+class PreviewFinalizeRequest(PreviewSaveRequest):
+    pass
 
 
 class PromptUpdateRequest(BaseModel):

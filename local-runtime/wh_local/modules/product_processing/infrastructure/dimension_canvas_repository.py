@@ -11,6 +11,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from ..domain.policy import is_safe_external_url
 from ..domain.physical_dimensions import prefill_physical_dimensions
+from ..domain.preview_images import MANIFEST_KEY, SLOT_INDEX, PreviewImageManifest, replace_carousel_slot
 from .database import ProductProcessingDatabase
 from .dimension_canvas_orm import (
     DimensionCanvasAssetRow,
@@ -21,6 +22,7 @@ from .dimension_canvas_orm import (
     DimensionCanvasNotificationRow,
 )
 from .orm import ProcessingTaskItemRow, ProcessingTaskRow, ProductDraftRow, utc_now
+from .preview_image_orm import PreviewImageAssetRow
 
 
 class StaleCanvasRevision(RuntimeError):
@@ -835,13 +837,13 @@ class DimensionCanvasRepository:
                 )
                 if replacement is None:
                     raise CanvasStateConflict("rendered asset not found")
-                replacement_url = str(replacement.source_url or "").strip()
                 if (
-                    replacement.availability != "published"
-                    or not replacement_url.lower().startswith("https://")
-                    or not is_safe_external_url(replacement_url)
+                    replacement.role != "rendered_dimension"
+                    or replacement.availability not in {"local", "published"}
+                    or not str(replacement.managed_path or "").strip()
+                    or not str(replacement.content_hash or "").strip()
                 ):
-                    raise CanvasStateConflict("rendered asset is not published to a public HTTPS image host")
+                    raise CanvasStateConflict("rendered dimension asset is not available locally")
                 draft = session.scalar(
                     select(ProductDraftRow).where(
                         ProductDraftRow.id == item.product_draft_id,
@@ -901,7 +903,22 @@ class DimensionCanvasRepository:
             )
             return self._change_set_with_items(session, row) if row else None
 
-    def accept_change_item(self, change_item_id: str, workspace_id: str) -> dict[str, Any]:
+    def get_change_item(self, change_item_id: str, workspace_id: str) -> dict[str, Any] | None:
+        with self.database.sessions() as session:
+            row = session.scalar(
+                select(DimensionCanvasChangeItemRow).where(
+                    DimensionCanvasChangeItemRow.id == str(change_item_id),
+                    DimensionCanvasChangeItemRow.workspace_id == str(workspace_id),
+                )
+            )
+            return self._change_item(row) if row else None
+
+    def accept_change_item(
+        self,
+        change_item_id: str,
+        workspace_id: str,
+        preview_managed_path: str | None = None,
+    ) -> dict[str, Any]:
         """Atomically merge one immutable slot patch; no client revision is trusted."""
         with self.database.sessions.begin() as session:
             change_item = session.scalar(
@@ -956,22 +973,36 @@ class DimensionCanvasRepository:
             )
             if managed_asset is None or managed_asset.role != "rendered_dimension":
                 raise CanvasStateConflict("replacement asset is not a managed canvas render")
-            replacement_value = str(managed_asset.source_url or "").strip()
             if (
-                managed_asset.availability != "published"
-                or not replacement_value.lower().startswith("https://")
-                or not is_safe_external_url(replacement_value)
+                managed_asset.availability not in {"local", "published"}
+                or not str(managed_asset.managed_path or "").strip()
+                or not str(managed_asset.content_hash or "").strip()
             ):
-                raise CanvasStateConflict("replacement asset is not published to a public HTTPS image host")
+                raise CanvasStateConflict("replacement dimension asset is not available locally")
             overrides = _loads(draft.preview_overrides_json, {})
+            preview_asset = self._register_dimension_preview_asset(
+                session,
+                canvas_item,
+                managed_asset,
+                workspace_id,
+                preview_managed_path=preview_managed_path,
+            )
+            manifest = self._manifest_for_acceptance(
+                session, canvas_item, draft, overrides, workspace_id
+            )
+            overrides[MANIFEST_KEY] = replace_carousel_slot(
+                manifest,
+                change_item.target_slot_id,
+                preview_asset.id,
+            ).as_dict()
+            # Once a v2 manifest exists, the semantic slot is owned by its stable
+            # asset ID. A stale legacy URL patch must not shadow the accepted image.
             patches = dict(overrides.get("image_slot_overrides") or {})
-            patches[change_item.target_slot_id] = {
-                "url": replacement_value,
-                "asset_id": managed_asset.id,
-                "content_hash": managed_asset.content_hash,
-                "render_revision": int(base.get("render_revision") or 0),
-            }
-            overrides["image_slot_overrides"] = patches
+            patches.pop(change_item.target_slot_id, None)
+            if patches:
+                overrides["image_slot_overrides"] = patches
+            else:
+                overrides.pop("image_slot_overrides", None)
             current_revision = int(draft.preview_revision or 0)
             updated = session.execute(
                 update(ProductDraftRow)
@@ -1133,6 +1164,205 @@ class DimensionCanvasRepository:
         )
         return _loads(task_item.result_json, {}) if task_item else {}
 
+    @staticmethod
+    def _register_dimension_preview_asset(
+        session,
+        item: DimensionCanvasItemRow,
+        asset: DimensionCanvasAssetRow,
+        workspace_id: str,
+        *,
+        preview_managed_path: str | None = None,
+    ) -> PreviewImageAssetRow:
+        identity_hash = hashlib.sha256(f"dimension:{asset.id}".encode("utf-8")).hexdigest()
+        preview_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"preview-asset:{workspace_id}:{item.task_id}:{item.product_draft_id}:{identity_hash}",
+            )
+        )
+        session.execute(
+            sqlite_insert(PreviewImageAssetRow)
+            .values(
+                id=preview_id,
+                workspace_id=workspace_id,
+                task_id=item.task_id,
+                product_draft_id=item.product_draft_id,
+                origin="dimension",
+                source_asset_id=asset.id,
+                identity_hash=identity_hash,
+                managed_path=str(preview_managed_path or asset.managed_path),
+                source_url="",
+                content_hash=asset.content_hash,
+                content_type=asset.content_type or "image/jpeg",
+                byte_size=0,
+                width=int(asset.width or 0),
+                height=int(asset.height or 0),
+                availability="local",
+                public_url="",
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    "workspace_id",
+                    "task_id",
+                    "product_draft_id",
+                    "identity_hash",
+                ]
+            )
+        )
+        row = session.scalar(
+            select(PreviewImageAssetRow).where(
+                PreviewImageAssetRow.workspace_id == workspace_id,
+                PreviewImageAssetRow.task_id == item.task_id,
+                PreviewImageAssetRow.product_draft_id == item.product_draft_id,
+                PreviewImageAssetRow.identity_hash == identity_hash,
+            )
+        )
+        if row is None:
+            raise CanvasStateConflict("dimension preview asset registration failed")
+        return row
+
+    @staticmethod
+    def _register_legacy_preview_asset(
+        session,
+        item: DimensionCanvasItemRow,
+        value: str,
+        origin: str,
+        workspace_id: str,
+    ) -> PreviewImageAssetRow | None:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        remote = normalized.lower().startswith(("http://", "https://"))
+        # A browser-only /pp-media URL is not a storage authority. It should have
+        # been projected by PreviewImageService already; do not invent a local path.
+        if normalized.startswith("/pp-media/"):
+            return None
+        identity_hash = hashlib.sha256(
+            (("remote:" if remote else "managed:") + normalized).encode("utf-8")
+        ).hexdigest()
+        asset_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"preview-asset:{workspace_id}:{item.task_id}:{item.product_draft_id}:{identity_hash}",
+            )
+        )
+        suffix = normalized.lower().split("?", 1)[0].rsplit(".", 1)[-1]
+        content_type = {
+            "png": "image/png",
+            "webp": "image/webp",
+        }.get(suffix, "image/jpeg")
+        session.execute(
+            sqlite_insert(PreviewImageAssetRow)
+            .values(
+                id=asset_id,
+                workspace_id=workspace_id,
+                task_id=item.task_id,
+                product_draft_id=item.product_draft_id,
+                origin=origin,
+                source_asset_id="",
+                identity_hash=identity_hash,
+                managed_path="" if remote else normalized,
+                source_url=normalized if remote else "",
+                content_hash="",
+                content_type=content_type,
+                byte_size=0,
+                width=0,
+                height=0,
+                availability="materializing" if remote else "local",
+                public_url="",
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    "workspace_id",
+                    "task_id",
+                    "product_draft_id",
+                    "identity_hash",
+                ]
+            )
+        )
+        return session.scalar(
+            select(PreviewImageAssetRow).where(
+                PreviewImageAssetRow.workspace_id == workspace_id,
+                PreviewImageAssetRow.task_id == item.task_id,
+                PreviewImageAssetRow.product_draft_id == item.product_draft_id,
+                PreviewImageAssetRow.identity_hash == identity_hash,
+            )
+        )
+
+    def _manifest_for_acceptance(
+        self,
+        session,
+        item: DimensionCanvasItemRow,
+        draft: ProductDraftRow,
+        overrides: dict[str, Any],
+        workspace_id: str,
+    ) -> PreviewImageManifest:
+        if MANIFEST_KEY in overrides:
+            return PreviewImageManifest.from_value(overrides.get(MANIFEST_KEY))
+
+        result = self._task_result(session, item)
+        source_values = {
+            str(value or "").strip()
+            for value in result.get("source_image_urls") or []
+            if str(value or "").strip()
+        }
+        semantic_values: list[str] = []
+        patches = overrides.get("image_slot_overrides") or {}
+        for entry in result.get("image_manifest") or []:
+            if not isinstance(entry, dict):
+                continue
+            slot_id = str(entry.get("slot_id") or "")
+            patched = patches.get(slot_id) if isinstance(patches, dict) else None
+            value = str((patched or {}).get("url") or entry.get("value") or "").strip()
+            if value:
+                semantic_values.append(value)
+        if "carousel_images" in overrides:
+            carousel_values = [str(value or "").strip() for value in overrides.get("carousel_images") or []]
+        else:
+            carousel_values = semantic_values or [
+                str(value or "").strip() for value in result.get("carousel_image_paths") or []
+            ]
+            summary = str(result.get("grid_image_summary_path") or "").strip()
+            if summary:
+                carousel_values.append(summary)
+        carousel_values = list(dict.fromkeys(value for value in carousel_values if value))
+        main_value = str(overrides.get("main_image") or "").strip()
+        if not main_value and carousel_values:
+            main_value = carousel_values[0]
+        if main_value and main_value not in carousel_values:
+            carousel_values.insert(0, main_value)
+        detail_values = (
+            [str(value or "").strip() for value in overrides.get("detail_images") or []]
+            if "detail_images" in overrides
+            else [str(value or "").strip() for value in result.get("detail_image_paths") or []]
+        )
+
+        def register(value: str) -> str:
+            row = self._register_legacy_preview_asset(
+                session,
+                item,
+                value,
+                "source" if value in source_values else "generated",
+                workspace_id,
+            )
+            return str(row.id) if row is not None else ""
+
+        carousel_ids = [asset_id for value in carousel_values if (asset_id := register(value))]
+        detail_ids = [asset_id for value in detail_values if (asset_id := register(value))]
+        main_id = register(main_value) if main_value else ""
+        return PreviewImageManifest.from_value(
+            {
+                "main_asset_id": main_id,
+                "carousel_asset_ids": carousel_ids,
+                "detail_asset_ids": detail_ids,
+                "semantic_asset_ids": {
+                    slot_id: carousel_ids[index]
+                    for slot_id, index in SLOT_INDEX.items()
+                    if index < len(carousel_ids)
+                },
+            }
+        )
+
     def _current_review_inputs(
         self,
         session,
@@ -1144,6 +1374,16 @@ class DimensionCanvasRepository:
         slot_id = str(target_slot_id or item.target_slot_id)
         result = self._task_result(session, item)
         overrides = _loads(draft.preview_overrides_json, {})
+        if MANIFEST_KEY in overrides:
+            manifest = PreviewImageManifest.from_value(overrides.get(MANIFEST_KEY))
+            index = SLOT_INDEX.get(slot_id)
+            asset_id = (
+                manifest.carousel_asset_ids[index]
+                if index is not None and index < len(manifest.carousel_asset_ids)
+                else ""
+            )
+            dimensions = overrides.get("physical_dimensions") or result.get("physical_dimensions") or {}
+            return ({"asset_id": asset_id} if asset_id else {}), dimensions
         slot_patch = dict((overrides.get("image_slot_overrides") or {}).get(slot_id) or {})
         if slot_patch:
             slot = slot_patch

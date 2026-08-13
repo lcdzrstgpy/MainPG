@@ -46,6 +46,13 @@ from .infrastructure.ocr_gate import (
     ocr_gate_enabled,
 )
 from .infrastructure.repository import ProductProcessingRepository
+from .infrastructure.preview_image_repository import (
+    PreviewIdempotencyConflict,
+    PreviewImageRepository,
+    PreviewPublicationConflict,
+    PreviewRevisionConflict,
+)
+from .preview_image_service import PreviewImageService
 from .provider_config import resolve_ai_provider
 
 _MEDIA_TYPES: tuple | None = None
@@ -208,6 +215,15 @@ class ProductProcessingService:
         self._ai_instance: AiClient | None = None
         self._ai_lock = threading.Lock()  # 保护 AiClient 懒加载（多线程并行处理时避免重复创建）
         self._media_instance = None  # ProductImageProcessor (懒加载，可选依赖)
+        self.preview_images = PreviewImageService(
+            PreviewImageRepository(repository.database),
+            repository,
+            assets,
+            publisher=self.publish_preview_media,
+            trusted_public_url=self.is_trusted_cos_url,
+            public_image_fetcher=public_image_fetcher,
+            max_publish_workers=4,
+        )
         # 主体识别结果缓存：同一来源主图只识别一次（批量任务大量重复商品时省 N 次 AI 调用）
         self._subject_cache: dict[str, dict[str, str]] = {}
         self._subject_cache_lock = threading.Lock()
@@ -666,47 +682,46 @@ class ProductProcessingService:
         fetched = self._public_image_fetcher(source_url)
         return bytes(fetched.content)
 
-    def publish_dimension_media(
+    def publish_preview_media(
         self,
         content: bytes,
-        task_id: int,
-        draft_id: int,
-        render_revision: int,
+        content_type: str,
+        suffix: str,
         content_hash: str,
         workspace_id: str,
-    ) -> dict[str, Any]:
-        """Publish a finalized dimension render once under a content-addressed COS key.
-
-        The canvas keeps local managed previews while editing. This adapter is called
-        only when the user submits the latest render back for review; it never falls
-        back to a local path because Dianxiaomi requires a public image URL.
-        """
+    ) -> str:
+        """Publish immutable original bytes for the final retained precheck set."""
         media_types = _media_types()
         if not media_types:
-            raise MediaUnavailableError("图片处理依赖缺失：无法发布尺寸图")
+            raise MediaUnavailableError("图片处理依赖缺失：无法发布最终预审图片")
         from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
 
         digest = hashlib.sha256(content).hexdigest()
         if content_hash and digest != str(content_hash).strip().lower():
-            raise ValueError("dimension render hash mismatch")
+            raise ValueError("preview image hash mismatch")
         namespace = hashlib.sha256(str(workspace_id).encode("utf-8")).hexdigest()[:20]
         media = GeneratedMedia(
-            stage=f"dimension_r{int(render_revision)}",
+            stage="preview-final",
             content=bytes(content),
-            content_type="image/jpeg",
-            suffix=".jpg",
-            provider="dimension-canvas",
-            model="pillow",
-            reference_count=1,
+            content_type=str(content_type or "image/jpeg"),
+            suffix=str(suffix or ".jpg"),
+            provider="preview-finalizer",
+            model="original-bytes",
+            reference_count=0,
         )
         url = self._media_processor().upload_content_addressed_to_cos(
             media,
             namespace=namespace,
             content_hash=digest,
+            collection="preview-final",
         )
         if not url.lower().startswith("https://") or not is_safe_external_url(url):
-            raise ValueError("COS returned a non-public dimension image URL")
-        return {"url": url, "provider": "cos", "content_hash": digest}
+            raise ValueError("COS returned a non-public preview image URL")
+        return url
+
+    def is_trusted_cos_url(self, value: str) -> bool:
+        """Verify a legacy/final URL against the configured bucket with COS HEAD."""
+        return self._media_processor().is_configured_cos_url(value, require_public=True)
 
     def sync_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
         self.get_draft(draft_id, workspace_id)
@@ -1081,14 +1096,11 @@ class ProductProcessingService:
             )
         normalized = self._text(kind).lower()
         if normalized == "dxm_final":
-            # 预检导出最终版：合并预览覆盖后重新生成的店小秘表格
-            path = self.assets.output_root / f"task_{task_id}" / f"dxm_import_task_{task_id}_final.xlsx"
-            try:
-                return self.assets.require_managed_file(str(path))
-            except FileNotFoundError as exc:
-                raise ProductProcessingNotFound(
-                    "最终版表格尚未生成，请先在预检页点击「导出最终版表格」"
-                ) from exc
+            # A fixed legacy path cannot prove workspace, snapshot revision or COS
+            # completion. New clients must use the run-specific gated endpoint.
+            raise ProductProcessingConflict(
+                "请使用预审完成记录的专属下载链接，旧版固定路径已停用"
+            )
         field = {
             "dxm": "output_file",
             "errors": "error_report_file",
@@ -1119,14 +1131,22 @@ class ProductProcessingService:
             saved = (draft or {}).get("preview_overrides") or {}
             if not isinstance(saved, dict):
                 saved = {}
-            items.append(
-                self._preview_item(
+            projected = self.preview_images.project_item_images(
+                task_id=task_id,
+                product_draft_id=int(draft_id or 0),
+                result=result,
+                saved=saved,
+                workspace_id=workspace_id,
+            )
+            items.append({
+                **self._preview_item(
                     item,
                     result,
                     saved,
                     preview_revision=int((draft or {}).get("preview_revision") or 0),
-                )
-            )
+                ),
+                **projected,
+            })
         return {
             "task_id": task_id,
             "task": {
@@ -1154,29 +1174,26 @@ class ProductProcessingService:
         用户可改（标题/图片/核心字段）也可不修改默认保存；导出最终版表格时合并应用。
         """
         self._require_task(task_id, workspace_id)
-        saved_items: list[dict[str, Any]] = []
-        for entry in items:
-            if not isinstance(entry, dict):
-                continue
-            draft_id = entry.get("product_draft_id")
-            if not draft_id:
-                continue
-            overrides = entry.get("overrides") or {}
-            if not isinstance(overrides, dict):
-                overrides = {}
-            cleaned = self._clean_preview_overrides(overrides)
-            updated = self.repository.save_draft_preview_overrides(
-                draft_id, cleaned, workspace_id=workspace_id
+        normalized = [
+            {
+                **entry,
+                "overrides": self._clean_preview_overrides(
+                    dict(entry.get("overrides") or {})
+                ),
+            }
+            for entry in items
+            if isinstance(entry, dict)
+        ]
+        try:
+            saved_items = self.preview_images.save_preview(
+                task_id,
+                normalized,
+                workspace_id=workspace_id,
             )
-            if updated is None:
-                raise ProductProcessingNotFound(f"product draft {draft_id} not found")
-            saved_items.append(
-                {
-                    "product_draft_id": draft_id,
-                    "overrides": cleaned,
-                    "preview_revision": int(updated.get("preview_revision") or 0),
-                }
-            )
+        except PreviewRevisionConflict as exc:
+            raise ProductProcessingConflict(str(exc)) from exc
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
         return {"task_id": task_id, "saved_count": len(saved_items), "items": saved_items}
 
     def upload_preview_image(
@@ -1189,41 +1206,127 @@ class ProductProcessingService:
         *,
         workspace_id: str = "local",
     ) -> dict[str, Any]:
-        """预检图片上传：保存到后端静态图床（/pp-media 可预览），优先上传 COS 转外链。
+        """Compatibility delegate: uploads are local assets until finalization."""
+        return self.register_preview_upload(
+            task_id,
+            draft_id,
+            content,
+            filename,
+            content_type,
+            workspace_id=workspace_id,
+        )
 
-        COS 上传成功后返回外链（导出最终版表格可直接写入店小秘）；
-        COS 不可用时保留本地路径 URL，导出表会回退该字段的生成/来源图。
-        """
-        if not content:
-            raise ValueError("uploaded image is empty")
-        suffix = Path(filename or "").suffix.lower()
-        safe_suffix = suffix if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"} else ".jpg"
-        path = self.assets.save_generated_image(task_id, draft_id, "preview_override", content, safe_suffix)
-        url = self._display_url(str(path))
-        published = False
+    def require_preview_target(
+        self,
+        task_id: int,
+        draft_id: int,
+        *,
+        workspace_id: str = "local",
+    ) -> None:
         try:
-            processor = self._media_processor()
-            from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
+            self.preview_images.require_task_draft(task_id, draft_id, workspace_id)
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
 
-            cos_url = processor.upload_to_cos(
-                GeneratedMedia(
-                    stage="preview_override",
-                    content=content,
-                    content_type=content_type or "image/jpeg",
-                    suffix=safe_suffix,
-                    provider="upload",
-                    model="upload",
-                    reference_count=0,
-                ),
+    def register_preview_upload(
+        self,
+        task_id: int,
+        draft_id: int,
+        content: bytes,
+        filename: str,
+        content_type: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        try:
+            return self.preview_images.register_upload(
                 task_id=task_id,
-                draft_id=draft_id,
+                product_draft_id=draft_id,
+                workspace_id=workspace_id,
+                filename=filename,
+                content_type=content_type,
+                content=content,
             )
-            if cos_url:
-                url = cos_url
-                published = True
-        except Exception:
-            published = False
-        return {"url": url, "local_path": str(path), "published": published}
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+
+    def begin_preview_finalize(
+        self,
+        task_id: int,
+        items: list[dict[str, Any]],
+        *,
+        workspace_id: str = "local",
+        idempotency_key: str = "",
+    ) -> dict[str, Any]:
+        self._require_task(task_id, workspace_id)
+        if not bool(self.engine_status()["diagnostics"]["config"].get("cos_configured")):
+            raise ProductProcessingConflict("COS 图床未配置，请先在系统设置完成配置")
+        normalized = [
+            {
+                **entry,
+                "overrides": self._clean_preview_overrides(
+                    dict(entry.get("overrides") or {})
+                ),
+            }
+            for entry in items
+        ]
+        try:
+            return self.preview_images.begin_finalize(
+                task_id,
+                normalized,
+                workspace_id=workspace_id,
+                idempotency_key=idempotency_key,
+            )
+        except (PreviewRevisionConflict, PreviewIdempotencyConflict, PreviewPublicationConflict) as exc:
+            raise ProductProcessingConflict(str(exc)) from exc
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+
+    def preview_finalize_status(
+        self,
+        task_id: int,
+        run_id: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        self._require_task(task_id, workspace_id)
+        try:
+            run = self.preview_images.get_finalize(run_id, workspace_id=workspace_id)
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+        if int(run.get("task_id") or 0) != int(task_id):
+            raise ProductProcessingNotFound("preview finalization run not found")
+        return run
+
+    def retry_preview_finalize(
+        self,
+        task_id: int,
+        run_id: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        self.preview_finalize_status(task_id, run_id, workspace_id=workspace_id)
+        try:
+            return self.preview_images.retry_finalize(run_id, workspace_id=workspace_id)
+        except PreviewPublicationConflict as exc:
+            raise ProductProcessingConflict(str(exc)) from exc
+
+    def preview_finalize_download_path(
+        self,
+        task_id: int,
+        run_id: str,
+        *,
+        workspace_id: str = "local",
+    ) -> Path:
+        self.preview_finalize_status(task_id, run_id, workspace_id=workspace_id)
+        try:
+            return self.preview_images.finalize_download_path(
+                run_id,
+                task_id,
+                workspace_id=workspace_id,
+            )
+        except (LookupError, FileNotFoundError) as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
 
     def export_final_workbook(self, task_id: int, *, workspace_id: str = "local") -> dict[str, Any]:
         """导出最终版店小秘表格：合并各商品已保存的预检覆盖后重新生成 xlsx。
@@ -1263,7 +1366,9 @@ class ProductProcessingService:
 
     @staticmethod
     def _clean_preview_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
-        """清理预检覆盖：去掉空字符串/空列表，避免覆盖默认生成结果。"""
+        """Normalize full desired state while retaining explicit empty manifests."""
+        from .domain.preview_images import MANIFEST_KEY, PreviewImageManifest  # noqa: PLC0415
+
         cleaned: dict[str, Any] = {}
         for key in ("title", "description", "main_image"):
             value = str(overrides.get(key) or "").strip()
@@ -1301,6 +1406,10 @@ class ProductProcessingService:
                 core[key] = value
             if core:
                 cleaned["core_fields"] = core
+        if MANIFEST_KEY in overrides:
+            cleaned[MANIFEST_KEY] = PreviewImageManifest.from_value(
+                overrides.get(MANIFEST_KEY)
+            ).as_dict()
         return cleaned
 
     def _preview_item(
@@ -1457,7 +1566,14 @@ class ProductProcessingService:
 
         def _process(item: dict[str, Any]) -> dict[str, Any]:
             draft = drafts.get(item["product_draft_id"])
-            return self._process_one(item, draft, settings, preflight_only, task_id=task_id)
+            return self._process_one(
+                item,
+                draft,
+                settings,
+                preflight_only,
+                task_id=task_id,
+                workspace_id=workspace_id,
+            )
 
         def _persist_progress(processed: dict[str, Any]) -> None:
             """逐项写入处理结果并实时刷新任务计数，供前端进度轮询读取。"""
@@ -1596,6 +1712,7 @@ class ProductProcessingService:
         preflight_only: bool,
         *,
         task_id: int,
+        workspace_id: str = "local",
     ) -> dict[str, Any]:
         processing_started = time.perf_counter()
         stage_timings_ms: dict[str, int] = {}
@@ -1948,6 +2065,7 @@ class ProductProcessingService:
                 ai_notes,
                 vision_subject,
                 image_template=str(settings.get("image_template") or "A"),
+                workspace_id=workspace_id,
             )
             record_stage("grid_pipeline", stage_started)
             grid_image_paths, grid_summary_path = grid_output
@@ -1992,6 +2110,7 @@ class ProductProcessingService:
                     category,
                     target_language,
                     ai_notes,
+                    workspace_id=workspace_id,
                 )
                 record_stage("local_detail", stage_started)
             if not detail_image_paths:
@@ -2007,6 +2126,7 @@ class ProductProcessingService:
                     target_site,
                     ai_notes,
                     vision_subject,
+                    workspace_id=workspace_id,
                 )
                 record_stage("detail_generation", stage_started)
         if grid_image_paths:
@@ -2390,6 +2510,7 @@ class ProductProcessingService:
         ai_notes: list[str] | None = None,
         vision_subject: str = "",
         image_template: str = "A",
+        workspace_id: str = "local",
     ) -> GridImageOutput:
         """按原型逻辑生成 2x2 四宫格并本地拆分为 4 张轮播图 + 1 张汇总图。"""
         if not _ai_enabled() or not reference_urls:
@@ -2466,14 +2587,12 @@ class ProductProcessingService:
         carousel: list[str] = []
         carousel_media: list[Any] = []
         summary_path = ""
-        publish_started = time.perf_counter()
-        published = self._publish_media(processor, parts, task_id, draft_id)
-        grid_timings_ms["publish_ms"] = max(
+        persist_started = time.perf_counter()
+        published = self._persist_media_for_preview(parts, task_id, draft_id, workspace_id)
+        grid_timings_ms["persist_ms"] = max(
             0,
-            round((time.perf_counter() - publish_started) * 1000),
+            round((time.perf_counter() - persist_started) * 1000),
         )
-        if not any(str(value).startswith(("http://", "https://")) for value in published):
-            self._note_media_unconfigured(ai_notes, "four_grid")
         for part, value in zip(parts, published):
             if part.stage.startswith("grid_image_summary"):
                 summary_path = str(value)
@@ -2501,6 +2620,7 @@ class ProductProcessingService:
         target_site: str,
         ai_notes: list[str] | None = None,
         vision_subject: str = "",
+        workspace_id: str = "local",
     ) -> list[str]:
         if not _ai_enabled() or not reference_urls:
             return []
@@ -2525,10 +2645,7 @@ class ProductProcessingService:
         except (media_config_error, media_error, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
             return []
-        published = self._publish_media(processor, [media], task_id, draft_id)
-        if not any(str(value).startswith(("http://", "https://")) for value in published):
-            self._note_media_unconfigured(ai_notes, "detail_images")
-        return published
+        return self._persist_media_for_preview([media], task_id, draft_id, workspace_id)
 
     def _generate_detail_images_local(
         self,
@@ -2539,6 +2656,7 @@ class ProductProcessingService:
         category: str,
         target_language: str,
         ai_notes: list[str] | None = None,
+        workspace_id: str = "local",
     ) -> list[str]:
         """本地合成详情图（0 AI，对齐原项目 detail_image_local_synthesis）。
 
@@ -2576,10 +2694,7 @@ class ProductProcessingService:
                 model="pillow",
                 reference_count=min(4, len(source_values)),
             )
-            published = self._publish_media(processor, [media], task_id, draft_id)
-            if not any(str(value).startswith(("http://", "https://")) for value in published):
-                self._note_media_unconfigured(ai_notes, "detail_images")
-            return published
+            return self._persist_media_for_preview([media], task_id, draft_id, workspace_id)
         except (media_config_error, media_error, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
             return []
@@ -3333,47 +3448,24 @@ class ProductProcessingService:
             "limits": limits,
         }
 
-    def _publish_media(
+    def _persist_media_for_preview(
         self,
-        processor: Any,
         parts: list[Any],
         task_id: int,
         draft_id: int,
+        workspace_id: str,
     ) -> list[str]:
-        """对齐原型出图保存逻辑：生成图优先整组上传 COS 取得外链，店小秘可直接读取；
-        任一上传失败或未配置 COS 时，回退后端静态图床（WH_MEDIA_BASE_URL + /pp-media）转对外 URL；
-        静态图床也未配置时保留本地路径（导出表会进一步回退来源 http 图片）。"""
-        urls: list[str] = []
-        try:
-            if len(parts) <= 1:
-                urls = [processor.upload_to_cos(part, task_id=task_id, draft_id=draft_id) for part in parts]
-            else:
-                # 多张图（四宫格 5 张）并行上传 COS，整组成功才返回；任一失败由外层统一回退本地
-                from concurrent.futures import ThreadPoolExecutor
-
-                with ThreadPoolExecutor(max_workers=min(6, len(parts))) as executor:
-                    urls = list(
-                        executor.map(
-                            lambda part: processor.upload_to_cos(part, task_id=task_id, draft_id=draft_id),
-                            parts,
-                        )
-                    )
-        except Exception:
-            urls = []
-        if urls:
-            return urls
-        local_paths = [
-            self.assets.save_generated_image(task_id, draft_id, part.stage, part.content, part.suffix)
-            for part in parts
-        ]
-        # 后端静态图床：本地保存 + WH_MEDIA_BASE_URL 时转成对外可访问 URL（/pp-media 静态挂载）
-        base = _media_public_base_url()
-        if base:
-            return [
-                f"{base}/pp-media/{path.relative_to(self.assets.output_root).as_posix()}"
-                for path in local_paths
-            ]
-        return [str(path) for path in local_paths]
+        """Register original generated bytes locally; never call COS here."""
+        values: list[str] = []
+        for part in parts:
+            asset = self.preview_images.register_generated(
+                task_id=task_id,
+                product_draft_id=draft_id,
+                workspace_id=workspace_id,
+                media=part,
+            )
+            values.append(str(asset.get("preview_url") or ""))
+        return values
 
     @staticmethod
     def _iso_datetime(value: str | None) -> Any:

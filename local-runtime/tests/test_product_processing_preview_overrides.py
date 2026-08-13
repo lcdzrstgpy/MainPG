@@ -108,11 +108,13 @@ def test_save_preview_overrides_then_preview_merges(tmp_path: Path) -> None:
     service = _service(tmp_path)
     task = _create_task_with_result(service)
     draft_id = task["items"][0]["product_draft_id"]
+    revision = service.task_preview(task["id"], workspace_id="local")["items"][0]["preview_revision"]
     saved = service.save_task_preview(
         task["id"],
         [
             {
                 "product_draft_id": draft_id,
+                "expected_preview_revision": revision,
                 "overrides": {
                     "title": "Manual Edited Title",
                     "carousel_images": ["https://user.example.com/new1.jpg"],
@@ -227,11 +229,13 @@ def test_dimension_slot_patch_preserves_other_carousel_and_summary(tmp_path: Pat
     service = _service(tmp_path)
     task = _create_task_with_result(service)
     draft_id = task["items"][0]["product_draft_id"]
+    revision = service.task_preview(task["id"], workspace_id="local")["items"][0]["preview_revision"]
     service.save_task_preview(
         task["id"],
         [
             {
                 "product_draft_id": draft_id,
+                "expected_preview_revision": revision,
                 "overrides": {
                     "image_slot_overrides": {
                         "carousel.dimension_background": {
@@ -252,6 +256,7 @@ def test_dimension_slot_patch_preserves_other_carousel_and_summary(tmp_path: Pat
         "https://cos.example.com/c2.jpg",
         "https://cos.example.com/c3.jpg",
         "https://user.example.com/dimension.jpg",
+        "https://cos.example.com/summary.jpg",
     ]
     assert item["image_slots"][3]["slot_id"] == "carousel.dimension_background"
 
@@ -304,11 +309,13 @@ def test_export_final_workbook_applies_overrides(tmp_path: Path) -> None:
     service = _service(tmp_path)
     task = _create_task_with_result(service)
     draft_id = task["items"][0]["product_draft_id"]
+    revision = service.task_preview(task["id"], workspace_id="local")["items"][0]["preview_revision"]
     service.save_task_preview(
         task["id"],
         [
             {
                 "product_draft_id": draft_id,
+                "expected_preview_revision": revision,
                 "overrides": {
                     "title": "Manual Edited Title",
                     "main_image": "https://user.example.com/main.jpg",

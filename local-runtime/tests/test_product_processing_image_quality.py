@@ -291,12 +291,25 @@ def test_content_addressed_cos_publish_reuses_the_same_object(monkeypatch) -> No
             assert Bucket == "bucket-1"
             if Key not in self.keys:
                 raise _Missing()
-            return {}
+            return {
+                "x-cos-meta-sha256": hashlib.sha256(b"dimension-jpeg").hexdigest(),
+                "Content-Length": str(len(b"dimension-jpeg")),
+                "Content-Type": "image/jpeg",
+            }
 
-        def put_object(self, *, Bucket: str, Key: str, Body: bytes, ContentType: str):
+        def put_object(
+            self,
+            *,
+            Bucket: str,
+            Key: str,
+            Body: bytes,
+            ContentType: str,
+            Metadata: dict[str, str],
+        ):
             assert Bucket == "bucket-1"
             assert Body == b"dimension-jpeg"
             assert ContentType == "image/jpeg"
+            assert Metadata == {"x-cos-meta-sha256": hashlib.sha256(Body).hexdigest()}
             self.keys.add(Key)
             self.put_calls += 1
             return {}
@@ -328,11 +341,24 @@ def test_content_addressed_cos_publish_reuses_the_same_object(monkeypatch) -> No
         model="pillow",
         reference_count=1,
     )
-    first = processor.upload_content_addressed_to_cos(media, namespace="workspace-a", content_hash=digest)
-    second = processor.upload_content_addressed_to_cos(media, namespace="workspace-a", content_hash=digest)
+    first = processor.upload_content_addressed_to_cos(
+        media,
+        namespace="workspace-a",
+        content_hash=digest,
+        collection="preview-final",
+    )
+    second = processor.upload_content_addressed_to_cos(
+        media,
+        namespace="workspace-a",
+        content_hash=digest,
+        collection="preview-final",
+    )
     assert first == second
+    assert "/preview-final/workspace-a/" in first
     assert first.endswith(f"/{digest}.jpg")
     assert client.put_calls == 1
+    assert processor.is_configured_cos_url(first) is True
+    assert processor.is_configured_cos_url("https://other.example.com/old.jpg") is False
 
 
 def test_system_settings_cos_credentials_feed_internal_media_config(monkeypatch) -> None:
