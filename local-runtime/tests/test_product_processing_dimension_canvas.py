@@ -20,6 +20,7 @@ from wh_local.modules.product_processing.infrastructure.assets import ProductPro
 from wh_local.modules.product_processing.infrastructure.database import create_database
 from wh_local.modules.product_processing.infrastructure.dimension_canvas_repository import DimensionCanvasRepository
 from wh_local.modules.product_processing.infrastructure.dimension_canvas_repository import CanvasStateConflict
+from wh_local.modules.product_processing.infrastructure.dimension_renderer import DimensionSourceInfo
 from wh_local.modules.product_processing.infrastructure.dimension_canvas_orm import DimensionCanvasItemRow
 from wh_local.modules.product_processing.infrastructure.orm import (
     ProcessingTaskItemRow,
@@ -40,6 +41,11 @@ class _Output:
 
 
 class _Renderer:
+    def inspect_source(self, content: bytes) -> DimensionSourceInfo:
+        if not content.startswith(b"valid-image"):
+            raise ValueError("dimension_source_invalid")
+        return DimensionSourceInfo(800, 600, "image/png", ".png")
+
     def render(self, request) -> _Output:
         content = b"rendered:" + request.source_bytes + str(request.annotations).encode()
         return _Output(b"master:" + content, content, hashlib.sha256(content).hexdigest())
@@ -191,6 +197,57 @@ def test_single_item_import_materializes_registered_asset_renders_and_submits(se
     rendered = next(asset for asset in hydrated["assets"] if asset["role"] == "rendered_dimension")
     assert rendered["preview_url"].startswith("https://bucket.cos.")
     assert change_set["items"][0]["new_image_url"].startswith("https://bucket.cos.")
+
+
+def test_user_upload_is_registered_once_and_available_as_local_preview(service_fixture) -> None:
+    database, _product, repository, service, _calls, _publisher_calls = service_fixture
+    seeded = _seed(database)
+    item = service.import_preview_item(
+        seeded["task_id"], seeded["task_item_id"], workspace_id="local"
+    )
+
+    first = service.upload_asset(
+        item["id"],
+        b"valid-image-content",
+        "custom.png",
+        "image/png",
+        workspace_id="local",
+    )
+    repeated = service.upload_asset(
+        item["id"],
+        b"valid-image-content",
+        "renamed.png",
+        "image/png",
+        workspace_id="local",
+    )
+
+    assert first["asset_id"] == repeated["asset_id"]
+    uploaded = repository.get_asset(first["asset_id"], item["id"], "local")
+    assert uploaded is not None
+    assert uploaded["role"] == "user_upload"
+    assert uploaded["availability"] == "local"
+    hydrated = service.get_item(item["id"], workspace_id="local")
+    preview = next(asset for asset in hydrated["assets"] if asset["id"] == first["asset_id"])
+    assert preview["preview_url"].startswith("/pp-media/dimension-canvas/")
+
+
+def test_user_upload_endpoint_rejects_invalid_bytes(service_fixture) -> None:
+    database, _product, _repository, service, _calls, _publisher_calls = service_fixture
+    seeded = _seed(database)
+    item = service.import_preview_item(
+        seeded["task_id"], seeded["task_item_id"], workspace_id="local"
+    )
+    app = FastAPI()
+    app.include_router(create_dimension_canvas_router(service))
+
+    response = TestClient(app).post(
+        f"/dimension-canvas/items/{item['id']}/assets",
+        files={"file": ("bad.jpg", b"not-an-image", "image/jpeg")},
+        headers={"X-Workspace-ID": "local"},
+    )
+
+    assert response.status_code == 400
+    assert "dimension_source_invalid" in response.text
 
 
 def test_redraw_uses_new_render_revision_and_new_change_set_key(service_fixture) -> None:

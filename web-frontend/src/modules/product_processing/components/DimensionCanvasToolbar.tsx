@@ -42,6 +42,7 @@ export function DimensionCanvasToolbar({
     if (dimension.provenance === "unconfirmed") return "请先确认商品本体尺寸";
     return "";
   };
+  const customReason = editor.customValueCm && editor.customValueCm > 0 ? "" : "请先填写自定义尺寸";
 
   return (
     <aside className="dimension-toolbar" aria-label="尺寸画布工具栏">
@@ -61,7 +62,12 @@ export function DimensionCanvasToolbar({
             </button>
           );
         })}
-        <button className={editor.activeTool === "custom" ? "is-active" : ""} onClick={() => onTool("custom")}>自定义</button>
+        <button
+          className={editor.activeTool === "custom" ? "is-active" : ""}
+          onClick={() => onTool("custom")}
+          disabled={Boolean(customReason)}
+          title={customReason || "绘制自定义尺寸线"}
+        >自定义</button>
       </div>
       <div className="dimension-tool-group is-row">
         <button onClick={onUndo} disabled={!canUndo} title="撤销">↶</button>

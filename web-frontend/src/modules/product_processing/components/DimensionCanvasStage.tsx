@@ -1,6 +1,6 @@
-import { useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
-import { clampPoint, formatCentimeters, updateAnnotation } from "../data/dimensionCanvasModel";
+import { clampPoint, formatDimension, updateAnnotation } from "../data/dimensionCanvasModel";
 import type {
   DimensionAnnotation,
   DimensionAsset,
@@ -8,34 +8,40 @@ import type {
   NormalizedPoint,
 } from "../types/dimensionCanvas";
 
+type MovePart = "start" | "end" | "label" | "line";
 type DragState =
   | { kind: "create"; start: NormalizedPoint; current: NormalizedPoint; pointerId: number }
   | {
       kind: "move";
       annotationId: string;
-      part: "start" | "end" | "label";
+      part: MovePart;
       pointerId: number;
+      origin: NormalizedPoint;
+      baseEditor: EditorState;
     };
 
 type Props = {
   editor: EditorState;
   asset: DimensionAsset | null;
   zoom: number;
-  onChange: (editor: EditorState) => void;
+  onSelectAnnotation: (annotationId: string) => void;
+  onCommitEditor: (editor: EditorState) => void;
   onCommitAnnotation: (start: NormalizedPoint, end: NormalizedPoint) => void;
 };
 
-function eventPoint(event: ReactPointerEvent<SVGSVGElement>): NormalizedPoint {
-  const rect = event.currentTarget.getBoundingClientRect();
+function eventPoint(
+  svg: SVGSVGElement,
+  event: Pick<ReactPointerEvent<SVGElement>, "clientX" | "clientY">,
+): NormalizedPoint {
+  const rect = svg.getBoundingClientRect();
   return clampPoint({
-    x: (event.clientX - rect.left) / rect.width,
-    y: (event.clientY - rect.top) / rect.height,
+    x: (event.clientX - rect.left) / Math.max(1, rect.width),
+    y: (event.clientY - rect.top) / Math.max(1, rect.height),
   });
 }
 
 function colorFor(annotation: DimensionAnnotation): string {
-  if (annotation.style === "dark") return "#111111";
-  return "#ffffff";
+  return annotation.style === "dark" ? "#111111" : "#ffffff";
 }
 
 function arrowPoints(tip: NormalizedPoint, other: NormalizedPoint): string {
@@ -53,12 +59,86 @@ function arrowPoints(tip: NormalizedPoint, other: NormalizedPoint): string {
   return `${tx},${ty} ${bx + px},${by + py} ${bx - px},${by - py}`;
 }
 
-export function DimensionCanvasStage({ editor, asset, zoom, onChange, onCommitAnnotation }: Props) {
-  const [drag, setDrag] = useState<DragState | null>(null);
+function translateAnnotation(
+  editor: EditorState,
+  annotationId: string,
+  origin: NormalizedPoint,
+  point: NormalizedPoint,
+): EditorState {
+  const annotation = editor.annotations.find((item) => item.id === annotationId);
+  if (!annotation) return editor;
+  const points = [annotation.start, annotation.end, annotation.label];
+  const requestedX = point.x - origin.x;
+  const requestedY = point.y - origin.y;
+  const deltaX = Math.min(1 - Math.max(...points.map((item) => item.x)), Math.max(-Math.min(...points.map((item) => item.x)), requestedX));
+  const deltaY = Math.min(1 - Math.max(...points.map((item) => item.y)), Math.max(-Math.min(...points.map((item) => item.y)), requestedY));
+  const move = (value: NormalizedPoint) => ({ x: value.x + deltaX, y: value.y + deltaY });
+  return updateAnnotation(editor, annotationId, {
+    start: move(annotation.start),
+    end: move(annotation.end),
+    label: move(annotation.label),
+  });
+}
+
+function moveEditor(drag: Extract<DragState, { kind: "move" }>, point: NormalizedPoint): EditorState {
+  if (drag.part === "line") {
+    return translateAnnotation(drag.baseEditor, drag.annotationId, drag.origin, point);
+  }
+  return updateAnnotation(drag.baseEditor, drag.annotationId, { [drag.part]: point });
+}
+
+export function DimensionCanvasStage({
+  editor,
+  asset,
+  zoom,
+  onSelectAnnotation,
+  onCommitEditor,
+  onCommitAnnotation,
+}: Props) {
+  const [drag, setDragState] = useState<DragState | null>(null);
+  const [previewEditor, setPreviewEditor] = useState<EditorState | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const pendingPointRef = useRef<NormalizedPoint | null>(null);
+
+  const setDrag = (value: DragState | null) => {
+    dragRef.current = value;
+    setDragState(value);
+  };
+
+  const setPreview = (value: EditorState | null) => {
+    setPreviewEditor(value);
+  };
+
+  const cancelFrame = () => {
+    if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+    pendingPointRef.current = null;
+  };
+
+  useEffect(() => () => cancelFrame(), []);
+
+  const schedulePreview = (point: NormalizedPoint) => {
+    pendingPointRef.current = point;
+    if (frameRef.current != null) return;
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null;
+      const active = dragRef.current;
+      const pending = pendingPointRef.current;
+      pendingPointRef.current = null;
+      if (!active || !pending) return;
+      if (active.kind === "create") {
+        setDrag({ ...active, current: pending });
+      } else {
+        setPreview(moveEditor(active, pending));
+      }
+    });
+  };
 
   const startCreate = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (editor.activeTool === "select" || event.target !== event.currentTarget) return;
-    const point = eventPoint(event);
+    event.preventDefault();
+    const point = eventPoint(event.currentTarget, event);
     event.currentTarget.setPointerCapture(event.pointerId);
     setDrag({ kind: "create", start: point, current: point, pointerId: event.pointerId });
   };
@@ -66,45 +146,76 @@ export function DimensionCanvasStage({ editor, asset, zoom, onChange, onCommitAn
   const startMove = (
     event: ReactPointerEvent<SVGElement>,
     annotationId: string,
-    part: "start" | "end" | "label",
+    part: MovePart,
   ) => {
     if (editor.activeTool !== "select") return;
+    event.preventDefault();
     event.stopPropagation();
     const svg = event.currentTarget.ownerSVGElement;
-    svg?.setPointerCapture(event.pointerId);
-    setDrag({ kind: "move", annotationId, part, pointerId: event.pointerId });
-    onChange({ ...editor, selectedAnnotationId: annotationId });
+    if (!svg) return;
+    svg.setPointerCapture(event.pointerId);
+    const baseEditor = { ...editor, selectedAnnotationId: annotationId };
+    setPreview(baseEditor);
+    setDrag({
+      kind: "move",
+      annotationId,
+      part,
+      pointerId: event.pointerId,
+      origin: eventPoint(svg, event),
+      baseEditor,
+    });
+    onSelectAnnotation(annotationId);
   };
 
   const move = (event: ReactPointerEvent<SVGSVGElement>) => {
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const point = eventPoint(event);
-    if (drag.kind === "create") {
-      setDrag({ ...drag, current: point });
-      return;
-    }
-    onChange(updateAnnotation(editor, drag.annotationId, { [drag.part]: point }));
+    const active = dragRef.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    schedulePreview(eventPoint(event.currentTarget, event));
   };
 
   const finish = (event: ReactPointerEvent<SVGSVGElement>) => {
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-    if (drag.kind === "create") {
-      const end = eventPoint(event);
-      if (Math.hypot(end.x - drag.start.x, end.y - drag.start.y) >= 0.01) {
-        onCommitAnnotation(drag.start, end);
+    const active = dragRef.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const point = eventPoint(event.currentTarget, event);
+    cancelFrame();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (active.kind === "create") {
+      if (Math.hypot(point.x - active.start.x, point.y - active.start.y) >= 0.01) {
+        onCommitAnnotation(active.start, point);
+      }
+    } else {
+      if (Math.hypot(point.x - active.origin.x, point.y - active.origin.y) >= 0.001) {
+        onCommitEditor(moveEditor(active, point));
       }
     }
+    setPreview(null);
     setDrag(null);
   };
 
-  const preview = drag?.kind === "create" ? drag : null;
+  const cancel = () => {
+    cancelFrame();
+    setPreview(null);
+    setDrag(null);
+  };
+
+  const visibleEditor = previewEditor ?? editor;
+  const draft = drag?.kind === "create" ? drag : null;
 
   return (
-    <div className="dimension-stage-viewport" aria-label="尺寸图编辑画布">
+    <div className={`dimension-stage-viewport${drag ? " is-dragging" : ""}`} aria-label="尺寸图编辑画布">
       <div className="dimension-stage-surface" style={{ transform: `scale(${zoom})` }}>
         {asset?.previewUrl ? (
-          <img className="dimension-stage-image" src={asset.previewUrl} alt={asset.role || "尺寸图素材"} />
+          <img
+            className="dimension-stage-image"
+            src={asset.previewUrl}
+            alt={asset.role || "尺寸图素材"}
+            draggable={false}
+            onDragStart={(event) => event.preventDefault()}
+          />
         ) : (
           <div className="dimension-stage-placeholder">请选择可用素材</div>
         )}
@@ -116,20 +227,17 @@ export function DimensionCanvasStage({ editor, asset, zoom, onChange, onCommitAn
           onPointerDown={startCreate}
           onPointerMove={move}
           onPointerUp={finish}
-          onPointerCancel={() => setDrag(null)}
+          onPointerCancel={cancel}
+          onLostPointerCapture={() => {
+            if (dragRef.current) cancel();
+          }}
+          onDragStart={(event) => event.preventDefault()}
         >
-          {editor.annotations.map((annotation) => {
+          {visibleEditor.annotations.map((annotation) => {
             const color = colorFor(annotation);
-            const selected = editor.selectedAnnotationId === annotation.id;
+            const selected = visibleEditor.selectedAnnotationId === annotation.id;
             return (
-              <g
-                key={annotation.id}
-                className={`dimension-annotation${selected ? " is-selected" : ""}`}
-                onPointerDown={(event) => {
-                  event.stopPropagation();
-                  onChange({ ...editor, selectedAnnotationId: annotation.id });
-                }}
-              >
+              <g key={annotation.id} className={`dimension-annotation${selected ? " is-selected" : ""}`}>
                 <line
                   x1={annotation.start.x * 1000}
                   y1={annotation.start.y * 1000}
@@ -141,6 +249,14 @@ export function DimensionCanvasStage({ editor, asset, zoom, onChange, onCommitAn
                 />
                 <polygon points={arrowPoints(annotation.start, annotation.end)} fill={color} />
                 <polygon points={arrowPoints(annotation.end, annotation.start)} fill={color} />
+                <line
+                  className="dimension-line-hit"
+                  x1={annotation.start.x * 1000}
+                  y1={annotation.start.y * 1000}
+                  x2={annotation.end.x * 1000}
+                  y2={annotation.end.y * 1000}
+                  onPointerDown={(event) => startMove(event, annotation.id, "line")}
+                />
                 <text
                   x={annotation.label.x * 1000}
                   y={annotation.label.y * 1000}
@@ -152,34 +268,37 @@ export function DimensionCanvasStage({ editor, asset, zoom, onChange, onCommitAn
                   className="dimension-annotation-label"
                   onPointerDown={(event) => startMove(event, annotation.id, "label")}
                 >
-                  {formatCentimeters(annotation.valueCm)}
+                  {formatDimension(annotation.valueCm, annotation.unit)}
                 </text>
                 <circle
                   cx={annotation.start.x * 1000}
                   cy={annotation.start.y * 1000}
-                  r="22"
+                  r="24"
                   className="dimension-endpoint-hit"
                   onPointerDown={(event) => startMove(event, annotation.id, "start")}
                 />
                 <circle
                   cx={annotation.end.x * 1000}
                   cy={annotation.end.y * 1000}
-                  r="22"
+                  r="24"
                   className="dimension-endpoint-hit"
                   onPointerDown={(event) => startMove(event, annotation.id, "end")}
                 />
               </g>
             );
           })}
-          {preview && (
-            <line
-              className="dimension-draft-line"
-              x1={preview.start.x * 1000}
-              y1={preview.start.y * 1000}
-              x2={preview.current.x * 1000}
-              y2={preview.current.y * 1000}
-              vectorEffect="non-scaling-stroke"
-            />
+          {draft && (
+            <g className="dimension-draft-line">
+              <line
+                x1={draft.start.x * 1000}
+                y1={draft.start.y * 1000}
+                x2={draft.current.x * 1000}
+                y2={draft.current.y * 1000}
+                vectorEffect="non-scaling-stroke"
+              />
+              <polygon points={arrowPoints(draft.start, draft.current)} />
+              <polygon points={arrowPoints(draft.current, draft.start)} />
+            </g>
           )}
         </svg>
       </div>

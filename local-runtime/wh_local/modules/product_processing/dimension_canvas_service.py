@@ -188,11 +188,49 @@ class DimensionCanvasService:
                 cleaned,
                 workspace_id,
             )
-        except StaleCanvasRevision as exc:
+        except (StaleCanvasRevision, CanvasStateConflict) as exc:
             raise DimensionCanvasConflict(str(exc)) from exc
         except LookupError as exc:
             raise DimensionCanvasNotFound(str(exc)) from exc
         return self._hydrate_item(saved, workspace_id)
+
+    def upload_asset(
+        self,
+        item_id: str,
+        content: bytes,
+        filename: str,
+        content_type: str,
+        *,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        """Validate and register an uploaded image without touching editor revision."""
+
+        if self.canvas_repository.get_item(item_id, workspace_id) is None:
+            raise DimensionCanvasNotFound("dimension canvas item not found")
+        info = self.renderer.inspect_source(bytes(content))
+        digest = hashlib.sha256(content).hexdigest()
+        path = self.assets.save_dimension_asset(
+            content,
+            kind="source",
+            suffix=info.suffix,
+            workspace_id=workspace_id,
+        )
+        asset = self.canvas_repository.register_uploaded_asset(
+            item_id,
+            workspace_id,
+            managed_path=str(path),
+            content_hash=digest,
+            width=info.width,
+            height=info.height,
+            content_type=info.content_type,
+        )
+        item = self.canvas_repository.get_item(item_id, workspace_id)
+        assert item is not None
+        return {
+            "item": self._hydrate_item(item, workspace_id),
+            "asset_id": asset["id"],
+            "filename": Path(filename or "uploaded-image").name,
+        }
 
     def complete_item(
         self,
@@ -657,6 +695,21 @@ class DimensionCanvasService:
             cleaned["annotations"] = [DimensionCanvasService._normalize_annotation(value) for value in annotations]
         if "canvas_settings" in cleaned and not isinstance(cleaned["canvas_settings"], dict):
             raise ValueError("canvas_settings must be an object")
+        if "canvas_settings" in cleaned:
+            settings = dict(cleaned["canvas_settings"] or {})
+            unknown_settings = set(settings) - {"fit", "style", "display_unit", "custom_value_cm"}
+            if unknown_settings:
+                raise ValueError(f"unsupported canvas settings: {sorted(unknown_settings)}")
+            if str(settings.get("fit") or "contain") not in {"contain", "cover"}:
+                raise ValueError("canvas fit is invalid")
+            if str(settings.get("style") or "auto") not in {"auto", "dark", "light"}:
+                raise ValueError("canvas style is invalid")
+            if str(settings.get("display_unit") or "cm") not in {"cm", "mm", "in", "ft"}:
+                raise ValueError("canvas display unit is invalid")
+            custom_value = settings.get("custom_value_cm")
+            if custom_value is not None and float(custom_value) <= 0:
+                raise ValueError("custom dimension value must be positive")
+            cleaned["canvas_settings"] = settings
         if "target_slot_id" in cleaned:
             slot = str(cleaned["target_slot_id"] or "")
             if slot and slot != "carousel.dimension_background":
@@ -679,6 +732,7 @@ class DimensionCanvasService:
             "end": DimensionCanvasService._point(value.get("end"), "end"),
             "label": DimensionCanvasService._point(value.get("label"), "label"),
             "style": str(value.get("style") or "auto"),
+            "unit": str(value.get("unit") or "cm"),
         }
         # Run the actual renderer contract at the API boundary too.
         DimensionCanvasService._renderer_annotation(normalized)
@@ -706,6 +760,7 @@ class DimensionCanvasService:
             end=(float(value["end"]["x"]), float(value["end"]["y"])),
             label=(float(value["label"]["x"]), float(value["label"]["y"])),
             style=value.get("style") or "auto",
+            unit=value.get("unit") or "cm",
         )
 
     def _validate_complete(self, item: dict[str, Any]) -> None:

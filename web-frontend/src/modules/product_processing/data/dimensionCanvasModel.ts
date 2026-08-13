@@ -2,6 +2,7 @@ import type {
   DimensionAnnotation,
   DimensionCanvasItem,
   DimensionKey,
+  DimensionUnit,
   EditorState,
   NormalizedPoint,
 } from "../types/dimensionCanvas.ts";
@@ -19,7 +20,7 @@ export function addAnnotation(
   start: NormalizedPoint,
   end: NormalizedPoint,
 ): EditorState {
-  const valueCm = key === "custom" ? 0 : state.dimensions[key].valueCm ?? 0;
+  const valueCm = key === "custom" ? state.customValueCm ?? 0 : state.dimensions[key].valueCm ?? 0;
   const safeStart = clampPoint(start);
   const safeEnd = clampPoint(end);
   const label = {
@@ -34,6 +35,7 @@ export function addAnnotation(
     end: safeEnd,
     label,
     style: "auto",
+    unit: state.displayUnit,
   };
   return {
     ...state,
@@ -99,6 +101,9 @@ export function canComplete(state: EditorState): { ok: boolean; reason: string }
   if (!state.selectedAssetId) return { ok: false, reason: "请选择尺寸图素材" };
   if (!state.targetSlotId) return { ok: false, reason: "请选择回写位置" };
   if (state.annotations.length === 0) return { ok: false, reason: "请至少绘制一条尺寸线" };
+  if (state.annotations.some((item) => !Number.isFinite(item.valueCm) || item.valueCm <= 0)) {
+    return { ok: false, reason: "尺寸数值必须大于 0" };
+  }
   const allowed = new Set(["source_confirmed", "manual_confirmed"]);
   const invalid = state.annotations.find(
     (item) =>
@@ -109,8 +114,26 @@ export function canComplete(state: EditorState): { ok: boolean; reason: string }
     : { ok: true, reason: "" };
 }
 
-export function formatCentimeters(value: number): string {
-  return `${Number(value.toFixed(2))} cm`;
+export function centimetersToUnit(valueCm: number, unit: DimensionUnit): number {
+  return unit === "mm" ? valueCm * 10 : unit === "in" ? valueCm / 2.54 : unit === "ft" ? valueCm / 30.48 : valueCm;
+}
+
+export function unitToCentimeters(value: number, unit: DimensionUnit): number {
+  return unit === "mm" ? value / 10 : unit === "in" ? value * 2.54 : unit === "ft" ? value * 30.48 : value;
+}
+
+export function formatDimension(valueCm: number, unit: DimensionUnit): string {
+  const converted = centimetersToUnit(valueCm, unit);
+  const precision = unit === "mm" ? 1 : 2;
+  return `${Number(converted.toFixed(precision))} ${unit}`;
+}
+
+export function changeDisplayUnit(state: EditorState, unit: DimensionUnit): EditorState {
+  return {
+    ...state,
+    displayUnit: unit,
+    annotations: state.annotations.map((annotation) => ({ ...annotation, unit })),
+  };
 }
 
 /** Any semantic edit invalidates the previous deterministic render locally. */

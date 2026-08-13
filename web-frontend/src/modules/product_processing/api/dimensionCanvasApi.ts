@@ -1,4 +1,4 @@
-import { ppRequest, type ApiContext } from "./client";
+import { ppRequest, ppUpload, type ApiContext } from "./client";
 import {
   mapChangeSet,
   mapDimensionNotifications,
@@ -20,6 +20,7 @@ import type {
   ImportableDimensionTask,
   PhysicalDimensions,
   SaveDimensionItemRequest,
+  UploadedDimensionAsset,
 } from "../types/dimensionCanvas";
 
 const API_BASE = "/api/product-processing/dimension-canvas";
@@ -65,6 +66,7 @@ function mapAnnotation(value: unknown): DimensionAnnotation {
     end: point(raw.end),
     label: point(raw.label),
     style: stringValue(raw.style || "auto") as DimensionAnnotation["style"],
+    unit: stringValue(raw.unit || "cm") as DimensionAnnotation["unit"],
   };
 }
 
@@ -85,6 +87,7 @@ export function mapItem(value: unknown): DimensionCanvasItem {
   const raw = record(value);
   const rawEditor = record(raw.editor ?? raw.editor_state);
   const rawDimensions = raw.physical_dimensions ?? raw.physical_dimensions_json ?? rawEditor.dimensions;
+  const rawSettings = record(raw.canvas_settings ?? rawEditor.canvasSettings ?? rawEditor.canvas_settings);
   const dimensions = rawDimensions ? mapPhysicalDimensions(rawDimensions) : EMPTY_DIMENSIONS;
   const editor: EditorState = {
     selectedAssetId: stringValue(raw.selected_source_asset_id ?? rawEditor.selectedAssetId),
@@ -95,6 +98,10 @@ export function mapItem(value: unknown): DimensionCanvasItem {
     annotations: arrayValue(raw.annotations ?? raw.annotations_json ?? rawEditor.annotations).map(mapAnnotation),
     activeTool: "select",
     selectedAnnotationId: null,
+    displayUnit: stringValue(rawSettings.display_unit ?? rawSettings.displayUnit ?? "cm") as EditorState["displayUnit"],
+    customValueCm: rawSettings.custom_value_cm == null && rawSettings.customValueCm == null
+      ? null
+      : numberValue(rawSettings.custom_value_cm ?? rawSettings.customValueCm),
   };
   return {
     id: stringValue(raw.id ?? raw.dimension_item_id),
@@ -160,6 +167,21 @@ export async function saveDimensionItem(
     body: serializeSaveDimensionItemRequest(request),
   });
   return unwrap(payload, "item", mapItem);
+}
+
+export async function uploadDimensionAsset(itemId: string, file: File): Promise<UploadedDimensionAsset> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const payload = await ppUpload<unknown>(
+    context,
+    `${API_BASE}/items/${encodeURIComponent(itemId)}/assets`,
+    formData,
+  );
+  const raw = record(payload);
+  return {
+    item: mapItem(raw.item ?? payload),
+    assetId: stringValue(raw.asset_id),
+  };
 }
 
 export async function completeDimensionItem(

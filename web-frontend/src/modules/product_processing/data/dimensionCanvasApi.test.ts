@@ -26,8 +26,9 @@ test("save payload explicitly serializes nested editor state to snake case", () 
       end: { x: .9, y: .8 },
       label: { x: .5, y: .75 },
       style: "auto",
+      unit: "ft",
     }],
-    canvas_settings: { fit: "contain", style: "auto" },
+    canvas_settings: { fit: "contain", style: "auto", display_unit: "ft", custom_value_cm: null },
   });
 
   const dimensions = payload.physical_dimensions as Record<string, Record<string, unknown>>;
@@ -41,6 +42,7 @@ test("save payload explicitly serializes nested editor state to snake case", () 
   assert.equal(annotations[0].value_cm, 12);
   assert.equal("valueCm" in annotations[0], false);
   assert.deepEqual(annotations[0].start, { x: .1, y: .8 });
+  assert.equal(annotations[0].unit, "ft");
 });
 
 test("change mapper reads nested safe URLs and never managed_path", () => {

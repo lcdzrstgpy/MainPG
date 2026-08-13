@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from collections.abc import Iterable
 from typing import Any, Literal
 
@@ -150,6 +151,49 @@ def extract_physical_dimensions(raw: dict[str, Any]) -> PhysicalDimensions:
         width=resolved["width"],
         height=resolved["height"],
         conflict=conflict,
+    )
+
+
+def prefill_physical_dimensions(result: dict[str, Any]) -> PhysicalDimensions:
+    """Return canvas fields with processing-table estimates visible but untrusted.
+
+    Explicit product-body evidence remains authoritative.  The product-processing
+    table's ``product_dimensions`` values are useful as an editing starting point,
+    but most of them are packaging/AI estimates, so they must be confirmed by the
+    user before a dimension line can be rendered.
+    """
+
+    try:
+        current = PhysicalDimensions.model_validate(result.get("physical_dimensions") or {})
+    except (TypeError, ValueError):
+        current = PhysicalDimensions()
+    estimates = result.get("product_dimensions") or {}
+    if not isinstance(estimates, dict):
+        return current
+    source = str(estimates.get("source") or "processing_table")
+    values: dict[DimensionAxis, DimensionValue] = {}
+    for axis in ("length", "width", "height"):
+        existing = getattr(current, axis)
+        if existing.value_cm is not None or existing.evidence_ref:
+            values[axis] = existing
+            continue
+        try:
+            candidate = float(estimates.get(f"{axis}_cm"))
+        except (TypeError, ValueError):
+            candidate = 0
+        if not math.isfinite(candidate) or candidate <= 0:
+            values[axis] = existing
+            continue
+        values[axis] = DimensionValue(
+            value_cm=candidate,
+            provenance="package_estimate",
+            evidence_ref=f"product_dimensions.{axis}_cm:{source}",
+        )
+    return PhysicalDimensions(
+        length=values["length"],
+        width=values["width"],
+        height=values["height"],
+        conflict=current.conflict,
     )
 
 

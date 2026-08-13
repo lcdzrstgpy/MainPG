@@ -5,6 +5,8 @@ import {
   addAnnotation,
   canComplete,
   changeDimensionValue,
+  changeDisplayUnit,
+  formatDimension,
   invalidateRenderOnEdit,
   nextQueueItem,
 } from "./dimensionCanvasModel.ts";
@@ -23,6 +25,7 @@ function annotation(id: string, key: DimensionKey, valueCm: number): DimensionAn
     end: { x: 0.9, y: 0.8 },
     label: { x: 0.5, y: 0.75 },
     style: "auto",
+    unit: "cm",
   };
 }
 
@@ -39,6 +42,8 @@ function fixtureState(input: { length?: number; annotations?: DimensionAnnotatio
     annotations: input.annotations ?? [],
     activeTool: "select",
     selectedAnnotationId: null,
+    displayUnit: "cm",
+    customValueCm: null,
   };
 }
 
@@ -92,4 +97,18 @@ test("semantic edits invalidate an old render before another submit", () => {
   assert.equal(next.state, "editing");
   assert.equal(next.renderRevision, 0);
   assert.equal(next.renderAssetId, "");
+});
+
+test("display-unit changes preserve canonical centimeters and relabel annotations", () => {
+  const state = fixtureState({ annotations: [annotation("a", "length", 30.48)] });
+  const next = changeDisplayUnit(state, "ft");
+  assert.equal(next.dimensions.length.valueCm, 10);
+  assert.equal(next.annotations[0].valueCm, 30.48);
+  assert.equal(next.annotations[0].unit, "ft");
+  assert.equal(formatDimension(next.annotations[0].valueCm, "ft"), "1 ft");
+});
+
+test("custom annotation requires a positive value before completion", () => {
+  const state = fixtureState({ annotations: [annotation("a", "custom", 0)] });
+  assert.deepEqual(canComplete(state), { ok: false, reason: "尺寸数值必须大于 0" });
 });

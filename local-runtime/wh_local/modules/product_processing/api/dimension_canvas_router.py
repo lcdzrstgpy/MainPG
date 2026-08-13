@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 from pydantic import ValidationError
 
 from ..dimension_canvas_service import (
@@ -67,6 +67,29 @@ def create_dimension_canvas_router(service: DimensionCanvasService) -> APIRouter
             patch,
             workspace_id=_workspace(workspace_id),
         )
+
+    @router.post("/items/{item_id}/assets")
+    async def upload_asset(
+        item_id: str,
+        request: Request,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        form = await request.form()
+        file = form.get("file")
+        if file is None or not hasattr(file, "read"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "file is required")
+        try:
+            content = await file.read(25 * 1024 * 1024 + 1)
+            return _call(
+                service.upload_asset,
+                item_id,
+                content,
+                str(getattr(file, "filename", "") or "uploaded-image"),
+                str(getattr(file, "content_type", "") or ""),
+                workspace_id=_workspace(workspace_id),
+            )
+        finally:
+            await file.close()
 
     @router.post("/items/{item_id}/complete")
     def complete_item(

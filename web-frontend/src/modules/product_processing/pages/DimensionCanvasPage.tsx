@@ -8,6 +8,7 @@ import {
   retryDimensionRender,
   saveDimensionItem,
   submitDimensionBatchReview,
+  uploadDimensionAsset,
 } from "../api/dimensionCanvasApi";
 import { DimensionCanvasImportDialog } from "../components/DimensionCanvasImportDialog";
 import { DimensionCanvasQueue } from "../components/DimensionCanvasQueue";
@@ -16,16 +17,20 @@ import { DimensionCanvasToolbar } from "../components/DimensionCanvasToolbar";
 import {
   addAnnotation,
   canComplete,
+  centimetersToUnit,
+  changeDisplayUnit,
   changeDimensionValue,
   invalidateRenderOnEdit,
   nextQueueItem,
   removeAnnotation,
+  unitToCentimeters,
 } from "../data/dimensionCanvasModel";
 import { useDimensionCanvasAutosave } from "../hooks/useDimensionCanvasAutosave";
 import type {
   DimensionCanvasBatch,
   DimensionCanvasItem,
   DimensionKey,
+  DimensionUnit,
   EditorState,
   NormalizedPoint,
   SaveDimensionItemRequest,
@@ -44,6 +49,12 @@ type HistoryState = {
 };
 
 const DIMENSION_LABELS = { length: "长", width: "宽", height: "高" } as const;
+const UNIT_OPTIONS: Array<{ value: DimensionUnit; label: string }> = [
+  { value: "cm", label: "厘米 (cm)" },
+  { value: "mm", label: "毫米 (mm)" },
+  { value: "in", label: "英寸 (in)" },
+  { value: "ft", label: "英尺 (ft)" },
+];
 
 export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrecheck }: Props) {
   const [batches, setBatches] = useState<DimensionCanvasBatch[]>([]);
@@ -59,6 +70,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
   const [message, setMessage] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const locallyEditedIds = useRef(new Set<string>());
   const renderWatchGeneration = useRef(new Map<string, number>());
 
@@ -270,6 +282,48 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
     updateEditor(addAnnotation(editor, editor.activeTool, start, end));
   };
 
+  const selectDimensionTool = (key: Exclude<DimensionKey, "custom">) => {
+    if (!editor) return;
+    const dimension = editor.dimensions[key];
+    if (dimension.valueCm == null || dimension.valueCm <= 0) {
+      setError(`请先填写${DIMENSION_LABELS[key]}的数值`);
+      return;
+    }
+    const confirmed = new Set(["source_confirmed", "manual_confirmed"]).has(dimension.provenance);
+    const next = confirmed ? editor : changeDimensionValue(editor, key, dimension.valueCm);
+    updateEditor({ ...next, activeTool: key }, !confirmed, !confirmed);
+    setMessage(confirmed ? `已选择“${DIMENSION_LABELS[key]}”，请在图上拖出双箭头` : `已确认“${DIMENSION_LABELS[key]}”并进入绘制`);
+  };
+
+  const uploadAsset = async (file: File | null) => {
+    if (!file || !currentItem || !editor) return;
+    if (autosave.state === "saving") {
+      setMessage("当前修改保存完成后再上传图片");
+      return;
+    }
+    setBusy("upload");
+    setError("");
+    try {
+      const uploaded = await uploadDimensionAsset(currentItem.id, file);
+      const nextEditor = { ...editor, selectedAssetId: uploaded.assetId };
+      setHistory((current) => ({ past: [...current.past, editor], future: [] }));
+      locallyEditedIds.current.add(currentItem.id);
+      setEditor(nextEditor);
+      setBatch((current) => current ? {
+        ...current,
+        items: current.items.map((item) => item.id === uploaded.item.id
+          ? invalidateRenderOnEdit(uploaded.item, nextEditor)
+          : item),
+      } : current);
+      setMessage("图片已导入并选中，可直接绘制尺寸线");
+    } catch (cause) {
+      setError(`图片导入失败：${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      setBusy("");
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
+    }
+  };
+
   const undo = () => {
     if (!editor || history.past.length === 0) return;
     const previous = history.past[history.past.length - 1];
@@ -320,7 +374,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
       setMessage(`已交回 ${changeSet.itemCount} 项审核；未完成项目继续保留在当前批次`);
       onOpenPrecheck(changeSet.sourceTaskId || batch.sourceTaskId, changeSet.id);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(`COS 交回失败：${cause instanceof Error ? cause.message : String(cause)}`);
     } finally {
       setBusy("");
     }
@@ -361,7 +415,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
         </div>
       </header>
 
-      {(error || autosave.error) && <div className="dimension-banner is-error">{error || autosave.error}{autosave.state === "error" && <button onClick={autosave.retry}>重试保存</button>}</div>}
+      {(error || autosave.error) && <div className="dimension-banner is-error">{error || `画布草稿保存失败：${autosave.error}`}{autosave.state === "error" && <button onClick={autosave.retry}>重试保存</button>}</div>}
       {message && <div className="dimension-banner is-success">{message}</div>}
       {autosave.conflictItem && <div className="dimension-banner is-warning">预检基线或画布版本已更新。本地编辑已保留，远端版本 #{autosave.conflictItem.itemRevision} 未覆盖当前画布。</div>}
 
@@ -391,29 +445,70 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               <div className="dimension-asset-list">
                 {currentItem.assets.map((asset) => (
                   <button key={asset.id} className={editor.selectedAssetId === asset.id ? "is-active" : ""} onClick={() => updateEditor({ ...editor, selectedAssetId: asset.id })} disabled={asset.availability === "failed"}>
-                    {asset.previewUrl ? <img src={asset.previewUrl} alt={asset.role} /> : <span>待加载</span>}
+                    {asset.previewUrl ? <img src={asset.previewUrl} alt={asset.role} draggable={false} onDragStart={(event) => event.preventDefault()} /> : <span>待加载</span>}
                     <small>{asset.role}</small>
                   </button>
                 ))}
+                <button className="dimension-upload-tile" onClick={() => uploadInputRef.current?.click()} disabled={busy !== "" || autosave.state === "saving"}>
+                  <span aria-hidden="true">＋</span>
+                  <small>{busy === "upload" ? "导入中…" : "导入图片"}</small>
+                </button>
+                <input
+                  ref={uploadInputRef}
+                  className="dimension-upload-input"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(event) => void uploadAsset(event.target.files?.[0] ?? null)}
+                />
               </div>
             </div>
             <div className="dimension-values">
-              <span className="dimension-meta-label">商品本体尺寸</span>
+              <div className="dimension-value-heading">
+                <span className="dimension-meta-label">商品本体尺寸</span>
+                <label>显示单位
+                  <select value={editor.displayUnit} onChange={(event) => updateEditor(changeDisplayUnit(editor, event.target.value as DimensionUnit))}>
+                    {UNIT_OPTIONS.map((unit) => <option key={unit.value} value={unit.value}>{unit.label}</option>)}
+                  </select>
+                </label>
+              </div>
               <div className="dimension-value-list">
                 {(["length", "width", "height"] as const).map((key) => {
                   const value = editor.dimensions[key];
                   return (
                     <label key={key} className={`provenance-${value.provenance}`}>
                       <span>{DIMENSION_LABELS[key]}</span>
-                      <input type="number" min="0" step="0.01" value={value.valueCm ?? ""} onChange={(event) => {
+                      <input type="number" min="0" step={editor.displayUnit === "mm" ? "1" : "0.01"} value={value.valueCm == null ? "" : Number(centimetersToUnit(value.valueCm, editor.displayUnit).toFixed(editor.displayUnit === "mm" ? 1 : 2))} onChange={(event) => {
                         const parsed = Number(event.target.value);
-                        if (Number.isFinite(parsed) && parsed > 0) updateEditor(changeDimensionValue(editor, key, parsed));
+                        if (event.target.value === "") {
+                          updateEditor({ ...editor, dimensions: { ...editor.dimensions, [key]: { valueCm: null, provenance: "unconfirmed", evidenceRef: "manual" } } });
+                        } else if (Number.isFinite(parsed) && parsed > 0) {
+                          updateEditor(changeDimensionValue(editor, key, unitToCentimeters(parsed, editor.displayUnit)));
+                        }
                       }} />
-                      <em>cm · {value.provenance === "package_estimate" ? "包裹估算（禁用）" : value.provenance}</em>
+                      <button type="button" onClick={() => selectDimensionTool(key)} disabled={value.valueCm == null || value.valueCm <= 0}>绘制</button>
+                      <em>{editor.displayUnit} · {value.provenance === "package_estimate" ? "处理表估值（绘制前确认）" : value.provenance}</em>
                     </label>
                   );
                 })}
               </div>
+              <label className="dimension-custom-value">自定义尺寸
+                <input
+                  type="number"
+                  min="0"
+                  step={editor.displayUnit === "mm" ? "1" : "0.01"}
+                  value={editor.customValueCm == null ? "" : Number(centimetersToUnit(editor.customValueCm, editor.displayUnit).toFixed(editor.displayUnit === "mm" ? 1 : 2))}
+                  onChange={(event) => {
+                    const parsed = Number(event.target.value);
+                    updateEditor({
+                      ...editor,
+                      customValueCm: event.target.value === "" || !Number.isFinite(parsed) || parsed <= 0
+                        ? null
+                        : unitToCentimeters(parsed, editor.displayUnit),
+                    });
+                  }}
+                />
+                <span>{editor.displayUnit}</span>
+              </label>
             </div>
           </section>
           <div className="dimension-editor-layout">
@@ -432,7 +527,14 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               onStyle={(style) => updateEditor({ ...editor, annotations: editor.annotations.map((annotation) => editor.selectedAnnotationId === annotation.id ? { ...annotation, style } : annotation) })}
             />
             <main className="dimension-stage-panel">
-              <DimensionCanvasStage editor={editor} asset={activeAsset} zoom={zoom} onChange={(next) => updateEditor(next, false)} onCommitAnnotation={commitAnnotation} />
+              <DimensionCanvasStage
+                editor={editor}
+                asset={activeAsset}
+                zoom={zoom}
+                onSelectAnnotation={(annotationId) => updateEditor({ ...editor, selectedAnnotationId: annotationId }, false, false)}
+                onCommitEditor={(next) => updateEditor(next)}
+                onCommitAnnotation={commitAnnotation}
+              />
               <footer className="dimension-editor-footer">
                 <label>回写位置
                   <select value={editor.targetSlotId} onChange={(event) => updateEditor({ ...editor, targetSlotId: event.target.value })}>
@@ -475,6 +577,8 @@ function nullEditor(): EditorState {
     annotations: [],
     activeTool: "select",
     selectedAnnotationId: null,
+    displayUnit: "cm",
+    customValueCm: null,
   };
 }
 

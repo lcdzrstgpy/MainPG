@@ -83,10 +83,11 @@ class ProductProcessingAssets:
         if not content:
             raise ValueError("dimension asset is empty")
         safe_suffix = str(suffix or "").lower()
-        if safe_suffix not in {".png", ".jpg", ".jpeg"}:
+        allowed_suffixes = {".png", ".jpg", ".jpeg", ".webp"} if kind == "source" else {".png", ".jpg", ".jpeg"}
+        if safe_suffix not in allowed_suffixes:
             raise ValueError("unsupported dimension asset suffix")
         digest = hashlib.sha256(content).hexdigest()
-        safe_kind = "master" if kind == "master" else "published"
+        safe_kind = kind if kind in {"source", "master", "published"} else "published"
         workspace_root = self._dimension_workspace_root(workspace_id)
         root = (workspace_root / safe_kind / digest[:2]).resolve()
         if workspace_root != root and workspace_root not in root.parents:

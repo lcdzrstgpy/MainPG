@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from ..domain.policy import is_safe_external_url
+from ..domain.physical_dimensions import prefill_physical_dimensions
 from .database import ProductProcessingDatabase
 from .dimension_canvas_orm import (
     DimensionCanvasAssetRow,
@@ -161,7 +162,9 @@ class DimensionCanvasRepository:
                         product_draft_id=draft.id,
                         skc=str(task_item.skc or ""),
                         source_preview_revision=int(draft.preview_revision or 0),
-                        physical_dimensions_json=_dumps(result.get("physical_dimensions") or {}),
+                        physical_dimensions_json=_dumps(
+                            prefill_physical_dimensions(result).model_dump(mode="json")
+                        ),
                     )
                     session.add(row)
                     session.flush()
@@ -170,7 +173,9 @@ class DimensionCanvasRepository:
                     if int(row.item_revision) == 0 and row.state == "pending":
                         row.source_preview_revision = int(draft.preview_revision or 0)
                         result = _loads(task_item.result_json, {})
-                        row.physical_dimensions_json = _dumps(result.get("physical_dimensions") or {})
+                        row.physical_dimensions_json = _dumps(
+                            prefill_physical_dimensions(result).model_dump(mode="json")
+                        )
                         old_assets = session.scalars(
                             select(DimensionCanvasAssetRow).where(
                                 DimensionCanvasAssetRow.item_id == row.id,
@@ -220,12 +225,68 @@ class DimensionCanvasRepository:
                 )
                 .order_by(DimensionCanvasItemRow.created_at, DimensionCanvasItemRow.id)
             ).all()
-            return {**self._batch(batch), "items": [self._item(row) for row in items]}
+            task_items = session.scalars(
+                select(ProcessingTaskItemRow).where(
+                    ProcessingTaskItemRow.id.in_([row.task_item_id for row in items])
+                )
+            ).all()
+            results = {row.id: _loads(row.result_json, {}) for row in task_items}
+            return {
+                **self._batch(batch),
+                "items": [self._item_with_result(row, results.get(row.task_item_id, {})) for row in items],
+            }
 
     def get_item(self, item_id: str, workspace_id: str) -> dict[str, Any] | None:
         with self.database.sessions() as session:
             row = self._get_item_row(session, item_id, workspace_id)
-            return self._item(row) if row is not None else None
+            if row is None:
+                return None
+            task_item = session.get(ProcessingTaskItemRow, row.task_item_id)
+            result = _loads(task_item.result_json, {}) if task_item is not None else {}
+            return self._item_with_result(row, result)
+
+    def register_uploaded_asset(
+        self,
+        item_id: str,
+        workspace_id: str,
+        *,
+        managed_path: str,
+        content_hash: str,
+        width: int,
+        height: int,
+        content_type: str,
+    ) -> dict[str, Any]:
+        """Register one validated, server-managed user upload for this item."""
+
+        asset_id = str(
+            uuid5(NAMESPACE_URL, f"mainpg:{workspace_id}:{item_id}:user-upload:{content_hash}")
+        )
+        with self.database.sessions.begin() as session:
+            if self._get_item_row(session, item_id, workspace_id) is None:
+                raise LookupError("dimension canvas item not found")
+            row = session.scalar(
+                select(DimensionCanvasAssetRow).where(
+                    DimensionCanvasAssetRow.id == asset_id,
+                    DimensionCanvasAssetRow.item_id == item_id,
+                    DimensionCanvasAssetRow.workspace_id == workspace_id,
+                )
+            )
+            if row is None:
+                row = DimensionCanvasAssetRow(
+                    id=asset_id,
+                    workspace_id=workspace_id,
+                    item_id=item_id,
+                    role="user_upload",
+                )
+                session.add(row)
+            row.managed_path = str(managed_path)
+            row.content_hash = str(content_hash)
+            row.width = int(width)
+            row.height = int(height)
+            row.content_type = str(content_type)
+            row.availability = "local"
+            session.flush()
+            return self._asset(row)
 
     def list_assets(self, item_id: str, workspace_id: str) -> list[dict[str, Any]]:
         with self.database.sessions() as session:
@@ -1211,6 +1272,19 @@ class DimensionCanvasRepository:
             "availability": row.availability,
             "created_at": row.created_at,
         }
+
+    @classmethod
+    def _item_with_result(
+        cls,
+        row: DimensionCanvasItemRow,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        item = cls._item(row)
+        merged = prefill_physical_dimensions(
+            {**dict(result or {}), "physical_dimensions": item.get("physical_dimensions") or {}}
+        )
+        item["physical_dimensions"] = merged.model_dump(mode="json")
+        return item
 
     @staticmethod
     def _change_set(row: DimensionCanvasChangeSetRow) -> dict[str, Any]:

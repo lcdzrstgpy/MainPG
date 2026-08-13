@@ -1,4 +1,5 @@
 export type DimensionKey = "length" | "width" | "height" | "custom";
+export type DimensionUnit = "cm" | "mm" | "in" | "ft";
 
 export type DimensionProvenance =
   | "source_confirmed"
@@ -32,6 +33,7 @@ export interface DimensionAnnotation {
   end: NormalizedPoint;
   label: NormalizedPoint;
   style: "auto" | "dark" | "light";
+  unit: DimensionUnit;
 }
 
 export interface DimensionValue {
@@ -53,7 +55,7 @@ export interface DimensionAsset {
   previewUrl: string;
   width: number;
   height: number;
-  availability: "metadata" | "ready" | "failed";
+  availability: "metadata" | "ready" | "local" | "published" | "failed";
   contentHash?: string;
 }
 
@@ -64,6 +66,8 @@ export interface EditorState {
   annotations: DimensionAnnotation[];
   activeTool: DimensionKey | "select";
   selectedAnnotationId: string | null;
+  displayUnit: DimensionUnit;
+  customValueCm: number | null;
 }
 
 export interface DimensionCanvasItem {
@@ -126,7 +130,17 @@ export interface SaveDimensionItemRequest {
   target_slot_id: string;
   physical_dimensions: PhysicalDimensions;
   annotations: DimensionAnnotation[];
-  canvas_settings: { fit: "contain" | "cover"; style: "auto" | "dark" | "light" };
+  canvas_settings: {
+    fit: "contain" | "cover";
+    style: "auto" | "dark" | "light";
+    display_unit: DimensionUnit;
+    custom_value_cm: number | null;
+  };
+}
+
+export interface UploadedDimensionAsset {
+  item: DimensionCanvasItem;
+  assetId: string;
 }
 
 export interface ImportableDimensionTask {

@@ -268,6 +268,24 @@
   padding: 5px;
 }
 
+.dimension-upload-input {
+  display: none;
+}
+
+.dimension-asset-list .dimension-upload-tile {
+  place-items: center;
+  align-content: center;
+  border-style: dashed;
+}
+
+.dimension-upload-tile > span {
+  display: grid;
+  place-items: center;
+  color: var(--theme-primary);
+  font-size: 25px;
+  font-weight: 400;
+}
+
 .dimension-asset-list img,
 .dimension-asset-list button > span {
   width: 70px;
@@ -291,15 +309,51 @@
   gap: 8px;
 }
 
+.dimension-value-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.dimension-value-heading .dimension-meta-label {
+  margin-bottom: 0;
+}
+
+.dimension-value-heading label,
+.dimension-custom-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+}
+
+.dimension-value-heading select,
+.dimension-custom-value input {
+  min-width: 0;
+  border: 1px solid var(--theme-module-border);
+  background: var(--theme-module-surface-raised);
+  color: var(--theme-text-primary);
+  border-radius: 7px;
+  padding: 5px 7px;
+}
+
 .dimension-value-list label {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(54px, 1fr) auto;
   align-items: center;
   gap: 4px 8px;
   border: 1px solid var(--theme-module-border);
   background: var(--theme-module-surface-soft);
   border-radius: 9px;
   padding: 7px 9px;
+}
+
+.dimension-value-list label > button {
+  padding: 5px 7px;
+  font-size: 11px;
 }
 
 .dimension-value-list label.provenance-unconfirmed,
@@ -327,6 +381,15 @@
   font-style: normal;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dimension-custom-value {
+  justify-content: flex-end;
+  margin-top: 7px;
+}
+
+.dimension-custom-value input {
+  width: 86px;
 }
 
 .dimension-editor-layout {
@@ -376,6 +439,8 @@
   overflow: auto;
   background: var(--theme-module-surface-soft);
   padding: 24px;
+  overscroll-behavior: contain;
+  user-select: none;
 }
 
 .dimension-stage-surface {
@@ -400,6 +465,9 @@
 
 .dimension-stage-image {
   object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .dimension-stage-placeholder {
@@ -410,6 +478,14 @@
 
 .dimension-stage-svg {
   touch-action: none;
+  cursor: crosshair;
+  user-select: none;
+}
+
+.dimension-stage-viewport.is-dragging .dimension-stage-svg,
+.dimension-stage-viewport.is-dragging .dimension-annotation-label,
+.dimension-stage-viewport.is-dragging .dimension-line-hit {
+  cursor: grabbing;
 }
 
 .dimension-annotation-label {
@@ -420,19 +496,31 @@
 }
 
 .dimension-endpoint-hit {
-  fill: var(--theme-module-overlay);
+  fill: transparent;
+  stroke: transparent;
+  pointer-events: all;
   cursor: crosshair;
 }
 
 .dimension-annotation.is-selected .dimension-endpoint-hit {
-  stroke: var(--theme-primary);
-  stroke-width: 3;
+  stroke: transparent;
 }
 
-.dimension-draft-line {
+.dimension-line-hit {
+  stroke: transparent;
+  stroke-width: 28;
+  pointer-events: stroke;
+  cursor: move;
+}
+
+.dimension-draft-line line {
   stroke: var(--theme-primary);
   stroke-width: 3;
   stroke-dasharray: 8 6;
+}
+
+.dimension-draft-line polygon {
+  fill: var(--theme-primary);
 }
 
 .dimension-editor-footer {

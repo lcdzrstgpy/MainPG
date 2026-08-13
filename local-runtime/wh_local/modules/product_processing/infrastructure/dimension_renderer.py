@@ -26,6 +26,7 @@ class DimensionAnnotation(BaseModel):
     end: tuple[float, float]
     label: tuple[float, float]
     style: Literal["auto", "dark", "light"] = "auto"
+    unit: Literal["cm", "mm", "in", "ft"] = "cm"
 
 
 class DimensionRenderRequest(BaseModel):
@@ -50,7 +51,24 @@ class DimensionRenderOutput:
     height: int
 
 
+@dataclass(frozen=True)
+class DimensionSourceInfo:
+    width: int
+    height: int
+    content_type: str
+    suffix: str
+
+
 class DimensionRenderer:
+    def inspect_source(self, content: bytes) -> DimensionSourceInfo:
+        image, source_format = self._open_source(content)
+        return DimensionSourceInfo(
+            width=image.width,
+            height=image.height,
+            content_type={"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}[source_format],
+            suffix={"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}[source_format],
+        )
+
     def render(self, request: DimensionRenderRequest) -> DimensionRenderOutput:
         self._validate_request(request)
         if not _FONT_PATH.is_file():
@@ -114,16 +132,26 @@ class DimensionRenderer:
 
     @staticmethod
     def _decode_source(content: bytes) -> Image.Image:
+        image, _source_format = DimensionRenderer._open_source(content)
+        return image
+
+    @staticmethod
+    def _open_source(content: bytes) -> tuple[Image.Image, str]:
+        if not content:
+            raise ValueError("dimension_source_invalid")
+        if len(content) > _MAX_SOURCE_BYTES:
+            raise ValueError("dimension_source_too_large")
         try:
             with Image.open(BytesIO(content)) as opened:
-                if opened.format not in _ALLOWED_SOURCE_FORMATS:
+                source_format = str(opened.format or "").upper()
+                if source_format not in _ALLOWED_SOURCE_FORMATS:
                     raise ValueError("dimension_source_format_invalid")
                 if int(getattr(opened, "n_frames", 1)) != 1:
                     raise ValueError("dimension_source_animated")
                 if opened.width * opened.height > _MAX_SOURCE_PIXELS:
                     raise ValueError("dimension_source_pixels_exceeded")
                 opened.load()
-                return ImageOps.exif_transpose(opened).convert("RGB")
+                return ImageOps.exif_transpose(opened).convert("RGB"), source_format
         except ValueError:
             raise
         except (OSError, UnidentifiedImageError) as exc:
@@ -190,7 +218,7 @@ class DimensionRenderer:
             fill=color,
         )
 
-        label = f"{annotation.value_cm:.2f}".rstrip("0").rstrip(".") + " cm"
+        label = _format_dimension(annotation.value_cm, annotation.unit)
         stroke_width = max(2, round(size * 0.0025))
         bounds = draw.textbbox(
             label_point,
@@ -220,6 +248,18 @@ class DimensionRenderer:
 
 def _pixel_point(point: tuple[float, float], size: int) -> tuple[int, int]:
     return round(point[0] * (size - 1)), round(point[1] * (size - 1))
+
+
+def _format_dimension(value_cm: float, unit: Literal["cm", "mm", "in", "ft"]) -> str:
+    converted = {
+        "cm": value_cm,
+        "mm": value_cm * 10,
+        "in": value_cm / 2.54,
+        "ft": value_cm / 30.48,
+    }[unit]
+    precision = 1 if unit == "mm" else 2
+    number = f"{converted:.{precision}f}".rstrip("0").rstrip(".")
+    return f"{number} {unit}"
 
 
 def _annotation_colors(

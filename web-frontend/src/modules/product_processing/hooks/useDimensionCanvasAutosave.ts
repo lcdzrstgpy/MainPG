@@ -21,6 +21,8 @@ function persistentSignature(editor: EditorState): string {
     targetSlotId: editor.targetSlotId,
     dimensions: editor.dimensions,
     annotations: editor.annotations,
+    displayUnit: editor.displayUnit,
+    customValueCm: editor.customValueCm,
   });
 }
 
@@ -57,7 +59,12 @@ export function useDimensionCanvasAutosave(
     target_slot_id: snapshot.targetSlotId,
     physical_dimensions: snapshot.dimensions,
     annotations: snapshot.annotations,
-    canvas_settings: { fit: "contain", style: "auto" },
+    canvas_settings: {
+      fit: "contain",
+      style: "auto",
+      display_unit: snapshot.displayUnit,
+      custom_value_cm: snapshot.customValueCm,
+    },
   });
 
   const flush = useCallback(async () => {
@@ -128,11 +135,12 @@ export function useDimensionCanvasAutosave(
     generationRef.current += 1;
     queuedRef.current = { generation: generationRef.current, editor };
     blockedRef.current = false;
+    setState("saving");
     if (timerRef.current != null) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
       timerRef.current = null;
       void flush();
-    }, 450);
+    }, 250);
     return () => {
       if (timerRef.current != null) window.clearTimeout(timerRef.current);
     };

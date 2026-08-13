@@ -347,10 +347,12 @@ export type {
   DimensionNotification,
   DimensionProvenance,
   DimensionTaskEligibility,
+  DimensionUnit,
   DimensionValue,
   EditorState,
   ImportableDimensionTask,
   NormalizedPoint,
   PhysicalDimensions,
   SaveDimensionItemRequest,
+  UploadedDimensionAsset,
 } from "./dimensionCanvas";

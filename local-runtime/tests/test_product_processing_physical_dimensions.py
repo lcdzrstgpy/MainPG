@@ -1,6 +1,7 @@
 from wh_local.modules.product_processing.domain.physical_dimensions import (
     PhysicalDimensions,
     extract_physical_dimensions,
+    prefill_physical_dimensions,
 )
 
 
@@ -126,3 +127,60 @@ def test_manual_confirmed_dimensions_are_drawable() -> None:
     )
 
     assert result.drawable is True
+
+
+def test_processing_table_dimensions_prefill_without_becoming_trusted() -> None:
+    result = prefill_physical_dimensions(
+        {
+            "physical_dimensions": {},
+            "product_dimensions": {
+                "length_cm": 30,
+                "width_cm": 20,
+                "height_cm": 10,
+                "source": "ai_estimated",
+            },
+        }
+    )
+
+    assert (result.length.value_cm, result.width.value_cm, result.height.value_cm) == (30, 20, 10)
+    assert result.length.provenance == "package_estimate"
+    assert result.length.evidence_ref == "product_dimensions.length_cm:ai_estimated"
+    assert result.drawable is False
+
+
+def test_explicit_product_evidence_wins_over_processing_estimate_per_axis() -> None:
+    result = prefill_physical_dimensions(
+        {
+            "physical_dimensions": {
+                "length": {
+                    "value_cm": 12,
+                    "provenance": "source_confirmed",
+                    "evidence_ref": "source.length",
+                }
+            },
+            "product_dimensions": {"length_cm": 99, "width_cm": 8},
+        }
+    )
+
+    assert result.length.value_cm == 12
+    assert result.length.provenance == "source_confirmed"
+    assert result.width.value_cm == 8
+    assert result.width.provenance == "package_estimate"
+
+
+def test_manually_cleared_dimension_is_not_silently_refilled() -> None:
+    result = prefill_physical_dimensions(
+        {
+            "physical_dimensions": {
+                "length": {
+                    "value_cm": None,
+                    "provenance": "unconfirmed",
+                    "evidence_ref": "manual",
+                }
+            },
+            "product_dimensions": {"length_cm": 30},
+        }
+    )
+
+    assert result.length.value_cm is None
+    assert result.length.evidence_ref == "manual"
