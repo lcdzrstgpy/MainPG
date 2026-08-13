@@ -22,6 +22,18 @@ def test_valid_five_points_are_normalized_without_rewriting_content() -> None:
     assert all(line.startswith("- ") for line in normalized.splitlines())
 
 
+def test_presentation_only_heading_variants_are_canonicalized_locally() -> None:
+    lines = []
+    for index, line in enumerate(normalize_five_point_description(VALID).splitlines(), start=1):
+        content = line.removeprefix("- ")
+        heading, body = content.split(":", maxsplit=1)
+        lines.append(f"{index}. **{heading.title()}**：{body.strip()}")
+
+    normalized = normalize_five_point_description("\n".join(lines))
+
+    assert normalized == normalize_five_point_description(VALID)
+
+
 @pytest.mark.parametrize(
     ("value", "message"),
     [

@@ -97,6 +97,29 @@ def test_combined_call_embeds_operator_description_prompt_and_enforces_five_poin
     assert "CUSTOM OPERATOR DESCRIPTION RULE" in client.prompts[0]
 
 
+def test_combined_invalid_description_is_retained_for_the_single_repair(monkeypatch) -> None:
+    candidate = "- CUTE KEYCHAINS: Small decorative charms for bags."
+    service, _client = _combined_service(
+        monkeypatch,
+        json.dumps(
+            {
+                "optimized_title": "Cartoon Character Keychain Set, Colorful Resin Bag Charms with Metal Rings",
+                "description": candidate,
+                "variant_translations": [],
+            }
+        ),
+    )
+
+    result = service._generate_combined_text(
+        "Cartoon Character Keychain Set", "Accessories", _raw(), "en", "US", []
+    )
+
+    assert result is not None
+    assert result["description"] == ""
+    assert result["description_candidate"] == candidate
+    assert "exactly five" in result["description_contract_error"]
+
+
 def test_changing_operator_description_prompt_changes_combined_cache_key(monkeypatch) -> None:
     response = json.dumps(
         {
@@ -225,6 +248,66 @@ def test_process_rejects_invalid_description_instead_of_exporting_fallback(monke
     assert result["status"] == "attention_required"
     assert result["result"]["error_type"] == "description_contract_unmet"
     assert "Source information preserved" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_process_sends_failed_combined_candidate_to_the_single_description_repair(monkeypatch) -> None:
+    service = _process_service(monkeypatch)
+    repair_calls: list[dict] = []
+    monkeypatch.setattr(
+        service,
+        "_generate_combined_text",
+        lambda *args, **kwargs: {
+            "title": "Cartoon Character Keychain Set, Colorful Resin Bag Charms with Metal Rings",
+            "description": "",
+            "description_candidate": "- Cute Keychains: Small decorative charms for bags.",
+            "description_contract_error": "description must contain exactly five bullet points",
+            "variant_translations": {},
+        },
+    )
+
+    def repaired_description(*args, **kwargs) -> str:
+        repair_calls.append(kwargs)
+        return VALID_DESCRIPTION
+
+    monkeypatch.setattr(service, "_generate_description", repaired_description)
+    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(
+            carousel_urls=tuple(f"https://example.com/grid-{index}.jpg" for index in range(4)),
+            summary_url="https://example.com/grid-summary.jpg",
+            attempt_count=1,
+            provider_status_class="success",
+        ),
+    )
+
+    result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
+
+    assert result["status"] == "completed"
+    assert repair_calls[0]["prior_description"].startswith("- Cute Keychains")
+    assert repair_calls[0]["contract_error"] == "description must contain exactly five bullet points"
+    assert "description_contract:repaired" in result["result"]["ai_notes"]
+
+
+def test_description_repair_prompt_uses_failed_candidate_as_data_only(monkeypatch) -> None:
+    service, client = _combined_service(monkeypatch, VALID_DESCRIPTION)
+
+    result = service._generate_description(
+        "Cartoon Character Keychain Set, Colorful Resin Bag Charms with Metal Rings",
+        "Accessories",
+        _raw(),
+        "en",
+        "US",
+        [],
+        prior_description="- Cute Keychains: Small decorative charms for bags.",
+        contract_error="description must contain exactly five bullet points",
+    )
+
+    assert result.count("\n") == 4
+    assert "PREVIOUS CANDIDATE" in client.prompts[0]
+    assert "16-24 English words" in client.prompts[0]
+    assert "untrusted formatting input only" in client.prompts[0]
 
 
 def test_process_success_exposes_five_points_grid_attempts_and_stage_timings(monkeypatch) -> None:

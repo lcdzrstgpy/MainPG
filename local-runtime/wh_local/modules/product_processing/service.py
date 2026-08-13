@@ -34,7 +34,7 @@ from .domain.image_slots import DEFAULT_SLOT_IDS, apply_slot_overrides
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
 from .domain.physical_dimensions import extract_physical_dimensions
 from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_issue, strict_external_url_issue
-from .domain.prompts import GRID_RUNTIME_CONTRACT, format_prompt
+from .domain.prompts import DESCRIPTION_REPAIR_PROMPT, GRID_RUNTIME_CONTRACT, format_prompt
 from .domain.visual_planner import listing_prompt_context
 from .domain.workbooks import read_product_workbook
 from .infrastructure.assets import ProductProcessingAssets
@@ -1842,6 +1842,8 @@ class ProductProcessingService:
             local_title = title
             local_desc = description
             translations: dict[str, str] = {}
+            description_candidate = ""
+            description_contract_error = ""
             needs_title = "title" in scope and settings.get("title_optimize", True)
             # Selecting description processing means regenerate it from the active operator prompt;
             # do not silently preserve an arbitrary source description.
@@ -1897,6 +1899,8 @@ class ProductProcessingService:
                     if combined.get("description"):
                         local_desc = combined["description"]
                         needs_desc = False
+                    description_candidate = str(combined.get("description_candidate") or "")
+                    description_contract_error = str(combined.get("description_contract_error") or "")
                     if combined.get("variant_translations"):
                         translations = combined["variant_translations"]
                     ai_notes.append("text:ai-combined")
@@ -1950,6 +1954,8 @@ class ProductProcessingService:
                         target_site,
                         ai_notes,
                         image_derived_title=vision_preliminary_title,
+                        prior_description=description_candidate,
+                        contract_error=description_contract_error,
                     )
                 except ListingTextConfigurationError as exc:
                     record_stage("description_repair", stage_started)
@@ -1978,6 +1984,9 @@ class ProductProcessingService:
                 if generated_desc:
                     local_desc = generated_desc
                     ai_notes.append("details:ai")
+                    if description_candidate:
+                        ai_notes.append("description_contract:repaired")
+                        provider_status_classes["combined_text"] = "repaired_contract"
                     needs_desc = False
             if "details" in scope and needs_desc:
                 return {
@@ -2314,6 +2323,8 @@ class ProductProcessingService:
                 return {
                     "title": self._normalized_title(cached["title"]),
                     "description": cached_description,
+                    "description_candidate": "",
+                    "description_contract_error": "",
                     "variant_translations": cached.get("variant_translations") or {},
                 }
             return None
@@ -2325,14 +2336,19 @@ class ProductProcessingService:
                 return None
             ensure_target_language_result("标题", data.get("optimized_title"), target_language)
             description = ""
+            description_candidate = str(data.get("description") or "").strip()[:1600]
+            description_contract_error = ""
             try:
-                description = normalize_five_point_description(data.get("description") or "")
+                description = normalize_five_point_description(description_candidate)
                 ensure_target_language_result("详情", description, target_language)
             except (DescriptionContractError, ValueError) as exc:
-                self._note_ai_failure(ai_notes, "description_contract", _ai_error_reason(exc))
+                description_contract_error = _ai_error_reason(exc)
+                self._note_ai_failure(ai_notes, "description_contract", description_contract_error)
             result = {
                 "title": self._normalized_title(data["optimized_title"]),
                 "description": description,
+                "description_candidate": "" if description else description_candidate,
+                "description_contract_error": "" if description else description_contract_error,
                 "variant_translations": self._combined_variant_translations(data, variant_values),
             }
             if description:
@@ -2410,15 +2426,35 @@ class ProductProcessingService:
         target_site: str,
         ai_notes: list[str] | None = None,
         image_derived_title: str = "",
+        prior_description: str = "",
+        contract_error: str = "",
     ) -> str:
+        """按目标语言生成五点描述；失败时返回空串（由调用方决定回退）。"""
         if not _ai_enabled():
             return ""
         template = self._effective_prompt("desc")
         contracted = apply_language_contract_to_prompt(template, "desc", target_language, target_site)
         context = listing_prompt_context(raw, title=optimized_title, category=category)
-        prompt = format_prompt(
-            contracted, title=optimized_title, image_derived_title=image_derived_title, **context
-        )
+        candidate = self._normalized_description(prior_description)[:1600]
+        if candidate:
+            repair_template = apply_language_contract_to_prompt(
+                DESCRIPTION_REPAIR_PROMPT, "desc", target_language, target_site
+            )
+            prompt = format_prompt(
+                repair_template,
+                title=optimized_title,
+                image_derived_title=image_derived_title,
+                operator_description_instructions=contracted,
+                candidate_description=candidate,
+                contract_error=str(contract_error or "format validation failed")[:240],
+                **context,
+            )
+            if ai_notes is not None:
+                ai_notes.append("description_contract:repair-requested")
+        else:
+            prompt = format_prompt(
+                contracted, title=optimized_title, image_derived_title=image_derived_title, **context
+            )
         try:
             text = self._ai_client().chat(self._text_messages(prompt, image_derived_title=image_derived_title))
             ensure_target_language_result("详情", text, target_language)
