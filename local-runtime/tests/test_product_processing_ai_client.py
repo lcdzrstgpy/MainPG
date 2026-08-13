@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -197,6 +198,158 @@ def test_concurrent_products_single_flight_unavailable_model_routes(monkeypatch)
         "gpt-5.6-terra",
         "gpt-5.6-luna",
     ]
+
+
+def test_slow_healthy_initial_route_probe_only_briefly_holds_followers(monkeypatch):
+    first_started = threading.Event()
+    release_first = threading.Event()
+    request_lock = threading.Lock()
+
+    class SlowHealthySession(_Session):
+        def __init__(self):
+            super().__init__([])
+            self.call_count = 0
+
+        def request(self, method, url, *, headers, json, timeout):
+            with request_lock:
+                self.call_count += 1
+                call_number = self.call_count
+                self.requests.append(
+                    {
+                        "method": method,
+                        "url": url,
+                        "headers": dict(headers),
+                        "json": json,
+                        "timeout": timeout,
+                    }
+                )
+            if call_number == 1:
+                first_started.set()
+                assert release_first.wait(timeout=1.0)
+                content = "FIRST OK"
+            else:
+                content = "FOLLOWER OK"
+            return _Response({"choices": [{"message": {"content": content}}]})
+
+    session = SlowHealthySession()
+    monkeypatch.setattr(ai_client, "resolve_ai_provider", _provider)
+    monkeypatch.setattr(ai_client, "_HTTP_SESSION", session)
+    monkeypatch.setattr(ai_client, "ROUTE_PROBE_FOLLOWER_WAIT_SECONDS", 0.01)
+    client = ai_client.AiClient()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(
+            client.chat,
+            [{"role": "user", "content": "first"}],
+        )
+        assert first_started.wait(timeout=0.5)
+        follower = pool.submit(
+            client.chat,
+            [{"role": "user", "content": "follower"}],
+        )
+        assert follower.result(timeout=0.5) == "FOLLOWER OK"
+        assert first.done() is False
+        release_first.set()
+        assert first.result(timeout=0.5) == "FIRST OK"
+
+    assert [request["json"]["model"] for request in session.requests] == [
+        "gpt-5.6-terra",
+        "gpt-5.6-terra",
+    ]
+
+
+def test_late_initial_no_route_does_not_overwrite_newer_follower_success(monkeypatch):
+    first_started = threading.Event()
+    release_first = threading.Event()
+    request_lock = threading.Lock()
+
+    class LateNoRouteSession(_Session):
+        def __init__(self):
+            super().__init__([])
+            self.call_count = 0
+
+        def request(self, method, url, *, headers, json, timeout):
+            with request_lock:
+                self.call_count += 1
+                call_number = self.call_count
+            if call_number == 1:
+                first_started.set()
+                assert release_first.wait(timeout=1.0)
+                return _Response(
+                    {"error": {"code": "key_has_no_route_providers"}},
+                    status_code=400,
+                )
+            return _Response({"choices": [{"message": {"content": "FOLLOWER OK"}}]})
+
+    monkeypatch.setattr(ai_client, "resolve_ai_provider", _provider)
+    monkeypatch.setattr(ai_client, "_HTTP_SESSION", LateNoRouteSession())
+    monkeypatch.setattr(ai_client, "ROUTE_PROBE_FOLLOWER_WAIT_SECONDS", 0.01)
+    client = ai_client.AiClient()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.chat, [{"role": "user", "content": "first"}])
+        assert first_started.wait(timeout=0.5)
+        follower = pool.submit(client.chat, [{"role": "user", "content": "follower"}])
+        assert follower.result(timeout=0.5) == "FOLLOWER OK"
+        release_first.set()
+        with pytest.raises(ai_client.AiProviderError):
+            first.result(timeout=0.5)
+
+    assert client._route_states["gpt-5.6-terra"] == "available"
+    assert client.chat([{"role": "user", "content": "next"}]) == "FOLLOWER OK"
+
+
+def test_transient_model_cooldown_skips_in_order_then_success_resets(monkeypatch):
+    clock = [0.0]
+
+    def provider() -> dict:
+        return {
+            **_provider(),
+            "text_timeout_seconds": 300,
+            "text_total_timeout_seconds": 360,
+            "text_model_fallback_order": ["gpt-5.6-luna"],
+        }
+
+    ok = lambda text: _Response({"choices": [{"message": {"content": text}}]})
+    session = _Session(
+        [
+            requests.Timeout("terra timeout"),
+            ok("luna after timeout"),
+            _Response({"error": "busy"}, status_code=429),
+            ok("luna after 429"),
+            ok("luna while terra cools"),
+            ok("terra half-open success"),
+            _Response({"error": "bad gateway"}, status_code=500),
+            ok("luna after first 5xx"),
+            ok("terra success proves reset"),
+        ]
+    )
+    monkeypatch.setattr(ai_client, "resolve_ai_provider", provider)
+    monkeypatch.setattr(ai_client, "_HTTP_SESSION", session)
+    monkeypatch.setattr(ai_client.time, "monotonic", lambda: clock[0])
+    client = ai_client.AiClient()
+
+    assert client.chat([{"role": "user", "content": "one"}]) == "luna after timeout"
+    assert client.chat([{"role": "user", "content": "two"}]) == "luna after 429"
+    assert client.chat([{"role": "user", "content": "three"}]) == "luna while terra cools"
+
+    clock[0] = ai_client.MODEL_COOLDOWN_SECONDS + 1.0
+    assert client.chat([{"role": "user", "content": "four"}]) == "terra half-open success"
+    assert client.chat([{"role": "user", "content": "five"}]) == "luna after first 5xx"
+    assert client.chat([{"role": "user", "content": "six"}]) == "terra success proves reset"
+
+    assert [request["json"]["model"] for request in session.requests] == [
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+    ]
+    assert all(request["timeout"] == 300.0 for request in session.requests)
 
 
 def test_mixed_retryable_failures_do_not_claim_every_model_has_no_route(monkeypatch):

@@ -182,3 +182,44 @@ def test_four_grid_repairs_only_failed_slot_with_one_1k_call(monkeypatch) -> Non
         b"generated-image",
         b"slot-4",
     ]
+
+
+def test_unsplittable_four_grid_never_repeats_the_paid_whole_grid_call(monkeypatch) -> None:
+    service, processor = _service(monkeypatch)
+    split_attempts = 0
+    original_split = processor.split_four_grid
+
+    def split_after_retry(media):
+        nonlocal split_attempts
+        split_attempts += 1
+        if split_attempts == 1:
+            raise ValueError("missing trusted grid structure")
+        return original_split(media)
+
+    monkeypatch.setattr(processor, "split_four_grid", split_after_retry)
+    monkeypatch.setattr(
+        service_module,
+        "inspect_visible_text",
+        lambda _content: {"chinese": [], "prominent": []},
+    )
+
+    output = service._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Travel Mug",
+        "Drinkware",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=4,
+    )
+
+    assert len(processor.calls) == 1
+    assert all(call["stage"] == "grid_image" for call in processor.calls)
+    assert all(call["layout_scaffold"] is True for call in processor.calls)
+    assert all("model_override" not in call for call in processor.calls)
+    assert "image_size" not in processor.calls[0]
+    assert output.attempt_count == 1
+    assert output.provider_status_class == "failed"
+    assert output.carousel_urls == ()

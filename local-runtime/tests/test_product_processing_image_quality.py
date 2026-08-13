@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 import requests
-from PIL import Image
+from PIL import Image, JpegImagePlugin
 
 from wh_local.modules.product_processing import service as service_module
 from wh_local.modules.product_processing import provider_config as provider_config_module
@@ -19,6 +19,7 @@ from wh_local.modules.product_processing.domain.prompts import (
     GRID_IMAGE_PROMPT_B,
     GRID_IMAGE_REPAIR_PROMPT,
     GRID_RUNTIME_CONTRACT,
+    PREMIUM_IMAGE_PROMPT,
 )
 from wh_local.modules.product_processing.domain.workbooks import _http_urls
 from wh_local.modules.product_processing.infrastructure import ocr_gate
@@ -90,6 +91,55 @@ def test_split_four_grid_rejects_low_resolution_source() -> None:
     processor = ProductImageProcessor(lambda: {})
     with pytest.raises(MediaProcessingError, match="cannot be split"):
         processor.split_four_grid(_media(_grid_bytes(1024)))
+
+
+def test_split_premium_four_grid_preserves_approximately_2k_panels() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    parts = processor.split_premium_four_grid(_media(_grid_bytes(4096)))
+
+    assert [part.stage for part in parts] == [
+        "premium_image_1",
+        "premium_image_2",
+        "premium_image_3",
+        "premium_image_4",
+        "premium_image_summary",
+    ]
+    for part in parts[:4]:
+        with Image.open(BytesIO(part.content)) as image:
+            assert image.size == (2048, 2048)
+            assert image.format == "JPEG"
+            assert JpegImagePlugin.get_sampling(image) == 0
+    with Image.open(BytesIO(parts[-1].content)) as image:
+        assert image.size == (800, 800)
+
+
+def test_split_premium_four_grid_accepts_2k_gateway_output_and_uses_exact_center() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    parts = processor.split_premium_four_grid(_media(_grid_bytes(2048)))
+    assert len(parts) == 5
+    for part in parts[:4]:
+        with Image.open(BytesIO(part.content)) as opened:
+            assert opened.size == (1024, 1024)
+
+
+def test_split_premium_four_grid_rejects_too_small_or_repeated_panels() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    with pytest.raises(MediaProcessingError, match="cannot be split"):
+        processor.split_premium_four_grid(_media(_grid_bytes(1700)))
+
+    repeated = Image.new("RGB", (2048, 2048), (30, 70, 120))
+    buffer = BytesIO()
+    repeated.save(buffer, format="PNG")
+    with pytest.raises(MediaProcessingError, match="cannot be split"):
+        processor.split_premium_four_grid(_media(buffer.getvalue()))
+
+
+def test_premium_prompt_requires_exact_split_safe_4k_grid() -> None:
+    assert "4096 x 4096" in PREMIUM_IMAGE_PROMPT
+    assert "exactly FOUR equal square panels" in PREMIUM_IMAGE_PROMPT
+    assert "50% vertical center" in PREMIUM_IMAGE_PROMPT
+    assert "50% horizontal center" in PREMIUM_IMAGE_PROMPT
+    assert "Nothing may cross either center divider" in PREMIUM_IMAGE_PROMPT
 
 
 def test_split_two_grid_preserves_two_landscape_panels() -> None:
@@ -178,6 +228,48 @@ def test_image_timeout_with_unknown_outcome_is_not_retried(monkeypatch, tmp_path
         processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
     assert calls == 1
     assert caught.value.status_class == "unknown_outcome_timeout"
+
+
+def test_transient_provider_cooldown_skips_to_backup_but_never_removes_only_route(monkeypatch, tmp_path) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(_grid_bytes())
+    calls: list[str] = []
+
+    config = _image_provider_config(source)
+    config["backup_image"] = {
+        "base_url": "https://backup.example/v1",
+        "api_key": "configured",
+        "model": "gpt-image-backup",
+        "reference_model": "gpt-image-backup",
+        "image_size": "2048x2048",
+    }
+    config["limits"]["image_provider_strategy"] = "primary_first"
+
+    def respond(provider, *_args, **_kwargs):
+        calls.append(provider["name"])
+        if provider["name"].startswith("primary"):
+            raise requests.Timeout("primary timed out")
+        return _grid_bytes(), "image/png"
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(respond))
+    processor = ProductImageProcessor(lambda: config)
+    for _ in range(2):
+        with pytest.raises(MediaProcessingError, match="primary"):
+            processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
+
+    media = processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
+
+    assert calls == [
+        "primary:gpt-image-test",
+        "primary:gpt-image-test",
+        "backup:gpt-image-backup",
+    ]
+    assert media.provider == "backup:gpt-image-backup"
+
+    only_primary = ProductImageProcessor(lambda: _image_provider_config(source))
+    only_key = only_primary._provider_health_key(only_primary._providers(_image_provider_config(source))[0])
+    only_primary._provider_cooldown_until[only_key] = time.monotonic() + 60
+    assert len(only_primary._provider_order(only_primary._providers(_image_provider_config(source)), _image_provider_config(source))) == 1
 
 
 def test_image_early_500_retries_only_once(monkeypatch, tmp_path) -> None:
@@ -326,6 +418,23 @@ def test_reference_download_cache_single_flights_concurrent_reads(monkeypatch) -
     assert [result[0][0] for result in results] == [b"same-image"] * 4
 
 
+def test_prime_references_uses_existing_safe_single_flight_cache(monkeypatch) -> None:
+    calls = 0
+
+    def download(_url: str) -> tuple[bytes, str]:
+        nonlocal calls
+        calls += 1
+        return b"same-image", "image/jpeg"
+
+    monkeypatch.setattr(media_module, "_download_reference_image", download)
+    processor = ProductImageProcessor(lambda: {})
+    reference = "https://example.com/source.jpg"
+
+    assert processor.prime_references([reference]) == 1
+    assert processor._load_references([reference], limit=1)[0][0] == b"same-image"
+    assert calls == 1
+
+
 def test_reference_download_cache_is_bounded_and_does_not_cache_failures(monkeypatch) -> None:
     calls: dict[str, int] = {}
 
@@ -363,6 +472,8 @@ def test_provider_config_exposes_explicit_1k_reference_profile(monkeypatch) -> N
     assert provider["image_size"] == "2048x2048"
     assert provider["reference_image_model_1k"] == "gpt-image-2-1k"
     assert provider["reference_image_size_1k"] == "1024x1024"
+    assert provider["premium_image_model"] == "gpt-image-2-4k"
+    assert provider["premium_image_size"] == "4096x4096"
 
 
 def test_b_grid_quality_failure_never_triggers_a_paid_repair(monkeypatch) -> None:

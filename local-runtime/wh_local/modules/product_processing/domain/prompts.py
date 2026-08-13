@@ -499,7 +499,7 @@ Grid & splitting infrastructure (fixed - do not change):
 
 
 PREMIUM_IMAGE_PROMPT = """Role & Core Mission (fixed):
-You are a senior e-commerce visual designer serving TEMU, TikTok Shop, and Amazon US listings. Treat the uploaded reference image(s) as the ONLY source of truth for the SKU. Rebuild ONE single full-resolution listing image with premium commercial quality, WITHOUT changing the product itself (the product body must stay 100% unchanged).
+You are a senior e-commerce visual designer serving TEMU, TikTok Shop, and Amazon US listings. Treat the uploaded reference image(s) as the ONLY source of truth for the SKU. Rebuild ONE exact 2x2 transport grid at 4096 x 4096 resolution. It will be split locally into four independent high-resolution listing images.
 
 Execution Priority (fixed): SKU accuracy > structure/pattern accuracy > material/color accuracy > complete product composition > background creativity > visual polish.
 
@@ -530,15 +530,19 @@ Premium feel & material polish (fixed - make the image look expensive and well-f
 - Tone control: keep one cohesive low-saturation premium palette; colors must feel curated, not clashing or garish.
 - Refined props: any prop must look intentional and high-end (real wood, stone, linen, brass, glass, ceramics); no cheap plastic-looking staging.
 
-Single full image instruction (fixed - no grid, no cropping):
-- Generate ONE single complete square product image only. Do NOT split into panels, do NOT add divider lines, do NOT imitate a collage or a 2x2 grid layout.
-- Keep the full sellable product complete, sharp, prominent, and unobstructed inside the single frame; no cropped parts and no partial stacking that hides quantity or structure.
-- {panel_role}
+Exact premium 2x2 grid instruction (fixed):
+- Generate exactly FOUR equal square panels in a 2x2 grid on one 4096 x 4096 canvas. Put one narrow, straight, uninterrupted neutral-light divider exactly at the 50% vertical center and one exactly at the 50% horizontal center.
+- Nothing may cross either center divider. Every panel is a complete standalone listing composition with its own background, props, contact shadow, subject, and safe margin. Never make a continuous poster, shared scene, shared surface, or shared shadow across panels.
+- Keep the complete sellable product or verified complete set sharp, prominent, unobstructed, and fully inside an 8%-12% safe margin in every panel. Do not crop parts or hide quantity or structure.
+- Panel order is fixed: top-left hero, top-right editorial/detail, bottom-left lifestyle, bottom-right clean orthographic-style angle for later deterministic dimension annotation.
+- Panel-specific directions:
+{panel_roles}
 
 Generate-then-self-check (fixed):
 - Confirm product quantity, silhouette, proportions, structure, color, material, transparency, texture, edges, and accessory count all match the reference.
 - If any SKU error is found, fix the product body first, then adjust background and polish.
-- Final goal: SKU-accurate, instantly recognizable, premium composition, matching US consumer taste.
+- Confirm both center dividers remain exact, clean, and uninterrupted, and no subject, prop, surface, or shadow crosses them.
+- Final goal: four SKU-accurate, instantly recognizable premium compositions in one exact split-safe canvas, matching US consumer taste.
 
 Official authenticity rules (fixed): the sellable product must be complete, sharp, prominent, and unobstructed. Do not show only a packaging bag unless the product being sold is packaging bags. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
 - Strict rules: do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. Generate no added text, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design.
@@ -567,7 +571,7 @@ IMAGE_TEMPLATES: list[dict[str, str]] = [
     {
         "id": "A",
         "name": "标准商品海报",
-        "description": "高级电商视觉：四张独立完整构图，画面零新增文字，避免拆图裁字",
+        "description": "高级电商视觉：四宫格内四个独立完整构图，画面零新增文字，避免拆图裁字",
     },
     {
         "id": "B",

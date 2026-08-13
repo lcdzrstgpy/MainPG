@@ -287,6 +287,7 @@ def test_prompt_evidence_is_ordered_deduplicated_and_used_by_combined_cache(monk
 
 def _process_service(monkeypatch) -> ProductProcessingService:
     service = object.__new__(ProductProcessingService)
+    service.repository = object()
     monkeypatch.setattr(service_module, "product_policy_issue", lambda *args, **kwargs: None)
     monkeypatch.setattr(service, "_identify_subject", lambda *args, **kwargs: ("travel mug", "Travel Mug"))
     return service
@@ -554,9 +555,8 @@ def test_dimension_repair_runs_in_parallel_with_grid_generation(monkeypatch) -> 
     assert result["result"]["product_dimensions"]["weight_g"] == 300
 
 
-def test_process_grid_quality_failure_falls_back_to_source_images(monkeypatch) -> None:
-    """四宫格质量门/拆图失败默认不再阻断：回退来源图继续走完流水线（completed），
-    失败原因留痕 ai_notes，预审环节可人工修正。"""
+def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(monkeypatch) -> None:
+    """四宫格失败必须明确失败，不能用零轮播结果伪装完成。"""
     service = _process_service(monkeypatch)
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(
@@ -577,14 +577,15 @@ def test_process_grid_quality_failure_falls_back_to_source_images(monkeypatch) -
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
-    assert result["status"] == "completed"
-    assert result["result"]["carousel_image_paths"] == []  # 回退来源图
-    assert "four_grid:force_import_acknowledged" in result["result"]["ai_notes"]
+    assert result["status"] == "failed"
+    assert result["result"]["error_type"] == "image_grid_incomplete"
+    assert result["result"]["failure_class"] == "technical_retryable"
+    assert result["result"]["retryable"] is True
+    assert "force_import_acknowledged" not in "|".join(result["result"]["ai_notes"])
 
 
-def test_process_force_import_bypasses_grid_quality_gate(monkeypatch) -> None:
-    """「我已知晓，仍要入库」：四宫格质量门失败不再阻断，回退来源图继续走完流水线，
-    失败原因留痕 ai_notes，预审环节可人工修正。"""
+def test_process_force_import_cannot_bypass_grid_completeness(monkeypatch) -> None:
+    """历史 force-import 参数也不能把零轮播结果标成成功。"""
     service = _process_service(monkeypatch)
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(
@@ -606,6 +607,7 @@ def test_process_force_import_bypasses_grid_quality_gate(monkeypatch) -> None:
     settings = {**_settings(), "force_import_draft_ids": [7]}
     result = service._process_one({"id": 1}, _draft(), settings, False, task_id=12)
 
-    assert result["status"] == "completed"
-    assert result["result"]["carousel_image_paths"] == []  # 回退来源图
-    assert "four_grid:force_import_acknowledged" in result["result"]["ai_notes"]
+    assert result["status"] == "failed"
+    assert result["result"]["error_type"] == "image_grid_incomplete"
+    assert result["result"]["retryable"] is True
+    assert "force_import_acknowledged" not in "|".join(result["result"]["ai_notes"])

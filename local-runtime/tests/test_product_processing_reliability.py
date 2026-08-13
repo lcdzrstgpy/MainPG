@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 
 import wh_local.modules.product_processing.service as service_module
 from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
@@ -247,3 +247,150 @@ def test_long_item_refreshes_employee_visible_heartbeat(tmp_path: Path, monkeypa
     assert refreshed["items"][0]["status"] == "running"
     assert "心跳正常" in refreshed["items"][0]["reason"]
     assert refreshed["items"][0]["updated_at"] > task["items"][0]["updated_at"]
+
+
+def test_stage_receipt_upsert_is_workspace_scoped_and_preserves_creation(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    draft = _draft(service, "receipt")
+    task = service.repository.create_task(
+        title="receipt",
+        preflight_only=False,
+        settings={},
+        drafts=[draft],
+        idempotency_key=None,
+        workspace_id="local",
+    )
+    item_id = task["items"][0]["id"]
+
+    first = service.repository.upsert_stage_receipt(
+        task["id"],
+        item_id,
+        "structured_text",
+        input_hash="hash-one",
+        output_data={"title": "first", "workspace_id": "untrusted-client-value"},
+        workspace_id="local",
+    )
+    second = service.repository.upsert_stage_receipt(
+        task["id"],
+        item_id,
+        "structured_text",
+        input_hash="hash-two",
+        output_data={"title": "second"},
+        workspace_id="local",
+    )
+
+    assert second["id"] == first["id"]
+    assert second["created_at"] == first["created_at"]
+    assert second["workspace_id"] == "local"
+    assert second["input_hash"] == "hash-two"
+    assert second["output"] == {"title": "second"}
+    assert service.repository.load_stage_receipt(
+        task["id"], item_id, "structured_text", workspace_id="other"
+    ) is None
+    with pytest.raises(LookupError):
+        service.repository.upsert_stage_receipt(
+            task["id"],
+            item_id,
+            "structured_text",
+            input_hash="attacker-hash",
+            output_data={"title": "overwrite"},
+            workspace_id="other",
+        )
+
+
+def test_stage_receipt_invalid_and_downstream_deletes_are_item_scoped(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    drafts = [_draft(service, title) for title in ("one", "two")]
+    task = service.repository.create_task(
+        title="receipts",
+        preflight_only=False,
+        settings={},
+        drafts=drafts,
+        idempotency_key=None,
+        workspace_id="local",
+    )
+    first_item, second_item = (item["id"] for item in task["items"])
+    for item_id in (first_item, second_item):
+        for stage in ("structured_text", "images", "dimensions"):
+            service.repository.upsert_stage_receipt(
+                task["id"],
+                item_id,
+                stage,
+                input_hash=f"{item_id}-{stage}",
+                output_data={"stage": stage},
+                workspace_id="local",
+            )
+
+    assert service.repository.delete_invalid_stage_receipt(
+        task["id"],
+        first_item,
+        "structured_text",
+        expected_input_hash="changed-input",
+        workspace_id="local",
+    ) is True
+    assert service.repository.delete_downstream_stage_receipts(
+        task["id"],
+        first_item,
+        ["images", "dimensions", "images"],
+        workspace_id="local",
+    ) == 2
+
+    assert service.repository.load_stage_receipt(
+        task["id"], first_item, "structured_text", workspace_id="local"
+    ) is None
+    assert service.repository.load_stage_receipt(
+        task["id"], second_item, "images", workspace_id="local"
+    )["output"] == {"stage": "images"}
+
+
+def test_retry_clears_terminal_result_but_keeps_stage_receipt(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    draft = _draft(service, "retry receipt")
+    task = service.repository.create_task(
+        title="retry receipt",
+        preflight_only=False,
+        settings={},
+        drafts=[draft],
+        idempotency_key=None,
+        workspace_id="local",
+    )
+    item_id = task["items"][0]["id"]
+    service.repository.upsert_stage_receipt(
+        task["id"],
+        item_id,
+        "structured_text",
+        input_hash="stable-input",
+        output_data={"title": "paid output"},
+        workspace_id="local",
+    )
+    service.repository.update_item_progress(
+        task["id"],
+        item_id,
+        status="failed",
+        result={"terminal": "failure"},
+        workspace_id="local",
+    )
+
+    assert service.repository.reset_failed_items(task["id"], "local") is True
+
+    refreshed = service.repository.get_task(task["id"], "local")
+    receipt = service.repository.load_stage_receipt(
+        task["id"], item_id, "structured_text", workspace_id="local"
+    )
+    assert refreshed["items"][0]["status"] == "pending"
+    assert refreshed["items"][0]["result"] == {}
+    assert receipt["output"] == {"title": "paid output"}
+
+
+def test_database_init_recreates_missing_stage_receipt_table(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'legacy.sqlite3').as_posix()}"
+    database = create_database(database_url)
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TABLE product_processing_stage_receipts")
+    database.dispose()
+
+    reopened = create_database(database_url)
+    try:
+        assert "product_processing_stage_receipts" in inspect(reopened.engine).get_table_names()
+    finally:
+        reopened.dispose()

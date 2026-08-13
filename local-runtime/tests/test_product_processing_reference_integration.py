@@ -376,13 +376,14 @@ def test_b_grid_uses_fixed_scaffold_and_disables_paid_repair(monkeypatch) -> Non
 
 
 class _CapturingPremiumImageProcessor:
-    """精品模式 mock：记录 4 次单张生成调用，不触发任何网络/OCR。"""
+    """精品模式 mock：记录一次 4K 四宫格调用，不触发任何网络/OCR。"""
 
     def __init__(self) -> None:
         self.prompts: list[str] = []
         self.stages: list[str] = []
         self.image_sizes: list[str | None] = []
         self.models: list[str | None] = []
+        self.layout_scaffolds: list[bool] = []
 
     def generate(
         self,
@@ -399,6 +400,7 @@ class _CapturingPremiumImageProcessor:
         self.stages.append(stage)
         self.image_sizes.append(image_size)
         self.models.append(model_override)
+        self.layout_scaffolds.append(layout_scaffold)
         return SimpleNamespace(
             stage=stage,
             content=b"image",
@@ -406,6 +408,13 @@ class _CapturingPremiumImageProcessor:
             attempt_count=1,
             provider_status_class="success",
         )
+
+    @staticmethod
+    def split_premium_four_grid(_media: SimpleNamespace) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(stage=f"premium_image_{slot}", content=f"slot-{slot}".encode())
+            for slot in range(1, 5)
+        ] + [SimpleNamespace(stage="premium_image_summary", content=b"summary")]
 
     def repair_generated(
         self,
@@ -428,11 +437,11 @@ class _CapturingPremiumImageProcessor:
 
 
 class _FailingPremiumImageProcessor(_CapturingPremiumImageProcessor):
-    """第 N 次生成抛错的 mock，用于验证「任一张失败整组失败」。"""
+    """每次 4K 生成都抛错，用于验证最多整体尝试两次。"""
 
-    def __init__(self, fail_after: int) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.fail_after = fail_after
+        self.attempts = 0
 
     def generate(
         self,
@@ -444,16 +453,8 @@ class _FailingPremiumImageProcessor(_CapturingPremiumImageProcessor):
         image_size: str | None = None,
         model_override: str | None = None,
     ) -> SimpleNamespace:
-        if len(self.prompts) >= self.fail_after:
-            raise ValueError("simulated premium generation failure")
-        return super().generate(
-            stage=stage,
-            prompt=prompt,
-            reference_values=reference_values,
-            layout_scaffold=layout_scaffold,
-            image_size=image_size,
-            model_override=model_override,
-        )
+        self.attempts += 1
+        raise ValueError("simulated premium generation failure")
 
 
 def _premium_service(monkeypatch, processor) -> ProductProcessingService:
@@ -466,7 +467,7 @@ def _premium_service(monkeypatch, processor) -> ProductProcessingService:
     monkeypatch.setattr(
         service,
         "_media_config_provider",
-        lambda: {"image": {"premium_image_model": "gpt-image-2-1k", "premium_image_size": "1024x1024"}},
+        lambda: {"image": {"premium_image_model": "gpt-image-2-4k", "premium_image_size": "4096x4096"}},
     )
     monkeypatch.setattr(
         service,
@@ -478,8 +479,8 @@ def _premium_service(monkeypatch, processor) -> ProductProcessingService:
     return service
 
 
-def test_premium_images_generates_four_full_single_images(monkeypatch) -> None:
-    """精品模式：分 4 次（并行）生成 4 张独立完整单图，无裁剪、无汇总图。"""
+def test_premium_images_generates_one_4k_grid_and_splits_four_high_resolution_images(monkeypatch) -> None:
+    """精品模式：一次 4K 四宫格，本地拆四张并保留汇总缩略图。"""
     processor = _CapturingPremiumImageProcessor()
     service = _premium_service(monkeypatch, processor)
     notes: list[str] = []
@@ -496,34 +497,26 @@ def test_premium_images_generates_four_full_single_images(monkeypatch) -> None:
         notes,
     )
 
-    assert len(processor.prompts) == 4
-    assert len(processor.stages) == 4
-    assert processor.stages == ["premium_image"] * 4
-    # 精品 4 张独立单图走 1K 模型（1024×1024、gpt-image-2-1k），只有四宫格才用 2K
-    assert processor.image_sizes == ["1024x1024"] * 4
-    assert processor.models == ["gpt-image-2-1k"] * 4
-    assert output.summary_url == ""  # 精品模式无四宫格汇总图
+    assert processor.stages == ["premium_image"]
+    assert processor.image_sizes == ["4096x4096"]
+    assert processor.models == ["gpt-image-2-4k"]
+    assert processor.layout_scaffolds == [True]
+    assert output.summary_url.endswith("premium_4.png")
     assert len(output.carousel_urls) == 4
     assert all(url.startswith("https://example.com/premium_") for url in output.carousel_urls)
-    joined = " ".join(processor.prompts)
-    joined_lower = joined.lower()
-    assert "four-panel" not in joined  # 非四宫格布局
-    # 模板明确「禁止」分格/分隔线/拼贴（否定义，非要求存在分隔线）
-    assert "do not split into panels" in joined_lower
-    assert "do not add divider lines" in joined_lower
-    # 每张都要求「单张完整商品图」：4 次调用各出现一次
-    assert joined_lower.count("single complete square product image") == 4
-    # 四个构图角色各一次（hero/detail/lifestyle/orthographic）
-    assert sum("hero shot:" in p.lower() for p in processor.prompts) == 1
-    assert sum("editorial/detail shot" in p.lower() for p in processor.prompts) == 1
-    assert sum("lifestyle scene" in p.lower() for p in processor.prompts) == 1
-    assert sum("clean front, side, or top view" in p.lower() for p in processor.prompts) == 1
+    joined_lower = processor.prompts[0].lower()
+    assert "exactly four equal square panels" in joined_lower
+    assert "50% vertical center" in joined_lower
+    assert "50% horizontal center" in joined_lower
+    assert "hero shot:" in joined_lower
+    assert "editorial/detail shot" in joined_lower
+    assert "lifestyle scene" in joined_lower
+    assert "clean front, side, or top view" in joined_lower
     assert sum(note.startswith("image_reference:") for note in notes) == 1
 
 
-def test_premium_images_fails_as_a_group_when_any_single_image_fails(monkeypatch) -> None:
-    """任一张单图失败 → 整组失败（与四宫格整组回退一致）。"""
-    processor = _FailingPremiumImageProcessor(fail_after=2)
+def test_premium_images_never_repeats_a_paid_whole_grid_call(monkeypatch) -> None:
+    processor = _FailingPremiumImageProcessor()
     service = _premium_service(monkeypatch, processor)
     notes: list[str] = []
 
@@ -541,4 +534,6 @@ def test_premium_images_fails_as_a_group_when_any_single_image_fails(monkeypatch
 
     assert output.carousel_urls == ()
     assert output.summary_url == ""
+    assert processor.attempts == 1
+    assert "premium_images:whole_4k_retry" not in notes
     assert any(note.startswith("premium_images:ai-failed:") for note in notes)

@@ -55,11 +55,19 @@ DXM_IMAGE_TARGET_SIZE = 800
 # 四宫格由 2048px 拆为 1024px 象限后再缩至 800px；使用 94 + 4:4:4，
 # 保留商品边缘、透明材质和本地排版细节，避免默认 4:2:0 二次损失。
 DXM_IMAGE_JPEG_QUALITY = 94
+# Some OpenAI-compatible gateways accept a 4K model/size request but return a
+# 2048px square transport image.  That is still sufficient for four native
+# 1024px carousel panels, so validate the usable result instead of trusting the
+# requested size.  Sources below 1800px remain too small for quality splitting.
+PREMIUM_GRID_MIN_SIZE = 1800
+PREMIUM_IMAGE_JPEG_QUALITY = 95
 
 # 2K 图像编辑的真实生成时间常超过 120 秒。请求和整条生成流程分别保留充足预算，
 # 同时用总预算限制失败后的重试，避免批处理无限占住图片并发槽。
 IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS = 600.0
 IMAGE_GENERATION_TOTAL_TIMEOUT_SECONDS = 660.0
+PROVIDER_TRANSIENT_FAILURE_THRESHOLD = 2
+PROVIDER_TRANSIENT_COOLDOWN_SECONDS = 45.0
 
 # 图片 provider 轮巡游标（对齐原项目 native_product_engine._PROVIDER_CURSORS）：
 # 进程内全局共享、线程锁保护，按"每次图片请求"取模轮转起始 provider，实现负载均衡。
@@ -123,6 +131,9 @@ class ProductImageProcessor:
         self._reference_cache: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
         self._reference_downloads: dict[str, threading.Event] = {}
         self._reference_cache_lock = threading.Lock()
+        self._provider_health_lock = threading.Lock()
+        self._provider_transient_failures: dict[str, int] = {}
+        self._provider_cooldown_until: dict[str, float] = {}
 
     def status(self) -> dict[str, Any]:
         config = self._config()
@@ -136,6 +147,23 @@ class ProductImageProcessor:
             ),
             "image_provider_names": [item["name"] for item in providers],
         }
+
+    def prime_references(self, reference_values: Iterable[str], stage: str = "grid_image") -> int:
+        """Warm validated reference bytes through the existing bounded single-flight cache.
+
+        This performs no provider/model call.  It deliberately shares the same
+        stage-specific reference limit and URL safety/download path as ``generate``.
+        """
+        config = self._config()
+        default_limit = 1 if stage == "grid_image" else 2
+        reference_limit = max(
+            1,
+            min(
+                int((config.get("limits") or {}).get(f"{stage}_reference_max_count") or default_limit),
+                4,
+            ),
+        )
+        return len(self._load_references(reference_values, limit=reference_limit))
 
     def generate(
         self,
@@ -214,6 +242,7 @@ class ProductImageProcessor:
                         image_size=image_size,
                         reference_model=model_override,
                     )
+                    self._record_provider_success(provider)
                     suffix = _suffix_for_content_type(content_type)
                     return GeneratedMedia(
                         stage=stage,
@@ -228,6 +257,13 @@ class ProductImageProcessor:
                 except (requests.RequestException, TimeoutError, ValueError, MediaProcessingError) as exc:
                     errors.append(f"{provider['name']} attempt {attempt}: {_safe_error(exc)}")
                     status_class = _retry_class(exc)
+                    if status_class in {
+                        "rate_limited",
+                        "server_error",
+                        "unknown_outcome_timeout",
+                        "connection_error",
+                    }:
+                        self._record_provider_transient_failure(provider)
                     if status_class in {"non_retryable_4xx", "unknown_outcome_timeout", "non_retryable_local"}:
                         raise MediaProcessingError(
                             "; ".join(errors),
@@ -325,6 +361,110 @@ class ProductImageProcessor:
             )
         result.append(self.compose_grid_summary(result))
         return result
+
+    def split_premium_four_grid(self, media: GeneratedMedia) -> list[GeneratedMedia]:
+        """Split one 2K-or-4K square grid into four native-resolution panels."""
+        try:
+            from PIL import Image  # type: ignore
+
+            source = Image.open(BytesIO(media.content)).convert("RGB")
+            width, height = source.size
+            if min(width, height) < PREMIUM_GRID_MIN_SIZE:
+                raise ValueError("premium four-grid source must be at least 1800px on each edge")
+            if abs(width - height) / max(width, height) > 0.02:
+                raise ValueError("premium four-grid source must be square")
+            # The 2x2 scaffold fixes panel geometry before generation.  Always cut
+            # the returned square at exactly 50/50; a model-painted divider is only
+            # decoration and must never trigger another paid 4K request.
+            center_x = width // 2
+            center_y = height // 2
+            boxes = (
+                (0, 0, center_x, center_y),
+                (center_x, 0, width, center_y),
+                (0, center_y, center_x, height),
+                (center_x, center_y, width, height),
+            )
+            panels = [source.crop(box) for box in boxes]
+            if any(min(panel.size) < 900 for panel in panels):
+                raise ValueError("premium four-grid panels must be at least 900px on each edge")
+            # A repeated quadrant is a structurally invalid transport grid.  Use a
+            # small exact visual fingerprint so legitimate similar product angles
+            # are retained while byte-identical copied panels fail closed.
+            fingerprints = {
+                hashlib.sha256(
+                    panel.resize((32, 32)).convert("RGB").tobytes()
+                ).hexdigest()
+                for panel in panels
+            }
+            if len(fingerprints) != 4:
+                raise ValueError("premium four-grid contains repeated panels")
+
+            def encode_panel(index_and_box: tuple[int, tuple[int, int, int, int]]) -> GeneratedMedia:
+                index, _box = index_and_box
+                panel = panels[index - 1]
+                return GeneratedMedia(
+                    stage=f"premium_image_{index}",
+                    content=_image_to_jpeg_bytes(panel, quality=PREMIUM_IMAGE_JPEG_QUALITY),
+                    content_type="image/jpeg",
+                    suffix=".jpg",
+                    provider="local-premium-split",
+                    model="pillow",
+                    reference_count=media.reference_count,
+                    attempt_count=media.attempt_count,
+                    provider_status_class=media.provider_status_class,
+                )
+
+            from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+            with ThreadPoolExecutor(max_workers=4, thread_name_prefix="pp-premium-encode") as pool:
+                result = list(pool.map(encode_panel, enumerate(boxes, start=1)))
+            result.append(self.compose_premium_grid_summary(result))
+            return result
+        except MediaConfigurationError:
+            raise
+        except Exception as exc:
+            raise MediaProcessingError("generated premium four-grid image cannot be split") from exc
+
+    @staticmethod
+    def compose_premium_grid_summary(parts: Iterable[GeneratedMedia]) -> GeneratedMedia:
+        """Create only the 800px preview summary; premium carousel parts stay high-resolution."""
+        try:
+            from PIL import Image  # type: ignore
+
+            normalized = list(parts)
+            if len(normalized) != 4:
+                raise ValueError("exactly four premium grid slots are required")
+            canvas = Image.new("RGB", (DXM_IMAGE_TARGET_SIZE * 2, DXM_IMAGE_TARGET_SIZE * 2))
+            for index, part in enumerate(normalized):
+                with Image.open(BytesIO(part.content)) as opened:
+                    square = _center_crop_to_square(opened.convert("RGB"))
+                    image = square.resize(
+                        (DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE),
+                        Image.Resampling.LANCZOS,
+                    )
+                canvas.paste(
+                    image,
+                    (
+                        (index % 2) * DXM_IMAGE_TARGET_SIZE,
+                        (index // 2) * DXM_IMAGE_TARGET_SIZE,
+                    ),
+                )
+            summary = canvas.resize(
+                (DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE),
+                Image.Resampling.LANCZOS,
+            )
+            return GeneratedMedia(
+                stage="premium_image_summary",
+                content=_image_to_jpeg_bytes(summary),
+                content_type="image/jpeg",
+                suffix=".jpg",
+                provider="local-compose",
+                model="pillow",
+                reference_count=max((part.reference_count for part in normalized), default=0),
+                attempt_count=max((part.attempt_count for part in normalized), default=1),
+            )
+        except Exception as exc:
+            raise MediaProcessingError("premium grid summary cannot be composed") from exc
 
     def compose_grid_summary(self, parts: Iterable[GeneratedMedia]) -> GeneratedMedia:
         """Compose four normalized 800px slots into a matching 800px 2x2 summary."""
@@ -714,8 +854,7 @@ class ProductImageProcessor:
                 )
         return providers
 
-    @staticmethod
-    def _provider_order(providers: list[dict[str, str]], config: dict[str, Any]) -> list[dict[str, str]]:
+    def _provider_order(self, providers: list[dict[str, str]], config: dict[str, Any]) -> list[dict[str, str]]:
         """按策略决定本轮 provider 起始顺序。
 
         balanced / round_robin / load_balance：进程内游标取模轮转起始 provider（对齐原项目）；
@@ -727,10 +866,40 @@ class ProductImageProcessor:
             with _PROVIDER_CURSOR_LOCK:
                 index = _PROVIDER_CURSORS.get(key, 0) % len(providers)
                 _PROVIDER_CURSORS[key] = index + 1
-            return providers[index:] + providers[:index]
-        if strategy == "backup_first" and len(providers) > 1:
-            return [*providers[1:], providers[0]]
-        return providers
+            ordered = providers[index:] + providers[:index]
+        elif strategy == "backup_first" and len(providers) > 1:
+            ordered = [*providers[1:], providers[0]]
+        else:
+            ordered = providers
+        if len(ordered) <= 1:
+            return ordered
+        now = time.monotonic()
+        with self._provider_health_lock:
+            available = [
+                provider
+                for provider in ordered
+                if self._provider_cooldown_until.get(self._provider_health_key(provider), 0.0) <= now
+            ]
+        # Never turn an all-cooling or single-provider pool into immediate failure.
+        return available or ordered
+
+    @staticmethod
+    def _provider_health_key(provider: dict[str, str]) -> str:
+        return f"{provider.get('base_url', '')}|{provider.get('name', '')}|{provider.get('reference_model', '')}"
+
+    def _record_provider_transient_failure(self, provider: dict[str, str]) -> None:
+        key = self._provider_health_key(provider)
+        with self._provider_health_lock:
+            failures = self._provider_transient_failures.get(key, 0) + 1
+            self._provider_transient_failures[key] = failures
+            if failures >= PROVIDER_TRANSIENT_FAILURE_THRESHOLD:
+                self._provider_cooldown_until[key] = time.monotonic() + PROVIDER_TRANSIENT_COOLDOWN_SECONDS
+
+    def _record_provider_success(self, provider: dict[str, str]) -> None:
+        key = self._provider_health_key(provider)
+        with self._provider_health_lock:
+            self._provider_transient_failures.pop(key, None)
+            self._provider_cooldown_until.pop(key, None)
 
     def _load_references(self, values: Iterable[str], *, limit: int) -> list[tuple[bytes, str, str]]:
         references: list[tuple[bytes, str, str]] = []
@@ -940,13 +1109,13 @@ def _center_crop_to_square(image: Any) -> Any:
     return image.crop((left, top, left + side, top + side))
 
 
-def _image_to_jpeg_bytes(image: Any) -> bytes:
+def _image_to_jpeg_bytes(image: Any, *, quality: int = DXM_IMAGE_JPEG_QUALITY) -> bytes:
     """PIL Image → high-detail JPEG bytes for 800px marketplace images."""
     buffer = BytesIO()
     image.save(
         buffer,
         format="JPEG",
-        quality=DXM_IMAGE_JPEG_QUALITY,
+        quality=quality,
         subsampling=0,
         optimize=True,
     )
