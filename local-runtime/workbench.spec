@@ -25,7 +25,7 @@ binaries: list = []
 hiddenimports: list = []
 
 # 第三方包完整收集（datas/binaries/hiddenimports）
-for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "openpyxl"):
+for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "openpyxl", "PIL"):
     _d, _b, _h = collect_all(_pkg)
     datas += _d
     binaries += _b
@@ -51,6 +51,12 @@ if _frontend_dist.is_dir():
     datas.append((str(_frontend_dist), "web-frontend/dist"))
 else:
     print("[workbench.spec] WARNING: web-frontend/dist 不存在，请先执行 npm run build")
+
+# Optional low-resource distractor detector (person/cat/dog). Missing model is
+# safe at runtime, but official builds include it for reference-image cleanup.
+_distractor_models = ROOT / "wh_local" / "price_verification" / "sourcing" / "models"
+if _distractor_models.is_dir():
+    datas.append((str(_distractor_models), "wh_local/price_verification/sourcing/models"))
 
 a = Analysis(
     [str(ROOT / "run_workbench.py")],

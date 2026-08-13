@@ -1360,6 +1360,9 @@
   box-shadow: var(--theme-module-shadow);
 }
 
+[data-theme="diamond"] .price-verification-linked-summary { color: var(--theme-text-secondary); }
+[data-theme="diamond"] .price-verification-linked-summary strong { color: var(--theme-text-primary); }
+
 [data-theme="diamond"] :is(
   .direction-card-meta span.is-custom,
   .candidate-facts > span,

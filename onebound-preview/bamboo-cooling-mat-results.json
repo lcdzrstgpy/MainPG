@@ -1,0 +1,92 @@
+{
+  "elapsed_seconds": 35.78,
+  "audit": {
+    "method": "local-phash-dhash-color-v1",
+    "threshold": 0.5,
+    "input_count": 60,
+    "verified_count": 0,
+    "fallback_count": 5,
+    "rejected_count": 60,
+    "unavailable_count": 0,
+    "reference_available": true,
+    "distractor_suppression": {
+      "method": "ssd-mobilenetv1-int8-coco",
+      "available": true,
+      "applied": true,
+      "distractor_count": 1,
+      "fallback": "suppressed_reference"
+    },
+    "title_evidence": {
+      "compatible": 0,
+      "missing": 9,
+      "conflict": 51
+    }
+  },
+  "items": [
+    {
+      "rank": 1,
+      "offer_id": "1056119470784",
+      "title": "狗垫子夏天大型犬狗狗睡垫宠物凉席睡垫皮革防水狗窝垫防撕咬四季",
+      "image_url": "https://cbu01.alicdn.com/O1CN01i5xJrr1VWKgE2zwqo_!!2215041682660-0-cib.jpg",
+      "detail_url": "https://detail.1688.com/offer/1056119470784.html?",
+      "price": "23.00",
+      "similarity": 0.2209,
+      "verified": false,
+      "fallback": true,
+      "onebound_rank": 27,
+      "title_evidence": "missing"
+    },
+    {
+      "rank": 2,
+      "offer_id": "1045717401586",
+      "title": "夏季宠物凉席垫降温猫垫子猫窝冰垫冷感狗垫子枕头中小狗狗下巴垫",
+      "image_url": "https://cbu01.alicdn.com/O1CN01OPnOA027iCKXuzx5q_!!3953267830-0-cib.jpg",
+      "detail_url": "https://detail.1688.com/offer/1045717401586.html?",
+      "price": "16.50",
+      "similarity": 0.2069,
+      "verified": false,
+      "fallback": true,
+      "onebound_rank": 56,
+      "title_evidence": "missing"
+    },
+    {
+      "rank": 3,
+      "offer_id": "1037302915386",
+      "title": "升级狗狗玩具羽毛球咬不烂自嗨解闷神器柯基柴犬发声玩具磨牙洁齿",
+      "image_url": "https://cbu01.alicdn.com/O1CN01sCowIB1XvdmekfBhu_!!2219346532986-0-cib.jpg",
+      "detail_url": "https://detail.1688.com/offer/1037302915386.html?",
+      "price": "4.30",
+      "similarity": 0.1907,
+      "verified": false,
+      "fallback": true,
+      "onebound_rank": 58,
+      "title_evidence": "conflict"
+    },
+    {
+      "rank": 4,
+      "offer_id": "838373734672",
+      "title": "猫碗陶瓷保护颈椎防打翻猫粮碗实木猫盆猫咪食盆水碗宠物用品",
+      "image_url": "https://cbu01.alicdn.com/O1CN01TxRnVb2AVmIWj3bMT_!!4111868209-0-cib.jpg",
+      "detail_url": "https://detail.1688.com/offer/838373734672.html?",
+      "price": "11.00",
+      "similarity": 0.1679,
+      "verified": false,
+      "fallback": true,
+      "onebound_rank": 2,
+      "title_evidence": "conflict"
+    },
+    {
+      "rank": 5,
+      "offer_id": "1071038612475",
+      "title": "狗狗凉席垫猫咪冰垫夏天猫窝睡垫睡觉凉感垫耐撕咬可水洗宠物狗窝",
+      "image_url": "https://cbu01.alicdn.com/O1CN01q0za9S1VvWTQXdezM_!!2222713302715-0-cib.jpg",
+      "detail_url": "https://detail.1688.com/offer/1071038612475.html?",
+      "price": "2.37",
+      "similarity": 0.155,
+      "verified": false,
+      "fallback": true,
+      "onebound_rank": 40,
+      "title_evidence": "missing"
+    }
+  ]
+}

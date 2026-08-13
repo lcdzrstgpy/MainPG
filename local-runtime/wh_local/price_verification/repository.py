@@ -1729,6 +1729,27 @@ class PriceVerificationRepository:
                 raise
         return _skc_source_link_record(saved)
 
+    def soft_remove_skc_source_links_for_skc(
+        self, *, workspace_id: str, skc_id: str, now: str
+    ) -> int:
+        """Deactivate every durable 1688 association for one deleted product SKC."""
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        skc_id = _required_text(skc_id, "skc_id")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = connection.execute(
+                    """UPDATE price_verification_skc_source_links
+                    SET status = 'removed', updated_at = ?
+                    WHERE workspace_id = ? AND skc_id = ? AND status = 'active'""",
+                    (now, workspace_id, skc_id),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return max(0, int(cursor.rowcount))
+
 
     def record_quote_decision(
         self,
