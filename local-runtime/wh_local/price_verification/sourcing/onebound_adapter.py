@@ -218,7 +218,7 @@ class OneBoundSourceAdapter:
             for index, raw_candidate in enumerate(merged):
                 offer_id = _offer_id(raw_candidate)
                 detailed = dict(raw_candidate)
-                if index == 0 and offer_id:
+                if index == 0 and offer_id and _needs_detail_lookup(raw_candidate):
                     detail = provider.get_item_detail(offer_id)
                     evidence.extend(_redacted_audits(detail))
                     # A failed detail lookup must not discard the results: keep
@@ -399,6 +399,18 @@ def _candidate_image_url(candidate: Mapping[str, Any]) -> str:
         if value:
             return value
     return ""
+
+
+def _needs_detail_lookup(candidate: Mapping[str, Any]) -> bool:
+    """Avoid a redundant OneBound round-trip when search data is display-ready."""
+    has_title = any(_text(candidate.get(key)) for key in ("title", "item_title", "subject", "name"))
+    has_image = bool(_candidate_image_url(candidate))
+    has_url = any(_text(candidate.get(key)) for key in ("detail_url", "source_url", "url", "item_url"))
+    has_price = any(
+        candidate.get(key) not in (None, "")
+        for key in ("price", "promotion_price", "price_info", "original_price")
+    )
+    return not (has_title and has_image and has_url and has_price)
 
 
 def _with_title_evidence(
