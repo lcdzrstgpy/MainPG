@@ -97,6 +97,8 @@ export function DimensionCanvasStage({
 }: Props) {
   const [drag, setDragState] = useState<DragState | null>(null);
   const [previewEditor, setPreviewEditor] = useState<EditorState | null>(null);
+  const [imageState, setImageState] = useState<"loading" | "loaded" | "error" | "empty">("empty");
+  const [retryNonce, setRetryNonce] = useState(0);
   const dragRef = useRef<DragState | null>(null);
   const frameRef = useRef<number | null>(null);
   const pendingPointRef = useRef<NormalizedPoint | null>(null);
@@ -117,6 +119,10 @@ export function DimensionCanvasStage({
   };
 
   useEffect(() => () => cancelFrame(), []);
+
+  useEffect(() => {
+    setImageState(asset?.previewUrl ? "loading" : "empty");
+  }, [asset?.previewUrl, retryNonce]);
 
   const schedulePreview = (point: NormalizedPoint) => {
     pendingPointRef.current = point;
@@ -209,13 +215,34 @@ export function DimensionCanvasStage({
     <div className={`dimension-stage-viewport${drag ? " is-dragging" : ""}`} aria-label="尺寸图编辑画布">
       <div className="dimension-stage-surface" style={{ transform: `scale(${zoom})` }}>
         {asset?.previewUrl ? (
-          <img
-            className="dimension-stage-image"
-            src={asset.previewUrl}
-            alt={asset.role || "尺寸图素材"}
-            draggable={false}
-            onDragStart={(event) => event.preventDefault()}
-          />
+          <>
+            <img
+              className="dimension-stage-image"
+              src={asset.previewUrl}
+              alt={asset.role || "尺寸图素材"}
+              draggable={false}
+              onDragStart={(event) => event.preventDefault()}
+              onLoad={() => setImageState("loaded")}
+              onError={() => setImageState("error")}
+              style={imageState === "loaded" ? undefined : { display: "none" }}
+            />
+            {imageState === "loading" && <div className="dimension-stage-status">图片加载中…</div>}
+            {imageState === "error" && (
+              <div className="dimension-stage-status is-error">
+                <span>图片加载失败</span>
+                <button
+                  type="button"
+                  className="dimension-stage-retry"
+                  onClick={() => {
+                    setImageState("loading");
+                    setRetryNonce((value) => value + 1);
+                  }}
+                >
+                  重试
+                </button>
+              </div>
+            )}
+          </>
         ) : (
           <div className="dimension-stage-placeholder">请选择可用素材</div>
         )}

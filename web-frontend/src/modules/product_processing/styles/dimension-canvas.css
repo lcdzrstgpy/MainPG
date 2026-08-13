@@ -514,6 +514,36 @@
   color: var(--theme-text-muted);
 }
 
+.dimension-stage-status {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  color: var(--theme-text-muted);
+  background: var(--theme-module-surface-raised);
+  text-align: center;
+}
+
+.dimension-stage-status.is-error {
+  align-content: center;
+}
+
+.dimension-stage-retry {
+  border: 1px solid var(--theme-module-border-strong);
+  border-radius: 6px;
+  padding: 4px 12px;
+  background: var(--theme-module-surface-hover);
+  color: var(--theme-text-primary);
+  cursor: pointer;
+}
+
+.dimension-asset-thumb-failed {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+}
+
 .dimension-stage-svg {
   touch-action: none;
   cursor: crosshair;

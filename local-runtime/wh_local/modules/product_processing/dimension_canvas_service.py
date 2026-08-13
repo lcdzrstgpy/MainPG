@@ -523,9 +523,8 @@ class DimensionCanvasService:
         }
 
     def _asset_preview_url(self, asset: dict[str, Any], *, product_draft_id: int = 0) -> str:
-        source_url = str(asset.get("source_url") or "").strip()
-        if source_url and self._is_public_dimension_url(source_url):
-            return source_url
+        # 本地已落盘文件最可靠：优先走 /pp-media 静态代理，避免浏览器直连外部图床
+        # 遭遇防盗链（如 1688 alicdn 偶发 420）导致空白或一直加载。
         managed_path = str(asset.get("managed_path") or "").strip()
         if managed_path:
             path = Path(managed_path).resolve()
@@ -533,9 +532,51 @@ class DimensionCanvasService:
             if output_root == path or output_root in path.parents:
                 relative = path.relative_to(output_root).as_posix()
                 return f"/pp-media/{relative}"
+        source_url = str(asset.get("source_url") or "").strip()
+        asset_id = str(asset.get("id") or "").strip()
+        if asset_id and source_url and self._is_public_dimension_url(source_url):
+            # 外部图床统一走后端同源代理（SSRF 校验 + 后端下载），浏览器不直连外部域名。
+            return f"/api/product-processing/dimension-assets/{asset_id}/image"
         if product_draft_id > 0 and str(asset.get("role") or "") in {"source", "task_source"}:
             return f"/api/product-processing/drafts/{product_draft_id}/image"
         return ""
+
+    def dimension_asset_image_path(self, asset_id: str, *, workspace_id: str) -> Path:
+        """Resolve one canvas asset to a local image file, downloading external URLs on demand.
+
+        Serves as the browser-facing image proxy: remote 1688/other CDN sources are fetched
+        server-side (SSRF-safe, size-limited) and cached under the workspace namespace, so the
+        browser never hits external hotlink protection directly.
+        """
+        asset = self.canvas_repository.find_asset(asset_id, workspace_id)
+        if asset is None:
+            raise DimensionCanvasNotFound("dimension canvas asset not found")
+        managed_path = str(asset.get("managed_path") or "").strip()
+        if managed_path:
+            return self.assets.require_workspace_dimension_asset(managed_path, workspace_id=workspace_id)
+        source_url = str(asset.get("source_url") or "").strip()
+        if not source_url or not self._is_public_dimension_url(source_url):
+            raise DimensionCanvasNotFound("dimension canvas asset is not fetchable")
+        content = self.source_loader(dict(asset))
+        if not content:
+            raise DimensionCanvasNotFound("dimension canvas asset download returned empty content")
+        suffix = ".png" if str(asset.get("content_type") or "").lower() == "image/png" else ".jpg"
+        path = self.assets.save_dimension_asset(
+            content,
+            kind="source",
+            suffix=suffix,
+            workspace_id=workspace_id,
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        self.canvas_repository.materialize_asset(
+            str(asset.get("id") or ""),
+            str(asset.get("item_id") or ""),
+            workspace_id,
+            managed_path=str(path),
+            content_hash=digest,
+            content_type=str(asset.get("content_type") or ""),
+        )
+        return path
 
     @staticmethod
     def _is_public_dimension_url(value: str) -> bool:
