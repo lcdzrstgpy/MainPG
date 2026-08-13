@@ -205,12 +205,14 @@ class SourcingService:
             # cached preview and put only the affected SKCs back into the image
             # search queue instead of ever rendering/associating them again.
             stale_keyword_skc_ids = _preview_keyword_skc_ids(preview)
-            if stale_keyword_skc_ids:
-                unresolved = tuple(dict.fromkeys((*session["unresolved_skc_ids"], *stale_keyword_skc_ids)))
+            stale_visual_skc_ids = _preview_unverified_visual_skc_ids(preview)
+            stale_skc_ids = tuple(dict.fromkeys((*stale_keyword_skc_ids, *stale_visual_skc_ids)))
+            if stale_skc_ids:
+                unresolved = tuple(dict.fromkeys((*session["unresolved_skc_ids"], *stale_skc_ids)))
                 selected_candidates = tuple(
                     candidate
                     for candidate in session["selected_candidates"]
-                    if _text(candidate.get("skc_id")) not in stale_keyword_skc_ids
+                    if _text(candidate.get("skc_id")) not in stale_skc_ids
                 )
                 session = self._repository.save_batch_sourcing_session(
                     workspace_id=actor.workspace_id, batch_id=batch_id,
@@ -253,20 +255,23 @@ class SourcingService:
         offer_id = _text(candidate.get("offer_id")) or _offer_id_from_url(_text(candidate.get("source_url")))
         if not re.fullmatch(r"\d{3,}", offer_id):
             raise PriceVerificationContractError("offer_id must be a 1688 offer id")
-        source_url = canonical_source_url(_text(candidate.get("source_url")), offer_id=offer_id)
+        verified_candidate = _verified_preview_candidate(session.get("preview"), skc_id, offer_id)
+        if verified_candidate is None:
+            raise PriceVerificationContractError("candidate is not in the current verified image-search results")
+        source_url = canonical_source_url(_text(verified_candidate.get("source_url")), offer_id=offer_id)
         if not source_url:
             raise PriceVerificationContractError("source_url must be a valid 1688 offer URL")
         selected = [dict(item) for item in session["selected_candidates"]
                     if not (item.get("skc_id") == skc_id and item.get("offer_id") == offer_id)]
         selected.append({
             "skc_id": skc_id, "offer_id": offer_id, "source_url": source_url,
-            "source_title": _text(candidate.get("source_title")),
-            "main_image_url": _text(candidate.get("main_image_url")),
-            "price_cny": _nullable_decimal_text(price_cny if price_cny is not None else candidate.get("promotion_price") or candidate.get("price")),
+            "source_title": _text(verified_candidate.get("source_title")),
+            "main_image_url": _text(verified_candidate.get("main_image_url")),
+            "price_cny": _nullable_decimal_text(price_cny if price_cny is not None else verified_candidate.get("promotion_price") or verified_candidate.get("price")),
             "weight_kg": _nullable_positive_decimal_text(weight_kg) or str(DEFAULT_WEIGHT_KG),
-            "moq": _nullable_decimal_text(candidate.get("moq")),
-            "domestic_freight_cny": _nullable_decimal_text(candidate.get("domestic_freight")),
-            "source_decision": _text(candidate.get("source_decision")),
+            "moq": _nullable_decimal_text(verified_candidate.get("moq")),
+            "domestic_freight_cny": _nullable_decimal_text(verified_candidate.get("domestic_freight")),
+            "source_decision": _text(verified_candidate.get("source_decision")),
         })
         return self._repository.save_batch_sourcing_session(
             workspace_id=actor.workspace_id, batch_id=batch_id,
@@ -887,9 +892,11 @@ def build_source_preview(
         status = _text(result.get("status")) if result else ("pending" if source_result is None else "failed")
         status = status or "succeeded"
         raw_candidates = result.get("candidates", []) if result else []
-        # A translated-title hit says nothing about visual equivalence. Reject
-        # it before preview construction so saved sessions, retries and every
-        # caller share the same hard boundary.
+        # A translated-title-only hit says nothing about visual equivalence and
+        # remains excluded.  Product-title conflicts on image-search hits are
+        # review labels, however, not visibility gates: the UI contract is to
+        # show five image candidates whenever OneBound supplied five usable
+        # offers, even if none is reliable enough to recommend automatically.
         if isinstance(raw_candidates, Sequence) and not isinstance(raw_candidates, (str, bytes)):
             raw_candidates = [
                 candidate
@@ -897,7 +904,6 @@ def build_source_preview(
                 if (
                     isinstance(candidate, Mapping)
                     and candidate.get("source_channel") != "keyword"
-                    and candidate.get("product_evidence_status") != "conflict"
                 )
             ]
         else:
@@ -916,6 +922,7 @@ def build_source_preview(
             "source_search_status": item_status,
             "source_search_error": _text(result.get("error")) if result else "",
             "image_search_audit": _image_search_audit(result),
+            "visual_verification": dict(result.get("visual_verification") or {}) if result else {},
             "source_decision": item_decision,
             "max_candidates": _quote_candidate_cap(quote),
             "candidates": recommended,
@@ -956,10 +963,6 @@ def _apply_batch_ranking(
         if not isinstance(item, dict):
             continue
         raw_candidates = item.get("all_candidates")
-        quote_context = {
-            "product_title": _text(item.get("product_title")),
-            "main_image_url": _text(item.get("main_image_url")),
-        }
         all_candidates = (
             [
                 candidate
@@ -967,8 +970,6 @@ def _apply_batch_ranking(
                 if (
                     isinstance(candidate, Mapping)
                     and candidate.get("source_channel") != "keyword"
-                    and candidate.get("product_evidence_status") != "conflict"
-                    and evaluate_product_evidence(quote_context, candidate)[0] != "conflict"
                 )
             ]
             if isinstance(raw_candidates, list)
@@ -983,6 +984,9 @@ def _apply_batch_ranking(
             candidate["profit"] = _candidate_profit(candidate, site, selling_price)
         item["all_candidates"] = ranked_copies
         item["ranked_candidates"] = list(ranked_copies[:DEFAULT_CANDIDATE_LIMIT])
+        # Keep the legacy field recommendation-only for decision automation;
+        # the UI intentionally renders ``all_candidates`` so review/conflict
+        # image hits still fill the fixed five-card display.
         item["candidates"] = [
             candidate
             for candidate in ranked_copies
@@ -1076,6 +1080,54 @@ def _preview_keyword_skc_ids(preview: Mapping[str, Any] | None) -> tuple[str, ..
             if skc_id and skc_id not in invalid:
                 invalid.append(skc_id)
     return tuple(invalid)
+
+
+def _preview_unverified_visual_skc_ids(preview: Mapping[str, Any] | None) -> tuple[str, ...]:
+    """Identify cached previews created before local visual verification existed."""
+    if not isinstance(preview, Mapping):
+        return ()
+    items = preview.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return ()
+    invalid: list[str] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        candidates = item.get("all_candidates") or item.get("ranked_candidates") or item.get("candidates")
+        if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
+            continue
+        if any(
+            isinstance(candidate, Mapping) and not candidate.get("image_similarity_selected")
+            for candidate in candidates
+        ):
+            skc_id = _text(item.get("skc_id")) or _text(item.get("quote_key"))
+            if skc_id and skc_id not in invalid:
+                invalid.append(skc_id)
+    return tuple(invalid)
+
+
+def _verified_preview_candidate(
+    preview: object, skc_id: str, offer_id: str
+) -> Mapping[str, Any] | None:
+    """Resolve the canonical image/link pair from the saved verified preview."""
+    if not isinstance(preview, Mapping):
+        return None
+    items = preview.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return None
+    for item in items:
+        if not isinstance(item, Mapping) or (_text(item.get("skc_id")) or _text(item.get("quote_key"))) != skc_id:
+            continue
+        candidates = item.get("all_candidates") or item.get("ranked_candidates") or item.get("candidates")
+        if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
+            continue
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping) or not candidate.get("image_similarity_selected"):
+                continue
+            candidate_offer_id = _text(candidate.get("offer_id")) or _offer_id_from_url(candidate.get("source_url"))
+            if candidate_offer_id == offer_id:
+                return candidate
+    return None
 
 
 def _preview_candidate_keys(preview: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1265,6 +1317,7 @@ def _merge_retry_source_result(
             "status": _text(parent.get("source_search_status")) or "succeeded",
             "error": _text(parent.get("source_search_error")),
             "candidates": list(candidates) if isinstance(candidates, list) else [],
+            "visual_verification": dict(parent.get("visual_verification") or {}),
         })
     return {"items": entries}
 

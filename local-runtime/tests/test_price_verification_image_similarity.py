@@ -1,0 +1,157 @@
+from __future__ import annotations
+
+from io import BytesIO
+
+from PIL import Image, ImageDraw
+
+from wh_local.data_collection.public_image_fetch import FetchedPublicImage
+from wh_local.price_verification.sourcing.image_similarity import (
+    IMAGE_SIMILARITY_THRESHOLD,
+    similarity_score,
+    verify_visual_candidates,
+)
+from wh_local.price_verification.sourcing.normalizer import normalize_source_candidate
+from wh_local.price_verification.sourcing.service import _verified_preview_candidate
+from wh_local.price_verification.quote_normalizer import QuoteItem
+
+
+def _image_bytes(*, background: str = "white", object_colour: str = "#3c78d8", decoration: bool = False) -> bytes:
+    image = Image.new("RGB", (240, 240), background)
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((45, 70, 195, 175), radius=18, fill=object_colour, outline="#1d3557", width=5)
+    draw.ellipse((85, 35, 155, 105), fill="#f4a261", outline="#7f5539", width=4)
+    if decoration:
+        draw.rectangle((0, 0, 240, 20), fill="#efefef")
+        draw.rectangle((0, 220, 240, 240), fill="#efefef")
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def _solid_image_bytes(colour: str) -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (64, 64), colour).save(output, format="PNG")
+    return output.getvalue()
+
+
+def test_perceptual_similarity_accepts_small_marketplace_decoration() -> None:
+    score = similarity_score(_image_bytes(), _image_bytes(decoration=True))
+
+    assert score >= IMAGE_SIMILARITY_THRESHOLD
+
+
+def test_similarity_threshold_is_fifty_percent() -> None:
+    assert IMAGE_SIMILARITY_THRESHOLD == 0.50
+
+
+def test_perceptual_similarity_rejects_different_product_composition() -> None:
+    reference = _image_bytes()
+    unrelated = Image.new("RGB", (240, 240), "#111111")
+    draw = ImageDraw.Draw(unrelated)
+    for offset in range(0, 240, 24):
+        draw.line((0, offset, 240, 240 - offset), fill="#f94144", width=9)
+    output = BytesIO()
+    unrelated.save(output, format="PNG")
+
+    assert similarity_score(reference, output.getvalue()) < IMAGE_SIMILARITY_THRESHOLD
+
+
+def test_visual_verification_keeps_only_passing_candidate_and_preserves_link_pair() -> None:
+    images = {
+        "https://images.example/reference.png": _image_bytes(),
+        "https://images.example/same.png": _image_bytes(decoration=True),
+        "https://images.example/other.png": _solid_image_bytes("black"),
+    }
+
+    def fetch(url: str) -> FetchedPublicImage:
+        return FetchedPublicImage(content=images[url], media_type="image/png", final_url=url)
+
+    candidates = [
+        {
+            "offer_id": "111111",
+            "source_url": "https://detail.1688.com/offer/111111.html",
+            "image": "https://images.example/same.png",
+        },
+        {
+            "offer_id": "222222",
+            "source_url": "https://detail.1688.com/offer/222222.html",
+            "image": "https://images.example/other.png",
+        },
+    ]
+
+    verified, audit = verify_visual_candidates(
+        "https://images.example/reference.png", candidates, fetcher=fetch, minimum_results=1
+    )
+
+    assert [candidate["offer_id"] for candidate in verified] == ["111111"]
+    assert verified[0]["source_url"].endswith("/111111.html")
+    assert verified[0]["image_similarity_verified"] is True
+    assert audit["verified_count"] == 1
+    assert audit["rejected_count"] == 1
+
+
+def test_visual_verification_fills_five_with_best_below_threshold_candidates() -> None:
+    reference_url = "https://images.example/reference.png"
+    images = {reference_url: _image_bytes()}
+    candidates = []
+    for index in range(8):
+        image_url = f"https://images.example/{index}.png"
+        images[image_url] = _solid_image_bytes(f"#{index + 1:02x}{index + 2:02x}{index + 3:02x}")
+        candidates.append({
+            "offer_id": str(100000 + index),
+            "source_url": f"https://detail.1688.com/offer/{100000 + index}.html",
+            "image": image_url,
+        })
+
+    def fetch(url: str) -> FetchedPublicImage:
+        return FetchedPublicImage(content=images[url], media_type="image/png", final_url=url)
+
+    selected, audit = verify_visual_candidates(reference_url, candidates, fetcher=fetch)
+
+    assert len(selected) == 5
+    assert audit["fallback_count"] == 5
+    assert all(candidate["image_similarity_fallback"] for candidate in selected)
+    assert all(candidate["image_similarity_selected"] for candidate in selected)
+
+
+def test_title_guard_rejects_unrelated_pet_medicine_for_cooling_mat() -> None:
+    candidate = normalize_source_candidate(
+        QuoteItem(product_title="Pet Cooling Mat Summer Ice Pad for Dogs and Cats"),
+        {
+            "num_iid": "333333",
+            "item_url": "https://detail.1688.com/offer/333333.html",
+            "title": "猫狗体外驱虫滴剂宠物除虫药",
+        },
+    )
+
+    assert candidate["product_evidence_status"] == "conflict"
+    assert candidate["product_evidence"] == ["product_category_mismatch"]
+
+
+def test_verified_candidate_is_resolved_from_saved_offer_image_pair() -> None:
+    preview = {
+        "items": [
+            {
+                "skc_id": "skc-1",
+                "all_candidates": [
+                    {
+                        "offer_id": "111111",
+                        "source_url": "https://detail.1688.com/offer/111111.html",
+                        "main_image_url": "https://images.example/111111.jpg",
+                        "image_similarity_verified": True,
+                        "image_similarity_selected": True,
+                    },
+                    {
+                        "offer_id": "222222",
+                        "source_url": "https://detail.1688.com/offer/222222.html",
+                        "main_image_url": "https://images.example/222222.jpg",
+                        "image_similarity_verified": False,
+                        "image_similarity_selected": False,
+                    },
+                ],
+            }
+        ]
+    }
+
+    assert _verified_preview_candidate(preview, "skc-1", "111111")["main_image_url"].endswith("111111.jpg")
+    assert _verified_preview_candidate(preview, "skc-1", "222222") is None
