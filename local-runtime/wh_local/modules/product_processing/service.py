@@ -101,12 +101,17 @@ def _ai_enabled() -> bool:
 
 
 def _media_public_base_url() -> str:
-    """后端静态图床对外地址：WH_MEDIA_BASE_URL（如 https://media.example.com 或 http://公网IP:8010）。
+    """Return the configured public base for the existing ``/pp-media`` host.
 
-    生成图本地保存于 assets/outputs，后端通过 /pp-media 静态挂载对外提供；
-    设置该地址后，即使未配置 COS，导出表也能写入可访问的生成图 URL（出图效果不再回退来源图）。
+    Environment configuration is retained for packaged deployments.  The system
+    settings value is the normal desktop path and was previously left unused by
+    the deferred preview-finalization flow.
     """
-    return str(os.environ.get("WH_MEDIA_BASE_URL", "")).strip().rstrip("/")
+    configured = str(os.environ.get("WH_MEDIA_BASE_URL", "")).strip().rstrip("/")
+    if configured:
+        return configured
+    updates = resolve_ai_provider().get("_sys_updates") or {}
+    return str(updates.get("public_base_url") or "").strip().rstrip("/")
 
 
 def _cos_local_config_paths() -> list[Path]:
@@ -838,14 +843,33 @@ class ProductProcessingService:
         workspace_id: str,
     ) -> str:
         """Publish immutable original bytes for the final retained precheck set."""
+        digest = hashlib.sha256(content).hexdigest()
+        if content_hash and digest != str(content_hash).strip().lower():
+            raise ValueError("preview image hash mismatch")
+
+        # COS remains the preferred durable publisher.  When it is intentionally
+        # absent, reuse the pre-existing static image-host export interface rather
+        # than blocking finalization merely because no COS credentials exist.
+        if not bool(self.engine_status()["diagnostics"]["config"].get("cos_configured")):
+            base = _media_public_base_url()
+            if not base or not base.lower().startswith("https://") or not is_safe_external_url(base):
+                raise MediaUnavailableError(
+                    "未配置可导出的图床：请配置 COS 或公共媒体地址（public_base_url）"
+                )
+            path = self.assets.save_preview_asset(
+                bytes(content),
+                digest,
+                str(suffix or ".jpg"),
+                workspace_id=workspace_id,
+            )
+            relative = path.relative_to(self.assets.output_root).as_posix()
+            return f"{base}/pp-media/{relative}"
+
         media_types = _media_types()
         if not media_types:
             raise MediaUnavailableError("图片处理依赖缺失：无法发布最终预审图片")
         from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
 
-        digest = hashlib.sha256(content).hexdigest()
-        if content_hash and digest != str(content_hash).strip().lower():
-            raise ValueError("preview image hash mismatch")
         namespace = hashlib.sha256(str(workspace_id).encode("utf-8")).hexdigest()[:20]
         media = GeneratedMedia(
             stage="preview-final",
@@ -867,7 +891,16 @@ class ProductProcessingService:
         return url
 
     def is_trusted_cos_url(self, value: str) -> bool:
-        """Verify a legacy/final URL against the configured bucket with COS HEAD."""
+        """Validate a final URL from either configured publication backend."""
+        base = _media_public_base_url()
+        static_prefix = f"{base}/pp-media/" if base else ""
+        if (
+            static_prefix
+            and str(value or "").startswith(static_prefix)
+            and base.lower().startswith("https://")
+            and is_safe_external_url(base)
+        ):
+            return True
         return self._media_processor().is_configured_cos_url(value, require_public=True)
 
     def sync_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
@@ -1635,8 +1668,16 @@ class ProductProcessingService:
         idempotency_key: str = "",
     ) -> dict[str, Any]:
         self._require_task(task_id, workspace_id)
-        if not bool(self.engine_status()["diagnostics"]["config"].get("cos_configured")):
-            raise ProductProcessingConflict("COS 图床未配置，请先在系统设置完成配置")
+        config = self.engine_status()["diagnostics"]["config"]
+        media_publish_configured = config.get("media_publish_configured")
+        if media_publish_configured is None:
+            # Test/extension adapters that predate the dual-publisher status
+            # contract may only report COS readiness.
+            media_publish_configured = config.get("cos_configured")
+        if not bool(media_publish_configured):
+            raise ProductProcessingConflict(
+                "未配置可导出的图床：请配置 COS 或公共媒体地址（public_base_url）"
+            )
         normalized = [
             {
                 **entry,
@@ -4842,6 +4883,7 @@ class ProductProcessingService:
         # 已配置安装可从程序目录读取 gitignored 本地配置；公开安装包不携带密钥，
         # 新安装需由系统设置或环境变量提供 COS 凭据。
         cos_config: dict[str, Any] = {}
+        local_cos_prefix = ""
         for local_cos in _cos_local_config_paths():
             try:
                 if local_cos.is_file():
@@ -4853,6 +4895,7 @@ class ProductProcessingService:
                             "secret_id": str(loaded.get("secret_id") or "").strip(),
                             "secret_key": str(loaded.get("secret_key") or "").strip(),
                         }
+                        local_cos_prefix = str(loaded.get("cos_prefix") or "").strip("/")
                         break
             except (OSError, ValueError):
                 cos_config = {}
@@ -4897,6 +4940,10 @@ class ProductProcessingService:
         sys_updates = provider.get("_sys_updates") or {}
         if sys_updates.get("cos_prefix"):
             limits["cos_prefix"] = sys_updates["cos_prefix"]
+        elif local_cos_prefix:
+            # 系统未显式设置上传前缀时，使用项目内 cos.local.json 固化的前缀
+            # （例如子账号只允许 temu-y2-control/* 的受限图床）。
+            limits["cos_prefix"] = local_cos_prefix
         return {
             "image": image_section,
             "backup_image": backup_image,
