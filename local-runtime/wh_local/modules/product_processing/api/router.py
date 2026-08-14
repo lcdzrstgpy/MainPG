@@ -18,6 +18,7 @@ from ..service import (
     ProductProcessingConflict,
     ProductProcessingNotFound,
     ProductProcessingService,
+    ProductProcessingValidationError,
 )
 from .schemas import (
     DailySelectionIntakeRequest,
@@ -58,6 +59,7 @@ def create_product_processing_router(
             service.assets,
             DimensionRenderer(),
             source_loader=service.load_dimension_source,
+            media_assets=service.media_assets,
         )
         setattr(service, "_dimension_canvas_service", dimension_service)
     @asynccontextmanager
@@ -258,6 +260,49 @@ def create_product_processing_router(
     ):
         path = _call(service.draft_image_path, draft_id, _workspace(workspace_id))
         return FileResponse(path, filename=path.name)
+
+    @router.get("/drafts/{draft_id}/media")
+    def draft_media(
+        draft_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(service.draft_media, draft_id, workspace_id=_workspace(workspace_id))
+
+    @router.get("/media-assets/{asset_id}/content", response_model=None)
+    def media_asset_content(
+        asset_id: str,
+        workspace_id: str = Query(...),
+        expires: int = Query(..., gt=0),
+        signature: str = Query(..., min_length=32, max_length=128),
+        request_workspace: str | None = Header(default=None, alias="X-Workspace-ID"),
+    ) -> FileResponse:
+        workspace = _workspace(workspace_id)
+        if request_workspace is not None and _workspace(request_workspace) != workspace:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "media asset not found")
+        try:
+            path, media_type = service.media_asset_content(
+                asset_id,
+                workspace_id=workspace,
+                expires=expires,
+                signature=signature,
+            )
+        except (LookupError, OSError, ValueError):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "media asset not found") from None
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "private, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @router.post("/media-assets/{asset_id}/retry")
+    def retry_media_asset(
+        asset_id: str,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(service.retry_media_asset, asset_id, workspace_id=_workspace(workspace_id))
 
     @router.delete("/drafts/{draft_id}")
     def delete_draft(
@@ -589,6 +634,8 @@ def _call(function, *args, **kwargs):
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ProductProcessingConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ProductProcessingValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except (ValueError, ValidationError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 

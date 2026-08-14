@@ -59,6 +59,11 @@ const UNIT_OPTIONS: Array<{ value: DimensionUnit; label: string }> = [
 
 function CanvasAssetThumb({ asset }: { asset: DimensionAsset }) {
   const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [asset.previewUrl]);
+
   if (failed) return <span className="dimension-asset-thumb-failed">加载失败</span>;
   if (!asset.previewUrl) return <span>待加载</span>;
   return (
@@ -307,8 +312,8 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
     }
     const confirmed = new Set(["source_confirmed", "manual_confirmed"]).has(dimension.provenance);
     const next = confirmed ? editor : changeDimensionValue(editor, key, dimension.valueCm);
-    updateEditor({ ...next, activeTool: key }, !confirmed, !confirmed);
-    setMessage(confirmed ? `已选择“${DIMENSION_LABELS[key]}”，请在图上拖出双箭头` : `已确认“${DIMENSION_LABELS[key]}”并进入绘制`);
+    updateEditor({ ...next, activeTool: key, selectedAnnotationId: null }, !confirmed, !confirmed);
+    setMessage(confirmed ? `已选择“${DIMENSION_LABELS[key]}”，请在图上拖出尺寸线` : `已确认“${DIMENSION_LABELS[key]}”并进入绘制`);
   };
 
   const uploadAsset = async (file: File | null) => {
@@ -390,7 +395,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
       setMessage(`已交回 ${changeSet.itemCount} 项审核；未完成项目继续保留在当前批次`);
       onOpenPrecheck(changeSet.sourceTaskId || batch.sourceTaskId, changeSet.id);
     } catch (cause) {
-      setError(`COS 交回失败：${cause instanceof Error ? cause.message : String(cause)}`);
+      setError(`交回审核失败：${cause instanceof Error ? cause.message : String(cause)}`);
     } finally {
       setBusy("");
     }
@@ -510,24 +515,6 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
                   );
                 })}
               </div>
-              <label className="dimension-custom-value">自定义尺寸
-                <input
-                  type="number"
-                  min="0"
-                  step={editor.displayUnit === "mm" ? "1" : "0.01"}
-                  value={editor.customValueCm == null ? "" : Number(centimetersToUnit(editor.customValueCm, editor.displayUnit).toFixed(editor.displayUnit === "mm" ? 1 : 2))}
-                  onChange={(event) => {
-                    const parsed = Number(event.target.value);
-                    updateEditor({
-                      ...editor,
-                      customValueCm: event.target.value === "" || !Number.isFinite(parsed) || parsed <= 0
-                        ? null
-                        : unitToCentimeters(parsed, editor.displayUnit),
-                    });
-                  }}
-                />
-                <span>{editor.displayUnit}</span>
-              </label>
             </div>
           </section>
           <div className="dimension-editor-layout">
@@ -535,7 +522,13 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               editor={editor}
               canUndo={history.past.length > 0}
               canRedo={history.future.length > 0}
-              onTool={(activeTool: DimensionKey | "select") => updateEditor({ ...editor, activeTool }, false, false)}
+              onTool={(activeTool: DimensionKey | "select") => {
+                if (activeTool === "select" || activeTool === "custom") {
+                  updateEditor({ ...editor, activeTool, selectedAnnotationId: activeTool === "select" ? editor.selectedAnnotationId : null }, false, false);
+                } else {
+                  selectDimensionTool(activeTool);
+                }
+              }}
               onUndo={undo}
               onRedo={redo}
               onDelete={() => editor.selectedAnnotationId && updateEditor(removeAnnotation(editor, editor.selectedAnnotationId))}
@@ -544,12 +537,25 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               onZoomOut={() => setZoom((value) => Math.max(0.5, value - 0.15))}
               onReset={() => setZoom(1)}
               onStyle={(style) => updateEditor({ ...editor, annotations: editor.annotations.map((annotation) => editor.selectedAnnotationId === annotation.id ? { ...annotation, style } : annotation) })}
+              onLineWidth={(lineWidth) => updateEditor({ ...editor, annotations: editor.annotations.map((annotation) => editor.selectedAnnotationId === annotation.id ? { ...annotation, lineWidth } : annotation) })}
+              onEndpointStyle={(endpointStyle) => {
+                const changesSelected = Boolean(editor.selectedAnnotationId);
+                updateEditor({
+                  ...editor,
+                  endpointStyle,
+                  annotations: editor.annotations.map((annotation) => editor.selectedAnnotationId === annotation.id
+                    ? { ...annotation, endpointStyle }
+                    : annotation),
+                }, changesSelected, changesSelected);
+              }}
+              onCustomValueChange={(customValueCm) => updateEditor({ ...editor, customValueCm })}
             />
             <main className="dimension-stage-panel">
               <DimensionCanvasStage
                 editor={editor}
                 asset={activeAsset}
                 zoom={zoom}
+                onZoomChange={setZoom}
                 onSelectAnnotation={(annotationId) => updateEditor({ ...editor, selectedAnnotationId: annotationId }, false, false)}
                 onCommitEditor={(next) => updateEditor(next)}
                 onCommitAnnotation={commitAnnotation}
@@ -598,6 +604,7 @@ function nullEditor(): EditorState {
     selectedAnnotationId: null,
     displayUnit: "cm",
     customValueCm: null,
+    endpointStyle: "arrow",
   };
 }
 

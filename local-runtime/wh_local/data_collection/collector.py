@@ -200,12 +200,13 @@ class DailySelectionCollector:
                         errors.append(response.error)
 
         unique = _rank_candidates(_deduplicate(candidates))
-        # 详情拉取量控制：设置 SKU 筛选时需要全量候选的 SKU 数据才能判定。
-        # 未设置 SKU 筛选时同样在预算内尽量全量拉取详情——detail_count 只作为
+        # 详情拉取量控制：设置 SKU/起订量筛选时需要全量候选的详情数据才能判定。
+        # 未设置这些筛选时同样在预算内尽量全量拉取详情——detail_count 只作为
         # 最低覆盖保证，避免候选的 SKU/发源地/属性等字段大面积“未知”。
         # 超出 API 预算时由后续逐条 _reserve 自然停止。
         has_sku_filter = (
-            criteria.min_sku_count is not None
+            criteria.min_moq is not None
+            or criteria.min_sku_count is not None
             or criteria.max_sku_count is not None
             or criteria.min_sku_price is not None
             or criteria.max_sku_price is not None

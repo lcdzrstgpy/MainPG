@@ -80,6 +80,7 @@ class DimensionCanvasAssetRow(Base):
     role: Mapped[str] = mapped_column(String(64), index=True)
     source_url: Mapped[str] = mapped_column(Text, default="")
     managed_path: Mapped[str] = mapped_column(Text, default="")
+    source_media_asset_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     content_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
     width: Mapped[int] = mapped_column(Integer, default=0)
     height: Mapped[int] = mapped_column(Integer, default=0)

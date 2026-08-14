@@ -25,11 +25,13 @@ class ProductProcessingAssets:
         self.library_root = self.root / "source-image-library"
         self.output_root = self.root / "outputs"
         self.preview_asset_root = self.output_root / "preview-assets"
+        self.media_asset_root = self.output_root / "media-assets"
         for path in (
             self.upload_root,
             self.library_root,
             self.output_root,
             self.preview_asset_root,
+            self.media_asset_root,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -206,6 +208,94 @@ class ProductProcessingAssets:
         if not path.is_file():
             raise FileNotFoundError("preview asset does not exist")
         return path
+
+    def save_media_asset(
+        self,
+        content: bytes,
+        content_hash: str,
+        suffix: str,
+        *,
+        workspace_id: str = "local",
+    ) -> Path:
+        """Store verified bytes in the content-addressed unified media root."""
+
+        if not content:
+            raise ValueError("media asset is empty")
+        digest = str(content_hash or "").strip().casefold()
+        if (
+            len(digest) != 64
+            or any(ch not in "0123456789abcdef" for ch in digest)
+            or hashlib.sha256(content).hexdigest() != digest
+        ):
+            raise ValueError("media asset content hash does not match its bytes")
+        safe_suffix = str(suffix or "").strip().casefold()
+        if safe_suffix == ".jpeg":
+            safe_suffix = ".jpg"
+        if safe_suffix not in {".jpg", ".png", ".webp"}:
+            raise ValueError("unsupported media asset suffix")
+
+        workspace_root = self._media_workspace_root(workspace_id)
+        parent = (workspace_root / digest[:2]).resolve()
+        if workspace_root != parent and workspace_root not in parent.parents:
+            raise ValueError("media asset path is outside the workspace root")
+        parent.mkdir(parents=True, exist_ok=True)
+        path = (parent / f"{digest}{safe_suffix}").resolve()
+        if path.parent != parent:
+            raise ValueError("media asset path is outside the managed root")
+        temporary_path: Path | None = None
+        if not path.exists():
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix=f".{digest}.",
+                    suffix=".tmp",
+                    dir=parent,
+                    delete=False,
+                ) as temporary:
+                    temporary_path = Path(temporary.name)
+                    temporary.write(content)
+                    temporary.flush()
+                    os.fsync(temporary.fileno())
+                if path.exists():
+                    temporary_path.unlink(missing_ok=True)
+                    temporary_path = None
+                else:
+                    os.replace(temporary_path, path)
+                    temporary_path = None
+            finally:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError("stored media asset does not match its content address")
+        return path
+
+    def require_workspace_media_asset(
+        self,
+        raw_path: str,
+        *,
+        workspace_id: str,
+    ) -> Path:
+        """Resolve a database-owned unified media file within the caller's workspace."""
+
+        if not raw_path or "://" in raw_path:
+            raise ValueError("media asset must be a managed local path")
+        workspace_root = self._media_workspace_root(workspace_id)
+        path = Path(raw_path).resolve()
+        if workspace_root != path and workspace_root not in path.parents:
+            raise ValueError("media asset is outside the workspace root")
+        if not path.is_file():
+            raise FileNotFoundError("media asset does not exist")
+        return path
+
+    def _media_workspace_root(self, workspace_id: str) -> Path:
+        workspace_key = hashlib.sha256(
+            str(workspace_id or "").encode("utf-8")
+        ).hexdigest()[:24]
+        root = (self.media_asset_root / "workspaces" / workspace_key).resolve()
+        media_root = self.media_asset_root.resolve()
+        if media_root != root and media_root not in root.parents:
+            raise ValueError("media workspace path is outside the managed root")
+        return root
 
     def import_dimension_as_preview_asset(
         self,

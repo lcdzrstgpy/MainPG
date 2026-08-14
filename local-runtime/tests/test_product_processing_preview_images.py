@@ -25,6 +25,7 @@ from wh_local.modules.product_processing.infrastructure.preview_image_repository
     PreviewPublicationConflict,
 )
 from wh_local.modules.product_processing.infrastructure.repository import ProductProcessingRepository
+from wh_local.modules.product_processing import service as service_module
 from wh_local.modules.product_processing.service import ProductProcessingService
 from wh_local.modules.product_processing.api.router import create_product_processing_router
 
@@ -92,6 +93,25 @@ def test_manifest_preserves_empty_lists_and_semantic_slot_after_reorder() -> Non
     assert changed.as_dict()["detail_asset_ids"] == []
 
 
+def test_manifest_uses_first_carousel_asset_as_its_only_main() -> None:
+    manifest = PreviewImageManifest.from_value({
+        "main_asset_id": "old-main",
+        "carousel_asset_ids": ["b", "a", "b"],
+        "library_asset_ids": ["source-1", "source-1"],
+        "semantic_asset_ids": {"carousel.hero": "old-main", "carousel.detail": "gone"},
+    })
+    assert manifest.main_asset_id == "b"
+    assert manifest.carousel_asset_ids == ("b", "a")
+    assert manifest.library_asset_ids == ("source-1",)
+    assert manifest.semantic_asset_ids == {"carousel.hero": "b"}
+
+
+def test_manifest_promotes_lone_main_to_first_carousel_item() -> None:
+    manifest = PreviewImageManifest.from_value({"main_asset_id": "only-main"})
+    assert manifest.carousel_asset_ids == ("only-main",)
+    assert manifest.main_asset_id == "only-main"
+
+
 def test_schema_and_workspace_asset_boundaries(tmp_path: Path) -> None:
     database = create_database(f"sqlite:///{(tmp_path / 'preview.sqlite3').as_posix()}")
     assert {
@@ -152,6 +172,14 @@ def test_upload_and_generated_projection_are_local_and_keep_asset_identity(tmp_p
     assert projected["image_manifest"]["main_asset_id"] == generated["id"]
 
 
+def test_task_preview_exposes_each_draft_media_contract_version(tmp_path: Path) -> None:
+    service, task, _draft_id = _finished_service(tmp_path)
+
+    preview = service.task_preview(task["id"], workspace_id="workspace-a")
+
+    assert preview["items"][0]["media_contract_version"] == 1
+
+
 def test_finalize_publishes_only_retained_assets_and_replays_idempotently(tmp_path: Path) -> None:
     service, task, draft_id = _finished_service(tmp_path)
     retained = service.register_preview_upload(
@@ -206,6 +234,74 @@ def test_finalize_publishes_only_retained_assets_and_replays_idempotently(tmp_pa
     )
     assert workbook.is_file()
     assert workbook.name != f"dxm_import_task_{task['id']}_final.xlsx"
+
+
+def test_finalize_uses_existing_static_image_host_when_cos_is_not_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Final export must keep working through the existing /pp-media host.
+
+    The deferred-finalization flow stores images locally first.  A configured
+    static image host therefore replaces COS for final-publication when COS is
+    deliberately not configured; it must not be rejected at request time.
+    """
+    # Ensure this test exercises the static-host branch even on machines whose
+    # project has a git-ignored cos.local.json already configured.
+    for name in ("WH_COS_BUCKET", "WH_COS_REGION", "WH_COS_SECRET_ID", "WH_COS_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(service_module, "_cos_local_config_paths", lambda: [])
+    monkeypatch.setenv("WH_MEDIA_BASE_URL", "https://images.example.test")
+    service, task, draft_id = _finished_service(tmp_path)
+    content = _jpeg("green")
+    retained = service.register_preview_upload(
+        task["id"], draft_id, content, "kept.jpg", "image/jpeg", workspace_id="workspace-a"
+    )
+    monkeypatch.setattr(service.preview_images, "_launch", lambda *_args, **_kwargs: False)
+    preview = service.task_preview(task["id"], workspace_id="workspace-a")["items"][0]
+    items = [
+        {
+            "product_draft_id": draft_id,
+            "expected_preview_revision": preview["preview_revision"],
+            "expected_result_version": preview["result_version"],
+            "overrides": {
+                "title": preview["title"],
+                "description": preview["description"],
+                "core_fields": preview["core_fields"],
+                "image_manifest_v2": {
+                    "main_asset_id": retained["id"],
+                    "carousel_asset_ids": [retained["id"]],
+                    "detail_asset_ids": [],
+                    "semantic_asset_ids": {"carousel.hero": retained["id"]},
+                },
+            },
+        }
+    ]
+
+    started = service.begin_preview_finalize(
+        task["id"], items, workspace_id="workspace-a", idempotency_key="static-host"
+    )
+    completed = service.preview_images.run_finalize(started["id"], workspace_id="workspace-a")
+
+    assert completed["status"] == "completed", completed["errors"]
+    digest = hashlib.sha256(content).hexdigest()
+    publication = service.preview_images.repository.get_publication("workspace-a", digest)
+    assert publication is not None
+    assert publication["public_url"].startswith(
+        "https://images.example.test/pp-media/preview-assets/"
+    )
+
+
+def test_static_image_host_reads_the_existing_system_public_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("WH_MEDIA_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        service_module,
+        "resolve_ai_provider",
+        lambda: {"_sys_updates": {"public_base_url": "https://images.example.test/base/"}},
+    )
+
+    assert service_module._media_public_base_url() == "https://images.example.test/base"
 
 
 def test_publication_and_finalize_leases_fence_late_workers(tmp_path: Path) -> None:

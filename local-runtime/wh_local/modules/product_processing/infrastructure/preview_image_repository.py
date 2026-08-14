@@ -41,6 +41,14 @@ class PreviewIdempotencyConflict(RuntimeError):
     """Raised when one finalization idempotency key is reused for another request."""
 
 
+class PreviewSourceNotInLibrary(ValueError):
+    """Raised when a source proxy is selected for export before joining the library."""
+
+
+class PreviewSourceNotReady(ValueError):
+    """Raised when a source proxy is used before its unified media is ready."""
+
+
 def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -81,6 +89,8 @@ class PreviewImageRepository:
         width: int,
         height: int,
         source_asset_id: str = "",
+        media_asset_id: str = "",
+        source_kind: str = "",
     ) -> dict[str, Any]:
         workspace = str(workspace_id or "").strip()
         identity = str(identity_hash or "").strip().casefold()
@@ -99,6 +109,8 @@ class PreviewImageRepository:
             "product_draft_id": int(product_draft_id),
             "origin": str(origin or "source")[:32],
             "source_asset_id": str(source_asset_id or "")[:64],
+            "media_asset_id": str(media_asset_id or "")[:36],
+            "source_kind": str(source_kind or "")[:32],
             "identity_hash": identity[:64],
             "access_token": uuid4().hex,
             "managed_path": str(managed_path or ""),
@@ -192,6 +204,24 @@ class PreviewImageRepository:
             )
             rows = session.scalars(
                 statement.order_by(PreviewImageAssetRow.created_at, PreviewImageAssetRow.id)
+            ).all()
+            return [self._asset(row) for row in rows]
+
+    def list_media_proxies(
+        self,
+        product_draft_id: int,
+        workspace_id: str,
+        *,
+        task_id: int,
+    ) -> list[dict[str, Any]]:
+        with self.database.sessions() as session:
+            rows = session.scalars(
+                select(PreviewImageAssetRow).where(
+                    PreviewImageAssetRow.product_draft_id == int(product_draft_id),
+                    PreviewImageAssetRow.workspace_id == str(workspace_id),
+                    PreviewImageAssetRow.task_id == int(task_id),
+                    PreviewImageAssetRow.media_asset_id != "",
+                ).order_by(PreviewImageAssetRow.created_at, PreviewImageAssetRow.id)
             ).all()
             return [self._asset(row) for row in rows]
 
@@ -968,19 +998,29 @@ class PreviewImageRepository:
                 manifest = PreviewImageManifest()
 
             live_ids = manifest.live_asset_ids()
-            if live_ids:
+            library_ids = tuple(manifest.library_asset_ids)
+            referenced_ids = tuple(dict.fromkeys((*live_ids, *library_ids)))
+            rows_by_id: dict[str, PreviewImageAssetRow] = {}
+            if referenced_ids:
                 rows = session.scalars(
                     select(PreviewImageAssetRow).where(
-                        PreviewImageAssetRow.id.in_(live_ids),
+                        PreviewImageAssetRow.id.in_(referenced_ids),
                         PreviewImageAssetRow.workspace_id == workspace_id,
                         PreviewImageAssetRow.task_id == int(task_id),
                         PreviewImageAssetRow.product_draft_id == draft_id,
                     )
                 ).all()
-                if {row.id for row in rows} != set(live_ids):
+                rows_by_id = {row.id: row for row in rows}
+                if set(rows_by_id) != set(referenced_ids):
                     raise LookupError(
                         "preview manifest references an asset outside its task or draft"
                     )
+            # A source proxy must be added to the library before it may be
+            # selected for export. Processed assets are always library-eligible.
+            for asset_id in live_ids:
+                row = rows_by_id.get(asset_id)
+                if row is not None and row.source_kind and asset_id not in library_ids:
+                    raise PreviewSourceNotInLibrary("请先将处理前图片加入素材库")
             if require_complete_finalize:
                 if not manifest.main_asset_id:
                     raise ValueError("preview finalization requires a main image")
@@ -1407,6 +1447,8 @@ class PreviewImageRepository:
             "product_draft_id": row.product_draft_id,
             "origin": row.origin,
             "source_asset_id": row.source_asset_id,
+            "media_asset_id": row.media_asset_id,
+            "source_kind": row.source_kind,
             "identity_hash": row.identity_hash,
             "access_token": row.access_token,
             "managed_path": row.managed_path,

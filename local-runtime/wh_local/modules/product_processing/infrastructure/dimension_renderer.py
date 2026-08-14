@@ -11,7 +11,15 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, StrictBytes
 
 
-_FONT_PATH = Path("C:/Windows/Fonts/segoeuib.ttf")
+_FONT_CANDIDATES = (
+    Path("C:/Windows/Fonts/segoeuib.ttf"),
+    Path("C:/Windows/Fonts/arialbd.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+)
+_FONT_PATH = next((path for path in _FONT_CANDIDATES if path.is_file()), None)
 _EXPORT_PADDING_RATIO = 0.005
 _MAX_SOURCE_BYTES = 25 * 1024 * 1024
 _MAX_SOURCE_PIXELS = 40_000_000
@@ -25,7 +33,9 @@ class DimensionAnnotation(BaseModel):
     start: tuple[float, float]
     end: tuple[float, float]
     label: tuple[float, float]
-    style: Literal["auto", "dark", "light"] = "auto"
+    style: Literal["auto", "dark", "light", "gray_dashed"] = "auto"
+    line_width: Literal["thin", "normal", "thick"] = "normal"
+    endpoint_style: Literal["arrow", "bar", "none"] = "arrow"
     unit: Literal["cm", "mm", "in", "ft"] = "cm"
 
 
@@ -71,15 +81,11 @@ class DimensionRenderer:
 
     def render(self, request: DimensionRenderRequest) -> DimensionRenderOutput:
         self._validate_request(request)
-        if not _FONT_PATH.is_file():
-            raise ValueError("dimension_font_missing")
 
         source = self._decode_source(request.source_bytes)
         canvas = self._compose_source(source, request.output_size, request.fit)
         draw = ImageDraw.Draw(canvas)
-        font = ImageFont.truetype(
-            str(_FONT_PATH), max(24, round(request.output_size * 0.044))
-        )
+        font = _load_font(max(24, round(request.output_size * 0.044)))
         for annotation in request.annotations:
             self._draw_annotation(canvas, draw, font, annotation)
 
@@ -200,27 +206,57 @@ class DimensionRenderer:
             size=size,
         )
         color, contrast = _annotation_colors(canvas, label_point, annotation.style)
-        line_width = max(4, round(size * 0.0045))
+        line_width_scale = {"thin": 0.65, "normal": 1.0, "thick": 1.65}[annotation.line_width]
+        line_width = max(3, round(size * 0.0045 * line_width_scale))
         arrow_length = max(18, round(size * 0.022))
         arrow_half_width = max(10, round(size * 0.011))
 
-        draw.line((start, end), fill=color, width=line_width)
-        _draw_arrow_head(
-            draw,
-            tip=start,
-            toward=end,
-            length=arrow_length,
-            half_width=arrow_half_width,
-            fill=color,
-        )
-        _draw_arrow_head(
-            draw,
-            tip=end,
-            toward=start,
-            length=arrow_length,
-            half_width=arrow_half_width,
-            fill=color,
-        )
+        if annotation.style == "gray_dashed":
+            _draw_dashed_line(
+                draw,
+                start,
+                end,
+                fill=color,
+                width=line_width,
+                dash_length=max(12, round(size * 0.014)),
+                gap_length=max(8, round(size * 0.009)),
+            )
+        else:
+            draw.line((start, end), fill=color, width=line_width)
+        if annotation.endpoint_style == "arrow":
+            _draw_arrow_head(
+                draw,
+                tip=start,
+                toward=end,
+                length=arrow_length,
+                half_width=arrow_half_width,
+                fill=color,
+            )
+            _draw_arrow_head(
+                draw,
+                tip=end,
+                toward=start,
+                length=arrow_length,
+                half_width=arrow_half_width,
+                fill=color,
+            )
+        elif annotation.endpoint_style == "bar":
+            _draw_endpoint_bar(
+                draw,
+                point=start,
+                toward=end,
+                half_length=arrow_half_width,
+                width=line_width,
+                fill=color,
+            )
+            _draw_endpoint_bar(
+                draw,
+                point=end,
+                toward=start,
+                half_length=arrow_half_width,
+                width=line_width,
+                fill=color,
+            )
 
         draw.text(
             label_point,
@@ -280,6 +316,12 @@ def _pixel_point(point: tuple[float, float], size: int) -> tuple[int, int]:
     return round(point[0] * (size - 1)), round(point[1] * (size - 1))
 
 
+def _load_font(size: int) -> ImageFont.ImageFont:
+    if _FONT_PATH is not None:
+        return ImageFont.truetype(str(_FONT_PATH), size)
+    return ImageFont.load_default(size=size)
+
+
 def _format_dimension(value_cm: float, unit: Literal["cm", "mm", "in", "ft"]) -> str:
     converted = {
         "cm": value_cm,
@@ -292,11 +334,44 @@ def _format_dimension(value_cm: float, unit: Literal["cm", "mm", "in", "ft"]) ->
     return f"{number} {unit}"
 
 
+def _draw_dashed_line(
+    draw: ImageDraw.ImageDraw,
+    start: tuple[int, int],
+    end: tuple[int, int],
+    *,
+    fill: tuple[int, int, int],
+    width: int,
+    dash_length: int,
+    gap_length: int,
+) -> None:
+    delta_x = end[0] - start[0]
+    delta_y = end[1] - start[1]
+    distance = math.hypot(delta_x, delta_y)
+    if distance <= 0:
+        return
+    unit_x = delta_x / distance
+    unit_y = delta_y / distance
+    cursor = 0.0
+    while cursor < distance:
+        dash_end = min(distance, cursor + dash_length)
+        draw.line(
+            (
+                (round(start[0] + unit_x * cursor), round(start[1] + unit_y * cursor)),
+                (round(start[0] + unit_x * dash_end), round(start[1] + unit_y * dash_end)),
+            ),
+            fill=fill,
+            width=width,
+        )
+        cursor += dash_length + gap_length
+
+
 def _annotation_colors(
     image: Image.Image,
     label_point: tuple[int, int],
-    style: Literal["auto", "dark", "light"],
+    style: Literal["auto", "dark", "light", "gray_dashed"],
 ) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    if style == "gray_dashed":
+        return (123, 135, 148), (255, 255, 255)
     if style == "dark":
         return (20, 20, 20), (255, 255, 255)
     if style == "light":
@@ -333,4 +408,30 @@ def _draw_arrow_head(
             (round(base_x - perpendicular_x), round(base_y - perpendicular_y)),
         ],
         fill=fill,
+    )
+
+
+def _draw_endpoint_bar(
+    draw: ImageDraw.ImageDraw,
+    *,
+    point: tuple[int, int],
+    toward: tuple[int, int],
+    half_length: int,
+    width: int,
+    fill: tuple[int, int, int],
+) -> None:
+    delta_x = toward[0] - point[0]
+    delta_y = toward[1] - point[1]
+    magnitude = math.hypot(delta_x, delta_y)
+    if magnitude <= 0:
+        return
+    perpendicular_x = (-delta_y / magnitude) * half_length
+    perpendicular_y = (delta_x / magnitude) * half_length
+    draw.line(
+        (
+            (round(point[0] - perpendicular_x), round(point[1] - perpendicular_y)),
+            (round(point[0] + perpendicular_x), round(point[1] + perpendicular_y)),
+        ),
+        fill=fill,
+        width=width,
     )

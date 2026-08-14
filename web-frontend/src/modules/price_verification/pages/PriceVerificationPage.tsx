@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useChangePoller } from "../../../shared/hooks/useChangePoller";
 import { priceVerificationApi } from "../api/priceVerificationApi";
@@ -7,7 +7,6 @@ import { LinkedSourcePanel } from "../components/LinkedSourcePanel";
 import { PrescreenPanel } from "../components/PrescreenPanel";
 import { SourcingPanel } from "../components/SourcingPanel";
 import { WorkflowSteps } from "../components/WorkflowSteps";
-import { createLatestRefreshRunner, incompleteSourcingNotice, isSourcingFullyResolved, sourceSearchResultNotice } from "../refreshCoordinator";
 import type { BatchSelection, BatchSourcingState, PriceVerificationStage, PrescreenSettings, QuoteBatchReviewItem, QuoteCaptureBatch, SkcSourceLink, SourceCandidate, SourcePreview } from "../types";
 import "../styles/priceVerification.css";
 import "../styles/priceVerificationHero.css";
@@ -16,33 +15,6 @@ import "../styles/priceVerificationApi.css";
 const emptySourcingState = (): BatchSourcingState => ({
   selected_skc_ids: [], unresolved_skc_ids: [], matched_products: [], preview: null, selected_candidates: [],
 });
-
-type RefreshOptions = { quiet: boolean };
-type RefreshSnapshot = {
-  batches: QuoteCaptureBatch[];
-  prescreen: PrescreenSettings;
-  batch: QuoteCaptureBatch | null;
-  items: QuoteBatchReviewItem[];
-  selections: BatchSelection[];
-  sourceState: BatchSourcingState;
-};
-
-async function loadRefreshSnapshot(): Promise<RefreshSnapshot> {
-  const [batches, prescreen] = await Promise.all([
-    priceVerificationApi.listCaptureBatches(),
-    priceVerificationApi.getPrescreen(),
-  ]);
-  const batch = batches.find((item) => item.is_current) ?? null;
-  if (!batch) {
-    return { batches, prescreen, batch: null, items: [], selections: [], sourceState: emptySourcingState() };
-  }
-  const [items, selections, sourceState] = await Promise.all([
-    priceVerificationApi.listCaptureBatchItems(batch.batch_id),
-    priceVerificationApi.listBatchSelections(batch.batch_id),
-    priceVerificationApi.getBatchSourcingState(batch.batch_id),
-  ]);
-  return { batches, prescreen, batch, items, selections, sourceState };
-}
 
 function errorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : "请求失败";
@@ -60,42 +32,9 @@ export function PriceVerificationPage() {
   const [sourceSkcIds, setSourceSkcIds] = useState<string[]>([]);
   const [sourcingState, setSourcingState] = useState<BatchSourcingState>(emptySourcingState);
   const [sourceLinks, setSourceLinks] = useState<SkcSourceLink[]>([]);
-  const [sourcingCompleted, setSourcingCompleted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busyKey, setBusyKey] = useState("");
   const [notice, setNotice] = useState("正在读取核价批次…");
-  const mountedRef = useRef(true);
-  const refreshRunnerRef = useRef<ReturnType<typeof createLatestRefreshRunner<RefreshSnapshot, RefreshOptions>> | null>(null);
-
-  useEffect(() => () => { mountedRef.current = false; }, []);
-
-  if (!refreshRunnerRef.current) {
-    refreshRunnerRef.current = createLatestRefreshRunner(
-      () => loadRefreshSnapshot(),
-      ({ batches, prescreen: nextPrescreen, batch, items, selections, sourceState }, { quiet }) => {
-        if (!mountedRef.current) return;
-        setCaptureBatches(batches);
-        setPrescreen(nextPrescreen);
-        setBatchItems(items);
-        setBatchSelections(selections);
-        setSourcingState(sourceState);
-        setSourceSkcIds(sourceState.selected_skc_ids);
-        const hadSourcingWork = sourceState.selected_skc_ids.length > 0 || sourceState.matched_products.length > 0;
-        setSourcingCompleted(isSourcingFullyResolved(sourceState, hadSourcingWork));
-        if (!quiet) {
-          setNotice(!batch
-            ? "等待插件采集：在 Temu“批量查看并确认申报价”页点“采集核价本页”即可入库。"
-            : batch.quote_count
-              ? `当前批次已入库 ${batch.quote_count} 条报价，初筛后 ${items.length} 个 SKC 可直接选择并执行图搜。`
-              : "当前批次暂无报价，可在 Temu 页面用插件采集本页数据后回此页刷新。");
-        }
-      },
-      (error) => {
-        if (!mountedRef.current) return;
-        setNotice(`读取运行状态失败：${errorMessage(error)}。已保留上次数据，请点击“重新检查”重试。`);
-      },
-    );
-  }
 
   const currentBatchId = useMemo(() => captureBatches.find((batch) => batch.is_current)?.batch_id ?? "", [captureBatches]);
   const scrollWorkflowTop = () => requestAnimationFrame(() => {
@@ -103,12 +42,35 @@ export function PriceVerificationPage() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
 
-  const refresh = (quiet = false) => {
+  const refresh = async (quiet = false) => {
     if (!quiet) setLoading(true);
-    const pending = refreshRunnerRef.current!.run({ quiet });
-    return quiet ? pending : pending.finally(() => {
-      if (mountedRef.current) setLoading(false);
-    });
+    try {
+      const batches = await priceVerificationApi.listCaptureBatches();
+      setCaptureBatches(batches);
+      const batch = batches.find((item) => item.is_current);
+      try { setPrescreen(await priceVerificationApi.getPrescreen()); } catch { setPrescreen(null); }
+      if (!batch) {
+        setBatchItems([]); setBatchSelections([]); setSourceSkcIds([]); setSourcingState(emptySourcingState());
+        if (!quiet) setNotice("等待插件采集：在 Temu“批量查看并确认申报价”页点“采集核价本页”即可入库。");
+        return;
+      }
+      const [items, selections, sourceState] = await Promise.all([
+        priceVerificationApi.listCaptureBatchItems(batch.batch_id).catch(() => []),
+        priceVerificationApi.listBatchSelections(batch.batch_id).catch(() => []),
+        priceVerificationApi.getBatchSourcingState(batch.batch_id).catch(emptySourcingState),
+      ]);
+      setBatchItems(items);
+      setBatchSelections(selections);
+      setSourcingState(sourceState);
+      if (sourceState.selected_skc_ids.length) setSourceSkcIds(sourceState.selected_skc_ids);
+      if (!quiet) setNotice(batch.quote_count
+        ? `当前批次已入库 ${batch.quote_count} 条报价，初筛后 ${items.length} 个 SKC 可直接选择并执行图搜。`
+        : "当前批次暂无报价，可在 Temu 页面用插件采集本页数据后回此页刷新。");
+    } catch (error) {
+      setNotice(`读取运行状态失败：${errorMessage(error)}`);
+    } finally {
+      if (!quiet) setLoading(false);
+    }
   };
 
   useEffect(() => { void refresh(false); }, []);
@@ -133,7 +95,6 @@ export function PriceVerificationPage() {
 
   const stageBatchAndStartSourcing = async (batchId: string, skcIds: string[], _maxCandidates: number) => {
     setBusyKey("prepare-source");
-    setSourcingCompleted(false);
     try {
       const selections = await priceVerificationApi.stageBatchSelections(batchId, skcIds, 5);
       let failed = 0;
@@ -155,15 +116,14 @@ export function PriceVerificationPage() {
       scrollWorkflowTop();
       if (!state.unresolved_skc_ids.length) {
         setSourcingState(state);
-        setSourcingCompleted(true);
         setNotice(`已保留 ${retained.length} 个 SKC，全部复用产品库已有货源，无需图搜。`);
         return;
       }
       const preview = await priceVerificationApi.sourceBatchSelections(batchId, state.unresolved_skc_ids);
       setSourcingState({ ...state, preview });
       setNotice(failed
-        ? `已保留 ${retained.length} 个 SKC，${failed} 个写入草稿池失败；${sourceSearchResultNotice(preview)}`
-        : `已保留 ${retained.length} 个 SKC；产品库复用 ${state.matched_products.length} 个。${sourceSearchResultNotice(preview)}`);
+        ? `已保留 ${retained.length} 个 SKC，${failed} 个写入草稿池失败；其余 SKC 已完成图片+标题双路图搜。`
+        : `已保留 ${retained.length} 个 SKC；产品库复用 ${state.matched_products.length} 个，其余 ${state.unresolved_skc_ids.length} 个已完成图片+标题双路图搜。`);
     } catch (error) { setNotice(`确认并执行图搜失败：${errorMessage(error)}`); } finally { setBusyKey(""); }
   };
 
@@ -186,24 +146,23 @@ export function PriceVerificationPage() {
   const startBatchSourcing = async () => {
     if (!currentBatchId || !sourcingState.unresolved_skc_ids.length) return;
     setBusyKey("source");
-    setSourcingCompleted(false);
     try {
       const preview = await priceVerificationApi.sourceBatchSelections(currentBatchId, sourcingState.unresolved_skc_ids);
       setSourcingState((current) => ({ ...current, preview }));
-      setNotice(sourceSearchResultNotice(preview));
+      setNotice(`货源图搜完成，获得 ${preview.counts?.candidate_count ?? 0} 个候选货源。请选择候选后完成入库。`);
     } catch (error) { setNotice(`执行图搜失败：${errorMessage(error)}`); } finally { setBusyKey(""); }
   };
 
   // 已关联 1688 货源列表（SourcingPanel 持久化关联模型），进入图搜阶段或关联变化时拉取
   const loadSourceLinks = async () => {
     if (!currentBatchId) return;
-    setSourceLinks(await priceVerificationApi.listSkcSourceLinks(currentBatchId));
+    try {
+      setSourceLinks(await priceVerificationApi.listSkcSourceLinks(currentBatchId));
+    } catch { /* 列表加载失败静默，面板内不阻塞操作 */ }
   };
 
   useEffect(() => {
-    if (activeStage === "sourcing" && currentBatchId) {
-      void loadSourceLinks().catch((error) => setNotice(`读取已关联货源失败：${errorMessage(error)}。请刷新后重试，现有页面数据已保留。`));
-    }
+    if (activeStage === "sourcing" && currentBatchId) void loadSourceLinks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStage, currentBatchId]);
 
@@ -211,42 +170,31 @@ export function PriceVerificationPage() {
     if (!currentBatchId) return;
     const state = await priceVerificationApi.selectBatchSourceCandidate(currentBatchId, skcId, candidate, priceOverride, weightOverride);
     setSourcingState(state);
-    setSourcingCompleted(false);
-    try { await loadSourceLinks(); } catch (error) {
-      setNotice(`候选已保存，但刷新关联列表失败：${errorMessage(error)}。请刷新后核对。`);
-    }
+    await loadSourceLinks();
   };
 
   const unselectSourceCandidate = async (skcId: string, offerId: string) => {
     if (!currentBatchId) return;
     const state = await priceVerificationApi.unselectBatchSourceCandidate(currentBatchId, skcId, offerId);
     setSourcingState(state);
-    setSourcingCompleted(false);
   };
 
   // SourcingPanel 新 API：按持久化链接 id 解除关联
   const removeSourceLink = async (linkId: number) => {
     if (!currentBatchId) return;
-    await priceVerificationApi.removeSkcSourceLink(currentBatchId, linkId);
-    setSourcingCompleted(false);
-    await loadSourceLinks();
-    setSourcingState(await priceVerificationApi.getBatchSourcingState(currentBatchId));
+    try {
+      await priceVerificationApi.removeSkcSourceLink(currentBatchId, linkId);
+      await loadSourceLinks();
+      setSourcingState(await priceVerificationApi.getBatchSourcingState(currentBatchId));
+    } catch (error) { setNotice(`解除关联失败：${errorMessage(error)}`); }
   };
 
   const completeSourcing = async () => {
     if (!currentBatchId) return;
     setBusyKey("complete-source");
     try {
-      const hadWork = sourceSkcIds.length > 0 || sourcingState.selected_skc_ids.length > 0 || sourcingState.selected_candidates.length > 0 || sourceLinks.length > 0;
       const state = await priceVerificationApi.completeBatchSourcing(currentBatchId);
       setSourcingState(state);
-      setSourceSkcIds(state.selected_skc_ids);
-      const completed = isSourcingFullyResolved(state, hadWork);
-      setSourcingCompleted(completed);
-      if (!completed) {
-        setNotice(incompleteSourcingNotice(state));
-        return;
-      }
       setNotice("已将本轮明确关联的候选入库；STEP 03 图搜临时数据已清空。");
     } catch (error) { setNotice(`完成关联失败：${errorMessage(error)}`); } finally { setBusyKey(""); }
   };
@@ -264,7 +212,6 @@ export function PriceVerificationPage() {
 
   const sourcedProducts = sourcingState.matched_products;
   const sourceCount = sourcingState.unresolved_skc_ids.length;
-  const showLinkedSourcePanel = sourcedProducts.length > 0 && sourceCount === 0 && sourcingState.preview === null;
   const currentBatch = captureBatches.find((batch) => batch.is_current);
   const batchSummary = currentBatch?.quote_count
     ? `当前批次已入库 ${currentBatch.quote_count} 条报价，初筛后 ${batchItems.length} 个 SKC 可直接选择并执行图搜。`
@@ -272,13 +219,13 @@ export function PriceVerificationPage() {
   const showNotice = Boolean(notice) && notice !== "正在读取核价批次…" && notice !== batchSummary;
   return <div className="price-verification-page">
     <section className="price-verification-hero"><div><p className="eyebrow">PRICE VERIFICATION · LOCAL WORKSPACE</p><h1>核价及货源</h1><p>插件采集 Temu 本页报价，人工确认本轮 SKC；优先复用产品库已有货源，仅对未入库 SKC 执行 1688 图搜。</p></div><div className="price-verification-hero-status"><span className="status-dot" />{currentBatchId ? "当前批次已就绪" : "等待插件采集"}</div></section>
-    <section className="price-verification-workflow-strip"><div className="price-verification-workflow-heading"><span>◇</span><strong>核价及货源工作流</strong><small>本轮 SKC 独立流转，历史数据不参与图搜</small></div><WorkflowSteps activeStage={activeStage} canOpen={canOpenStage} onOpen={openStage} /></section>
+    <section className="price-verification-workflow-card"><div className="price-verification-workflow-heading"><span>◇</span><strong>核价及货源工作流</strong><small>本轮 SKC 独立流转，历史数据不参与图搜</small></div><WorkflowSteps activeStage={activeStage} canOpen={canOpenStage} onOpen={openStage} /></section>
     {showNotice ? <p className="price-verification-notice price-verification-notice-compact" role="status" aria-live="polite">{notice}</p> : null}
     <div className="price-verification-content-grid"><div className="price-verification-main-column">
       {activeStage !== "prescreen" && <div className="price-verification-stage-tools"><button type="button" className="price-verification-back-button" onClick={() => openStage(activeStage === "batchReview" ? "prescreen" : "batchReview")}>← 返回上一步</button>{batchSummary ? <span>{batchSummary}</span> : null}</div>}
       {activeStage === "prescreen" && <PrescreenPanel isChecking={loading} totalItems={captureBatches.find((batch) => batch.is_current)?.quote_count ?? 0} totalSkc={captureBatches.find((batch) => batch.is_current)?.skc_count ?? 0} passedItems={batchItems.length} prescreen={prescreen} onPrescreenChange={savePrescreen} onRefresh={() => void refresh()} onContinue={() => openStage("batchReview")} />}
       {activeStage === "batchReview" && <BatchReviewPanel batchId={currentBatchId} items={batchItems} busy={Boolean(busyKey) || loading} onConfirm={(batchId, skcIds, maxCandidates) => stageBatchAndStartSourcing(batchId, skcIds, maxCandidates)} onDelete={(batchId, skcId) => deleteBatchItem(batchId, skcId)} onDeleteSelected={(batchId, skcIds) => deleteBatchItems(batchId, skcIds)} />}
-      {activeStage === "sourcing" && <><SourcingPanel preview={sourcingState.preview} batchId={currentBatchId} busy={Boolean(busyKey) || loading} sourceCount={sourceCount} links={sourceLinks} selectedCandidates={sourcingState.selected_candidates} onLink={(skcId, _offerId, candidate, priceOverride, weightOverride) => selectSourceCandidate(skcId, candidate, priceOverride, weightOverride)} onUnlink={(linkId) => removeSourceLink(linkId)} onUnselectCandidate={(skcId, offerId) => unselectSourceCandidate(skcId, offerId)} onComplete={() => void completeSourcing()} onStart={() => void startBatchSourcing()} onError={setNotice} matchingCompleted={sourceCount === 0 && sourcingState.preview === null} />{showLinkedSourcePanel ? <LinkedSourcePanel products={sourcedProducts} /> : null}</>}
+      {activeStage === "sourcing" && <><SourcingPanel preview={sourcingState.preview} batchId={currentBatchId} busy={Boolean(busyKey) || loading} sourceCount={sourceCount} links={sourceLinks} selectedCandidates={sourcingState.selected_candidates} onLink={(skcId, _offerId, candidate, priceOverride, weightOverride) => selectSourceCandidate(skcId, candidate, priceOverride, weightOverride)} onUnlink={(linkId) => removeSourceLink(linkId)} onUnselectCandidate={(skcId, offerId) => unselectSourceCandidate(skcId, offerId)} onComplete={() => void completeSourcing()} onStart={() => void startBatchSourcing()} onError={setNotice} matchingCompleted={sourceCount === 0 && sourcingState.preview === null} /><LinkedSourcePanel products={sourcedProducts} /></>}
     </div></div>
   </div>;
 }

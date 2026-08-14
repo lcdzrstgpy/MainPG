@@ -1,4 +1,4 @@
-export type ApiKeyField = "textModelApiKey" | "imageModelApiKey";
+export type ApiKeyField = "textModelApiKey" | "imageModelApiKey" | "cosSecretId" | "cosSecretKey";
 
 export type BasicSettingsForm = {
   textModelApiKey: string;
@@ -6,6 +6,11 @@ export type BasicSettingsForm = {
   textModel: string;
   imageModel: string;
   referenceImageModel: string;
+  cosBucket: string;
+  cosRegion: string;
+  cosSecretId: string;
+  cosSecretKey: string;
+  publicMediaBaseUrl: string;
 };
 
 export type BasicSettingsFieldErrors = Partial<Record<ApiKeyField, string>>;
@@ -18,6 +23,8 @@ export type BasicSettingsStatus = {
 export type SaveBasicSettingsPayload = {
   textModelApiKey?: string;
   imageModelApiKey?: string;
+  cosSecretId?: string;
+  cosSecretKey?: string;
 };
 
 export type TextAiConfig = {
@@ -95,4 +102,3 @@ export type SystemConfigUpdatePayload = {
   limits: RuntimeLimits;
   updates: UpdateConfig;
 };
-

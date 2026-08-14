@@ -4,6 +4,7 @@ type ApiKeyPanelProps = {
   fieldId: ApiKeyField;
   title: string;
   description: string;
+  keyLabel?: string;
   value: string;
   placeholder: string;
   visible: boolean;
@@ -17,6 +18,7 @@ export function ApiKeyPanel({
   fieldId,
   title,
   description,
+  keyLabel = "主 API Key",
   value,
   placeholder,
   visible,
@@ -38,7 +40,7 @@ export function ApiKeyPanel({
         </b>
       </div>
       <label>
-        <span>主 API Key</span>
+        <span>{keyLabel}</span>
         <div className={`api-key-input-row ${error ? "has-error" : ""}`}>
           <input
             id={fieldId}

@@ -39,15 +39,32 @@ const fallbackConfig: SystemConfigResponse = {
 export function toSaveBasicSettingsPayload(form: BasicSettingsForm): SaveBasicSettingsPayload {
   const textModelApiKey = form.textModelApiKey.trim();
   const imageModelApiKey = form.imageModelApiKey.trim();
+  const cosSecretId = form.cosSecretId.trim();
+  const cosSecretKey = form.cosSecretKey.trim();
 
   return {
     ...(textModelApiKey ? { textModelApiKey } : {}),
     ...(imageModelApiKey ? { imageModelApiKey } : {}),
+    ...(cosSecretId ? { cosSecretId } : {}),
+    ...(cosSecretKey ? { cosSecretKey } : {}),
   };
 }
 
 export async function loadSystemConfig() {
   return httpJson<SystemConfigResponse>(SYSTEM_CONFIG_PATH);
+}
+
+export type AiApiKeyReadiness = {
+  textConfigured: boolean;
+  imageConfigured: boolean;
+};
+
+export async function checkAiApiKeyReadiness(): Promise<AiApiKeyReadiness> {
+  const config = await loadSystemConfig();
+  return {
+    textConfigured: Boolean(config.secrets?.ai?.api_key_configured),
+    imageConfigured: Boolean(config.secrets?.image?.api_key_configured),
+  };
 }
 
 export function createSystemConfigUpdatePayload(
@@ -76,11 +93,16 @@ export function createSystemConfigUpdatePayload(
       reference_model: base.backup_image.reference_model,
     },
     cos: {
-      bucket: base.cos.bucket,
-      region: base.cos.region,
+      bucket: form.cosBucket.trim() || base.cos.bucket,
+      region: form.cosRegion.trim() || base.cos.region,
+      ...(payload.cosSecretId ? { secret_id: payload.cosSecretId } : {}),
+      ...(payload.cosSecretKey ? { secret_key: payload.cosSecretKey } : {}),
     },
     limits: base.limits,
-    updates: base.updates,
+    updates: {
+      ...base.updates,
+      public_base_url: form.publicMediaBaseUrl.trim() || base.updates.public_base_url,
+    },
   };
 }
 
