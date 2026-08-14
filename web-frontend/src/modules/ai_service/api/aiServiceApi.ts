@@ -1,10 +1,11 @@
 import { getAuthToken, httpBlob, httpJson } from "../../../transport/http/client";
 
 export type ApiAsset = { asset_id: string; filename: string; content_type: string };
+export type ApiConversation = { conversation_id: string; title: string; mode: "chat" | "generate" | "edit" | "pod"; is_pinned: boolean; updated_at: string };
 export type AiBootstrap = {
   models: Array<{ id: string; name: string; modes: Array<"chat" | "generate" | "edit">; sizes: string[] }>;
   templates: Array<{ id: string; label: string; description: string; mode: "generate" | "edit"; prompt: string }>;
-  conversations: Array<{ conversation_id: string; title: string; updated_at: string }>;
+  conversations: ApiConversation[];
 };
 
 function apiUrl(path: string) {
@@ -13,7 +14,9 @@ function apiUrl(path: string) {
 
 export const aiServiceApi = {
   bootstrap: () => httpJson<AiBootstrap>("/api/ai-service/bootstrap"),
-  createConversation: (title: string) => httpJson<{ conversation_id: string }>("/api/ai-service/conversations", { method: "POST", body: { title } }),
+  createConversation: (title: string, mode: ApiConversation["mode"]) => httpJson<{ conversation_id: string }>("/api/ai-service/conversations", { method: "POST", body: { title, mode } }),
+  updateConversation: (conversationId: string, body: { title?: string; is_pinned?: boolean }) => httpJson<ApiConversation>(`/api/ai-service/conversations/${encodeURIComponent(conversationId)}`, { method: "PATCH", body }),
+  deleteConversation: (conversationId: string) => httpJson<{ conversation_id: string; status: string }>(`/api/ai-service/conversations/${encodeURIComponent(conversationId)}`, { method: "DELETE" }),
   messages: (conversationId: string) => httpJson<{ messages: Array<{ message_id: string; role: "user" | "assistant"; content: string; asset_ids: string[] }> }>(`/api/ai-service/conversations/${encodeURIComponent(conversationId)}/messages`),
   uploadAsset: async (file: File): Promise<ApiAsset> => {
     const headers: Record<string, string> = {};

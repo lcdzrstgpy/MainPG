@@ -60,5 +60,169 @@ button { cursor: pointer; }
 .topbar-card.is-pinned { top: 0; box-shadow: 0 16px 42px rgba(26, 65, 101, .1); }
 .topbar-card.is-pinned.is-stuck { border-top: 0; border-radius: 0 0 22px 22px; background: #fff; box-shadow: 0 10px 28px rgba(26, 65, 101, .1); }
 .sidebar-card { isolation: isolate; }.sidebar-card::before { content: ""; position: absolute; z-index: 0; inset: 1px; border-radius: 20px; pointer-events: none; opacity: 0; background: linear-gradient(105deg, transparent 22%, rgba(37, 170, 237, .08) 36%, rgba(24, 187, 218, .2) 46%, rgba(33, 214, 172, .25) 53%, rgba(47, 183, 225, .15) 62%, transparent 78%); background-size: 230% 100%; filter: blur(.15px); box-shadow: inset 0 0 22px rgba(28, 190, 205, .05); animation: topbar-water-flow-soft 17s cubic-bezier(.35, .08, .28, 1) infinite; }.sidebar-card::after { content: ""; position: absolute; z-index: 0; right: 1px; bottom: 1px; left: 1px; height: 34px; overflow: hidden; border-radius: 0 0 20px 20px; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at 50% 115%, rgba(35, 218, 179, .29) 0 16%, rgba(25, 164, 226, .17) 36%, transparent 68%) 0 0 / 180px 32px repeat-x; filter: blur(2.2px); animation: topbar-water-ripple 17s ease-in-out infinite; }.sidebar-card > * { position: relative; z-index: 1; }
+
+/* 工作区不再用第二行撑满剩余视口：短页面按内容收口，长页面自然向下滚动。 */
+.workspace-main {
+  grid-template-rows: auto auto;
+  align-content: start;
+}
+
+.content-card {
+  align-self: start;
+}
+
+/* 所有模块共用的桌面矮视口适配，兼容浏览器缩放和系统任务栏。 */
+@media (min-width: 801px) and (max-height: 900px) {
+  .workspace-shell {
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .workspace-main {
+    gap: 12px;
+  }
+
+  .sidebar-card {
+    top: 12px;
+    min-height: calc(100vh - 24px);
+    height: calc(100vh - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .topbar-card.is-pinned {
+    top: 12px;
+  }
+
+  .content-card {
+    padding: clamp(14px, 2vw, 24px);
+  }
+}
+
+@media (min-width: 801px) and (max-height: 760px) {
+  .workspace-shell,
+  .workspace-main {
+    gap: 10px;
+  }
+
+  .workspace-shell {
+    padding: 10px;
+  }
+
+  .sidebar-card {
+    top: 10px;
+    min-height: calc(100vh - 20px);
+    height: calc(100vh - 20px);
+    max-height: calc(100vh - 20px);
+  }
+
+  .topbar-card.is-pinned {
+    top: 10px;
+  }
+
+  .topbar-main {
+    min-height: 56px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+
+  .content-card {
+    padding: 12px 16px;
+  }
+}
+
+/* 全站横向自适应：页面容器不溢出视口，宽表仅在自身区域内横向滚动。 */
+html,
+body,
+#root {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.workspace-shell,
+.workspace-main,
+.content-card {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.workspace-shell {
+  box-sizing: border-box;
+  grid-template-columns: minmax(0, 248px) minmax(0, 1fr);
+}
+
+.content-card > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (min-width: 801px) and (max-width: 1280px) {
+  .workspace-shell {
+    grid-template-columns: minmax(0, 208px) minmax(0, 1fr);
+    gap: 14px;
+    padding: 14px;
+  }
+
+  .workspace-main {
+    gap: 14px;
+  }
+
+  .sidebar-card {
+    top: 14px;
+    height: calc(100vh - 28px);
+    max-height: calc(100vh - 28px);
+    min-height: calc(100vh - 28px);
+  }
+
+  .topbar-card.is-pinned {
+    top: 14px;
+  }
+
+  .content-card {
+    padding: clamp(16px, 2.3vw, 26px);
+  }
+}
+
+@media (min-width: 801px) and (max-width: 1100px) {
+  .workspace-shell,
+  .workspace-shell:has(.sidebar-card.is-collapsed) {
+    grid-template-columns: 68px minmax(0, 1fr);
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .workspace-main {
+    gap: 12px;
+  }
+
+  .sidebar-card {
+    padding: 12px 8px;
+  }
+
+  .sidebar-card .brand-name,
+  .sidebar-card .sidebar-label,
+  .sidebar-card .sidebar-caption,
+  .sidebar-card .sidebar-submenu,
+  .sidebar-card .sidebar-status {
+    display: none;
+  }
+
+  .sidebar-card .brand-lockup,
+  .sidebar-card .sidebar-item {
+    justify-content: center;
+    gap: 0;
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .sidebar-card .brand-logo {
+    width: 36px;
+    height: 36px;
+    object-position: center;
+  }
+
+  .content-card {
+    padding: 16px;
+  }
+}
 @media (prefers-reduced-motion: reduce) { .sidebar-card::before, .sidebar-card::after { display: none; animation: none; } }
 .topbar-card > .topbar-main { z-index: 3; }

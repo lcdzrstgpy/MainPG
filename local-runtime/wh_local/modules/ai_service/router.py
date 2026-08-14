@@ -74,7 +74,19 @@ def create_router(database_path: Path, asset_root: Path) -> APIRouter:
     async def create_conversation(request: Request, actor: Actor = Depends(actor_from_authorization)) -> dict[str, str]:
         permitted(actor, "ai_service.create")
         body = await _body(request)
-        return _call(service.create_conversation, actor, str(body.get("title") or "新建创作"))
+        return _call(service.create_conversation, actor, str(body.get("title") or "新建创作"), mode=str(body.get("mode") or "chat"))
+
+    @router.patch("/conversations/{conversation_id}")
+    async def update_conversation(conversation_id: str, request: Request, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "ai_service.create")
+        body = await _body(request)
+        title = body.get("title")
+        is_pinned = body.get("is_pinned")
+        if title is not None and not isinstance(title, str):
+            raise HTTPException(status_code=400, detail="title must be a string")
+        if is_pinned is not None and not isinstance(is_pinned, bool):
+            raise HTTPException(status_code=400, detail="is_pinned must be a boolean")
+        return _call(service.update_conversation, actor, conversation_id, title=title, is_pinned=is_pinned)
 
     @router.delete("/conversations/{conversation_id}")
     def delete_conversation(conversation_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, str]:
@@ -128,7 +140,9 @@ def create_router(database_path: Path, asset_root: Path) -> APIRouter:
         permitted(actor, "ai_service.create")
         conversation_id = str(body.get("conversation_id") or "")
         if not conversation_id:
-            conversation_id = service.create_conversation(actor, str(body.get("title") or "新建创作"))["conversation_id"]
+            template_id = str(body.get("template_id") or "scene")
+            template = next((item for item in service.templates() if item["id"] == template_id), None)
+            conversation_id = service.create_conversation(actor, str(body.get("title") or "新建创作"), mode=str(template["mode"] if template else "generate"))["conversation_id"]
         asset_ids = _string_list(body.get("asset_ids"))
         prompt = str(body.get("prompt") or "").strip()
         model_id = str(body.get("model_id") or "gpt-image-2-1k")
@@ -184,7 +198,7 @@ def create_router(database_path: Path, asset_root: Path) -> APIRouter:
         if not prompt:
             raise HTTPException(status_code=400, detail="POD product brief is required")
         if not conversation_id:
-            conversation_id = service.create_conversation(actor, str(body.get("title") or "POD 出图"))["conversation_id"]
+            conversation_id = service.create_conversation(actor, str(body.get("title") or "POD 出图"), mode="pod")["conversation_id"]
         _call(service.append_message, actor, conversation_id, role="user", content=prompt, asset_ids=asset_ids)
         creation = _call(service.create_pod_creation, actor, conversation_id, user_prompt=prompt, asset_ids=asset_ids)
         for kind in ("scene", "feature", "size", "white"):
@@ -222,7 +236,15 @@ def create_router(database_path: Path, asset_root: Path) -> APIRouter:
             raise HTTPException(status_code=400, detail="selected model does not support chat")
         asset_ids = _string_list(body.get("asset_ids"))
         _call(service.append_message, actor, conversation_id, role="user", content=content, asset_ids=asset_ids)
-        context = _call(service.build_chat_context, actor, conversation_id, "你是本地商品创作助手，回答应简洁、可执行。")
+        context = _call(service.build_chat_context, actor, conversation_id, """你是本地商品创作助手，使用简体中文回答商品创作、运营与本地化相关问题。
+
+回答规则：
+1. 不要寒暄、自我介绍、重复用户问题，也不要先罗列你能提供哪些帮助；直接回应当前需求。
+2. 先给出结论或可执行答案，再补充必要的理由、步骤或示例。
+3. 使用清晰的 Markdown 排版：短标题、编号步骤和项目符号；每个要点只表达一件事，段落保持简短。
+4. 涉及方案、文案或运营建议时，优先给可直接复制或执行的内容；信息不足时，只追问一个最关键的问题。
+5. 不使用空泛套话，不堆叠长段落；除非用户要求，不写冗长前言或总结。
+6. 用户只发问候时，简洁引导其直接提供商品、目标或要解决的问题。""")
         if bool(body.get("web_search")):
             try:
                 results = search_public_web(content)

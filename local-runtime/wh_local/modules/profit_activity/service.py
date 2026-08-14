@@ -198,8 +198,6 @@ class ProfitActivityService:
                 missing.append("source_url_required")
             if not source_image_path:
                 missing.append("source_image_required")
-            if not note:
-                missing.append("note_required")
             if missing:
                 raise ValueError(",".join(missing))
         record = self._repository.upsert_record(

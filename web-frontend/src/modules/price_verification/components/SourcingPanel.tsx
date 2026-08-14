@@ -296,31 +296,25 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
   const linkedCount = links.length;
 
   return (
-    <section className="pv-source-panel">
+    <section className="pv-source-workspace">
       <div className="pv-source-head">
         <div>
-          <p className="pv-eyebrow">STEP 03 · SOURCE</p>
+          <p className="eyebrow price-verification-source-eyebrow">STEP 03 · SOURCE{matchingCompleted ? <small>图搜结果已收起，已关联货源见下方第四板块；点击「重新图搜」可恢复候选列表。</small> : null}</p>
           <h2>货源关联<SectionHelp title="每次搜索均以万邦图片图搜结果为候选依据；商品标题翻译后的中文关键词仅用于辅助确认同一货源，不能单独成为候选。结果按 SKC 分组，每个 SKC 默认展示前 5 条；每条候选均按 Temu 调整后申报价核算利润，源价与重量可调。" /></h2>
         </div>
         <div className="pv-source-head-actions">
+          <div className="pv-source-inline-stats" aria-label="图搜统计">
+            <span>图搜 SKC <strong>{preview?.items.length ?? 0}</strong></span>
+            <span>货源候选 <strong>{candidateCount}</strong></span>
+            <span>已关联 1688 <strong>{linkedCount}</strong></span>
+          </div>
           <button ref={sourceRunButtonRef} className="pv-source-run-button" onClick={onStart} disabled={!canRunSourceSearch}>{busy ? "图搜执行中…" : preview ? "重新图搜" : `执行图搜（${sourceCount ?? 0}）`}</button>
           {selectedCandidates.length > 0 && !matchingCompleted ? <button className="price-verification-secondary-button" onClick={onComplete} disabled={busy}>完成关联（{selectedCandidates.length}）</button> : null}
         </div>
       </div>
 
-      {/* 统计 + 排序控件 */}
-      <div className="pv-source-stats">
-        <div className="pv-source-stat"><span>图搜 SKC</span><strong>{preview?.items.length ?? 0}</strong></div>
-        <div className="pv-source-stat"><span>货源候选</span><strong>{candidateCount}</strong></div>
-        <div className="pv-source-stat"><span>已关联 1688</span><strong>{linkedCount}</strong></div>
-      </div>
-
       {/* SKC 分组候选列表 */}
-      {matchingCompleted ? (
-        <div className="pv-profit-empty">
-          图搜结果已收起（完成关联），已关联 1688 货源见下方第四板块；点击「重新图搜」可恢复候选列表。
-        </div>
-      ) : groups?.length ? (
+      {!matchingCompleted && (groups?.length ? (
         <div className="pv-source-cards">
           {groups.map((group) => {
             const item = group.items[0];
@@ -333,8 +327,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
               ? [...rankedCandidates.slice(1), rankedCandidates[0]]
               : rankedCandidates;
             return (
-              <div className="pv-source-group" key={group.skc_id}>
-                <div className="pv-source-group-head">
+              <div className="pv-source-result-stack" key={group.skc_id}>
+                <div className="pv-source-result-head">
                   <div className="pv-source-group-title">
                     {item?.main_image_url ? <img className="pv-source-temu-image" src={item.main_image_url} alt="" loading="lazy" referrerPolicy="no-referrer" /> : null}
                     <span className="pv-source-skc-badge">{group.skc_id}</span>
@@ -380,7 +374,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                               </div>
                             </div>
                             {profit?.available ? (
-                              <div className="pv-profit-box">
+                              <div className="pv-source-profit-summary">
                                 <dl className="pv-profit-grid">
                                   <div><dt>站点</dt><dd>{siteLabel(profit.site)}</dd></div>
                                   <div><dt>调整后申报价</dt><dd>{moneyText(profit.selling_price)}</dd></div>
@@ -420,7 +414,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
         </div>
       ) : (
         <div className="pv-profit-empty">{preview ? "暂无货源候选" : "等待图搜结果"}</div>
-      )}
+      ))}
       <button
         type="button"
         className={`pv-source-refloat-button ${showRefloatButton ? "is-visible" : ""}`}

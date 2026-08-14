@@ -3,7 +3,7 @@ import type { AiCreationMode, AiModel } from "../types";
 export const TEXT_MODELS: AiModel[] = [
   { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", description: "快速文本对话", capabilities: ["chat"] },
   { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", description: "高质量文本对话", capabilities: ["chat"] },
-  { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", description: "复杂商品创作对话", capabilities: ["chat"] },
+  { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", description: "支持图片理解的商品创作对话", capabilities: ["chat"], acceptsImageInput: true },
 ];
 
 export const IMAGE_MODELS: AiModel[] = [

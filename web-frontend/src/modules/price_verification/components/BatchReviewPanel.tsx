@@ -80,7 +80,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
   };
 
   return (
-    <section className="price-verification-panel">
+    <section className="price-verification-batch-review-panel">
       <div className="price-verification-panel-heading">
         <div>
           <p className="eyebrow">STEP 02 · SELECT & SEARCH</p>

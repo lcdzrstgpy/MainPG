@@ -89,31 +89,6 @@ class OneBoundSourceAdapter:
         if any(not isinstance(task, SourceSearchTask) for task in task_list):
             raise TypeError("tasks must contain SourceSearchTask values")
 
-<<<<<<< HEAD
-        if not task_list:
-            return _result_for_items(())
-
-        # One provider instance is created per task: the underlying transport
-        # is not required to be thread-safe. Executor.map preserves input
-        # order, while each task already converts its own provider exception
-        # into an isolated failed item.
-        with ThreadPoolExecutor(
-            max_workers=min(_MAX_PARALLEL_SEARCHES, len(task_list)),
-            thread_name_prefix="onebound-skc",
-        ) as executor:
-            items = list(
-                executor.map(
-                    lambda task: self._search_task_with_provider(
-                        task,
-                        keyword_search=keyword_search,
-                    ),
-                    task_list,
-                )
-            )
-        return _result_for_items(items)
-
-    def _search_task_with_provider(
-=======
         items: list[dict[str, Any]] = []
         parallelism = min(_recommended_skc_parallelism(), len(task_list))
         offset = 0
@@ -146,7 +121,6 @@ class OneBoundSourceAdapter:
         return _result_for_items(items)
 
     def _search_task_with_new_provider(
->>>>>>> team/codex/price-verification-sourcing-dev-20260811
         self,
         task: SourceSearchTask,
         *,
@@ -156,15 +130,7 @@ class OneBoundSourceAdapter:
             provider = self._provider_factory()
         except Exception as error:
             return _failed_item(task, _provider_error_message(error))
-<<<<<<< HEAD
-        item, _ = self._search_task(
-            provider,
-            task,
-            keyword_search=keyword_search,
-        )
-=======
         item, _ = self._search_task(provider, task, keyword_search=keyword_search)
->>>>>>> team/codex/price-verification-sourcing-dev-20260811
         return item
 
     def _search_task(self, provider: _OneBoundProvider, task: SourceSearchTask, *, keyword_search: bool = False) -> tuple[dict[str, Any], int]:

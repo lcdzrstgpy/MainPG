@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from wh_local.session import Actor
@@ -92,6 +93,7 @@ def test_edit_creation_payload_uses_template_and_local_reference_image(tmp_path:
 
     assert payload["model"] == "gpt-image-2-1k"
     assert payload["n"] == 1
+    assert "商品改图执行规范" in payload["prompt"]
     assert "严格保留上传商品图" in payload["prompt"]
     assert "浅蓝色渐变背景" in payload["prompt"]
     assert payload["image"].startswith("data:image/png;base64,")
@@ -112,7 +114,23 @@ def test_pod_payloads_are_fixed_to_1k_and_cover_the_four_output_groups(tmp_path:
     assert {item["payload"]["model"] for item in payloads} == {"gpt-image-2-1k"}
     assert [item["payload"]["n"] for item in payloads] == [2, 2, 1, 1]
     assert all("复古猫咪插画" in item["payload"]["prompt"] for item in payloads)
+    assert all("POD 交付图总规则" in item["payload"]["prompt"] for item in payloads)
     assert all(item["payload"]["image"].startswith("data:image/png;base64,") for item in payloads)
+
+
+def test_generate_creation_payload_uses_the_structured_generate_prompt(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    payload = service.prepare_creation(
+        _actor(),
+        template_id="poster",
+        model_id="gpt-image-2-1k",
+        user_prompt="为保温杯制作秋季礼品海报",
+        size="1024x1024",
+    )
+
+    assert "文生图执行规范" in payload["prompt"]
+    assert "保温杯制作秋季礼品海报" in payload["prompt"]
 
 
 def test_pod_creation_persists_four_independent_groups_and_retries_only_failed_one(tmp_path: Path) -> None:
@@ -156,3 +174,74 @@ def test_only_one_active_pod_creation_is_allowed_per_conversation_and_restart_in
     states = {group["status"] for group in service.pod_creation_status(actor, creation["creation_id"])["groups"]}
     assert states == {"interrupted"}
     assert service.latest_pod_creation(actor, conversation["conversation_id"])["creation_id"] == creation["creation_id"]
+
+
+def test_expired_conversations_remove_all_owned_assets_without_touching_other_users(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    other_actor = _actor("operator-2")
+    expired = service.create_conversation(actor, "过期会话")
+    recent = service.create_conversation(actor, "保留会话")
+    other_expired = service.create_conversation(other_actor, "其他用户的过期会话")
+    message_asset = service.save_asset(actor, "message.png", PNG, "image/png")
+    generated_asset = service.save_asset(actor, "generated.png", PNG, "image/png")
+    pod_asset = service.save_asset(actor, "pod.png", PNG, "image/png")
+    other_asset = service.save_asset(other_actor, "other.png", PNG, "image/png")
+    service.append_message(actor, expired["conversation_id"], role="user", content="过期附件", asset_ids=[message_asset["asset_id"]])
+    creation = service.create_creation(actor, expired["conversation_id"], {"model": "gpt-image-2-1k"})
+    service.finish_creation(actor, creation["creation_id"], status="succeeded", output_asset_ids=[generated_asset["asset_id"]])
+    pod_creation = service.create_pod_creation(actor, expired["conversation_id"], user_prompt="过期 POD", asset_ids=[])
+    service.finish_pod_group(actor, pod_creation["creation_id"], "scene", status="succeeded", output_asset_ids=[pod_asset["asset_id"]])
+    service.append_message(other_actor, other_expired["conversation_id"], role="user", content="其他用户附件", asset_ids=[other_asset["asset_id"]])
+
+    eight_days_ago = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat(timespec="seconds")
+    with service._connect() as conn:
+        conn.execute("UPDATE ai_service_conversations SET created_at = ?, updated_at = ? WHERE conversation_id IN (?, ?)", (eight_days_ago, eight_days_ago, expired["conversation_id"], other_expired["conversation_id"]))
+
+    assert [item["conversation_id"] for item in service.list_conversations(actor)] == [recent["conversation_id"]]
+    assert all(not (service.asset_root / asset["path"]).exists() for asset in (message_asset, generated_asset, pod_asset))
+    assert service.list_messages(other_actor, other_expired["conversation_id"])[0]["content"] == "其他用户附件"
+    assert (service.asset_root / other_asset["path"]).exists()
+
+
+def test_expiration_keeps_a_conversation_created_exactly_seven_days_ago(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    conversation = service.create_conversation(actor, "七天边界")
+    now = datetime(2030, 1, 8, tzinfo=timezone.utc)
+    cutoff = (now - timedelta(days=7)).isoformat(timespec="seconds")
+    with service._connect() as conn:
+        conn.execute("UPDATE ai_service_conversations SET created_at = ?, updated_at = ? WHERE conversation_id = ?", (cutoff, cutoff, conversation["conversation_id"]))
+
+    assert service.purge_expired_conversations(actor, now=now) == 0
+    assert service.list_messages(actor, conversation["conversation_id"]) == []
+
+
+def test_conversation_can_be_renamed_and_pinned_without_affecting_another_user(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    other_actor = _actor("operator-2")
+    first = service.create_conversation(actor, "第一个会话")
+    second = service.create_conversation(actor, "第二个会话")
+    other = service.create_conversation(other_actor, "其他用户会话")
+
+    renamed = service.update_conversation(actor, first["conversation_id"], title="  自定义名称  ", is_pinned=True)
+
+    assert renamed["title"] == "自定义名称"
+    assert renamed["is_pinned"] is True
+    assert [item["conversation_id"] for item in service.list_conversations(actor)] == [first["conversation_id"], second["conversation_id"]]
+    assert service.update_conversation(actor, first["conversation_id"], is_pinned=False)["is_pinned"] is False
+    assert service.update_conversation(other_actor, other["conversation_id"], title="其他名称")["title"] == "其他名称"
+
+
+def test_conversations_keep_their_creation_mode_for_mode_switching(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+
+    chat = service.create_conversation(actor, "聊天会话", mode="chat")
+    image = service.create_conversation(actor, "白底图", mode="generate")
+
+    conversations = {item["conversation_id"]: item for item in service.list_conversations(actor)}
+
+    assert conversations[chat["conversation_id"]]["mode"] == "chat"
+    assert conversations[image["conversation_id"]]["mode"] == "generate"
