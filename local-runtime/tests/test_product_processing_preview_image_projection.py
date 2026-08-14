@@ -11,6 +11,9 @@ from wh_local.data_collection.public_image_fetch import FetchedPublicImage
 from wh_local.modules.product_processing.domain.models import DailySelectionHandoffEnvelope
 from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
 from wh_local.modules.product_processing.infrastructure.database import create_database
+from wh_local.modules.product_processing.infrastructure.preview_image_repository import (
+    PreviewSourceNotReady,
+)
 from wh_local.modules.product_processing.infrastructure.repository import ProductProcessingRepository
 from wh_local.modules.product_processing.service import (
     ProductProcessingService,
@@ -220,3 +223,66 @@ def test_source_selected_without_library_is_rejected(tmp_path: Path) -> None:
             },
         )
 
+def test_pending_source_cannot_be_added_to_library_or_selected_for_export(tmp_path: Path) -> None:
+    service, task_id, _draft_id = _seeded_v2_product(tmp_path, materialize=False)
+    preview = service.task_preview(task_id, workspace_id="ws")["items"][0]
+    source = next(x for x in preview["assets"] if x["bucket"] == "source")
+    assert source["media_status"] == "pending"
+
+    with pytest.raises(ProductProcessingValidationError, match="同步完成"):
+        _save_manifest(
+            service,
+            task_id,
+            preview,
+            manifest={
+                "main_asset_id": source["id"],
+                "carousel_asset_ids": [source["id"]],
+                "detail_asset_ids": [],
+                "library_asset_ids": [source["id"]],
+                "semantic_asset_ids": {},
+            },
+        )
+
+    with pytest.raises(PreviewSourceNotReady, match="同步完成"):
+        service.preview_images.begin_finalize(
+            task_id,
+            [{
+                "product_draft_id": preview["product_draft_id"],
+                "expected_preview_revision": preview["preview_revision"],
+                "expected_result_version": preview["result_version"],
+                "overrides": {"image_manifest_v2": {
+                    "main_asset_id": source["id"],
+                    "carousel_asset_ids": [source["id"]],
+                    "detail_asset_ids": [],
+                    "library_asset_ids": [source["id"]],
+                    "semantic_asset_ids": {},
+                }},
+            }],
+            workspace_id="ws",
+            launch=False,
+        )
+
+
+def test_same_source_media_preserves_every_bound_source_kind(tmp_path: Path) -> None:
+    service, task_id, draft_id = _seeded_v2_product(tmp_path, materialize=True)
+    main_binding = next(
+        binding
+        for binding in service.media_assets.list_bindings("ws", product_draft_id=draft_id)
+        if binding["role"] == "main"
+    )
+    service.media_assets.bind_asset(
+        workspace_id="ws",
+        asset_id=main_binding["asset_id"],
+        product_draft_id=draft_id,
+        role="gallery",
+        sort_order=99,
+    )
+
+    assets = service.task_preview(task_id, workspace_id="ws")["items"][0]["assets"]
+    same_media = [
+        asset
+        for asset in assets
+        if asset["media_asset_id"] == main_binding["asset_id"]
+    ]
+    assert {asset["source_kind"] for asset in same_media} == {"main", "gallery"}
+    assert len({asset["id"] for asset in same_media}) == 2

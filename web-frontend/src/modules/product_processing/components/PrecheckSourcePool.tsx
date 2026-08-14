@@ -45,6 +45,7 @@ function SourceCard({
 }) {
   const url = assetUrl(asset);
   const retryable = asset.media_status ? supportsMediaRetry(asset.media_status) : false;
+  const ready = asset.media_status === "ready";
   const statusLabel = asset.media_status ? mediaStatusLabel(asset.media_status) : "无状态";
   return (
     <article className="precheck-asset-card precheck-source-card">
@@ -83,7 +84,7 @@ function SourceCard({
           >
             {retrying ? "重试中…" : "重新同步"}
           </button>
-        ) : (
+        ) : ready ? (
           <button
             type="button"
             disabled={disabled || alreadyInLibrary}
@@ -91,6 +92,8 @@ function SourceCard({
           >
             {alreadyInLibrary ? "已在素材库" : "加入素材库"}
           </button>
+        ) : (
+          <span className="precheck-source-waiting">同步完成后可加入素材库</span>
         )}
       </div>
     </article>

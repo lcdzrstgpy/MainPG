@@ -27,6 +27,7 @@ ALLOWED_PLUGIN_COMMAND_TYPES = frozenset(
 )
 _TERMINAL = frozenset({"succeeded", "failed"})
 _ACTIVE_WINDOW = timedelta(minutes=10)
+_COMMAND_LEASE_WINDOW = timedelta(minutes=5)
 _LEGACY_LOCAL_ACTOR_ID = "local-demo-admin"
 _LEGACY_LOCAL_WORKSPACE_ID = "default"
 
@@ -157,8 +158,17 @@ class DataCollectionPluginQueue:
 
     def poll(self, session_token: str, *, limit: int = 10) -> tuple[PluginCommand, ...]:
         now = _now()
+        reclaim_before = (datetime.now(timezone.utc) - _COMMAND_LEASE_WINDOW).isoformat()
         with self._connect() as conn:
             session = self._session(conn, session_token)
+            # A browser can die after acknowledging a command. Requeue its
+            # expired in-flight command so the next poll can finish it.
+            conn.execute(
+                """UPDATE data_collection_plugin_commands
+                SET status = 'queued', result_json = '{}', updated_at = ?
+                WHERE session_id = ? AND status IN ('sent', 'running') AND updated_at < ?""",
+                (now, session["id"], reclaim_before),
+            )
             rows = conn.execute(
                 """SELECT id FROM data_collection_plugin_commands
                 WHERE session_id = ? AND status = 'queued' ORDER BY id LIMIT ?""",
@@ -179,6 +189,9 @@ class DataCollectionPluginQueue:
         status: str,
         result: Mapping[str, Any],
     ) -> PluginCommand:
+        # Older browser plugins use `sent` as their acknowledgement payload;
+        # normalize it to the persisted in-flight state used by this queue.
+        status = "running" if status == "sent" else status
         if status not in {"running", *tuple(_TERMINAL)}:
             raise ValueError("unsupported command status")
         now = _now()

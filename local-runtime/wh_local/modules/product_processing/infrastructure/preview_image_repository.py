@@ -45,6 +45,10 @@ class PreviewSourceNotInLibrary(ValueError):
     """Raised when a source proxy is selected for export before joining the library."""
 
 
+class PreviewSourceNotReady(ValueError):
+    """Raised when a source proxy is used before its unified media is ready."""
+
+
 def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 

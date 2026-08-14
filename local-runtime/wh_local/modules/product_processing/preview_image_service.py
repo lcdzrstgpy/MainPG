@@ -30,6 +30,7 @@ from .infrastructure.preview_image_files import validate_preview_image
 from .infrastructure.preview_image_repository import (
     PreviewImageRepository,
     PreviewPublicationConflict,
+    PreviewSourceNotReady,
 )
 from .infrastructure.repository import ProductProcessingRepository
 from .media_asset_service import MediaAssetService
@@ -201,9 +202,13 @@ class PreviewImageService:
         media_asset_id = str(media_asset_id or "").strip()
         if not media_asset_id:
             raise ValueError("media proxy requires a media asset id")
+        # One upstream asset may be bound as both main and gallery.  Preserve
+        # those business roles as separate no-copy proxies so the source pool
+        # never loses a category during media-id de-duplication.
         identity = (
             "media-proxy:"
-            f"{str(workspace_id or '')}:{int(task_id)}:{int(product_draft_id)}:{media_asset_id}"
+            f"{str(workspace_id or '')}:{int(task_id)}:{int(product_draft_id)}:"
+            f"{media_asset_id}:{str(source_kind or '').strip()}"
         )
         identity_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()
         return self.repository.register_asset(
@@ -519,7 +524,8 @@ class PreviewImageService:
         workspace_id: str,
     ) -> dict[str, Any]:
         entries: list[dict[str, Any]] = []
-        indexed: dict[str, dict[str, Any]] = {}
+        indexed: dict[tuple[str, str], dict[str, Any]] = {}
+        proxy_id_by_media: dict[str, str] = {}
 
         def add_entry(
             media_id: str,
@@ -530,11 +536,8 @@ class PreviewImageService:
             media_id = str(media_id or "").strip()
             if not media_id:
                 return
-            if media_id in indexed:
-                existing = indexed[media_id]
-                if not existing["source_kind"] and source_kind:
-                    existing["source_kind"] = source_kind
-                    existing["role"] = role
+            entry_key = (media_id, source_kind)
+            if entry_key in indexed:
                 return
             media_asset = self.media_assets.get_asset(media_id, workspace_id)
             if media_asset is None:
@@ -556,7 +559,8 @@ class PreviewImageService:
                 "role": role,
                 "sort_order": sort_order,
             }
-            indexed[media_id] = entry
+            indexed[entry_key] = entry
+            proxy_id_by_media.setdefault(media_id, str(proxy["id"]))
             entries.append(entry)
 
         for binding in self.media_assets.list_bindings(
@@ -582,7 +586,7 @@ class PreviewImageService:
             product_draft_id, workspace_id, task_id=task_id
         ):
             media_id = str(asset.get("media_asset_id") or "")
-            if not media_id or media_id in indexed:
+            if not media_id or (media_id, "") in indexed:
                 continue
             media_asset = self.media_assets.get_asset(media_id, workspace_id)
             if media_asset is None or str(media_asset.get("origin") or "") == "remote_source":
@@ -600,8 +604,7 @@ class PreviewImageService:
         )
 
         def proxy_id_for_media(media_id: str) -> str:
-            entry = indexed.get(str(media_id or "").strip())
-            return str(entry["proxy"]["id"]) if entry else ""
+            return proxy_id_by_media.get(str(media_id or "").strip(), "")
 
         saved_manifest: PreviewImageManifest | None = None
         if MANIFEST_KEY in saved:
@@ -686,6 +689,7 @@ class PreviewImageService:
         *,
         workspace_id: str,
     ) -> list[dict[str, Any]]:
+        self._require_ready_source_media(task_id, items, workspace_id)
         snapshots = self.repository.save_preview_manifests(
             task_id,
             items,
@@ -700,6 +704,36 @@ class PreviewImageService:
             for entry in snapshots
         ]
 
+    def _require_ready_source_media(
+        self,
+        task_id: int,
+        items: Sequence[Mapping[str, Any]],
+        workspace_id: str,
+    ) -> None:
+        """Prevent pending source proxies from entering the library or export manifest."""
+        if self.media_assets is None:
+            return
+        for item in items:
+            draft_id = int(item.get("product_draft_id") or 0)
+            overrides = item.get("overrides") or {}
+            if not draft_id or not isinstance(overrides, Mapping) or MANIFEST_KEY not in overrides:
+                continue
+            manifest = PreviewImageManifest.from_value(overrides.get(MANIFEST_KEY))
+            referenced = tuple(dict.fromkeys((*manifest.live_asset_ids(), *manifest.library_asset_ids)))
+            for asset in self.repository.get_assets(
+                referenced,
+                workspace_id,
+                task_id=task_id,
+                product_draft_id=draft_id,
+            ):
+                if not asset.get("source_kind"):
+                    continue
+                media = self.media_assets.get_asset(
+                    str(asset.get("media_asset_id") or ""), workspace_id
+                )
+                if media is None or str(media.get("status") or "") != "ready":
+                    raise PreviewSourceNotReady("处理前图片尚未同步完成，暂不能加入素材库或用于导出")
+
     def begin_finalize(
         self,
         task_id: int,
@@ -709,6 +743,7 @@ class PreviewImageService:
         idempotency_key: str = "",
         launch: bool = True,
     ) -> dict[str, Any]:
+        self._require_ready_source_media(task_id, items, workspace_id)
         run = self.repository.create_finalize_run(
             workspace_id=workspace_id,
             task_id=task_id,
@@ -743,6 +778,11 @@ class PreviewImageService:
         def execute() -> None:
             try:
                 self.run_finalize(run_id, workspace_id=workspace_id)
+            except PreviewPublicationConflict:
+                # A retry/recovery worker may have acquired the lease first.
+                # The durable run record is authoritative; this worker exits
+                # quietly instead of leaking an unhandled daemon exception.
+                pass
             finally:
                 with self._finalize_worker_lock:
                     self._finalize_workers.pop(key, None)

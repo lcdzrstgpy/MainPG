@@ -45,6 +45,10 @@ class IncompleteRetainedQuotesError(ValueError):
     """Raised when retained links lack a URL, image, or selected price."""
 
 
+class ProductLibraryLookupError(RuntimeError):
+    """Raised when the optional product-library lookup cannot be completed."""
+
+
 class SourcingService:
     """Queue and materialize only read-only source browser discovery results."""
 
@@ -311,12 +315,21 @@ class SourcingService:
                 source_decision=_text(candidate.get("source_decision")),
             )
         products = self._product_library_products(actor, session["selected_skc_ids"])
+        selected_skc_ids = {
+            _text(candidate.get("skc_id"))
+            for candidate in selected_candidates
+        }
+        unresolved_skc_ids = tuple(
+            skc_id
+            for skc_id in session["unresolved_skc_ids"]
+            if skc_id not in selected_skc_ids
+        )
+        remaining_preview = _preview_for_skc_ids(session.get("preview"), unresolved_skc_ids)
         self._repository.save_batch_sourcing_session(
             workspace_id=actor.workspace_id, batch_id=batch_id,
-            selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=(),
-            matched_products=products, preview=None, selected_candidates=(),
+            selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=unresolved_skc_ids,
+            matched_products=products, preview=remaining_preview, selected_candidates=(),
         )
-        self._repository.clear_batch_sourcing_results(workspace_id=actor.workspace_id, batch_id=batch_id)
         return self.get_batch_sourcing_state(actor, batch_id=batch_id)
 
     def _product_library_products(
@@ -354,10 +367,23 @@ class SourcingService:
                         }
                         for link in links
                     ]
+                source_groups = payload.get("source_groups")
+                valid_sources = [
+                    dict(group)
+                    for group in source_groups
+                    if isinstance(group, Mapping)
+                    and canonical_source_url(
+                        _text(group.get("source_url")),
+                        offer_id=_text(group.get("offer_id")),
+                    )
+                ] if isinstance(source_groups, Sequence) and not isinstance(source_groups, (str, bytes)) else []
+                if not valid_sources:
+                    continue
+                payload["source_groups"] = valid_sources
                 enriched.append(payload)
             return tuple(enriched)
-        except Exception:
-            return ()
+        except Exception as exc:
+            raise ProductLibraryLookupError("产品库货源查询失败") from exc
 
     # existing code paths still use this direct link operation; the new batch
     # wizard stages candidates above and calls it only from complete_batch_sourcing.
@@ -934,6 +960,12 @@ def build_source_preview(
         review_candidates.extend(review)
         sku_targets.extend(item["source_sku_validation_targets"])
     counts = _counts(items)
+    result_status = _text(source_result.get("status")) if isinstance(source_result, Mapping) else ""
+    failed_skc_ids = (
+        [str(value) for value in source_result.get("failed_skc_ids") or [] if _text(value)]
+        if isinstance(source_result, Mapping)
+        else []
+    )
     return {
         "items": items,
         "skc_groups": _group_source_items_by_skc(items),
@@ -942,7 +974,39 @@ def build_source_preview(
         "source_review_candidates": review_candidates,
         "source_sku_validation_targets": sku_targets,
         "retry_quote_keys": [item["quote_key"] for item in items if item["source_decision"] == "failed"],
+        "search_status": result_status or ("pending" if source_result is None else "succeeded"),
+        "all_failed": bool(source_result.get("all_failed")) if isinstance(source_result, Mapping) else False,
+        "failed_skc_ids": failed_skc_ids,
     }
+
+
+def _preview_for_skc_ids(
+    preview: Mapping[str, Any] | None,
+    skc_ids: Sequence[str],
+) -> dict[str, Any] | None:
+    """Keep only unresolved SKC rows after a partial source-link completion."""
+    if not isinstance(preview, Mapping):
+        return None
+    keep = {str(skc_id) for skc_id in skc_ids}
+    filtered = dict(preview)
+    filtered["items"] = [
+        dict(item)
+        for item in preview.get("items") or []
+        if isinstance(item, Mapping) and _text(item.get("skc_id")) in keep
+    ]
+    failed_skc_ids = [
+        _text(item.get("skc_id"))
+        for item in filtered["items"]
+        if _text(item.get("source_decision")) == "failed"
+    ]
+    filtered["failed_skc_ids"] = failed_skc_ids
+    filtered["all_failed"] = bool(filtered["items"]) and len(failed_skc_ids) == len(filtered["items"])
+    filtered["search_status"] = (
+        "failed"
+        if filtered["all_failed"]
+        else ("partial" if failed_skc_ids else "succeeded")
+    )
+    return filtered
 
 
 def _apply_batch_ranking(

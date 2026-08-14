@@ -59,6 +59,7 @@ from .infrastructure.preview_image_repository import (
     PreviewPublicationConflict,
     PreviewRevisionConflict,
     PreviewSourceNotInLibrary,
+    PreviewSourceNotReady,
 )
 from .preview_image_service import PreviewImageService
 from .infrastructure.media_asset_repository import MediaAssetRepository, MediaMaterializationConflict
@@ -1527,6 +1528,8 @@ class ProductProcessingService:
             raise ProductProcessingConflict(str(exc)) from exc
         except PreviewSourceNotInLibrary as exc:
             raise ProductProcessingValidationError(str(exc)) from exc
+        except PreviewSourceNotReady as exc:
+            raise ProductProcessingValidationError(str(exc)) from exc
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
         return {"task_id": task_id, "saved_count": len(saved_items), "items": saved_items}
@@ -1652,6 +1655,8 @@ class ProductProcessingService:
             )
         except (PreviewRevisionConflict, PreviewIdempotencyConflict, PreviewPublicationConflict) as exc:
             raise ProductProcessingConflict(str(exc)) from exc
+        except PreviewSourceNotReady as exc:
+            raise ProductProcessingValidationError(str(exc)) from exc
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
 
