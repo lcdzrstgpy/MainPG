@@ -50,6 +50,19 @@ export async function loadSystemConfig() {
   return httpJson<SystemConfigResponse>(SYSTEM_CONFIG_PATH);
 }
 
+export type AiApiKeyReadiness = {
+  textConfigured: boolean;
+  imageConfigured: boolean;
+};
+
+export async function checkAiApiKeyReadiness(): Promise<AiApiKeyReadiness> {
+  const config = await loadSystemConfig();
+  return {
+    textConfigured: Boolean(config.secrets?.ai?.api_key_configured),
+    imageConfigured: Boolean(config.secrets?.image?.api_key_configured),
+  };
+}
+
 export function createSystemConfigUpdatePayload(
   form: BasicSettingsForm,
   currentConfig: SystemConfigResponse | null,

@@ -12,6 +12,7 @@ import {
   startSkuRepull,
 } from "../api/dailySelectionApi";
 import { getApiToken } from "../../../shared/api/apiClient";
+import { checkAiApiKeyReadiness } from "../../basic_settings/api/systemConfigApi";
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -646,6 +647,19 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       const channelName = platform === "taobao" ? "淘宝" : "1688 + 淘宝组合";
       setNotice(`${channelName}采集界面已就绪，当前后端尚未接入该渠道，本次没有发送采集请求。`);
       return;
+    }
+
+    try {
+      const readiness = await checkAiApiKeyReadiness();
+      const missing: string[] = [];
+      if (!readiness.textConfigured) missing.push("文本模型");
+      if (!readiness.imageConfigured) missing.push("图片模型");
+      if (missing.length) {
+        setError(`请先在「系统配置」中配置${missing.join("、")}的 API Key，再开始采集`);
+        return;
+      }
+    } catch {
+      // 读取配置失败时不拦截，交由后端在采集时返回可读错误。
     }
 
     setBusy(true);
