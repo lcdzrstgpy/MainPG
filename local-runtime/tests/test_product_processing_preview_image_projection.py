@@ -11,6 +11,7 @@ from wh_local.data_collection.public_image_fetch import FetchedPublicImage
 from wh_local.modules.product_processing.domain.models import DailySelectionHandoffEnvelope
 from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
 from wh_local.modules.product_processing.infrastructure.database import create_database
+from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia
 from wh_local.modules.product_processing.infrastructure.preview_image_repository import (
     PreviewSourceNotReady,
 )
@@ -286,3 +287,48 @@ def test_same_source_media_preserves_every_bound_source_kind(tmp_path: Path) -> 
     ]
     assert {asset["source_kind"] for asset in same_media} == {"main", "gallery"}
     assert len({asset["id"] for asset in same_media}) == 2
+
+
+def test_saved_legacy_preview_asset_ids_resolve_to_current_v2_proxies(tmp_path: Path) -> None:
+    service, task_id, draft_id = _seeded_v2_product(tmp_path, materialize=True)
+    # A generated preview asset row (canvas-era writeback style) is NOT the
+    # proxy the reloaded V2 pool serves. Its ID must be translated.
+    generated = service.preview_images.register_generated(
+        task_id=task_id,
+        product_draft_id=draft_id,
+        workspace_id="ws",
+        media=GeneratedMedia(
+            stage="grid_image_1", content=_jpeg("blue"), content_type="image/jpeg",
+            suffix=".jpg", provider="test", model="test", reference_count=1,
+        ),
+    )
+    legacy_id = generated["id"]
+    assert legacy_id != generated["media_asset_id"]
+
+    preview = service.task_preview(task_id, workspace_id="ws")["items"][0]
+    _save_manifest(
+        service,
+        task_id,
+        preview,
+        manifest={
+            "main_asset_id": legacy_id,
+            "carousel_asset_ids": [legacy_id],
+            "detail_asset_ids": [legacy_id],
+            "library_asset_ids": [legacy_id],
+            "semantic_asset_ids": {"carousel.hero": legacy_id},
+        },
+    )
+
+    reloaded = service.task_preview(task_id, workspace_id="ws")["items"][0]
+    manifest = reloaded["image_manifest"]
+    assert manifest["main_asset_id"] != legacy_id
+    assert manifest["main_asset_id"] in {asset["id"] for asset in reloaded["assets"]}
+    assert manifest["carousel_asset_ids"] == [manifest["main_asset_id"]]
+    assert manifest["semantic_asset_ids"].get("carousel.hero") == manifest["main_asset_id"]
+    proxy = next(
+        asset for asset in reloaded["assets"] if asset["id"] == manifest["main_asset_id"]
+    )
+    assert proxy["media_asset_id"] == generated["media_asset_id"]
+    assert proxy["preview_url"]
+    assert len(manifest["detail_asset_ids"]) == 1
+    assert manifest["detail_asset_ids"][0] == manifest["main_asset_id"]

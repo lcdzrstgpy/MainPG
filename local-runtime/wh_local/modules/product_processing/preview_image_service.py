@@ -606,10 +606,46 @@ class PreviewImageService:
         def proxy_id_for_media(media_id: str) -> str:
             return proxy_id_by_media.get(str(media_id or "").strip(), "")
 
+        proxy_by_id = {str(entry["proxy"]["id"]): entry for entry in entries}
+
+        def resolve_saved_asset_id(saved_id: str) -> str:
+            """Map a persisted precheck ID back to the current V2 proxy identity.
+
+            Canvas acceptance and earlier manifests may store a preview-asset row
+            ID (``654c..``) or a raw unified media ID, while this projection now
+            serves stable no-copy proxy rows (``e388..``).  Resolving both keeps
+            previously rendered AI images and dimension renders visible after a
+            reload without ever guessing a file path.
+            """
+            saved_id = str(saved_id or "").strip()
+            if not saved_id or saved_id in proxy_by_id:
+                return saved_id
+            row = self.repository.get_asset(saved_id, workspace_id)
+            media_id = str((row or {}).get("media_asset_id") or "")
+            if media_id:
+                return proxy_id_by_media.get(media_id, "")
+            return proxy_id_by_media.get(saved_id, "")
+
         saved_manifest: PreviewImageManifest | None = None
         if MANIFEST_KEY in saved:
             saved_manifest = PreviewImageManifest.from_value(saved.get(MANIFEST_KEY))
-            manifest = saved_manifest
+            manifest = PreviewImageManifest(
+                main_asset_id=resolve_saved_asset_id(saved_manifest.main_asset_id),
+                carousel_asset_ids=tuple(
+                    resolve_saved_asset_id(value) for value in saved_manifest.carousel_asset_ids
+                ),
+                detail_asset_ids=tuple(
+                    resolve_saved_asset_id(value) for value in saved_manifest.detail_asset_ids
+                ),
+                library_asset_ids=tuple(
+                    resolve_saved_asset_id(value) for value in saved_manifest.library_asset_ids
+                ),
+                semantic_asset_ids={
+                    str(slot_id or "").strip(): resolve_saved_asset_id(value)
+                    for slot_id, value in (saved_manifest.semantic_asset_ids or {}).items()
+                    if str(slot_id or "").strip() and str(value or "").strip()
+                },
+            )
         else:
             v2 = result.get("image_manifest_v2")
             v2 = v2 if isinstance(v2, Mapping) else {}
@@ -651,9 +687,8 @@ class PreviewImageService:
         source_id_set = {
             str(entry["proxy"]["id"]) for entry in entries if entry["bucket"] == "source"
         }
-        saved_library = saved_manifest.library_asset_ids if saved_manifest is not None else ()
         library_ids = processed_ids + [
-            asset_id for asset_id in saved_library if asset_id in source_id_set
+            asset_id for asset_id in manifest.library_asset_ids if asset_id in source_id_set
         ]
         manifest = PreviewImageManifest(
             main_asset_id=manifest.main_asset_id,
