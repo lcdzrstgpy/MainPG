@@ -32,6 +32,7 @@ from .infrastructure.preview_image_repository import (
     PreviewPublicationConflict,
 )
 from .infrastructure.repository import ProductProcessingRepository
+from .media_asset_service import MediaAssetService
 
 
 class PreviewImageService:
@@ -46,12 +47,14 @@ class PreviewImageService:
         trusted_public_url: Callable[[str], bool] | None = None,
         public_image_fetcher: Callable[[str], FetchedPublicImage] | None = None,
         max_publish_workers: int = 4,
+        media_assets: MediaAssetService | None = None,
     ):
         if not 1 <= int(max_publish_workers) <= 6:
             raise ValueError("preview publish workers must be between 1 and 6")
         self.repository = repository
         self.product_repository = product_repository
         self.assets = assets
+        self.media_assets = media_assets
         self.publisher = publisher
         self.trusted_public_url = trusted_public_url or (lambda _value: False)
         if public_image_fetcher is None:
@@ -84,6 +87,20 @@ class PreviewImageService:
             "height": int(asset.get("height") or 0),
         }
 
+    def _unified_media_asset_id(
+        self,
+        workspace_id: str,
+        origin: str,
+        content: bytes,
+        content_type: str,
+    ) -> str:
+        if self.media_assets is None:
+            return ""
+        unified = self.media_assets.register_local_asset(
+            workspace_id, origin, content, content_type
+        )
+        return str(unified.get("id") or "")
+
     def register_upload(
         self,
         *,
@@ -103,6 +120,9 @@ class PreviewImageService:
             decoded.suffix,
             workspace_id=workspace_id,
         )
+        media_asset_id = self._unified_media_asset_id(
+            workspace_id, "preview_upload", decoded.content, decoded.content_type
+        )
         row = self.repository.register_asset(
             workspace_id=workspace_id,
             task_id=task_id,
@@ -116,6 +136,7 @@ class PreviewImageService:
             byte_size=len(decoded.content),
             width=decoded.width,
             height=decoded.height,
+            media_asset_id=media_asset_id,
         )
         return self.public_asset(row)
 
@@ -135,6 +156,9 @@ class PreviewImageService:
             decoded.suffix,
             workspace_id=workspace_id,
         )
+        media_asset_id = self._unified_media_asset_id(
+            workspace_id, "ai_generated", decoded.content, decoded.content_type
+        )
         row = self.repository.register_asset(
             workspace_id=workspace_id,
             task_id=task_id,
@@ -148,6 +172,7 @@ class PreviewImageService:
             byte_size=len(decoded.content),
             width=decoded.width,
             height=decoded.height,
+            media_asset_id=media_asset_id,
         )
         return self.public_asset(row)
 

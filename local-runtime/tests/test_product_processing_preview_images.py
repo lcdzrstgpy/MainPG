@@ -152,6 +152,14 @@ def test_upload_and_generated_projection_are_local_and_keep_asset_identity(tmp_p
     assert projected["image_manifest"]["main_asset_id"] == generated["id"]
 
 
+def test_task_preview_exposes_each_draft_media_contract_version(tmp_path: Path) -> None:
+    service, task, _draft_id = _finished_service(tmp_path)
+
+    preview = service.task_preview(task["id"], workspace_id="workspace-a")
+
+    assert preview["items"][0]["media_contract_version"] == 1
+
+
 def test_finalize_publishes_only_retained_assets_and_replays_idempotently(tmp_path: Path) -> None:
     service, task, draft_id = _finished_service(tmp_path)
     retained = service.register_preview_upload(

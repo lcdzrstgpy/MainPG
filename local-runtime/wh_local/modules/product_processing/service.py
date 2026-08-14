@@ -60,6 +60,8 @@ from .infrastructure.preview_image_repository import (
     PreviewRevisionConflict,
 )
 from .preview_image_service import PreviewImageService
+from .infrastructure.media_asset_repository import MediaAssetRepository, MediaMaterializationConflict
+from .media_asset_service import MediaAssetService, canonical_source_url
 from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai_provider
 
 _MEDIA_TYPES: tuple | None = None
@@ -286,8 +288,15 @@ class ProductProcessingService:
         self._submission_lock = threading.RLock()
         self._task_worker_lock = threading.Lock()
         self._task_workers: dict[tuple[str, int], threading.Thread] = {}
+        self._media_materialization_lock = threading.Lock()
+        self._media_materialization_workers: dict[str, threading.Thread] = {}
         # 任务级串行闸门：限制同时执行的任务数，避免旧任务与新任务并发叠加打爆 AI 供应商。
         self._task_execution_gate = threading.BoundedSemaphore(_max_concurrent_tasks())
+        self.media_assets = MediaAssetService(
+            MediaAssetRepository(repository.database),
+            assets,
+            public_image_fetcher=public_image_fetcher,
+        )
         self.preview_images = PreviewImageService(
             PreviewImageRepository(repository.database),
             repository,
@@ -296,6 +305,7 @@ class ProductProcessingService:
             trusted_public_url=self.is_trusted_cos_url,
             public_image_fetcher=public_image_fetcher,
             max_publish_workers=4,
+            media_assets=self.media_assets,
         )
         # 主体识别结果缓存：同一来源主图只识别一次（批量任务大量重复商品时省 N 次 AI 调用）
         self._subject_cache: dict[str, dict[str, str]] = {}
@@ -902,29 +912,10 @@ class ProductProcessingService:
                 continue
             if handoff.status == "failed":
                 raise ValueError("failed daily-selection handoffs cannot be consumed")
-            # A new handoff means the operator explicitly chose to process the
-            # product again, even when the same source candidate was completed
-            # in an older run. Only replaying this exact handoff is idempotent.
-            draft, _created = self.create_draft(
-                self._draft_payload_from_handoff(handoff),
-                selection_run_id=handoff.run_id,
-                workspace_id=handoff.workspace_id,
-                handoff_id=handoff.handoff_id,
-                handoff_idempotency_key=handoff.idempotency_key,
-                allow_duplicate_candidate=True,
-            )
-            if _created:
-                created_count += 1
-            receipt = self.repository.save_handoff_receipt(
-                handoff_id=handoff.handoff_id,
-                idempotency_key=handoff.idempotency_key,
-                workspace_id=handoff.workspace_id,
-                run_id=handoff.run_id,
-                candidate_id=handoff.candidate_id,
-                product_draft_id=draft["id"],
-                source_status=handoff.status,
-                payload_sha256=hashlib.sha256(handoff.payload_json.encode("utf-8")).hexdigest(),
-            )
+            # A new handoff creates a V2 draft with its media assets and bindings
+            # in one transaction. Only replaying this exact handoff is idempotent.
+            draft, receipt = self.create_draft_with_media(handoff)
+            created_count += 1
             receipts.append(receipt)
             drafts.append(draft)
         return {
@@ -992,6 +983,126 @@ class ProductProcessingService:
             "selection_reasons": list(selection.get("selection_reasons") or []),
             "risk_tags": list(selection.get("risk_tags") or []),
         }
+
+    def create_draft_with_media(
+        self, handoff: DailySelectionHandoffEnvelope
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Create a V2 draft with registered media assets and bindings atomically."""
+        raw = self._draft_payload_from_handoff(handoff)
+        draft_values = self._draft_values_from_handoff(handoff, raw)
+        media_entries = self._handoff_media_entries(raw)
+        return self.repository.create_draft_with_media(
+            draft_values=draft_values,
+            media_entries=media_entries,
+            handoff_id=handoff.handoff_id,
+            idempotency_key=handoff.idempotency_key,
+            workspace_id=handoff.workspace_id,
+            run_id=handoff.run_id,
+            candidate_id=handoff.candidate_id,
+            source_status=handoff.status,
+            payload_sha256=hashlib.sha256(handoff.payload_json.encode("utf-8")).hexdigest(),
+        )
+
+    def _draft_values_from_handoff(
+        self,
+        handoff: DailySelectionHandoffEnvelope,
+        raw: dict[str, Any],
+    ) -> dict[str, Any]:
+        title = self._text(raw.get("title") or raw.get("product_name") or raw.get("source_title"))
+        product_name = self._text(raw.get("product_name") or title)
+        image_url = self._text(
+            raw.get("image_url")
+            or raw.get("main_image_url")
+            or self._first(raw.get("source_image_urls"))
+        )
+        source_ref = self._text(
+            raw.get("source_ref")
+            or raw.get("source_url")
+            or raw.get("product_link")
+            or raw.get("candidate_id")
+            or raw.get("offer_id")
+        )
+        cost = self._number(raw.get("cost") if raw.get("cost") is not None else raw.get("price_cny"))
+        declared_price = self._number(raw.get("declared_price"))
+        return {
+            "workspace_id": handoff.workspace_id,
+            "source_type": self._text(raw.get("source_type")) or "onebound_api",
+            "source_ref": source_ref,
+            "candidate_id": self._text(raw.get("candidate_id")) or None,
+            "selection_run_id": handoff.run_id,
+            "handoff_id": handoff.handoff_id,
+            "handoff_idempotency_key": handoff.idempotency_key,
+            "skc": self._text(raw.get("skc")) or None,
+            "sku": self._text(raw.get("sku")) or None,
+            "product_name": product_name,
+            "title": title,
+            "description": self._text(raw.get("description")),
+            "image_url": image_url,
+            "image_path": self._text(raw.get("image_path")),
+            "cost": cost,
+            "declared_price": declared_price,
+            "status": "draft",
+            "raw_payload_json": self._json(raw),
+        }
+
+    def _handoff_media_entries(self, raw: dict[str, Any]) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+
+        def add(
+            url: Any,
+            role: str,
+            *,
+            slot_id: str = "",
+            sku_id: str = "",
+            variant_label: str = "",
+            sort_order: int = 0,
+        ) -> None:
+            text = self._text(url)
+            if not text:
+                return
+            canonical = canonical_source_url(text)
+            if not canonical:
+                return
+            entries.append(
+                {
+                    "source_url": canonical,
+                    "source_identity_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    "role": role,
+                    "slot_id": slot_id,
+                    "sku_id": sku_id,
+                    "variant_label": variant_label,
+                    "sort_order": sort_order,
+                }
+            )
+
+        add(raw.get("image_url"), "main")
+        for index, url in enumerate(self._url_list(raw.get("source_image_urls"))):
+            add(url, "gallery", sort_order=index)
+        for index, url in enumerate(self._url_list(raw.get("source_detail_image_urls"))):
+            add(url, "detail", sort_order=index)
+        for index, record in enumerate(raw.get("source_variant_records") or []):
+            if not isinstance(record, dict):
+                continue
+            image_url = record.get("image_url")
+            if not image_url:
+                continue
+            attributes = record.get("attributes") or {}
+            if isinstance(attributes, dict):
+                attribute_label = " ".join(
+                    str(value)
+                    for value in attributes.values()
+                    if value is not None and str(value).strip()
+                )
+            else:
+                attribute_label = ""
+            add(
+                image_url,
+                "sku",
+                sku_id=str(record.get("sku_id") or ""),
+                variant_label=str(record.get("spec_text") or attribute_label or ""),
+                sort_order=index,
+            )
+        return entries
 
     @staticmethod
     def _normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -1151,6 +1262,30 @@ class ProductProcessingService:
             worker.start()
         return True
 
+    def _launch_media_materialization(self, workspace_id: str) -> bool:
+        """Start one bounded materialization worker per workspace."""
+
+        def _run() -> None:
+            try:
+                self.media_assets.materialize_pending(workspace_id=workspace_id, limit=20)
+            finally:
+                with self._media_materialization_lock:
+                    if self._media_materialization_workers.get(workspace_id) is threading.current_thread():
+                        self._media_materialization_workers.pop(workspace_id, None)
+
+        with self._media_materialization_lock:
+            current = self._media_materialization_workers.get(workspace_id)
+            if current is not None and current.is_alive():
+                return False
+            worker = threading.Thread(
+                target=_run,
+                daemon=True,
+                name=f"pp-media-materialize-{workspace_id}",
+            )
+            self._media_materialization_workers[workspace_id] = worker
+            worker.start()
+        return True
+
     def recover_background_work(self) -> dict[str, int]:
         """Recover safe queued work and make process-lost calls explicitly retryable."""
         interrupted = self.repository.recover_interrupted_tasks()
@@ -1160,12 +1295,17 @@ class ProductProcessingService:
             for task in queued
         )
         finalize = self.preview_images.recover_background_work()
+        media = self.media_assets.materialize_pending(limit=50)
         return {
             "interrupted": len(interrupted),
             "queued": len(queued),
             "launched": launched,
             "finalize_queued": int(finalize.get("queued") or 0),
             "finalize_launched": int(finalize.get("launched") or 0),
+            "media_claimed": int(media.get("claimed") or 0),
+            "media_ready": int(media.get("ready") or 0),
+            "media_retryable": int(media.get("retryable") or 0),
+            "media_failed": int(media.get("failed") or 0),
         }
 
     def task_outputs(
@@ -1331,6 +1471,7 @@ class ProductProcessingService:
                     saved,
                     preview_revision=int((draft or {}).get("preview_revision") or 0),
                 ),
+                "media_contract_version": int((draft or {}).get("media_contract_version") or 1),
                 **projected,
             })
         return {
@@ -1435,6 +1576,44 @@ class ProductProcessingService:
             )
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
+
+    def draft_media(self, draft_id: int, *, workspace_id: str = "local") -> dict[str, Any]:
+        draft = self.get_draft(draft_id, workspace_id)
+        if int(draft.get("media_contract_version") or 1) < 2:
+            raise ProductProcessingConflict("media registry is only available for V2 drafts")
+        return {
+            "contract_version": 2,
+            "draft_id": draft_id,
+            "groups": self.media_assets.list_draft_media(workspace_id, draft_id),
+        }
+
+    def media_asset_content(
+        self,
+        asset_id: str,
+        *,
+        workspace_id: str,
+        expires: int,
+        signature: str,
+    ) -> tuple[Path, str]:
+        try:
+            return self.media_assets.media_asset_content(
+                asset_id,
+                workspace_id=workspace_id,
+                expires=expires,
+                signature=signature,
+            )
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+
+    def retry_media_asset(self, asset_id: str, *, workspace_id: str = "local") -> dict[str, Any]:
+        try:
+            asset = self.media_assets.retry_asset(asset_id, workspace_id=workspace_id)
+            self._launch_media_materialization(workspace_id)
+            return asset
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+        except MediaMaterializationConflict as exc:
+            raise ProductProcessingConflict(str(exc)) from exc
 
     def begin_preview_finalize(
         self,

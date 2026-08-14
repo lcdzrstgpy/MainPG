@@ -20,6 +20,7 @@ export type Draft = {
   declared_price: number | null;
   status: DraftStatus;
   raw_payload: Record<string, any>;
+  media_contract_version: number;
   created_at: string;
   updated_at: string;
 };
@@ -204,6 +205,70 @@ export type PreviewImageManifest = {
   semantic_asset_ids: Record<string, string>;
 };
 
+export type MediaAssetOrigin =
+  | "remote_source"
+  | "ai_generated"
+  | "preview_upload"
+  | "dimension_rendered";
+
+export type MediaAssetStatus =
+  | "pending"
+  | "materializing"
+  | "ready"
+  | "retryable"
+  | "failed";
+
+export type MediaAssetView = {
+  id: string;
+  origin: MediaAssetOrigin;
+  status: MediaAssetStatus;
+  content_type: string;
+  width: number;
+  height: number;
+  preview_url: string;
+  error_code: string;
+  error_message: string;
+};
+
+export type MediaBindingView = {
+  binding_id: string;
+  asset_id: string;
+  role: string;
+  slot_id: string;
+  sku_id: string;
+  variant_label: string;
+  sort_order: number;
+  status: MediaAssetStatus;
+  preview_url: string;
+  width: number;
+  height: number;
+  content_type: string;
+  error_code: string;
+  error_message: string;
+};
+
+export type ImageManifestV2 = {
+  main_asset_id: string;
+  carousel_asset_ids: string[];
+  detail_asset_ids: string[];
+  semantic_asset_ids: Record<string, string>;
+};
+
+export type DraftMediaGroups = {
+  main: MediaBindingView[];
+  gallery: MediaBindingView[];
+  detail: MediaBindingView[];
+  sku: MediaBindingView[];
+  carousel: MediaBindingView[];
+  dimension: MediaBindingView[];
+};
+
+export type DraftMediaResponse = {
+  contract_version: number;
+  draft_id: number;
+  groups: DraftMediaGroups & Record<string, MediaBindingView[]>;
+};
+
 export type PreviewFinalizeRun = {
   id: string;
   task_id: number;
@@ -236,6 +301,7 @@ export type PreviewOverrides = {
 export type PreviewItem = {
   item_id: number;
   product_draft_id: number | null;
+  media_contract_version: number;
   preview_revision: number;
   result_version: string;
   exportable: boolean;

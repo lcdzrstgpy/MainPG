@@ -81,6 +81,7 @@ class PreviewImageRepository:
         width: int,
         height: int,
         source_asset_id: str = "",
+        media_asset_id: str = "",
     ) -> dict[str, Any]:
         workspace = str(workspace_id or "").strip()
         identity = str(identity_hash or "").strip().casefold()
@@ -99,6 +100,7 @@ class PreviewImageRepository:
             "product_draft_id": int(product_draft_id),
             "origin": str(origin or "source")[:32],
             "source_asset_id": str(source_asset_id or "")[:64],
+            "media_asset_id": str(media_asset_id or "")[:36],
             "identity_hash": identity[:64],
             "access_token": uuid4().hex,
             "managed_path": str(managed_path or ""),
@@ -1407,6 +1409,7 @@ class PreviewImageRepository:
             "product_draft_id": row.product_draft_id,
             "origin": row.origin,
             "source_asset_id": row.source_asset_id,
+            "media_asset_id": row.media_asset_id,
             "identity_hash": row.identity_hash,
             "access_token": row.access_token,
             "managed_path": row.managed_path,

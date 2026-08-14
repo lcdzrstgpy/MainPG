@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import {
   finalizeProductPreview,
+  getDraftMedia,
   getPreviewFinalizeRun,
+  retryMediaAsset,
   retryPreviewFinalizeRun,
   saveProductPreview,
   uploadPreviewAssets,
@@ -22,6 +24,8 @@ import {
   type PrecheckFinalizeRefresh,
 } from '../data/precheckFinalizeRefresh';
 import type {
+  DraftMediaGroups,
+  MediaBindingView,
   PreviewCoreFields,
   PreviewFinalizeRun,
   PreviewImageAsset,
@@ -183,6 +187,10 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const ctx = useMemo(() => api(), []);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [edits, setEdits] = useState<Record<number, ItemEdits>>({});
+  const [draftMedia, setDraftMedia] = useState<
+    Record<number, DraftMediaGroups & Record<string, MediaBindingView[]>>
+  >({});
+  const [retryingMediaAssetIds, setRetryingMediaAssetIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [pendingUploads, setPendingUploads] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -215,6 +223,23 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     try {
       const data = await ppRequest<PreviewResponse>(ctx, `${API_BASE}/tasks/${taskId}/preview`);
       setPreview(data);
+      const mediaResults = await Promise.allSettled(
+        data.items
+          .filter((item) => item.product_draft_id != null && item.media_contract_version >= 2)
+          .map(async (item) => ({
+            draftId: item.product_draft_id as number,
+            media: await getDraftMedia(ctx, item.product_draft_id as number),
+          })),
+      );
+      const nextDraftMedia: Record<number, DraftMediaGroups & Record<string, MediaBindingView[]>> = {};
+      const mediaFailure = mediaResults.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      for (const result of mediaResults) {
+        if (result.status === 'fulfilled') nextDraftMedia[result.value.draftId] = result.value.media.groups;
+      }
+      setDraftMedia(nextDraftMedia);
+      if (mediaFailure) fail(mediaFailure.reason);
       if (!preserveLocalEdits) setEdits({});
     } catch (err) {
       fail(err);
@@ -251,6 +276,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   useEffect(() => {
     setPreview(null);
     setEdits({});
+    setDraftMedia({});
+    setRetryingMediaAssetIds(new Set());
     setFinalizeRun(null);
     setUndoSnackbar(null);
     setActiveImage(null);
@@ -431,6 +458,46 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     }
   };
 
+  const retryDraftMediaAsset = async (draftId: number, assetId: string) => {
+    setRetryingMediaAssetIds((current) => new Set(current).add(assetId));
+    try {
+      const asset = await retryMediaAsset(ctx, assetId);
+      setDraftMedia((current) => {
+        const groups = current[draftId];
+        if (!groups) return current;
+        const nextGroups = Object.fromEntries(
+          Object.entries(groups).map(([group, media]) => [
+            group,
+            media.map((entry) => (
+              entry.asset_id === asset.id
+                ? {
+                  ...entry,
+                  status: asset.status,
+                  preview_url: asset.preview_url,
+                  width: asset.width,
+                  height: asset.height,
+                  content_type: asset.content_type,
+                  error_code: asset.error_code,
+                  error_message: asset.error_message,
+                }
+                : entry
+            )),
+          ]),
+        ) as DraftMediaGroups & Record<string, MediaBindingView[]>;
+        return { ...current, [draftId]: nextGroups };
+      });
+      notify('素材已加入重新同步队列');
+    } catch (err) {
+      fail(err);
+    } finally {
+      setRetryingMediaAssetIds((current) => {
+        const next = new Set(current);
+        next.delete(assetId);
+        return next;
+      });
+    }
+  };
+
   const saveAll = async () => {
     if (pendingUploads > 0) {
       fail('图片仍在导入，请等待完成后保存');
@@ -605,6 +672,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         const coreFields = effectiveCoreFields(item);
         const manifest = effectiveManifest(item);
         const assets = effectiveAssets(item);
+        const mediaGroups = item.media_contract_version >= 2 ? draftMedia[draftId] : undefined;
         const hasOverrides = itemIsDirty(item);
         return (
           <section key={item.item_id} className={`verify-section precheck-card${hasOverrides ? ' is-edited' : ''}`}>
@@ -690,6 +758,9 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                   }}
                   onManifestChange={(nextManifest) => setManifest(draftId, nextManifest)}
                   onPreview={setActiveImage}
+                  mediaGroups={mediaGroups}
+                  retryingMediaAssetIds={retryingMediaAssetIds}
+                  onRetryMediaAsset={(assetId) => void retryDraftMediaAsset(draftId, assetId)}
                   onUndoAvailable={(undo) => setUndoSnackbar({
                     draftId,
                     undo,

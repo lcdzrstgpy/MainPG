@@ -7,7 +7,17 @@ import {
   type PrecheckImageTarget,
   type RemovedAssetUndo,
 } from "../data/precheckImageModel";
-import type { PreviewImageAsset, PreviewImageManifest } from "../types";
+import {
+  DRAFT_MEDIA_GROUPS,
+  mediaStatusLabel,
+  supportsMediaRetry,
+} from "../data/draftMediaModel";
+import type {
+  DraftMediaGroups,
+  MediaBindingView,
+  PreviewImageAsset,
+  PreviewImageManifest,
+} from "../types";
 
 type PrecheckImageManagerProps = {
   assets: PreviewImageAsset[];
@@ -17,6 +27,9 @@ type PrecheckImageManagerProps = {
   onManifestChange: (manifest: PreviewImageManifest) => void;
   onPreview: (url: string) => void;
   onUndoAvailable: (undo: RemovedAssetUndo) => void;
+  mediaGroups?: DraftMediaGroups & Record<string, MediaBindingView[]>;
+  retryingMediaAssetIds?: ReadonlySet<string>;
+  onRetryMediaAsset?: (assetId: string) => void;
 };
 
 const ORIGIN_LABELS: Record<PreviewImageAsset["origin"], string> = {
@@ -33,6 +46,15 @@ const PUBLICATION_LABELS: Record<PreviewImageAsset["publication_status"], string
   publishing: "发布中",
   published: "已发布",
   publish_failed: "发布失败",
+};
+
+const MEDIA_GROUP_LABELS: Record<string, string> = {
+  main: "主图",
+  gallery: "来源轮播",
+  detail: "详情图",
+  sku: "SKU 图",
+  carousel: "处理后轮播",
+  dimension: "尺寸图",
 };
 
 function assetUrl(asset: PreviewImageAsset | undefined): string {
@@ -125,6 +147,125 @@ function PreviewAsset({
   );
 }
 
+function V2MediaAsset({
+  group,
+  media,
+  disabled,
+  retrying,
+  onPreview,
+  onRetry,
+}: {
+  group: string;
+  media: MediaBindingView;
+  disabled: boolean;
+  retrying: boolean;
+  onPreview: (url: string) => void;
+  onRetry?: (assetId: string) => void;
+}) {
+  const retryAvailable = supportsMediaRetry(media.status) && onRetry != null;
+  const skuLabel = [media.sku_id, media.variant_label].filter(Boolean).join(" · ");
+  return (
+    <article className="precheck-asset-card precheck-v2-media-card">
+      <button
+        type="button"
+        className="precheck-asset-preview"
+        disabled={!media.preview_url}
+        aria-label={`预览${MEDIA_GROUP_LABELS[group] ?? group}`}
+        onClick={() => media.preview_url && onPreview(media.preview_url)}
+      >
+        {media.preview_url ? (
+          <img
+            src={media.preview_url}
+            alt={MEDIA_GROUP_LABELS[group] ?? group}
+            loading="lazy"
+            onError={(event) => { event.currentTarget.style.visibility = "hidden"; }}
+          />
+        ) : (
+          <span>{mediaStatusLabel(media.status)}</span>
+        )}
+      </button>
+      <div className="precheck-asset-meta">
+        <span className="precheck-origin-badge">{MEDIA_GROUP_LABELS[group] ?? group}</span>
+        <span className={`precheck-publication status-${media.status}`}>
+          {mediaStatusLabel(media.status)}
+        </span>
+      </div>
+      {skuLabel && <p className="precheck-v2-sku">{skuLabel}</p>}
+      {media.error_message && <p className="precheck-v2-error">{media.error_message}</p>}
+      <small title={media.asset_id}>{media.asset_id}</small>
+      {retryAvailable && (
+        <div className="precheck-card-actions">
+          <button
+            type="button"
+            disabled={disabled || retrying}
+            onClick={() => onRetry(media.asset_id)}
+          >
+            {retrying ? "重试中…" : "重新同步"}
+          </button>
+        </div>
+      )}
+    </article>
+  );
+}
+
+function V2MediaRegistry({
+  groups,
+  disabled,
+  retryingMediaAssetIds,
+  onPreview,
+  onRetryMediaAsset,
+}: {
+  groups: DraftMediaGroups & Record<string, MediaBindingView[]>;
+  disabled: boolean;
+  retryingMediaAssetIds: ReadonlySet<string>;
+  onPreview: (url: string) => void;
+  onRetryMediaAsset?: (assetId: string) => void;
+}) {
+  const knownGroups = new Set<string>(DRAFT_MEDIA_GROUPS);
+  const groupNames = [
+    ...DRAFT_MEDIA_GROUPS,
+    ...Object.keys(groups).filter((group) => !knownGroups.has(group)).sort(),
+  ];
+  const hasMedia = groupNames.some((group) => groups[group]?.length);
+  return (
+    <section className="precheck-manager-section precheck-v2-media-registry">
+      <header>
+        <div>
+          <h3>统一素材状态</h3>
+          <p>素材 ID 是唯一身份；图片地址只用于展示，不参与路径推断或画布导入。</p>
+        </div>
+      </header>
+      {!hasMedia ? (
+        <div className="precheck-manager-empty is-warning">当前草稿尚无已绑定的 V2 素材。</div>
+      ) : groupNames.map((group) => {
+        const media = groups[group] ?? [];
+        if (media.length === 0) return null;
+        return (
+          <section key={group} className="precheck-v2-media-group">
+            <header>
+              <strong>{MEDIA_GROUP_LABELS[group] ?? group}</strong>
+              <span>{media.length} 项</span>
+            </header>
+            <div className="precheck-asset-grid">
+              {media.map((entry) => (
+                <V2MediaAsset
+                  key={entry.binding_id}
+                  group={group}
+                  media={entry}
+                  disabled={disabled}
+                  retrying={retryingMediaAssetIds.has(entry.asset_id)}
+                  onPreview={onPreview}
+                  onRetry={onRetryMediaAsset}
+                />
+              ))}
+            </div>
+          </section>
+        );
+      })}
+    </section>
+  );
+}
+
 export function PrecheckImageManager({
   assets,
   manifest,
@@ -133,6 +274,9 @@ export function PrecheckImageManager({
   onManifestChange,
   onPreview,
   onUndoAvailable,
+  mediaGroups,
+  retryingMediaAssetIds = new Set<string>(),
+  onRetryMediaAsset,
 }: PrecheckImageManagerProps) {
   const assetById = new Map(assets.map((asset) => [asset.id, asset]));
 
@@ -160,6 +304,15 @@ export function PrecheckImageManager({
 
   return (
     <div className={`precheck-image-manager${disabled ? " is-disabled" : ""}`}>
+      {mediaGroups && (
+        <V2MediaRegistry
+          groups={mediaGroups}
+          disabled={disabled}
+          retryingMediaAssetIds={retryingMediaAssetIds}
+          onPreview={onPreview}
+          onRetryMediaAsset={onRetryMediaAsset}
+        />
+      )}
       <section className="precheck-manager-section precheck-library">
         <header>
           <div>

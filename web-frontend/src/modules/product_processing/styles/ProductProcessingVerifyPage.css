@@ -1322,6 +1322,72 @@
   line-height: 1.45;
 }
 
+.precheck-v2-media-registry {
+  border-color: #b8d7e7;
+  background: linear-gradient(135deg, #f4fbff, #fbfdff);
+}
+
+.precheck-v2-media-group {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.precheck-v2-media-group + .precheck-v2-media-group {
+  border-top: 1px solid #dce9f2;
+  padding-top: 12px;
+}
+
+.precheck-v2-media-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #41657f;
+  font-size: 0.72rem;
+}
+
+.precheck-v2-media-group > header span {
+  color: #7c91a6;
+  font-size: 0.66rem;
+}
+
+.precheck-v2-sku,
+.precheck-v2-error {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.64rem;
+  line-height: 1.4;
+}
+
+.precheck-v2-sku {
+  color: #476b85;
+  font-weight: 750;
+}
+
+.precheck-v2-error {
+  color: #b34b42;
+}
+
+.precheck-publication.status-pending,
+.precheck-publication.status-materializing {
+  border-color: #9acff0;
+  background: #eaf6ff;
+  color: #0a6ba8;
+}
+
+.precheck-publication.status-retryable {
+  border-color: #ead38d;
+  background: #fff9df;
+  color: #896414;
+}
+
+.precheck-publication.status-failed {
+  border-color: #efc6c3;
+  background: #fff0ef;
+  color: #bd3e34;
+}
+
 .precheck-library {
   background: linear-gradient(135deg, #f8fcff, #f2f8fc);
 }
