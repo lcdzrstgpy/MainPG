@@ -27,6 +27,7 @@ class DimensionAnnotation(BaseModel):
     label: tuple[float, float]
     style: Literal["auto", "dark", "light", "gray_dashed"] = "auto"
     line_width: Literal["thin", "normal", "thick"] = "normal"
+    endpoint_style: Literal["arrow", "bar", "none"] = "arrow"
     unit: Literal["cm", "mm", "in", "ft"] = "cm"
 
 
@@ -218,22 +219,40 @@ class DimensionRenderer:
             )
         else:
             draw.line((start, end), fill=color, width=line_width)
-        _draw_arrow_head(
-            draw,
-            tip=start,
-            toward=end,
-            length=arrow_length,
-            half_width=arrow_half_width,
-            fill=color,
-        )
-        _draw_arrow_head(
-            draw,
-            tip=end,
-            toward=start,
-            length=arrow_length,
-            half_width=arrow_half_width,
-            fill=color,
-        )
+        if annotation.endpoint_style == "arrow":
+            _draw_arrow_head(
+                draw,
+                tip=start,
+                toward=end,
+                length=arrow_length,
+                half_width=arrow_half_width,
+                fill=color,
+            )
+            _draw_arrow_head(
+                draw,
+                tip=end,
+                toward=start,
+                length=arrow_length,
+                half_width=arrow_half_width,
+                fill=color,
+            )
+        elif annotation.endpoint_style == "bar":
+            _draw_endpoint_bar(
+                draw,
+                point=start,
+                toward=end,
+                half_length=arrow_half_width,
+                width=line_width,
+                fill=color,
+            )
+            _draw_endpoint_bar(
+                draw,
+                point=end,
+                toward=start,
+                half_length=arrow_half_width,
+                width=line_width,
+                fill=color,
+            )
 
         draw.text(
             label_point,
@@ -379,4 +398,30 @@ def _draw_arrow_head(
             (round(base_x - perpendicular_x), round(base_y - perpendicular_y)),
         ],
         fill=fill,
+    )
+
+
+def _draw_endpoint_bar(
+    draw: ImageDraw.ImageDraw,
+    *,
+    point: tuple[int, int],
+    toward: tuple[int, int],
+    half_length: int,
+    width: int,
+    fill: tuple[int, int, int],
+) -> None:
+    delta_x = toward[0] - point[0]
+    delta_y = toward[1] - point[1]
+    magnitude = math.hypot(delta_x, delta_y)
+    if magnitude <= 0:
+        return
+    perpendicular_x = (-delta_y / magnitude) * half_length
+    perpendicular_y = (delta_x / magnitude) * half_length
+    draw.line(
+        (
+            (round(point[0] - perpendicular_x), round(point[1] - perpendicular_y)),
+            (round(point[0] + perpendicular_x), round(point[1] + perpendicular_y)),
+        ),
+        fill=fill,
+        width=width,
     )

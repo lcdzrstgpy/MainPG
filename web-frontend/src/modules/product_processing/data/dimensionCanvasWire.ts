@@ -130,6 +130,7 @@ export function serializeSaveDimensionItemRequest(request: SaveDimensionItemRequ
       label: { x: annotation.label.x, y: annotation.label.y },
       style: annotation.style,
       line_width: annotation.lineWidth,
+      endpoint_style: annotation.endpointStyle,
       unit: annotation.unit,
     })),
     canvas_settings: request.canvas_settings,

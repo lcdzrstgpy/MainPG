@@ -18,6 +18,10 @@ const pageSource = readFileSync(
   new URL("../pages/DimensionCanvasPage.tsx", import.meta.url),
   "utf8",
 );
+const apiSource = readFileSync(
+  new URL("../api/dimensionCanvasApi.ts", import.meta.url),
+  "utf8",
+);
 const globalStyles = readFileSync(
   new URL("../../../shared/styles/global.css", import.meta.url),
   "utf8",
@@ -79,6 +83,29 @@ test("annotation style includes a gray dashed option in preview and toolbar", ()
   assert.match(toolbarSource, /灰虚线/);
   assert.match(stageSource, /annotation\.style === "gray_dashed" \? \[9, 7\]/);
   assert.match(canvasStyles, /\.dimension-color-dot\.is-gray_dashed/);
+});
+
+test("dimension tools expose three persistent endpoint modes above length width and height", () => {
+  const endpointModeIndex = toolbarSource.indexOf("dimension-endpoint-mode-row");
+  const dimensionToolsIndex = toolbarSource.indexOf("DIMENSION_TOOLS.map");
+  assert.ok(endpointModeIndex > 0 && endpointModeIndex < dimensionToolsIndex);
+  assert.match(toolbarSource, /key: "arrow", label: "三角"/);
+  assert.match(toolbarSource, /key: "bar", label: "横杠"/);
+  assert.match(toolbarSource, /key: "none", label: "无"/);
+  assert.match(toolbarSource, /activeEndpointStyle === key \? "is-active"/);
+  assert.match(pageSource, /selectedAnnotationId: null/);
+  assert.match(stageSource, /endpointStyle === "arrow"/);
+  assert.match(stageSource, /endpointStyle === "bar"/);
+  assert.match(canvasStyles, /\.dimension-endpoint-mode-row button\.is-active/);
+  assert.match(apiSource, /raw\.endpoint_style \?\? raw\.endpointStyle \?\? "arrow"/);
+  assert.match(apiSource, /rawSettings\.endpoint_style \?\? rawSettings\.endpointStyle \?\? "arrow"/);
+});
+
+test("selected annotations highlight endpoints without visible circular handles", () => {
+  assert.match(stageSource, /function endpointAccentPoints/);
+  assert.match(stageSource, /key={`endpoint-accent-\$\{index\}`}/);
+  assert.match(stageSource, /fill="rgba\(0,0,0,0\.001\)"/);
+  assert.doesNotMatch(stageSource, /radius=\{7\}[\s\S]*?fill="#ffffff"/);
 });
 
 test("desktop sidebar is fixed to the viewport", () => {

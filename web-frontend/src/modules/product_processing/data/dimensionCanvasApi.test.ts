@@ -27,9 +27,10 @@ test("save payload explicitly serializes nested editor state to snake case", () 
       label: { x: .5, y: .75 },
       style: "auto",
       lineWidth: "thick",
+      endpointStyle: "bar",
       unit: "ft",
     }],
-    canvas_settings: { fit: "contain", style: "auto", display_unit: "ft", custom_value_cm: null },
+    canvas_settings: { fit: "contain", style: "auto", display_unit: "ft", custom_value_cm: null, endpoint_style: "bar" },
   });
 
   const dimensions = payload.physical_dimensions as Record<string, Record<string, unknown>>;
@@ -44,6 +45,7 @@ test("save payload explicitly serializes nested editor state to snake case", () 
   assert.equal("valueCm" in annotations[0], false);
   assert.deepEqual(annotations[0].start, { x: .1, y: .8 });
   assert.equal(annotations[0].line_width, "thick");
+  assert.equal(annotations[0].endpoint_style, "bar");
   assert.equal(annotations[0].unit, "ft");
 });
 

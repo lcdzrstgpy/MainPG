@@ -26,6 +26,7 @@ function annotation(id: string, key: DimensionKey, valueCm: number): DimensionAn
     label: { x: 0.5, y: 0.75 },
     style: "auto",
     lineWidth: "normal",
+    endpointStyle: "arrow",
     unit: "cm",
   };
 }
@@ -45,6 +46,7 @@ function fixtureState(input: { length?: number; annotations?: DimensionAnnotatio
     selectedAnnotationId: null,
     displayUnit: "cm",
     customValueCm: null,
+    endpointStyle: "bar",
   };
 }
 
@@ -64,6 +66,7 @@ test("annotation points are normalized and immutable", () => {
   assert.deepEqual(next.annotations[0].start, { x: 0, y: 0.8 });
   assert.deepEqual(next.annotations[0].end, { x: 1, y: 0.8 });
   assert.equal(next.annotations[0].lineWidth, "normal");
+  assert.equal(next.annotations[0].endpointStyle, "bar");
 });
 
 test("queue navigation keeps sparse stable ids", () => {

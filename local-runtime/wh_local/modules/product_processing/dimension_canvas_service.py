@@ -733,7 +733,7 @@ class DimensionCanvasService:
             raise ValueError("canvas_settings must be an object")
         if "canvas_settings" in cleaned:
             settings = dict(cleaned["canvas_settings"] or {})
-            unknown_settings = set(settings) - {"fit", "style", "display_unit", "custom_value_cm"}
+            unknown_settings = set(settings) - {"fit", "style", "display_unit", "custom_value_cm", "endpoint_style"}
             if unknown_settings:
                 raise ValueError(f"unsupported canvas settings: {sorted(unknown_settings)}")
             if str(settings.get("fit") or "contain") not in {"contain", "cover"}:
@@ -742,6 +742,8 @@ class DimensionCanvasService:
                 raise ValueError("canvas style is invalid")
             if str(settings.get("display_unit") or "cm") not in {"cm", "mm", "in", "ft"}:
                 raise ValueError("canvas display unit is invalid")
+            if str(settings.get("endpoint_style") or "arrow") not in {"arrow", "bar", "none"}:
+                raise ValueError("canvas endpoint style is invalid")
             custom_value = settings.get("custom_value_cm")
             if custom_value is not None and float(custom_value) <= 0:
                 raise ValueError("custom dimension value must be positive")
@@ -769,6 +771,7 @@ class DimensionCanvasService:
             "label": DimensionCanvasService._point(value.get("label"), "label"),
             "style": str(value.get("style") or "auto"),
             "line_width": str(value.get("line_width") or "normal"),
+            "endpoint_style": str(value.get("endpoint_style") or "arrow"),
             "unit": str(value.get("unit") or "cm"),
         }
         # Run the actual renderer contract at the API boundary too.
@@ -798,6 +801,7 @@ class DimensionCanvasService:
             label=(float(value["label"]["x"]), float(value["label"]["y"])),
             style=value.get("style") or "auto",
             line_width=value.get("line_width") or "normal",
+            endpoint_style=value.get("endpoint_style") or "arrow",
             unit=value.get("unit") or "cm",
         )
 

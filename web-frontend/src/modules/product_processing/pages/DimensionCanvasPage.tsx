@@ -307,8 +307,8 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
     }
     const confirmed = new Set(["source_confirmed", "manual_confirmed"]).has(dimension.provenance);
     const next = confirmed ? editor : changeDimensionValue(editor, key, dimension.valueCm);
-    updateEditor({ ...next, activeTool: key }, !confirmed, !confirmed);
-    setMessage(confirmed ? `已选择“${DIMENSION_LABELS[key]}”，请在图上拖出双箭头` : `已确认“${DIMENSION_LABELS[key]}”并进入绘制`);
+    updateEditor({ ...next, activeTool: key, selectedAnnotationId: null }, !confirmed, !confirmed);
+    setMessage(confirmed ? `已选择“${DIMENSION_LABELS[key]}”，请在图上拖出尺寸线` : `已确认“${DIMENSION_LABELS[key]}”并进入绘制`);
   };
 
   const uploadAsset = async (file: File | null) => {
@@ -519,7 +519,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               canRedo={history.future.length > 0}
               onTool={(activeTool: DimensionKey | "select") => {
                 if (activeTool === "select" || activeTool === "custom") {
-                  updateEditor({ ...editor, activeTool }, false, false);
+                  updateEditor({ ...editor, activeTool, selectedAnnotationId: activeTool === "select" ? editor.selectedAnnotationId : null }, false, false);
                 } else {
                   selectDimensionTool(activeTool);
                 }
@@ -533,6 +533,16 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               onReset={() => setZoom(1)}
               onStyle={(style) => updateEditor({ ...editor, annotations: editor.annotations.map((annotation) => editor.selectedAnnotationId === annotation.id ? { ...annotation, style } : annotation) })}
               onLineWidth={(lineWidth) => updateEditor({ ...editor, annotations: editor.annotations.map((annotation) => editor.selectedAnnotationId === annotation.id ? { ...annotation, lineWidth } : annotation) })}
+              onEndpointStyle={(endpointStyle) => {
+                const changesSelected = Boolean(editor.selectedAnnotationId);
+                updateEditor({
+                  ...editor,
+                  endpointStyle,
+                  annotations: editor.annotations.map((annotation) => editor.selectedAnnotationId === annotation.id
+                    ? { ...annotation, endpointStyle }
+                    : annotation),
+                }, changesSelected, changesSelected);
+              }}
               onCustomValueChange={(customValueCm) => updateEditor({ ...editor, customValueCm })}
             />
             <main className="dimension-stage-panel">
@@ -589,6 +599,7 @@ function nullEditor(): EditorState {
     selectedAnnotationId: null,
     displayUnit: "cm",
     customValueCm: null,
+    endpointStyle: "arrow",
   };
 }
 

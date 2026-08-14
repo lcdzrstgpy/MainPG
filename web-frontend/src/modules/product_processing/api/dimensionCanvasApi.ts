@@ -67,6 +67,7 @@ function mapAnnotation(value: unknown): DimensionAnnotation {
     label: point(raw.label),
     style: stringValue(raw.style || "auto") as DimensionAnnotation["style"],
     lineWidth: stringValue(raw.line_width ?? raw.lineWidth ?? "normal") as DimensionAnnotation["lineWidth"],
+    endpointStyle: stringValue(raw.endpoint_style ?? raw.endpointStyle ?? "arrow") as DimensionAnnotation["endpointStyle"],
     unit: stringValue(raw.unit || "cm") as DimensionAnnotation["unit"],
   };
 }
@@ -103,6 +104,7 @@ export function mapItem(value: unknown): DimensionCanvasItem {
     customValueCm: rawSettings.custom_value_cm == null && rawSettings.customValueCm == null
       ? null
       : numberValue(rawSettings.custom_value_cm ?? rawSettings.customValueCm),
+    endpointStyle: stringValue(rawSettings.endpoint_style ?? rawSettings.endpointStyle ?? "arrow") as EditorState["endpointStyle"],
   };
   return {
     id: stringValue(raw.id ?? raw.dimension_item_id),

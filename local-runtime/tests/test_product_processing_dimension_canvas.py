@@ -64,7 +64,11 @@ def _dimensions(value: float = 10) -> dict:
     }
 
 
-def _annotation(value: float = 10, line_width: str = "normal") -> dict:
+def _annotation(
+    value: float = 10,
+    line_width: str = "normal",
+    endpoint_style: str = "arrow",
+) -> dict:
     return {
         "id": "a1",
         "key": "length",
@@ -74,6 +78,7 @@ def _annotation(value: float = 10, line_width: str = "normal") -> dict:
         "label": {"x": 0.5, "y": 0.7},
         "style": "auto",
         "line_width": line_width,
+        "endpoint_style": endpoint_style,
     }
 
 
@@ -82,6 +87,24 @@ def test_annotation_line_width_is_normalized_and_validated() -> None:
     assert normalized["line_width"] == "thick"
     with pytest.raises(ValueError):
         DimensionCanvasService._normalize_annotation(_annotation(line_width="extra-thick"))
+
+
+def test_annotation_endpoint_style_is_normalized_and_validated() -> None:
+    normalized = DimensionCanvasService._normalize_annotation(_annotation(endpoint_style="bar"))
+    assert normalized["endpoint_style"] == "bar"
+    with pytest.raises(ValueError):
+        DimensionCanvasService._normalize_annotation(_annotation(endpoint_style="circle"))
+
+
+def test_canvas_endpoint_style_is_accepted_and_validated() -> None:
+    cleaned = DimensionCanvasService._validate_save_patch(
+        {"canvas_settings": {"endpoint_style": "none"}}
+    )
+    assert cleaned["canvas_settings"]["endpoint_style"] == "none"
+    with pytest.raises(ValueError, match="endpoint style"):
+        DimensionCanvasService._validate_save_patch(
+            {"canvas_settings": {"endpoint_style": "circle"}}
+        )
 
 
 def _seed(database, workspace_id: str = "local", *, remote: bool = False) -> dict:

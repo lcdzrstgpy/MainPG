@@ -3,6 +3,7 @@ import type { KonvaEventObject } from "konva/lib/Node";
 import "konva/lib/shapes/Arrow";
 import "konva/lib/shapes/Circle";
 import "konva/lib/shapes/Label";
+import "konva/lib/shapes/Line";
 import "konva/lib/shapes/Rect";
 import "konva/lib/shapes/Text";
 import {
@@ -11,7 +12,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Arrow, Circle, Group, Label, Layer, Rect, Stage, Tag, Text } from "react-konva/lib/ReactKonvaCore";
+import { Arrow, Circle, Group, Label, Layer, Line, Rect, Stage, Tag, Text } from "react-konva/lib/ReactKonvaCore";
 
 import { clampPoint, formatDimension, updateAnnotation } from "../data/dimensionCanvasModel";
 import type {
@@ -74,6 +75,33 @@ function lineMetrics(annotation: DimensionAnnotation): { strokeWidth: number; po
   if (annotation.lineWidth === "thin") return { strokeWidth: 2, pointerWidth: 7 };
   if (annotation.lineWidth === "thick") return { strokeWidth: 6, pointerWidth: 13 };
   return { strokeWidth: 3, pointerWidth: 9 };
+}
+
+function endpointBarPoints(points: number[], halfLength: number): [number[], number[]] {
+  const [startX, startY, endX, endY] = points;
+  const deltaX = endX - startX;
+  const deltaY = endY - startY;
+  const magnitude = Math.hypot(deltaX, deltaY) || 1;
+  const perpendicularX = (-deltaY / magnitude) * halfLength;
+  const perpendicularY = (deltaX / magnitude) * halfLength;
+  return [
+    [startX - perpendicularX, startY - perpendicularY, startX + perpendicularX, startY + perpendicularY],
+    [endX - perpendicularX, endY - perpendicularY, endX + perpendicularX, endY + perpendicularY],
+  ];
+}
+
+function endpointAccentPoints(points: number[], length: number): [number[], number[]] {
+  const [startX, startY, endX, endY] = points;
+  const deltaX = endX - startX;
+  const deltaY = endY - startY;
+  const magnitude = Math.hypot(deltaX, deltaY) || 1;
+  const unitX = deltaX / magnitude;
+  const unitY = deltaY / magnitude;
+  const safeLength = Math.min(length, magnitude / 3);
+  return [
+    [startX, startY, startX + unitX * safeLength, startY + unitY * safeLength],
+    [endX - unitX * safeLength, endY - unitY * safeLength, endX, endY],
+  ];
 }
 
 function eventPoint(stage: Konva.Stage, size: number): NormalizedPoint {
@@ -399,6 +427,13 @@ export function DimensionCanvasStage({
 
   const visibleEditor = previewEditor ?? editor;
   const draft = drag?.kind === "create" ? drag : null;
+  const draftPoints = draft ? [
+    draft.start.x * canvasSize,
+    draft.start.y * canvasSize,
+    draft.current.x * canvasSize,
+    draft.current.y * canvasSize,
+  ] : [];
+  const draftBars = draft ? endpointBarPoints(draftPoints, 7) : [];
 
   return (
     <div
@@ -465,12 +500,15 @@ export function DimensionCanvasStage({
               const color = colorFor(annotation);
               const selected = visibleEditor.selectedAnnotationId === annotation.id;
               const metrics = lineMetrics(annotation);
+              const endpointStyle = annotation.endpointStyle ?? "arrow";
               const points = [
                 annotation.start.x * canvasSize,
                 annotation.start.y * canvasSize,
                 annotation.end.x * canvasSize,
                 annotation.end.y * canvasSize,
               ];
+              const bars = endpointBarPoints(points, Math.max(6, metrics.pointerWidth * 0.75));
+              const accents = endpointAccentPoints(points, Math.max(18, metrics.pointerWidth * 2.4));
               return (
                 <Group key={annotation.id}>
                   <Arrow
@@ -478,8 +516,8 @@ export function DimensionCanvasStage({
                     fill={color}
                     stroke={color}
                     strokeWidth={metrics.strokeWidth + (selected ? 1 : 0)}
-                    pointerAtBeginning
-                    pointerAtEnding
+                    pointerAtBeginning={endpointStyle === "arrow"}
+                    pointerAtEnding={endpointStyle === "arrow"}
                     pointerLength={10}
                     pointerWidth={metrics.pointerWidth}
                     dash={annotation.style === "gray_dashed" ? [9, 7] : undefined}
@@ -490,6 +528,37 @@ export function DimensionCanvasStage({
                     perfectDrawEnabled={false}
                     listening={false}
                   />
+                  {endpointStyle === "bar" && bars.map((barPoints, index) => (
+                    <Line
+                      key={`bar-${index}`}
+                      points={barPoints}
+                      stroke={selected ? "#149bd3" : color}
+                      strokeWidth={metrics.strokeWidth + (selected ? 1 : 0)}
+                      lineCap="round"
+                      shadowColor="#000000"
+                      shadowBlur={2}
+                      shadowOpacity={0.75}
+                      shadowOffsetY={1}
+                      perfectDrawEnabled={false}
+                      listening={false}
+                    />
+                  ))}
+                  {selected && accents.map((accentPoints, index) => (
+                    <Arrow
+                      key={`endpoint-accent-${index}`}
+                      points={accentPoints}
+                      fill="#149bd3"
+                      stroke="#149bd3"
+                      strokeWidth={metrics.strokeWidth + 1}
+                      pointerAtBeginning={endpointStyle === "arrow" && index === 0}
+                      pointerAtEnding={endpointStyle === "arrow" && index === 1}
+                      pointerLength={10}
+                      pointerWidth={metrics.pointerWidth}
+                      lineCap="round"
+                      perfectDrawEnabled={false}
+                      listening={false}
+                    />
+                  ))}
                   <Arrow
                     points={points}
                     fill="rgba(0,0,0,0.001)"
@@ -533,21 +602,21 @@ export function DimensionCanvasStage({
                       <Circle
                         x={annotation.start.x * canvasSize}
                         y={annotation.start.y * canvasSize}
-                        radius={7}
-                        fill="#ffffff"
-                        stroke="#149bd3"
-                        strokeWidth={3}
-                        hitStrokeWidth={16}
+                        radius={12}
+                        fill="rgba(0,0,0,0.001)"
+                        stroke="rgba(0,0,0,0.001)"
+                        strokeWidth={0}
+                        hitStrokeWidth={20}
                         onPointerDown={(event) => startMove(event, annotation.id, "start")}
                       />
                       <Circle
                         x={annotation.end.x * canvasSize}
                         y={annotation.end.y * canvasSize}
-                        radius={7}
-                        fill="#ffffff"
-                        stroke="#149bd3"
-                        strokeWidth={3}
-                        hitStrokeWidth={16}
+                        radius={12}
+                        fill="rgba(0,0,0,0.001)"
+                        stroke="rgba(0,0,0,0.001)"
+                        strokeWidth={0}
+                        hitStrokeWidth={20}
                         onPointerDown={(event) => startMove(event, annotation.id, "end")}
                       />
                     </>
@@ -558,23 +627,30 @@ export function DimensionCanvasStage({
           </Layer>
           <Layer listening={false}>
             {draft && (
-              <Arrow
-                points={[
-                  draft.start.x * canvasSize,
-                  draft.start.y * canvasSize,
-                  draft.current.x * canvasSize,
-                  draft.current.y * canvasSize,
-                ]}
-                fill="#149bd3"
-                stroke="#149bd3"
-                strokeWidth={3}
-                dash={[8, 6]}
-                pointerAtBeginning
-                pointerAtEnding
-                pointerLength={10}
-                pointerWidth={9}
-                perfectDrawEnabled={false}
-              />
+              <Group>
+                <Arrow
+                  points={draftPoints}
+                  fill="#149bd3"
+                  stroke="#149bd3"
+                  strokeWidth={3}
+                  dash={[8, 6]}
+                  pointerAtBeginning={editor.endpointStyle === "arrow"}
+                  pointerAtEnding={editor.endpointStyle === "arrow"}
+                  pointerLength={10}
+                  pointerWidth={9}
+                  perfectDrawEnabled={false}
+                />
+                {editor.endpointStyle === "bar" && draftBars.map((barPoints, index) => (
+                  <Line
+                    key={`draft-bar-${index}`}
+                    points={barPoints}
+                    stroke="#149bd3"
+                    strokeWidth={3}
+                    lineCap="round"
+                    perfectDrawEnabled={false}
+                  />
+                ))}
+              </Group>
             )}
           </Layer>
         </Stage>

@@ -1,4 +1,4 @@
-import type { DimensionKey, DimensionLineWidth, EditorState } from "../types/dimensionCanvas";
+import type { DimensionEndpointStyle, DimensionKey, DimensionLineWidth, EditorState } from "../types/dimensionCanvas";
 import { centimetersToUnit, unitToCentimeters } from "../data/dimensionCanvasModel";
 
 type Props = {
@@ -15,6 +15,7 @@ type Props = {
   onReset: () => void;
   onStyle: (style: "auto" | "dark" | "light" | "gray_dashed") => void;
   onLineWidth: (lineWidth: DimensionLineWidth) => void;
+  onEndpointStyle: (endpointStyle: DimensionEndpointStyle) => void;
   onCustomValueChange: (valueCm: number | null) => void;
 };
 
@@ -31,6 +32,28 @@ const ANNOTATION_STYLES = [
   { key: "gray_dashed", label: "灰虚线", title: "灰色虚线" },
 ] as const;
 
+const ENDPOINT_STYLES: Array<{ key: DimensionEndpointStyle; label: string; title: string }> = [
+  { key: "arrow", label: "三角", title: "两端三角箭头" },
+  { key: "bar", label: "横杠", title: "两端横杠端点" },
+  { key: "none", label: "无", title: "无端点直线" },
+];
+
+function EndpointStyleIcon({ style }: { style: DimensionEndpointStyle }) {
+  return (
+    <svg className={`dimension-endpoint-icon is-${style}`} viewBox="0 0 40 14" aria-hidden="true">
+      <line x1="7" y1="7" x2="33" y2="7" />
+      {style === "arrow" && <>
+        <path d="M7 7 L12 3 L12 11 Z" />
+        <path d="M33 7 L28 3 L28 11 Z" />
+      </>}
+      {style === "bar" && <>
+        <line x1="7" y1="2.5" x2="7" y2="11.5" />
+        <line x1="33" y1="2.5" x2="33" y2="11.5" />
+      </>}
+    </svg>
+  );
+}
+
 export function DimensionCanvasToolbar({
   editor,
   canUndo,
@@ -45,9 +68,11 @@ export function DimensionCanvasToolbar({
   onReset,
   onStyle,
   onLineWidth,
+  onEndpointStyle,
   onCustomValueChange,
 }: Props) {
   const selectedAnnotation = editor.annotations.find((annotation) => annotation.id === editor.selectedAnnotationId);
+  const activeEndpointStyle = selectedAnnotation?.endpointStyle ?? editor.endpointStyle;
   const toolReason = (key: Exclude<DimensionKey, "custom">): string => {
     const dimension = editor.dimensions[key];
     if (dimension.valueCm == null || dimension.valueCm <= 0) return "缺少商品本体尺寸";
@@ -68,6 +93,23 @@ export function DimensionCanvasToolbar({
         <button className={`dimension-tool-primary${editor.activeTool === "select" ? " is-active" : ""}`} onClick={() => onTool("select")}>
           <span aria-hidden="true">⌖</span>选择 / 移动
         </button>
+        <span className="dimension-tool-label dimension-tool-sublabel">箭头模式</span>
+        <div className="dimension-endpoint-mode-row" role="group" aria-label="尺寸线箭头模式">
+          {ENDPOINT_STYLES.map(({ key, label, title }) => (
+            <button
+              type="button"
+              key={key}
+              className={activeEndpointStyle === key ? "is-active" : ""}
+              onClick={() => onEndpointStyle(key)}
+              aria-label={title}
+              aria-pressed={activeEndpointStyle === key}
+              title={title}
+            >
+              <EndpointStyleIcon style={key} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
         {DIMENSION_TOOLS.map(({ key, label }) => {
           const reason = toolReason(key);
           return (

@@ -530,6 +530,45 @@
   box-shadow: -4px 0 0 -1px currentColor, 4px 0 0 -1px currentColor;
 }
 
+.dimension-endpoint-mode-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-bottom: 2px;
+}
+
+.dimension-endpoint-mode-row button {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 4px 2px;
+  color: var(--theme-text-secondary);
+  font-size: 10px;
+}
+
+.dimension-endpoint-mode-row button.is-active {
+  color: var(--theme-primary);
+  background: color-mix(in srgb, var(--theme-primary) 9%, var(--theme-module-surface-raised));
+}
+
+.dimension-endpoint-icon {
+  width: 34px;
+  height: 14px;
+  overflow: visible;
+}
+
+.dimension-endpoint-icon line {
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.dimension-endpoint-icon path {
+  fill: currentColor;
+}
+
 .dimension-tool-group.is-row {
   grid-template-columns: repeat(3, 1fr);
 }

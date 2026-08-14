@@ -3415,7 +3415,13 @@ class ProductProcessingService:
                 # after the deterministic split so one bad quadrant never redraws the
                 # three usable quadrants.
                 grid_prompt = f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}"
-                media = generate_one(grid_prompt, layout_scaffold=True)
+                # Do not rely on the provider default here. Some OpenAI-compatible
+                # gateways silently fall back to 1024 when size is omitted.
+                media = generate_one(
+                    grid_prompt,
+                    image_size="2048x2048",
+                    layout_scaffold=True,
+                )
                 record_media(media)
                 validation_started = time.perf_counter()
                 try:

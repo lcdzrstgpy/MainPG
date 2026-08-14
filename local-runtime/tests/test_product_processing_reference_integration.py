@@ -252,6 +252,7 @@ class _CapturingImageProcessor:
     def __init__(self) -> None:
         self.prompts: list[str] = []
         self.layout_scaffold_values: list[bool] = []
+        self.image_sizes: list[str | None] = []
 
     def generate(
         self,
@@ -260,11 +261,13 @@ class _CapturingImageProcessor:
         prompt: str,
         reference_values: list[str],
         layout_scaffold: bool = False,
+        image_size: str | None = None,
     ) -> SimpleNamespace:
         assert stage == "grid_image"
         assert reference_values == ["https://example.com/source.jpg"]
         self.prompts.append(prompt)
         self.layout_scaffold_values.append(layout_scaffold)
+        self.image_sizes.append(image_size)
         return SimpleNamespace(stage=stage, content=b"image", content_type="image/png", attempt_count=1)
 
     @staticmethod
@@ -319,6 +322,7 @@ def test_grid_image_reference_does_not_add_provider_calls(monkeypatch) -> None:
     )
     # A 模板与 B 模板一致使用固定 2x2 scaffold，保证四等分 + 直线分隔线的结构遵循度
     assert processor.layout_scaffold_values == [True]
+    assert processor.image_sizes == ["2048x2048"]
     assert len(carousel) == 4
     assert summary.endswith("grid_image_summary.png")
     assert sum(note.startswith("image_reference:") for note in notes) == 1
@@ -365,6 +369,7 @@ def test_b_grid_uses_fixed_scaffold_and_disables_paid_repair(monkeypatch) -> Non
     )
 
     assert processor.layout_scaffold_values == [True]
+    assert processor.image_sizes == ["2048x2048"]
     assert repair_options == []
     assert output.attempt_count == 1
     assert output.provider_status_class == "success"

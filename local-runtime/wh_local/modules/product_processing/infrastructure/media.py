@@ -341,7 +341,11 @@ class ProductImageProcessor:
                 guides = center_split_guides(source)
             panels = extract_grid_panels(source, guides)
         except Exception as exc:
-            raise MediaProcessingError("generated four-grid image cannot be split") from exc
+            detail = str(exc).strip()
+            message = "generated four-grid image cannot be split"
+            if detail:
+                message = f"{message}: {detail}"
+            raise MediaProcessingError(message) from exc
 
         target_size = DXM_IMAGE_TARGET_SIZE
         result: list[GeneratedMedia] = []
@@ -578,16 +582,24 @@ class ProductImageProcessor:
 
     @staticmethod
     def validate_four_grid(media: GeneratedMedia) -> None:
-        """Require a 2K square; divider evidence is best-effort (center fallback splits)."""
+        """Require a usable square grid; divider evidence is best-effort.
+
+        We request 2K from the provider, but some OpenAI-compatible gateways
+        ignore ``size`` and return 1024x1024. Four 512px source panels are still
+        usable for the workbench's 800px carousel output, so accept that common
+        fallback instead of failing the entire product.
+        """
         try:
             from PIL import Image  # type: ignore
 
             source = Image.open(BytesIO(media.content)).convert("RGB")
             width, height = source.size
-            if min(width, height) < 1800:
-                raise ValueError("four-grid source must be at least 1800px on each edge")
+            if min(width, height) < 1024:
+                raise ValueError(
+                    f"four-grid source is {width}x{height}; at least 1024px is required on each edge"
+                )
             if abs(width - height) / max(width, height) > 0.02:
-                raise ValueError("four-grid source must be square")
+                raise ValueError(f"four-grid source is {width}x{height}; a square image is required")
             try:
                 locate_split_guides(source)
             except Exception:
@@ -596,7 +608,11 @@ class ProductImageProcessor:
         except MediaConfigurationError:
             raise
         except Exception as exc:
-            raise MediaProcessingError("generated four-grid structure failed validation") from exc
+            detail = str(exc).strip()
+            message = "generated four-grid structure failed validation"
+            if detail:
+                message = f"{message}: {detail}"
+            raise MediaProcessingError(message) from exc
 
     def upload_to_cos(
         self,

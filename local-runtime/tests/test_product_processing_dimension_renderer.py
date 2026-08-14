@@ -72,6 +72,31 @@ def test_renderer_rejects_unknown_line_width() -> None:
         _length_annotation(line_width="extra-thick")
 
 
+def test_renderer_supports_arrow_bar_and_no_endpoint_modes() -> None:
+    def rendered(endpoint_style: str) -> Image.Image:
+        output = DimensionRenderer().render(
+            DimensionRenderRequest(
+                source_bytes=_source_bytes(),
+                annotations=[_length_annotation(endpoint_style=endpoint_style)],
+            )
+        )
+        return Image.open(BytesIO(output.master_png_bytes)).convert("RGB")
+
+    arrow = rendered("arrow")
+    bar = rendered("bar")
+    none = rendered("none")
+
+    assert arrow.getpixel((330, 1590)) != (255, 255, 255)
+    assert bar.getpixel((300, 1580)) != (255, 255, 255)
+    assert none.getpixel((330, 1590)) == (255, 255, 255)
+    assert none.getpixel((300, 1580)) == (255, 255, 255)
+
+
+def test_renderer_rejects_unknown_endpoint_style() -> None:
+    with pytest.raises(ValidationError):
+        _length_annotation(endpoint_style="circle")
+
+
 def test_renderer_draws_gray_dashed_annotation_with_visible_gaps() -> None:
     output = DimensionRenderer().render(
         DimensionRenderRequest(

@@ -36,6 +36,7 @@ export function addAnnotation(
     label,
     style: "auto",
     lineWidth: "normal",
+    endpointStyle: state.endpointStyle,
     unit: state.displayUnit,
   };
   return {
