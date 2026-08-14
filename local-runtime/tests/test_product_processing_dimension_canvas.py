@@ -60,7 +60,7 @@ def _dimensions(value: float = 10) -> dict:
     }
 
 
-def _annotation(value: float = 10) -> dict:
+def _annotation(value: float = 10, line_width: str = "normal") -> dict:
     return {
         "id": "a1",
         "key": "length",
@@ -69,7 +69,15 @@ def _annotation(value: float = 10) -> dict:
         "end": {"x": 0.85, "y": 0.8},
         "label": {"x": 0.5, "y": 0.7},
         "style": "auto",
+        "line_width": line_width,
     }
+
+
+def test_annotation_line_width_is_normalized_and_validated() -> None:
+    normalized = DimensionCanvasService._normalize_annotation(_annotation(line_width="thick"))
+    assert normalized["line_width"] == "thick"
+    with pytest.raises(ValueError):
+        DimensionCanvasService._normalize_annotation(_annotation(line_width="extra-thick"))
 
 
 def _seed(database, workspace_id: str = "local", *, remote: bool = False) -> dict:

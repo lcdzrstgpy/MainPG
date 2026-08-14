@@ -1,5 +1,6 @@
 export type DimensionKey = "length" | "width" | "height" | "custom";
 export type DimensionUnit = "cm" | "mm" | "in" | "ft";
+export type DimensionLineWidth = "thin" | "normal" | "thick";
 
 export type DimensionProvenance =
   | "source_confirmed"
@@ -32,7 +33,8 @@ export interface DimensionAnnotation {
   start: NormalizedPoint;
   end: NormalizedPoint;
   label: NormalizedPoint;
-  style: "auto" | "dark" | "light";
+  style: "auto" | "dark" | "light" | "gray_dashed";
+  lineWidth: DimensionLineWidth;
   unit: DimensionUnit;
 }
 

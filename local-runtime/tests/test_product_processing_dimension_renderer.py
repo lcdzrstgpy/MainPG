@@ -53,6 +53,39 @@ def test_renderer_outputs_crisp_2000_square() -> None:
     assert len(output.master_png_bytes) > len(source)
 
 
+def test_renderer_applies_thin_and_thick_line_presets() -> None:
+    def rendered_line_depth(line_width: str) -> int:
+        output = DimensionRenderer().render(
+            DimensionRenderRequest(
+                source_bytes=_source_bytes(),
+                annotations=[_length_annotation(line_width=line_width)],
+            )
+        )
+        rendered = Image.open(BytesIO(output.master_png_bytes)).convert("RGB")
+        return sum(rendered.getpixel((1000, y)) != (255, 255, 255) for y in range(1570, 1631))
+
+    assert rendered_line_depth("thick") > rendered_line_depth("thin")
+
+
+def test_renderer_rejects_unknown_line_width() -> None:
+    with pytest.raises(ValidationError):
+        _length_annotation(line_width="extra-thick")
+
+
+def test_renderer_draws_gray_dashed_annotation_with_visible_gaps() -> None:
+    output = DimensionRenderer().render(
+        DimensionRenderRequest(
+            source_bytes=_source_bytes(),
+            annotations=[_length_annotation(style="gray_dashed")],
+        )
+    )
+    rendered = Image.open(BytesIO(output.master_png_bytes)).convert("RGB")
+    samples = [rendered.getpixel((x, 1600)) for x in range(400, 1600)]
+
+    assert any(pixel == (123, 135, 148) for pixel in samples)
+    assert any(pixel == (255, 255, 255) for pixel in samples)
+
+
 def test_renderer_nudges_edge_label_inside_safe_margin() -> None:
     request = DimensionRenderRequest(
         source_bytes=_source_bytes(),

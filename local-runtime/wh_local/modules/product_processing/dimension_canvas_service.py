@@ -691,6 +691,7 @@ class DimensionCanvasService:
             "end": DimensionCanvasService._point(value.get("end"), "end"),
             "label": DimensionCanvasService._point(value.get("label"), "label"),
             "style": str(value.get("style") or "auto"),
+            "line_width": str(value.get("line_width") or "normal"),
             "unit": str(value.get("unit") or "cm"),
         }
         # Run the actual renderer contract at the API boundary too.
@@ -719,6 +720,7 @@ class DimensionCanvasService:
             end=(float(value["end"]["x"]), float(value["end"]["y"])),
             label=(float(value["label"]["x"]), float(value["label"]["y"])),
             style=value.get("style") or "auto",
+            line_width=value.get("line_width") or "normal",
             unit=value.get("unit") or "cm",
         )
 

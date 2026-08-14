@@ -27,7 +27,6 @@ ALLOWED_PLUGIN_COMMAND_TYPES = frozenset(
 )
 _TERMINAL = frozenset({"succeeded", "failed"})
 _ACTIVE_WINDOW = timedelta(minutes=10)
-_COMMAND_LEASE = timedelta(minutes=10)
 _LEGACY_LOCAL_ACTOR_ID = "local-demo-admin"
 _LEGACY_LOCAL_WORKSPACE_ID = "default"
 
@@ -158,40 +157,19 @@ class DataCollectionPluginQueue:
 
     def poll(self, session_token: str, *, limit: int = 10) -> tuple[PluginCommand, ...]:
         now = _now()
-        lease_cutoff = _lease_cutoff()
         with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                session = self._session(conn, session_token)
-                rows = conn.execute(
-                    """SELECT id FROM data_collection_plugin_commands
-                    WHERE session_id = ? AND (
-                      status = 'queued' OR (
-                        status IN ('sent', 'running') AND updated_at <= ?
-                      )
-                    )
-                    ORDER BY id LIMIT ?""",
-                    (session["id"], lease_cutoff, max(1, min(limit, 50))),
-                ).fetchall()
-                ids = [int(row["id"]) for row in rows]
-                if ids:
-                    marks = ",".join("?" for _ in ids)
-                    conn.execute(
-                        f"""UPDATE data_collection_plugin_commands
-                        SET status = 'sent', updated_at = ? WHERE id IN ({marks})""",
-                        (now, *ids),
-                    )
-                conn.execute(
-                    """UPDATE data_collection_plugin_sessions
-                    SET last_seen_at = ?, status = 'connected' WHERE id = ?""",
-                    (now, session["id"]),
-                )
-                commands = tuple(self._command(conn, command_id) for command_id in ids)
-                conn.commit()
-                return commands
-            except BaseException:
-                conn.rollback()
-                raise
+            session = self._session(conn, session_token)
+            rows = conn.execute(
+                """SELECT id FROM data_collection_plugin_commands
+                WHERE session_id = ? AND status = 'queued' ORDER BY id LIMIT ?""",
+                (session["id"], max(1, min(limit, 50))),
+            ).fetchall()
+            ids = [int(row["id"]) for row in rows]
+            if ids:
+                marks = ",".join("?" for _ in ids)
+                conn.execute(f"UPDATE data_collection_plugin_commands SET status = 'sent', updated_at = ? WHERE id IN ({marks})", (now, *ids))
+            conn.execute("UPDATE data_collection_plugin_sessions SET last_seen_at = ?, status = 'connected' WHERE id = ?", (now, session["id"]))
+            return tuple(self._command(conn, command_id) for command_id in ids)
 
     def receive_result(
         self,
@@ -201,12 +179,8 @@ class DataCollectionPluginQueue:
         status: str,
         result: Mapping[str, Any],
     ) -> PluginCommand:
-        if status not in {"sent", "running", *tuple(_TERMINAL)}:
+        if status not in {"running", *tuple(_TERMINAL)}:
             raise ValueError("unsupported command status")
-        # The delivered connector acknowledges a newly received command as
-        # ``sent``.  Storage calls that state ``running`` so its lease is kept
-        # alive until a terminal result arrives.
-        status = "running" if status == "sent" else status
         now = _now()
         with self._connect() as conn:
             session = self._session(conn, session_token)
@@ -418,10 +392,6 @@ class DataCollectionPluginQueue:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _lease_cutoff() -> str:
-    return (datetime.now(timezone.utc) - _COMMAND_LEASE).isoformat(timespec="seconds")
 
 
 def _active(value: str) -> bool:

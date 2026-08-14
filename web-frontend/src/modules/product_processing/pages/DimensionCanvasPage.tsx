@@ -510,24 +510,6 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
                   );
                 })}
               </div>
-              <label className="dimension-custom-value">自定义尺寸
-                <input
-                  type="number"
-                  min="0"
-                  step={editor.displayUnit === "mm" ? "1" : "0.01"}
-                  value={editor.customValueCm == null ? "" : Number(centimetersToUnit(editor.customValueCm, editor.displayUnit).toFixed(editor.displayUnit === "mm" ? 1 : 2))}
-                  onChange={(event) => {
-                    const parsed = Number(event.target.value);
-                    updateEditor({
-                      ...editor,
-                      customValueCm: event.target.value === "" || !Number.isFinite(parsed) || parsed <= 0
-                        ? null
-                        : unitToCentimeters(parsed, editor.displayUnit),
-                    });
-                  }}
-                />
-                <span>{editor.displayUnit}</span>
-              </label>
             </div>
           </section>
           <div className="dimension-editor-layout">
@@ -535,7 +517,13 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               editor={editor}
               canUndo={history.past.length > 0}
               canRedo={history.future.length > 0}
-              onTool={(activeTool: DimensionKey | "select") => updateEditor({ ...editor, activeTool }, false, false)}
+              onTool={(activeTool: DimensionKey | "select") => {
+                if (activeTool === "select" || activeTool === "custom") {
+                  updateEditor({ ...editor, activeTool }, false, false);
+                } else {
+                  selectDimensionTool(activeTool);
+                }
+              }}
               onUndo={undo}
               onRedo={redo}
               onDelete={() => editor.selectedAnnotationId && updateEditor(removeAnnotation(editor, editor.selectedAnnotationId))}
@@ -544,12 +532,15 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               onZoomOut={() => setZoom((value) => Math.max(0.5, value - 0.15))}
               onReset={() => setZoom(1)}
               onStyle={(style) => updateEditor({ ...editor, annotations: editor.annotations.map((annotation) => editor.selectedAnnotationId === annotation.id ? { ...annotation, style } : annotation) })}
+              onLineWidth={(lineWidth) => updateEditor({ ...editor, annotations: editor.annotations.map((annotation) => editor.selectedAnnotationId === annotation.id ? { ...annotation, lineWidth } : annotation) })}
+              onCustomValueChange={(customValueCm) => updateEditor({ ...editor, customValueCm })}
             />
             <main className="dimension-stage-panel">
               <DimensionCanvasStage
                 editor={editor}
                 asset={activeAsset}
                 zoom={zoom}
+                onZoomChange={setZoom}
                 onSelectAnnotation={(annotationId) => updateEditor({ ...editor, selectedAnnotationId: annotationId }, false, false)}
                 onCommitEditor={(next) => updateEditor(next)}
                 onCommitAnnotation={commitAnnotation}

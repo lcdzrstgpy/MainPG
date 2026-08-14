@@ -66,6 +66,7 @@ function mapAnnotation(value: unknown): DimensionAnnotation {
     end: point(raw.end),
     label: point(raw.label),
     style: stringValue(raw.style || "auto") as DimensionAnnotation["style"],
+    lineWidth: stringValue(raw.line_width ?? raw.lineWidth ?? "normal") as DimensionAnnotation["lineWidth"],
     unit: stringValue(raw.unit || "cm") as DimensionAnnotation["unit"],
   };
 }
