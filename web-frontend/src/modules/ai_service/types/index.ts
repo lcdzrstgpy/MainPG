@@ -5,6 +5,7 @@ export type AiModel = {
   name: string;
   description: string;
   capabilities: AiCreationMode[];
+  acceptsImageInput?: boolean;
 };
 
 export type AiCreationTemplate = {
@@ -19,8 +20,11 @@ export type AiCreationTemplate = {
 export type AiConversation = {
   id: string;
   title: string;
+  mode: AiCreationMode;
   preview: string;
   time: string;
+  isPinned: boolean;
+  updatedAt: string;
 };
 
 export type AiMessage = {

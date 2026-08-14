@@ -93,6 +93,7 @@ def test_edit_creation_payload_uses_template_and_local_reference_image(tmp_path:
 
     assert payload["model"] == "gpt-image-2-1k"
     assert payload["n"] == 1
+    assert "商品改图执行规范" in payload["prompt"]
     assert "严格保留上传商品图" in payload["prompt"]
     assert "浅蓝色渐变背景" in payload["prompt"]
     assert payload["image"].startswith("data:image/png;base64,")
@@ -113,7 +114,23 @@ def test_pod_payloads_are_fixed_to_1k_and_cover_the_four_output_groups(tmp_path:
     assert {item["payload"]["model"] for item in payloads} == {"gpt-image-2-1k"}
     assert [item["payload"]["n"] for item in payloads] == [2, 2, 1, 1]
     assert all("复古猫咪插画" in item["payload"]["prompt"] for item in payloads)
+    assert all("POD 交付图总规则" in item["payload"]["prompt"] for item in payloads)
     assert all(item["payload"]["image"].startswith("data:image/png;base64,") for item in payloads)
+
+
+def test_generate_creation_payload_uses_the_structured_generate_prompt(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    payload = service.prepare_creation(
+        _actor(),
+        template_id="poster",
+        model_id="gpt-image-2-1k",
+        user_prompt="为保温杯制作秋季礼品海报",
+        size="1024x1024",
+    )
+
+    assert "文生图执行规范" in payload["prompt"]
+    assert "保温杯制作秋季礼品海报" in payload["prompt"]
 
 
 def test_pod_creation_persists_four_independent_groups_and_retries_only_failed_one(tmp_path: Path) -> None:
@@ -198,3 +215,33 @@ def test_expiration_keeps_a_conversation_created_exactly_seven_days_ago(tmp_path
 
     assert service.purge_expired_conversations(actor, now=now) == 0
     assert service.list_messages(actor, conversation["conversation_id"]) == []
+
+
+def test_conversation_can_be_renamed_and_pinned_without_affecting_another_user(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    other_actor = _actor("operator-2")
+    first = service.create_conversation(actor, "第一个会话")
+    second = service.create_conversation(actor, "第二个会话")
+    other = service.create_conversation(other_actor, "其他用户会话")
+
+    renamed = service.update_conversation(actor, first["conversation_id"], title="  自定义名称  ", is_pinned=True)
+
+    assert renamed["title"] == "自定义名称"
+    assert renamed["is_pinned"] is True
+    assert [item["conversation_id"] for item in service.list_conversations(actor)] == [first["conversation_id"], second["conversation_id"]]
+    assert service.update_conversation(actor, first["conversation_id"], is_pinned=False)["is_pinned"] is False
+    assert service.update_conversation(other_actor, other["conversation_id"], title="其他名称")["title"] == "其他名称"
+
+
+def test_conversations_keep_their_creation_mode_for_mode_switching(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+
+    chat = service.create_conversation(actor, "聊天会话", mode="chat")
+    image = service.create_conversation(actor, "白底图", mode="generate")
+
+    conversations = {item["conversation_id"]: item for item in service.list_conversations(actor)}
+
+    assert conversations[chat["conversation_id"]]["mode"] == "chat"
+    assert conversations[image["conversation_id"]]["mode"] == "generate"

@@ -51,6 +51,23 @@ POD_OUTPUT_SPECS: tuple[dict[str, Any], ...] = (
     },
 )
 
+CREATION_MODE_INSTRUCTIONS = {
+    "generate": """【文生图执行规范】
+目标：将用户需求转化为一张可直接用于商品展示的高质量视觉图。
+画面优先级：商品主体与卖点 > 构图与使用场景 > 光线、材质和配色细节。
+严格执行：主体清晰、构图干净、视觉焦点明确、符合电商审美；除非用户明确要求，不生成可读文字、水印、品牌 Logo 或无关道具。
+输出要求：只生成图像，不解释创作过程；用户未提供的信息应使用克制且合理的视觉补全。""",
+    "edit": """【商品改图执行规范】
+参考图中的商品主体是唯一事实来源：必须保留其造型、比例、颜色、材质、图案、结构与关键细节。
+只执行用户明确提出的改动；未提及的商品属性不得重绘、替换、增删或变形。
+画面要求：主体完整清晰、边缘自然、透视和光影一致、背景与投影真实；不添加水印、品牌 Logo、不可读文字或额外商品。""",
+}
+
+POD_DELIVERY_INSTRUCTIONS = """【POD 交付图总规则】
+目标：生成可直接交付供应商与上架使用的一组统一商品图。
+同一组图片必须保持完全一致的商品主体、设计图案、颜色、材质、比例与结构；仅随交付类型改变构图和场景。
+画面干净、主体完整、卖点明确；不生成水印、品牌 Logo、不可读文字或未提供的产品信息。尺寸图只可呈现用户已提供的尺寸，不得臆造数字。"""
+
 
 class AiServiceError(RuntimeError):
     def __init__(self, message: str, status_code: int = 400):
@@ -153,29 +170,65 @@ class AiService:
                 )
         return self.templates()
 
-    def create_conversation(self, actor: Actor, title: str = "新建创作") -> dict[str, str]:
+    def create_conversation(self, actor: Actor, title: str = "新建创作", *, mode: str = "chat") -> dict[str, str]:
+        if mode not in {"chat", "generate", "edit", "pod"}:
+            raise AiServiceError("conversation mode is invalid")
         conversation_id = uuid.uuid4().hex
         now = _now()
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO ai_service_conversations
-                   (conversation_id, workspace_id, owner_user_id, title, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (conversation_id, actor.workspace_id, actor.id, _clean_title(title), now, now),
+                   (conversation_id, workspace_id, owner_user_id, title, mode, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (conversation_id, actor.workspace_id, actor.id, _clean_title(title), mode, now, now),
             )
-        return {"conversation_id": conversation_id, "title": _clean_title(title), "created_at": now}
+        return {"conversation_id": conversation_id, "title": _clean_title(title), "mode": mode, "created_at": now}
 
     def list_conversations(self, actor: Actor, limit: int = 50) -> list[dict[str, Any]]:
         self.purge_expired_conversations(actor)
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT conversation_id, title, updated_at
+                """SELECT conversation_id, title, mode, is_pinned, updated_at
                    FROM ai_service_conversations
                    WHERE workspace_id = ? AND owner_user_id = ?
-                   ORDER BY updated_at DESC LIMIT ?""",
+                   ORDER BY is_pinned DESC, updated_at DESC LIMIT ?""",
                 (actor.workspace_id, actor.id, max(1, min(limit, 100))),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [{**dict(row), "is_pinned": bool(row["is_pinned"])} for row in rows]
+
+    def update_conversation(
+        self,
+        actor: Actor,
+        conversation_id: str,
+        *,
+        title: str | None = None,
+        is_pinned: bool | None = None,
+    ) -> dict[str, Any]:
+        if title is None and is_pinned is None:
+            raise AiServiceError("title or is_pinned is required")
+        self._conversation(actor, conversation_id)
+        assignments: list[str] = []
+        values: list[Any] = []
+        if title is not None:
+            cleaned = _clean_title(title)
+            if not title.strip():
+                raise AiServiceError("conversation title is required")
+            assignments.append("title = ?")
+            values.append(cleaned)
+        if is_pinned is not None:
+            assignments.append("is_pinned = ?")
+            values.append(int(is_pinned))
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE ai_service_conversations SET {', '.join(assignments)} WHERE conversation_id = ? AND workspace_id = ? AND owner_user_id = ?",
+                (*values, conversation_id, actor.workspace_id, actor.id),
+            )
+            row = conn.execute(
+                """SELECT conversation_id, title, mode, is_pinned, updated_at FROM ai_service_conversations
+                   WHERE conversation_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (conversation_id, actor.workspace_id, actor.id),
+            ).fetchone()
+        return {**dict(row), "is_pinned": bool(row["is_pinned"])}
 
     def purge_expired_conversations(self, actor: Actor, now: datetime | None = None) -> int:
         cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=7)
@@ -392,7 +445,11 @@ class AiService:
             if model["reference_transport"] != "data_url":
                 raise AiServiceError("temporary reference transport is not configured", 503)
             reference_image = self.asset_data_url(actor, image_asset_id)
-        prompt = "\n\n".join(part for part in (str(template["prompt"]), user_prompt.strip()) if part)
+        prompt = "\n\n".join(part for part in (
+            CREATION_MODE_INSTRUCTIONS[template["mode"]],
+            f"【本次创作任务】\n{str(template['prompt'])}",
+            f"【用户补充】\n{user_prompt.strip()}" if user_prompt.strip() else "",
+        ) if part)
         return {
             "model": model_id,
             "prompt": prompt,
@@ -417,17 +474,14 @@ class AiService:
         asset_ids = asset_ids or []
         image_asset_id = next((asset_id for asset_id in asset_ids if _is_image_type(self._asset(actor, asset_id)["content_type"])), None)
         reference_image = self.asset_data_url(actor, image_asset_id) if image_asset_id else ""
-        shared_prompt = (
-            "你正在为外贸 POD 商品制作供应商交付图。严格保持同一商品主体、设计图案、颜色和材质的一致性。\n"
-            f"用户输入：{user_prompt.strip()}"
-        )
+        shared_prompt = "\n\n".join((POD_DELIVERY_INSTRUCTIONS, f"【用户商品信息】\n{user_prompt.strip()}"))
         return [
             {
                 "kind": spec["kind"],
                 "label": spec["label"],
                 "payload": {
                     "model": "gpt-image-2-1k",
-                    "prompt": f"{shared_prompt}\n\n交付类型：{spec['prompt']}",
+                    "prompt": f"{shared_prompt}\n\n【本张交付类型】\n{spec['prompt']}",
                     "n": spec["count"],
                     "return_url": True,
                     "size": "1024x1024",
@@ -675,6 +729,31 @@ class AiService:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(ai_service_assets)")}
             if "extracted_text" not in columns:
                 conn.execute("ALTER TABLE ai_service_assets ADD COLUMN extracted_text TEXT NOT NULL DEFAULT ''")
+            conversation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ai_service_conversations)")}
+            if "is_pinned" not in conversation_columns:
+                conn.execute("ALTER TABLE ai_service_conversations ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0")
+            if "mode" not in conversation_columns:
+                conn.execute("ALTER TABLE ai_service_conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'chat'")
+                conn.execute(
+                    """UPDATE ai_service_conversations
+                       SET mode = CASE
+                           WHEN EXISTS (
+                               SELECT 1 FROM ai_service_creations
+                               WHERE ai_service_creations.conversation_id = ai_service_conversations.conversation_id
+                                 AND ai_service_creations.request_json LIKE '%pod_outputs%'
+                           ) THEN 'pod'
+                           WHEN EXISTS (
+                               SELECT 1 FROM ai_service_creations
+                               WHERE ai_service_creations.conversation_id = ai_service_conversations.conversation_id
+                                 AND ai_service_creations.request_json LIKE '%local-asset-reference%'
+                           ) THEN 'edit'
+                           WHEN EXISTS (
+                               SELECT 1 FROM ai_service_creations
+                               WHERE ai_service_creations.conversation_id = ai_service_conversations.conversation_id
+                           ) THEN 'generate'
+                           ELSE 'chat'
+                       END"""
+                )
 
 
 SCHEMA_SQL = """
@@ -706,6 +785,8 @@ CREATE TABLE IF NOT EXISTS ai_service_conversations (
     workspace_id TEXT NOT NULL,
     owner_user_id TEXT NOT NULL,
     title TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'chat',
+    is_pinned INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
