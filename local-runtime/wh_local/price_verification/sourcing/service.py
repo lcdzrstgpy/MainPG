@@ -8,7 +8,6 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import urlsplit
 
 from ..contracts import PluginCommandRequest, PriceVerificationActor, PriceVerificationContractError
 from ..quote_normalizer import QuoteItem
@@ -44,10 +43,6 @@ class NoRetainedQuotesError(ValueError):
 
 class IncompleteRetainedQuotesError(ValueError):
     """Raised when retained links lack a URL, image, or selected price."""
-
-
-class ProductLibraryLookupError(PriceVerificationContractError):
-    """Raised when library matching could not be completed reliably."""
 
 
 class SourcingService:
@@ -228,23 +223,14 @@ class SourcingService:
                 return session
             # 产品库命中展示每次读取都用耐久的货源关联记录补全，避免早期产品库
             # 只保存 URL 时在 STEP 04 退化成重复的空白“1688 货源”。
-            product_library_error = ""
-            try:
-                products = self._product_library_products(actor, session["selected_skc_ids"])
-            except ProductLibraryLookupError as error:
-                # A transient library failure must not be rewritten as "zero
-                # matches" and must not erase a previously saved result.
-                products = tuple(session["matched_products"])
-                product_library_error = str(error)
-            if tuple(session["matched_products"]) != products or preview_updated:
+            products = self._product_library_products(actor, session["selected_skc_ids"])
+            if products or preview_updated:
                 session = self._repository.save_batch_sourcing_session(
                     workspace_id=actor.workspace_id, batch_id=batch_id,
                     selected_skc_ids=session["selected_skc_ids"],
                     unresolved_skc_ids=session["unresolved_skc_ids"], matched_products=products,
                     preview=preview, selected_candidates=session["selected_candidates"],
                 )
-            if product_library_error:
-                return {**session, "product_library_error": product_library_error}
             return session
         return {
             "selected_skc_ids": (), "unresolved_skc_ids": (), "matched_products": (),
@@ -324,25 +310,13 @@ class SourcingService:
                 domestic_freight_cny=candidate.get("domestic_freight_cny"),
                 source_decision=_text(candidate.get("source_decision")),
             )
-        resolved_skc_ids = {
-            _text(candidate.get("skc_id")) for candidate in selected_candidates
-            if _text(candidate.get("skc_id"))
-        }
-        unresolved = tuple(
-            skc_id for skc_id in session["unresolved_skc_ids"]
-            if skc_id not in resolved_skc_ids
-        )
-        remaining_candidates = tuple(
-            candidate for candidate in selected_candidates
-            if _text(candidate.get("skc_id")) in unresolved
-        )
-        preview = _preview_for_skc_ids(session["preview"], unresolved)
         products = self._product_library_products(actor, session["selected_skc_ids"])
         self._repository.save_batch_sourcing_session(
             workspace_id=actor.workspace_id, batch_id=batch_id,
-            selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=unresolved,
-            matched_products=products, preview=preview, selected_candidates=remaining_candidates,
+            selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=(),
+            matched_products=products, preview=None, selected_candidates=(),
         )
+        self._repository.clear_batch_sourcing_results(workspace_id=actor.workspace_id, batch_id=batch_id)
         return self.get_batch_sourcing_state(actor, batch_id=batch_id)
 
     def _product_library_products(
@@ -367,7 +341,8 @@ class SourcingService:
                 if skc_id not in selected:
                     continue
                 links = links_by_skc.get(skc_id, [])
-                source_groups = [
+                if links:
+                    payload["source_groups"] = [
                         {
                             "source_url": link.source_url,
                             "source_title": link.source_title,
@@ -378,21 +353,11 @@ class SourcingService:
                             "domestic_freight_cny": link.domestic_freight_cny,
                         }
                         for link in links
-                        if _valid_1688_source(link.source_url, link.offer_id)
                     ]
-                if not source_groups:
-                    source_groups = _valid_product_source_groups(payload)
-                if not source_groups:
-                    continue
-                payload["source_groups"] = source_groups
                 enriched.append(payload)
             return tuple(enriched)
-        except ProductLibraryLookupError:
-            raise
-        except Exception as error:
-            raise ProductLibraryLookupError(
-                "产品库货源查询失败，请重试；本轮未把任何 SKC 当作产品库命中"
-            ) from error
+        except Exception:
+            return ()
 
     # existing code paths still use this direct link operation; the new batch
     # wizard stages candidates above and calls it only from complete_batch_sourcing.
@@ -824,7 +789,7 @@ class SourcingService:
             quote_run_id=resolved_quote_run_id,
             candidates=snapshots,
             source_mode="browser_image_search",
-            status=preview["search_status"],
+            status="partial" if preview["counts"]["failed_quotes"] else "succeeded",
             task_count=len(preview["items"]),
             source_quotes=tuple(frozen_quotes),
         )
@@ -969,7 +934,7 @@ def build_source_preview(
         review_candidates.extend(review)
         sku_targets.extend(item["source_sku_validation_targets"])
     counts = _counts(items)
-    return _annotate_search_outcome({
+    return {
         "items": items,
         "skc_groups": _group_source_items_by_skc(items),
         "counts": counts,
@@ -977,7 +942,7 @@ def build_source_preview(
         "source_review_candidates": review_candidates,
         "source_sku_validation_targets": sku_targets,
         "retry_quote_keys": [item["quote_key"] for item in items if item["source_decision"] == "failed"],
-    })
+    }
 
 
 def _apply_batch_ranking(
@@ -1274,79 +1239,6 @@ def _offer_id_from_url(value: object) -> str:
     return match.group(1) if match else ""
 
 
-def _valid_1688_source(value: object, offer_id: object = "") -> bool:
-    url = _text(value)
-    candidate_offer_id = _text(offer_id) or _offer_id_from_url(url)
-    if not re.fullmatch(r"\d{3,}", candidate_offer_id):
-        return False
-    try:
-        host = (urlsplit(url).hostname or "").casefold()
-    except ValueError:
-        return False
-    return host == "1688.com" or host.endswith(".1688.com")
-
-
-def _valid_product_source_groups(product: Mapping[str, Any]) -> list[dict[str, Any]]:
-    raw_groups: object = product.get("source_groups")
-    if not isinstance(raw_groups, Sequence) or isinstance(raw_groups, (str, bytes)):
-        encoded = product.get("source_groups_json")
-        if isinstance(encoded, str) and encoded.strip():
-            try:
-                raw_groups = json.loads(encoded)
-            except (TypeError, ValueError):
-                raw_groups = ()
-        else:
-            raw_groups = ()
-    groups = [
-        dict(group)
-        for group in raw_groups
-        if isinstance(group, Mapping)
-        and _valid_1688_source(group.get("source_url"), group.get("offer_id"))
-    ]
-    if groups:
-        return groups
-    source_url = product.get("source_url")
-    offer_id = product.get("offer_id")
-    if _valid_1688_source(source_url, offer_id):
-        return [{"source_url": _text(source_url), "offer_id": _text(offer_id) or _offer_id_from_url(source_url)}]
-    return []
-
-
-def _preview_for_skc_ids(
-    preview: Mapping[str, Any] | None, skc_ids: Sequence[str]
-) -> dict[str, Any] | None:
-    if not skc_ids or not isinstance(preview, Mapping):
-        return None
-    retained = set(skc_ids)
-    raw_items = preview.get("items")
-    items = [
-        dict(item)
-        for item in raw_items
-        if isinstance(item, Mapping) and _text(item.get("skc_id")) in retained
-    ] if isinstance(raw_items, Sequence) and not isinstance(raw_items, (str, bytes)) else []
-    result = dict(preview)
-    result["items"] = items
-    result["skc_groups"] = _group_source_items_by_skc(items)
-    result["counts"] = _counts(items)
-    result["source_review_candidates"] = [
-        candidate
-        for item in items
-        for candidate in item.get("source_review_candidates", [])
-        if isinstance(candidate, Mapping)
-    ]
-    result["source_sku_validation_targets"] = [
-        target
-        for item in items
-        for target in item.get("source_sku_validation_targets", [])
-        if isinstance(target, Mapping)
-    ]
-    result["retry_quote_keys"] = [
-        _text(item.get("quote_key")) for item in items
-        if _text(item.get("source_decision")) == "failed"
-    ]
-    return _annotate_search_outcome(result)
-
-
 def _group_source_items_by_skc(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Present completed sourcing evidence by SKC without coalescing search tasks."""
     grouped: dict[str, dict[str, Any]] = {}
@@ -1440,64 +1332,6 @@ def _counts(items: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         "no_reliable_source_quotes": decisions["no_reliable_source"], "no_result_quotes": decisions["no_results"],
         "failed_quotes": decisions["failed"], "pending_quotes": decisions["pending"],
     }
-
-
-def _annotate_search_outcome(preview: dict[str, Any]) -> dict[str, Any]:
-    items = preview.get("items")
-    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
-        items = []
-    failed_skc_ids = list(
-        dict.fromkeys(
-            _text(item.get("skc_id")) or _text(item.get("quote_key"))
-            for item in items
-            if isinstance(item, Mapping) and _text(item.get("source_decision")) == "failed"
-        )
-    )
-    pending_skc_ids = list(
-        dict.fromkeys(
-            _text(item.get("skc_id")) or _text(item.get("quote_key"))
-            for item in items
-            if isinstance(item, Mapping) and _text(item.get("source_decision")) == "pending"
-        )
-    )
-    item_count = sum(1 for item in items if isinstance(item, Mapping))
-    failed_item_count = sum(
-        1
-        for item in items
-        if isinstance(item, Mapping) and _text(item.get("source_decision")) == "failed"
-    )
-    all_failed = item_count > 0 and failed_item_count == item_count
-    if all_failed:
-        status = "failed"
-    elif failed_skc_ids:
-        status = "partial"
-    elif pending_skc_ids:
-        status = "running"
-    else:
-        status = "succeeded"
-    preview["search_status"] = status
-    preview["all_failed"] = all_failed
-    preview["failed_skc_ids"] = failed_skc_ids
-    preview["pending_skc_ids"] = pending_skc_ids
-    counts = preview.get("counts")
-    if isinstance(counts, dict):
-        counts["failed_skc_count"] = len(failed_skc_ids)
-        counts["pending_skc_count"] = len(pending_skc_ids)
-        counts["completed_skc_count"] = max(0, item_count - len(pending_skc_ids))
-    summary = _employee_action_summary(counts if isinstance(counts, Mapping) else _counts(()))
-    if all_failed:
-        summary.update(
-            next_action="retry_failed_items",
-            message="所有 SKC 图搜均失败，请重试失败项；本轮没有可完成的货源匹配",
-        )
-    elif failed_skc_ids:
-        summary["message"] = f"{len(failed_skc_ids)} 个 SKC 图搜失败，可单独重试；其余结果已保留"
-    elif pending_skc_ids:
-        summary["message"] = f"仍有 {len(pending_skc_ids)} 个 SKC 正在图搜"
-    else:
-        summary["message"] = "图搜已完成"
-    preview["employee_action_summary"] = summary
-    return preview
 
 
 def _employee_action_summary(counts: Mapping[str, int]) -> dict[str, Any]:

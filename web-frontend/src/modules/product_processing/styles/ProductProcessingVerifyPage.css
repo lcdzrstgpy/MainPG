@@ -102,13 +102,12 @@
   color: #db5960;
 }
 
-.verify-draft-workspace {
+.verify-section {
   margin-bottom: 18px;
   padding: 16px 18px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+  border: 1px solid #dce9f2;
+  border-radius: 14px;
+  background: #fbfdff;
 }
 
 .verify-section-head {
@@ -2404,13 +2403,12 @@
 }
 
 /* ── 快速操作栏 ── */
-.verify-draft-action-row {
+.verify-quickbar {
   margin-top: 16px;
   padding: 16px 20px;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
+  background: #f8fafc;
+  border: 1px solid #dce3e8;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2563,7 +2561,7 @@
 
 /* 通用操作按钮图标 */
 .verify-actions button .iconfont,
-.verify-draft-action-row button .iconfont,
+.verify-quickbar button .iconfont,
 .verify-history button .iconfont {
   font-size: 0.95rem;
   margin-right: 4px;
@@ -2571,7 +2569,7 @@
 }
 
 .verify-actions button.primary .iconfont,
-.verify-draft-action-row button.primary .iconfont {
+.verify-quickbar button.primary .iconfont {
   color: #fff;
 }
 

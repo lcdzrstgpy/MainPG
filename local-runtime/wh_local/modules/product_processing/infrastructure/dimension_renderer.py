@@ -25,7 +25,8 @@ class DimensionAnnotation(BaseModel):
     start: tuple[float, float]
     end: tuple[float, float]
     label: tuple[float, float]
-    style: Literal["auto", "dark", "light"] = "auto"
+    style: Literal["auto", "dark", "light", "gray_dashed"] = "auto"
+    line_width: Literal["thin", "normal", "thick"] = "normal"
     unit: Literal["cm", "mm", "in", "ft"] = "cm"
 
 
@@ -200,11 +201,23 @@ class DimensionRenderer:
             size=size,
         )
         color, contrast = _annotation_colors(canvas, label_point, annotation.style)
-        line_width = max(4, round(size * 0.0045))
+        line_width_scale = {"thin": 0.65, "normal": 1.0, "thick": 1.65}[annotation.line_width]
+        line_width = max(3, round(size * 0.0045 * line_width_scale))
         arrow_length = max(18, round(size * 0.022))
         arrow_half_width = max(10, round(size * 0.011))
 
-        draw.line((start, end), fill=color, width=line_width)
+        if annotation.style == "gray_dashed":
+            _draw_dashed_line(
+                draw,
+                start,
+                end,
+                fill=color,
+                width=line_width,
+                dash_length=max(12, round(size * 0.014)),
+                gap_length=max(8, round(size * 0.009)),
+            )
+        else:
+            draw.line((start, end), fill=color, width=line_width)
         _draw_arrow_head(
             draw,
             tip=start,
@@ -292,11 +305,44 @@ def _format_dimension(value_cm: float, unit: Literal["cm", "mm", "in", "ft"]) ->
     return f"{number} {unit}"
 
 
+def _draw_dashed_line(
+    draw: ImageDraw.ImageDraw,
+    start: tuple[int, int],
+    end: tuple[int, int],
+    *,
+    fill: tuple[int, int, int],
+    width: int,
+    dash_length: int,
+    gap_length: int,
+) -> None:
+    delta_x = end[0] - start[0]
+    delta_y = end[1] - start[1]
+    distance = math.hypot(delta_x, delta_y)
+    if distance <= 0:
+        return
+    unit_x = delta_x / distance
+    unit_y = delta_y / distance
+    cursor = 0.0
+    while cursor < distance:
+        dash_end = min(distance, cursor + dash_length)
+        draw.line(
+            (
+                (round(start[0] + unit_x * cursor), round(start[1] + unit_y * cursor)),
+                (round(start[0] + unit_x * dash_end), round(start[1] + unit_y * dash_end)),
+            ),
+            fill=fill,
+            width=width,
+        )
+        cursor += dash_length + gap_length
+
+
 def _annotation_colors(
     image: Image.Image,
     label_point: tuple[int, int],
-    style: Literal["auto", "dark", "light"],
+    style: Literal["auto", "dark", "light", "gray_dashed"],
 ) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    if style == "gray_dashed":
+        return (123, 135, 148), (255, 255, 255)
     if style == "dark":
         return (20, 20, 20), (255, 255, 255)
     if style == "light":

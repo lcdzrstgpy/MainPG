@@ -504,7 +504,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
         <div className={`verify-message ${error ? 'error' : ''}`}>{error || message}</div>
       )}
 
-      <section className="verify-draft-workspace" ref={draftListRef}>
+      <section className="verify-section" ref={draftListRef}>
         <div className="verify-sticky-toolbar-spacer" ref={stickySpacerRef}>
         <div className="verify-sticky-toolbar" ref={stickyToolbarRef}>
         <div className="verify-section-head">
@@ -779,9 +779,20 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenHistoryTa
             </span>
           </footer>
         )}
+        {/* 草稿池底部历史采集入口：直接在本界面唤出历史任务卡片 */}
+        <div className="verify-pool-history-entry">
+          <button type="button" onClick={openHistory} disabled={historyLoading}>
+            <i className="iconfont icon-clock" aria-hidden="true" />
+            <span>
+              <strong>历史采集任务</strong>
+              <small>查看最近的产品处理任务记录与输出文件</small>
+            </span>
+            <em aria-hidden="true">›</em>
+          </button>
+        </div>
       </section>
 
-      <section className="verify-draft-action-row">
+      <section className="verify-quickbar">
         <div className="verify-actions">
           {premiumIds.size > 0 && <span className="verify-premium-hint"><i className="iconfont icon-gem" aria-hidden="true" />精品 {premiumIds.size} 条·1 张 4K 四宫格拆成 4 张高清图</span>}
           <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
