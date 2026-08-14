@@ -5,6 +5,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Literal
+from urllib.parse import quote
 
 from pydantic import ValidationError
 
@@ -200,6 +201,8 @@ class DimensionCanvasService:
         batch = self.canvas_repository.get_batch(batch_id, workspace_id)
         if batch is None:
             raise DimensionCanvasNotFound("dimension canvas batch not found")
+        for item in batch["items"]:
+            self._snapshot_v2_media(item["id"], workspace_id)
         batch["items"] = [self._hydrate_item(item, workspace_id) for item in batch["items"]]
         return batch
 
@@ -207,6 +210,7 @@ class DimensionCanvasService:
         item = self.canvas_repository.get_item(item_id, workspace_id)
         if item is None:
             raise DimensionCanvasNotFound("dimension canvas item not found")
+        self._snapshot_v2_media(item_id, workspace_id)
         return self._hydrate_item(item, workspace_id)
 
     def save_item(
@@ -326,14 +330,6 @@ class DimensionCanvasService:
             raise ValueError("batch has no completed dimension items")
         identities: list[str] = []
         for item in sorted(completed, key=lambda value: value["id"]):
-            draft = self.product_repository.get_draft(
-                int(item["product_draft_id"]),
-                workspace_id=workspace_id,
-            )
-            if draft is None:
-                raise DimensionCanvasNotFound("product draft not found")
-            if int(draft.get("preview_revision") or 0) != int(item.get("source_preview_revision") or 0):
-                raise DimensionCanvasConflict("商品预检图在导入尺寸画布后已更新，请重新导入后再交回")
             asset = self.canvas_repository.get_asset(
                 item["render_asset_id"],
                 item["id"],
@@ -352,17 +348,21 @@ class DimensionCanvasService:
                 idempotency_key,
                 workspace_id,
             )
-            return self._sanitize_change_set(result)
+            return self._sanitize_change_set(result, workspace_id=workspace_id)
         except LookupError as exc:
             raise DimensionCanvasNotFound(str(exc)) from exc
         except CanvasStateConflict as exc:
+            if str(exc) == "product preview changed after dimension canvas import":
+                raise DimensionCanvasConflict(
+                    "商品预检图在导入尺寸画布后已更新，请重新导入后再交回"
+                ) from exc
             raise DimensionCanvasConflict(str(exc)) from exc
 
     def get_change_set(self, change_set_id: str, *, workspace_id: str) -> dict[str, Any]:
         result = self.canvas_repository.get_change_set(change_set_id, workspace_id)
         if result is None:
             raise DimensionCanvasNotFound("dimension change set not found")
-        return self._sanitize_change_set(result)
+        return self._sanitize_change_set(result, workspace_id=workspace_id)
 
     def accept_change_set(self, change_set_id: str, *, workspace_id: str) -> dict[str, Any]:
         change_set = self.get_change_set(change_set_id, workspace_id=workspace_id)
@@ -388,7 +388,8 @@ class DimensionCanvasService:
             raise DimensionCanvasNotFound("dimension change item not found")
         try:
             return self._sanitize_change_item(
-                self._accept_local_change(change_item_id, workspace_id)
+                self._accept_local_change(change_item_id, workspace_id),
+                workspace_id=workspace_id,
             )
         except LookupError as exc:
             raise DimensionCanvasNotFound(str(exc)) from exc
@@ -437,7 +438,8 @@ class DimensionCanvasService:
             raise DimensionCanvasNotFound("dimension change item not found")
         try:
             return self._sanitize_change_item(
-                self.canvas_repository.reject_change_item(change_item_id, workspace_id)
+                self.canvas_repository.reject_change_item(change_item_id, workspace_id),
+                workspace_id=workspace_id,
             )
         except LookupError as exc:
             raise DimensionCanvasNotFound(str(exc)) from exc
@@ -535,9 +537,14 @@ class DimensionCanvasService:
             return
         for asset in self.canvas_repository.list_assets(item_id, workspace_id):
             source_media_id = str(asset.get("source_media_asset_id") or "")
-            if not source_media_id or asset.get("availability") != "metadata":
+            if not source_media_id or asset.get("availability") not in {"metadata", "unavailable"}:
                 continue
-            content = self.media_assets.read_ready_asset(source_media_id, workspace_id=workspace_id)
+            try:
+                content = self.media_assets.read_ready_asset(source_media_id, workspace_id=workspace_id)
+            except (LookupError, OSError, ValueError):
+                # The source registry may still be syncing. Keep this canvas asset
+                # retryable; a later page refresh will snapshot it once it is ready.
+                continue
             content_type = str(asset.get("content_type") or "")
             suffix = ".png" if content_type.casefold() == "image/png" else ".jpg"
             path = self.assets.save_dimension_asset(
@@ -568,6 +575,7 @@ class DimensionCanvasService:
                     "preview_url": self._asset_preview_url(
                         asset,
                         product_draft_id=int(item.get("product_draft_id") or 0),
+                        workspace_id=workspace_id,
                     ),
                 }.items()
                 if key not in {"workspace_id", "managed_path"}
@@ -576,18 +584,22 @@ class DimensionCanvasService:
         ]
         return result
 
-    def _sanitize_change_set(self, change_set: dict[str, Any]) -> dict[str, Any]:
+    def _sanitize_change_set(self, change_set: dict[str, Any], *, workspace_id: str) -> dict[str, Any]:
         result = {key: value for key, value in change_set.items() if key != "workspace_id"}
-        result["items"] = [self._sanitize_change_item(item) for item in change_set.get("items") or []]
+        result["items"] = [
+            self._sanitize_change_item(item, workspace_id=workspace_id)
+            for item in change_set.get("items") or []
+        ]
         return result
 
-    def _sanitize_change_item(self, item: dict[str, Any]) -> dict[str, Any]:
+    def _sanitize_change_item(self, item: dict[str, Any], *, workspace_id: str) -> dict[str, Any]:
         base = dict(item.get("base_asset") or {})
         replacement = dict(item.get("replacement_asset") or {})
         old_url = self._safe_preview_value(str((base.get("slot") or {}).get("url") or ""))
         new_url = self._asset_preview_url(
             replacement,
             product_draft_id=int(item.get("product_draft_id") or 0),
+            workspace_id=workspace_id,
         )
         return {
             **{key: value for key, value in item.items() if key not in {"workspace_id", "base_asset", "replacement_asset"}},
@@ -599,21 +611,30 @@ class DimensionCanvasService:
             "replacement_content_hash": str(replacement.get("content_hash") or ""),
         }
 
-    def _asset_preview_url(self, asset: dict[str, Any], *, product_draft_id: int = 0) -> str:
-        # 本地已落盘文件最可靠：优先走 /pp-media 静态代理，避免浏览器直连外部图床
-        # 遭遇防盗链（如 1688 alicdn 偶发 420）导致空白或一直加载。
+    def _asset_preview_url(
+        self,
+        asset: dict[str, Any],
+        *,
+        product_draft_id: int = 0,
+        workspace_id: str = "local",
+    ) -> str:
+        # Canvas images are always served through the canvas API. This keeps local
+        # snapshots and remote-source fallbacks on the same browser-origin route,
+        # including when the frontend is running through the Vite development proxy.
         managed_path = str(asset.get("managed_path") or "").strip()
+        asset_id = str(asset.get("id") or "").strip()
+        source_url = str(asset.get("source_url") or "").strip()
+        if asset_id and (managed_path or (source_url and self._is_public_dimension_url(source_url))):
+            return (
+                f"/api/product-processing/dimension-canvas/assets/{quote(asset_id, safe='')}/image"
+                f"?workspace_id={quote(workspace_id, safe='')}"
+            )
         if managed_path:
             path = Path(managed_path).resolve()
             output_root = self.assets.output_root.resolve()
             if output_root == path or output_root in path.parents:
                 relative = path.relative_to(output_root).as_posix()
                 return f"/pp-media/{relative}"
-        source_url = str(asset.get("source_url") or "").strip()
-        asset_id = str(asset.get("id") or "").strip()
-        if asset_id and source_url and self._is_public_dimension_url(source_url):
-            # 外部图床统一走后端同源代理（SSRF 校验 + 后端下载），浏览器不直连外部域名。
-            return f"/api/product-processing/dimension-assets/{asset_id}/image"
         if product_draft_id > 0 and str(asset.get("role") or "") in {"source", "task_source"}:
             return f"/api/product-processing/drafts/{product_draft_id}/image"
         return ""

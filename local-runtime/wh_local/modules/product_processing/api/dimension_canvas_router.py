@@ -220,7 +220,8 @@ def create_dimension_canvas_router(service: DimensionCanvasService) -> APIRouter
     @router.get("/assets/{asset_id}/image")
     def dimension_asset_image(
         asset_id: str,
-        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+        image_workspace_id: str = Query(default="", alias="workspace_id"),
     ):
         """Browser-facing same-origin image proxy for canvas assets.
 
@@ -231,7 +232,7 @@ def create_dimension_canvas_router(service: DimensionCanvasService) -> APIRouter
             path = _call(
                 service.dimension_asset_image_path,
                 asset_id,
-                workspace_id=_workspace(workspace_id),
+                workspace_id=_workspace(workspace_id or image_workspace_id or "local"),
             )
         except HTTPException:
             raise

@@ -164,6 +164,15 @@ class MediaAssetService:
         )
 
     def read_ready_asset(self, asset_id: str, *, workspace_id: str) -> bytes:
+        path, _content_type = self.require_ready_managed_file(asset_id, workspace_id=workspace_id)
+        content = path.read_bytes()
+        asset = self.repository.get_asset(asset_id, workspace_id)
+        if asset and asset.get("content_hash") and hashlib.sha256(content).hexdigest() != asset["content_hash"]:
+            raise ValueError("managed media asset hash mismatch")
+        return content
+
+    def require_ready_managed_file(self, asset_id: str, *, workspace_id: str) -> tuple[Path, str]:
+        """Return a workspace-scoped ready unified asset; never accept a URL or raw path."""
         asset = self.repository.get_asset(asset_id, workspace_id)
         if asset is None or asset.get("status") != "ready" or not asset.get("managed_path"):
             raise LookupError("media asset is not ready")
@@ -171,10 +180,7 @@ class MediaAssetService:
             str(asset["managed_path"]),
             workspace_id=workspace_id,
         )
-        content = path.read_bytes()
-        if asset.get("content_hash") and hashlib.sha256(content).hexdigest() != asset["content_hash"]:
-            raise ValueError("managed media asset hash mismatch")
-        return content
+        return path, str(asset.get("content_type") or "image/jpeg")
 
     def media_asset_content(
         self,
@@ -295,6 +301,30 @@ class MediaAssetService:
                     )
                     failed += 1
         return {"claimed": len(claimed), "ready": ready, "retryable": retryable, "failed": failed}
+
+    def materialize_until_idle(
+        self,
+        *,
+        workspace_id: str | None = None,
+        batch_size: int = 20,
+    ) -> dict[str, int]:
+        """Drain every currently claimable remote asset in bounded claim batches.
+
+        A single batch is intentionally limited so claims remain short-lived.  The
+        caller that owns the background worker must, however, continue claiming
+        batches until none are left; otherwise assets beyond the first batch are
+        permanently left in ``pending`` with zero attempts.
+        """
+        total = {"claimed": 0, "ready": 0, "retryable": 0, "failed": 0}
+        while True:
+            batch = self.materialize_pending(
+                workspace_id=workspace_id,
+                limit=max(1, int(batch_size)),
+            )
+            for key in total:
+                total[key] += int(batch.get(key) or 0)
+            if int(batch["claimed"] or 0) < max(1, int(batch_size)):
+                return total
 
     def retry_asset(self, asset_id: str, *, workspace_id: str) -> dict[str, Any]:
         row = self.repository.reset_asset_for_retry(asset_id, workspace_id)

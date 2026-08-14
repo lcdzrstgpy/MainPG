@@ -778,7 +778,7 @@ def _schedule_media_materialization(
         # V2 assets are registered inside the same transaction that created the
         # draft, so they are safe to materialize immediately after commit.
         background_tasks.add_task(
-            draft_writer.media_assets.materialize_pending,
+            draft_writer.media_assets.materialize_until_idle,
             workspace_id=workspace_id,
         )
 

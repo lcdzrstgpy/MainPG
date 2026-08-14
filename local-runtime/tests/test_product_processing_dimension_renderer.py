@@ -53,6 +53,21 @@ def test_renderer_outputs_crisp_2000_square() -> None:
     assert len(output.master_png_bytes) > len(source)
 
 
+def test_renderer_resolves_an_available_platform_font() -> None:
+    assert _FONT_PATH is not None
+    assert _FONT_PATH.is_file()
+
+    output = DimensionRenderer().render(
+        DimensionRenderRequest(
+            source_bytes=_source_bytes(),
+            annotations=[_length_annotation()],
+        )
+    )
+
+    assert output.width == 2000
+    assert output.height == 2000
+
+
 def test_renderer_applies_thin_and_thick_line_presets() -> None:
     def rendered_line_depth(line_width: str) -> int:
         output = DimensionRenderer().render(

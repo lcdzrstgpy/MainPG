@@ -10,8 +10,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
-from sqlalchemy import update
+from sqlalchemy import select, update
 
+from wh_local.data_collection.public_image_fetch import FetchedPublicImage
 from wh_local.modules.product_processing.api.dimension_canvas_router import create_dimension_canvas_router
 from wh_local.modules.product_processing.api.router import create_product_processing_router
 from wh_local.modules.product_processing.dimension_canvas_service import (
@@ -24,6 +25,7 @@ from wh_local.modules.product_processing.infrastructure.dimension_canvas_reposit
 from wh_local.modules.product_processing.infrastructure.dimension_canvas_repository import CanvasStateConflict
 from wh_local.modules.product_processing.infrastructure.dimension_renderer import DimensionSourceInfo
 from wh_local.modules.product_processing.infrastructure.dimension_canvas_orm import DimensionCanvasItemRow
+from wh_local.modules.product_processing.infrastructure.preview_image_orm import PreviewImageAssetRow
 from wh_local.modules.product_processing.infrastructure.orm import (
     ProcessingTaskItemRow,
     ProcessingTaskRow,
@@ -230,8 +232,22 @@ def test_single_item_import_materializes_registered_asset_renders_and_submits(se
     assert publisher_calls == []
     hydrated = service.get_item(completed["id"], workspace_id="local")
     rendered = next(asset for asset in hydrated["assets"] if asset["role"] == "rendered_dimension")
-    assert rendered["preview_url"].startswith("/pp-media/")
-    assert change_set["items"][0]["new_image_url"].startswith("/pp-media/")
+    assert rendered["preview_url"].startswith("/api/product-processing/dimension-canvas/assets/")
+    assert change_set["items"][0]["new_image_url"].startswith("/api/product-processing/dimension-canvas/assets/")
+
+
+def test_repeated_submit_after_acceptance_returns_existing_change_set(service_fixture) -> None:
+    database, _product, _repository, service, _calls, _publisher_calls = service_fixture
+    seeded = _seed(database)
+    completed = _complete(service, seeded)
+
+    submitted = service.submit_review(completed["batch_id"], workspace_id="local")
+    accepted = service.accept_change_set(submitted["id"], workspace_id="local")
+    repeated = service.submit_review(completed["batch_id"], workspace_id="local")
+
+    assert accepted["status"] == "resolved"
+    assert repeated["id"] == submitted["id"]
+    assert repeated["status"] == "resolved"
 
 
 def test_user_upload_is_registered_once_and_available_as_local_preview(service_fixture) -> None:
@@ -263,7 +279,7 @@ def test_user_upload_is_registered_once_and_available_as_local_preview(service_f
     assert uploaded["availability"] == "local"
     hydrated = service.get_item(item["id"], workspace_id="local")
     preview = next(asset for asset in hydrated["assets"] if asset["id"] == first["asset_id"])
-    assert preview["preview_url"].startswith("/pp-media/dimension-canvas/")
+    assert preview["preview_url"].startswith("/api/product-processing/dimension-canvas/assets/")
 
 
 def test_user_upload_endpoint_rejects_invalid_bytes(service_fixture) -> None:
@@ -388,7 +404,7 @@ def test_submit_review_never_calls_cos_publisher(service_fixture) -> None:
     completed = _complete(service, seeded)
     change_set = service.submit_review(completed["batch_id"], workspace_id="local")
     assert publisher_calls == []
-    assert change_set["items"][0]["new_image_url"].startswith("/pp-media/")
+    assert change_set["items"][0]["new_image_url"].startswith("/api/product-processing/dimension-canvas/assets/")
     assert repository.list_notifications("local")
 
 
@@ -488,7 +504,7 @@ def test_submit_review_ignores_legacy_publisher_and_keeps_render_local(service_f
     seeded = _seed(database)
     completed = _complete(service, seeded)
     change_set = service.submit_review(completed["batch_id"], workspace_id="local")
-    assert change_set["items"][0]["new_image_url"].startswith("/pp-media/")
+    assert change_set["items"][0]["new_image_url"].startswith("/api/product-processing/dimension-canvas/assets/")
     asset = repository.get_asset(completed["render_asset_id"], completed["id"], "local")
     assert asset is not None
     assert asset["availability"] == "local"
@@ -576,6 +592,74 @@ def test_v2_import_snapshots_ready_media_and_marks_pending_unavailable(tmp_path:
     assert loader_calls == []
 
 
+def test_v2_canvas_refresh_materializes_media_that_finished_syncing_later(tmp_path: Path) -> None:
+    database = create_database(f"sqlite:///{(tmp_path / 'v2-refresh.sqlite3').as_posix()}")
+    assets = ProductProcessingAssets(tmp_path / "assets")
+    product_repository = ProductProcessingRepository(database)
+    canvas_repository = DimensionCanvasRepository(database)
+    remote_bytes = _v2_jpeg("orange")
+    media_assets = MediaAssetService(
+        MediaAssetRepository(database),
+        assets,
+        public_image_fetcher=lambda _url: FetchedPublicImage(
+            content=remote_bytes,
+            media_type="image/jpeg",
+            final_url="https://img.example.com/later.jpg",
+        ),
+    )
+    pending = media_assets.register_remote_asset("local", "https://img.example.com/later.jpg")
+
+    with database.sessions.begin() as session:
+        draft = ProductDraftRow(workspace_id="local", media_contract_version=2, skc="v2-later", status="draft")
+        session.add(draft)
+        session.flush()
+        task = ProcessingTaskRow(workspace_id="local", title="finished", status="completed", total_count=1, success_count=1)
+        session.add(task)
+        session.flush()
+        item = ProcessingTaskItemRow(
+            task_id=task.id,
+            product_draft_id=draft.id,
+            skc="v2-later",
+            status="completed",
+            result_json=json.dumps({"physical_dimensions": _dimensions()}),
+        )
+        session.add(item)
+        session.flush()
+        draft_id, task_id, task_item_id = int(draft.id), int(task.id), int(item.id)
+
+    media_assets.bind_asset(
+        workspace_id="local",
+        asset_id=pending["id"],
+        product_draft_id=draft_id,
+        role="detail",
+        slot_id="detail_1",
+    )
+    service = DimensionCanvasService(
+        canvas_repository,
+        product_repository,
+        assets,
+        _Renderer(),
+        media_assets=media_assets,
+    )
+    try:
+        imported = service.import_preview_item(task_id, task_item_id, workspace_id="local")
+        detail = next(asset for asset in imported["assets"] if asset["role"] == "detail")
+        assert detail["availability"] == "unavailable"
+
+        assert media_assets.materialize_pending(workspace_id="local") == {"claimed": 1, "ready": 1, "retryable": 0, "failed": 0}
+
+        refreshed = service.get_item(imported["id"], workspace_id="local")
+        detail = next(asset for asset in refreshed["assets"] if asset["role"] == "detail")
+        assert detail["availability"] == "local"
+        assert detail["preview_url"] == (
+            f"/api/product-processing/dimension-canvas/assets/{detail['id']}/image?workspace_id=local"
+        )
+        assert service.dimension_asset_image_path(detail["id"], workspace_id="local").read_bytes() == remote_bytes
+    finally:
+        service.close()
+        database.dispose()
+
+
 class _JpegRenderer:
     def inspect_source(self, content: bytes) -> DimensionSourceInfo:
         return DimensionSourceInfo(64, 64, "image/jpeg", ".jpg")
@@ -604,7 +688,18 @@ def test_v2_acceptance_creates_dimension_binding(tmp_path: Path) -> None:
         draft_id = int(draft.id)
         item = ProcessingTaskItemRow(
             task_id=task.id, product_draft_id=draft_id, skc="v2-skc", status="completed",
-            result_json=json.dumps({"physical_dimensions": _dimensions(), "image_manifest_v2": {"main_asset_id": ready_main["id"]}}),
+            # V2 results can retain these legacy display URLs for compatibility.
+            # They must never be treated as managed filesystem paths when a
+            # dimension-canvas acceptance builds the preview manifest.
+            result_json=json.dumps({
+                "physical_dimensions": _dimensions(),
+                "image_manifest_v2": {"main_asset_id": ready_main["id"]},
+                "image_manifest": [{
+                    "slot_id": "carousel.hero",
+                    "role": "hero",
+                    "value": "/api/product-processing/preview/assets/old-preview/content?workspace_id=local",
+                }],
+            }),
         )
         session.add(item)
         session.flush()
@@ -639,6 +734,14 @@ def test_v2_acceptance_creates_dimension_binding(tmp_path: Path) -> None:
     assert dimension_bindings[0]["slot_id"] == "carousel.dimension_background"
     asset = media_assets.get_asset(dimension_bindings[0]["asset_id"], "local")
     assert asset["origin"] == "dimension_rendered"
+    with database.sessions() as session:
+        preview_assets = session.scalars(
+            select(PreviewImageAssetRow).where(
+                PreviewImageAssetRow.product_draft_id == draft_id,
+                PreviewImageAssetRow.workspace_id == "local",
+            )
+        ).all()
+    assert all(not row.managed_path.startswith("/api/") for row in preview_assets)
 
 
 def test_cross_workspace_forged_ids_return_404_and_schema_rejects_workspace(service_fixture) -> None:
@@ -657,6 +760,30 @@ def test_cross_workspace_forged_ids_return_404_and_schema_rejects_workspace(serv
         headers={"X-Workspace-ID": "local"},
     )
     assert response.status_code == 422
+
+
+def test_dimension_asset_image_accepts_workspace_query_for_browser_images(service_fixture) -> None:
+    database, _product, _repository, service, _calls, _publisher_calls = service_fixture
+    seeded = _seed(database, "other")
+    item = service.import_preview_item(
+        seeded["task_id"], seeded["task_item_id"], workspace_id="other"
+    )
+    uploaded = service.upload_asset(
+        item["id"],
+        b"valid-image-content",
+        "other.png",
+        "image/png",
+        workspace_id="other",
+    )
+    app = FastAPI()
+    app.include_router(create_dimension_canvas_router(service))
+
+    response = TestClient(app).get(
+        f"/dimension-canvas/assets/{uploaded['asset_id']}/image?workspace_id=other"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
 
 
 def test_api_retry_accepts_empty_body_and_uses_server_revision(service_fixture) -> None:

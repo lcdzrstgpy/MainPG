@@ -46,6 +46,19 @@ test("dimension canvas uses Konva layers and keeps image rendering asynchronous"
   assert.match(canvasStyles, /contain:\s*layout paint style/);
 });
 
+test("dimension canvas retries a thumbnail when the server refreshes its preview URL", () => {
+  assert.match(
+    pageSource,
+    /function CanvasAssetThumb[\s\S]*?useEffect\(\(\) => \{\s*setFailed\(false\);\s*\}, \[asset\.previewUrl\]\)/,
+  );
+  assert.match(stageSource, /setImageState\(asset\?\.previewUrl \? "loading" : "empty"\)/);
+});
+
+test("dimension canvas reports a review handoff failure without mislabeling it as COS", () => {
+  assert.match(pageSource, /交回审核失败：/);
+  assert.doesNotMatch(pageSource, /COS 交回失败：/);
+});
+
 test("dimension canvas supports page scroll, modifier zoom and low-power rendering", () => {
   assert.match(stageSource, /event\.ctrlKey \|\| event\.metaKey/);
   assert.match(stageSource, /onZoomChangeRef\.current/);

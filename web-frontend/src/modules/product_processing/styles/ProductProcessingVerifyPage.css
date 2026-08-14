@@ -1116,6 +1116,8 @@
 
 /* 预检环节 */
 .precheck-card {
+  display: grid;
+  gap: 16px;
   border: 1px solid #e2edf5;
   border-left: 4px solid #cfdce8;
 }
@@ -1126,15 +1128,19 @@
 
 .precheck-grid {
   display: grid;
-  grid-template-columns: minmax(340px, 5fr) minmax(420px, 6fr);
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
   align-items: start;
 }
 
 .precheck-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.4fr);
+  gap: 16px;
+}
+
+.precheck-fields .precheck-core-grid {
+  grid-column: 1 / -1;
 }
 
 .precheck-label {
@@ -1183,9 +1189,9 @@
 }
 
 .precheck-images {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  min-width: 0;
+  display: grid;
+  gap: 18px;
 }
 
 .precheck-image-block {
@@ -1397,6 +1403,64 @@
   background: #f8fcff;
 }
 
+.precheck-source-pool {
+  border-color: #bcd9e8;
+  background: linear-gradient(135deg, #fbfeff, #f4fafd);
+}
+
+.precheck-material-library {
+  background: linear-gradient(135deg, #f8fcff, #f2f8fc);
+}
+
+.precheck-source-group,
+.precheck-material-group {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.precheck-source-group + .precheck-source-group,
+.precheck-material-group + .precheck-material-group {
+  border-top: 1px solid #dce9f2;
+  padding-top: 12px;
+}
+
+.precheck-source-group > header,
+.precheck-material-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #41657f;
+  font-size: 0.72rem;
+}
+
+.precheck-source-group > header span,
+.precheck-material-group > header span {
+  color: #7c91a6;
+  font-size: 0.66rem;
+}
+
+.precheck-main-badge {
+  position: absolute;
+  z-index: 1;
+  top: 12px;
+  right: 12px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: linear-gradient(100deg, #0a8fca, #0ab3c0);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 800;
+  box-shadow: 0 2px 7px rgba(10, 155, 202, 0.28);
+}
+
+.precheck-origin-badge.origin-source {
+  border-color: #bcd9e8;
+  background: #f1f8fc;
+  color: #2d6f96;
+}
+
 .precheck-file-input {
   display: none;
 }
@@ -1410,7 +1474,7 @@
 
 .precheck-asset-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
   gap: 10px;
 }
 

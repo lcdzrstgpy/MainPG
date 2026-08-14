@@ -182,6 +182,10 @@ export type PreviewCoreFields = {
 
 export type PreviewImageOrigin = "source" | "generated" | "dimension" | "upload";
 
+export type PreviewImageBucket = "source" | "processed";
+
+export type PreviewSourceKind = "main" | "gallery" | "sku" | "detail" | "";
+
 export type PreviewImageAsset = {
   id: string;
   origin: PreviewImageOrigin;
@@ -196,12 +200,17 @@ export type PreviewImageAsset = {
   public_url: string | null;
   width: number;
   height: number;
+  bucket: PreviewImageBucket;
+  source_kind: PreviewSourceKind;
+  media_asset_id: string;
+  media_status: MediaAssetStatus | "";
 };
 
 export type PreviewImageManifest = {
   main_asset_id: string;
   carousel_asset_ids: string[];
   detail_asset_ids: string[];
+  library_asset_ids: string[];
   semantic_asset_ids: Record<string, string>;
 };
 

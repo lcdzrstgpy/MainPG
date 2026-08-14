@@ -57,6 +57,24 @@ def test_remote_asset_materializes_to_ready(tmp_path: Path) -> None:
     assert service.read_ready_asset(asset["id"], workspace_id="ws") == content
 
 
+def test_materialize_until_idle_drains_assets_beyond_one_batch(tmp_path: Path) -> None:
+    content = _jpeg("green")
+
+    def fetcher(url: str) -> FetchedPublicImage:
+        return FetchedPublicImage(content, "image/jpeg", url)
+
+    service, _db = _service(tmp_path, fetcher=fetcher)
+    assets = [
+        service.register_remote_asset("ws", f"https://example.com/{index}.jpg")
+        for index in range(21)
+    ]
+
+    result = service.materialize_until_idle(workspace_id="ws", batch_size=20)
+
+    assert result == {"claimed": 21, "ready": 21, "retryable": 0, "failed": 0}
+    assert all(service.get_asset(asset["id"], "ws")["status"] == "ready" for asset in assets)
+
+
 def test_transient_fetch_failure_is_retryable(tmp_path: Path) -> None:
     def fetcher(url: str) -> FetchedPublicImage:
         raise OSError("network down")

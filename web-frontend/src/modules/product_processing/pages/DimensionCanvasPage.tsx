@@ -59,6 +59,11 @@ const UNIT_OPTIONS: Array<{ value: DimensionUnit; label: string }> = [
 
 function CanvasAssetThumb({ asset }: { asset: DimensionAsset }) {
   const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [asset.previewUrl]);
+
   if (failed) return <span className="dimension-asset-thumb-failed">加载失败</span>;
   if (!asset.previewUrl) return <span>待加载</span>;
   return (
@@ -390,7 +395,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
       setMessage(`已交回 ${changeSet.itemCount} 项审核；未完成项目继续保留在当前批次`);
       onOpenPrecheck(changeSet.sourceTaskId || batch.sourceTaskId, changeSet.id);
     } catch (cause) {
-      setError(`COS 交回失败：${cause instanceof Error ? cause.message : String(cause)}`);
+      setError(`交回审核失败：${cause instanceof Error ? cause.message : String(cause)}`);
     } finally {
       setBusy("");
     }

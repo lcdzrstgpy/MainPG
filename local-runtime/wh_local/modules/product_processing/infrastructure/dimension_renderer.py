@@ -11,7 +11,15 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, StrictBytes
 
 
-_FONT_PATH = Path("C:/Windows/Fonts/segoeuib.ttf")
+_FONT_CANDIDATES = (
+    Path("C:/Windows/Fonts/segoeuib.ttf"),
+    Path("C:/Windows/Fonts/arialbd.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+)
+_FONT_PATH = next((path for path in _FONT_CANDIDATES if path.is_file()), None)
 _EXPORT_PADDING_RATIO = 0.005
 _MAX_SOURCE_BYTES = 25 * 1024 * 1024
 _MAX_SOURCE_PIXELS = 40_000_000
@@ -73,15 +81,11 @@ class DimensionRenderer:
 
     def render(self, request: DimensionRenderRequest) -> DimensionRenderOutput:
         self._validate_request(request)
-        if not _FONT_PATH.is_file():
-            raise ValueError("dimension_font_missing")
 
         source = self._decode_source(request.source_bytes)
         canvas = self._compose_source(source, request.output_size, request.fit)
         draw = ImageDraw.Draw(canvas)
-        font = ImageFont.truetype(
-            str(_FONT_PATH), max(24, round(request.output_size * 0.044))
-        )
+        font = _load_font(max(24, round(request.output_size * 0.044)))
         for annotation in request.annotations:
             self._draw_annotation(canvas, draw, font, annotation)
 
@@ -310,6 +314,12 @@ def _fit_label_inside_safe_margin(
 
 def _pixel_point(point: tuple[float, float], size: int) -> tuple[int, int]:
     return round(point[0] * (size - 1)), round(point[1] * (size - 1))
+
+
+def _load_font(size: int) -> ImageFont.ImageFont:
+    if _FONT_PATH is not None:
+        return ImageFont.truetype(str(_FONT_PATH), size)
+    return ImageFont.load_default(size=size)
 
 
 def _format_dimension(value_cm: float, unit: Literal["cm", "mm", "in", "ft"]) -> str:

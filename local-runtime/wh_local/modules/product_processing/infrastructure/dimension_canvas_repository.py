@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Mapping
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import select, update
@@ -1000,6 +1000,7 @@ class DimensionCanvasRepository:
                 managed_asset,
                 workspace_id,
                 preview_managed_path=preview_managed_path,
+                media_asset_id=dimension_media_asset_id,
             )
             manifest = self._manifest_for_acceptance(
                 session, canvas_item, draft, overrides, workspace_id
@@ -1329,6 +1330,7 @@ class DimensionCanvasRepository:
         workspace_id: str,
         *,
         preview_managed_path: str | None = None,
+        media_asset_id: str = "",
     ) -> PreviewImageAssetRow:
         identity_hash = hashlib.sha256(f"dimension:{asset.id}".encode("utf-8")).hexdigest()
         preview_id = str(
@@ -1346,6 +1348,7 @@ class DimensionCanvasRepository:
                 product_draft_id=item.product_draft_id,
                 origin="dimension",
                 source_asset_id=asset.id,
+                media_asset_id=str(media_asset_id or ""),
                 identity_hash=identity_hash,
                 managed_path=str(preview_managed_path or asset.managed_path),
                 source_url="",
@@ -1458,6 +1461,8 @@ class DimensionCanvasRepository:
             return PreviewImageManifest.from_value(overrides.get(MANIFEST_KEY))
 
         result = self._task_result(session, item)
+        if int(draft.media_contract_version or 1) >= 2:
+            return self._v2_preview_manifest(session, item, result, workspace_id)
         source_values = {
             str(value or "").strip()
             for value in result.get("source_image_urls") or []
@@ -1518,6 +1523,72 @@ class DimensionCanvasRepository:
                     if index < len(carousel_ids)
                 },
             }
+        )
+
+    @staticmethod
+    def _v2_preview_manifest(
+        session,
+        item: DimensionCanvasItemRow,
+        result: Mapping[str, Any],
+        workspace_id: str,
+    ) -> PreviewImageManifest:
+        """Translate V2 media identities only through their preview-asset binding.
+
+        ``image_manifest`` and ``carousel_image_paths`` may contain old browser
+        URLs for backwards compatibility.  Those are display values, not files;
+        accepting a dimension change must not turn one into a fake local asset.
+        """
+        raw = result.get("image_manifest_v2") or {}
+        manifest = raw if isinstance(raw, Mapping) else {}
+        media_ids = {
+            str(value or "").strip()
+            for value in (
+                manifest.get("main_asset_id"),
+                *(manifest.get("carousel_asset_ids") or []),
+                *(manifest.get("detail_asset_ids") or []),
+                *(dict(manifest.get("semantic_asset_ids") or {}).values()),
+            )
+            if str(value or "").strip()
+        }
+        if not media_ids:
+            return PreviewImageManifest()
+        rows = session.scalars(
+            select(PreviewImageAssetRow)
+            .where(
+                PreviewImageAssetRow.workspace_id == workspace_id,
+                PreviewImageAssetRow.task_id == item.task_id,
+                PreviewImageAssetRow.product_draft_id == item.product_draft_id,
+                PreviewImageAssetRow.media_asset_id.in_(media_ids),
+            )
+            .order_by(PreviewImageAssetRow.created_at, PreviewImageAssetRow.id)
+        ).all()
+        preview_by_media: dict[str, str] = {}
+        for row in rows:
+            preview_by_media.setdefault(str(row.media_asset_id or ""), str(row.id))
+
+        def preview_id(media_asset_id: Any) -> str:
+            return preview_by_media.get(str(media_asset_id or "").strip(), "")
+
+        carousel = tuple(
+            preview_id(value)
+            for value in manifest.get("carousel_asset_ids") or []
+            if preview_id(value)
+        )
+        detail = tuple(
+            preview_id(value)
+            for value in manifest.get("detail_asset_ids") or []
+            if preview_id(value)
+        )
+        semantic = {
+            str(slot_id): identifier
+            for slot_id, value in dict(manifest.get("semantic_asset_ids") or {}).items()
+            if (identifier := preview_id(value))
+        }
+        return PreviewImageManifest(
+            main_asset_id=preview_id(manifest.get("main_asset_id")),
+            carousel_asset_ids=carousel,
+            detail_asset_ids=detail,
+            semantic_asset_ids=semantic,
         )
 
     def _current_review_inputs(

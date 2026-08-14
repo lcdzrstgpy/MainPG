@@ -75,6 +75,7 @@ _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("origin", "VARCHAR(32) NOT NULL DEFAULT 'source'"),
         ("source_asset_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ("media_asset_id", "VARCHAR(36) NOT NULL DEFAULT ''"),
+        ("source_kind", "VARCHAR(32) NOT NULL DEFAULT ''"),
         ("identity_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ("access_token", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ("managed_path", "TEXT NOT NULL DEFAULT ''"),

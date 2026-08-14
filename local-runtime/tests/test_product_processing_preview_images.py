@@ -92,6 +92,25 @@ def test_manifest_preserves_empty_lists_and_semantic_slot_after_reorder() -> Non
     assert changed.as_dict()["detail_asset_ids"] == []
 
 
+def test_manifest_uses_first_carousel_asset_as_its_only_main() -> None:
+    manifest = PreviewImageManifest.from_value({
+        "main_asset_id": "old-main",
+        "carousel_asset_ids": ["b", "a", "b"],
+        "library_asset_ids": ["source-1", "source-1"],
+        "semantic_asset_ids": {"carousel.hero": "old-main", "carousel.detail": "gone"},
+    })
+    assert manifest.main_asset_id == "b"
+    assert manifest.carousel_asset_ids == ("b", "a")
+    assert manifest.library_asset_ids == ("source-1",)
+    assert manifest.semantic_asset_ids == {"carousel.hero": "b"}
+
+
+def test_manifest_promotes_lone_main_to_first_carousel_item() -> None:
+    manifest = PreviewImageManifest.from_value({"main_asset_id": "only-main"})
+    assert manifest.carousel_asset_ids == ("only-main",)
+    assert manifest.main_asset_id == "only-main"
+
+
 def test_schema_and_workspace_asset_boundaries(tmp_path: Path) -> None:
     database = create_database(f"sqlite:///{(tmp_path / 'preview.sqlite3').as_posix()}")
     assert {

@@ -18,6 +18,7 @@ from ..service import (
     ProductProcessingConflict,
     ProductProcessingNotFound,
     ProductProcessingService,
+    ProductProcessingValidationError,
 )
 from .schemas import (
     DailySelectionIntakeRequest,
@@ -633,6 +634,8 @@ def _call(function, *args, **kwargs):
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ProductProcessingConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ProductProcessingValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except (ValueError, ValidationError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
