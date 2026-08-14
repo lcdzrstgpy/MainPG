@@ -27,6 +27,7 @@ function editor(length = 10): EditorState {
     selectedAnnotationId: null,
     displayUnit: "cm",
     customValueCm: null,
+    endpointStyle: "arrow",
   };
 }
 

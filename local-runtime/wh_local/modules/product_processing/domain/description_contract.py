@@ -12,6 +12,14 @@ _MARKDOWN_HEADING = re.compile(r"^(?:\*\*|__)\s*(.+?)\s*(?:\*\*|__)")
 _POINT = re.compile(r"^([A-Za-z][A-Za-z0-9'&]*(?: [A-Za-z0-9'&]+){0,5})\s*[-:：—]\s+(.+)$")
 _CHINESE = re.compile(r"[\u3400-\u9fff]")
 _INTERNAL_FALLBACK = re.compile(r"source information preserved|operator review", re.IGNORECASE)
+# 描述必须直接陈述商品事实，禁止转述来源图/参考图内容（如 “The reference image shows ...”）。
+_META_COMMENTARY = re.compile(
+    r"(?:the\s+)?(?:reference|source)\s+image\s+(?:shows?|displays?|depicts?|illustrates?)"
+    r"|\b(?:the\s+)?(?:image|picture|photo)\s+(?:shows?|displays?|depicts?|illustrates?)"
+    r"|\b(?:as\s+shown|in\s+the\s+(?:image|picture|photo))\b"
+    r"|展示图|参考图|图片中|图中",
+    re.IGNORECASE,
+)
 
 
 class DescriptionContractError(ValueError):
@@ -21,13 +29,15 @@ class DescriptionContractError(ValueError):
 def normalize_five_point_description(value: str) -> str:
     """归一化描述并做最简结构校验（用户确认：仅保留基本底线）。
 
-    底线只保留：非空、纯英文、无内部占位文案、长度 ≤1000 字符、要点不重复；
-    行数（不再要求 3-5）、词数（不再要求 40-180）、标题「heading: body」格式
-    均不再强制，避免模型输出小差异就整单失败。
+    底线：非空、纯英文、无内部占位文案、长度 ≤1000 字符、要点不重复、
+    必须恰好 5 条、禁止转述「参考图/展示图」等元语言；
+    词数（40-180）与标题「heading: body」格式不再强制。
     """
     raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if _INTERNAL_FALLBACK.search(raw):
         raise DescriptionContractError("description contains an internal fallback message")
+    if _META_COMMENTARY.search(raw):
+        raise DescriptionContractError("description must describe the product directly, not the reference/source image")
     if _CHINESE.search(raw):
         raise DescriptionContractError("description must be English only")
     lines = [line.strip() for line in raw.split("\n") if line.strip()]
@@ -58,8 +68,8 @@ def normalize_five_point_description(value: str) -> str:
         bodies.add(body_key)
         normalized.append(f"- {heading}: {body}" if heading else f"- {body}")
 
-    if not normalized:
-        raise DescriptionContractError("description must contain at least one usable selling point")
+    if len(normalized) != 5:
+        raise DescriptionContractError("description must contain exactly five selling points")
     result = "\n".join(normalized)
     if len(result) > 1000:
         raise DescriptionContractError("description must not exceed 1000 characters")

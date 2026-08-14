@@ -87,10 +87,19 @@ def test_split_four_grid_uses_exact_center_and_preserves_outer_edges() -> None:
             assert all(abs(value - wanted) <= 4 for value, wanted in zip(actual, color))
 
 
-def test_split_four_grid_rejects_low_resolution_source() -> None:
+def test_split_four_grid_accepts_provider_1k_fallback() -> None:
     processor = ProductImageProcessor(lambda: {})
-    with pytest.raises(MediaProcessingError, match="cannot be split"):
-        processor.split_four_grid(_media(_grid_bytes(1024)))
+    parts = processor.split_four_grid(_media(_grid_bytes(1024)))
+    assert len(parts) == 5
+    for part in parts:
+        with Image.open(BytesIO(part.content)) as image:
+            assert image.size == (800, 800)
+
+
+def test_split_four_grid_rejects_source_below_1k_with_dimensions() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    with pytest.raises(MediaProcessingError, match=r"900x900.*at least 1024px"):
+        processor.split_four_grid(_media(_grid_bytes(900)))
 
 
 def test_split_premium_four_grid_preserves_approximately_2k_panels() -> None:

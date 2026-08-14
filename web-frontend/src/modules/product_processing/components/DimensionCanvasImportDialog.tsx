@@ -74,6 +74,7 @@ export function DimensionCanvasImportDialog({ open, onClose, onImported }: Props
   }, [open, taskId]);
 
   const toggle = (id: number) => {
+    if (eligibility.assetFailed.some((item) => item.taskItemId === id)) return;
     setSelected((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
@@ -96,7 +97,10 @@ export function DimensionCanvasImportDialog({ open, onClose, onImported }: Props
     try {
       const taskItemIds = orderedItems
         .map((item) => item.taskItemId)
-        .filter((id) => selected.has(id));
+        .filter((id) => (
+          selected.has(id)
+          && !eligibility.assetFailed.some((item) => item.taskItemId === id)
+        ));
       const batch = await importDimensionTask({
         task_id: taskId,
         task_item_ids: taskItemIds,
@@ -113,13 +117,24 @@ export function DimensionCanvasImportDialog({ open, onClose, onImported }: Props
 
   if (!open) return null;
 
-  const group = (title: string, hint: string, items: DimensionEligibilityItem[], existing = false) => (
+  const group = (
+    title: string,
+    hint: string,
+    items: DimensionEligibilityItem[],
+    existing = false,
+    selectable = true,
+  ) => (
     <section className="dimension-import-group">
       <header><strong>{title}</strong><span>{items.length} 项 · {hint}</span></header>
       {items.length === 0 ? <p>暂无商品</p> : items.map((item) => (
         <div key={item.taskItemId} className="dimension-import-item">
           <label>
-            <input type="checkbox" checked={selected.has(item.taskItemId)} onChange={() => toggle(item.taskItemId)} />
+            <input
+              type="checkbox"
+              checked={selected.has(item.taskItemId)}
+              disabled={!selectable}
+              onChange={() => toggle(item.taskItemId)}
+            />
             <span><strong>{item.skc || `商品 #${item.taskItemId}`}</strong><small>{item.label}</small></span>
           </label>
           {existing && (
@@ -160,7 +175,7 @@ export function DimensionCanvasImportDialog({ open, onClose, onImported }: Props
             {group("可直接制作", "默认选中", eligibility.ready)}
             {group("待补尺寸", "导入后需人工确认", eligibility.needsDimensions)}
             {group("已有尺寸图", "请选择保留、重做或跳过", eligibility.existingDimension, true)}
-            {group("素材不可用", "可稍后重选或上传", eligibility.assetFailed)}
+            {group("素材同步中或失败", "不可导入；请等待同步完成或回到预检页重试", eligibility.assetFailed, false, false)}
           </div>
         )}
         <footer className="dimension-modal-actions">

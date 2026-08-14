@@ -17,11 +17,18 @@ const initialForm: BasicSettingsForm = {
   textModel: "",
   imageModel: "",
   referenceImageModel: "",
+  cosBucket: "",
+  cosRegion: "",
+  cosSecretId: "",
+  cosSecretKey: "",
+  publicMediaBaseUrl: "",
 };
 
 const initialVisibility: Record<ApiKeyField, boolean> = {
   textModelApiKey: false,
   imageModelApiKey: false,
+  cosSecretId: false,
+  cosSecretKey: false,
 };
 
 const defaultStatus: BasicSettingsStatus = {
@@ -29,7 +36,7 @@ const defaultStatus: BasicSettingsStatus = {
   message: "填入模型名或 API Key 后保存，修改将应用到产品处理模块。",
 };
 
-function validateForm(form: BasicSettingsForm): BasicSettingsFieldErrors {
+function validateForm(form: BasicSettingsForm, config: SystemConfigResponse | null): BasicSettingsFieldErrors {
   const errors: BasicSettingsFieldErrors = {};
   const textKey = form.textModelApiKey.trim();
   const imageKey = form.imageModelApiKey.trim();
@@ -41,6 +48,33 @@ function validateForm(form: BasicSettingsForm): BasicSettingsFieldErrors {
   if (imageKey) {
     if (imageKey.length < 16) errors.imageModelApiKey = "API Key 通常不少于 16 位";
     else if (/\s/.test(imageKey)) errors.imageModelApiKey = "不能包含空格";
+  }
+  const cosSecretId = form.cosSecretId.trim();
+  const cosSecretKey = form.cosSecretKey.trim();
+  const cosBucket = form.cosBucket.trim();
+  const cosRegion = form.cosRegion.trim();
+  const savedCosBucket = String(config?.cos?.bucket || "").trim();
+  const savedCosRegion = String(config?.cos?.region || "").trim();
+  const hasCosChange = Boolean(
+    cosSecretId
+      || cosSecretKey
+      || cosBucket !== savedCosBucket
+      || cosRegion !== savedCosRegion,
+  );
+  const hasSavedCosSecrets = Boolean(
+    config?.secrets?.cos?.secret_id_configured && config?.secrets?.cos?.secret_key_configured,
+  );
+  if (hasCosChange && (!cosBucket || !cosRegion)) {
+    if (!cosBucket) errors.cosSecretId = "配置 COS 时必须填写存储桶";
+    if (!cosRegion) errors.cosSecretKey = "配置 COS 时必须填写所属地域";
+  }
+  if (!hasSavedCosSecrets && hasCosChange && (!cosSecretId || !cosSecretKey)) {
+    if (!cosSecretId) errors.cosSecretId = "首次配置 COS 时必须填写 SecretId";
+    if (!cosSecretKey) errors.cosSecretKey = "首次配置 COS 时必须填写 SecretKey";
+  }
+  const publicBaseUrl = form.publicMediaBaseUrl.trim();
+  if (publicBaseUrl && !/^https:\/\//i.test(publicBaseUrl)) {
+    errors.cosSecretKey = "公共媒体地址必须使用 HTTPS";
   }
   return errors;
 }
@@ -65,6 +99,9 @@ export function BasicSettingsPage() {
           textModel: nextConfig.ai?.model || prev.textModel,
           imageModel: nextConfig.image?.model || prev.imageModel,
           referenceImageModel: nextConfig.image?.reference_model || prev.referenceImageModel,
+          cosBucket: nextConfig.cos?.bucket || prev.cosBucket,
+          cosRegion: nextConfig.cos?.region || prev.cosRegion,
+          publicMediaBaseUrl: nextConfig.updates?.public_base_url || prev.publicMediaBaseUrl,
         }));
         setStatus({ tone: "success", message: "已读取后端系统配置状态。" });
       })
@@ -80,7 +117,7 @@ export function BasicSettingsPage() {
 
   const updateField = (field: keyof BasicSettingsForm, value: string) => {
     setForm((current) => ({ ...current, [field]: value }));
-    if (field === "textModelApiKey" || field === "imageModelApiKey") {
+    if (field === "textModelApiKey" || field === "imageModelApiKey" || field === "cosSecretId" || field === "cosSecretKey") {
       setFieldErrors((current) => ({ ...current, [field]: undefined }));
     }
     setStatus(defaultStatus);
@@ -92,7 +129,7 @@ export function BasicSettingsPage() {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const errors = validateForm(form);
+    const errors = validateForm(form, config);
     setFieldErrors(errors);
     if (Object.values(errors).some(Boolean)) {
       setStatus({ tone: "error", message: "保存前请先检查输入内容。" });
@@ -117,6 +154,9 @@ export function BasicSettingsPage() {
         textModel: result.config.ai?.model || prev.textModel,
         imageModel: result.config.image?.model || prev.imageModel,
         referenceImageModel: result.config.image?.reference_model || prev.referenceImageModel,
+        cosBucket: result.config.cos?.bucket || prev.cosBucket,
+        cosRegion: result.config.cos?.region || prev.cosRegion,
+        publicMediaBaseUrl: result.config.updates?.public_base_url || prev.publicMediaBaseUrl,
       }));
       setStatus({ tone: "success", message: `已重新读取：${result.reloadedAt}` });
     } catch (error) {
@@ -166,6 +206,60 @@ export function BasicSettingsPage() {
             onChange={(value) => updateField("imageModelApiKey", value)}
             onToggleVisible={() => toggleVisible("imageModelApiKey")}
           />
+        </div>
+
+        <div className="settings-card settings-card-wide">
+          <div className="settings-card-head">
+            <div>
+              <h3>导出图床（腾讯 COS）</h3>
+              <p className="settings-card-description">预检通过并导出时，产品图片会上传到该 COS 桶；密钥仅加密保存在本机，不会回显。</p>
+            </div>
+            <span className={`api-key-configured-badge ${config?.summary?.cos_configured ? "is-configured" : ""}`}>
+              {config?.summary?.cos_configured ? "已配置" : "未配置"}
+            </span>
+          </div>
+          <div className="settings-row">
+            <label className="settings-field">
+              <span>存储桶</span>
+              <input value={form.cosBucket} placeholder="例如 temu-images-123-1429573868" onChange={(event) => updateField("cosBucket", event.target.value)} />
+            </label>
+            <label className="settings-field">
+              <span>所属地域</span>
+              <input value={form.cosRegion} placeholder="例如 ap-guangzhou" onChange={(event) => updateField("cosRegion", event.target.value)} />
+            </label>
+          </div>
+          <div className="settings-grid settings-grid-inner">
+            <ApiKeyPanel
+              fieldId="cosSecretId"
+              title="COS SecretId"
+              description="创建“仅该桶读写”子账号密钥后填入；留空不修改已保存密钥。"
+              keyLabel="SecretId"
+              value={form.cosSecretId}
+              placeholder="留空不修改 SecretId"
+              visible={visibleFields.cosSecretId}
+              configured={Boolean(config?.secrets?.cos?.secret_id_configured)}
+              error={fieldErrors.cosSecretId}
+              onChange={(value) => updateField("cosSecretId", value)}
+              onToggleVisible={() => toggleVisible("cosSecretId")}
+            />
+            <ApiKeyPanel
+              fieldId="cosSecretKey"
+              title="COS SecretKey"
+              description="请不要在聊天里发送密钥，直接在本页输入并保存。"
+              keyLabel="SecretKey"
+              value={form.cosSecretKey}
+              placeholder="留空不修改 SecretKey"
+              visible={visibleFields.cosSecretKey}
+              configured={Boolean(config?.secrets?.cos?.secret_key_configured)}
+              error={fieldErrors.cosSecretKey}
+              onChange={(value) => updateField("cosSecretKey", value)}
+              onToggleVisible={() => toggleVisible("cosSecretKey")}
+            />
+          </div>
+          <label className="settings-field">
+            <span>公共媒体地址（可选，仅静态图床兜底）</span>
+            <input value={form.publicMediaBaseUrl} placeholder="https://你的公开域名" onChange={(event) => updateField("publicMediaBaseUrl", event.target.value)} />
+          </label>
         </div>
       </section>
 

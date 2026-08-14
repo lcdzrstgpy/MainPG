@@ -2,12 +2,19 @@ import { useRef, type KeyboardEvent } from "react";
 import {
   addAssets,
   moveAsset,
+  promoteToLibrary,
   removeAsset,
+  removeFromLibrary,
   selectMainAsset,
   type PrecheckImageTarget,
   type RemovedAssetUndo,
 } from "../data/precheckImageModel";
-import type { PreviewImageAsset, PreviewImageManifest } from "../types";
+import { PrecheckMaterialLibrary } from "./PrecheckMaterialLibrary";
+import { PrecheckSourcePool } from "./PrecheckSourcePool";
+import type {
+  PreviewImageAsset,
+  PreviewImageManifest,
+} from "../types";
 
 type PrecheckImageManagerProps = {
   assets: PreviewImageAsset[];
@@ -17,6 +24,8 @@ type PrecheckImageManagerProps = {
   onManifestChange: (manifest: PreviewImageManifest) => void;
   onPreview: (url: string) => void;
   onUndoAvailable: (undo: RemovedAssetUndo) => void;
+  retryingMediaAssetIds?: ReadonlySet<string>;
+  onRetryMediaAsset?: (assetId: string) => void;
 };
 
 const ORIGIN_LABELS: Record<PreviewImageAsset["origin"], string> = {
@@ -133,8 +142,18 @@ export function PrecheckImageManager({
   onManifestChange,
   onPreview,
   onUndoAvailable,
+  retryingMediaAssetIds = new Set<string>(),
+  onRetryMediaAsset,
 }: PrecheckImageManagerProps) {
   const assetById = new Map(assets.map((asset) => [asset.id, asset]));
+
+  const libraryAssetIds = new Set(manifest.library_asset_ids ?? []);
+  const sourceAssets = assets.filter((asset) => asset.bucket === "source");
+  const processedAssets = assets.filter((asset) => asset.bucket === "processed");
+  const materialAssets = [
+    ...processedAssets,
+    ...sourceAssets.filter((asset) => libraryAssetIds.has(asset.id)),
+  ];
 
   const remove = (target: PrecheckImageTarget, assetId: string) => {
     const result = removeAsset(manifest, target, assetId);
@@ -156,101 +175,33 @@ export function PrecheckImageManager({
   };
 
   const mainAssetId = manifest.main_asset_id;
-  const mainAsset = mainAssetId ? assetById.get(mainAssetId) : undefined;
 
   return (
     <div className={`precheck-image-manager${disabled ? " is-disabled" : ""}`}>
-      <section className="precheck-manager-section precheck-library">
-        <header>
-          <div>
-            <h3>可用素材库</h3>
-            <p>素材保留稳定 ID；移出商品清单后仍可重新加入。</p>
-          </div>
-        </header>
-        {assets.length === 0 ? (
-          <div className="precheck-manager-empty">暂无可用素材，可从下方图片区导入。</div>
-        ) : (
-          <div className="precheck-asset-grid">
-            {assets.map((asset) => (
-              <article key={asset.id} className="precheck-asset-card library-card">
-                <PreviewAsset
-                  asset={asset}
-                  assetId={asset.id}
-                  label={`${ORIGIN_LABELS[asset.origin]}素材`}
-                  onPreview={onPreview}
-                />
-                <div className="precheck-card-actions">
-                  <button
-                    type="button"
-                    disabled={disabled || mainAssetId === asset.id}
-                    onClick={() => onManifestChange(addAssets(manifest, "main", [asset.id]))}
-                  >设为主图</button>
-                  <button
-                    type="button"
-                    disabled={disabled || manifest.carousel_asset_ids.includes(asset.id)}
-                    onClick={() => onManifestChange(addAssets(manifest, "carousel", [asset.id]))}
-                  >加入轮播</button>
-                  <button
-                    type="button"
-                    disabled={disabled || manifest.detail_asset_ids.includes(asset.id)}
-                    onClick={() => onManifestChange(addAssets(manifest, "detail", [asset.id]))}
-                  >加入详情</button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
+      <PrecheckSourcePool
+        assets={sourceAssets}
+        libraryAssetIds={libraryAssetIds}
+        disabled={disabled}
+        retryingMediaAssetIds={retryingMediaAssetIds}
+        onPromote={(assetId) => onManifestChange(promoteToLibrary(manifest, assetId))}
+        onRetry={onRetryMediaAsset}
+        onPreview={onPreview}
+      />
 
-      <section className="precheck-manager-section precheck-main-section">
-        <header>
-          <div>
-            <h3>主图</h3>
-            <p>最终导出必须保留一张有效主图。</p>
-          </div>
-          <FilePicker
-            label="添加或更换主图"
-            target="main"
-            disabled={disabled}
-            onAddFiles={onAddFiles}
-          />
-        </header>
-        {mainAssetId ? (
-          <article className="precheck-asset-card main-card">
-            <PreviewAsset
-              asset={mainAsset}
-              assetId={mainAssetId}
-              label="主图"
-              onPreview={onPreview}
-            />
-            <div className="precheck-card-actions">
-              <button
-                type="button"
-                className="danger"
-                disabled={disabled}
-                onClick={() => remove("main", mainAssetId)}
-              >删除主图</button>
-            </div>
-          </article>
-        ) : (
-          <div className="precheck-manager-empty is-warning">
-            <strong>待选择主图</strong>
-            <span>从素材库选择，或导入一张新图片。</span>
-            <FilePicker
-              label="添加主图"
-              target="main"
-              disabled={disabled}
-              onAddFiles={onAddFiles}
-            />
-          </div>
-        )}
-      </section>
+      <PrecheckMaterialLibrary
+        assets={materialAssets}
+        manifest={manifest}
+        disabled={disabled}
+        onManifestChange={onManifestChange}
+        onRemoveFromLibrary={(assetId) => onManifestChange(removeFromLibrary(manifest, assetId))}
+        onPreview={onPreview}
+      />
 
       <section className="precheck-manager-section">
         <header>
           <div>
-            <h3>轮播图 <span>{manifest.carousel_asset_ids.length}</span></h3>
-            <p>按最终导出顺序排列；聚焦卡片后可按 Alt + 方向键排序。</p>
+            <h3>轮播图（第 1 张即主图） <span>{manifest.carousel_asset_ids.length}</span></h3>
+            <p>第 1 张即主图；删除或排序后自动更新主图。聚焦卡片可按 Alt + 方向键排序。</p>
           </div>
           <FilePicker
             label="添加图片"
@@ -280,6 +231,7 @@ export function PrecheckImageManager({
                 onKeyDown={(event) => reorderByKeyboard(event, "carousel", assetId)}
               >
                 <span className="precheck-order-number">{index + 1}</span>
+                {index === 0 && <span className="precheck-main-badge">主图</span>}
                 <PreviewAsset
                   asset={assetById.get(assetId)}
                   assetId={assetId}

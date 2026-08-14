@@ -30,6 +30,8 @@ class PreviewImageAssetRow(Base):
     )
     origin: Mapped[str] = mapped_column(String(32), index=True)
     source_asset_id: Mapped[str] = mapped_column(String(64), default="")
+    media_asset_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    source_kind: Mapped[str] = mapped_column(String(32), default="")
     identity_hash: Mapped[str] = mapped_column(String(64))
     access_token: Mapped[str] = mapped_column(String(64), default=lambda: uuid4().hex)
     managed_path: Mapped[str] = mapped_column(Text, default="")

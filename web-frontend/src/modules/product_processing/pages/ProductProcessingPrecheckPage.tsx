@@ -3,6 +3,7 @@ import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import {
   finalizeProductPreview,
   getPreviewFinalizeRun,
+  retryMediaAsset,
   retryPreviewFinalizeRun,
   saveProductPreview,
   uploadPreviewAssets,
@@ -76,6 +77,7 @@ function cloneManifest(manifest: PreviewImageManifest): PreviewImageManifest {
     main_asset_id: manifest.main_asset_id,
     carousel_asset_ids: [...manifest.carousel_asset_ids],
     detail_asset_ids: [...manifest.detail_asset_ids],
+    library_asset_ids: [...(manifest.library_asset_ids ?? [])],
     semantic_asset_ids: { ...manifest.semantic_asset_ids },
   };
 }
@@ -183,6 +185,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const ctx = useMemo(() => api(), []);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [edits, setEdits] = useState<Record<number, ItemEdits>>({});
+  const [retryingMediaAssetIds, setRetryingMediaAssetIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [pendingUploads, setPendingUploads] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -251,6 +254,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   useEffect(() => {
     setPreview(null);
     setEdits({});
+    setRetryingMediaAssetIds(new Set());
     setFinalizeRun(null);
     setUndoSnackbar(null);
     setActiveImage(null);
@@ -428,6 +432,23 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       fail(err);
     } finally {
       setPendingUploads((count) => Math.max(0, count - 1));
+    }
+  };
+
+  const retryMediaSource = async (assetId: string) => {
+    setRetryingMediaAssetIds((current) => new Set(current).add(assetId));
+    try {
+      await retryMediaAsset(ctx, assetId);
+      notify('素材已加入重新同步队列');
+      await load(true);
+    } catch (err) {
+      fail(err);
+    } finally {
+      setRetryingMediaAssetIds((current) => {
+        const next = new Set(current);
+        next.delete(assetId);
+        return next;
+      });
     }
   };
 
@@ -690,6 +711,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                   }}
                   onManifestChange={(nextManifest) => setManifest(draftId, nextManifest)}
                   onPreview={setActiveImage}
+                  retryingMediaAssetIds={retryingMediaAssetIds}
+                  onRetryMediaAsset={(assetId) => void retryMediaSource(assetId)}
                   onUndoAvailable={(undo) => setUndoSnackbar({
                     draftId,
                     undo,

@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from .orm import Base
 from . import dimension_canvas_orm as _dimension_canvas_orm  # noqa: F401
 from . import preview_image_orm as _preview_image_orm  # noqa: F401
+from . import media_asset_orm as _media_asset_orm  # noqa: F401
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "product_processing_drafts": [
         ("preview_revision", "INTEGER NOT NULL DEFAULT 0"),
         ("preview_overrides_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("media_contract_version", "INTEGER NOT NULL DEFAULT 1"),
     ],
     "product_processing_dimension_items": [
         ("render_input_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
@@ -72,6 +74,8 @@ _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("product_draft_id", "INTEGER NOT NULL DEFAULT 0"),
         ("origin", "VARCHAR(32) NOT NULL DEFAULT 'source'"),
         ("source_asset_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("media_asset_id", "VARCHAR(36) NOT NULL DEFAULT ''"),
+        ("source_kind", "VARCHAR(32) NOT NULL DEFAULT ''"),
         ("identity_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ("access_token", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ("managed_path", "TEXT NOT NULL DEFAULT ''"),
@@ -89,6 +93,9 @@ _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("materialize_claimed_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ("created_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ("updated_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
+    ],
+    "product_processing_dimension_assets": [
+        ("source_media_asset_id", "VARCHAR(36) NOT NULL DEFAULT ''"),
     ],
     "product_processing_preview_publications": [
         ("status", "VARCHAR(32) NOT NULL DEFAULT 'pending'"),

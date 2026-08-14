@@ -93,8 +93,14 @@ def filter_candidates(
         if sku_reason is not None:
             filtered.append(_filtered(candidate, (sku_reason, *risk_reasons), risks))
             continue
-        # 对齐参考版本：价格/起订量/主图缺失等只是软性提示，不硬过滤，
-        # 由用户在人工复核时决定保留或排除。
+        # 起订量上限：用户显式设置后应硬过滤，超过上限的候选直接排除。
+        if criteria.min_moq is not None and (
+            candidate.min_order_quantity is not None
+            and candidate.min_order_quantity > criteria.min_moq
+        ):
+            filtered.append(_filtered(candidate, ("moq_above_limit", *risk_reasons), risks))
+            continue
+        # 价格/主图缺失等仍为软性提示，由用户在人工复核时决定保留或排除。
         accepted.append(_with_risks(_with_filter_notes(candidate, criteria), risks))
 
     result_candidates = tuple(accepted)
@@ -216,9 +222,10 @@ def _with_filter_notes(
 ) -> DailySelectionCandidate:
     """Append soft quality notes instead of hard-filtering on them.
 
-    Aligned with the reference workbench: price / MOQ / missing image only
-    affect the selection score and appear as machine-readable reasons, while
-    the reviewer decides whether to keep the candidate.
+    Price / missing image only affect the selection score and appear as
+    machine-readable reasons, while the reviewer decides whether to keep the
+    candidate. MOQ above the configured upper limit is already hard-filtered in
+    ``filter_candidates``; a missing MOQ is noted here rather than rejected.
     """
     notes: list[str] = []
     if candidate.main_image_url is None:
@@ -233,11 +240,6 @@ def _with_filter_notes(
         reason = "missing_price" if candidate.price_cny is None else "price_above_max"
         if reason not in notes:
             notes.append(reason)
-    if criteria.min_moq is not None and (
-        candidate.min_order_quantity is not None and candidate.min_order_quantity > criteria.min_moq
-    ):
-        # ``min_moq`` 是起订量上限：高于上限提示“起订量偏高”，不硬过滤。
-        notes.append("moq_above_limit")
     if candidate.min_order_quantity is None:
         notes.append("missing_moq")
     if not notes:

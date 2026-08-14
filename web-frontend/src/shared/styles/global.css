@@ -132,3 +132,54 @@ button { cursor: pointer; }
 
 @media (prefers-reduced-motion: reduce) { .sidebar-card::before, .sidebar-card::after { display: none; animation: none; } }
 .topbar-card > .topbar-main { z-index: 3; }
+
+/* Keep desktop navigation attached to the viewport while long modules scroll. */
+@media (min-width: 801px) {
+  .workspace-shell {
+    --workspace-gutter: 18px;
+    --workspace-sidebar-width: 248px;
+  }
+
+  .workspace-main {
+    grid-column: 2;
+  }
+
+  .sidebar-card {
+    position: fixed;
+    z-index: 19;
+    top: var(--workspace-gutter);
+    left: var(--workspace-gutter);
+    width: var(--workspace-sidebar-width);
+  }
+
+  .sidebar-card.is-collapsed {
+    width: 72px;
+  }
+}
+
+@media (min-width: 801px) and (max-height: 900px) {
+  .workspace-shell { --workspace-gutter: 12px; }
+}
+
+@media (min-width: 801px) and (max-height: 760px) {
+  .workspace-shell { --workspace-gutter: 10px; }
+}
+
+@media (min-width: 801px) and (max-width: 1280px) {
+  .workspace-shell {
+    --workspace-gutter: 14px;
+    --workspace-sidebar-width: 208px;
+  }
+}
+
+@media (min-width: 801px) and (max-width: 1100px) {
+  .workspace-shell {
+    --workspace-gutter: 12px;
+    --workspace-sidebar-width: 68px;
+  }
+
+  .sidebar-card,
+  .sidebar-card.is-collapsed {
+    width: var(--workspace-sidebar-width);
+  }
+}

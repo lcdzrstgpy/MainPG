@@ -100,7 +100,7 @@ def test_combined_call_embeds_operator_description_prompt_and_enforces_five_poin
     assert "CUSTOM OPERATOR DESCRIPTION RULE" in client.prompts[0]
 
 
-def test_combined_partial_description_is_accepted_without_forcing_five_points(monkeypatch) -> None:
+def test_combined_partial_description_is_rejected_when_five_points_are_required(monkeypatch) -> None:
     candidate = "- CUTE KEYCHAINS: Small decorative charms for bags."
     service, _client = _combined_service(
         monkeypatch,
@@ -118,9 +118,9 @@ def test_combined_partial_description_is_accepted_without_forcing_five_points(mo
     )
 
     assert result is not None
-    assert result["description"] == "- CUTE KEYCHAINS: Small decorative charms for bags."
-    assert result["description_candidate"] == ""
-    assert result["description_contract_error"] == ""
+    assert result["description"] == ""
+    assert result["description_candidate"] == candidate
+    assert "exactly five" in result["description_contract_error"]
 
 
 def test_changing_operator_description_prompt_changes_combined_cache_key(monkeypatch) -> None:

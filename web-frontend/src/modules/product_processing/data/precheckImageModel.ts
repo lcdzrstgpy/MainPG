@@ -14,8 +14,59 @@ function copyManifest(manifest: PreviewImageManifest): PreviewImageManifest {
     main_asset_id: manifest.main_asset_id,
     carousel_asset_ids: [...manifest.carousel_asset_ids],
     detail_asset_ids: [...manifest.detail_asset_ids],
+    library_asset_ids: [...(manifest.library_asset_ids ?? [])],
     semantic_asset_ids: { ...manifest.semantic_asset_ids },
   };
+}
+
+function dedupeIds(ids: string[]): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const value = (id ?? "").trim();
+    if (value && !seen.has(value)) {
+      seen.add(value);
+      result.push(value);
+    }
+  }
+  return result;
+}
+
+export function normalizeManifest(manifest: PreviewImageManifest): PreviewImageManifest {
+  const carousel = dedupeIds(manifest.carousel_asset_ids);
+  const detail = dedupeIds(manifest.detail_asset_ids);
+  const library = dedupeIds(manifest.library_asset_ids ?? []);
+  let main = (manifest.main_asset_id ?? "").trim();
+  if (carousel.length > 0) {
+    main = carousel[0];
+  } else if (main) {
+    carousel.push(main);
+  }
+  const carouselSet = new Set(carousel);
+  const semantic: Record<string, string> = {};
+  for (const [slot, id] of Object.entries(manifest.semantic_asset_ids ?? {})) {
+    if (id && carouselSet.has(id)) semantic[slot] = id;
+  }
+  if (carousel.length > 0) semantic["carousel.hero"] = carousel[0];
+  return {
+    main_asset_id: main,
+    carousel_asset_ids: carousel,
+    detail_asset_ids: detail,
+    library_asset_ids: library,
+    semantic_asset_ids: semantic,
+  };
+}
+
+export function promoteToLibrary(manifest: PreviewImageManifest, assetId: string): PreviewImageManifest {
+  const next = copyManifest(manifest);
+  next.library_asset_ids = dedupeIds([...next.library_asset_ids, assetId]);
+  return normalizeManifest(next);
+}
+
+export function removeFromLibrary(manifest: PreviewImageManifest, assetId: string): PreviewImageManifest {
+  const next = copyManifest(manifest);
+  next.library_asset_ids = next.library_asset_ids.filter((id) => id !== assetId);
+  return normalizeManifest(next);
 }
 
 function appendNewIds(existing: string[], assetIds: string[]): string[] {
@@ -37,22 +88,17 @@ export function addAssets(
   const next = copyManifest(manifest);
   const usableIds = assetIds.filter(Boolean);
   if (target === "main") {
-    if (usableIds.length === 0) return next;
-    next.main_asset_id = usableIds[0];
-    next.carousel_asset_ids = appendNewIds(next.carousel_asset_ids, usableIds);
-    return next;
+    if (usableIds.length === 0) return normalizeManifest(next);
+    const mainId = usableIds[0];
+    next.carousel_asset_ids = dedupeIds([mainId, ...next.carousel_asset_ids]);
+    return normalizeManifest(next);
   }
   if (target === "carousel") {
     next.carousel_asset_ids = appendNewIds(next.carousel_asset_ids, usableIds);
-    return next;
+    return normalizeManifest(next);
   }
   next.detail_asset_ids = appendNewIds(next.detail_asset_ids, usableIds);
-  return next;
-}
-
-function nextMainAfterRemoval(assetIds: string[], removedIndex: number): string {
-  if (assetIds.length === 0) return "";
-  return assetIds[removedIndex] ?? assetIds[0];
+  return normalizeManifest(next);
 }
 
 export function removeAsset(
@@ -63,31 +109,23 @@ export function removeAsset(
   const next = copyManifest(manifest);
   const previousMainAssetId = manifest.main_asset_id;
   let originalIndex = -1;
-
   if (target === "detail") {
     originalIndex = next.detail_asset_ids.indexOf(assetId);
     if (originalIndex >= 0) next.detail_asset_ids.splice(originalIndex, 1);
   } else {
     originalIndex = next.carousel_asset_ids.indexOf(assetId);
     if (originalIndex >= 0) next.carousel_asset_ids.splice(originalIndex, 1);
-    if (next.main_asset_id === assetId) {
-      next.main_asset_id = nextMainAfterRemoval(next.carousel_asset_ids, Math.max(0, originalIndex));
-    } else if (target === "main") {
-      next.main_asset_id = nextMainAfterRemoval(next.carousel_asset_ids, Math.max(0, originalIndex));
+    if (next.carousel_asset_ids.length === 0) {
+      next.main_asset_id = "";
     }
   }
-
   return {
-    manifest: next,
+    manifest: normalizeManifest(next),
     undo: { target, assetId, originalIndex, previousMainAssetId },
   };
 }
 
-function insertAtIdentity(
-  assetIds: string[],
-  assetId: string,
-  originalIndex: number,
-): string[] {
+function insertAtIdentity(assetIds: string[], assetId: string, originalIndex: number): string[] {
   if (originalIndex < 0) return [...assetIds];
   if (assetIds.includes(assetId)) return [...assetIds];
   const next = [...assetIds];
@@ -102,20 +140,11 @@ export function restoreRemovedAsset(
 ): PreviewImageManifest {
   const next = copyManifest(manifest);
   if (undo.target === "detail") {
-    next.detail_asset_ids = insertAtIdentity(
-      next.detail_asset_ids,
-      undo.assetId,
-      undo.originalIndex,
-    );
+    next.detail_asset_ids = insertAtIdentity(next.detail_asset_ids, undo.assetId, undo.originalIndex);
   } else {
-    next.carousel_asset_ids = insertAtIdentity(
-      next.carousel_asset_ids,
-      undo.assetId,
-      undo.originalIndex,
-    );
-    next.main_asset_id = undo.previousMainAssetId;
+    next.carousel_asset_ids = insertAtIdentity(next.carousel_asset_ids, undo.assetId, undo.originalIndex);
   }
-  return next;
+  return normalizeManifest(next);
 }
 
 export function moveAsset(
@@ -128,12 +157,14 @@ export function moveAsset(
   const assetIds = target === "carousel" ? next.carousel_asset_ids : next.detail_asset_ids;
   const currentIndex = assetIds.indexOf(assetId);
   const destinationIndex = currentIndex + delta;
-  if (currentIndex < 0 || destinationIndex < 0 || destinationIndex >= assetIds.length) return next;
+  if (currentIndex < 0 || destinationIndex < 0 || destinationIndex >= assetIds.length) {
+    return normalizeManifest(next);
+  }
   [assetIds[currentIndex], assetIds[destinationIndex]] = [
     assetIds[destinationIndex],
     assetIds[currentIndex],
   ];
-  return next;
+  return normalizeManifest(next);
 }
 
 export function selectMainAsset(
@@ -141,7 +172,7 @@ export function selectMainAsset(
   assetId: string,
 ): PreviewImageManifest {
   const next = copyManifest(manifest);
-  next.main_asset_id = assetId;
-  next.carousel_asset_ids = appendNewIds(next.carousel_asset_ids, [assetId]);
-  return next;
+  const remaining = next.carousel_asset_ids.filter((id) => id !== assetId);
+  next.carousel_asset_ids = [assetId, ...remaining];
+  return normalizeManifest(next);
 }

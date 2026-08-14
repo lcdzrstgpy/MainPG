@@ -174,6 +174,7 @@ class PreviewImageManifestInput(BaseModel):
     main_asset_id: str = ""
     carousel_asset_ids: list[str] = Field(default_factory=list)
     detail_asset_ids: list[str] = Field(default_factory=list)
+    library_asset_ids: list[str] = Field(default_factory=list)
     semantic_asset_ids: dict[str, str] = Field(default_factory=dict)
 
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ppDownload, ppRequest, type ApiContext } from '../api/client';
+import { ppRequest, type ApiContext } from '../api/client';
 import type {
   ProductProcessingOptions,
   TaskHistoryItem,
@@ -249,11 +249,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
     } catch (err) { fail(err); }
   };
 
-  const download = (kind: string, filename: string) => {
-    if (!batch) return;
-    ppDownload(ctx, `${API_BASE}/tasks/${batch.task_id}/download?kind=${kind}`, filename).catch(fail);
-  };
-
   // 重新处理失败/待确认项：以这些草稿为新的批次重新走处理流水线（async_mode 后台执行）
   const retryFailed = async (draftIds: number[]) => {
     if (!draftIds.length || !batch || batchProcessing || startInFlightRef.current) return;
@@ -456,30 +451,12 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
                 </div>
                 <div className="verify-actions">
                   <button
-                    disabled={batchProcessing}
-                    onClick={() => download('dxm', `dxm_import_task_${batch.task_id}.xlsx`)}
-                    title={batchProcessing ? '处理完成后可下载' : undefined}
-                  >下载店小秘导入表</button>
-                  <button
-                    disabled={batchProcessing}
-                    onClick={() => download('errors', `error_report_task_${batch.task_id}.csv`)}
-                    title={batchProcessing ? '处理完成后可下载' : undefined}
-                  >下载失败原因表</button>
-                  <button
-                    disabled={batchProcessing}
-                    onClick={() => download('video_manifest', `product_video_manifest_task_${batch.task_id}.csv`)}
-                    title={batchProcessing ? '处理完成后可下载' : undefined}
-                  >下载视频清单</button>
-                  <button
                     className="primary"
                     disabled={batchProcessing}
                     onClick={() => onOpenPrecheck?.(batch.task_id)}
                     title={batchProcessing ? '处理完成后可进入预检' : '打开预检页：核对标题/图片/字段，修改后导出最终版表格'}
                   >预检并导出最终版</button>
                 </div>
-                {batchProcessing && (
-                  <p className="verify-download-hint">输出文件将在处理完成后生成，请稍候。</p>
-                )}
               </>
             )}
             {!batch && <p className="verify-empty">尚未提交处理批次。请配置参数后点击"开始处理"。</p>}
