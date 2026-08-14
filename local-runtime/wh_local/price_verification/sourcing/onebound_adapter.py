@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+import ctypes
 from dataclasses import dataclass
+import os
 import re
 from typing import Any, Protocol
 
@@ -25,6 +27,10 @@ from .title_translation import to_search_keywords, translate_title_to_chinese
 _PROVIDER_NAME = "onebound-1688"
 _MAX_PARALLEL_SEARCHES = 4
 _OFFER_ID = re.compile(r"(?:offer/|offerId=|offer_id=)(\d{3,})", flags=re.IGNORECASE)
+_LOW_MEMORY_BYTES = 8 * 1024**3
+_LOW_CPU_COUNT = 4
+_MAX_PARALLEL_SKCS = 2
+_SERIAL_FALLBACK_OUTCOMES = frozenset({"rate_limited", "timeout"})
 
 
 class _ProviderResult(Protocol):
@@ -83,6 +89,7 @@ class OneBoundSourceAdapter:
         if any(not isinstance(task, SourceSearchTask) for task in task_list):
             raise TypeError("tasks must contain SourceSearchTask values")
 
+<<<<<<< HEAD
         if not task_list:
             return _result_for_items(())
 
@@ -106,6 +113,40 @@ class OneBoundSourceAdapter:
         return _result_for_items(items)
 
     def _search_task_with_provider(
+=======
+        items: list[dict[str, Any]] = []
+        parallelism = min(_recommended_skc_parallelism(), len(task_list))
+        offset = 0
+        while offset < len(task_list):
+            batch = task_list[offset : offset + parallelism]
+            if len(batch) == 1:
+                batch_items = [
+                    self._search_task_with_new_provider(batch[0], keyword_search=keyword_search)
+                ]
+            else:
+                # Each SKC owns a provider instance. Sharing one transport
+                # across worker threads would make request state and retries
+                # unnecessarily coupled.
+                with ThreadPoolExecutor(max_workers=len(batch)) as executor:
+                    futures = [
+                        executor.submit(
+                            self._search_task_with_new_provider,
+                            task,
+                            keyword_search=keyword_search,
+                        )
+                        for task in batch
+                    ]
+                    # Resolve in submission order so the response remains in
+                    # the same SKC order as the request.
+                    batch_items = [future.result() for future in futures]
+            items.extend(batch_items)
+            offset += len(batch)
+            if parallelism > 1 and _requires_serial_fallback(batch_items):
+                parallelism = 1
+        return _result_for_items(items)
+
+    def _search_task_with_new_provider(
+>>>>>>> team/codex/price-verification-sourcing-dev-20260811
         self,
         task: SourceSearchTask,
         *,
@@ -115,11 +156,15 @@ class OneBoundSourceAdapter:
             provider = self._provider_factory()
         except Exception as error:
             return _failed_item(task, _provider_error_message(error))
+<<<<<<< HEAD
         item, _ = self._search_task(
             provider,
             task,
             keyword_search=keyword_search,
         )
+=======
+        item, _ = self._search_task(provider, task, keyword_search=keyword_search)
+>>>>>>> team/codex/price-verification-sourcing-dev-20260811
         return item
 
     def _search_task(self, provider: _OneBoundProvider, task: SourceSearchTask, *, keyword_search: bool = False) -> tuple[dict[str, Any], int]:
@@ -130,13 +175,19 @@ class OneBoundSourceAdapter:
             image_raw: list[Mapping[str, Any]] = []
             image_ok = False
             image_error = ""
+            reference_content: bytes | None = None
             try:
-                searched = provider.search_by_image(
-                    _ImageSearchCriteria(
-                        task.main_image_url,
-                        target_count=max(IMAGE_SEARCH_RECALL_LIMIT, int(task.max_candidates or 0)),
-                    )
+                criteria = _ImageSearchCriteria(
+                    task.main_image_url,
+                    target_count=max(IMAGE_SEARCH_RECALL_LIMIT, int(task.max_candidates or 0)),
                 )
+                search_with_reference = getattr(provider, "search_by_image_with_reference", None)
+                if callable(search_with_reference):
+                    searched, reference_content = search_with_reference(criteria)
+                    if reference_content is not None and not isinstance(reference_content, bytes):
+                        raise TypeError("provider reference content must be bytes")
+                else:
+                    searched = provider.search_by_image(criteria)
                 evidence.extend(_redacted_audits(searched))
                 if _result_ok(searched):
                     image_ok = True
@@ -188,7 +239,14 @@ class OneBoundSourceAdapter:
                 _with_title_evidence(task, candidate)
                 for candidate in merged
             ]
-            verified, visual_audit = verify_visual_candidates(task.main_image_url, merged)
+            if reference_content is None:
+                verified, visual_audit = verify_visual_candidates(task.main_image_url, merged)
+            else:
+                verified, visual_audit = verify_visual_candidates(
+                    task.main_image_url,
+                    merged,
+                    reference_content=reference_content,
+                )
             visual_audit["title_evidence"] = {
                 status: sum(
                     candidate.get("title_evidence_status") == status
@@ -319,6 +377,57 @@ def _result_for_items(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "candidate_count": sum(len(item["candidates"]) for item in items),
         },
     }
+
+
+def _recommended_skc_parallelism() -> int:
+    """Use two SKC workers only when both CPU and memory are sufficient."""
+    cpu_count = os.cpu_count() or 1
+    total_memory = _total_physical_memory_bytes()
+    if cpu_count <= _LOW_CPU_COUNT or total_memory is None or total_memory < _LOW_MEMORY_BYTES:
+        return 1
+    return _MAX_PARALLEL_SKCS
+
+
+def _total_physical_memory_bytes() -> int | None:
+    try:
+        if os.name == "nt":
+            class _MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            state = _MemoryStatusEx()
+            state.dwLength = ctypes.sizeof(state)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(state)):  # type: ignore[attr-defined]
+                return int(state.ullTotalPhys)
+            return None
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        page_count = int(os.sysconf("SC_PHYS_PAGES"))
+        return page_size * page_count if page_size > 0 and page_count > 0 else None
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _requires_serial_fallback(items: Sequence[Mapping[str, Any]]) -> bool:
+    for item in items:
+        evidence = item.get("evidence")
+        if not isinstance(evidence, Sequence) or isinstance(evidence, (str, bytes)):
+            continue
+        for audit in evidence:
+            if not isinstance(audit, Mapping):
+                continue
+            summary = audit.get("response_summary")
+            if isinstance(summary, Mapping) and _text(summary.get("outcome")).casefold() in _SERIAL_FALLBACK_OUTCOMES:
+                return True
+    return False
 
 
 def _result_ok(result: object) -> bool:

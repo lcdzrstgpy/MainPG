@@ -6,10 +6,12 @@ from PIL import Image, ImageDraw
 
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage
 from wh_local.price_verification.sourcing.image_similarity import (
+    IMAGE_FEATURE_CACHE_TTL_DAYS,
     IMAGE_SIMILARITY_THRESHOLD,
     similarity_score,
     verify_visual_candidates,
 )
+from wh_local.price_verification.sourcing.image_feature_cache import ImageFeatureCache
 from wh_local.price_verification.sourcing.normalizer import normalize_source_candidate
 from wh_local.price_verification.sourcing.service import _verified_preview_candidate
 from wh_local.price_verification.quote_normalizer import QuoteItem
@@ -42,6 +44,90 @@ def test_perceptual_similarity_accepts_small_marketplace_decoration() -> None:
 
 def test_similarity_threshold_is_fifty_percent() -> None:
     assert IMAGE_SIMILARITY_THRESHOLD == 0.50
+
+
+def test_candidate_features_are_cached_for_three_days_without_image_bytes_or_url(tmp_path) -> None:
+    reference_url = "https://images.example/reference.png?temporary=secret"
+    candidate_url = "https://images.example/candidate.png?signature=private"
+    images = {
+        reference_url: _image_bytes(),
+        candidate_url: _image_bytes(decoration=True),
+    }
+    fetches: list[str] = []
+
+    def fetch(url: str) -> FetchedPublicImage:
+        fetches.append(url)
+        return FetchedPublicImage(content=images[url], media_type="image/png", final_url=url)
+
+    cache = ImageFeatureCache(
+        tmp_path / "features",
+        feature_method="local-phash-dhash-color-v1",
+        ttl_seconds=IMAGE_FEATURE_CACHE_TTL_DAYS * 24 * 60 * 60,
+    )
+    candidates = [{"offer_id": "111111", "image": candidate_url}]
+
+    first, first_audit = verify_visual_candidates(
+        reference_url, candidates, fetcher=fetch, feature_cache=cache, minimum_results=1
+    )
+    second, second_audit = verify_visual_candidates(
+        reference_url, candidates, fetcher=fetch, feature_cache=cache, minimum_results=1
+    )
+
+    assert IMAGE_FEATURE_CACHE_TTL_DAYS == 3
+    assert len(first) == len(second) == 1
+    assert first[0]["image_similarity_score"] == second[0]["image_similarity_score"]
+    assert fetches == [reference_url, candidate_url, reference_url]
+    assert first_audit["feature_cache_miss_count"] == 1
+    assert second_audit["feature_cache_hit_count"] == 1
+    cache_files = list((tmp_path / "features").rglob("*.json"))
+    assert len(cache_files) == 1
+    stored = cache_files[0].read_text(encoding="utf-8")
+    assert candidate_url not in stored
+    assert "signature=private" not in stored
+    assert images[candidate_url] not in cache_files[0].read_bytes()
+
+
+def test_visual_verification_reuses_reference_bytes_without_downloading_reference(tmp_path) -> None:
+    reference_url = "https://images.example/reference.png"
+    candidate_url = "https://images.example/candidate.png"
+    reference_content = _image_bytes()
+    fetched: list[str] = []
+
+    def fetch(url: str) -> FetchedPublicImage:
+        fetched.append(url)
+        assert url == candidate_url
+        return FetchedPublicImage(
+            content=_image_bytes(decoration=True),
+            media_type="image/png",
+            final_url=url,
+        )
+
+    selected, audit = verify_visual_candidates(
+        reference_url,
+        [{"offer_id": "111111", "image": candidate_url}],
+        reference_content=reference_content,
+        fetcher=fetch,
+        feature_cache=ImageFeatureCache(tmp_path / "features", feature_method="test"),
+        minimum_results=1,
+    )
+
+    assert len(selected) == 1
+    assert fetched == [candidate_url]
+    assert audit["reference_available"] is True
+    assert audit["reference_reused"] is True
+
+
+def test_candidate_feature_cache_expires_after_three_days(tmp_path) -> None:
+    cache = ImageFeatureCache(
+        tmp_path / "features",
+        feature_method="test-features",
+        ttl_seconds=3 * 24 * 60 * 60,
+    )
+    variants = [{"average_hash": "1"}]
+
+    assert cache.store("https://images.example/item.png", variants, now=100.0)
+    assert cache.load("https://images.example/item.png", now=100.0 + 3 * 24 * 60 * 60 - 1) == variants
+    assert cache.load("https://images.example/item.png", now=100.0 + 3 * 24 * 60 * 60) is None
 
 
 def test_perceptual_similarity_rejects_different_product_composition() -> None:
