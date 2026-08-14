@@ -26,6 +26,13 @@ test("source-pool cards only promote to library", () => {
   assert.doesNotMatch(sourcePoolSource, /加入轮播/);
 });
 
+test("gallery and detail source groups are independently collapsed by default", () => {
+  assert.match(sourcePoolSource, /gallery: false/);
+  assert.match(sourcePoolSource, /detail: false/);
+  assert.match(sourcePoolSource, /aria-expanded=\{expanded\}/);
+  assert.match(sourcePoolSource, /\{expanded \? "收起" : "展开"\}/);
+});
+
 test("main is rendered as carousel item one instead of a separate panel", () => {
   assert.match(managerSource, /轮播图.*第 1 张即主图/s);
   assert.doesNotMatch(managerSource, /precheck-main-section/);

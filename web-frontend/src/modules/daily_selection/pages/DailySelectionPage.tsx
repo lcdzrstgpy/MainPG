@@ -1178,7 +1178,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                       <span title={`${candidate.source_variant_records.length} 个 SKU 规格`}><b>{candidate.source_variant_records.length || "未知"}</b><em>SKU</em></span>
                     </div>
                     <div className="candidate-meta"><span>{candidate.shop_name || "店铺待补齐"}</span><span>{candidate.location || "产地待补齐"}</span></div>
-                    <div className="candidate-score"><span>选品分</span><b>{Number(candidate.selection_score).toFixed(1)}</b></div>
                     {candidate.selection_reasons.length > 0 && (
                       <div className="candidate-reasons">
                         {candidate.selection_reasons.slice(0, 2).map((reason) => <span key={reason}>{reason}</span>)}

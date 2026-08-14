@@ -1441,6 +1441,42 @@
   font-size: 0.66rem;
 }
 
+.precheck-source-group-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.precheck-source-toggle {
+  min-width: 68px;
+  padding: 7px 15px;
+  border: 1px solid #b9d8e9;
+  border-radius: 8px;
+  background: #f5fbff;
+  color: #176e9b;
+  font-size: 0.74rem;
+  font-weight: 800;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.precheck-source-toggle:hover {
+  border-color: #76bddf;
+  background: #eaf7ff;
+  color: #075f91;
+}
+
+.precheck-source-toggle:focus-visible {
+  outline: 2px solid rgba(10, 143, 202, 0.28);
+  outline-offset: 2px;
+}
+
+.precheck-source-group.is-collapsed {
+  gap: 0;
+}
+
 .precheck-main-badge {
   position: absolute;
   z-index: 1;

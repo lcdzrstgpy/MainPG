@@ -1,3 +1,5 @@
+import { useId, useState } from "react";
+
 import { mediaStatusLabel, supportsMediaRetry } from "../data/draftMediaModel";
 import type { PreviewImageAsset } from "../types";
 
@@ -9,6 +11,12 @@ const SOURCE_KIND_LABELS: Record<string, string> = {
   sku: "原始 SKU",
   detail: "原始详情",
 };
+
+type CollapsibleSourceKind = "gallery" | "detail";
+
+function isCollapsibleSourceKind(kind: string): kind is CollapsibleSourceKind {
+  return kind === "gallery" || kind === "detail";
+}
 
 type PrecheckSourcePoolProps = {
   assets: PreviewImageAsset[];
@@ -109,6 +117,11 @@ export function PrecheckSourcePool({
   onRetry,
   onPreview,
 }: PrecheckSourcePoolProps) {
+  const sourcePoolId = useId().replace(/:/g, "");
+  const [expandedGroups, setExpandedGroups] = useState<Record<CollapsibleSourceKind, boolean>>({
+    gallery: false,
+    detail: false,
+  });
   const byKind = new Map<string, PreviewImageAsset[]>();
   for (const kind of SOURCE_KIND_ORDER) byKind.set(kind, []);
   for (const asset of assets) {
@@ -135,27 +148,53 @@ export function PrecheckSourcePool({
       ) : (
         [...knownGroups, ...extraGroups].map((kind) => {
           const group = byKind.get(kind) ?? [];
+          const collapsible = isCollapsibleSourceKind(kind);
+          const expanded = !collapsible || expandedGroups[kind];
+          const contentId = `${sourcePoolId}-${kind}-images`;
           return (
-            <section key={kind} className="precheck-source-group">
+            <section
+              key={kind}
+              className={`precheck-source-group ${collapsible && !expanded ? "is-collapsed" : ""}`}
+            >
               <header>
-                <strong>{SOURCE_KIND_LABELS[kind] ?? kind}</strong>
+                <div className="precheck-source-group-heading">
+                  <strong>{SOURCE_KIND_LABELS[kind] ?? kind}</strong>
+                  {collapsible && (
+                    <button
+                      type="button"
+                      className="precheck-source-toggle"
+                      aria-expanded={expanded}
+                      aria-controls={contentId}
+                      onClick={() => {
+                        setExpandedGroups((current) => ({
+                          ...current,
+                          [kind]: !current[kind],
+                        }));
+                      }}
+                    >
+                      {expanded ? "收起" : "展开"}
+                    </button>
+                  )}
+                </div>
                 <span>{group.length} 项</span>
               </header>
-              <div className="precheck-asset-grid">
-                {group.map((asset) => (
-                  <SourceCard
-                    key={asset.id}
-                    asset={asset}
-                    kind={kind}
-                    alreadyInLibrary={libraryAssetIds.has(asset.id)}
-                    disabled={disabled}
-                    retrying={retryingMediaAssetIds.has(asset.media_asset_id)}
-                    onPromote={onPromote}
-                    onRetry={onRetry}
-                    onPreview={onPreview}
-                  />
-                ))}
-              </div>
+              {expanded && (
+                <div id={contentId} className="precheck-asset-grid">
+                  {group.map((asset) => (
+                    <SourceCard
+                      key={asset.id}
+                      asset={asset}
+                      kind={kind}
+                      alreadyInLibrary={libraryAssetIds.has(asset.id)}
+                      disabled={disabled}
+                      retrying={retryingMediaAssetIds.has(asset.media_asset_id)}
+                      onPromote={onPromote}
+                      onRetry={onRetry}
+                      onPreview={onPreview}
+                    />
+                  ))}
+                </div>
+              )}
             </section>
           );
         })
