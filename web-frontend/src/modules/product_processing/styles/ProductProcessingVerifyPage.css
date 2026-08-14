@@ -6,6 +6,14 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
+/* 处理任务页直接置于工作区背景中，移除包住整页的白底大框与投影。 */
+.content-card:has(.verify-page) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
 .verify-commandbar {
   min-height: 142px;
   display: flex;
@@ -1083,8 +1091,7 @@
 }
 
 .verify-template-card:has(input:checked) {
-  border-color: #2d7ff9;
-  background: #eef5fe;
+  color: #2d7ff9;
 }
 
 .verify-template-card input {
@@ -2471,6 +2478,77 @@
     position: static;
     max-height: none;
   }
+}
+
+/* 处理设置在中等宽度时先将历史任务下移，避免左侧配置被压成半行。 */
+@media (max-width: 1500px) {
+  .task-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .task-history {
+    position: static;
+    max-height: none;
+  }
+}
+
+.verify-form-row:has(.verify-template-card) {
+  display: grid;
+  grid-template-columns: 116px repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+}
+
+.verify-form-row:has(.verify-template-card) .verify-template-card {
+  min-width: 0;
+}
+
+@media (max-width: 700px) {
+  .verify-form-row:has(.verify-template-card) {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 处理任务页以内容和留白分区，不再使用大面积矩形边框或投影。 */
+.verify-form-row:has(.verify-template-card) .verify-template-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.verify-form-row:has(.verify-template-card) .verify-template-card:has(input:checked) {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.verify-form-row:has(.verify-template-card) .verify-template-card:has(input:checked) .verify-template-name {
+  color: #2d7ff9;
+}
+
+.task-history {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.verify-history {
+  gap: 0;
+}
+
+.verify-history li {
+  padding: 14px 0;
+  border: 0;
+  border-bottom: 1px solid #e2edf5;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.verify-history li:first-child {
+  border-top: 1px solid #e2edf5;
 }
 
 /* ══════════ 图标美化（iconfont） ══════════ */
