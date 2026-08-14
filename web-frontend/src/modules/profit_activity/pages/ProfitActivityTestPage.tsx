@@ -108,6 +108,15 @@ const emptyProduct: ProductForm = {
   source_url: "",
   source_urls: [],
 };
+const clearedProduct: ProductForm = {
+  skc: "",
+  selling_price: "",
+  cost_price: "",
+  weight_kg: "",
+  note: "",
+  source_url: "",
+  source_urls: [],
+};
 
 const siteLabels: Record<Site, string> = { US: "美区", CO: "哥伦比亚", EC: "厄瓜多尔" };
 const siteSettingFields: Record<Site, SiteSettingField[]> = {
@@ -212,7 +221,7 @@ export function ProfitActivityTestPage() {
   const sourceImagesReady = sourceLinks.length > 0
     && sourceLinks.every((url, index) => !url.trim() || Boolean(sourceImages[index]))
     && sourceLinks.some((url) => url.trim());
-  const formReadyForArchive = Boolean(formReadyForPreview && productImage && sourceImagesReady && productForm.note.trim());
+  const formReadyForArchive = Boolean(formReadyForPreview && productImage && sourceImagesReady);
 
   useEffect(() => {
     void loadSettings();
@@ -426,7 +435,7 @@ export function ProfitActivityTestPage() {
 
   const saveProduct = () => withBusy("入产品库", async () => {
     if (!formReadyForArchive) {
-      throw new Error("入档前必须填写 SKC/售价/成本/重量，并提供商品主图、每个货源链接对应的货源图和备注。");
+      throw new Error("入档前必须填写商品ID/售价/成本/重量，并提供商品主图和每个货源链接对应的货源图。");
     }
     if (!productImage) {
       throw new Error("请选择商品主图。");
@@ -455,6 +464,10 @@ export function ProfitActivityTestPage() {
     localStorage.setItem("profitActivityRecentSaved", JSON.stringify(nextRecent));
     setQuerySkcs(savedSkc);
     await queryProducts(savedSkc);
+    setProductForm(clearedProduct);
+    setProductImage(null);
+    setSourceImages([null]);
+    setCalculation(null);
   }, `${productForm.skc} 入库成功`);
 
   const addSourceUrl = () => {
@@ -781,14 +794,14 @@ export function ProfitActivityTestPage() {
               <ImageDrop title={`货源${index + 2} 图片 Ctrl+V`} hint="必填：该链接截图" file={sourceImages[index + 1] ?? null} onFile={(file) => setSourceImageAt(index + 1, file)} />
             </div>
           ))}
-          <label className="profit-span-2">备注<input value={productForm.note} onChange={(event) => setProductForm({ ...productForm, note: event.target.value })} placeholder="必填" /></label>
+          <label className="profit-span-2">备注<input value={productForm.note} onChange={(event) => setProductForm({ ...productForm, note: event.target.value })} placeholder="可选填" /></label>
           <h3>利润预览</h3>
           <PreviewStrip calculation={calculation?.calculation} />
           <div className="profit-actions">
             <button onClick={() => calculateProfit(true)} disabled={!!busy || !formReadyForPreview}>手动刷新预览</button>
             <button className="primary-button" onClick={saveProduct} disabled={!!busy || !formReadyForArchive}>入产品库</button>
           </div>
-          {!formReadyForArchive && <p className="muted">入档必填：商品ID、售价、成本、重量、商品主图、每个货源链接对应的货源图、备注。</p>}
+          {!formReadyForArchive && <p className="muted">入档必填：商品ID、售价、成本、重量、商品主图、每个货源链接对应的货源图。</p>}
           {recentSaved.length > 0 && (
             <p className="profit-recent-saved">最近入库：{recentSaved.map((skc) => <span key={skc}>{skc}</span>)}</p>
           )}
