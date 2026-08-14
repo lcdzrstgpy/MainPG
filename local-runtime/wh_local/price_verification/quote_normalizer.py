@@ -368,6 +368,11 @@ def compatible_dedupe_key(
             and (not existing.site or not item.site)
         ):
             return key
+        # Network/DOM evidence may be paired at SKC level only when at least
+        # one side lacks a SKU identifier.  Two explicit, different SKUs are
+        # distinct variants and must never be coalesced.
+        if existing.sku_id and item.sku_id and existing.sku_id != item.sku_id:
+            continue
         if _network_dom_pair(existing, item):
             return key
     return None

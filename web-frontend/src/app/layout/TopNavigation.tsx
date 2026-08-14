@@ -11,7 +11,13 @@ export type WorkspaceTab = {
   iconClass?: string;
   directionId?: string;
   draftIds?: number[];
+  premiumDraftIds?: number[];
   processingOptions?: unknown;
+  taskId?: number;
+  dimensionBatchId?: string;
+  dimensionItemId?: string;
+  returnTaskId?: number;
+  dimensionChangeSetId?: string;
 };
 
 type TopNavigationProps = {

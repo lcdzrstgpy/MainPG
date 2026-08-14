@@ -8,8 +8,11 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Re
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
+from ..dimension_canvas_service import DimensionCanvasService
 from ..infrastructure.assets import ProductProcessingAssets
 from ..infrastructure.database import create_database
+from ..infrastructure.dimension_canvas_repository import DimensionCanvasRepository
+from ..infrastructure.dimension_renderer import DimensionRenderer
 from ..infrastructure.repository import ProductProcessingRepository
 from ..service import (
     ProductProcessingConflict,
@@ -23,10 +26,13 @@ from .schemas import (
     DraftDeleteRequest,
     DraftProcessRequest,
     DraftUpdateRequest,
+    PreviewFinalizeRequest,
+    PreviewSaveRequest,
     PromptUpdateRequest,
     RetryTaskRequest,
     extras,
 )
+from .dimension_canvas_router import create_dimension_canvas_router
 
 
 def create_product_processing_router(
@@ -43,15 +49,30 @@ def create_product_processing_router(
             ProductProcessingRepository(owned_database),
             ProductProcessingAssets(assets_root),
         )
+    dimension_service = getattr(service, "_dimension_canvas_service", None)
+    owns_dimension_service = dimension_service is None
+    if dimension_service is None:
+        dimension_service = DimensionCanvasService(
+            DimensionCanvasRepository(service.repository.database),
+            service.repository,
+            service.assets,
+            DimensionRenderer(),
+            source_loader=service.load_dimension_source,
+        )
+        setattr(service, "_dimension_canvas_service", dimension_service)
     @asynccontextmanager
     async def lifespan(_app):
         try:
+            service.recover_background_work()
             yield
         finally:
+            if owns_dimension_service:
+                dimension_service.close()
             if owned_database is not None:
                 owned_database.dispose()
 
     router = APIRouter(prefix="/product-processing", tags=["product_processing"], lifespan=lifespan)
+    router.include_router(create_dimension_canvas_router(dimension_service))
 
     @router.get("/engine/status")
     def engine_status() -> dict[str, Any]:
@@ -316,9 +337,18 @@ def create_product_processing_router(
     @router.get("/tasks/history")
     def task_history(
         limit: int = Query(default=80, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+        date_from: str | None = Query(default=None),
+        date_to: str | None = Query(default=None),
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
-        return service.task_history(limit, _workspace(workspace_id))
+        return service.task_history(
+            limit,
+            _workspace(workspace_id),
+            offset=offset,
+            date_from=date_from,
+            date_to=date_to,
+        )
 
     @router.get("/tasks/{task_id}/outputs")
     def task_outputs(
@@ -338,6 +368,158 @@ def create_product_processing_router(
             summary_only=True,
             workspace_id=_workspace(workspace_id),
         )
+
+    # ---- 预检环节（生成表格 → 预检 → 导出最终版 → 导入店小秘）----
+    @router.get("/tasks/{task_id}/preview")
+    def task_preview(
+        task_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(service.task_preview, task_id, workspace_id=_workspace(workspace_id))
+
+    @router.patch("/tasks/{task_id}/preview")
+    def save_preview(
+        task_id: int,
+        body: PreviewSaveRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.save_task_preview,
+            task_id,
+            [item.model_dump() for item in body.items],
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.get("/preview/assets/{asset_id}/content", response_model=None)
+    def preview_asset_content(
+        asset_id: str,
+        workspace_id: str = Query(...),
+        expires: int = Query(..., gt=0),
+        signature: str = Query(..., min_length=32, max_length=128),
+        request_workspace: str | None = Header(default=None, alias="X-Workspace-ID"),
+    ) -> FileResponse:
+        workspace = _workspace(workspace_id)
+        if request_workspace is not None and _workspace(request_workspace) != workspace:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "preview image asset not found")
+        try:
+            path, media_type = service.preview_images.preview_asset_content(
+                asset_id,
+                workspace_id=workspace,
+                expires=expires,
+                signature=signature,
+            )
+        except (LookupError, OSError, ValueError):
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "preview image asset not found",
+            ) from None
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "private, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @router.post("/tasks/{task_id}/preview/assets")
+    async def upload_preview_assets(
+        task_id: int,
+        request: Request,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        form = await request.form()
+        try:
+            draft_id = int(str(form.get("draft_id") or 0) or 0)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_id is required") from exc
+        files = [value for value in form.getlist("image_files") if hasattr(value, "read")]
+        if draft_id <= 0 or not files:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "draft_id and image_files are required",
+            )
+        if len(files) > 20:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "at most 20 images may be uploaded")
+        assets: list[dict[str, Any]] = []
+        try:
+            for upload in files:
+                assets.append(
+                    _call(
+                        service.register_preview_upload,
+                        task_id,
+                        draft_id,
+                        await _read_limited_upload(upload),
+                        _filename(upload, "preview-image.jpg"),
+                        str(getattr(upload, "content_type", "") or ""),
+                        workspace_id=_workspace(workspace_id),
+                    )
+                )
+        finally:
+            for upload in files:
+                await upload.close()
+        return {"assets": assets}
+
+    @router.post(
+        "/tasks/{task_id}/preview/finalize",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def finalize_preview(
+        task_id: int,
+        body: PreviewFinalizeRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.begin_preview_finalize,
+            task_id,
+            [item.model_dump() for item in body.items],
+            workspace_id=_workspace(workspace_id),
+            idempotency_key=str(idempotency_key or "").strip(),
+        )
+
+    @router.get("/tasks/{task_id}/preview/finalize/{run_id}")
+    def preview_finalize_status(
+        task_id: int,
+        run_id: str,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.preview_finalize_status,
+            task_id,
+            run_id,
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.post(
+        "/tasks/{task_id}/preview/finalize/{run_id}/retry",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def retry_preview_finalize(
+        task_id: int,
+        run_id: str,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.retry_preview_finalize,
+            task_id,
+            run_id,
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.get("/tasks/{task_id}/preview/finalize/{run_id}/download")
+    def download_preview_finalize(
+        task_id: int,
+        run_id: str,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ):
+        path = _call(
+            service.preview_finalize_download_path,
+            task_id,
+            run_id,
+            workspace_id=_workspace(workspace_id),
+        )
+        return FileResponse(path, filename=path.name, media_type=_download_media_type(path))
 
     @router.post("/tasks/{task_id}/pause")
     def pause_task(
@@ -359,8 +541,12 @@ def create_product_processing_router(
         body: RetryTaskRequest | None = None,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
-        _ = body
-        return _call(service.retry_attention, task_id, _workspace(workspace_id))
+        return _call(
+            service.retry_attention,
+            task_id,
+            _workspace(workspace_id),
+            draft_ids=body.draft_ids if body else None,
+        )
 
     @router.post("/tasks/{task_id}/clear")
     def clear_task(
@@ -413,6 +599,14 @@ async def _upload_form(request: Request, field: str):
     if file is None or not hasattr(file, "read"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{field} is required")
     return dict(form_data), file
+
+
+async def _read_limited_upload(file: Any, limit: int = 25 * 1024 * 1024) -> bytes:
+    """Read at most the preview image contract plus one byte, never unbounded."""
+    content = await file.read(limit + 1)
+    if len(content) > limit:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "preview image exceeds 25 MiB")
+    return bytes(content)
 
 
 def _filename(file: Any, fallback: str) -> str:

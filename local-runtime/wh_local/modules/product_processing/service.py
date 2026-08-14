@@ -8,7 +8,9 @@ import os
 import re
 import sys
 import threading
+import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,15 +29,38 @@ from .domain.language_contract import (
     language_profile,
     normalize_target_language,
 )
+from .domain.description_contract import DescriptionContractError, normalize_five_point_description
+from .domain.image_slots import DEFAULT_SLOT_IDS, apply_slot_overrides
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
+from .domain.physical_dimensions import extract_physical_dimensions
 from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_issue, strict_external_url_issue
-from .domain.prompts import format_prompt
+from .domain.preview_images import task_item_result_version
+from .domain.prompts import (
+    DESCRIPTION_REPAIR_PROMPT,
+    GRID_RUNTIME_CONTRACT,
+    SINGLE_IMAGE_RUNTIME_CONTRACT,
+    TWO_IMAGE_RUNTIME_CONTRACT,
+    format_prompt,
+)
 from .domain.visual_planner import listing_prompt_context
 from .domain.workbooks import read_product_workbook
 from .infrastructure.assets import ProductProcessingAssets
-from .infrastructure.ocr_gate import detect_chinese_text, max_repair_rounds, ocr_diagnostics, ocr_gate_enabled
+from .infrastructure.ocr_gate import (
+    detect_chinese_text,
+    inspect_visible_text,
+    max_repair_rounds,
+    ocr_diagnostics,
+    ocr_gate_enabled,
+)
 from .infrastructure.repository import ProductProcessingRepository
-from .provider_config import resolve_ai_provider
+from .infrastructure.preview_image_repository import (
+    PreviewIdempotencyConflict,
+    PreviewImageRepository,
+    PreviewPublicationConflict,
+    PreviewRevisionConflict,
+)
+from .preview_image_service import PreviewImageService
+from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai_provider
 
 _MEDIA_TYPES: tuple | None = None
 
@@ -63,6 +88,7 @@ _CACHE_VOLATILE_RAW_KEYS = frozenset(
 )
 
 _STAGE_CACHE_VERSION = 3
+_TASK_HEARTBEAT_SECONDS = 10.0
 
 
 def _ai_enabled() -> bool:
@@ -119,6 +145,11 @@ def _ai_error_reason(exc: Exception) -> str:
     return message[:200] if message else type(exc).__name__
 
 
+def _is_non_retryable_provider_4xx(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    return isinstance(status_code, int) and 400 <= status_code < 500 and status_code != 429
+
+
 def _media_types() -> tuple:
     """Lazily import the image adapter; requests/Pillow are optional at import time."""
     global _MEDIA_TYPES
@@ -147,6 +178,65 @@ class MediaUnavailableError(RuntimeError):
     """Image processing dependencies are missing."""
 
 
+class ListingTextConfigurationError(RuntimeError):
+    """A provider-side 4xx cannot be repaired by another listing-text stage."""
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class GridImageOutput:
+    carousel_urls: tuple[str, ...] = ()
+    summary_url: str = ""
+    carousel_media: tuple[Any, ...] = ()
+    attempt_count: int = 0
+    provider_status_class: str = ""
+    stage_timings_ms: dict[str, int] = field(default_factory=dict)
+
+    def __iter__(self):
+        # Keep existing direct-call tests and integrations source compatible.
+        yield list(self.carousel_urls)
+        yield self.summary_url
+
+
+# 精品模式四个构图角色（对齐正常四宫格的 hero/detail/lifestyle/维度背景语义，
+# 但每张都是完整大图，细节保留度高于 1/4 面板）。
+_PREMIUM_PANEL_ROLES = [
+    (
+        "hero",
+        "Composition - Hero shot: show the complete sellable product or complete verified set; no cropped parts and "
+        "no partial stacking that hides quantity or structure. Product occupies 68%-82% of the frame with a balanced "
+        "marketplace hero composition. Place the product slightly off-center so it breathes; keep the full product "
+        "inside the safe area. Use side-backlight or premium commercial photography light and emphasize material, "
+        "structure, thickness, transparency, and edge details. Background clearly different from plain white.",
+    ),
+    (
+        "detail",
+        "Composition - Editorial/Detail shot: keep the complete product visible at 55%-70% of the frame, plus at most "
+        "one small inset close-up of a real detail (a pure macro crop without the complete product is forbidden). "
+        "Style options: Editorial, Modern Classic, Organic Modern, Art Deco, Coastal. Make it clearly different from "
+        "the hero shot in at least 3 of: background main color, surface material, angle, arrangement, props, lighting.",
+    ),
+    (
+        "lifestyle",
+        "Composition - Lifestyle scene: place the product in a real American home scene matching the SKU category "
+        "(living room, sunroom, Game Night, Brunch, etc.). You may add realistic adult hands (natural, no deformities), "
+        "cups, snacks, tablecloth, or plants; the product must stay sharp and exactly the original SKU. Lighting: "
+        "natural window light, afternoon side light, or warm home lighting that wraps the product in soft highlights. "
+        "Keep the complete product unobstructed and prominent.",
+    ),
+    (
+        "orthographic",
+        "Composition - Clean front, side, or top view: create an orthographic-style angle suitable for later "
+        "deterministic dimension annotation. Keep the complete product sharp and leave 12%-18% clear space around it. "
+        "Never render measurements, numbers, units, dimension lines, arrows, rulers, scales, labels, or size claims. "
+        "If no useful orthographic view is possible, create a clean alternate product angle with the same empty safe area.",
+    ),
+]
+
+
 def _as_bool(value: Any, *, default: bool = False) -> bool:
     """Coerce form/JSON booleans (including string 'true'/'false') into bool."""
     if isinstance(value, bool):
@@ -154,6 +244,29 @@ def _as_bool(value: Any, *, default: bool = False) -> bool:
     if value in (None, ""):
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _image_generation_count(value: Any, *, default: int = 4) -> int:
+    """Return the supported image count per provider call without breaking legacy jobs."""
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return default
+    return normalized if normalized in {1, 2, 4} else default
+
+
+def _max_concurrent_tasks() -> int:
+    """进程内最多同时执行的产品处理任务数（默认 1=任务串行排队）。
+
+    多任务并发（历史恢复任务 + 新提交任务）会在短时间窗口内向 AI 中转商
+    叠加打出大量请求，被供应商判定为攻击。任务串行不丢功能，只是排队。
+    """
+    raw = os.environ.get("WH_PRODUCT_MAX_CONCURRENT_TASKS", "")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 1
+    return max(1, min(value, 8))
 
 
 class ProductProcessingService:
@@ -169,9 +282,26 @@ class ProductProcessingService:
         self._ai_instance: AiClient | None = None
         self._ai_lock = threading.Lock()  # 保护 AiClient 懒加载（多线程并行处理时避免重复创建）
         self._media_instance = None  # ProductImageProcessor (懒加载，可选依赖)
+        self._media_lock = threading.Lock()
+        self._submission_lock = threading.RLock()
+        self._task_worker_lock = threading.Lock()
+        self._task_workers: dict[tuple[str, int], threading.Thread] = {}
+        # 任务级串行闸门：限制同时执行的任务数，避免旧任务与新任务并发叠加打爆 AI 供应商。
+        self._task_execution_gate = threading.BoundedSemaphore(_max_concurrent_tasks())
+        self.preview_images = PreviewImageService(
+            PreviewImageRepository(repository.database),
+            repository,
+            assets,
+            publisher=self.publish_preview_media,
+            trusted_public_url=self.is_trusted_cos_url,
+            public_image_fetcher=public_image_fetcher,
+            max_publish_workers=4,
+        )
         # 主体识别结果缓存：同一来源主图只识别一次（批量任务大量重复商品时省 N 次 AI 调用）
-        self._subject_cache: dict[str, str] = {}
+        self._subject_cache: dict[str, dict[str, str]] = {}
         self._subject_cache_lock = threading.Lock()
+        self._source_data_url_cache: dict[str, str] = {}
+        self._source_data_url_lock = threading.Lock()
 
     def engine_status(self) -> dict[str, Any]:
         dependency_status = {
@@ -188,6 +318,53 @@ class ProductProcessingService:
         media_types = _media_types()
         if media_types:
             media = media_types[0](config_provider=self._media_config_provider).status()
+        ai_enabled = _ai_enabled()
+        ocr_enabled = ocr_gate_enabled()
+        ocr_status = ocr_diagnostics() if ocr_enabled else {"ready": False, "reason": "OCR 质量门已关闭"}
+        text_ready = bool(provider.get("base_url") and provider.get("api_key"))
+        image_ready = bool(media.get("image_configured")) and dependency_status["pillow"]
+        ocr_ready = bool(ocr_status.get("ready")) and dependency_status["pillow"]
+        capabilities = {
+            "text_ai": {
+                "enabled": ai_enabled,
+                "ready": text_ready if ai_enabled else False,
+                "reason": (
+                    "文本 AI 已关闭（WH_PRODUCT_AI_ENABLED）"
+                    if not ai_enabled
+                    else ("" if text_ready else "文本 AI 已启用，但未配置可用的服务地址和 API Key")
+                ),
+            },
+            "image_ai": {
+                "enabled": ai_enabled,
+                "ready": image_ready if ai_enabled else False,
+                "reason": (
+                    "图片 AI 已关闭（WH_PRODUCT_AI_ENABLED）"
+                    if not ai_enabled
+                    else (
+                        ""
+                        if image_ready
+                        else "图片 AI 已启用，但未配置可用的图片服务地址/API Key，或 Pillow 图片依赖不可用"
+                    )
+                ),
+            },
+            "ocr": {
+                "enabled": ocr_enabled,
+                "ready": ocr_ready if ocr_enabled else False,
+                "reason": "" if ocr_ready else str(ocr_status.get("reason") or "OCR 运行时不可用"),
+            },
+        }
+        unavailable_reasons: list[str] = []
+        required_dependencies = (
+            ("openpyxl", "Excel 处理依赖 openpyxl 不可用"),
+            ("python_multipart", "文件上传依赖 python-multipart 不可用"),
+        )
+        for dependency, reason in required_dependencies:
+            if not dependency_status[dependency]:
+                unavailable_reasons.append(reason)
+        for capability in capabilities.values():
+            if capability["enabled"] and not capability["ready"]:
+                unavailable_reasons.append(str(capability["reason"]))
+        ready = not unavailable_reasons
         config = {
             "ai_provider": provider["provider"] if provider.get("api_key") else "local-deterministic",
             "ai_model": provider.get("text_model") or "product-processing-local-v1",
@@ -204,17 +381,23 @@ class ProductProcessingService:
         }
         return {
             "available": True,
-            "ready": dependency_status["openpyxl"] and dependency_status["python_multipart"],
+            "ready": ready,
             "app_dir": str(Path(__file__).parent),
             "app_file": str(Path(__file__)),
             "python": sys.executable,
             "worker": "local-synchronous-v1",
-            "message": "本地产品处理引擎已就绪（five-stage 对齐：文本合并一次调用 + 尺寸确定性提取 + 四宫格出图 + 详情图本地合成）；失败时自动回退来源透传。",
+            "message": (
+                "本地产品处理引擎已就绪（文本 AI、图片 AI 与 OCR 能力均按当前开关完成本地配置检查）。"
+                if ready
+                else f"本地产品处理引擎暂不可用：{'；'.join(unavailable_reasons)}"
+            ),
+            "unavailable_reasons": unavailable_reasons,
             "diagnostics": {
                 "config": config,
                 "tenant_ai_capability": {"text": config["ai_configured"], "image": config["image_configured"], "mode": "openai_compatible_relay"},
+                "capabilities": capabilities,
                 "dependencies": dependency_status,
-                "ocr_gate": ocr_diagnostics(),
+                "ocr_gate": ocr_status,
                 "storage_root": str(self.assets.root),
             },
         }
@@ -251,10 +434,13 @@ class ProductProcessingService:
         workspace_id: str = "local",
         handoff_id: str | None = None,
         handoff_idempotency_key: str | None = None,
+        allow_duplicate_candidate: bool = False,
     ) -> tuple[dict[str, Any], bool]:
         raw = dict(payload)
         candidate_id = self._text(raw.get("candidate_id")) or None
-        existing = self.repository.draft_by_candidate(candidate_id or "", workspace_id)
+        existing = None if allow_duplicate_candidate else self.repository.draft_by_candidate(
+            candidate_id or "", workspace_id
+        )
         if existing and existing["status"] != "deleted":
             # A OneBound candidate may legitimately recur in a later preview.
             # Keep its single draft, but replace the run-scoped provenance with
@@ -611,6 +797,63 @@ class ProductProcessingService:
         )
         return {"images": images, "count": len(images)}
 
+    def load_dimension_source(self, asset: dict[str, Any]) -> bytes:
+        """Materialize only a server-registered canvas asset; never accepts a client path.
+
+        The canvas repository has already proved workspace/item ownership before this
+        adapter is invoked.  Remote sources still pass through the existing SSRF-safe,
+        size-limited public image fetcher and are fetched only when the user renders.
+        """
+        managed_path = self._text(asset.get("managed_path"))
+        if managed_path:
+            return self.assets.require_managed_file(managed_path).read_bytes()
+        source_url = self._text(asset.get("source_url"))
+        if not source_url:
+            raise ValueError("dimension source asset is unavailable")
+        fetched = self._public_image_fetcher(source_url)
+        return bytes(fetched.content)
+
+    def publish_preview_media(
+        self,
+        content: bytes,
+        content_type: str,
+        suffix: str,
+        content_hash: str,
+        workspace_id: str,
+    ) -> str:
+        """Publish immutable original bytes for the final retained precheck set."""
+        media_types = _media_types()
+        if not media_types:
+            raise MediaUnavailableError("图片处理依赖缺失：无法发布最终预审图片")
+        from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
+
+        digest = hashlib.sha256(content).hexdigest()
+        if content_hash and digest != str(content_hash).strip().lower():
+            raise ValueError("preview image hash mismatch")
+        namespace = hashlib.sha256(str(workspace_id).encode("utf-8")).hexdigest()[:20]
+        media = GeneratedMedia(
+            stage="preview-final",
+            content=bytes(content),
+            content_type=str(content_type or "image/jpeg"),
+            suffix=str(suffix or ".jpg"),
+            provider="preview-finalizer",
+            model="original-bytes",
+            reference_count=0,
+        )
+        url = self._media_processor().upload_content_addressed_to_cos(
+            media,
+            namespace=namespace,
+            content_hash=digest,
+            collection="preview-final",
+        )
+        if not url.lower().startswith("https://") or not is_safe_external_url(url):
+            raise ValueError("COS returned a non-public preview image URL")
+        return url
+
+    def is_trusted_cos_url(self, value: str) -> bool:
+        """Verify a legacy/final URL against the configured bucket with COS HEAD."""
+        return self._media_processor().is_configured_cos_url(value, require_public=True)
+
     def sync_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
         self.get_draft(draft_id, workspace_id)
         ready = failed = 0
@@ -659,19 +902,18 @@ class ProductProcessingService:
                 continue
             if handoff.status == "failed":
                 raise ValueError("failed daily-selection handoffs cannot be consumed")
-            draft = self.repository.draft_by_candidate(
-                handoff.candidate_id, handoff.workspace_id
+            # A new handoff means the operator explicitly chose to process the
+            # product again, even when the same source candidate was completed
+            # in an older run. Only replaying this exact handoff is idempotent.
+            draft, _created = self.create_draft(
+                self._draft_payload_from_handoff(handoff),
+                selection_run_id=handoff.run_id,
+                workspace_id=handoff.workspace_id,
+                handoff_id=handoff.handoff_id,
+                handoff_idempotency_key=handoff.idempotency_key,
+                allow_duplicate_candidate=True,
             )
-            if draft is None or draft["status"] == "deleted":
-                # 确认入池是草稿池的唯一入口：preview 不再自动建草稿，
-                # 首次确认时用 handoff 载荷创建草稿（候选级幂等由 create_draft 保证）。
-                draft, _created = self.create_draft(
-                    self._draft_payload_from_handoff(handoff),
-                    selection_run_id=handoff.run_id,
-                    workspace_id=handoff.workspace_id,
-                    handoff_id=handoff.handoff_id,
-                    handoff_idempotency_key=handoff.idempotency_key,
-                )
+            if _created:
                 created_count += 1
             receipt = self.repository.save_handoff_receipt(
                 handoff_id=handoff.handoff_id,
@@ -816,6 +1058,10 @@ class ProductProcessingService:
             s["product_video_template"] = True
         s["skip_duplicates"] = _as_bool(s.get("skip_duplicates"), default=False)
         s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
+        # 生图提示词模板：A=标准商品海报（现有），B=高端模特视觉（防比价）。
+        s["image_template"] = "B" if str(s.get("image_template") or "A").strip().upper() == "B" else "A"
+        # 兼容未传该字段的历史 API 调用：继续走原有四宫格一次调用。
+        s["image_generation_count"] = _image_generation_count(s.get("image_generation_count"), default=4)
         return s
 
     def process_drafts(
@@ -825,9 +1071,6 @@ class ProductProcessingService:
         idempotency_key: str | None = None,
         workspace_id: str = "local",
     ) -> dict[str, Any]:
-        existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
-        if existing is not None:
-            return self._task_response(existing, "重复提交已返回原任务")
         payload = self._normalize_settings(payload)
         draft_ids = list(dict.fromkeys(int(item) for item in payload.get("draft_ids") or [] if int(item) > 0))
         if not draft_ids:
@@ -835,61 +1078,95 @@ class ProductProcessingService:
         max_products = max(0, int(payload.get("max_products") or 0))
         if max_products:
             draft_ids = draft_ids[:max_products]
-        drafts = self.repository.get_drafts(draft_ids, workspace_id=workspace_id)
-        missing = sorted(set(draft_ids) - {draft["id"] for draft in drafts})
-        if missing:
-            raise ProductProcessingNotFound(f"product drafts not found: {missing}")
-        if payload.get("skip_duplicates"):
-            drafts = [draft for draft in drafts if draft["status"] != "processed"]
-        if not drafts:
-            return {
-                "status": "skipped",
-                "message": "本次勾选商品均为已处理状态（已勾选“跳过已处理”），未创建处理任务",
-                "total_count": 0,
-                "success_count": 0,
-                "failed_count": 0,
-                "skipped_count": 0,
-            }
-        preflight_only = bool(payload.get("preflight_only") or payload.get("category_preflight_only"))
-        task = self.repository.create_task(
-            title=self._text(payload.get("title")) or "产品处理任务-草稿池商品",
-            preflight_only=preflight_only,
-            settings=payload,
-            drafts=drafts,
-            idempotency_key=idempotency_key,
-            workspace_id=workspace_id,
-        )
-        # 提交处理即把涉及草稿置为 processing：草稿池立即隐藏（前端过滤该状态），
-        # 处理完成置 processed，失败/待确认回退 draft 以便重新出现在草稿池重试。
-        if not preflight_only:
-            self.repository.mark_drafts_status(draft_ids, "processing", workspace_id=workspace_id)
+        with self._submission_lock:
+            existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
+            if existing is not None:
+                return self._task_response(existing, "重复提交已返回原任务")
+            drafts = self.repository.get_drafts(draft_ids, workspace_id=workspace_id)
+            missing = sorted(set(draft_ids) - {draft["id"] for draft in drafts})
+            if missing:
+                raise ProductProcessingNotFound(f"product drafts not found: {missing}")
+            if any(draft["status"] == "processing" for draft in drafts):
+                raise ProductProcessingConflict("所选商品中有正在处理的草稿，请勿重复提交")
+            if payload.get("skip_duplicates"):
+                drafts = [draft for draft in drafts if draft["status"] != "processed"]
+            if not drafts:
+                return {
+                    "status": "skipped",
+                    "message": "本次勾选商品均为已处理状态（已勾选“跳过已处理”），未创建处理任务",
+                    "total_count": 0,
+                    "success_count": 0,
+                    "failed_count": 0,
+                    "skipped_count": 0,
+                }
+            preflight_only = bool(payload.get("preflight_only") or payload.get("category_preflight_only"))
+            task = self.repository.create_task(
+                title=self._text(payload.get("title")) or "产品处理任务-草稿池商品",
+                preflight_only=preflight_only,
+                settings=payload,
+                drafts=drafts,
+                idempotency_key=idempotency_key,
+                workspace_id=workspace_id,
+            )
+            if not preflight_only:
+                self.repository.mark_drafts_status(
+                    [draft["id"] for draft in drafts], "processing", workspace_id=workspace_id
+                )
         if bool(payload.get("async_mode", True)):
             self._launch_background_execute(task["id"], workspace_id)
             return {**self._task_response(task, "任务已提交，正在后台处理"), "async_mode": True}
         completed = self._execute_task(task["id"], workspace_id)
         return self._task_response(completed, "草稿池预检已完成" if preflight_only else "产品处理任务已完成")
 
-    def _launch_background_execute(self, task_id: int, workspace_id: str) -> None:
+    def _launch_background_execute(self, task_id: int, workspace_id: str) -> bool:
         """后台线程执行任务，立即返回让前端轮询实时进度。"""
 
         def _run() -> None:
             try:
-                # 预热 OCR 引擎（首次加载 2-5s），避免首个草稿在图片质检时等待模型加载
+                # OCR 首次加载可耗时数秒。让它与前置文本/远程生图并行预热；
+                # 真正质检若先到仍会由 OCR 内部单例锁等待，质量合同不变。
                 if ocr_gate_enabled():
-                    ocr_diagnostics()
+                    threading.Thread(
+                        target=ocr_diagnostics,
+                        daemon=True,
+                        name=f"pp-ocr-warm-{task_id}",
+                    ).start()
                 self._execute_task(task_id, workspace_id)
-            except Exception:
-                # 兜底：任务执行异常时标记失败，避免任务卡在 running 状态
+            except Exception as exc:
                 try:
-                    self.repository.set_task_status(task_id, "failed", workspace_id)
+                    self.repository.fail_task_execution(task_id, _ai_error_reason(exc), workspace_id)
                 except Exception:
                     pass
+            finally:
+                with self._task_worker_lock:
+                    self._task_workers.pop((workspace_id, task_id), None)
 
-        threading.Thread(
-            target=_run,
-            daemon=True,
-            name=f"pp-task-{task_id}",
-        ).start()
+        worker_key = (workspace_id, task_id)
+        with self._task_worker_lock:
+            current = self._task_workers.get(worker_key)
+            if current is not None and current.is_alive():
+                return False
+            worker = threading.Thread(target=_run, daemon=True, name=f"pp-task-{task_id}")
+            self._task_workers[worker_key] = worker
+            worker.start()
+        return True
+
+    def recover_background_work(self) -> dict[str, int]:
+        """Recover safe queued work and make process-lost calls explicitly retryable."""
+        interrupted = self.repository.recover_interrupted_tasks()
+        queued = self.repository.queued_tasks()
+        launched = sum(
+            self._launch_background_execute(int(task["id"]), str(task["workspace_id"]))
+            for task in queued
+        )
+        finalize = self.preview_images.recover_background_work()
+        return {
+            "interrupted": len(interrupted),
+            "queued": len(queued),
+            "launched": launched,
+            "finalize_queued": int(finalize.get("queued") or 0),
+            "finalize_launched": int(finalize.get("launched") or 0),
+        }
 
     def task_outputs(
         self, task_id: int, *, summary_only: bool = False, workspace_id: str = "local"
@@ -904,8 +1181,18 @@ class ProductProcessingService:
         response["item_count"] = len(task["items"])
         return response
 
-    def task_history(self, limit: int, workspace_id: str = "local") -> dict[str, Any]:
-        tasks = self.repository.list_tasks(limit, workspace_id)
+    def task_history(
+        self,
+        limit: int,
+        workspace_id: str = "local",
+        *,
+        offset: int = 0,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> dict[str, Any]:
+        tasks, total = self.repository.list_tasks(
+            limit, workspace_id, offset=offset, date_from=date_from, date_to=date_to
+        )
         history = []
         for task in tasks:
             downloadable = {
@@ -937,7 +1224,7 @@ class ProductProcessingService:
                     "language_contract_version": "product-processing-language-v1",
                 }
             )
-        return {"tasks": history, "limit": limit}
+        return {"tasks": history, "limit": limit, "offset": offset, "total": total}
 
     def pause_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
         task = self._require_task(task_id, workspace_id)
@@ -950,6 +1237,8 @@ class ProductProcessingService:
         task = self._require_task(task_id, workspace_id)
         if task["status"] in {"completed", "failed", "partial_failure"}:
             return {**self._task_response(task), "message": "任务已结束，返回现有结果"}
+        if task["status"] != "paused":
+            return {**self._task_response(task), "message": "任务已在执行，未重复启动"}
         self.repository.set_task_status(task_id, "queued", workspace_id)
         task = self._require_task(task_id, workspace_id)
         if bool(task["settings"].get("async_mode", True)):
@@ -957,11 +1246,19 @@ class ProductProcessingService:
             return {**self._task_response(task, "产品处理任务已继续，正在后台处理"), "async_mode": True}
         return self._task_response(self._execute_task(task_id, workspace_id), "产品处理任务已继续并完成")
 
-    def retry_attention(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
+    def retry_attention(
+        self,
+        task_id: int,
+        workspace_id: str = "local",
+        *,
+        draft_ids: list[int] | None = None,
+    ) -> dict[str, Any]:
         task = self._require_task(task_id, workspace_id)
+        if task["status"] in {"queued", "running", "paused"}:
+            raise ProductProcessingConflict("任务尚未结束，不能启动失败项重试")
         if not any(item["status"] in {"failed", "attention_required"} for item in task["items"]):
             return {**self._task_response(task), "message": "当前任务没有可重试的失败商品"}
-        self.repository.reset_failed_items(task_id, workspace_id)
+        self.repository.reset_failed_items(task_id, workspace_id, draft_ids=draft_ids)
         task = self._require_task(task_id, workspace_id)
         if bool(task["settings"].get("async_mode", True)):
             self._launch_background_execute(task_id, workspace_id)
@@ -969,6 +1266,9 @@ class ProductProcessingService:
         return self._task_response(self._execute_task(task_id, workspace_id), "失败商品已重新处理")
 
     def clear_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
+        current = self._require_task(task_id, workspace_id)
+        if current["status"] in {"queued", "running", "paused"}:
+            raise ProductProcessingConflict("任务正在执行或暂停，请先等待结束后再清理")
         task = self.repository.clear_task(task_id, workspace_id)
         if task is None:
             raise ProductProcessingNotFound("product processing task not found")
@@ -981,17 +1281,393 @@ class ProductProcessingService:
                 f"任务尚未完成（当前状态：{task['status']}），输出文件将在处理后生成"
             )
         normalized = self._text(kind).lower()
+        if normalized == "dxm_final":
+            # A fixed legacy path cannot prove workspace, snapshot revision or COS
+            # completion. New clients must use the run-specific gated endpoint.
+            raise ProductProcessingConflict(
+                "请使用预审完成记录的专属下载链接，旧版固定路径已停用"
+            )
         field = {
             "dxm": "output_file",
             "errors": "error_report_file",
             "video_manifest": "video_manifest_file",
         }.get(normalized)
         if field is None:
-            raise ValueError("kind must be dxm, errors or video_manifest")
+            raise ValueError("kind must be dxm, dxm_final, errors or video_manifest")
         try:
             return self.assets.require_managed_file(task[field])
         except FileNotFoundError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
+
+    def task_preview(
+        self, task_id: int, *, workspace_id: str = "local"
+    ) -> dict[str, Any]:
+        """预检数据：任务完成后逐商品展示标题/原图/生成图轮播/详情图/核心字段。
+
+        用户已保存的预览覆盖优先展示；未覆盖时展示生成结果原值。
+        """
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] not in {"completed", "failed", "partial_failure"}:
+            raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
+        items = []
+        for item in task["items"]:
+            result = item.get("result") or {}
+            draft_id = item.get("product_draft_id")
+            draft = self.repository.get_draft(draft_id, workspace_id=workspace_id) if draft_id else None
+            saved = (draft or {}).get("preview_overrides") or {}
+            if not isinstance(saved, dict):
+                saved = {}
+            projected = self.preview_images.project_item_images(
+                task_id=task_id,
+                product_draft_id=int(draft_id or 0),
+                result=result,
+                saved=saved,
+                workspace_id=workspace_id,
+            )
+            items.append({
+                **self._preview_item(
+                    item,
+                    result,
+                    saved,
+                    preview_revision=int((draft or {}).get("preview_revision") or 0),
+                ),
+                **projected,
+            })
+        return {
+            "task_id": task_id,
+            "task": {
+                "id": task["id"],
+                "title": task["title"],
+                "status": task["status"],
+                "total_count": task["total_count"],
+                "success_count": task["success_count"],
+                "failed_count": task["failed_count"],
+                "skipped_count": task["skipped_count"],
+            },
+            "item_count": len(items),
+            "items": items,
+        }
+
+    def save_task_preview(
+        self,
+        task_id: int,
+        items: list[dict[str, Any]],
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """保存预检覆盖：按 product_draft_id 写入草稿 preview_overrides_json。
+
+        用户可改（标题/图片/核心字段）也可不修改默认保存；导出最终版表格时合并应用。
+        """
+        self._require_task(task_id, workspace_id)
+        normalized = [
+            {
+                **entry,
+                "overrides": self._clean_preview_overrides(
+                    dict(entry.get("overrides") or {})
+                ),
+            }
+            for entry in items
+            if isinstance(entry, dict)
+        ]
+        try:
+            saved_items = self.preview_images.save_preview(
+                task_id,
+                normalized,
+                workspace_id=workspace_id,
+            )
+        except PreviewRevisionConflict as exc:
+            raise ProductProcessingConflict(str(exc)) from exc
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+        return {"task_id": task_id, "saved_count": len(saved_items), "items": saved_items}
+
+    def upload_preview_image(
+        self,
+        task_id: int,
+        draft_id: int,
+        content: bytes,
+        filename: str,
+        content_type: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """Compatibility delegate: uploads are local assets until finalization."""
+        return self.register_preview_upload(
+            task_id,
+            draft_id,
+            content,
+            filename,
+            content_type,
+            workspace_id=workspace_id,
+        )
+
+    def require_preview_target(
+        self,
+        task_id: int,
+        draft_id: int,
+        *,
+        workspace_id: str = "local",
+    ) -> None:
+        try:
+            self.preview_images.require_task_draft(task_id, draft_id, workspace_id)
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+
+    def register_preview_upload(
+        self,
+        task_id: int,
+        draft_id: int,
+        content: bytes,
+        filename: str,
+        content_type: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        try:
+            return self.preview_images.register_upload(
+                task_id=task_id,
+                product_draft_id=draft_id,
+                workspace_id=workspace_id,
+                filename=filename,
+                content_type=content_type,
+                content=content,
+            )
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+
+    def begin_preview_finalize(
+        self,
+        task_id: int,
+        items: list[dict[str, Any]],
+        *,
+        workspace_id: str = "local",
+        idempotency_key: str = "",
+    ) -> dict[str, Any]:
+        self._require_task(task_id, workspace_id)
+        if not bool(self.engine_status()["diagnostics"]["config"].get("cos_configured")):
+            raise ProductProcessingConflict("COS 图床未配置，请先在系统设置完成配置")
+        normalized = [
+            {
+                **entry,
+                "overrides": self._clean_preview_overrides(
+                    dict(entry.get("overrides") or {})
+                ),
+            }
+            for entry in items
+        ]
+        try:
+            return self.preview_images.begin_finalize(
+                task_id,
+                normalized,
+                workspace_id=workspace_id,
+                idempotency_key=idempotency_key,
+            )
+        except (PreviewRevisionConflict, PreviewIdempotencyConflict, PreviewPublicationConflict) as exc:
+            raise ProductProcessingConflict(str(exc)) from exc
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+
+    def preview_finalize_status(
+        self,
+        task_id: int,
+        run_id: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        self._require_task(task_id, workspace_id)
+        try:
+            run = self.preview_images.get_finalize(run_id, workspace_id=workspace_id)
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+        if int(run.get("task_id") or 0) != int(task_id):
+            raise ProductProcessingNotFound("preview finalization run not found")
+        return run
+
+    def retry_preview_finalize(
+        self,
+        task_id: int,
+        run_id: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        self.preview_finalize_status(task_id, run_id, workspace_id=workspace_id)
+        try:
+            return self.preview_images.retry_finalize(run_id, workspace_id=workspace_id)
+        except PreviewPublicationConflict as exc:
+            raise ProductProcessingConflict(str(exc)) from exc
+
+    def preview_finalize_download_path(
+        self,
+        task_id: int,
+        run_id: str,
+        *,
+        workspace_id: str = "local",
+    ) -> Path:
+        self.preview_finalize_status(task_id, run_id, workspace_id=workspace_id)
+        try:
+            return self.preview_images.finalize_download_path(
+                run_id,
+                task_id,
+                workspace_id=workspace_id,
+            )
+        except (LookupError, FileNotFoundError) as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+
+    def export_final_workbook(self, task_id: int, *, workspace_id: str = "local") -> dict[str, Any]:
+        """导出最终版店小秘表格：合并各商品已保存的预检覆盖后重新生成 xlsx。
+
+        字段规则与原版一致（workbooks._dxm_export_rows 逐 SKU 行 + 规格组合去重）。
+        """
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] not in {"completed", "failed", "partial_failure"}:
+            raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
+        rows: list[dict[str, Any]] = []
+        for item in task["items"]:
+            result = item.get("result") or {}
+            if not result.get("optimized_title"):
+                continue
+            merged = dict(result)
+            draft_id = item.get("product_draft_id")
+            draft = self.repository.get_draft(draft_id, workspace_id=workspace_id) if draft_id else None
+            if draft and draft.get("preview_overrides"):
+                merged["preview_overrides"] = draft["preview_overrides"]
+            rows.append(merged)
+        if not rows:
+            raise ValueError("task has no successful products to export")
+        from .domain import workbooks as wb_module  # noqa: PLC0415
+
+        exported_rows = [export for row in rows for export in wb_module._dxm_export_rows(row)]
+        if not exported_rows:
+            raise ValueError("task has no exportable rows")
+        workbook_path = self.assets.output_root / f"task_{task_id}" / f"dxm_import_task_{task_id}_final.xlsx"
+        wb_module.create_result_workbook(rows, workbook_path)
+        return {
+            "task_id": task_id,
+            "file": workbook_path.name,
+            "row_count": len(exported_rows),
+            "product_count": len(rows),
+            "download": f"/api/product-processing/tasks/{task_id}/download?kind=dxm_final",
+        }
+
+    @staticmethod
+    def _clean_preview_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
+        """Normalize full desired state while retaining explicit empty manifests."""
+        from .domain.preview_images import MANIFEST_KEY, PreviewImageManifest  # noqa: PLC0415
+
+        cleaned: dict[str, Any] = {}
+        for key in ("title", "description", "main_image"):
+            value = str(overrides.get(key) or "").strip()
+            if value:
+                cleaned[key] = value
+        for key in ("carousel_images", "detail_images"):
+            values = [str(value).strip() for value in (overrides.get(key) or []) if str(value or "").strip()]
+            if values:
+                cleaned[key] = values
+        image_slot_overrides = overrides.get("image_slot_overrides") or {}
+        if isinstance(image_slot_overrides, dict):
+            slot_patches: dict[str, dict[str, str]] = {}
+            for raw_slot_id, raw_patch in image_slot_overrides.items():
+                slot_id = str(raw_slot_id or "").strip()
+                if slot_id not in DEFAULT_SLOT_IDS or not isinstance(raw_patch, dict):
+                    continue
+                url = str(raw_patch.get("url") or "").strip()
+                if not url.lower().startswith(("http://", "https://")) and not url.startswith("/pp-media/"):
+                    continue
+                patch = {"url": url}
+                asset_id = str(raw_patch.get("asset_id") or "").strip()
+                if asset_id:
+                    patch["asset_id"] = asset_id
+                slot_patches[slot_id] = patch
+            if slot_patches:
+                cleaned["image_slot_overrides"] = slot_patches
+        core_fields = overrides.get("core_fields") or {}
+        if isinstance(core_fields, dict):
+            core: dict[str, Any] = {}
+            for key, value in core_fields.items():
+                if value is None:
+                    continue
+                if isinstance(value, str) and not value.strip():
+                    continue
+                core[key] = value
+            if core:
+                cleaned["core_fields"] = core
+        if MANIFEST_KEY in overrides:
+            cleaned[MANIFEST_KEY] = PreviewImageManifest.from_value(
+                overrides.get(MANIFEST_KEY)
+            ).as_dict()
+        return cleaned
+
+    def _preview_item(
+        self,
+        item: dict[str, Any],
+        result: dict[str, Any],
+        saved: dict[str, Any],
+        *,
+        preview_revision: int = 0,
+    ) -> dict[str, Any]:
+        core_fields = saved.get("core_fields") or {}
+        if not isinstance(core_fields, dict):
+            core_fields = {}
+        dimensions = result.get("product_dimensions") or {}
+        if not isinstance(dimensions, dict):
+            dimensions = {}
+        # 标题/描述：覆盖优先，其次生成结果
+        title = str(saved.get("title") or result.get("optimized_title") or "").strip()
+        description = str(saved.get("description") or result.get("description") or "").strip()
+        # 图片：覆盖优先，其次生成结果
+        slots = apply_slot_overrides(result, saved)
+        override_detail = [str(v).strip() for v in (saved.get("detail_images") or []) if str(v or "").strip()]
+        override_main = str(saved.get("main_image") or "").strip()
+        carousel_sources = [str(slot.get("value") or "").strip() for slot in slots if str(slot.get("value") or "").strip()]
+        detail_sources = override_detail or list(result.get("detail_image_paths") or [])
+        main_source = override_main or (carousel_sources[0] if carousel_sources else "")
+        return {
+            "item_id": item.get("id") or item.get("item_id"),
+            "product_draft_id": item.get("product_draft_id"),
+            "skc": item.get("skc") or "",
+            "status": item.get("status") or "",
+            "reason": item.get("reason") or "",
+            "title": title,
+            "description": description,
+            "source_image_urls": [self._display_url(value) for value in (result.get("source_image_urls") or [])],
+            "carousel_images": [self._display_url(value) for value in carousel_sources],
+            "main_image": self._display_url(main_source),
+            "detail_images": [self._display_url(value) for value in detail_sources],
+            "image_slots": [
+                {**slot, "value": self._display_url(slot.get("value"))}
+                for slot in slots
+            ],
+            "physical_dimensions": result.get("physical_dimensions") or {},
+            "preview_revision": preview_revision,
+            "result_version": task_item_result_version(result),
+            "core_fields": {
+                "sku": str(core_fields.get("sku") or result.get("sku") or "").strip(),
+                "declared_price": core_fields.get("declared_price", result.get("declared_price")),
+                "suggested_price": core_fields.get("suggested_price", result.get("suggested_price")),
+                "stock": core_fields.get("stock", result.get("stock")),
+                "category_path": str(core_fields.get("category_path") or result.get("category_path") or "").strip(),
+                "category_id": str(core_fields.get("category_id") or result.get("category_id") or "").strip(),
+                "length_cm": core_fields.get("length_cm", dimensions.get("length_cm")),
+                "width_cm": core_fields.get("width_cm", dimensions.get("width_cm")),
+                "height_cm": core_fields.get("height_cm", dimensions.get("height_cm")),
+                "weight_g": core_fields.get("weight_g", dimensions.get("weight_g")),
+            },
+            "overrides": saved,
+        }
+
+    def _display_url(self, value: Any) -> str:
+        """本地生成图路径 → /pp-media/ 相对 URL（后端静态图床）；http(s) 外链原样返回。"""
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text.lower().startswith(("http://", "https://")):
+            return text
+        try:
+            relative = Path(text).resolve().relative_to(self.assets.output_root.resolve())
+        except (ValueError, OSError):
+            return text
+        return f"/pp-media/{relative.as_posix()}"
 
     def process_workbook(
         self,
@@ -1002,17 +1678,25 @@ class ProductProcessingService:
         idempotency_key: str | None = None,
         workspace_id: str = "local",
     ) -> dict[str, Any]:
-        imported = self.import_workbook(
-            filename,
-            content,
-            self._text(form.get("source_type")) or "excel",
-            int(form.get("max_products") or 0),
-            workspace_id,
-        )
-        if not imported["ids"]:
-            raise ValueError("workbook did not create any processable drafts")
-        payload = {**form, "draft_ids": imported["ids"], "title": form.get("title") or "产品处理任务-Excel 导入"}
-        return self.process_drafts(payload, idempotency_key=idempotency_key, workspace_id=workspace_id)
+        with self._submission_lock:
+            existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
+            if existing is not None:
+                return self._task_response(existing, "重复提交已返回原任务")
+            imported = self.import_workbook(
+                filename,
+                content,
+                self._text(form.get("source_type")) or "excel",
+                int(form.get("max_products") or 0),
+                workspace_id,
+            )
+            if not imported["ids"]:
+                raise ValueError("workbook did not create any processable drafts")
+            payload = {
+                **form,
+                "draft_ids": imported["ids"],
+                "title": form.get("title") or "产品处理任务-Excel 导入",
+            }
+            return self.process_drafts(payload, idempotency_key=idempotency_key, workspace_id=workspace_id)
 
     def process_single(
         self,
@@ -1024,40 +1708,60 @@ class ProductProcessingService:
         idempotency_key: str | None = None,
         workspace_id: str = "local",
     ) -> dict[str, Any]:
-        draft, _ = self.create_draft(
-            {
-                "source_type": "manual",
-                "title": form.get("title"),
-                "product_name": form.get("title"),
-                "category": form.get("category"),
-                "image_url": form.get("image_url"),
-                "price": form.get("price"),
-                "product_link": form.get("link"),
-            },
-            workspace_id=workspace_id,
-        )
-        if image_content:
-            draft = self.save_draft_image(
-                draft["id"],
-                image_content,
-                image_filename,
-                image_content_type,
-                workspace_id,
+        with self._submission_lock:
+            existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
+            if existing is not None:
+                return self._task_response(existing, "重复提交已返回原任务")
+            draft, _ = self.create_draft(
+                {
+                    "source_type": "manual",
+                    "title": form.get("title"),
+                    "product_name": form.get("title"),
+                    "category": form.get("category"),
+                    "image_url": form.get("image_url"),
+                    "price": form.get("price"),
+                    "product_link": form.get("link"),
+                },
+                workspace_id=workspace_id,
             )
-        return self.process_drafts(
-            {**form, "draft_ids": [draft["id"]], "title": form.get("task_title") or "产品处理任务-单品"},
-            idempotency_key=idempotency_key,
-            workspace_id=workspace_id,
-        )
+            if image_content:
+                draft = self.save_draft_image(
+                    draft["id"],
+                    image_content,
+                    image_filename,
+                    image_content_type,
+                    workspace_id,
+                )
+            return self.process_drafts(
+                {**form, "draft_ids": [draft["id"]], "title": form.get("task_title") or "产品处理任务-单品"},
+                idempotency_key=idempotency_key,
+                workspace_id=workspace_id,
+            )
 
     def _execute_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
+        """任务执行统一入口：先过任务级串行闸门，避免多任务并发叠加打爆 AI 供应商。"""
+        with self._task_execution_gate:
+            return self._execute_task_impl(task_id, workspace_id)
+
+    def _execute_task_impl(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
         task = self._require_task(task_id, workspace_id)
         if task["status"] == "paused":
             return task
-        self.repository.set_task_status(task_id, "running", workspace_id)
+        if not self.repository.claim_task_execution(task_id, workspace_id):
+            return self._require_task(task_id, workspace_id)
+        task = self._require_task(task_id, workspace_id)
         settings = task["settings"]
         preflight_only = bool(task["preflight_only"])
-        max_workers = max(1, min(20, int(settings.get("max_parallel_drafts", 1))))
+        requested_workers = max(1, min(20, int(settings.get("max_parallel_drafts", 1))))
+        # Product orchestration may use all employee-selected workers. Text and image
+        # providers keep their own narrower semaphores, so silently shrinking an
+        # employee-selected 8-product batch to 4 only lengthens the queue.
+        provider_budget = max(
+            1,
+            min(8, int(settings.get("provider_concurrency_budget", requested_workers))),
+        )
+        max_workers = min(requested_workers, provider_budget)
+        items_to_process = [item for item in task["items"] if item["status"] in {"pending", "running"}]
         draft_ids = [item["product_draft_id"] for item in task["items"] if item["product_draft_id"]]
         drafts = {
             draft["id"]: draft
@@ -1068,16 +1772,37 @@ class ProductProcessingService:
             )
         }
         item_results: list[dict[str, Any]] = []
-        successes: list[dict[str, Any]] = []
+        successes: list[dict[str, Any]] = [
+            dict(item.get("result") or {}) for item in task["items"] if item["status"] == "completed"
+        ]
         failures: list[dict[str, Any]] = []
-        source_images: list[str] = []
+        source_images: list[str] = [
+            str(url)
+            for result in successes
+            for url in (result.get("source_image_urls") or [])
+            if url
+        ]
         lock = threading.Lock()
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        def _process(item: dict[str, Any]) -> dict[str, Any]:
+        def _process(item: dict[str, Any]) -> dict[str, Any] | None:
+            if self._require_task(task_id, workspace_id)["status"] == "paused":
+                return None
             draft = drafts.get(item["product_draft_id"])
-            return self._process_one(item, draft, settings, preflight_only, task_id=task_id)
+            return self._run_with_item_heartbeat(
+                task_id,
+                int(item["item_id"]),
+                workspace_id,
+                lambda: self._process_one(
+                    item,
+                    draft,
+                    settings,
+                    preflight_only,
+                    task_id=task_id,
+                    workspace_id=workspace_id,
+                ),
+            )
 
         def _persist_progress(processed: dict[str, Any]) -> None:
             """逐项写入处理结果并实时刷新任务计数，供前端进度轮询读取。"""
@@ -1103,8 +1828,10 @@ class ProductProcessingService:
 
         if max_workers <= 1:
             # 串行模式：保持原有行为，便于调试和问题排查
-            for item in task["items"]:
+            for item in items_to_process:
                 processed = _process(item)
+                if processed is None:
+                    continue
                 item_results.append(processed)
                 _persist_progress(processed)
                 if processed["status"] == "completed":
@@ -1121,7 +1848,7 @@ class ProductProcessingService:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures_map = {
                     executor.submit(_process, item): item
-                    for item in task["items"]
+                    for item in items_to_process
                 }
                 for future in as_completed(futures_map):
                     item = futures_map[future]
@@ -1138,6 +1865,8 @@ class ProductProcessingService:
                                 "retryable": True,
                             },
                         }
+                    if processed is None:
+                        continue
                     with lock:
                         item_results.append(processed)
                         _persist_progress(processed)
@@ -1151,6 +1880,9 @@ class ProductProcessingService:
                             failures.append(processed)
                             if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
                                 self._mark_draft_failed(draft, workspace_id)
+
+        if self._require_task(task_id, workspace_id)["status"] == "paused":
+            return self._require_task(task_id, workspace_id)
 
         preserve = settings.get("source_image_to_library")
         if preserve is None:
@@ -1180,6 +1912,52 @@ class ProductProcessingService:
             video_manifest_file=str(paths.video_manifest) if paths.video_manifest else "",
             workspace_id=workspace_id,
         )
+
+    def _run_with_item_heartbeat(
+        self,
+        task_id: int,
+        item_id: int,
+        workspace_id: str,
+        operation: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Run one long item while keeping its employee-visible stage fresh."""
+        stage = "AI 文本与图片处理"
+        self.repository.update_item_progress(
+            task_id,
+            item_id,
+            status="running",
+            reason=f"{stage}中",
+            workspace_id=workspace_id,
+        )
+        stopped = threading.Event()
+        started_at = time.monotonic()
+
+        def _heartbeat() -> None:
+            while not stopped.wait(_TASK_HEARTBEAT_SECONDS):
+                elapsed_seconds = max(1, round(time.monotonic() - started_at))
+                try:
+                    self.repository.update_item_progress(
+                        task_id,
+                        item_id,
+                        status="running",
+                        reason=f"{stage}中 · 心跳正常 · 已持续 {elapsed_seconds} 秒",
+                        workspace_id=workspace_id,
+                    )
+                except Exception:
+                    # 心跳是可观测性辅助，不得因任务被清理或短暂数据库忙而打断业务调用。
+                    return
+
+        worker = threading.Thread(
+            target=_heartbeat,
+            daemon=True,
+            name=f"pp-heartbeat-{task_id}-{item_id}",
+        )
+        worker.start()
+        try:
+            return operation()
+        finally:
+            stopped.set()
+            worker.join(timeout=1.0)
 
     def _mark_draft_processed(
         self, draft: dict[str, Any], task_id: int, settings: dict[str, Any], workspace_id: str
@@ -1216,7 +1994,21 @@ class ProductProcessingService:
         preflight_only: bool,
         *,
         task_id: int,
+        workspace_id: str = "local",
     ) -> dict[str, Any]:
+        processing_started = time.perf_counter()
+        stage_timings_ms: dict[str, int] = {}
+
+        def record_stage(stage: str, started_at: float) -> None:
+            key = stage if stage.endswith("_ms") else f"{stage}_ms"
+            stage_timings_ms[key] = max(0, round((time.perf_counter() - started_at) * 1000))
+
+        def timing_snapshot() -> dict[str, int]:
+            return {
+                **stage_timings_ms,
+                "total_processing_ms": max(0, round((time.perf_counter() - processing_started) * 1000)),
+            }
+
         if draft is None or draft["status"] == "deleted":
             return {
                 **item,
@@ -1227,6 +2019,7 @@ class ProductProcessingService:
                     "failure_class": "technical_retryable",
                     "operator_hint": "草稿不存在或已被删除",
                     "retryable": True,
+                    "stage_timings_ms": timing_snapshot(),
                 },
             }
         raw = draft["raw_payload"]
@@ -1247,6 +2040,7 @@ class ProductProcessingService:
                     "failure_class": "configuration_blocked",
                     "operator_hint": "补充标题和主图后重试",
                     "retryable": True,
+                    "stage_timings_ms": timing_snapshot(),
                 },
             }
 
@@ -1278,6 +2072,7 @@ class ProductProcessingService:
                     "failure_class": failure_class,
                     "operator_hint": issue.operator_hint,
                     "retryable": failure_class in {"technical_retryable", "configuration_blocked"},
+                    "stage_timings_ms": timing_snapshot(),
                 },
             }
 
@@ -1295,6 +2090,8 @@ class ProductProcessingService:
         source_attributes = self._source_attributes_text(raw)
 
         ai_notes: list[str] = []
+        provider_attempts: dict[str, int] = {}
+        provider_status_classes: dict[str, str] = {}
         optimized_title = title
         description = self._text(draft.get("description") or raw.get("description"))
         need_grid = (
@@ -1307,20 +2104,91 @@ class ProductProcessingService:
             and "detail_images" in scope
             and _as_bool(settings.get("ai_media_opt_in"), default=True)
         )
+        # 精品模式：用户从草稿池勾选的链接走一次 4K 四宫格并本地高清拆分；
+        # 其余标题、描述、详情图与导出合同保持一致。
+        premium_mode = int(draft["id"]) in {int(x) for x in (settings.get("premium_draft_ids") or [])}
         vision_subject = ""
+        vision_preliminary_title = ""
         combined_variant_translations: dict[str, str] = {}
+        product_dimensions: dict[str, Any] = {}
+        task_item_id = int(item.get("item_id") or 0)
+        supports_stage_receipts = all(
+            callable(getattr(self.repository, method, None))
+            for method in (
+                "load_stage_receipt",
+                "upsert_stage_receipt",
+                "delete_invalid_stage_receipt",
+                "delete_downstream_stage_receipts",
+            )
+        )
+        structured_receipt_input = (
+            self._processing_stage_input_hash(
+                "structured_text",
+                {
+                    "draft_id": int(draft["id"]),
+                    "title": title,
+                    "category": category,
+                    "raw": self._canonical_prompt_evidence(raw),
+                    "target_site": target_site,
+                    "target_language": target_language,
+                    "scope": sorted(scope),
+                },
+            )
+            if supports_stage_receipts
+            else ""
+        )
+        structured_receipt: dict[str, Any] | None = None
+        if task_item_id and supports_stage_receipts:
+            structured_receipt = self.repository.load_stage_receipt(
+                task_id,
+                task_item_id,
+                "structured_text",
+                workspace_id=workspace_id,
+            )
+            if structured_receipt and structured_receipt.get("input_hash") != structured_receipt_input:
+                self.repository.delete_invalid_stage_receipt(
+                    task_id,
+                    task_item_id,
+                    "structured_text",
+                    expected_input_hash=structured_receipt_input,
+                    workspace_id=workspace_id,
+                )
+                self.repository.delete_downstream_stage_receipts(
+                    task_id,
+                    task_item_id,
+                    ["images"],
+                    workspace_id=workspace_id,
+                )
+                structured_receipt = None
         if not preflight_only:
-            # 文本生成与视觉主体识别是两个独立 AI 调用：并行执行省一段串行等待
-            # （主体识别提示词仅用原始标题作上下文，不依赖文本结果，可提前发起）。
-            from concurrent.futures import ThreadPoolExecutor
-
-            def _run_text() -> tuple[str, str, dict[str, str]]:
-                local_title = title
-                local_desc = description
-                translations: dict[str, str] = {}
-                needs_title = "title" in scope and settings.get("title_optimize", True)
-                needs_desc = "details" in scope and not local_desc
-                if needs_title and needs_desc:
+            local_title = title
+            local_desc = description
+            combined: dict[str, Any] | None = None
+            translations: dict[str, str] = {}
+            description_candidate = ""
+            description_contract_error = ""
+            needs_title = "title" in scope and settings.get("title_optimize", True)
+            # Selecting description processing means regenerate it from the active operator prompt;
+            # do not silently preserve an arbitrary source description.
+            needs_desc = "details" in scope
+            needs_dimensions = "product_dimensions" in scope
+            deterministic_dimensions = (
+                self._extract_deterministic_size(raw) if needs_dimensions else None
+            )
+            needs_visual_identity = bool(
+                source_image_urls and (need_grid or need_detail or needs_title)
+            )
+            variant_values = self._unique_variant_values(raw)
+            receipt_output = structured_receipt.get("output") if structured_receipt else None
+            if isinstance(receipt_output, dict):
+                combined = dict(receipt_output)
+                ai_notes.append("structured_text:receipt-hit")
+                provider_attempts["combined_text"] = 0
+                provider_status_classes["combined_text"] = "receipt_hit"
+            elif needs_title or needs_desc or needs_dimensions or variant_values:
+                stage_started = time.perf_counter()
+                note_start = len(ai_notes)
+                try:
                     combined = self._generate_combined_text(
                         title,
                         category,
@@ -1328,17 +2196,83 @@ class ProductProcessingService:
                         target_language,
                         target_site,
                         ai_notes,
+                        image_url=(source_image_urls[0] if needs_visual_identity else ""),
+                        known_dimensions=deterministic_dimensions,
+                        include_dimensions=needs_dimensions,
                     )
-                    if combined:
-                        if combined.get("title"):
-                            local_title = self._normalized_title(combined["title"])
-                        if combined.get("description"):
-                            local_desc = combined["description"]
-                        if combined.get("variant_translations"):
-                            translations = combined["variant_translations"]
-                        ai_notes.append("text:ai-combined")
-                        needs_title = needs_desc = False
-                if needs_title:
+                except ListingTextConfigurationError as exc:
+                    record_stage("combined_text", stage_started)
+                    return {
+                        **item,
+                        "title": local_title,
+                        "image_url": image_url,
+                        "status": "attention_required",
+                        "reason": str(exc),
+                        "result": {
+                            "error_type": "text_provider_configuration",
+                            "failure_class": "configuration_blocked",
+                            "operator_hint": "文本模型返回不可重试的 4xx；请检查模型路由、密钥或请求配置后重试",
+                            "retryable": True,
+                            "ai_notes": ai_notes,
+                            "provider_attempts": {"combined_text": 1},
+                            "provider_status_classes": {"combined_text": "non_retryable_4xx"},
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
+                record_stage("combined_text", stage_started)
+                provider_attempts["combined_text"] = (
+                    0 if "text:cache-hit" in ai_notes[note_start:] else 1
+                )
+                provider_status_classes["combined_text"] = (
+                    "output_contract_failed"
+                    if any(
+                        note.startswith("description_contract:ai-failed:")
+                        for note in ai_notes[note_start:]
+                    )
+                    else "success"
+                )
+                if combined and task_item_id and supports_stage_receipts:
+                    self.repository.upsert_stage_receipt(
+                        task_id,
+                        task_item_id,
+                        "structured_text",
+                        input_hash=structured_receipt_input,
+                        output_data=combined,
+                        workspace_id=workspace_id,
+                    )
+            if isinstance(combined, dict):
+                vision_subject = self._text(combined.get("vision_subject"))
+                vision_preliminary_title = self._text(
+                    combined.get("vision_preliminary_title")
+                )
+                if vision_subject:
+                    ai_notes.append("subject_identity:combined")
+                if combined.get("title") and needs_title:
+                    local_title = self._normalized_title(combined["title"])
+                    needs_title = False
+                if combined.get("description") and needs_desc:
+                    local_desc = combined["description"]
+                    needs_desc = False
+                description_candidate = str(combined.get("description_candidate") or "")
+                description_contract_error = str(combined.get("description_contract_error") or "")
+                if combined.get("variant_translations"):
+                    translations = combined["variant_translations"]
+                if needs_dimensions:
+                    product_dimensions = dict(combined.get("product_dimensions") or {})
+                ai_notes.append("text:ai-combined")
+            # Old cached entries and providers without image input may omit the visual
+            # fields. Repair only that field; do not repeat the full structured call.
+            if needs_visual_identity and not vision_subject:
+                stage_started = time.perf_counter()
+                vision_subject, fallback_preliminary_title = self._identify_subject(
+                    source_image_urls[0], title, category, ai_notes
+                )
+                if not vision_preliminary_title:
+                    vision_preliminary_title = fallback_preliminary_title
+                record_stage("subject_identity_repair", stage_started)
+            if needs_title:
+                stage_started = time.perf_counter()
+                try:
                     generated_title = self._generate_title(
                         title,
                         category,
@@ -1346,11 +2280,38 @@ class ProductProcessingService:
                         target_language,
                         target_site,
                         ai_notes,
+                        image_derived_title=vision_preliminary_title,
                     )
-                    if generated_title:
-                        local_title = generated_title
-                        ai_notes.append("title:ai")
-                if needs_desc:
+                except ListingTextConfigurationError as exc:
+                    record_stage("title_generation", stage_started)
+                    return {
+                        **item,
+                        "title": local_title,
+                        "image_url": image_url,
+                        "status": "attention_required",
+                        "reason": str(exc),
+                        "result": {
+                            "error_type": "text_provider_configuration",
+                            "failure_class": "configuration_blocked",
+                            "operator_hint": "文本模型返回不可重试的 4xx；请检查模型路由、密钥或请求配置后重试",
+                            "retryable": True,
+                            "ai_notes": ai_notes,
+                            "provider_attempts": {"title_generation": 1},
+                            "provider_status_classes": {"title_generation": "non_retryable_4xx"},
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
+                record_stage("title_generation", stage_started)
+                provider_attempts["title_generation"] = 1
+                provider_status_classes["title_generation"] = (
+                    "success" if generated_title else "failed"
+                )
+                if generated_title:
+                    local_title = generated_title
+                    ai_notes.append("title:ai")
+            if needs_desc:
+                stage_started = time.perf_counter()
+                try:
                     generated_desc = self._generate_description(
                         local_title,
                         category,
@@ -1358,27 +2319,60 @@ class ProductProcessingService:
                         target_language,
                         target_site,
                         ai_notes,
+                        image_derived_title=vision_preliminary_title,
+                        prior_description=description_candidate,
+                        contract_error=description_contract_error,
                     )
-                    if generated_desc:
-                        local_desc = generated_desc
-                        ai_notes.append("details:ai")
-                return local_title, local_desc, translations
-
-            def _run_subject() -> str:
-                if not ((need_grid or need_detail) and source_image_urls):
-                    return ""
-                return self._identify_subject(source_image_urls[0], title, category, ai_notes)
-
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_text = executor.submit(_run_text)
-                future_subject = executor.submit(_run_subject)
-                # 主体识别先取（图片阶段立即要用）；文本结果随后合并
-                vision_subject = future_subject.result()
-                optimized_title, description, combined_variant_translations = future_text.result()
-
-        if not description:
-            # AI 未启用或生成失败时保留旧模板兜底，避免导入表描述为空
-            description = f"{optimized_title}. Source information preserved for operator review."
+                except ListingTextConfigurationError as exc:
+                    record_stage("description_repair", stage_started)
+                    return {
+                        **item,
+                        "title": local_title,
+                        "image_url": image_url,
+                        "status": "attention_required",
+                        "reason": str(exc),
+                        "result": {
+                            "error_type": "text_provider_configuration",
+                            "failure_class": "configuration_blocked",
+                            "operator_hint": "文本模型返回不可重试的 4xx；请检查模型路由、密钥或请求配置后重试",
+                            "retryable": True,
+                            "ai_notes": ai_notes,
+                            "provider_attempts": {"description_repair": 1},
+                            "provider_status_classes": {"description_repair": "non_retryable_4xx"},
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
+                record_stage("description_repair", stage_started)
+                provider_attempts["description_repair"] = 1
+                provider_status_classes["description_repair"] = (
+                    "success" if generated_desc else "failed"
+                )
+                if generated_desc:
+                    local_desc = generated_desc
+                    ai_notes.append("details:ai")
+                    if description_candidate:
+                        ai_notes.append("description_contract:repaired")
+                        provider_status_classes["combined_text"] = "repaired_contract"
+                    needs_desc = False
+            if "details" in scope and needs_desc:
+                return {
+                    **item,
+                    "title": local_title,
+                    "image_url": image_url,
+                    "status": "attention_required",
+                    "reason": "产品描述未生成可用内容",
+                    "result": {
+                        "error_type": "description_content_unavailable",
+                        "failure_class": "technical_retryable",
+                        "operator_hint": "描述仅需为英文要点且不重复（已阻止空/占位/含中文描述进入店小秘）",
+                        "retryable": True,
+                        "ai_notes": ai_notes,
+                        "provider_attempts": provider_attempts,
+                        "provider_status_classes": provider_status_classes,
+                        "stage_timings_ms": timing_snapshot(),
+                    },
+                }
+            optimized_title, description, combined_variant_translations = local_title, local_desc, translations
 
         # 目标语言强制校验：AI 启用时不允许把未翻译标题/描述导出（对齐原型“已阻止导出”行为）
         if not preflight_only and _ai_enabled():
@@ -1398,57 +2392,81 @@ class ProductProcessingService:
                         "operator_hint": "AI 输出未通过目标语言校验（标题/描述仍含其他语言文本），请重试或检查 AI 配置",
                         "retryable": True,
                         "ai_notes": ai_notes,
+                        "provider_attempts": provider_attempts,
+                        "provider_status_classes": provider_status_classes,
+                        "stage_timings_ms": timing_snapshot(),
                     },
                 }
 
-        # 变种属性值翻译（对齐原型 VARIANT_VALUE_TRANSLATION_PROMPT）：来源中文规格值 → 目标语言可读显示名。
-        # combined 文本调用已并入翻译时直接复用（省一次独立 AI 调用）；否则按需单独调用。
-        variant_value_translations: dict[str, str] = {}
-        if not preflight_only:
-            if combined_variant_translations:
-                variant_value_translations = combined_variant_translations
-                ai_notes.append("variant_values:combined")
-            else:
-                variant_value_translations = self._translate_variant_values(
-                    raw, optimized_title, target_language, target_site, ai_notes
-                )
-
-        product_dimensions: dict[str, Any] = {}
-        if not preflight_only and "product_dimensions" in scope:
-            product_dimensions = self._generate_size(raw, optimized_title, category, ai_notes) or {}
-
-        grid_image_paths: list[str] = []
-        grid_summary_path = ""
-        detail_image_paths: list[str] = []
-        # 图片编排（对齐原项目 five-stage：media_sku_local 一次出图 + 详情图本地合成 0 AI）：
-        # 先出四宫格（1 次图像调用 + OCR 重绘≤1 轮），再拿四宫格分图本地拼详情图；
-        # 四宫格不可用或本地合成含中文时才回退 AI 详情图生成。
-        if need_grid:
-            grid_image_paths, grid_summary_path = self._generate_grid_images(
+        if not preflight_only and task_item_id and supports_stage_receipts:
+            self.repository.upsert_stage_receipt(
                 task_id,
-                draft["id"],
-                raw,
-                optimized_title,
-                category,
-                source_image_urls,
-                target_language,
-                target_site,
-                ai_notes,
-                vision_subject,
+                task_item_id,
+                "structured_text",
+                input_hash=structured_receipt_input,
+                output_data={
+                    "title": optimized_title,
+                    "description": description,
+                    "variant_translations": combined_variant_translations,
+                    "vision_subject": vision_subject,
+                    "vision_preliminary_title": vision_preliminary_title,
+                    "product_dimensions": product_dimensions,
+                },
+                workspace_id=workspace_id,
             )
-        if need_detail:
-            if grid_image_paths:
-                detail_image_paths = self._generate_detail_images_local(
-                    task_id,
-                    draft["id"],
-                    grid_image_paths,
-                    optimized_title,
-                    category,
-                    target_language,
-                    ai_notes,
-                )
-            if not detail_image_paths:
-                detail_image_paths = self._generate_detail_images(
+
+        # The structured call established product identity and listing text. Start
+        # media now while narrow variant/dimension repairs continue on this thread.
+        # Media uses a private notes buffer so merge order remains deterministic.
+        image_generation_count = _image_generation_count(
+            settings.get("image_generation_count"), default=4
+        )
+        media_executor = None
+        grid_future = None
+        direct_detail_future = None
+        media_stage_started = 0.0
+        media_ai_notes: list[str] = []
+        if need_grid or need_detail:
+            from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+            media_executor = ThreadPoolExecutor(max_workers=1)
+            media_stage_started = time.perf_counter()
+            if need_grid:
+                if premium_mode:
+                    grid_future = media_executor.submit(
+                        self._generate_premium_images,
+                        task_id,
+                        draft["id"],
+                        raw,
+                        optimized_title,
+                        category,
+                        source_image_urls,
+                        target_language,
+                        target_site,
+                        media_ai_notes,
+                        vision_subject,
+                        workspace_id=workspace_id,
+                    )
+                else:
+                    grid_future = media_executor.submit(
+                        self._generate_grid_images,
+                        task_id,
+                        draft["id"],
+                        raw,
+                        optimized_title,
+                        category,
+                        source_image_urls,
+                        target_language,
+                        target_site,
+                        media_ai_notes,
+                        vision_subject,
+                        image_template=str(settings.get("image_template") or "A"),
+                        image_generation_count=image_generation_count,
+                        workspace_id=workspace_id,
+                    )
+            elif need_detail:
+                direct_detail_future = media_executor.submit(
+                    self._generate_detail_images,
                     task_id,
                     draft["id"],
                     raw,
@@ -1457,13 +2475,200 @@ class ProductProcessingService:
                     source_detail_image_urls or source_image_urls,
                     target_language,
                     target_site,
+                    media_ai_notes,
+                    vision_subject,
+                    workspace_id=workspace_id,
+                )
+
+        # 变种属性值翻译（对齐原型 VARIANT_VALUE_TRANSLATION_PROMPT）：来源中文规格值 → 目标语言可读显示名。
+        # combined 文本调用已并入翻译时直接复用（省一次独立 AI 调用）；否则按需单独调用。
+        # 尺寸/变种翻译均为独立 AI 调用，与下方图片编排并行执行，缩短单条流水线总耗时。
+        variant_value_translations: dict[str, str] = {}
+        side_pool: Any = None
+        side_futures: dict[str, Any] = {}
+        if not preflight_only:
+            from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+            side_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pp-side")
+            side_futures["_started"] = time.perf_counter()
+            if combined_variant_translations:
+                variant_value_translations.update(combined_variant_translations)
+                ai_notes.append("variant_values:combined")
+            else:
+                missing_variant_values = [
+                    value
+                    for value in self._unique_variant_values(raw)
+                    if value not in variant_value_translations
+                ]
+                if missing_variant_values:
+                    side_futures["variants"] = side_pool.submit(
+                        self._translate_variant_values,
+                        raw,
+                        optimized_title,
+                        target_language,
+                        target_site,
+                        ai_notes,
+                        only_values=missing_variant_values,
+                    )
+            dimensions_complete = all(
+                self._number(product_dimensions.get(key)) is not None
+                and float(self._number(product_dimensions.get(key)) or 0) > 0
+                for key in ("length_cm", "width_cm", "height_cm", "weight_g")
+            )
+            if "product_dimensions" in scope and dimensions_complete:
+                ai_notes.append("product_dimensions:combined")
+            elif "product_dimensions" in scope:
+                side_futures["dimensions"] = side_pool.submit(
+                    self._generate_size,
+                    raw,
+                    optimized_title,
+                    category,
+                    ai_notes,
+                )
+        physical_dimensions = extract_physical_dimensions(raw).model_dump(mode="json")
+
+        grid_image_paths: list[str] = []
+        grid_summary_path = ""
+        grid_carousel_media: list[Any] = []
+        detail_image_paths: list[str] = []
+        # 图片编排与尺寸/规格补全并行。普通新任务固定一张四宫格，历史任务仍兼容
+        # 旧的 1 / 2 / 4 设置；精品任务由专用单次 4K 四宫格流水线处理。
+        # 详情图优先由轮播图本地合成，只有本地合成不可用时才回退 AI 详情图生成。
+        if need_grid:
+            if grid_future is not None:
+                try:
+                    grid_output = grid_future.result()
+                finally:
+                    if media_executor is not None:
+                        media_executor.shutdown(wait=True)
+                        media_executor = None
+                ai_notes.extend(media_ai_notes)
+                record_stage("grid_pipeline", media_stage_started)
+            else:
+                stage_started = time.perf_counter()
+                grid_output = self._generate_grid_images(
+                    task_id,
+                    draft["id"],
+                    raw,
+                    optimized_title,
+                    category,
+                    source_image_urls,
+                    target_language,
+                    target_site,
                     ai_notes,
                     vision_subject,
+                    image_template=str(settings.get("image_template") or "A"),
+                    image_generation_count=image_generation_count,
+                    workspace_id=workspace_id,
                 )
+                record_stage("grid_pipeline", stage_started)
+            grid_image_paths, grid_summary_path = grid_output
+            grid_carousel_media = list(grid_output.carousel_media)
+            provider_attempts["four_grid"] = grid_output.attempt_count
+            provider_status_classes["four_grid"] = grid_output.provider_status_class
+            stage_timings_ms.update(grid_output.stage_timings_ms)
+            if len(grid_image_paths) != 4:
+                # Success means four real carousel images. Never turn a split or
+                # generation failure into a misleading completed result, even when
+                # an older task payload contains force-import compatibility flags.
+                if side_pool is not None:
+                    side_pool.shutdown(wait=True, cancel_futures=True)
+                    side_pool = None
+                mode_label = "精品4K" if premium_mode else "普通四宫格"
+                return {
+                    **item,
+                    "title": optimized_title,
+                    "image_url": image_url,
+                    "status": "failed",
+                    "reason": f"{mode_label}未生成4张可用轮播图",
+                    "result": {
+                        "error_type": "image_grid_incomplete",
+                        "failure_class": "technical_retryable",
+                        "operator_hint": "已阻止缺图结果进入预检；请重试或检查图片模型实际输出尺寸",
+                        "retryable": True,
+                        "ai_notes": ai_notes,
+                        "provider_attempts": provider_attempts,
+                        "provider_status_classes": provider_status_classes,
+                        "stage_timings_ms": timing_snapshot(),
+                    },
+                }
+        if need_detail:
+            if grid_image_paths:
+                stage_started = time.perf_counter()
+                detail_image_paths = self._generate_detail_images_local(
+                    task_id,
+                    draft["id"],
+                    grid_carousel_media or grid_image_paths,
+                    optimized_title,
+                    category,
+                    target_language,
+                    ai_notes,
+                    workspace_id=workspace_id,
+                )
+                record_stage("local_detail", stage_started)
+            if not detail_image_paths:
+                if direct_detail_future is not None:
+                    try:
+                        detail_image_paths = direct_detail_future.result()
+                    finally:
+                        if media_executor is not None:
+                            media_executor.shutdown(wait=True)
+                            media_executor = None
+                    ai_notes.extend(media_ai_notes)
+                    record_stage("detail_generation", media_stage_started)
+                else:
+                    stage_started = time.perf_counter()
+                    detail_image_paths = self._generate_detail_images(
+                        task_id,
+                        draft["id"],
+                        raw,
+                        optimized_title,
+                        category,
+                        source_detail_image_urls or source_image_urls,
+                        target_language,
+                        target_site,
+                        ai_notes,
+                        vision_subject,
+                        workspace_id=workspace_id,
+                    )
+                    record_stage("detail_generation", stage_started)
         if grid_image_paths:
-            ai_notes.append("four_grid:ai")
+            ai_notes.append(
+                "premium_images:ai"
+                if premium_mode
+                else f"image_set:{image_generation_count}:ai"
+            )
         if detail_image_paths:
             ai_notes.append("detail_images:ai")
+
+        # 收集并行侧任务结果（图片编排期间尺寸/变种翻译早已完成，此处通常无等待）
+        try:
+            if "variants" in side_futures:
+                try:
+                    variant_value_translations = side_futures["variants"].result() or {}
+                except Exception:
+                    variant_value_translations = {}
+                record_stage("variant_translation", side_futures["_started"])
+            if "dimensions" in side_futures:
+                try:
+                    product_dimensions = side_futures["dimensions"].result() or {}
+                except Exception:
+                    product_dimensions = {}
+                record_stage("product_dimensions", side_futures["_started"])
+        finally:
+            if side_pool is not None:
+                side_pool.shutdown(wait=True)
+
+        image_manifest: list[dict[str, str]] = []
+        image_roles = (
+            ("carousel.hero", "hero"),
+            ("carousel.detail", "detail"),
+            ("carousel.lifestyle", "lifestyle"),
+            ("carousel.dimension_background", "dimension_background"),
+        )
+        for index, value in enumerate(grid_image_paths):
+            slot_id, role = image_roles[index] if index < len(image_roles) else (f"carousel.extra.{index + 1}", "extra")
+            image_manifest.append({"slot_id": slot_id, "role": role, "value": value})
 
         result = {
             "product_draft_id": draft["id"],
@@ -1479,6 +2684,7 @@ class ProductProcessingService:
             "source_url": source_url,
             "source_platform": raw.get("source_platform") or raw.get("platform") or "",
             "source_image_urls": source_image_urls,
+            "image_generation_count": image_generation_count,
             "source_detail_image_urls": source_detail_image_urls,
             "source_attributes": raw.get("source_attributes") or [],
             "source_variant_records": raw.get("source_variant_records") or [],
@@ -1487,15 +2693,21 @@ class ProductProcessingService:
             "declared_price": draft.get("declared_price"),
             "suggested_price": draft.get("cost"),
             "product_dimensions": product_dimensions,
+            "physical_dimensions": physical_dimensions,
             "stock": self._source_stock(raw),
             "ship_days": 2,
             "target_site": target_site,
             "target_language": target_language,
             "target_language_label": language_profile(target_language)["label"],
             "carousel_image_paths": grid_image_paths,
+            "image_manifest": image_manifest,
             "grid_image_summary_path": grid_summary_path,
             "detail_image_paths": detail_image_paths,
             "ai_notes": ai_notes,
+            "provider_attempts": provider_attempts,
+            "provider_status_classes": provider_status_classes,
+            "stage_timings_ms": timing_snapshot(),
+            "preview_overrides": draft.get("preview_overrides") or {},
             "selection_run_id": draft.get("selection_run_id"),
             "selection_keyword": raw.get("selection_keyword") or "",
             "selection_score": raw.get("selection_score"),
@@ -1537,6 +2749,48 @@ class ProductProcessingService:
         if ai_notes is not None and note not in ai_notes:
             ai_notes.append(note)
 
+    @staticmethod
+    def _text_messages(prompt: str, *, image_derived_title: str = "") -> list[dict[str, Any]]:
+        """组装文本 AI 消息：图像初步标题作为 system 级证据前置。
+
+        这样即使操作员自定义的提示词未引用 {image_derived_title}，模型也一定能收到
+        主图识别的商品理解（标题据此生成而非直译来源标题）；无图像证据时保持单条消息。
+        """
+        if not str(image_derived_title or "").strip():
+            return [{"role": "user", "content": prompt}]
+        system = (
+            "Image analysis of the source product main image (authoritative visual evidence of the "
+            "actual product being sold). Draft title based only on what is visible in the image: "
+            f"{str(image_derived_title).strip()[:300]}\n\n"
+            "Generate the requested listing text primarily from this image-derived understanding of "
+            "the actual product, combined with the source facts and instructions in the prompt below. "
+            "The source title in the prompt is supporting evidence only: do not literally translate it. "
+            "Do not invent any feature that is neither visible in the image nor stated in the source facts."
+        )
+        return [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+
+    def _combined_multimodal_messages(
+        self,
+        prompt: str,
+        *,
+        image_url: str = "",
+        image_derived_title: str = "",
+    ) -> list[dict[str, Any]]:
+        """Attach the source image to the existing combined-text request when available."""
+
+        data_url = self._image_to_data_url(image_url) if image_url else ""
+        if not data_url:
+            return self._text_messages(prompt, image_derived_title=image_derived_title)
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ]
+
     def _generate_combined_text(
         self,
         source_title: str,
@@ -1545,11 +2799,16 @@ class ProductProcessingService:
         target_language: str,
         target_site: str,
         ai_notes: list[str] | None = None,
+        image_derived_title: str = "",
+        image_url: str = "",
+        known_dimensions: dict[str, Any] | None = None,
+        include_dimensions: bool = False,
     ) -> dict[str, Any] | None:
-        """一次调用同时生成标题、描述与变种属性值翻译（交接文档 §9.3 + VARIANT_VALUE_TRANSLATION_PROMPT）。
+        """One structured call for visual identity, listing text, variants and missing dimensions.
 
-        变种翻译并入 combined 调用（对齐原项目 five-stage 的 combined_generation 一次文本调用
-        产出多份内容），命中阶段级 DB 缓存时 0 次调用。失败返回 None。
+        It deliberately retains the existing ``combined_text`` stage cache. Individual
+        fields are validated independently so a bad field can use its narrow repair
+        without repeating this full structured request.
         """
         if not _ai_enabled():
             return None
@@ -1559,13 +2818,45 @@ class ProductProcessingService:
         template = self._effective_prompt("combined_text")
         contracted = apply_language_contract_to_prompt(template, "combined_text", target_language, target_site)
         context = listing_prompt_context(raw, title=source_title, category=category)
+        description_template = self._effective_prompt("desc")
+        description_contracted = apply_language_contract_to_prompt(
+            description_template,
+            "desc",
+            target_language,
+            target_site,
+        )
+        description_instructions = format_prompt(
+            description_contracted,
+            title=source_title,
+            image_derived_title=image_derived_title,
+            **context,
+        )
         prompt = format_prompt(
             contracted,
             title=source_title,
+            image_derived_title=image_derived_title,
+            description_instructions=description_instructions,
             variant_options=variant_options_text,
             target_language_name=profile.get("ai_language", target_language),
             language_code=target_language,
             **context,
+        )
+        known = dict(known_dimensions or {})
+        dimension_contract = (
+            "Also return product_dimensions as an object with positive numeric length_cm, width_cm, "
+            "height_cm and weight_g. Preserve every supplied known value exactly and estimate only "
+            f"missing values. Known values: {json.dumps(known, ensure_ascii=False, sort_keys=True)}."
+            if include_dimensions
+            else "Return product_dimensions as an empty object."
+        )
+        prompt = (
+            f"{prompt.rstrip()}\n\n"
+            "MULTIMODAL STRUCTURED OUTPUT EXTENSION:\n"
+            "Inspect the attached source image when present. Keep all fields requested above and also "
+            "return sellable_subject (short English noun phrase), preliminary_title (visible facts only), "
+            "variant_translations, and product_dimensions in the same strict JSON object. "
+            "Do not infer product facts from background props or scenes. "
+            f"{dimension_contract}"
         )
         reference = select_title_reference(raw, title=source_title, category=category)
         prompt = append_content_reference(prompt, reference, kind="title")
@@ -1573,31 +2864,105 @@ class ProductProcessingService:
         input_data = {
             "title": source_title,
             "category": category,
-            "raw": self._stable_raw(raw),
+            "raw": self._canonical_prompt_evidence(raw),
+            "image_derived_title": image_derived_title,
+            "image_url": image_url,
+            "known_dimensions": known,
+            "include_dimensions": bool(include_dimensions),
         }
         cache_key = self._ai_stage_cache_key("combined_text", prompt=prompt, input_data=input_data)
         cached = self._load_ai_stage_cache("combined_text", cache_key)
         if cached is not None:
-            ai_notes.append("text:cache-hit")
-            return cached if isinstance(cached, dict) else None
+            if isinstance(cached, dict):
+                cached_title = ""
+                cached_description = ""
+                try:
+                    if cached.get("title"):
+                        ensure_target_language_result("标题", cached.get("title"), target_language)
+                        cached_title = self._normalized_title(cached["title"])
+                except ValueError as exc:
+                    self._note_ai_failure(ai_notes, "title_contract", _ai_error_reason(exc))
+                try:
+                    if cached.get("description"):
+                        cached_description = normalize_five_point_description(cached.get("description") or "")
+                        ensure_target_language_result("详情", cached_description, target_language)
+                except (DescriptionContractError, ValueError) as exc:
+                    self._note_ai_failure(ai_notes, "description_contract", _ai_error_reason(exc))
+                    cached_description = ""
+                if ai_notes is not None:
+                    ai_notes.append("text:cache-hit")
+                return {
+                    "title": cached_title,
+                    "description": cached_description,
+                    "description_candidate": "",
+                    "description_contract_error": "",
+                    "variant_translations": cached.get("variant_translations") or {},
+                    "vision_subject": self._text(cached.get("vision_subject")),
+                    "vision_preliminary_title": self._text(cached.get("vision_preliminary_title")),
+                    "product_dimensions": self._combined_dimensions(
+                        cached.get("product_dimensions"), known
+                    ),
+                }
+            return None
         try:
-            text = self._ai_client().chat([{"role": "user", "content": prompt}])
-            data = _extract_json_object(text)
-            if not isinstance(data, dict) or not data.get("optimized_title"):
-                self._note_ai_failure(ai_notes, "text", "combined 输出未包含可用的 optimized_title")
-                return None
-            ensure_target_language_result("标题", data.get("optimized_title"), target_language)
-            ensure_target_language_result("详情", data.get("description"), target_language)
-            result = {
-                "title": self._normalized_title(data["optimized_title"]),
-                "description": self._normalized_description(data.get("description") or ""),
-                "variant_translations": self._combined_variant_translations(data, variant_values),
-            }
-            self._save_ai_stage_cache(
-                "combined_text", cache_key, output_data=result, prompt=prompt, input_data=input_data
+            text = self._ai_client().chat(
+                self._combined_multimodal_messages(
+                    prompt,
+                    image_url=image_url,
+                    image_derived_title=image_derived_title,
+                )
             )
+            data = _extract_json_object(text)
+            if not isinstance(data, dict):
+                self._note_ai_failure(ai_notes, "text", "combined 输出未包含可用 JSON")
+                return None
+            generated_title = ""
+            try:
+                if not data.get("optimized_title"):
+                    raise ValueError("combined 输出未包含可用的 optimized_title")
+                ensure_target_language_result("标题", data.get("optimized_title"), target_language)
+                generated_title = self._normalized_title(data["optimized_title"])
+            except ValueError as exc:
+                self._note_ai_failure(ai_notes, "title_contract", _ai_error_reason(exc))
+            description = ""
+            description_candidate = str(data.get("description") or "").strip()[:1600]
+            description_contract_error = ""
+            try:
+                description = normalize_five_point_description(description_candidate)
+                ensure_target_language_result("详情", description, target_language)
+            except (DescriptionContractError, ValueError) as exc:
+                description_contract_error = _ai_error_reason(exc)
+                self._note_ai_failure(ai_notes, "description_contract", description_contract_error)
+            result = {
+                "title": generated_title,
+                "description": description,
+                "description_candidate": "" if description else description_candidate,
+                "description_contract_error": "" if description else description_contract_error,
+                "variant_translations": self._combined_variant_translations(data, variant_values),
+                "vision_subject": self._text(data.get("sellable_subject"))[:160],
+                "vision_preliminary_title": (
+                    self._normalized_title(data.get("preliminary_title"))
+                    if data.get("preliminary_title")
+                    else ""
+                ),
+                "product_dimensions": self._combined_dimensions(
+                    data.get("product_dimensions"), known
+                ),
+            }
+            if generated_title and description:
+                self._save_ai_stage_cache(
+                    "combined_text", cache_key, output_data=result, prompt=prompt, input_data=input_data
+                )
             return result
-        except (AiProviderError, ValueError, OSError) as exc:
+        except AiProviderError as exc:
+            self._note_ai_failure(ai_notes, "text", _ai_error_reason(exc))
+            if _is_non_retryable_provider_4xx(exc):
+                raise ListingTextConfigurationError(
+                    _ai_error_reason(exc),
+                    status_code=exc.status_code,
+                ) from exc
+            return None
+        except (ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "text", _ai_error_reason(exc))
             return None
 
@@ -1609,8 +2974,13 @@ class ProductProcessingService:
         target_language: str,
         target_site: str,
         ai_notes: list[str] | None = None,
+        image_derived_title: str = "",
     ) -> str:
-        """按目标语言生成标题；失败时返回空串（由调用方决定回退）。"""
+        """按目标语言生成标题；失败时返回空串（由调用方决定回退）。
+
+        image_derived_title：主图识别出的图像初步标题，作为标题生成的权威视觉证据
+        （标题据此生成而非直译来源标题）。
+        """
         if not _ai_enabled():
             return ""
         template = self._effective_prompt("title")
@@ -1619,6 +2989,7 @@ class ProductProcessingService:
         prompt = format_prompt(
             contracted,
             title=source_title,
+            image_derived_title=image_derived_title,
             title_identity_context=source_title,
             title_formula="product type + key real attributes + intended use, concise and scannable",
             title_priority_terms="",
@@ -1629,10 +3000,18 @@ class ProductProcessingService:
         prompt = append_content_reference(prompt, reference, kind="title")
         self._note_content_reference(ai_notes, "title_reference", reference.reference_id)
         try:
-            text = self._ai_client().chat([{"role": "user", "content": prompt}])
+            text = self._ai_client().chat(self._text_messages(prompt, image_derived_title=image_derived_title))
             ensure_target_language_result("标题", text, target_language)
             return self._normalized_title(text)
-        except (AiProviderError, ValueError, OSError) as exc:
+        except AiProviderError as exc:
+            self._note_ai_failure(ai_notes, "title", _ai_error_reason(exc))
+            if _is_non_retryable_provider_4xx(exc):
+                raise ListingTextConfigurationError(
+                    _ai_error_reason(exc),
+                    status_code=exc.status_code,
+                ) from exc
+            return ""
+        except (ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "title", _ai_error_reason(exc))
             return ""
 
@@ -1644,18 +3023,49 @@ class ProductProcessingService:
         target_language: str,
         target_site: str,
         ai_notes: list[str] | None = None,
+        image_derived_title: str = "",
+        prior_description: str = "",
+        contract_error: str = "",
     ) -> str:
+        """尽量生成五点描述；有 1-5 条可用内容即返回，完全不可用时返回空串。"""
         if not _ai_enabled():
             return ""
         template = self._effective_prompt("desc")
         contracted = apply_language_contract_to_prompt(template, "desc", target_language, target_site)
         context = listing_prompt_context(raw, title=optimized_title, category=category)
-        prompt = format_prompt(contracted, title=optimized_title, **context)
+        candidate = self._normalized_description(prior_description)[:1600]
+        if candidate:
+            repair_template = apply_language_contract_to_prompt(
+                DESCRIPTION_REPAIR_PROMPT, "desc", target_language, target_site
+            )
+            prompt = format_prompt(
+                repair_template,
+                title=optimized_title,
+                image_derived_title=image_derived_title,
+                operator_description_instructions=contracted,
+                candidate_description=candidate,
+                contract_error=str(contract_error or "format validation failed")[:240],
+                **context,
+            )
+            if ai_notes is not None:
+                ai_notes.append("description_contract:repair-requested")
+        else:
+            prompt = format_prompt(
+                contracted, title=optimized_title, image_derived_title=image_derived_title, **context
+            )
         try:
-            text = self._ai_client().chat([{"role": "user", "content": prompt}])
+            text = self._ai_client().chat(self._text_messages(prompt, image_derived_title=image_derived_title))
             ensure_target_language_result("详情", text, target_language)
-            return self._normalized_description(text)
-        except (AiProviderError, ValueError, OSError) as exc:
+            return normalize_five_point_description(text)
+        except AiProviderError as exc:
+            self._note_ai_failure(ai_notes, "details", _ai_error_reason(exc))
+            if _is_non_retryable_provider_4xx(exc):
+                raise ListingTextConfigurationError(
+                    _ai_error_reason(exc),
+                    status_code=exc.status_code,
+                ) from exc
+            return ""
+        except (DescriptionContractError, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "details", _ai_error_reason(exc))
             return ""
 
@@ -1666,6 +3076,8 @@ class ProductProcessingService:
         target_language: str,
         target_site: str,
         ai_notes: list[str] | None = None,
+        *,
+        only_values: list[str] | None = None,
     ) -> dict[str, str]:
         """对齐原型 VARIANT_VALUE_TRANSLATION_PROMPT：把来源变种属性值翻译成目标语言可读显示名。
 
@@ -1673,20 +3085,12 @@ class ProductProcessingService:
         """
         if not _ai_enabled():
             return {}
-        variants = raw.get("source_variant_records") or []
-        unique_values: list[str] = []
-        seen: set[str] = set()
-        for variant in variants:
-            if not isinstance(variant, dict):
-                continue
-            attributes = variant.get("attributes")
-            if not isinstance(attributes, dict):
-                continue
-            for value in attributes.values():
-                text = str(value or "").strip()
-                if text and text not in seen:
-                    seen.add(text)
-                    unique_values.append(text)
+        unique_values = self._unique_variant_values(raw)
+        seen = set(unique_values)
+        if only_values is not None:
+            requested = {str(value).strip() for value in only_values if str(value).strip()}
+            unique_values = [value for value in unique_values if value in requested]
+            seen = set(unique_values)
         if not unique_values or not any(re.search(r"[\u4e00-\u9fff]", value) for value in unique_values):
             return {}
         profile = language_profile(target_language)
@@ -1733,17 +3137,34 @@ class ProductProcessingService:
         target_site: str,
         ai_notes: list[str] | None = None,
         vision_subject: str = "",
-    ) -> tuple[list[str], str]:
-        """按原型逻辑生成 2x2 四宫格并本地拆分为 4 张轮播图 + 1 张汇总图。"""
+        image_template: str = "A",
+        image_generation_count: int = 4,
+        workspace_id: str = "local",
+    ) -> GridImageOutput:
+        """Generate four carousel images with a selectable 1/2/4-image transport layout."""
         if not _ai_enabled() or not reference_urls:
-            return [], ""
+            return GridImageOutput()
         media_types = _media_types()
         if not media_types:
-            return [], ""
+            return GridImageOutput()
         processor_cls, media_config_error, media_error = media_types
+        image_generation_count = _image_generation_count(image_generation_count, default=4)
+        note_key = "four_grid" if image_generation_count == 4 else "image_set"
+        attempt_count = 0
+        provider_status_class = "success"
+        grid_timings_ms: dict[str, int] = {}
+        parts: list[Any] = []
+        failed_slots: list[tuple[int, str]] = []
+        slot_recovery_used = False
         try:
             processor = self._media_processor()
-            template = self._effective_prompt("grid_image")
+            is_b_template = str(image_template).strip().upper() == "B"
+            prompt_key = (
+                ("grid_image_b" if is_b_template else "grid_image")
+                if image_generation_count == 4
+                else ("image_set_b" if is_b_template else "image_set")
+            )
+            template = self._effective_prompt(prompt_key)
             contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)
             context = listing_prompt_context(raw, title=optimized_title, category=category)
             if vision_subject:
@@ -1752,24 +3173,515 @@ class ProductProcessingService:
             reference = select_image_reference(raw, title=optimized_title, category=category)
             prompt = append_content_reference(prompt, reference, kind="image")
             self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
-            media = processor.generate(stage="grid_image", prompt=prompt, reference_values=reference_urls)
-            # OCR 质量门：检出中文 → 定向重绘为英文（本地 OCR 后置验证器，对齐原型）
-            media = self._repair_until_clean(processor, "grid_image", "four_grid", media, reference_urls, ai_notes)
-            parts = processor.split_four_grid(media)
+
+            panel_roles = (
+                "Hero product image",
+                "Alternate complete product angle with one real visible detail",
+                "Credible lifestyle product image",
+                "Clean dimension annotation background",
+            )
+
+            standalone_prompt = prompt
+            if image_generation_count == 4:
+                standalone_key = "image_set_b" if is_b_template else "image_set"
+                standalone_template = self._effective_prompt(standalone_key)
+                standalone_contracted = apply_language_contract_to_prompt(
+                    standalone_template,
+                    "grid_image",
+                    target_language,
+                    target_site,
+                )
+                standalone_prompt = format_prompt(
+                    standalone_contracted,
+                    title=optimized_title,
+                    **context,
+                )
+
+            def single_prompt(role: str) -> str:
+                return (
+                    f"{standalone_prompt.rstrip()}\n\n"
+                    f"{format_prompt(SINGLE_IMAGE_RUNTIME_CONTRACT, panel_role=role)}"
+                )
+
+            def two_image_prompt(left_role: str, right_role: str) -> str:
+                return f"{prompt.rstrip()}\n\n{format_prompt(TWO_IMAGE_RUNTIME_CONTRACT, left_panel_role=left_role, right_panel_role=right_role)}"
+
+            def generate_one(
+                image_prompt: str,
+                *,
+                image_size: str | None = None,
+                layout_scaffold: bool = False,
+            ) -> Any:
+                kwargs: dict[str, Any] = {
+                    "stage": "grid_image",
+                    "prompt": image_prompt,
+                    "reference_values": reference_urls,
+                }
+                if image_size:
+                    kwargs["image_size"] = image_size
+                if layout_scaffold:
+                    kwargs["layout_scaffold"] = True
+                return processor.generate(**kwargs)
+
+            def record_media(media: Any) -> None:
+                nonlocal attempt_count, provider_status_class
+                attempt_count += max(1, int(getattr(media, "attempt_count", 1) or 1))
+                status_class = str(getattr(media, "provider_status_class", "success") or "success")
+                if status_class != "success":
+                    provider_status_class = status_class
+
+            generation_started = time.perf_counter()
+            if image_generation_count == 4:
+                # Generate the economical 2K transport grid once.  Validation happens
+                # after the deterministic split so one bad quadrant never redraws the
+                # three usable quadrants.
+                grid_prompt = f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}"
+                media = generate_one(grid_prompt, layout_scaffold=True)
+                record_media(media)
+                validation_started = time.perf_counter()
+                try:
+                    # Scaffolded square transport is split deterministically at the
+                    # exact center. Never redraw the whole 2K image for a local split
+                    # concern; only identified bad slots may use the 1K repair path.
+                    split_parts = processor.split_four_grid(media)
+
+                    summary_parts = [
+                        part
+                        for part in split_parts
+                        if str(getattr(part, "stage", "")) == "grid_image_summary"
+                    ]
+                    carousel_parts = [
+                        part
+                        for part in split_parts
+                        if re.fullmatch(r"grid_image_[1-4]", str(getattr(part, "stage", "")))
+                    ]
+
+                    def panel_issues(part: Any) -> list[str]:
+                        inspection = inspect_visible_text(bytes(getattr(part, "content", b"")))
+                        if inspection is None:
+                            raise ValueError("四宫格 OCR 质量门不可用，已阻止未验证生成图")
+                        return list(
+                            dict.fromkeys(
+                                [*inspection.get("chinese", []), *inspection.get("prominent", [])]
+                            )
+                        )
+
+                    usable_parts: list[Any] = []
+                    if not failed_slots:
+                        for slot, role in enumerate(panel_roles, start=1):
+                            part = next(
+                                (
+                                    candidate
+                                    for candidate in carousel_parts
+                                    if str(getattr(candidate, "stage", "")) == f"grid_image_{slot}"
+                                ),
+                                None,
+                            )
+                            if part is None or panel_issues(part):
+                                failed_slots.append((slot, role))
+                            else:
+                                usable_parts.append(part)
+
+                    if failed_slots:
+                        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                        slot_recovery_used = True
+                        if ai_notes is not None:
+                            ai_notes.append(
+                                "four_grid:slot_1k_repair:" + ",".join(str(slot) for slot, _ in failed_slots)
+                            )
+
+                        def regenerate_grid_slot(slot: int, role: str) -> tuple[Any, Any]:
+                            replacement = processor.generate(
+                                stage=f"grid_image_{slot}",
+                                prompt=single_prompt(role),
+                                reference_values=reference_urls,
+                                image_size="1024x1024",
+                                model_override="gpt-image-2-1k",
+                            )
+                            normalized = processor.normalize_standalone_image(
+                                replacement,
+                                stage=f"grid_image_{slot}",
+                            )
+                            if panel_issues(normalized):
+                                raise ValueError(f"replacement slot {slot} still contains visible AI text")
+                            return replacement, normalized
+
+                        retry_failures: list[tuple[int, str]] = []
+                        with ThreadPoolExecutor(max_workers=min(4, len(failed_slots))) as executor:
+                            futures = {
+                                executor.submit(regenerate_grid_slot, slot, role): (slot, role)
+                                for slot, role in failed_slots
+                            }
+                            for future in as_completed(futures):
+                                slot, role = futures[future]
+                                try:
+                                    replacement, normalized = future.result()
+                                    record_media(replacement)
+                                    usable_parts.append(normalized)
+                                except (media_config_error, media_error, ValueError, OSError) as exc:
+                                    attempt_count += max(0, int(getattr(exc, "attempt_count", 0) or 0))
+                                    retry_failures.append((slot, role))
+                                    self._note_ai_failure(ai_notes, note_key, _ai_error_reason(exc))
+                        failed_slots = retry_failures
+
+                    if failed_slots or len(usable_parts) != 4:
+                        raise ValueError("four-grid slot recovery did not produce four usable images")
+                    usable_parts.sort(key=lambda part: int(str(getattr(part, "stage", "0")).rsplit("_", 1)[-1]))
+                    if slot_recovery_used:
+                        summary_parts = [processor.compose_grid_summary(usable_parts)]
+                    parts = [*usable_parts, *summary_parts[:1]]
+                finally:
+                    grid_timings_ms["grid_validation_ms"] = max(
+                        0,
+                        round((time.perf_counter() - validation_started) * 1000),
+                    )
+            else:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                validation_started = time.perf_counter()
+                if image_generation_count == 2:
+                    primary_jobs = (
+                        (1, panel_roles[0], panel_roles[1]),
+                        (3, panel_roles[2], panel_roles[3]),
+                    )
+
+                    def generate_pair(start_index: int, left_role: str, right_role: str) -> tuple[Any, list[Any]]:
+                        media = generate_one(
+                            two_image_prompt(left_role, right_role),
+                            image_size="2048x1024",
+                        )
+                        return media, processor.split_two_grid(media, start_index=start_index)
+
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        futures = {
+                            executor.submit(generate_pair, start, left, right): (start, left, right)
+                            for start, left, right in primary_jobs
+                        }
+                        for future in as_completed(futures):
+                            start, left, right = futures[future]
+                            try:
+                                media, generated_parts = future.result()
+                                record_media(media)
+                                parts.extend(generated_parts)
+                            except (media_config_error, media_error, ValueError, OSError) as exc:
+                                attempt_count += max(0, int(getattr(exc, "attempt_count", 0) or 0))
+                                failed_slots.extend(((start, left), (start + 1, right)))
+                                self._note_ai_failure(ai_notes, note_key, _ai_error_reason(exc))
+                else:
+                    def generate_standalone(slot: int, role: str) -> tuple[Any, Any]:
+                        media = generate_one(single_prompt(role))
+                        return media, processor.normalize_standalone_image(media, stage=f"grid_image_{slot}")
+
+                    with ThreadPoolExecutor(max_workers=4) as executor:
+                        futures = {
+                            executor.submit(generate_standalone, slot, role): (slot, role)
+                            for slot, role in enumerate(panel_roles, start=1)
+                        }
+                        for future in as_completed(futures):
+                            slot, role = futures[future]
+                            try:
+                                media, generated_part = future.result()
+                                record_media(media)
+                                parts.append(generated_part)
+                            except (media_config_error, media_error, ValueError, OSError) as exc:
+                                attempt_count += max(0, int(getattr(exc, "attempt_count", 0) or 0))
+                                failed_slots.append((slot, role))
+                                self._note_ai_failure(ai_notes, note_key, _ai_error_reason(exc))
+
+                # A bad two-panel canvas, or one failed single call, only regenerates its
+                # own carousel slot. This keeps the fast path parallel without discarding
+                # the usable images that have already completed.
+                if failed_slots:
+                    slot_recovery_used = True
+                    def regenerate_slot(slot: int, role: str) -> tuple[Any, Any]:
+                        media = generate_one(single_prompt(role))
+                        return media, processor.normalize_standalone_image(media, stage=f"grid_image_{slot}")
+
+                    retry_failures: list[tuple[int, str]] = []
+                    with ThreadPoolExecutor(max_workers=min(4, len(failed_slots))) as executor:
+                        futures = {
+                            executor.submit(regenerate_slot, slot, role): (slot, role)
+                            for slot, role in failed_slots
+                        }
+                        for future in as_completed(futures):
+                            slot, role = futures[future]
+                            try:
+                                media, generated_part = future.result()
+                                record_media(media)
+                                parts.append(generated_part)
+                            except (media_config_error, media_error, ValueError, OSError) as exc:
+                                attempt_count += max(0, int(getattr(exc, "attempt_count", 0) or 0))
+                                retry_failures.append((slot, role))
+                                self._note_ai_failure(ai_notes, note_key, _ai_error_reason(exc))
+                    failed_slots = retry_failures
+
+                grid_timings_ms["grid_validation_ms"] = max(
+                    0,
+                    round((time.perf_counter() - validation_started) * 1000),
+                )
+                if failed_slots or len(parts) != 4:
+                    raise ValueError("image set did not produce four usable carousel images")
+            grid_timings_ms["grid_generation_ms"] = max(
+                0,
+                round((time.perf_counter() - generation_started) * 1000),
+            )
         except (media_config_error, media_error, ValueError, OSError) as exc:
-            self._note_ai_failure(ai_notes, "four_grid", _ai_error_reason(exc))
-            return [], ""
+            attempt_count = max(attempt_count, int(getattr(exc, "attempt_count", 0) or 0))
+            provider_status_class = str(getattr(exc, "status_class", "") or "failed")
+            self._note_ai_failure(ai_notes, note_key, _ai_error_reason(exc))
+            return GridImageOutput(
+                attempt_count=attempt_count,
+                provider_status_class=provider_status_class,
+                stage_timings_ms=grid_timings_ms,
+            )
+        if slot_recovery_used:
+            provider_status_class = "recovered_slot_retry"
+        parts.sort(
+            key=lambda value: int(match.group(1)) if (match := re.fullmatch(r"grid_image_(\d+)", str(getattr(value, "stage", "")))) else 99
+        )
         carousel: list[str] = []
+        carousel_media: list[Any] = []
         summary_path = ""
-        published = self._publish_media(processor, parts, task_id, draft_id)
-        if not any(str(value).startswith(("http://", "https://")) for value in published):
-            self._note_media_unconfigured(ai_notes, "four_grid")
+        persist_started = time.perf_counter()
+        published = self._persist_media_for_preview(parts, task_id, draft_id, workspace_id)
+        grid_timings_ms["persist_ms"] = max(
+            0,
+            round((time.perf_counter() - persist_started) * 1000),
+        )
         for part, value in zip(parts, published):
             if part.stage.startswith("grid_image_summary"):
                 summary_path = str(value)
             elif part.stage.startswith("grid_image_"):
                 carousel.append(str(value))
-        return carousel[:4], summary_path
+                carousel_media.append(part)
+        return GridImageOutput(
+            tuple(carousel[:4]),
+            summary_path,
+            tuple(carousel_media[:4]),
+            attempt_count,
+            provider_status_class,
+            grid_timings_ms,
+        )
+
+    def _generate_premium_images(
+        self,
+        task_id: int,
+        draft_id: int,
+        raw: dict[str, Any],
+        optimized_title: str,
+        category: str,
+        reference_urls: list[str],
+        target_language: str,
+        target_site: str,
+        ai_notes: list[str] | None = None,
+        vision_subject: str = "",
+        workspace_id: str = "local",
+    ) -> GridImageOutput:
+        """精品模式：一次 4K 四宫格，本地拆成四张不降采样的高清轮播图。"""
+        if not _ai_enabled() or not reference_urls:
+            return GridImageOutput()
+        media_types = _media_types()
+        if not media_types:
+            return GridImageOutput()
+        _, media_config_error, media_error = media_types
+        processor = self._media_processor()
+        premium_image_model = PREMIUM_IMAGE_MODEL
+        premium_image_size = PREMIUM_IMAGE_SIZE
+        try:
+            _image_cfg = (self._media_config_provider().get("image") or {})
+            premium_image_model = str(_image_cfg.get("premium_image_model") or "").strip() or PREMIUM_IMAGE_MODEL
+            premium_image_size = str(_image_cfg.get("premium_image_size") or "").strip() or PREMIUM_IMAGE_SIZE
+        except Exception:
+            pass
+        template = self._effective_prompt("premium_image")
+        contracted = apply_language_contract_to_prompt(template, "premium_image", target_language, target_site)
+        context = listing_prompt_context(raw, title=optimized_title, category=category)
+        if vision_subject:
+            context["product_visual_identity"] = vision_subject
+        reference = select_image_reference(raw, title=optimized_title, category=category)
+        panel_roles = "\n".join(
+            f"  {index}. {instruction}"
+            for index, (_role, instruction) in enumerate(_PREMIUM_PANEL_ROLES, start=1)
+        )
+        base_prompt = format_prompt(
+            contracted,
+            title=optimized_title,
+            panel_roles=panel_roles,
+            **context,
+        )
+        base_prompt = append_content_reference(base_prompt, reference, kind="image")
+        self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
+        attempt_count = 0
+        provider_status_class = "success"
+        timings_ms: dict[str, int] = {}
+        parts: list[Any] = []
+        last_error: BaseException | None = None
+        generation_started = time.perf_counter()
+        # One paid 4K transport call only. The fixed scaffold plus exact 50/50
+        # local crop owns layout correctness; validation must never redraw all
+        # four panels and discard a valid first result.
+        for whole_attempt in range(1):
+            try:
+                media = processor.generate(
+                    stage="premium_image",
+                    prompt=base_prompt,
+                    reference_values=reference_urls,
+                    layout_scaffold=True,
+                    image_size=premium_image_size,
+                    model_override=premium_image_model,
+                )
+                attempt_count += max(1, int(getattr(media, "attempt_count", 1) or 1))
+                status = str(getattr(media, "provider_status_class", "success") or "success")
+                if status != "success":
+                    provider_status_class = status
+                validation_started = time.perf_counter()
+                split_parts = processor.split_premium_four_grid(media)
+                carousel_parts = [
+                    part
+                    for part in split_parts
+                    if re.fullmatch(r"premium_image_[1-4]", str(getattr(part, "stage", "")))
+                ]
+                summary_parts = [
+                    part
+                    for part in split_parts
+                    if str(getattr(part, "stage", "")) == "premium_image_summary"
+                ]
+                if len(carousel_parts) != 4 or len(summary_parts) != 1:
+                    raise ValueError("premium four-grid split did not produce four panels and one summary")
+                if ocr_gate_enabled():
+                    from concurrent.futures import ThreadPoolExecutor
+
+                    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="pp-premium-ocr") as pool:
+                        inspections = list(
+                            pool.map(
+                                lambda part: inspect_visible_text(
+                                    bytes(getattr(part, "content", b""))
+                                ),
+                                carousel_parts,
+                            )
+                        )
+                    # OCR is diagnostic here: printed symbols and branding belong to
+                    # many real products (for example mahjong tiles). It must not
+                    # discard four geometrically valid panels or trigger another 4K
+                    # call. The generation prompt remains text-free by default.
+                    # Native product printing (mahjong symbols, labels, logos) is
+                    # valid content. Only banner-sized overlay copy is considered a
+                    # bad slot. Repair that slot alone with the fast 1K model; never
+                    # redraw the other three valid premium panels.
+                    failed_slots = [
+                        slot
+                        for slot, inspection in enumerate(inspections, start=1)
+                        if inspection is not None and bool(inspection.get("prominent"))
+                    ]
+                    if failed_slots:
+                        from concurrent.futures import as_completed
+
+                        if ai_notes is not None:
+                            ai_notes.append(
+                                "premium_images:slot_1k_repair:"
+                                + ",".join(str(slot) for slot in failed_slots)
+                            )
+
+                        def repair_premium_slot(slot: int) -> tuple[int, Any, Any]:
+                            role = _PREMIUM_PANEL_ROLES[slot - 1][1]
+                            replacement = processor.generate(
+                                stage=f"premium_image_{slot}",
+                                prompt=(
+                                    "Create ONE square premium ecommerce product image. "
+                                    f"Required panel role: {role}. Preserve the exact product identity, "
+                                    "shape, material, color and visible accessories from the references. "
+                                    "Show one complete product composition only. Add no title, caption, "
+                                    "badge, dimensions, watermark, logo or decorative text."
+                                ),
+                                reference_values=reference_urls,
+                                image_size="1024x1024",
+                                model_override="gpt-image-2-1k",
+                            )
+                            normalized = processor.normalize_standalone_image(
+                                replacement,
+                                stage=f"premium_image_{slot}",
+                            )
+                            return slot, replacement, normalized
+
+                        with ThreadPoolExecutor(
+                            max_workers=min(4, len(failed_slots)),
+                            thread_name_prefix="pp-premium-repair",
+                        ) as pool:
+                            futures = {
+                                pool.submit(repair_premium_slot, slot): slot
+                                for slot in failed_slots
+                            }
+                            for future in as_completed(futures):
+                                slot = futures[future]
+                                try:
+                                    _, replacement, normalized = future.result()
+                                    attempt_count += max(
+                                        1,
+                                        int(getattr(replacement, "attempt_count", 1) or 1),
+                                    )
+                                    carousel_parts[slot - 1] = normalized
+                                except (media_config_error, media_error, ValueError, OSError) as exc:
+                                    # Keep the correctly split original slot if its
+                                    # targeted repair fails; do not turn the entire
+                                    # product into a retry loop or attention state.
+                                    self._note_ai_failure(
+                                        ai_notes,
+                                        f"premium_slot_{slot}",
+                                        _ai_error_reason(exc),
+                                    )
+                    issues_found = any(inspection is None for inspection in inspections)
+                    if ai_notes is not None:
+                        ai_notes.append(
+                            "premium_images:ocr_unavailable"
+                            if issues_found
+                            else "premium_images:ocr_passed"
+                        )
+                timings_ms["premium_grid_validation_ms"] = max(
+                    0,
+                    round((time.perf_counter() - validation_started) * 1000),
+                )
+                carousel_parts.sort(key=lambda part: int(str(part.stage).rsplit("_", 1)[-1]))
+                parts = [*carousel_parts, summary_parts[0]]
+                break
+            except (media_config_error, media_error, ValueError, OSError) as exc:
+                attempt_count += max(0, int(getattr(exc, "attempt_count", 0) or 0))
+                last_error = exc
+        timings_ms["premium_grid_generation_ms"] = max(
+            0,
+            round((time.perf_counter() - generation_started) * 1000),
+        )
+        if not parts:
+            self._note_ai_failure(
+                ai_notes,
+                "premium_images",
+                _ai_error_reason(last_error or ValueError("premium image generation failed")),
+            )
+            return GridImageOutput(
+                attempt_count=attempt_count,
+                provider_status_class="failed",
+                stage_timings_ms=timings_ms,
+            )
+        persist_started = time.perf_counter()
+        published = self._persist_media_for_preview(parts, task_id, draft_id, workspace_id)
+        timings_ms["persist_ms"] = max(0, round((time.perf_counter() - persist_started) * 1000))
+        carousel: list[str] = []
+        summary_path = ""
+        carousel_media: list[Any] = []
+        for part, value in zip(parts, published):
+            if part.stage == "premium_image_summary":
+                summary_path = str(value)
+            else:
+                carousel.append(str(value))
+                carousel_media.append(part)
+        return GridImageOutput(
+            tuple(carousel),
+            summary_path,
+            tuple(carousel_media),
+            attempt_count,
+            provider_status_class,
+            timings_ms,
+        )
 
     def _generate_detail_images(
         self,
@@ -1783,6 +3695,7 @@ class ProductProcessingService:
         target_site: str,
         ai_notes: list[str] | None = None,
         vision_subject: str = "",
+        workspace_id: str = "local",
     ) -> list[str]:
         if not _ai_enabled() or not reference_urls:
             return []
@@ -1807,20 +3720,18 @@ class ProductProcessingService:
         except (media_config_error, media_error, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
             return []
-        published = self._publish_media(processor, [media], task_id, draft_id)
-        if not any(str(value).startswith(("http://", "https://")) for value in published):
-            self._note_media_unconfigured(ai_notes, "detail_images")
-        return published
+        return self._persist_media_for_preview([media], task_id, draft_id, workspace_id)
 
     def _generate_detail_images_local(
         self,
         task_id: int,
         draft_id: int,
-        source_values: list[str],
+        source_values: list[Any],
         optimized_title: str,
         category: str,
         target_language: str,
         ai_notes: list[str] | None = None,
+        workspace_id: str = "local",
     ) -> list[str]:
         """本地合成详情图（0 AI，对齐原项目 detail_image_local_synthesis）。
 
@@ -1858,19 +3769,22 @@ class ProductProcessingService:
                 model="pillow",
                 reference_count=min(4, len(source_values)),
             )
-            published = self._publish_media(processor, [media], task_id, draft_id)
-            if not any(str(value).startswith(("http://", "https://")) for value in published):
-                self._note_media_unconfigured(ai_notes, "detail_images")
-            return published
+            return self._persist_media_for_preview([media], task_id, draft_id, workspace_id)
         except (media_config_error, media_error, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
             return []
 
     @staticmethod
-    def _local_source_bytes(value: str) -> bytes | None:
+    def _local_source_bytes(value: Any) -> bytes | None:
         """读取本地路径或 http(s) 图片字节（供本地合成详情图用）；失败返回 None。"""
         if not value:
             return None
+        if isinstance(value, bytes):
+            return value
+        content = getattr(value, "content", None)
+        if isinstance(content, bytes):
+            return content
+        value = str(value)
         if Path(value).is_file():
             try:
                 return Path(value).read_bytes()
@@ -1886,7 +3800,7 @@ class ProductProcessingService:
 
     @staticmethod
     def _compose_local_detail_image(
-        source_values: list[str],
+        source_values: list[Any],
         title: str,
         category: str,
         target_language: str,
@@ -1991,22 +3905,6 @@ class ProductProcessingService:
                 lines.append(current)
             return lines or [text[:40]]
 
-        def title_band(canvas: Image.Image, text_draw: ImageDraw.ImageDraw, title_text: str, category_text: str) -> None:
-            """顶部半透明黑条 + 白色标题/类目（E/F 使用，保证任何图下文字清晰）。"""
-            title_font = font(38, bold=True)
-            sub_font = font(20)
-            band = Image.new("RGBA", (target, 300), (0, 0, 0, 0))
-            band_draw = ImageDraw.Draw(band)
-            for row in range(300):
-                alpha = int(120 * (1 - row / 300) ** 1.2)
-                band_draw.line((0, row, target, row), fill=(0, 0, 0, alpha))
-            canvas.paste(band, (0, 62), band)
-            y = 92
-            for line in wrap(title_text, title_font, 880, 2):
-                text_draw.text((52, y), line, font=title_font, fill=(255, 255, 255))
-                y += 44
-            text_draw.text((54, y + 6), category_text.upper(), font=sub_font, fill=(240, 238, 232))
-
         clean_text = re.sub(r"\s+", " ", str(title or "")).strip(" -_|/")
         title_text = clean_text[:96] or ("Detalle del producto" if target_language == "es" else "Product Detail")
         category_text = (re.sub(r"\s+", " ", str(category or "")).strip(" -_|/")[:44]) or "Selected Detail"
@@ -2041,25 +3939,21 @@ class ProductProcessingService:
             return canvas
 
         def compose_e() -> Image.Image:
-            """E 圆形拼贴：主图居中 + 三张圆形蒙版嵌图 + 顶部压暗标题条"""
+            """E 圆形拼贴：主图居中 + 三张圆形蒙版嵌图（无文字覆盖）"""
             canvas = Image.new("RGB", (target, target), (244, 242, 238))
             canvas.paste(cover(images[0], 820, 820), (102, 102))
             paste_shaped(canvas, images[1], (150, 150), 290, "circle")
             paste_shaped(canvas, images[2], (874, 150), 290, "circle")
             paste_shaped(canvas, images[3], (512, 950), 290, "circle")
-            text_draw = ImageDraw.Draw(canvas)
-            title_band(canvas, text_draw, title_text, category_text)
             return canvas
 
         def compose_f() -> Image.Image:
-            """F 混合形状：主图居中 + 圆形/圆角方形/菱形蒙版嵌图 + 顶部压暗标题条"""
+            """F 混合形状：主图居中 + 圆形/圆角方形/菱形蒙版嵌图（无文字覆盖）"""
             canvas = Image.new("RGB", (target, target), (244, 242, 238))
             canvas.paste(cover(images[0], 820, 820), (102, 102))
             paste_shaped(canvas, images[1], (150, 150), 300, "circle")
             paste_shaped(canvas, images[2], (874, 150), 300, "square")
             paste_shaped(canvas, images[3], (512, 950), 320, "diamond")
-            text_draw = ImageDraw.Draw(canvas)
-            title_band(canvas, text_draw, title_text, category_text)
             return canvas
 
         compositor = {"D": compose_d, "E": compose_e, "F": compose_f}[random.choice(("D", "E", "F"))]
@@ -2076,47 +3970,70 @@ class ProductProcessingService:
         media: Any,
         reference_urls: list[str],
         ai_notes: list[str] | None = None,
+        *,
+        allow_paid_repair: bool = True,
     ) -> Any:
-        """OCR 质量门：生成后本地检出中文 → 把该图回传模型定向重绘（中文换成英文），最多 N 轮。
+        """Run deterministic text/structure gates, repair once on failure, then revalidate.
 
-        对齐交接文档 §11.4/§15：OCR 是后置验证器，走「确定性验证 → AI 修复 → 确定性复验」。
-        检出中文后保留商品与构图，仅把文字替换为英文；重绘失败或仍含中文时保留最后一次
-        生成图并记 ai_note，不回退来源图（来源图必带中文促销文案，更差）。
+        质量门为软性：检出问题先尝试定向重绘，仍不合格只留痕（quality_unresolved），
+        不阻断流水线——图片整组失败时由 _process_one 回退来源图继续（用户要求不再卡流程）。
         """
         if not ocr_gate_enabled():
-            return media
-        chinese = detect_chinese_text(media.content)
-        if chinese is None:
-            return media
-        if not chinese:
-            if ai_notes is not None:
-                ai_notes.append(f"{note_key}:ocr_passed")
             return media
         media_types = _media_types()
         if not media_types:
             return media
         _, media_config_error, media_error = media_types
+
+        def inspect(value: Any) -> tuple[list[str], list[str]]:
+            """返回 (可重绘问题, 不可重绘问题)。中文走重绘；显著 AI 文字/产品印刷大字符、
+            结构问题不重绘（重绘大概率无效且烧时间），直接放行留痕。"""
+            inspection = inspect_visible_text(value.content)
+            if inspection is None:
+                return [], []
+            reparables = list(dict.fromkeys(inspection["chinese"]))
+            others: list[str] = []
+            if note_key == "four_grid":
+                others.extend(inspection["prominent"])
+                try:
+                    processor.validate_four_grid(value)
+                except (media_config_error, media_error, ValueError, OSError):
+                    others.append("grid_structure_invalid")
+            return reparables, list(dict.fromkeys(others))
+
+        reparables, others = inspect(media)
+        if not reparables and not others:
+            if ai_notes is not None:
+                ai_notes.append(f"{note_key}:ocr_passed")
+            return media
+        if not allow_paid_repair or not reparables:
+            # 仅不可重绘问题（产品印刷字符/结构/横幅）或禁用重绘：留痕放行，不阻断
+            if ai_notes is not None:
+                ai_notes.append(f"{note_key}:quality_unresolved")
+            return media
         rounds = 0
-        while chinese and rounds < max_repair_rounds():
+        while reparables and rounds < max_repair_rounds():
             rounds += 1
             try:
                 media = processor.repair_generated(
                     stage=stage,
-                    prompt=self._effective_prompt("image_repair_chinese"),
+                    prompt=self._effective_prompt(
+                        "image_repair_grid" if note_key == "four_grid" else "image_repair_chinese"
+                    ),
                     prior_content=media.content,
                     prior_content_type=media.content_type,
                     reference_values=reference_urls,
                 )
             except (media_config_error, media_error, ValueError, OSError) as exc:
                 if ai_notes is not None:
-                    ai_notes.append(f"{note_key}:chinese_repair_failed")
+                    ai_notes.append(f"{note_key}:quality_repair_failed")
                 return media
-            chinese = detect_chinese_text(media.content)
+            reparables, others = inspect(media)
         if ai_notes is not None:
-            if chinese:
-                ai_notes.append(f"{note_key}:chinese_unresolved")
+            if reparables or others:
+                ai_notes.append(f"{note_key}:quality_unresolved")
             else:
-                ai_notes.append(f"{note_key}:chinese_repaired")
+                ai_notes.append(f"{note_key}:quality_repaired")
         return media
 
     def _effective_prompt(self, key: str) -> str:
@@ -2138,6 +4055,28 @@ class ProductProcessingService:
         }
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _processing_stage_input_hash(self, stage: str, input_data: Any) -> str:
+        """Fingerprint retry receipts without changing the existing shared cache contract."""
+        provider = resolve_ai_provider()
+        payload = {
+            "version": _STAGE_CACHE_VERSION,
+            "stage": str(stage or ""),
+            "input": input_data if input_data is not None else {},
+            "model": str(provider.get("text_model") or ""),
+            "fallback_order": list(provider.get("text_model_fallback_order") or ()),
+            "title_prompt": self._effective_prompt("title"),
+            "description_prompt": self._effective_prompt("desc"),
+            "combined_prompt": self._effective_prompt("combined_text"),
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _load_ai_stage_cache(self, stage: str, cache_key: str) -> Any:
         """读取阶段级 AI 缓存；命中返回输出对象，否则 None。缓存异常不影响主流程。"""
@@ -2318,23 +4257,92 @@ class ProductProcessingService:
         dimensions["source"] = "deterministic_source_evidence"
         return dimensions
 
-    @staticmethod
-    def _unique_variant_values(raw: dict[str, Any]) -> list[str]:
+    @classmethod
+    def _unique_variant_values(cls, raw: dict[str, Any]) -> list[str]:
         """收集来源变种记录中的唯一属性值（保持出现顺序）。"""
         unique: list[str] = []
         seen: set[str] = set()
+        for item in cls._canonical_prompt_evidence(raw)["variant_attributes"]:
+            value = str(item["value"])
+            key = value.casefold()
+            if key not in seen:
+                seen.add(key)
+                unique.append(value)
+        return unique
+
+    @classmethod
+    def _canonical_prompt_evidence(cls, raw: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
+        """Canonical prompt-only attributes; never mutates persisted product data."""
+
+        source: list[dict[str, str]] = []
+        variants: list[dict[str, str]] = []
+        source_seen: set[tuple[str, str]] = set()
+        variant_seen: set[tuple[str, str]] = set()
+
+        def add(
+            target: list[dict[str, str]],
+            seen: set[tuple[str, str]],
+            name: Any,
+            value: Any,
+        ) -> None:
+            normalized_name = re.sub(r"\s+", " ", str(name or "")).strip()
+            normalized_value = re.sub(r"\s+", " ", str(value or "")).strip()
+            if not normalized_value:
+                return
+            key = (normalized_name.casefold(), normalized_value.casefold())
+            if key in seen:
+                return
+            seen.add(key)
+            target.append({"name": normalized_name, "value": normalized_value})
+
+        raw_source = raw.get("source_attributes") or []
+        if isinstance(raw_source, dict):
+            source_entries: Any = raw_source.items()
+        else:
+            source_entries = raw_source if isinstance(raw_source, list) else []
+        for entry in source_entries:
+            if isinstance(entry, dict):
+                add(
+                    source,
+                    source_seen,
+                    entry.get("name")
+                    or entry.get("attribute_name_en")
+                    or entry.get("attribute_name")
+                    or entry.get("name_en"),
+                    entry.get("value")
+                    or entry.get("value_name_en")
+                    or entry.get("value_name"),
+                )
+            else:
+                try:
+                    add(source, source_seen, entry[0], entry[1])
+                except (TypeError, IndexError, KeyError):
+                    continue
+
         for variant in raw.get("source_variant_records") or []:
             if not isinstance(variant, dict):
                 continue
             attributes = variant.get("attributes")
-            if not isinstance(attributes, dict):
+            if isinstance(attributes, dict):
+                entries: Any = attributes.items()
+            elif isinstance(attributes, list):
+                entries = attributes
+            else:
                 continue
-            for value in attributes.values():
-                text = str(value or "").strip()
-                if text and text not in seen:
-                    seen.add(text)
-                    unique.append(text)
-        return unique
+            for entry in entries:
+                if isinstance(entry, dict):
+                    add(
+                        variants,
+                        variant_seen,
+                        entry.get("name") or entry.get("attribute_name") or entry.get("attribute_name_en"),
+                        entry.get("value") or entry.get("value_name") or entry.get("value_name_en"),
+                    )
+                else:
+                    try:
+                        add(variants, variant_seen, entry[0], entry[1])
+                    except (TypeError, IndexError, KeyError):
+                        continue
+        return {"source_attributes": source, "variant_attributes": variants}
 
     @staticmethod
     def _combined_variant_translations(
@@ -2355,8 +4363,40 @@ class ProductProcessingService:
                 translations[raw_value] = export_value
         return translations
 
-    @staticmethod
-    def _size_source_text(raw: dict[str, Any], title: str) -> str:
+    @classmethod
+    def _combined_dimensions(
+        cls,
+        value: Any,
+        known: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Validate combined dimension output while preserving source evidence."""
+
+        raw = dict(value) if isinstance(value, dict) else {}
+        result: dict[str, Any] = {}
+        for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
+            number = cls._number(raw.get(key))
+            if number is not None and number > 0:
+                result[key] = float(number)
+        for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
+            source_value = cls._number((known or {}).get(key))
+            if source_value is not None and source_value > 0:
+                result[key] = float(source_value)
+        if not result:
+            return {}
+        result.update(
+            {
+                "confidence": cls._text(raw.get("confidence")) or (
+                    "high" if known and all((known or {}).get(key) for key in result) else "medium"
+                ),
+                "package_profile": cls._text(raw.get("package_profile")),
+                "reason": cls._text(raw.get("reason")),
+                "source": "combined_ai_with_source_evidence" if known else "combined_ai_estimated",
+            }
+        )
+        return result
+
+    @classmethod
+    def _size_source_text(cls, raw: dict[str, Any], title: str) -> str:
         """将来源文本/属性/变种记录拼成 SIZE_PROMPT 的 source_data（对齐原型 _size_source_text）。"""
         parts: list[str] = []
         if title:
@@ -2364,20 +4404,27 @@ class ProductProcessingService:
         category = raw.get("category") or raw.get("source_category_path")
         if category:
             parts.append(f"category: {category}")
-        attrs = ProductProcessingService._source_attributes_text(raw)
-        if attrs:
-            parts.append(f"attributes: {attrs}")
+        evidence = cls._canonical_prompt_evidence(raw)
+        if evidence["source_attributes"]:
+            parts.append(
+                "attributes: "
+                + "; ".join(
+                    f"{item['name']}: {item['value']}" if item["name"] else item["value"]
+                    for item in evidence["source_attributes"]
+                )
+            )
         for key in ("weight_text", "package_info_text", "freight_cny"):
             value = raw.get(key)
             if value not in (None, ""):
                 parts.append(f"{key}: {value}")
-        for variant in raw.get("source_variant_records") or []:
-            if not isinstance(variant, dict):
-                continue
-            variant_attrs = variant.get("attributes")
-            if isinstance(variant_attrs, dict) and variant_attrs:
-                pairs = "; ".join(f"{key}: {value}" for key, value in variant_attrs.items() if value not in (None, ""))
-                parts.append(f"variant: {pairs}")
+        if evidence["variant_attributes"]:
+            parts.append(
+                "variant attributes: "
+                + "; ".join(
+                    f"{item['name']}: {item['value']}" if item["name"] else item["value"]
+                    for item in evidence["variant_attributes"]
+                )
+            )
         return " | ".join(parts)[:1200]
 
     def _source_stock(self, raw: dict[str, Any]) -> int:
@@ -2434,6 +4481,10 @@ class ProductProcessingService:
         """安全下载图片并转 base64 data URL（供多模态视觉识别，隔离下载/限字节）。"""
         if not is_safe_external_url(image_url):
             return ""
+        with self._source_data_url_lock:
+            cached = self._source_data_url_cache.get(image_url)
+        if cached:
+            return cached
         try:
             image = fetch_public_image(image_url, max_bytes=8 * 1024 * 1024, timeout_seconds=30)
         except Exception:
@@ -2442,7 +4493,12 @@ class ProductProcessingService:
         if not content:
             return ""
         content_type = str(getattr(image, "content_type", None) or "image/jpeg").split(";", 1)[0].strip()
-        return f"data:{content_type or 'image/jpeg'};base64,{base64.b64encode(content).decode('ascii')}"
+        value = f"data:{content_type or 'image/jpeg'};base64,{base64.b64encode(content).decode('ascii')}"
+        with self._source_data_url_lock:
+            if len(self._source_data_url_cache) >= 64:
+                self._source_data_url_cache.pop(next(iter(self._source_data_url_cache)))
+            self._source_data_url_cache[image_url] = value
+        return value
 
     def _identify_subject(
         self,
@@ -2450,28 +4506,35 @@ class ProductProcessingService:
         title: str,
         category: str,
         ai_notes: list[str] | None = None,
-    ) -> str:
-        """多模态识别主图中的可售主体（对齐原型 NativeVisualModelClient.judge）。
+    ) -> tuple[str, str]:
+        """多模态识别主图中的可售主体 + 基于主图的初步标题（对齐原型 NativeVisualModelClient.judge）。
 
-        返回英文主体描述，用于替换生图提示词 ``Product:`` 行的标题猜测，减少主体误判；
-        任何失败返回空串，调用方回退原标题描述。
+        返回 (subject, preliminary_title)：
+        - subject：英文主体描述，用于替换生图提示词 ``Product:`` 行的标题猜测，减少主体误判；
+        - preliminary_title：仅依据主图可见内容生成的英文初步标题草稿，作为文本生成
+          （标题/描述）的图像证据——标题据此生成而非直译来源标题。
+        任何失败返回 ("", "")，调用方回退原标题/描述流程。
         """
         if not _ai_enabled() or not image_url:
-            return ""
+            return "", ""
         # 缓存：同一来源主图只识别一次（批量任务重复商品省 N 次多模态调用）
         with self._subject_cache_lock:
             cached = self._subject_cache.get(image_url)
         if cached:
-            return cached
+            return cached["subject"], cached["preliminary_title"]
         data_url = self._image_to_data_url(image_url)
         if not data_url:
-            return ""
+            return "", ""
         prompt = (
-            "Identify the actual sellable product shown in the main image. "
+            "Analyze the actual sellable product shown in the main image. "
             "The foreground sellable subject is the product to sell; ignore houses, rooms, tables, "
             "people, props, and background scenes. Reply with strict JSON only: "
             '{"sellable_subject": "<one short English noun phrase describing the sellable product, '
             'e.g. a round acrylic keychain with letter charms>", '
+            '"preliminary_title": "<one draft English listing title (80-180 letters) written ONLY from '
+            'what is visible in the image: exact product type + 2-4 real visible attributes such as '
+            'material, color, size, shape, quantity + intended use only if clearly shown; never invent '
+            'facts that are not visible in the image>", '
             '"material_evidence": "<visible material and structure details>", '
             '"background_scene": "<what the background shows>"}'
         )
@@ -2490,33 +4553,51 @@ class ProductProcessingService:
                 ],
                 model="gpt-5.6-terra",
             )
-            data = _extract_json_object(text)
-            subject = self._text((data or {}).get("sellable_subject"))
-            if not subject:
-                return ""
+            data = _extract_json_object(text) or {}
+            subject = self._text(data.get("sellable_subject"))
+            preliminary_title = self._text(data.get("preliminary_title"))
+            if not subject and not preliminary_title:
+                return "", ""
             ai_notes.append("subject_identity:ai")
-            result = str(subject).strip()[:160]
+            if preliminary_title:
+                ai_notes.append("subject_identity:preliminary-title")
+            result = {
+                "subject": str(subject).strip()[:160],
+                "preliminary_title": self._normalized_title(preliminary_title) if preliminary_title else "",
+            }
             with self._subject_cache_lock:
                 self._subject_cache[image_url] = result
-            return result
+            return result["subject"], result["preliminary_title"]
         except (AiProviderError, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "subject_identity", _ai_error_reason(exc))
-            return ""
+            return "", ""
 
     def _media_processor(self) -> Any:
         if self._media_instance is None:
-            media_types = _media_types()
-            if not media_types:
-                raise MediaUnavailableError("图片处理依赖缺失：需要安装 requests 与 Pillow")
-            processor_cls, _, _ = media_types
-            self._media_instance = processor_cls(config_provider=self._media_config_provider)
+            with self._media_lock:
+                if self._media_instance is None:
+                    media_types = _media_types()
+                    if not media_types:
+                        raise MediaUnavailableError("图片处理依赖缺失：需要安装 requests 与 Pillow")
+                    processor_cls, _, _ = media_types
+                    self._media_instance = processor_cls(config_provider=self._media_config_provider)
         return self._media_instance
 
     @staticmethod
     def _media_config_provider() -> dict[str, Any]:
         provider = resolve_ai_provider()
         image_section: dict[str, Any] = {}
-        if provider.get("api_key"):
+        sys_image = provider.get("_sys_image_ai") or {}
+        if sys_image.get("base_url") and sys_image.get("api_key"):
+            image_section = {
+                "base_url": sys_image.get("base_url") or "",
+                "api_key": sys_image.get("api_key") or "",
+                "model": sys_image.get("model") or provider.get("image_model") or "",
+                "reference_model": sys_image.get("reference_model") or provider.get("reference_image_model") or "",
+                "image_models": list(provider.get("image_models") or ()),
+                "image_size": provider.get("image_size") or "2048x2048",
+            }
+        elif provider.get("api_key"):
             image_section = {
                 "base_url": provider.get("base_url") or "",
                 "api_key": provider.get("api_key") or "",
@@ -2524,10 +4605,15 @@ class ProductProcessingService:
                 "reference_model": provider.get("reference_image_model") or "",
                 # 图片模型池：同中转多模型轮巡（对齐原型 _provider_order 游标轮巡）
                 "image_models": list(provider.get("image_models") or ()),
+                "image_size": provider.get("image_size") or "2048x2048",
+                # 精品模式：一次生成 4096×4096 四宫格，再本地拆成四张约 2048×2048 高清图
+                "premium_image_model": provider.get("premium_image_model") or PREMIUM_IMAGE_MODEL,
+                "premium_image_size": provider.get("premium_image_size") or PREMIUM_IMAGE_SIZE,
             }
         # COS 图床：gitignored 本地配置 cos.local.json 优先，环境变量 WH_COS_* 可覆盖。
         # 对齐原型出图保存逻辑——生成图上传 COS 转外链后写进导入表，店小秘可直接读取。
-        # 安装包场景：cos.local.json 随程序一起分发（源码/可执行同目录/打包资源），零配置生效。
+        # 已配置安装可从程序目录读取 gitignored 本地配置；公开安装包不携带密钥，
+        # 新安装需由系统设置或环境变量提供 COS 凭据。
         cos_config: dict[str, Any] = {}
         for local_cos in _cos_local_config_paths():
             try:
@@ -2553,13 +4639,14 @@ class ProductProcessingService:
         # 系统配置优先于 cos.local.json（通过 BasicSettings Web UI 管理）
         sys_cos = provider.get("_sys_cos")
         if sys_cos and sys_cos.get("bucket") and sys_cos.get("region"):
-            sys_cos_secret = {}  # COS 密钥在 basic_settings 的 secret_values 中，_media_config_provider 暂不读取
-            if bucket and region and secret_id and secret_key:
-                sys_cos_secret = cos_config  # 优先用 cos.local.json/env 的密钥
+            # resolve_ai_provider 只在后端内部携带解密密钥；公开 provider summary 会剔除。
+            sys_secret_id = str(sys_cos.get("secret_id") or secret_id).strip()
+            sys_secret_key = str(sys_cos.get("secret_key") or secret_key).strip()
             cos_config = {
                 "bucket": sys_cos["bucket"],
                 "region": sys_cos["region"],
-                **sys_cos_secret,
+                "secret_id": sys_secret_id,
+                "secret_key": sys_secret_key,
             }
         sys_backup = provider.get("_sys_backup_image_ai")
         backup_image = (
@@ -2575,9 +4662,10 @@ class ProductProcessingService:
         sys_limits = provider.get("_sys_limits") or {}
         limits = {
             "image_retry_attempts": sys_limits.get("image_retry_attempts", 2),
+            "image_workers": sys_limits.get("image_workers", 4),
             "grid_image_reference_max_count": 4,
             "detail_image_reference_max_count": 2,
-            "image_provider_strategy": sys_limits.get("image_provider_strategy", "balanced"),
+            "image_provider_strategy": sys_limits.get("image_provider_strategy", "primary_first"),
         }
         sys_updates = provider.get("_sys_updates") or {}
         if sys_updates.get("cos_prefix"):
@@ -2589,47 +4677,24 @@ class ProductProcessingService:
             "limits": limits,
         }
 
-    def _publish_media(
+    def _persist_media_for_preview(
         self,
-        processor: Any,
         parts: list[Any],
         task_id: int,
         draft_id: int,
+        workspace_id: str,
     ) -> list[str]:
-        """对齐原型出图保存逻辑：生成图优先整组上传 COS 取得外链，店小秘可直接读取；
-        任一上传失败或未配置 COS 时，回退后端静态图床（WH_MEDIA_BASE_URL + /pp-media）转对外 URL；
-        静态图床也未配置时保留本地路径（导出表会进一步回退来源 http 图片）。"""
-        urls: list[str] = []
-        try:
-            if len(parts) <= 1:
-                urls = [processor.upload_to_cos(part, task_id=task_id, draft_id=draft_id) for part in parts]
-            else:
-                # 多张图（四宫格 5 张）并行上传 COS，整组成功才返回；任一失败由外层统一回退本地
-                from concurrent.futures import ThreadPoolExecutor
-
-                with ThreadPoolExecutor(max_workers=min(6, len(parts))) as executor:
-                    urls = list(
-                        executor.map(
-                            lambda part: processor.upload_to_cos(part, task_id=task_id, draft_id=draft_id),
-                            parts,
-                        )
-                    )
-        except Exception:
-            urls = []
-        if urls:
-            return urls
-        local_paths = [
-            self.assets.save_generated_image(task_id, draft_id, part.stage, part.content, part.suffix)
-            for part in parts
-        ]
-        # 后端静态图床：本地保存 + WH_MEDIA_BASE_URL 时转成对外可访问 URL（/pp-media 静态挂载）
-        base = _media_public_base_url()
-        if base:
-            return [
-                f"{base}/pp-media/{path.relative_to(self.assets.output_root).as_posix()}"
-                for path in local_paths
-            ]
-        return [str(path) for path in local_paths]
+        """Register original generated bytes locally; never call COS here."""
+        values: list[str] = []
+        for part in parts:
+            asset = self.preview_images.register_generated(
+                task_id=task_id,
+                product_draft_id=draft_id,
+                workspace_id=workspace_id,
+                media=part,
+            )
+            values.append(str(asset.get("preview_url") or ""))
+        return values
 
     @staticmethod
     def _iso_datetime(value: str | None) -> Any:

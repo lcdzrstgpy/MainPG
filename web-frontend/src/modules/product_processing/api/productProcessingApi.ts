@@ -1,4 +1,11 @@
 import { apiRequest } from "../../../shared/api/apiClient";
+import { ppRequest, ppUpload, type ApiContext } from "./client";
+import type {
+  PreviewCoreFields,
+  PreviewFinalizeRun,
+  PreviewImageAsset,
+  PreviewImageManifest,
+} from "../types";
 
 export type DraftSourceType = "web_manual_capture" | "onebound_api";
 
@@ -30,4 +37,79 @@ export function retryProductDraftSourceImages(draftId: number): Promise<{ sync: 
   return apiRequest(`/product-processing/drafts/${encodeURIComponent(String(draftId))}/source-images/retry`, {
     method: "POST",
   });
+}
+
+export type PreviewSavePayload = {
+  product_draft_id: number;
+  expected_preview_revision: number;
+  expected_result_version: string;
+  overrides: {
+    title: string;
+    description: string;
+    core_fields: PreviewCoreFields;
+    image_manifest_v2: PreviewImageManifest;
+  };
+};
+
+export type PreviewSaveResponse = {
+  saved_count: number;
+  items: Array<{ product_draft_id: number; preview_revision: number }>;
+};
+
+export async function uploadPreviewAssets(
+  ctx: ApiContext,
+  taskId: number,
+  draftId: number,
+  files: File[],
+): Promise<{ assets: PreviewImageAsset[] }> {
+  const form = new FormData();
+  form.append("draft_id", String(draftId));
+  files.forEach((file) => form.append("image_files", file));
+  return ppUpload(ctx, `/api/product-processing/tasks/${taskId}/preview/assets`, form);
+}
+
+export function saveProductPreview(
+  ctx: ApiContext,
+  taskId: number,
+  items: PreviewSavePayload[],
+): Promise<PreviewSaveResponse> {
+  return ppRequest(ctx, `/api/product-processing/tasks/${taskId}/preview`, {
+    method: "PATCH",
+    body: { items },
+  });
+}
+
+export function finalizeProductPreview(
+  ctx: ApiContext,
+  taskId: number,
+  items: PreviewSavePayload[],
+  idempotencyKey: string,
+): Promise<PreviewFinalizeRun> {
+  return ppRequest(ctx, `/api/product-processing/tasks/${taskId}/preview/finalize`, {
+    method: "POST", headers: { "Idempotency-Key": idempotencyKey },
+    body: { items },
+  });
+}
+
+export function getPreviewFinalizeRun(
+  ctx: ApiContext,
+  taskId: number,
+  runId: string,
+): Promise<PreviewFinalizeRun> {
+  return ppRequest(
+    ctx,
+    `/api/product-processing/tasks/${taskId}/preview/finalize/${encodeURIComponent(runId)}`,
+  );
+}
+
+export function retryPreviewFinalizeRun(
+  ctx: ApiContext,
+  taskId: number,
+  runId: string,
+): Promise<PreviewFinalizeRun> {
+  return ppRequest(
+    ctx,
+    `/api/product-processing/tasks/${taskId}/preview/finalize/${encodeURIComponent(runId)}/retry`,
+    { method: "POST", body: {} },
+  );
 }

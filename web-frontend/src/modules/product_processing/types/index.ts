@@ -111,6 +111,7 @@ export type Task = {
 export type EngineStatus = {
   available: boolean;
   ready: boolean;
+  unavailable_reasons: string[];
   app_dir: string;
   app_file: string;
   python: string;
@@ -119,7 +120,9 @@ export type EngineStatus = {
   diagnostics: {
     config: Record<string, unknown>;
     tenant_ai_capability: Record<string, unknown>;
+    capabilities: Record<string, { enabled: boolean; ready: boolean; reason: string }>;
     dependencies: Record<string, boolean>;
+    ocr_gate: Record<string, unknown>;
     storage_root: string;
   };
 };
@@ -150,7 +153,129 @@ export interface ProductProcessingOptions {
   skipDuplicates: boolean;
   ipCheck: boolean;
   maxParallelDrafts: number;
+  /** 生图提示词模板：A=标准商品海报，B=高端模特视觉（防比价） */
+  imageTemplate?: 'A' | 'B';
+  /** 历史/API 兼容字段；新前端任务固定发送 4，不再向用户暴露。 */
+  imageGenerationCount?: 1 | 2 | 4;
 }
+
+/** 生图提示词模板注册表（对齐后端 IMAGE_TEMPLATES） */
+export interface ImageTemplateOption {
+  id: 'A' | 'B';
+  name: string;
+  description: string;
+}
+
+export type PreviewCoreFields = {
+  sku?: string;
+  declared_price?: number | string | null;
+  suggested_price?: number | string | null;
+  stock?: number | string | null;
+  category_path?: string;
+  category_id?: string;
+  length_cm?: number | string | null;
+  width_cm?: number | string | null;
+  height_cm?: number | string | null;
+  weight_g?: number | string | null;
+};
+
+export type PreviewImageOrigin = "source" | "generated" | "dimension" | "upload";
+
+export type PreviewImageAsset = {
+  id: string;
+  origin: PreviewImageOrigin;
+  preview_url: string;
+  publication_status:
+    | "local"
+    | "materializing"
+    | "ready"
+    | "publishing"
+    | "published"
+    | "publish_failed";
+  public_url: string | null;
+  width: number;
+  height: number;
+};
+
+export type PreviewImageManifest = {
+  main_asset_id: string;
+  carousel_asset_ids: string[];
+  detail_asset_ids: string[];
+  semantic_asset_ids: Record<string, string>;
+};
+
+export type PreviewFinalizeRun = {
+  id: string;
+  task_id: number;
+  status: "queued" | "publishing" | "publish_failed" | "stale" | "completed";
+  total_count: number;
+  published_count: number;
+  failed_count: number;
+  errors: Array<{
+    asset_id: string;
+    product_draft_id: number;
+    code: string;
+    message: string;
+  }>;
+  workbook_ready: boolean;
+  file: string;
+  row_count: number;
+  product_count: number;
+  download: string;
+};
+
+export type PreviewOverrides = {
+  title?: string;
+  description?: string;
+  main_image?: string;
+  carousel_images?: string[];
+  detail_images?: string[];
+  core_fields?: PreviewCoreFields;
+};
+
+export type PreviewItem = {
+  item_id: number;
+  product_draft_id: number | null;
+  preview_revision: number;
+  result_version: string;
+  exportable: boolean;
+  skc: string;
+  status: string;
+  reason: string;
+  title: string;
+  description: string;
+  source_image_urls: string[];
+  carousel_images: string[];
+  main_image: string;
+  detail_images: string[];
+  core_fields: PreviewCoreFields;
+  overrides: PreviewOverrides;
+  assets: PreviewImageAsset[];
+  image_manifest: PreviewImageManifest;
+};
+
+export type PreviewResponse = {
+  task_id: number;
+  task: {
+    id: number;
+    title: string;
+    status: string;
+    total_count: number;
+    success_count: number;
+    failed_count: number;
+    skipped_count: number;
+  };
+  item_count: number;
+  items: PreviewItem[];
+};
+
+export type PreviewExportResponse = {
+  task_id: number;
+  file: string;
+  row_count: number;
+  product_count: number;
+  download: string;
+};
 
 export interface TaskArtifact {
   artifact_id: string;
@@ -263,3 +388,26 @@ export type TaskHistoryResponse = {
   tasks: TaskHistoryItem[];
   limit: number;
 };
+
+export type {
+  CanvasItemState,
+  DimensionAnnotation,
+  DimensionAsset,
+  DimensionCanvasBatch,
+  DimensionCanvasItem,
+  DimensionChangeItem,
+  DimensionChangeSet,
+  DimensionEligibilityItem,
+  DimensionKey,
+  DimensionNotification,
+  DimensionProvenance,
+  DimensionTaskEligibility,
+  DimensionUnit,
+  DimensionValue,
+  EditorState,
+  ImportableDimensionTask,
+  NormalizedPoint,
+  PhysicalDimensions,
+  SaveDimensionItemRequest,
+  UploadedDimensionAsset,
+} from "./dimensionCanvas";

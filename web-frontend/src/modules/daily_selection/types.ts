@@ -97,6 +97,14 @@ export type DailySelectionHandoff = {
   created_at: string;
 };
 
+export type DailySelectionConfirmResult = {
+  handoffs: DailySelectionHandoff[];
+  selected_count: number;
+  created_count: number;
+  replayed_count: number;
+  pending_count: number;
+};
+
 export type SkuRepullState = {
   status: "idle" | "running" | "completed" | "cancelled" | "failed";
   round: number;

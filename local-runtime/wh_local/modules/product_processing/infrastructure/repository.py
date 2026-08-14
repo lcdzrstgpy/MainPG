@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Select, and_, func, or_, select, update
+from sqlalchemy import Select, and_, delete, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from .database import ProductProcessingDatabase
@@ -15,6 +15,7 @@ from .orm import (
     DailySelectionHandoffReceiptRow,
     DailySelectionIntakeRow,
     EnginePromptRow,
+    ProcessingStageReceiptRow,
     ProcessingTaskItemRow,
     ProcessingTaskRow,
     ProductDraftRow,
@@ -32,6 +33,14 @@ def loads(value: str | None, fallback: Any) -> Any:
         return json.loads(value or "")
     except (TypeError, ValueError):
         return fallback
+
+
+class StalePreviewRevision(RuntimeError):
+    """Raised when a canvas result targets an older precheck revision."""
+
+
+class PreviewSlotConflict(StalePreviewRevision):
+    """Raised when the target image slot changed after canvas import."""
 
 
 class ProductProcessingRepository:
@@ -55,7 +64,7 @@ class ProductProcessingRepository:
                 select(ProductDraftRow).where(
                     ProductDraftRow.workspace_id == workspace_id,
                     ProductDraftRow.candidate_id == candidate_id,
-                )
+                ).order_by(ProductDraftRow.id.desc()).limit(1)
             )
             return self._draft(row) if row else None
 
@@ -143,8 +152,10 @@ class ProductProcessingRepository:
                     ProductDraftRow.workspace_id == workspace_id,
                 )
             ).all()
+            now = utc_now()
             for row in rows:
                 row.status = status
+                row.updated_at = now
             return [row.id for row in rows]
 
     def update_draft(
@@ -164,6 +175,100 @@ class ProductProcessingRepository:
             row.raw_payload_json = dumps(raw_payload)
             row.updated_at = utc_now()
             session.flush()
+            return self._draft(row)
+
+    def save_draft_preview_overrides(
+        self,
+        draft_id: int,
+        overrides: dict[str, Any],
+        *,
+        expected_revision: int | None = None,
+        workspace_id: str = "local",
+    ) -> dict[str, Any] | None:
+        """保存预检环节的覆盖数据（标题/描述/图片/核心字段），供导出最终版表格时应用。"""
+        with self.database.sessions.begin() as session:
+            row = session.get(ProductDraftRow, draft_id)
+            if row is None or row.workspace_id != workspace_id:
+                return None
+            current_revision = int(row.preview_revision or 0)
+            if expected_revision is not None and current_revision != int(expected_revision):
+                raise StalePreviewRevision(
+                    f"preview revision conflict: expected {expected_revision}, current {current_revision}"
+                )
+            serialized = dumps(overrides or {})
+            if row.preview_overrides_json != serialized:
+                row.preview_overrides_json = serialized
+                row.preview_revision = current_revision + 1
+                row.updated_at = utc_now()
+            session.flush()
+            return self._draft(row)
+
+    def apply_dimension_slot_patch(
+        self,
+        draft_id: int,
+        *,
+        target_slot: str,
+        patch: dict[str, Any],
+        base_slot_value: str,
+        workspace_id: str = "local",
+    ) -> dict[str, Any] | None:
+        """Atomically merge one reviewed dimension image into the latest preview overrides.
+
+        Unrelated title/description edits are retained.  A legacy whole-carousel edit or
+        a newer edit of the same semantic slot is rejected instead of being overwritten.
+        """
+        slot_indexes = {
+            "carousel.hero": 0,
+            "carousel.detail": 1,
+            "carousel.lifestyle": 2,
+            "carousel.dimension_background": 3,
+        }
+        if target_slot not in slot_indexes or not str(patch.get("url") or "").strip():
+            raise ValueError("invalid dimension image slot patch")
+        with self.database.sessions.begin() as session:
+            row = session.get(ProductDraftRow, draft_id)
+            if row is None or row.workspace_id != workspace_id:
+                return None
+            overrides = loads(row.preview_overrides_json, {})
+            if not isinstance(overrides, dict):
+                overrides = {}
+            current_slot_value = str(base_slot_value or "").strip()
+            legacy = overrides.get("carousel_images") or []
+            if isinstance(legacy, list) and slot_indexes[target_slot] < len(legacy):
+                current_slot_value = str(legacy[slot_indexes[target_slot]] or "").strip()
+            slot_overrides = overrides.get("image_slot_overrides") or {}
+            if not isinstance(slot_overrides, dict):
+                slot_overrides = {}
+            current_patch = slot_overrides.get(target_slot) or {}
+            if isinstance(current_patch, dict) and str(current_patch.get("url") or "").strip():
+                current_slot_value = str(current_patch["url"]).strip()
+            if current_slot_value != str(base_slot_value or "").strip():
+                raise PreviewSlotConflict("target image slot changed after dimension canvas import")
+
+            next_patch = {"url": str(patch["url"]).strip()}
+            asset_id = str(patch.get("asset_id") or "").strip()
+            if asset_id:
+                next_patch["asset_id"] = asset_id
+            next_overrides = dict(overrides)
+            next_overrides["image_slot_overrides"] = {**slot_overrides, target_slot: next_patch}
+            current_revision = int(row.preview_revision or 0)
+            updated = session.execute(
+                update(ProductDraftRow)
+                .where(
+                    ProductDraftRow.id == draft_id,
+                    ProductDraftRow.workspace_id == workspace_id,
+                    ProductDraftRow.preview_revision == current_revision,
+                )
+                .values(
+                    preview_overrides_json=dumps(next_overrides),
+                    preview_revision=current_revision + 1,
+                    updated_at=utc_now(),
+                )
+            )
+            if updated.rowcount != 1:
+                raise StalePreviewRevision("preview changed while accepting dimension image")
+            session.expire(row)
+            session.refresh(row)
             return self._draft(row)
 
     def delete_drafts(self, draft_ids: list[int] | None, workspace_id: str = "local") -> list[int]:
@@ -237,16 +342,138 @@ class ProductProcessingRepository:
                 return None
             return self._task(row) if row else None
 
-    def list_tasks(self, limit: int, workspace_id: str = "local") -> list[dict[str, Any]]:
+    def list_tasks(
+        self,
+        limit: int,
+        workspace_id: str = "local",
+        *,
+        offset: int = 0,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
         with self.database.sessions() as session:
+            filters = [ProcessingTaskRow.workspace_id == workspace_id]
+            if date_from:
+                filters.append(ProcessingTaskRow.created_at >= f"{date_from}T00:00:00")
+            if date_to:
+                filters.append(ProcessingTaskRow.created_at <= f"{date_to}T23:59:59.999999")
+            total = int(
+                session.scalar(select(func.count()).select_from(ProcessingTaskRow).where(*filters)) or 0
+            )
             rows = session.scalars(
                 select(ProcessingTaskRow)
                 .options(selectinload(ProcessingTaskRow.items))
-                .where(ProcessingTaskRow.workspace_id == workspace_id)
+                .where(*filters)
                 .order_by(ProcessingTaskRow.created_at.desc(), ProcessingTaskRow.id.desc())
+                .offset(max(0, int(offset)))
                 .limit(limit)
             ).all()
-            return [self._task(row) for row in rows]
+            return [self._task(row) for row in rows], total
+
+    def queued_tasks(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        with self.database.sessions() as session:
+            statement = (
+                select(ProcessingTaskRow)
+                .options(selectinload(ProcessingTaskRow.items))
+                .where(ProcessingTaskRow.status == "queued")
+                .order_by(ProcessingTaskRow.id)
+            )
+            if workspace_id is not None:
+                statement = statement.where(ProcessingTaskRow.workspace_id == workspace_id)
+            return [self._task(row) for row in session.scalars(statement).all()]
+
+    def recover_interrupted_tasks(self) -> list[dict[str, Any]]:
+        """Turn process-lost running work into an explicit retryable terminal state."""
+        recovered: list[tuple[int, str]] = []
+        with self.database.sessions.begin() as session:
+            tasks = session.scalars(
+                select(ProcessingTaskRow)
+                .options(selectinload(ProcessingTaskRow.items))
+                .where(ProcessingTaskRow.status == "running")
+            ).all()
+            now = utc_now()
+            for task in tasks:
+                for item in task.items:
+                    if item.status not in {"pending", "running"}:
+                        continue
+                    item.status = "failed"
+                    item.reason = "应用重启中断处理；上次调用结果不确定，请人工重试"
+                    item.result_json = dumps(
+                        {
+                            "failure_class": "technical_retryable",
+                            "retryable": True,
+                            "operator_hint": "确认服务稳定后重试；系统不会自动重复付费调用",
+                            "error_type": "worker_interrupted",
+                        }
+                    )
+                    item.updated_at = now
+                    if item.product_draft_id is not None:
+                        draft = session.get(ProductDraftRow, item.product_draft_id)
+                        if draft is not None and draft.workspace_id == task.workspace_id and draft.status == "processing":
+                            draft.status = "draft"
+                            draft.updated_at = now
+                statuses = [item.status for item in task.items]
+                task.success_count = sum(value == "completed" for value in statuses)
+                task.skipped_count = sum(value == "skipped" for value in statuses)
+                task.failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
+                task.status = "failed" if task.success_count == 0 else "partial_failure"
+                task.updated_at = now
+                recovered.append((task.id, task.workspace_id))
+        return [task for task_id, workspace in recovered if (task := self.get_task(task_id, workspace)) is not None]
+
+    def claim_task_execution(self, task_id: int, workspace_id: str = "local") -> bool:
+        with self.database.sessions.begin() as session:
+            changed = session.execute(
+                update(ProcessingTaskRow)
+                .where(
+                    ProcessingTaskRow.id == task_id,
+                    ProcessingTaskRow.workspace_id == workspace_id,
+                    ProcessingTaskRow.status == "queued",
+                )
+                .values(status="running", updated_at=utc_now())
+            )
+            return changed.rowcount == 1
+
+    def fail_task_execution(self, task_id: int, reason: str, workspace_id: str = "local") -> dict[str, Any] | None:
+        """Fail only unfinished items and restore their drafts after an executor crash."""
+        with self.database.sessions.begin() as session:
+            task = session.scalar(
+                select(ProcessingTaskRow)
+                .options(selectinload(ProcessingTaskRow.items))
+                .where(
+                    ProcessingTaskRow.id == task_id,
+                    ProcessingTaskRow.workspace_id == workspace_id,
+                )
+            )
+            if task is None:
+                return None
+            now = utc_now()
+            for item in task.items:
+                if item.status not in {"pending", "running"}:
+                    continue
+                item.status = "failed"
+                item.reason = str(reason)[:240]
+                item.result_json = dumps(
+                    {
+                        "failure_class": "technical_retryable",
+                        "retryable": True,
+                        "operator_hint": "后台执行异常，修复原因后可重试",
+                        "error_type": "executor_failed",
+                    }
+                )
+                item.updated_at = now
+                if item.product_draft_id is not None:
+                    draft = session.get(ProductDraftRow, item.product_draft_id)
+                    if draft is not None and draft.workspace_id == workspace_id and draft.status == "processing":
+                        draft.status = "draft"
+                        draft.updated_at = now
+            statuses = [item.status for item in task.items]
+            task.success_count = sum(value == "completed" for value in statuses)
+            task.skipped_count = sum(value == "skipped" for value in statuses)
+            task.failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
+            task.status = "failed" if task.success_count == 0 else "partial_failure"
+            task.updated_at = now
+        return self.get_task(task_id, workspace_id)
 
     def set_task_status(self, task_id: int, status: str, workspace_id: str = "local") -> dict[str, Any] | None:
         with self.database.sessions.begin() as session:
@@ -277,7 +504,6 @@ class ProductProcessingRepository:
                     select(ProcessingTaskItemRow).where(ProcessingTaskItemRow.task_id == task_id)
                 ).all()
             }
-            success_count = failed_count = skipped_count = 0
             now = utc_now()
             for result in item_results:
                 item = items[int(result["item_id"])]
@@ -289,12 +515,10 @@ class ProductProcessingRepository:
                 item.image_url = str(result.get("image_url") or item.image_url)
                 item.result_json = dumps(result.get("result") or {})
                 item.updated_at = now
-                if item.status == "completed":
-                    success_count += 1
-                elif item.status == "skipped":
-                    skipped_count += 1
-                else:
-                    failed_count += 1
+            statuses = [item.status for item in items.values()]
+            success_count = sum(value == "completed" for value in statuses)
+            skipped_count = sum(value == "skipped" for value in statuses)
+            failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
             task.success_count = success_count
             task.failed_count = failed_count
             task.skipped_count = skipped_count
@@ -340,7 +564,7 @@ class ProductProcessingRepository:
                     return "success"
                 if current == "skipped":
                     return "skipped"
-                if current in (None, "", "pending"):
+                if current in (None, "", "pending", "running"):
                     return None
                 return "failed"
 
@@ -371,22 +595,170 @@ class ProductProcessingRepository:
             task.updated_at = utc_now()
         return self.get_task(task_id, workspace_id)
 
-    def reset_failed_items(self, task_id: int, workspace_id: str = "local") -> bool:
+    def reset_failed_items(
+        self,
+        task_id: int,
+        workspace_id: str = "local",
+        *,
+        draft_ids: list[int] | None = None,
+    ) -> bool:
         with self.database.sessions.begin() as session:
             task = session.get(ProcessingTaskRow, task_id)
             if task is None or task.workspace_id != workspace_id:
                 return False
-            for item in session.scalars(
-                select(ProcessingTaskItemRow).where(
+            item_query = select(ProcessingTaskItemRow).where(
                     ProcessingTaskItemRow.task_id == task_id,
                     ProcessingTaskItemRow.status.in_(["failed", "attention_required"]),
                 )
-            ):
+            if draft_ids:
+                item_query = item_query.where(ProcessingTaskItemRow.product_draft_id.in_(draft_ids))
+            for item in session.scalars(item_query):
                 item.status = "pending"
                 item.reason = ""
+                item.result_json = "{}"
+                item.updated_at = utc_now()
+            statuses = session.scalars(
+                select(ProcessingTaskItemRow.status).where(ProcessingTaskItemRow.task_id == task_id)
+            ).all()
+            task.success_count = sum(value == "completed" for value in statuses)
+            task.skipped_count = sum(value == "skipped" for value in statuses)
+            task.failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
             task.status = "queued"
             task.updated_at = utc_now()
             return True
+
+    def load_stage_receipt(
+        self,
+        task_id: int,
+        item_id: int,
+        stage: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any] | None:
+        stage_name = str(stage).strip()
+        if not stage_name:
+            return None
+        with self.database.sessions() as session:
+            try:
+                self._require_workspace_task_item(
+                    session,
+                    task_id=task_id,
+                    item_id=item_id,
+                    workspace_id=workspace_id,
+                )
+            except LookupError:
+                return None
+            row = session.scalar(
+                select(ProcessingStageReceiptRow).where(
+                    ProcessingStageReceiptRow.workspace_id == workspace_id,
+                    ProcessingStageReceiptRow.task_item_id == item_id,
+                    ProcessingStageReceiptRow.stage == stage_name,
+                )
+            )
+            return self._stage_receipt(row) if row is not None else None
+
+    def upsert_stage_receipt(
+        self,
+        task_id: int,
+        item_id: int,
+        stage: str,
+        *,
+        input_hash: str,
+        output_data: Any,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        stage_name = str(stage).strip()
+        stable_input_hash = str(input_hash).strip()
+        if not stage_name or not stable_input_hash:
+            raise ValueError("stage and input_hash are required")
+        with self.database.sessions.begin() as session:
+            task, _item = self._require_workspace_task_item(
+                session,
+                task_id=task_id,
+                item_id=item_id,
+                workspace_id=workspace_id,
+            )
+            row = session.scalar(
+                select(ProcessingStageReceiptRow).where(
+                    ProcessingStageReceiptRow.workspace_id == task.workspace_id,
+                    ProcessingStageReceiptRow.task_item_id == item_id,
+                    ProcessingStageReceiptRow.stage == stage_name,
+                )
+            )
+            now = utc_now()
+            if row is None:
+                row = ProcessingStageReceiptRow(
+                    workspace_id=task.workspace_id,
+                    task_item_id=item_id,
+                    stage=stage_name,
+                    input_hash=stable_input_hash,
+                    output_json=dumps(output_data),
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+                session.flush()
+            else:
+                row.input_hash = stable_input_hash
+                row.output_json = dumps(output_data)
+                row.updated_at = now
+            return self._stage_receipt(row)
+
+    def delete_invalid_stage_receipt(
+        self,
+        task_id: int,
+        item_id: int,
+        stage: str,
+        *,
+        expected_input_hash: str,
+        workspace_id: str = "local",
+    ) -> bool:
+        stage_name = str(stage).strip()
+        with self.database.sessions.begin() as session:
+            self._require_workspace_task_item(
+                session,
+                task_id=task_id,
+                item_id=item_id,
+                workspace_id=workspace_id,
+            )
+            result = session.execute(
+                delete(ProcessingStageReceiptRow).where(
+                    ProcessingStageReceiptRow.workspace_id == workspace_id,
+                    ProcessingStageReceiptRow.task_item_id == item_id,
+                    ProcessingStageReceiptRow.stage == stage_name,
+                    ProcessingStageReceiptRow.input_hash != str(expected_input_hash).strip(),
+                )
+            )
+            return bool(result.rowcount)
+
+    def delete_downstream_stage_receipts(
+        self,
+        task_id: int,
+        item_id: int,
+        downstream_stages: Iterable[str],
+        *,
+        workspace_id: str = "local",
+    ) -> int:
+        stage_names = list(
+            dict.fromkeys(str(stage).strip() for stage in downstream_stages if str(stage).strip())
+        )
+        if not stage_names:
+            return 0
+        with self.database.sessions.begin() as session:
+            self._require_workspace_task_item(
+                session,
+                task_id=task_id,
+                item_id=item_id,
+                workspace_id=workspace_id,
+            )
+            result = session.execute(
+                delete(ProcessingStageReceiptRow).where(
+                    ProcessingStageReceiptRow.workspace_id == workspace_id,
+                    ProcessingStageReceiptRow.task_item_id == item_id,
+                    ProcessingStageReceiptRow.stage.in_(stage_names),
+                )
+            )
+            return int(result.rowcount or 0)
 
     def clear_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any] | None:
         with self.database.sessions.begin() as session:
@@ -774,6 +1146,22 @@ class ProductProcessingRepository:
         )
 
     @staticmethod
+    def _require_workspace_task_item(
+        session,
+        *,
+        task_id: int,
+        item_id: int,
+        workspace_id: str,
+    ) -> tuple[ProcessingTaskRow, ProcessingTaskItemRow]:
+        task = session.get(ProcessingTaskRow, task_id)
+        if task is None or task.workspace_id != workspace_id:
+            raise LookupError("product processing task not found")
+        item = session.get(ProcessingTaskItemRow, item_id)
+        if item is None or item.task_id != task_id:
+            raise LookupError("product processing task item not found")
+        return task, item
+
+    @staticmethod
     def _draft(row: ProductDraftRow) -> dict[str, Any]:
         return {
             "id": row.id,
@@ -795,6 +1183,8 @@ class ProductProcessingRepository:
             "declared_price": row.declared_price,
             "status": row.status,
             "raw_payload": loads(row.raw_payload_json, {}),
+            "preview_overrides": loads(row.preview_overrides_json, {}),
+            "preview_revision": int(row.preview_revision or 0),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }
@@ -813,6 +1203,19 @@ class ProductProcessingRepository:
             "status": row.status,
             "reason": row.reason,
             "result": loads(row.result_json, {}),
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    def _stage_receipt(row: ProcessingStageReceiptRow) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "workspace_id": row.workspace_id,
+            "task_item_id": row.task_item_id,
+            "stage": row.stage,
+            "input_hash": row.input_hash,
+            "output": loads(row.output_json, None),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }

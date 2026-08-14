@@ -29,6 +29,18 @@ class DailySelectionHandoff(BaseModel):
     created_at: str
 
 
+class DailySelectionConfirmResult(BaseModel):
+    """Employee-visible outcome of one confirm action."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    handoffs: tuple[DailySelectionHandoff, ...]
+    selected_count: int
+    created_count: int
+    replayed_count: int
+    pending_count: int = 0
+
+
 def handoff_idempotency_key(
     *, workspace_id: str, run_id: str, candidate_id: str
 ) -> str:

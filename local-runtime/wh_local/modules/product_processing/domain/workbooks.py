@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import csv
+import math
 import re
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, Sequence
 
 from openpyxl import Workbook, load_workbook
+
+from .image_slots import apply_slot_overrides
+from .policy import is_safe_external_url
 
 
 # 店小秘导入默认值（对齐原型 native_product_engine 常量）
@@ -60,12 +64,23 @@ HEADER_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def _is_http_url(value: Any) -> bool:
-    """店小秘图片列只接受 http(s) 外部地址；本地生成图（未上传 COS）不可写进导入表。"""
-    return str(value or "").strip().lower().startswith(("http://", "https://"))
+    """店小秘图片列只接受无凭据、非本机/内网的公开 HTTP(S) 地址。"""
+    return is_safe_external_url(str(value or "").strip())
 
 
 def _http_urls(values: Any) -> list[str]:
     return [str(value).strip() for value in (values or []) if _is_http_url(value)]
+
+
+def require_final_public_image_urls(values: list[str]) -> list[str]:
+    """Fail closed when a final workbook still contains a local/private image."""
+    normalized = [str(value or "").strip() for value in values]
+    if any(
+        not value.lower().startswith("https://") or not is_safe_external_url(value)
+        for value in normalized
+    ):
+        raise ValueError("final workbook images must be public HTTPS URLs")
+    return normalized
 
 
 def read_product_workbook(filename: str, content: bytes) -> list[dict[str, Any]]:
@@ -177,10 +192,24 @@ def _dxm_export_rows(row: dict[str, Any]) -> list[list[Any]]:
 
 
 def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) -> list[Any]:
-    optimized_title = str(row.get("optimized_title") or "").strip()
-    description = str(row.get("description") or "").strip()
+    # 预检覆盖（precheck 页保存的标题/描述/图片/核心字段，用户可改可不改，默认保留生成结果）
+    preview_overrides = row.get("preview_overrides") or {}
+    if not isinstance(preview_overrides, dict):
+        preview_overrides = {}
+    core_fields = preview_overrides.get("core_fields") or {}
+    if not isinstance(core_fields, dict):
+        core_fields = {}
+    override_carousel = _http_urls(preview_overrides.get("carousel_images"))
+    slot_overrides = preview_overrides.get("image_slot_overrides") or {}
+    if not isinstance(slot_overrides, dict):
+        slot_overrides = {}
+    override_main = str(preview_overrides.get("main_image") or "").strip()
+    override_detail = _http_urls(preview_overrides.get("detail_images"))
+
+    optimized_title = str(preview_overrides.get("title") or row.get("optimized_title") or "").strip()
+    description = str(preview_overrides.get("description") or row.get("description") or "").strip()
     skc = str(row.get("skc") or "").strip()
-    sku = str(row.get("sku") or skc).strip()
+    sku = str(core_fields.get("sku") or row.get("sku") or skc).strip()
     main_image_url = str(row.get("image_url") or "").strip()
     source_url = str(row.get("source_url") or "").strip()
     source_image_urls = row.get("source_image_urls") or []
@@ -188,8 +217,8 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     source_attributes = row.get("source_attributes") or []
     cost = row.get("cost")
     category = str(row.get("category") or "").strip()
-    category_path = str(row.get("category_path") or category).strip()
-    category_id = str(row.get("category_id") or "").strip()
+    category_path = str(core_fields.get("category_path") or row.get("category_path") or category).strip()
+    category_id = str(core_fields.get("category_id") or row.get("category_id") or "").strip()
 
     # 变种属性值翻译表（来源中文值 → 目标语言显示名，由 service 的 AI 翻译步骤生成）
     value_translations = row.get("variant_value_translations") or {}
@@ -254,11 +283,26 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
 
     # 四宫格落位（对齐交接文档 §11.3）：预览图/素材图=第1张分图；轮播图=4张分图+完整四宫格总览（总览放最后）。
     # 生成图为本地路径（未上传 COS）时店小秘无法访问，仅 http(s) 生成图才可用，否则回退来源 http 图片。
+    # 预检覆盖优先：用户改过标题/图片后以覆盖值为准，未改则走原生成/回退逻辑。
     generated_carousel = row.get("carousel_image_paths") or []
     grid_summary_path = str(row.get("grid_image_summary_path") or "").strip()
     detail_image_paths = row.get("detail_image_paths") or []
     generated_images = _http_urls(list(generated_carousel) + [grid_summary_path])
-    if generated_images:
+    if slot_overrides:
+        # 新版尺寸画布以旧版整组人工轮播为基线再覆盖单槽；总览仍保留在末尾。
+        slotted_images = _http_urls(
+            [slot.get("value") for slot in apply_slot_overrides(row, preview_overrides)]
+        )
+        export_images = slotted_images + _http_urls([grid_summary_path])
+        carousel = "\n".join(export_images)
+        main_image = override_main if _is_http_url(override_main) else next(iter(slotted_images), "")
+        material_images = main_image
+    elif override_carousel:
+        # 纯旧版整组轮播图覆盖保持原语义，避免历史预检数据被悄悄追加图片。
+        carousel = "\n".join(override_carousel)
+        main_image = override_main if _is_http_url(override_main) else override_carousel[0]
+        material_images = main_image
+    elif generated_images:
         carousel = "\n".join(generated_images)
         main_image = generated_images[0]
         material_images = generated_images[0]
@@ -271,7 +315,14 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
             material_images = main_image
 
     # 详情图以 HTML 追加到产品描述（交接文档 §10/§12）；仅追加可外部访问的 http(s) 地址
-    detail_html = "".join(f'<img src="{value}" />' for value in _http_urls(detail_image_paths))
+    # Presence is semantic: an explicit empty array means the operator removed
+    # every detail image and must never resurrect generated legacy values.
+    detail_sources = (
+        override_detail
+        if "detail_images" in preview_overrides
+        else _http_urls(detail_image_paths)
+    )
+    detail_html = "".join(f'<img src="{value}" />' for value in detail_sources)
     if detail_html:
         description = f"{description}\n{detail_html}".strip()
 
@@ -279,14 +330,15 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     dimensions = row.get("product_dimensions") or {}
     if not isinstance(dimensions, dict):
         dimensions = {}
-    length = _export_number(dimensions.get("length_cm"))
-    width = _export_number(dimensions.get("width_cm"))
-    height = _export_number(dimensions.get("height_cm"))
-    weight = _export_number(dimensions.get("weight_g"))
+    length = _export_number(core_fields.get("length_cm") if "length_cm" in core_fields else dimensions.get("length_cm"))
+    width = _export_number(core_fields.get("width_cm") if "width_cm" in core_fields else dimensions.get("width_cm"))
+    height = _export_number(core_fields.get("height_cm") if "height_cm" in core_fields else dimensions.get("height_cm"))
+    weight = _export_number(core_fields.get("weight_g") if "weight_g" in core_fields else dimensions.get("weight_g"))
     package_shape, package_type = _package_export_values(dimensions)
 
     # 店小秘体积重校验兜底：变种属性里的尺寸（如 30*20*10cm，店小秘以此算体积重）
     # 与独立长宽高列取体积重（长×宽×高÷6），重量必须大于体积重，否则导入整行被拒。
+    source_attr_map = source_attributes if isinstance(source_attributes, dict) else {}
     dimensions_texts: list[Any] = []
     if length not in ("", None) and width not in ("", None) and height not in ("", None):
         dimensions_texts.append(f"{length}*{width}*{height}")
@@ -294,24 +346,45 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     if variant is not None:
         variant_attributes = variant.get("attributes") or {}
         if isinstance(variant_attributes, dict):
-            dimensions_texts.extend(variant_attributes.values())
+            for attr_value in variant_attributes.values():
+                dimensions_texts.append(attr_value)
+                # 1688 规格表：变种属性值原文（如【45*50cm】2.5丝，常规款）是规格表 key，
+                # 对应 value（如 "25 20 0.50 250 4"）携带完整 长/宽/高/体积/重量。
+                spec_row = source_attr_map.get(attr_value)
+                if spec_row:
+                    dimensions_texts.append(spec_row)
     if isinstance(source_attributes, dict):
         dimensions_texts.extend(source_attributes.values())
     dimensions_texts.extend(value for _, value in variant_values)
     weight = _weight_meeting_volumetric(weight, dimensions_texts)
 
-    # 建议售价（对齐原型 _build_dxm_row）：变种建议售价 → 行建议售价 → 来源成本
+    # 长宽高列兜底：AI 未产出 product_dimensions（长宽高缺失）时，从变种/规格表文本
+    # 解析首个三维尺寸填列，保证店小秘 *长/宽/高（cm） 必填列非空。
+    if length == "" or width == "" or height == "":
+        for text in dimensions_texts:
+            parsed_lwh = _parse_dimensions(text)
+            if parsed_lwh is not None:
+                length = _export_number(parsed_lwh[0])
+                width = _export_number(parsed_lwh[1])
+                height = _export_number(parsed_lwh[2])
+                break
+
+    # 建议售价（对齐原型 _build_dxm_row）：变种建议售价 → 行建议售价 → 来源成本；预检核心字段覆盖优先
     suggested_price = variant.get("suggested_price") if variant else None
     if suggested_price in (None, ""):
         suggested_price = row.get("suggested_price")
     if suggested_price in (None, ""):
         suggested_price = cost
+    if core_fields.get("suggested_price") not in (None, ""):
+        suggested_price = core_fields.get("suggested_price")
 
     # 申报价格（对齐原型 _declared_price_for）：
     # 显式申报价 → max(价, 150)；否则 建议售价×4，下限 150；无任何价据 → 150
     declared_price_value = variant.get("declared_price") if variant else None
     if declared_price_value in (None, ""):
         declared_price_value = row.get("declared_price")
+    if core_fields.get("declared_price") not in (None, ""):
+        declared_price_value = core_fields.get("declared_price")
     parsed_declared = _parse_money(declared_price_value)
     if parsed_declared is not None:
         declared_price_value = max(parsed_declared, DECLARED_PRICE_MIN_CNY)
@@ -323,6 +396,8 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     stock = _normalize_stock(variant.get("stock") if variant else None)
     if stock <= 0:
         stock = _normalize_stock(row.get("stock"))
+    if core_fields.get("stock") not in (None, ""):
+        stock = _normalize_stock(core_fields.get("stock"))
 
     return [
         optimized_title,
@@ -387,27 +462,40 @@ _DIMENSIONS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# 1688 规格表行格式：长 宽 高 体积 重量（如 "25 20 0.50 250 4"，取前三个数为长宽高，单位 cm）
+_SPACED_DIMENSIONS_PATTERN = re.compile(
+    r"(?P<l>\d+(?:\.\d+)?)\s+(?P<w>\d+(?:\.\d+)?)\s+(?P<h>\d+(?:\.\d+)?)"
+)
+
 
 def _parse_dimensions(value: Any) -> tuple[float, float, float] | None:
     """从文本提取 (长, 宽, 高) 厘米；无法识别返回 None。
 
-    单位 mm/毫米 时换算为厘米（÷10），cm/厘米/无单位按厘米处理。
+    支持两种格式：
+    1. 乘号分隔三维尺寸（30*20*10cm / 30×20×10 CM），单位 mm/毫米 时换算为厘米（÷10）。
+    2. 空格分隔的 1688 规格表行（"25 20 0.50 250 4"，前三个数为长/宽/高 cm）。
     1688 变种尺寸属性常以毫米标注（如 34.5cm 商品写 "345*255*55mm"），
     若不换算会把体积重虚大 1000 倍，导致导出重量超出店小秘允许区间。
     """
     if value in (None, ""):
         return None
     match = _DIMENSIONS_PATTERN.search(str(value))
-    if not match:
-        return None
-    length = float(match.group("l"))
-    width = float(match.group("w"))
-    height = float(match.group("h"))
+    if match:
+        length = float(match.group("l"))
+        width = float(match.group("w"))
+        height = float(match.group("h"))
+        unit = (match.group("unit") or "").lower()
+        if unit in {"mm", "毫米"}:
+            length, width, height = length / 10.0, width / 10.0, height / 10.0
+    else:
+        match = _SPACED_DIMENSIONS_PATTERN.search(str(value))
+        if not match:
+            return None
+        length = float(match.group("l"))
+        width = float(match.group("w"))
+        height = float(match.group("h"))
     if length <= 0 or width <= 0 or height <= 0:
         return None
-    unit = (match.group("unit") or "").lower()
-    if unit in {"mm", "毫米"}:
-        length, width, height = length / 10.0, width / 10.0, height / 10.0
     return length, width, height
 
 
@@ -433,9 +521,12 @@ def _weight_meeting_volumetric(weight: Any, dimensions_texts: Sequence[Any]) -> 
             volumetric = max(volumetric, _volumetric_weight_g(*parsed))
     if volumetric <= 0:
         return weight
-    if isinstance(weight, (int, float)) and weight > volumetric:
+    if isinstance(weight, (int, float)) and weight > math.ceil(volumetric):
         return weight
-    return min(int(volumetric) + 1, DXM_WEIGHT_MAX_G)
+    # 体积重为小数时（含小数长宽高），店小秘若将体积重四舍五入到整数再与重量比较，
+    # 低于 ceil(vol)+1 的重量（含恰好等于舍入值）会被 "材积重量大于实际重量" 拒绝；
+    # ceil(vol)+1 保证重量严格大于任何舍入结果（比最低值多 ≤1g，不虚高）。
+    return min(math.ceil(volumetric) + 1, DXM_WEIGHT_MAX_G)
 
 
 def _normalize_stock(value: Any) -> int:

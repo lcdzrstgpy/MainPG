@@ -25,6 +25,7 @@ from .title_translation import to_search_keywords, translate_title_to_chinese
 
 
 _PROVIDER_NAME = "onebound-1688"
+_MAX_PARALLEL_SEARCHES = 4
 _OFFER_ID = re.compile(r"(?:offer/|offerId=|offer_id=)(\d{3,})", flags=re.IGNORECASE)
 _LOW_MEMORY_BYTES = 8 * 1024**3
 _LOW_CPU_COUNT = 4
@@ -316,9 +317,23 @@ def _failed_item(
 
 
 def _result_for_items(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    failed = [item for item in items if item["status"] == "failed"]
+    if items and len(failed) == len(items):
+        status = "failed"
+    elif failed:
+        status = "partial"
+    else:
+        status = "succeeded"
     return {
+        "status": status,
+        "all_failed": bool(items) and len(failed) == len(items),
+        "failed_skc_ids": [item["skc_id"] for item in failed],
         "items": list(items),
         "counts": {
+            "total_skc": len(items),
+            "completed_skc": len(items),
+            "succeeded_skc": len(items) - len(failed),
+            "failed_skc": len(failed),
             "processed_quotes": sum(len(item["source_quote_keys"]) for item in items),
             "failed_quotes": sum(
                 len(item["source_quote_keys"])

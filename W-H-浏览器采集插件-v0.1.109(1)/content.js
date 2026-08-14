@@ -4,6 +4,7 @@
   const tenantContext = globalThis.WorkbenchTenantContext;
   const PRODUCT_CAPTURE_HOST_RE = /(^|\.)(temu|1688|alibaba|pinduoduo|yangkeduo|amazon)\.com$/i;
   let productListCaptureBusy = false;
+  let priceQuoteCaptureBusy = false;
   let extensionContextInvalidated = false;
 
   renderConnectorBadge();
@@ -543,7 +544,9 @@
   function refreshPriceQuoteCaptureButton() {
     const button = document.getElementById("temu-price-quote-capture");
     if (!button) return;
+    if (priceQuoteCaptureBusy) return;
     safeStorageGet(["connectionContext"], (settings) => {
+      if (priceQuoteCaptureBusy) return;
       let connected = false;
       try {
         connected = Boolean(tenantContext.validateConnectionContext(settings?.connectionContext));
@@ -562,12 +565,14 @@
   function setPriceQuoteCaptureButtonState(text, busy = false, help = "") {
     const button = document.getElementById("temu-price-quote-capture");
     if (!button) return;
+    priceQuoteCaptureBusy = Boolean(busy);
     button.textContent = text;
     button.disabled = busy;
     button.title = help || text;
   }
 
   async function capturePriceQuotePageToWorkbench() {
+    if (priceQuoteCaptureBusy) return;
     setPriceQuoteCaptureButtonState("正在采集核价...", true);
     try {
       const response = await safeSendRuntimeMessage({ type: "CAPTURE_TEMU_PRICE_QUOTE_PAGE" });
@@ -667,6 +672,7 @@
     if (!button) return;
     if (productListCaptureBusy) return;
     safeStorageGet(["connectionContext"], (settings) => {
+      if (productListCaptureBusy) return;
       let connected = false;
       try {
         connected = Boolean(tenantContext.validateConnectionContext(settings?.connectionContext));
@@ -712,6 +718,7 @@
   }
 
   async function captureProductListToWorkbench() {
+    if (productListCaptureBusy) return;
     setProductListButtonState("正在采集...", true);
     setProductListCancelButtonState(true, "中断采集", false);
     try {

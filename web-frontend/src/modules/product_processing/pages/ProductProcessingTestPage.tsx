@@ -343,6 +343,7 @@ export function ProductProcessingTestPage() {
     formData.append('processing_scope', options.processingScope.join(','));
     formData.append('qualification_mode', options.qualificationMode);
     formData.append('include_product_video', String(options.includeProductVideo));
+    formData.append('image_generation_count', '4');
     try {
       const data = await ppUpload<TaskOutputsResponse>(api, `${API_BASE}/import`, formData);
       setCurrentTask(data);
@@ -378,6 +379,7 @@ export function ProductProcessingTestPage() {
         include_product_video: options.includeProductVideo,
         skip_duplicates: options.skipDuplicates,
         ip_check: options.ipCheck,
+        image_generation_count: 4,
       };
       const data = await ppRequest<TaskOutputsResponse>(api, `${API_BASE}/drafts/process`, {
         body,

@@ -720,8 +720,14 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     setBusy(true);
     setError("");
     try {
-      const handoffs = await confirmCandidates(activeRun.run_id, selectedCandidates);
-      setNotice(`已确认 ${handoffs.length} 个候选，等待产品处理模块消费`);
+      const result = await confirmCandidates(activeRun.run_id, selectedCandidates);
+      const replayText = result.replayed_count > 0
+        ? `；重复请求 ${result.replayed_count} 个未重复建池`
+        : "";
+      const pendingText = result.pending_count > 0
+        ? `；等待产品处理 ${result.pending_count} 个`
+        : "";
+      setNotice(`本次选择 ${result.selected_count} 个，新入池 ${result.created_count} 个${replayText}${pendingText}`);
       setActiveRun(await getSelectionRun(activeRun.run_id));
       setSelectedCandidates([]);
     } catch (requestError) {

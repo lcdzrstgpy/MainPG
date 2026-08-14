@@ -4,7 +4,7 @@
 构建步骤（见 build_installer.ps1）：
     1. 先执行 web-frontend 的 `npm run build` 生成 dist；
     2. `python -m PyInstaller workbench.spec --noconfirm --clean`；
-    3. 把 gitignored 的 cos.local.json / onebound.local.json 复制到 dist\\MainPG 目录；
+    3. 复制图标，但绝不复制 gitignored 的本地凭据、数据库或用户产物；
     4. 压缩 dist\\MainPG 得到安装包 zip。
 
 关键打包点：
@@ -34,6 +34,7 @@ for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "op
 # 运行期按 Path(__file__) 相对位置读取的迁移 SQL（必须按原目录结构打进包）
 for _rel in (
     "wh_local/data_collection/migrations",
+    "wh_local/modules/ai_service/migrations",
     "wh_local/modules/product_processing/migrations",
     "wh_local/modules/profit_activity/migrations",
     "wh_local/price_verification/migrations",

@@ -8,9 +8,10 @@ type SidebarProps = {
   modules: WorkspaceModule[];
   onSelect: (id: WorkspaceModuleId) => void;
   onHoverChange: (hovered: boolean) => void;
+  badges?: Partial<Record<WorkspaceModuleId, number>>;
 };
 
-export function Sidebar({ collapsed, activeId, expandedModuleIds, modules, onSelect, onHoverChange }: SidebarProps) {
+export function Sidebar({ collapsed, activeId, expandedModuleIds, modules, onSelect, onHoverChange, badges = {} }: SidebarProps) {
   return (
     <aside
       className={`sidebar-card ${collapsed ? "is-collapsed" : ""}`}
@@ -37,6 +38,7 @@ export function Sidebar({ collapsed, activeId, expandedModuleIds, modules, onSel
               >
                 <span className={module.iconClass} aria-hidden="true">{module.icon}</span>
                 <span className="sidebar-label">{module.label}</span>
+                {Boolean(badges[module.id]) && <span className="sidebar-module-badge" aria-label={`${badges[module.id]} 条待处理通知`}>{badges[module.id]}</span>}
               </button>
               {visibleChildren.length && groupExpanded ? (
                 <div className="sidebar-submenu" aria-label={`${module.label}子导航`}>

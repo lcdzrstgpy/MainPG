@@ -16,9 +16,6 @@ class Base(DeclarativeBase):
 
 class ProductDraftRow(Base):
     __tablename__ = "product_processing_drafts"
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "candidate_id", name="uq_product_processing_workspace_candidate"),
-    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     workspace_id: Mapped[str] = mapped_column(String(255), default="local", index=True)
@@ -39,6 +36,8 @@ class ProductDraftRow(Base):
     declared_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
     raw_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    preview_overrides_json: Mapped[str] = mapped_column(Text, default="{}")
+    preview_revision: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)
 
@@ -91,6 +90,32 @@ class ProcessingTaskItemRow(Base):
     updated_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)
 
     task: Mapped[ProcessingTaskRow] = relationship(back_populates="items")
+
+
+class ProcessingStageReceiptRow(Base):
+    """Durable evidence for one completed processing stage of one task item."""
+
+    __tablename__ = "product_processing_stage_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "task_item_id",
+            "stage",
+            name="uq_product_processing_workspace_item_stage_receipt",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(String(255), index=True)
+    task_item_id: Mapped[int] = mapped_column(
+        ForeignKey("product_processing_task_items.id", ondelete="CASCADE"),
+        index=True,
+    )
+    stage: Mapped[str] = mapped_column(String(64), index=True)
+    input_hash: Mapped[str] = mapped_column(String(64))
+    output_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)
 
 
 class DailySelectionIntakeRow(Base):

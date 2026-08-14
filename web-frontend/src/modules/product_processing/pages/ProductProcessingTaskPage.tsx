@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import type {
   ProductProcessingOptions,
@@ -18,10 +18,16 @@ const SITES = [
 const SCOPES: { key: string; label: string }[] = [
   { key: 'title', label: '标题' },
   { key: 'details', label: '详情' },
-  { key: 'product_dimensions', label: '产品尺寸' },
+  { key: 'product_dimensions', label: '物流包裹尺寸/重量' },
   { key: 'four_grid', label: '四宫格' },
   { key: 'detail_images', label: '详情图' },
   { key: 'qualification', label: '资质' },
+];
+
+// 生图提示词模板（对齐后端 IMAGE_TEMPLATES：A/B 直观标题区分两套生图逻辑）
+const IMAGE_TEMPLATES: { id: 'A' | 'B'; name: string; description: string }[] = [
+  { id: 'A', name: '标准商品海报', description: 'Amazon 高级电商视觉：大主体主图 + 精品展示 + 生活方式场景，画面不新增文字' },
+  { id: 'B', name: '高端模特视觉（防比价）', description: '人设+空间故事叙事、杂志编辑大片感，材质显贵、难以搜图比价，画面无文字' },
 ];
 
 const FAILURE_CLASS_LABELS: Record<string, string> = {
@@ -48,7 +54,11 @@ const AI_CONFIG_HINT =
 
 type Props = {
   initialDraftIds?: number[];
+  /** 精品模式草稿：一次 4K 四宫格，本地拆成四张高清独立图 */
+  initialPremiumDraftIds?: number[];
   initialOptions?: ProductProcessingOptions;
+  /** 任务完成后打开预检页（生成表格 → 预检修改 → 导出最终版） */
+  onOpenPrecheck?: (taskId: number) => void;
 };
 
 function api(): ApiContext {
@@ -76,7 +86,7 @@ function formatDuration(seconds?: number): string {
   return `${secs}秒`;
 }
 
-export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: Props) {
+export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck }: Props) {
   const ctx = api();
   const [options, setOptions] = useState<ProductProcessingOptions>(
     initialOptions || {
@@ -89,6 +99,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
       skipDuplicates: false,
       ipCheck: true,
       maxParallelDrafts: 8,
+      imageTemplate: 'A',
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
@@ -100,6 +111,9 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const startInFlightRef = useRef(false);
+  const startRequestRef = useRef<{ signature: string; key: string } | null>(null);
+  const pollGenerationRef = useRef(0);
 
   const failureItems = useMemo(
     () => batch?.items.filter(
@@ -158,46 +172,77 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
     if (!batch) return;
     const running = ['queued', 'running', 'paused'];
     if (!running.includes(batch.task.status)) return;
-    const timer = setInterval(async () => {
+    const generation = ++pollGenerationRef.current;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    const poll = async () => {
       try {
         const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/outputs`);
+        if (stopped || pollGenerationRef.current !== generation) return;
         setBatch(data);
-        if (!running.includes(data.task.status)) { clearInterval(timer); loadHistory(1); }
-      } catch { clearInterval(timer); }
-    }, 1000);
-    return () => clearInterval(timer);
+        if (!running.includes(data.task.status)) {
+          loadHistory(1);
+          return;
+        }
+      } catch (err) {
+        if (stopped || pollGenerationRef.current !== generation) return;
+        fail(err);
+      }
+      timer = setTimeout(poll, 1000);
+    };
+    timer = setTimeout(poll, 1000);
+    return () => {
+      stopped = true;
+      pollGenerationRef.current += 1;
+      if (timer) clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batch?.task_id, batch?.task.status]);
 
   const startBatch = async () => {
     if (!initialDraftIds?.length) { setError('没有可处理的草稿'); return; }
+    if (startInFlightRef.current || batchProcessing) return;
+    const body = {
+      title: '产品处理任务',
+      draft_ids: initialDraftIds.slice(0, options.maxProducts || 100),
+      max_products: options.maxProducts,
+      async_mode: true,
+      target_site: options.targetSite,
+      target_language: options.targetLanguage,
+      processing_scope: options.processingScope,
+      qualification_mode: options.qualificationMode,
+      include_product_video: options.includeProductVideo,
+      skip_duplicates: options.skipDuplicates,
+      ip_check: options.ipCheck,
+      max_parallel_drafts: options.maxParallelDrafts,
+      image_template: options.imageTemplate || 'A',
+      // 兼容旧 API 字段；新任务统一走四宫格策略，不再由用户选择。
+      image_generation_count: 4,
+    };
+    const signature = JSON.stringify(body);
+    if (!startRequestRef.current || startRequestRef.current.signature !== signature) {
+      startRequestRef.current = {
+        signature,
+        key: globalThis.crypto?.randomUUID?.() || `pp-${Date.now()}-${Math.random()}`,
+      };
+    }
+    startInFlightRef.current = true;
     setLoading(true);
     setMessage('');
     setError('');
     try {
+      const premiumIds = (initialPremiumDraftIds || []).filter((id) => initialDraftIds.includes(id));
       const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/drafts/process`, {
-        body: {
-          title: '产品处理任务',
-          draft_ids: initialDraftIds.slice(0, options.maxProducts || 100),
-          max_products: options.maxProducts,
-          async_mode: true,
-          target_site: options.targetSite,
-          target_language: options.targetLanguage,
-          processing_scope: options.processingScope,
-          qualification_mode: options.qualificationMode,
-          include_product_video: options.includeProductVideo,
-          skip_duplicates: options.skipDuplicates,
-          ip_check: options.ipCheck,
-          max_parallel_drafts: options.maxParallelDrafts,
-        },
+        body: { ...body, premium_draft_ids: premiumIds },
+        headers: { 'Idempotency-Key': startRequestRef.current.key },
       });
       setBatch(data);
-      notify(data.message || '批次已提交');
-    } catch (err) { fail(err); } finally { setLoading(false); }
+      notify(premiumIds.length ? data.message || `批次已提交（含 ${premiumIds.length} 条精品单图）` : (data.message || '批次已提交'));
+    } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
   };
 
   const clearBatch = async () => {
-    if (!batch) return;
+    if (!batch || batchProcessing) return;
     try {
       await ppRequest(ctx, `${API_BASE}/tasks/${batch.task_id}/clear`, { body: {} });
       setBatch(null); loadHistory(1); notify('已清空当前任务');
@@ -211,6 +256,24 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
 
   // 重新处理失败/待确认项：以这些草稿为新的批次重新走处理流水线（async_mode 后台执行）
   const retryFailed = async (draftIds: number[]) => {
+    if (!draftIds.length || !batch || batchProcessing || startInFlightRef.current) return;
+    startInFlightRef.current = true;
+    setLoading(true);
+    setMessage('');
+    setError('');
+    try {
+      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/retry-attention`, {
+        body: { draft_ids: draftIds },
+      });
+      setBatch(data);
+      notify(data.message || `已提交 ${draftIds.length} 个失败项重新处理`);
+      loadHistory(1);
+    } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
+  };
+
+  // 强制入库：用户「我已知晓，仍要入库」——图片质量门不再阻断，回退来源图继续走完流水线，
+  // 预审环节可人工修正图片/信息
+  const forceImportFailed = async (draftIds: number[]) => {
     if (!draftIds.length) return;
     setLoading(true);
     setMessage('');
@@ -218,8 +281,9 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
     try {
       const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/drafts/process`, {
         body: {
-          title: '失败项重新处理',
+          title: '失败项强制入库',
           draft_ids: draftIds,
+          force_import_draft_ids: draftIds,
           max_products: 0,
           async_mode: true,
           target_site: options.targetSite,
@@ -230,10 +294,11 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
           skip_duplicates: false,
           ip_check: options.ipCheck,
           max_parallel_drafts: options.maxParallelDrafts,
+          image_template: options.imageTemplate || 'A',
         },
       });
       setBatch(data);
-      notify(data.message || `已提交 ${draftIds.length} 个失败项重新处理`);
+      notify(data.message || `已提交 ${draftIds.length} 个失败项强制入库`);
       loadHistory(1);
     } catch (err) { fail(err); } finally { setLoading(false); }
   };
@@ -314,6 +379,21 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
               <label className="verify-scope-check"><input type="checkbox" checked={options.skipDuplicates} onChange={(e) => setOptions((p) => ({ ...p, skipDuplicates: e.target.checked }))} />跳过已处理</label>
               <label className="verify-scope-check"><input type="checkbox" checked={options.ipCheck} onChange={(e) => setOptions((p) => ({ ...p, ipCheck: e.target.checked }))} />侵权词过滤</label>
             </div>
+            <div className="verify-form-row">
+              <span className="verify-scope-label">生图模板：</span>
+              {IMAGE_TEMPLATES.map((template) => (
+                <label key={template.id} className="verify-template-card" title={template.description}>
+                  <input
+                    type="radio"
+                    name="image-template"
+                    checked={(options.imageTemplate || 'A') === template.id}
+                    onChange={() => setOptions((p) => ({ ...p, imageTemplate: template.id }))}
+                  />
+                  <span className="verify-template-name">{template.name}</span>
+                  <span className="verify-template-desc">{template.description}</span>
+                </label>
+              ))}
+            </div>
             <div className="verify-slider-row">
               <span className="verify-scope-label">处理数量：</span>
               <input className="verify-slider" type="range" min={0} max={100} step={1} value={options.maxProducts} onChange={(e) => setOptions((p) => ({ ...p, maxProducts: Number(e.target.value) || 0 }))} />
@@ -325,8 +405,11 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
               <span className="verify-slider-value">{options.maxParallelDrafts} 线程{options.maxParallelDrafts <= 1 ? '（串行）' : ''}</span>
             </div>
             <div className="verify-actions">
-              <button className="primary" onClick={() => startBatch()} disabled={loading || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
-              <button onClick={clearBatch} disabled={!batch}>清空任务</button>
+              <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
+              <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
+              {!!initialPremiumDraftIds?.length && (
+                <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条：一次 4K 四宫格，拆为 4 张高清图</span>
+              )}
             </div>
           </section>
 
@@ -387,6 +470,12 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
                     onClick={() => download('video_manifest', `product_video_manifest_task_${batch.task_id}.csv`)}
                     title={batchProcessing ? '处理完成后可下载' : undefined}
                   >下载视频清单</button>
+                  <button
+                    className="primary"
+                    disabled={batchProcessing}
+                    onClick={() => onOpenPrecheck?.(batch.task_id)}
+                    title={batchProcessing ? '处理完成后可进入预检' : '打开预检页：核对标题/图片/字段，修改后导出最终版表格'}
+                  >预检并导出最终版</button>
                 </div>
                 {batchProcessing && (
                   <p className="verify-download-hint">输出文件将在处理完成后生成，请稍候。</p>
@@ -407,6 +496,12 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
                     onClick={() => retryFailed(failureItems.map((item) => item.product_draft_id).filter((id): id is number => id != null))}
                     title={batchProcessing ? '当前批次处理中，完成后可重试' : undefined}
                   ><i className="iconfont icon-rocket" aria-hidden="true" />重试全部失败（{failureItems.length}）</button>
+                  <button
+                    className="btn-mini force-import"
+                    disabled={loading || batchProcessing}
+                    onClick={() => forceImportFailed(failureItems.map((item) => item.product_draft_id).filter((id): id is number => id != null))}
+                    title={batchProcessing ? '当前批次处理中，完成后可操作' : '我已知道生成图质量问题，仍要提交入库（回退来源图，预审可修改）'}
+                  ><i className="iconfont icon-check-circle" aria-hidden="true" />全部知晓入库（{failureItems.length}）</button>
                 </span>
               </div>
               {hasAiConfigIssue && (
@@ -429,12 +524,22 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialOptions }: P
                         <td>{result.retryable ? '是' : '否'}</td>
                         <td>
                           {draftId != null ? (
-                            <button
-                              className="btn-mini primary"
-                              disabled={loading || batchProcessing}
-                              onClick={() => retryFailed([draftId])}
-                              title="以该草稿重新提交处理流水线"
-                            >重新处理</button>
+                            <span className="verify-row-actions">
+                              <button
+                                className="btn-mini primary"
+                                disabled={loading || batchProcessing}
+                                onClick={() => retryFailed([draftId])}
+                                title="以该草稿重新提交处理流水线"
+                              >重新处理</button>
+                              {result.retryable && (
+                                <button
+                                  className="btn-mini force-import"
+                                  disabled={loading || batchProcessing}
+                                  onClick={() => forceImportFailed([draftId])}
+                                  title="我已知道生成图质量问题，仍要提交入库（回退来源图，预审可修改）"
+                                >我已知晓，仍要入库</button>
+                              )}
+                            </span>
                           ) : ('-')}
                         </td>
                       </tr>

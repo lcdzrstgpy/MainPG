@@ -74,6 +74,11 @@ class DraftProcessRequest(BaseModel):
     category_preflight_only: bool = False
     force_new_task: bool = False
     plugin_session_id: int | None = None
+    # 精品模式：勾选草稿走「1 张 4K 四宫格、本地拆成 4 张高清图」流程，其余逻辑一致
+    premium_draft_ids: list[int] = []
+    # 强制入库：用户对失败/待确认草稿点击「我已知晓，仍要入库」后重新提交时带上。
+    # 图片质量门不再阻断（回退来源图继续走完流水线），预审环节可人工修正信息。
+    force_import_draft_ids: list[int] = []
     # 旧版布尔开关（向后兼容）
     title_optimize: bool = True
     description: bool = True
@@ -96,6 +101,10 @@ class DraftProcessRequest(BaseModel):
     processing_scope: list[str] = Field(default_factory=list)
     include_product_video: bool = False
     max_parallel_drafts: int = Field(default=1, ge=1, le=20, description="最大并行处理数，1=串行，上限20")
+    image_generation_count: int = Field(
+        default=4,
+        description="旧客户端兼容字段；当前固定为 4，普通与精品均一次生成四宫格后本地拆分",
+    )
 
     @field_validator("draft_ids")
     @classmethod
@@ -113,6 +122,13 @@ class DraftProcessRequest(BaseModel):
         if invalid:
             raise ValueError(f"processing_scope 包含非法值: {sorted(invalid)}")
         return list(dict.fromkeys(value))
+
+    @field_validator("image_generation_count")
+    @classmethod
+    def valid_image_generation_count(cls, value: int) -> int:
+        if value not in {1, 2, 4}:
+            raise ValueError("image_generation_count 必须是 1、2 或 4")
+        return value
 
     @model_validator(mode="after")
     def sync_scope_and_legacy_options(self) -> "DraftProcessRequest":
@@ -151,6 +167,36 @@ class DraftProcessRequest(BaseModel):
 
 class RetryTaskRequest(BaseModel):
     plugin_session_id: int | None = None
+    draft_ids: list[int] = Field(default_factory=list)
+
+
+class PreviewImageManifestInput(BaseModel):
+    main_asset_id: str = ""
+    carousel_asset_ids: list[str] = Field(default_factory=list)
+    detail_asset_ids: list[str] = Field(default_factory=list)
+    semantic_asset_ids: dict[str, str] = Field(default_factory=dict)
+
+
+class PreviewDesiredState(BaseModel):
+    title: str
+    description: str
+    core_fields: dict[str, Any] = Field(default_factory=dict)
+    image_manifest_v2: PreviewImageManifestInput
+
+
+class PreviewSaveItem(BaseModel):
+    product_draft_id: int
+    expected_preview_revision: int = Field(ge=0)
+    expected_result_version: str = Field(default="", max_length=64)
+    overrides: PreviewDesiredState
+
+
+class PreviewSaveRequest(BaseModel):
+    items: list[PreviewSaveItem] = Field(default_factory=list)
+
+
+class PreviewFinalizeRequest(PreviewSaveRequest):
+    pass
 
 
 class PromptUpdateRequest(BaseModel):

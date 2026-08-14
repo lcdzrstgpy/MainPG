@@ -615,12 +615,21 @@ def visual_category_family(category_path: str, text: str) -> str:
 
 def visual_style_for_family(family: str, traits: dict[str, bool]) -> str:
     if traits.get("red_festive") or family == "party_festival":
-        return "warm festive US/EU home style, tasteful and not exaggerated"
-    return str(visual_role_plan(family).get("style") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["style"])
+        base = "warm festive US/EU home style, tasteful and not exaggerated"
+    else:
+        base = str(visual_role_plan(family).get("style") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["style"])
+    return (
+        f"{base}; premium editorial e-commerce photography, curated low-saturation palette, "
+        "tactile high-quality finish, no plain white/gray template look"
+    )
 
 
 def lighting_plan_for_family(family: str) -> str:
-    return str(visual_role_plan(family).get("lighting") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["lighting"])
+    base = str(visual_role_plan(family).get("lighting") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["lighting"])
+    return (
+        f"{base}; add directional soft side light, realistic rim highlights, contact shadows, "
+        "soft reflections, material luster, and crisp micro-contrast; avoid flat studio lighting"
+    )
 
 
 def material_plan_for_family(family: str, traits: dict[str, bool], *, trusted_material: str) -> str:
@@ -630,14 +639,24 @@ def material_plan_for_family(family: str, traits: dict[str, bool], *, trusted_ma
     if trusted_material:
         material_focus.append(f"verified {trusted_material} surface/finish")
     if material_focus:
-        return "; ".join(material_focus)
-    return str(visual_role_plan(family).get("material") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["material"])
+        base = "; ".join(material_focus)
+    else:
+        base = str(visual_role_plan(family).get("material") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["material"])
+    return (
+        f"{base}; emphasize only visible real texture, edge polish, grain, weave, gloss, transparency, "
+        "stitching, hardware, printed detail, or surface finish without inventing material"
+    )
 
 
 def background_plan_for_family(family: str, traits: dict[str, bool]) -> str:
     if family == "party_festival" or traits.get("red_festive"):
-        return "warm festive dining or home party setting, tasteful and not crowded"
-    return str(visual_role_plan(family).get("background") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["background"])
+        base = "warm festive dining or home party setting, tasteful and not crowded"
+    else:
+        base = str(visual_role_plan(family).get("background") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["background"])
+    return (
+        f"{base}; use premium category-matched surfaces such as walnut wood, micro-cement, linen, "
+        "stone, ceramic, glass reflection, or editorial home props, not a plain white/gray background"
+    )
 
 
 def composition_plan_for_family(family: str) -> str:

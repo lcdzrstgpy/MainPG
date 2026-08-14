@@ -41,7 +41,7 @@ class RuntimeLimits(BaseModel):
     text_request_limit: int = Field(default=30, ge=1, le=100)
     image_request_limit: int = Field(default=15, ge=1, le=100)
     image_retry_attempts: int = Field(default=3, ge=1, le=5)
-    image_provider_strategy: str = "balanced"
+    image_provider_strategy: str = "primary_first"
     provider_backup_share_percent: int = Field(default=0, ge=0, le=90)
     image_stop_after_billable_failure: bool = True
 

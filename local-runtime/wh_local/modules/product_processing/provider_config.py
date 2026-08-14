@@ -26,18 +26,25 @@ TEXT_MODEL = "gpt-5.6-terra"
 # 禁止降级到高价模型（如 gpt-5.4、deepseek-v4-pro）。
 TEXT_MODEL_FALLBACK_ORDER = ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "gemini-3.1-flash-lite-antigravity")
 
-IMAGE_MODEL = "gpt-image-2-1k"
-REFERENCE_IMAGE_MODEL = "gpt-image-2-1k"
-# 图片模型池：同中转多模型之间按请求轮巡（balanced/round_robin），单模型挂掉自动切换。
-IMAGE_MODEL_POOL = ("gpt-image-2-1k", "gpt-image-2-2k")
-IMAGE_SIZE = "1024x1024"
+IMAGE_MODEL = "gpt-image-2-2k"
+REFERENCE_IMAGE_MODEL = "gpt-image-2-2k"
+REFERENCE_IMAGE_MODEL_1K = "gpt-image-2-1k"
+# 产品处理出图优先质感：默认固定使用 gpt-image-2-2k，避免 balanced 轮巡回 1k。
+IMAGE_MODEL_POOL = ("gpt-image-2-2k",)
+IMAGE_SIZE = "2048x2048"
+REFERENCE_IMAGE_SIZE_1K = "1024x1024"
 IMAGE_QUALITY = "medium"
+# 精品模式固定一次 4K 四宫格，再在本地无降采样拆为四张约 2048×2048 轮播图。
+PREMIUM_IMAGE_MODEL = "gpt-image-2-4k"
+PREMIUM_IMAGE_SIZE = "4096x4096"
 
-DEFAULT_AI_TIMEOUT_SECONDS = 60.0
-# 差异化超时：文本生成快，缩短等待让失败快速落回降级链；图片编辑耗时长，保留充足时间。
-# 避免慢模型/挂起请求把整批任务拖成 4×60s。
-TEXT_AI_TIMEOUT_SECONDS = 25.0
-IMAGE_AI_TIMEOUT_SECONDS = 90.0
+# 运行时模型通常先返回，再由调用方做结构化校验；慢模型不能被客户端过早取消。
+# 文本单候选最多等 5 分钟，整条降级链最多 6 分钟，避免四个候选串行等待 20 分钟。
+# 2K 参考图编辑实测可超过 3 分钟，因此单次图片请求保留 10 分钟。
+DEFAULT_AI_TIMEOUT_SECONDS = 300.0
+TEXT_AI_TIMEOUT_SECONDS = 300.0
+TEXT_AI_TOTAL_TIMEOUT_SECONDS = 360.0
+IMAGE_AI_TIMEOUT_SECONDS = 600.0
 
 # 应用组合根（create_app 中注入），指向 BasicSettings 使用的 SQLite 数据库。
 _system_config_db_path: str | None = None
@@ -99,11 +106,22 @@ def resolve_ai_provider() -> dict[str, Any]:
     ).strip()
     image_model = IMAGE_MODEL
     reference_image_model = REFERENCE_IMAGE_MODEL
+    premium_image_model = PREMIUM_IMAGE_MODEL
+    premium_image_size = PREMIUM_IMAGE_SIZE
 
     fallback = list(TEXT_MODEL_FALLBACK_ORDER)
 
-    # 读取 COS 系统配置公开字段（bucket/region），密钥由 _media_config_provider 处理
-    sys_cos: dict[str, str] = _try_system_cos_public()
+    # 解密后的 COS 配置仅作为后端内部运行时数据传给图片发布器；安全摘要不会回显它。
+    sys_cos: dict[str, str] = (
+        {
+            "bucket": str(sys_cfg.cos.bucket).strip(),
+            "region": str(sys_cfg.cos.region).strip(),
+            "secret_id": str(sys_cfg.cos.secret_id).strip(),
+            "secret_key": str(sys_cfg.cos.secret_key).strip(),
+        }
+        if sys_cfg and sys_cfg.cos.configured
+        else _try_system_cos_public()
+    )
 
     return {
         "provider": AI_PROVIDER,
@@ -113,11 +131,17 @@ def resolve_ai_provider() -> dict[str, Any]:
         "text_model_fallback_order": fallback,
         "image_model": image_model,
         "reference_image_model": reference_image_model,
+        "reference_image_model_1k": REFERENCE_IMAGE_MODEL_1K,
+        "reference_image_size_1k": REFERENCE_IMAGE_SIZE_1K,
         "image_models": list(IMAGE_MODEL_POOL),
         "image_size": os.environ.get("WH_AI_IMAGE_SIZE", IMAGE_SIZE).strip(),
         "image_quality": os.environ.get("WH_AI_IMAGE_QUALITY", IMAGE_QUALITY).strip(),
+        # 精品模式 4K 四宫格配置（环境变量可覆盖，便于运营按中转实际能力调整）
+        "premium_image_model": os.environ.get("WH_AI_PREMIUM_IMAGE_MODEL", premium_image_model).strip(),
+        "premium_image_size": os.environ.get("WH_AI_PREMIUM_IMAGE_SIZE", premium_image_size).strip(),
         "timeout_seconds": DEFAULT_AI_TIMEOUT_SECONDS,
         "text_timeout_seconds": TEXT_AI_TIMEOUT_SECONDS,
+        "text_total_timeout_seconds": TEXT_AI_TOTAL_TIMEOUT_SECONDS,
         "image_timeout_seconds": IMAGE_AI_TIMEOUT_SECONDS,
         # 系统配置附加信息（供 _media_config_provider 使用）
         "_sys_image_ai": (
@@ -126,6 +150,8 @@ def resolve_ai_provider() -> dict[str, Any]:
                 "api_key": image_api_key,
                 "model": image_model,
                 "reference_model": reference_image_model,
+                "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
+                "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
             }
             if sys_cfg and sys_cfg.image_ai.configured
             else None
@@ -136,6 +162,8 @@ def resolve_ai_provider() -> dict[str, Any]:
                 "api_key": sys_cfg.backup_image_ai.api_key,
                 "model": sys_cfg.backup_image_ai.model,
                 "reference_model": sys_cfg.backup_image_ai.reference_model,
+                "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
+                "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
             }
             if sys_cfg and sys_cfg.backup_image_ai.configured
             else None
@@ -191,6 +219,8 @@ def ai_provider_summary() -> dict[str, Any]:
         "text_model_fallback_order": provider["text_model_fallback_order"],
         "image_model": provider["image_model"],
         "reference_image_model": provider["reference_image_model"],
+        "reference_image_model_1k": provider["reference_image_model_1k"],
+        "reference_image_size_1k": provider["reference_image_size_1k"],
         "image_size": provider["image_size"],
         "image_quality": provider["image_quality"],
         "enabled": bool(provider["api_key"]),
