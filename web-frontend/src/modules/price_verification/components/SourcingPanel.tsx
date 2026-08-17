@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import { priceVerificationApi } from "../api/priceVerificationApi";
-import type { SkcSourceLink, SourceCandidate, SourceCandidateSelection, SourcePreview, SourcePreviewItem, SourcePreviewSkcGroup, SourceTopProfit } from "../types";
+import type { QuoteBatchSkuPrice, SkcSourceLink, SourceCandidate, SourceCandidateSelection, SourcePreview, SourcePreviewItem, SourcePreviewSkcGroup, SourceTopProfit } from "../types";
 import { SectionHelp } from "./SectionHelp";
 import "../styles/priceVerificationSource.css";
 
@@ -77,6 +77,19 @@ function moneyText(value: unknown) {
   return `¥${number.toFixed(2)}`;
 }
 
+function temuSkuPrice(sku: QuoteBatchSkuPrice) {
+  return sku.new_declared_price_cny
+    ?? sku.adjusted_declared_price_cny
+    ?? sku.original_declared_price_cny
+    ?? null;
+}
+
+function temuPriceText(sku: QuoteBatchSkuPrice) {
+  const value = temuSkuPrice(sku);
+  if (value === null || value === undefined || value === "") return "-";
+  return `¥${value}`;
+}
+
 function percentText(value: unknown) {
   const number = toNumber(value);
   if (!Number.isFinite(number)) return "";
@@ -148,6 +161,14 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
   const [manualLookupUrl, setManualLookupUrl] = useState("");
   const [manualLookupBusy, setManualLookupBusy] = useState(false);
   const [imagePreviewUrl, setImagePreviewUrl] = useState("");
+  const [temuSkuDrawer, setTemuSkuDrawer] = useState<{
+    productId: string;
+    productTitle: string;
+    imageUrl?: string;
+    skus: QuoteBatchSkuPrice[];
+    loading: boolean;
+    error: string;
+  } | null>(null);
   const sourceRunButtonRef = useRef<HTMLButtonElement>(null);
   const [showRefloatButton, setShowRefloatButton] = useState(false);
   const canRunSourceSearch = !busy && (sourceCount ?? 0) > 0;
@@ -180,6 +201,20 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
   }, [imagePreviewUrl]);
 
   useEffect(() => {
+    if (!temuSkuDrawer) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTemuSkuDrawer(null);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [temuSkuDrawer]);
+
+  useEffect(() => {
     const contentCard = document.querySelector<HTMLElement>(".content-card");
     const updateRefloatVisibility = () => {
       const button = sourceRunButtonRef.current;
@@ -201,6 +236,31 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       window.removeEventListener("resize", updateRefloatVisibility);
     };
   }, [canRefloatSourceSearch, preview]);
+
+  const openTemuSkuDrawer = async (productId: string, item?: SourcePreviewItem) => {
+    if (!batchId || !productId) return;
+    const productTitle = item?.product_title || "Temu 商品";
+    const imageUrl = item?.main_image_url;
+    setTemuSkuDrawer({ productId, productTitle, imageUrl, skus: [], loading: true, error: "" });
+    try {
+      const selections = await priceVerificationApi.listBatchSelections(batchId);
+      const selection = selections.find((entry) => entry.skc_id === productId);
+      if (!selection) {
+        setTemuSkuDrawer({ productId, productTitle, imageUrl, skus: [], loading: false, error: "当前批次未找到该商品的 SKU 采集记录。" });
+        return;
+      }
+      setTemuSkuDrawer({
+        productId,
+        productTitle: selection.product_title || productTitle,
+        imageUrl: selection.main_image_url || imageUrl,
+        skus: selection.sku_prices,
+        loading: false,
+        error: "",
+      });
+    } catch (error) {
+      setTemuSkuDrawer({ productId, productTitle, imageUrl, skus: [], loading: false, error: `读取 Temu SKU 失败：${actionError(error)}` });
+    }
+  };
 
   const computeCandidateProfit = async (item: SourcePreviewItem, candidate: SourceCandidate, weightKg: number, priceOverride?: string): Promise<SourceTopProfit | null> => {
     if (!batchId) return null;
@@ -375,7 +435,9 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                         {mainImageUrl ? <button type="button" className="pv-source-temu-image-trigger" onClick={() => setImagePreviewUrl(mainImageUrl)} aria-label="查看商品大图">
                           <img className="pv-source-temu-image" src={mainImageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
                         </button> : null}
-                    <span className="pv-source-skc-badge">{group.skc_id}</span>
+                    <button type="button" className="pv-source-temu-id-button" onClick={() => void openTemuSkuDrawer(group.skc_id, item)} title="查看 Temu 商品 SKU">
+                      {group.skc_id}
+                    </button>
                     <strong>{item?.product_title || "未命名商品"}</strong>
                     <button type="button" className="pv-source-manual-button" disabled={busy || manualLookupBusy} onClick={() => { setManualLookupSkcId(group.skc_id); setManualLookupUrl(""); }}>手动查1688</button>
                   </div>
@@ -471,6 +533,34 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       >
         {busy ? "图搜执行中…" : "重新图搜"}
       </button>
+      {temuSkuDrawer ? <div className="pv-temu-sku-drawer-layer" role="presentation" onMouseDown={(event) => {
+        if (event.currentTarget === event.target) setTemuSkuDrawer(null);
+      }}>
+        <aside className="pv-temu-sku-drawer" role="dialog" aria-modal="true" aria-label="Temu 商品 SKU 信息">
+          <header className="pv-temu-sku-drawer-head">
+            <div><span>TEMU PRODUCT</span><strong>商品 SKU 信息</strong><small>商品 ID：{temuSkuDrawer.productId}</small></div>
+            <button type="button" onClick={() => setTemuSkuDrawer(null)} aria-label="关闭 SKU 信息">×</button>
+          </header>
+          <div className="pv-temu-sku-product">
+            {temuSkuDrawer.imageUrl ? <img src={temuSkuDrawer.imageUrl} alt="" referrerPolicy="no-referrer" /> : null}
+            <strong>{temuSkuDrawer.productTitle}</strong>
+          </div>
+          <div className="pv-temu-sku-drawer-body">
+            {temuSkuDrawer.loading ? <p className="pv-temu-sku-status">正在读取 SKU 信息…</p> : null}
+            {!temuSkuDrawer.loading && temuSkuDrawer.error ? <p className="pv-temu-sku-status is-error">{temuSkuDrawer.error}</p> : null}
+            {!temuSkuDrawer.loading && !temuSkuDrawer.error && temuSkuDrawer.skus.length === 0 ? <p className="pv-temu-sku-status">该商品采集时未提供 SKU 明细。</p> : null}
+            {!temuSkuDrawer.loading && !temuSkuDrawer.error && temuSkuDrawer.skus.length > 0 ? <div className="pv-temu-sku-table-wrap">
+              <table className="pv-temu-sku-table">
+                <thead><tr><th>SKU 货号</th><th>调整后申报价格</th></tr></thead>
+                <tbody>{temuSkuDrawer.skus.map((sku, index) => <tr key={`${sku.sku_id || "sku"}-${index}`}>
+                  <td><strong>{sku.sku_id || "-"}</strong>{sku.sku_attribute_text ? <small>{sku.sku_attribute_text}</small> : null}</td>
+                  <td>{temuPriceText(sku)}</td>
+                </tr>)}</tbody>
+              </table>
+            </div> : null}
+          </div>
+        </aside>
+      </div> : null}
       {manualLookupSkcId ? <div className="pv-source-manual-dialog-backdrop" role="presentation" onMouseDown={() => !manualLookupBusy && setManualLookupSkcId("")}>
         <form className="pv-source-manual-dialog" role="dialog" aria-modal="true" aria-labelledby="pv-manual-lookup-title" onSubmit={(event) => void submitManualLookup(event)} onMouseDown={(event) => event.stopPropagation()}>
           <div>

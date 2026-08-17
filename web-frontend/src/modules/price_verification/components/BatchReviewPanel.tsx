@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import type { QuoteBatchReviewItem } from "../types";
 import { SectionHelp } from "./SectionHelp";
 import { WorkflowActionBar, useFloatingActionBar } from "./WorkflowActionBar";
@@ -27,6 +27,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
   const [confirming, setConfirming] = useState(false);
   const [deletingSkcId, setDeletingSkcId] = useState("");
   const [deletingSelected, setDeletingSelected] = useState(false);
+  const [expandedSkcIds, setExpandedSkcIds] = useState<Record<string, boolean>>({});
   const [maxCandidates] = useState(5);
   const { actionBarRef, spacerRef } = useFloatingActionBar("top");
   const selectedSkcIds = useMemo(
@@ -44,6 +45,10 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
 
   const toggleAll = (checked: boolean) => {
     setSelected(Object.fromEntries(items.map((item) => [item.skc_id, checked])));
+  };
+
+  const toggleSkuDetails = (skcId: string) => {
+    setExpandedSkcIds((current) => ({ ...current, [skcId]: !current[skcId] }));
   };
 
   const confirm = async () => {
@@ -113,37 +118,67 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
-                <tr key={item.skc_id} className={selected[item.skc_id] ? "is-selected" : ""}>
-                  <td className="batch-review-check-cell"><input type="checkbox" checked={Boolean(selected[item.skc_id])} onChange={(event) => toggle(item.skc_id, event.target.checked)} disabled={busy} /></td>
-                  <td className="batch-review-sku-info-cell">
-                    <div className="batch-review-sku-info">
-                      {item.main_image_url ? <img src={item.main_image_url} alt="" referrerPolicy="no-referrer" /> : <div className="batch-review-no-image">无图</div>}
-                      <div>
-                        <strong title={item.product_title}>{item.product_title || "未命名商品"}</strong>
-                        <small>SKC：{item.skc_id}</small>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="batch-review-site-cell">{item.site || "—"}</td>
-                  <td className="batch-review-price-cell">{priceRange(item.original_min, item.original_max)}</td>
-                  <td className="batch-review-price-cell is-adjusted">{priceRange(item.adjusted_min, item.adjusted_max)}</td>
-                  <td className="batch-review-action-cell">
-                    <button
-                      type="button"
-                      className="batch-review-delete-button"
-                      disabled={busy || Boolean(deletingSkcId)}
-                      onClick={() => {
-                        if (window.confirm(`确认删除 SKC ${item.skc_id}？删除后该商品不再出现在本次批次报价审核中。`)) {
-                          void remove(item.skc_id);
-                        }
-                      }}
-                    >
-                      {deletingSkcId === item.skc_id ? "删除中…" : "删除"}
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {items.map((item) => {
+                const skuPrices = item.sku_prices ?? [];
+                const expanded = Boolean(expandedSkcIds[item.skc_id]);
+                return (
+                  <Fragment key={item.skc_id}>
+                    <tr className={selected[item.skc_id] ? "is-selected" : ""}>
+                      <td className="batch-review-check-cell"><input type="checkbox" checked={Boolean(selected[item.skc_id])} onChange={(event) => toggle(item.skc_id, event.target.checked)} disabled={busy} /></td>
+                      <td className="batch-review-sku-info-cell">
+                        <div className="batch-review-sku-info">
+                          {item.main_image_url ? <img src={item.main_image_url} alt="" referrerPolicy="no-referrer" /> : <div className="batch-review-no-image">无图</div>}
+                          <div>
+                            <strong title={item.product_title}>{item.product_title || "未命名商品"}</strong>
+                            <small>SKC：{item.skc_id}</small>
+                            {skuPrices.length ? <button type="button" className="batch-review-sku-toggle" onClick={() => toggleSkuDetails(item.skc_id)} aria-expanded={expanded}>{expanded ? `收起下属 SKU（${skuPrices.length}）` : `查看下属 SKU（${skuPrices.length}）`}</button> : null}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="batch-review-site-cell">{item.site || "—"}</td>
+                      <td className="batch-review-price-cell">{priceRange(item.original_min, item.original_max)}</td>
+                      <td className="batch-review-price-cell is-adjusted">{priceRange(item.adjusted_min, item.adjusted_max)}</td>
+                      <td className="batch-review-action-cell">
+                        <button
+                          type="button"
+                          className="batch-review-delete-button"
+                          disabled={busy || Boolean(deletingSkcId)}
+                          onClick={() => {
+                            if (window.confirm(`确认删除 SKC ${item.skc_id}？删除后该商品不再出现在本次批次报价审核中。`)) {
+                              void remove(item.skc_id);
+                            }
+                          }}
+                        >
+                          {deletingSkcId === item.skc_id ? "删除中…" : "删除"}
+                        </button>
+                      </td>
+                    </tr>
+                    {expanded ? (
+                      <tr className="batch-review-sku-children-row">
+                        <td className="batch-review-check-cell" />
+                        <td colSpan={5}>
+                          <div className="batch-review-sku-children">
+                            <strong>下属 SKU（{skuPrices.length}）</strong>
+                            <table>
+                              <thead><tr><th>SKU 货号</th><th>SKU 属性</th><th>原申报价格（CNY）</th><th>调整后申报价格（CNY）</th></tr></thead>
+                              <tbody>
+                                {skuPrices.map((sku, index) => (
+                                  <tr key={`${sku.sku_id || "sku"}-${index}`}>
+                                    <td>{sku.sku_id || "—"}</td>
+                                    <td>{sku.sku_attribute_text || "—"}</td>
+                                    <td>{money(sku.original_declared_price_cny)}</td>
+                                    <td>{money(sku.adjusted_declared_price_cny)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>

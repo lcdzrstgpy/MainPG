@@ -33,6 +33,7 @@ class QuoteItem:
     sku_merchant_code: str = ""
     sku_attribute_set: str = ""
     sku_attribute_text: str = ""
+    sku_quantity: str = ""
     skc_attribute_text: str = ""
     product_attribute_summary: str = ""
     spu_or_goods_id: str = ""
@@ -147,6 +148,7 @@ def normalize_price_quote_discovery(payload: Mapping[str, Any]) -> QuotePreview:
         item = quote_item_from_dom_row(row, popup_confirmed=popup_confirmed)
         if has_quote_signal(item):
             dom_items.append(item)
+    network_items = attach_sku_only_network_items(network_items, dom_items)
     items = [*align_network_to_dom_page(network_items, dom_items), *dom_items]
     quotes = dedupe_quotes(items)
     complete = [item for item in quotes if is_complete_quote(item)]
@@ -240,6 +242,42 @@ def align_network_to_dom_page(
     return [item for item in network_items if item.skc_id in dom_skcs]
 
 
+def attach_sku_only_network_items(
+    network_items: Sequence[QuoteItem], dom_items: Sequence[QuoteItem]
+) -> list[QuoteItem]:
+    """Attach SKU-only network rows to the parent SKC shown in the popup DOM."""
+    parent_by_sku: dict[str, QuoteItem] = {}
+    for item in dom_items:
+        if not item.skc_id:
+            continue
+        for identifier in (item.sku_id, item.sku_true_id, item.sku_merchant_code):
+            normalized = stringify_id(identifier)
+            if normalized:
+                parent_by_sku.setdefault(normalized, item)
+
+    attached: list[QuoteItem] = []
+    for item in network_items:
+        if item.skc_id:
+            attached.append(item)
+            continue
+        parent = next(
+            (
+                parent_by_sku.get(stringify_id(identifier))
+                for identifier in (item.sku_id, item.sku_true_id, item.sku_merchant_code)
+                if stringify_id(identifier) in parent_by_sku
+            ),
+            None,
+        )
+        if parent is not None:
+            item.skc_id = parent.skc_id
+            item.product_title = item.product_title or parent.product_title
+            item.main_image_url = item.main_image_url or parent.main_image_url
+            item.official_link_url = item.official_link_url or parent.official_link_url
+            item.site = item.site or parent.site
+        attached.append(item)
+    return attached
+
+
 def _parse_iso(value: str) -> datetime | None:
     try:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -288,6 +326,7 @@ def quote_item_from_dom_row(row: Mapping[str, Any], *, popup_confirmed: bool = F
     new = money_for(cells, ("新申报价格(CNY)", "新申报价格")) if popup_confirmed else None
     sku_id = id_from(cells, ("SKU ID", "sku_id", "SKU编号", "SKU货号"), text, r"\bSKU(?:\s*(?:ID|编号|货号))?[:：\s]*([A-Za-z0-9_-]{4,})\b")
     goods_id = id_from(cells, ("SPU", "SPU ID", "商品ID", "goods_id"), text, r"\b(?:SPU|Goods)[:：\s]*([A-Za-z0-9_-]{4,})\b")
+    sku_quantity = text_for(cells, ("库存", "库存数量", "可售库存", "数量", "quantity", "stock"))
     row_links = dom_row_links(row)
     link = row_links[0] if row_links else ""
     if not goods_id and link:
@@ -295,10 +334,11 @@ def quote_item_from_dom_row(row: Mapping[str, Any], *, popup_confirmed: bool = F
         goods_id = stringify_id(query_goods)
     product_title = text_for(cells, ("商品标题", "商品名称", "title")) or title_before_skc(text)
     return QuoteItem(
-        skc_id=id_from(cells, ("SKC", "SKC ID", "skc_id"), text, r"\bSKC[:：\s]*([A-Za-z0-9_-]{4,})\b"),
+        skc_id=skc_id_from_dom_row(row, cells, text),
         sku_id=sku_id,
         sku_true_id=sku_id,
         sku_identifier_kind="sku_id" if sku_id else "",
+        sku_quantity=sku_quantity,
         spu_or_goods_id=goods_id,
         site=text_for(cells, ("站点", "site")) or site_text(text), status=text_for(cells, ("状态", "status")),
         original_declared_price_cny=original, adjusted_declared_price_cny=adjusted,
@@ -416,6 +456,7 @@ def quote_from_mapping(mapping: Mapping[str, Any], endpoint: str, captured_at: s
         sku_identifier_kind="sku_id" if sku_true_id else ("merchant_sku_code" if merchant_code else ""), sku_merchant_code=merchant_code,
         sku_attribute_set=clean_text(first_value(mapping, ("skuAttributeSet", "skuAttributeGroup", "skuName", "skuSpec"))),
         sku_attribute_text=clean_text(first_value(mapping, ("skuAttributeText", "skuAttributes", "skuPropsText"))),
+        sku_quantity=clean_text(first_value(mapping, ("skuQuantity", "stockQuantity", "availableQuantity", "inventory", "stock", "quantity", "库存", "数量"))),
         skc_attribute_text=clean_text(first_value(mapping, ("skcAttributeText", "skcAttributes", "productAttributesText"))),
         product_attribute_summary=attribute_summary(first_value(mapping, ("productPropertyList", "productAttributeList", "attributes"))),
         spu_or_goods_id=goods_id,
@@ -512,7 +553,7 @@ def dedupe_key(item: QuoteItem) -> tuple[str, str, str, str]:
 
 def merge_quote_evidence(target: QuoteItem, source: QuoteItem) -> None:
     fields = tuple(field_name for field_name, _ in _COMPLETE_FIELDS) + (
-        "spu_or_goods_id", "status", "new_declared_price_cny", "sku_merchant_code",
+        "spu_or_goods_id", "status", "new_declared_price_cny", "sku_merchant_code", "sku_quantity",
         "official_link_url",
     )
     for field_name in fields:
@@ -595,6 +636,19 @@ def title_before_skc(value: str) -> str:
 
 def text_for(mapping: Mapping[str, Any], aliases: Iterable[str]) -> str:
     return clean_text(first_value(mapping, aliases))
+
+
+def skc_id_from_dom_row(row: Mapping[str, Any], cells: Mapping[str, Any], text: str) -> str:
+    """Read only an explicit SKC marker; never treat a SKU number as an SKC."""
+    inherited = stringify_id(row.get("parent_skc_id"))
+    if inherited:
+        return inherited
+    pattern = r"\bSKC(?:\s*(?:ID|\u4fe1\u606f))?\s*[:\uFF1A]?\s*([A-Za-z0-9_-]{4,})\b"
+    for value in (text_for(cells, ("SKC", "SKC ID", "skc_id")), text):
+        match = re.search(pattern, value, flags=re.IGNORECASE)
+        if match:
+            return stringify_id(match.group(1))
+    return ""
 
 
 def id_from(mapping: Mapping[str, Any], aliases: Iterable[str], text: str, pattern: str) -> str:
