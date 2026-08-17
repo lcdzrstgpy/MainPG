@@ -103,34 +103,248 @@
   box-shadow: 0 8px 18px rgba(7, 48, 83, .16);
 }
 
+.profit-hero-actions {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.profit-hero-actions .profit-settings-toggle {
+  width: 100%;
+}
+
 .profit-test-page .profit-settings-toggle:hover:not(:disabled) {
   border-color: rgba(255, 255, 255, .7);
   background: rgba(255, 255, 255, .23);
   box-shadow: 0 10px 22px rgba(7, 48, 83, .22);
 }
 
-.profit-settings-collapse {
+.profit-settings-dialog-backdrop {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
   display: grid;
-  grid-template-rows: 0fr;
-  margin-bottom: -18px;
+  place-items: center;
+  padding: 24px;
+  background: rgba(14, 35, 57, .34);
+  backdrop-filter: blur(3px);
+}
+
+.profit-settings-dialog {
+  display: grid;
+  gap: 16px;
+  width: min(760px, 100%);
+  max-height: min(760px, calc(100dvh - 48px));
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid #d8e7f2;
+  border-radius: 18px;
+  background: #fbfdff;
+  box-shadow: 0 20px 60px rgba(14, 49, 81, .28);
+}
+
+.profit-import-dialog {
+  width: min(900px, 100%);
+}
+
+.profit-settings-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.profit-test-page .profit-settings-dialog-close {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  flex: 0 0 32px;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 9px;
+  color: #4a6983;
+  font-size: 0;
+  line-height: 0;
+}
+
+.profit-test-page .profit-settings-dialog-close span {
+  display: block;
+  width: 16px;
+  height: 16px;
+  font-size: 1.45rem;
+  line-height: 16px;
+  text-align: center;
+  transform: translateY(-1px);
+}
+
+.profit-settings-site-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profit-settings-site-tabs button {
+  min-width: 92px;
+}
+
+.profit-settings-site-tabs button.is-active {
+  border-color: #168dd2;
+  color: #0878c1;
+  background: #e7f6ff;
+}
+
+.profit-settings-site-tabs .profit-add-site-button {
+  border-style: dashed;
+  color: #49718f;
+  background: #f8fbfd;
+}
+
+.profit-new-site-form {
+  display: grid;
+  grid-template-columns: minmax(130px, .7fr) minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px dashed #a9cbe0;
+  border-radius: 12px;
+  background: #f6fbfe;
+}
+
+.profit-new-site-form input.is-invalid {
+  border-color: #d95a5a;
+  box-shadow: 0 0 0 3px rgba(217, 90, 90, .12);
+}
+
+.profit-activity-upload {
+  display: grid;
+  gap: 8px;
+  max-width: 560px;
+}
+
+.profit-activity-upload label {
+  display: grid;
+  gap: 8px;
+}
+
+.profit-activity-upload input[type="file"] {
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  background: #fbfdff;
+}
+
+.profit-file-status {
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+  margin: 0;
+  color: #70869b;
+  font-size: .82rem;
+  line-height: 1.45;
+}
+
+.profit-file-status::before {
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  content: "";
+  background: #f0a233;
+}
+
+.profit-file-status.is-selected {
+  color: #167253;
+}
+
+.profit-file-status.is-selected::before {
+  background: #29aa7a;
+}
+
+.profit-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.profit-card-heading .profit-title-icon {
+  color: #04bfea;
+  font-size: 1.2rem;
+}
+
+.profit-help-tooltip {
+  position: relative;
+  display: inline-flex;
+  margin-left: 7px;
+  vertical-align: middle;
+  outline: none;
+}
+
+.profit-help-tooltip-mark {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid #9cb6c9;
+  border-radius: 50%;
+  color: #6a879d;
+  font-size: .72rem;
+  font-weight: 900;
+  line-height: 1;
+  cursor: help;
+}
+
+.profit-help-tooltip-content {
+  position: absolute;
+  z-index: 5;
+  bottom: calc(100% + 9px);
+  left: 50%;
+  width: min(280px, 70vw);
+  padding: 9px 11px;
+  border-radius: 9px;
+  color: #fff;
+  background: #244b68;
+  box-shadow: 0 8px 20px rgba(20, 56, 83, .22);
+  font-size: .78rem;
+  font-weight: 650;
+  line-height: 1.5;
   opacity: 0;
-  visibility: hidden;
-  transform: translateY(-8px);
-  transition: grid-template-rows .28s ease, margin-bottom .28s ease, opacity .2s ease, transform .28s ease, visibility 0s linear .28s;
+  pointer-events: none;
+  transform: translate(-50%, 4px);
+  transition: opacity .16s ease, transform .16s ease;
 }
 
-.profit-settings-collapse.is-open {
-  grid-template-rows: 1fr;
-  margin-bottom: 0;
+.profit-help-tooltip:hover .profit-help-tooltip-content,
+.profit-help-tooltip:focus .profit-help-tooltip-content {
   opacity: 1;
-  visibility: visible;
-  transform: translateY(0);
-  transition-delay: 0s;
+  transform: translate(-50%, 0);
 }
 
-.profit-settings-collapse-inner {
-  min-height: 0;
-  overflow: hidden;
+.profit-help-tooltip:focus-visible .profit-help-tooltip-mark {
+  outline: 2px solid #13a9f2;
+  outline-offset: 2px;
+}
+
+.profit-settings-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.profit-settings-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.profit-settings-dialog .profit-save-root,
+.profit-settings-dialog .profit-formula-note {
+  margin: 0;
 }
 
 .profit-settings-panel {
@@ -180,8 +394,27 @@
     flex-direction: column;
   }
 
-  .profit-test-page .profit-settings-toggle {
+  .profit-hero-actions {
     width: 100%;
+  }
+
+  .profit-settings-dialog-backdrop {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .profit-settings-dialog {
+    max-height: calc(100dvh - 24px);
+    padding: 18px;
+    border-radius: 16px;
+  }
+
+  .profit-settings-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .profit-new-site-form {
+    grid-template-columns: 1fr;
   }
 }
 

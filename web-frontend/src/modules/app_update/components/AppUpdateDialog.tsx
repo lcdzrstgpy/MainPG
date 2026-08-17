@@ -152,6 +152,19 @@ export function AppUpdateDialog() {
     }
   };
 
+  const snooze = async () => {
+    if (!beginPost()) return;
+    try {
+      const next = await appUpdateApi.snooze();
+      setDismissed(false);
+      setStatus(next);
+    } catch (error) {
+      setStatus((previous) => previous ? { ...previous, state: "failed", error: errorMessage(error) } : previous);
+    } finally {
+      finishPost();
+    }
+  };
+
   return (
     <div className="app-update-backdrop" role="presentation">
       <section ref={dialogRef} className="app-update-dialog" role="dialog" aria-modal="true" aria-labelledby="app-update-title" aria-describedby="app-update-description" tabIndex={-1} onKeyDown={trapFocus}>
@@ -172,7 +185,10 @@ export function AppUpdateDialog() {
         {view.phase === "failed" && <p className="app-update-error" role="alert">{view.error || "更新过程中发生未知错误。"}</p>}
         <div className="app-update-actions">
           {view.phase === "failed" ? <button type="button" className="app-update-primary" onClick={() => void retry()} disabled={postPending}>重新检查并重试</button> : !inProgress && <button type="button" className="app-update-primary" onClick={() => void install()} disabled={postPending}>立即更新</button>}
-          {deferAvailable && <button type="button" className="app-update-secondary" onClick={() => setDismissed(true)} disabled={postPending}>稍后</button>}
+          {deferAvailable && <>
+            <button type="button" className="app-update-secondary" onClick={() => setDismissed(true)} disabled={postPending}>稍后</button>
+            <button type="button" className="app-update-secondary" onClick={() => void snooze()} disabled={postPending}>此次更新不再提醒</button>
+          </>}
         </div>
       </section>
     </div>

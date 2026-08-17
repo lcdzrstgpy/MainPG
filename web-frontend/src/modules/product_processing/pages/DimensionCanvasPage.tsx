@@ -42,6 +42,7 @@ type Props = {
   initialBatchId?: string;
   initialItemId?: string;
   onOpenPrecheck: (taskId: number, changeSetId?: string) => void;
+  isActive?: boolean;
 };
 
 type HistoryState = {
@@ -77,7 +78,7 @@ function CanvasAssetThumb({ asset }: { asset: DimensionAsset }) {
   );
 }
 
-export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrecheck }: Props) {
+export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrecheck, isActive = true }: Props) {
   const [batches, setBatches] = useState<DimensionCanvasBatch[]>([]);
   const [batch, setBatch] = useState<DimensionCanvasBatch | null>(null);
   const [activeItemId, setActiveItemId] = useState(initialItemId ?? "");
@@ -94,6 +95,10 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const locallyEditedIds = useRef(new Set<string>());
   const renderWatchGeneration = useRef(new Map<string, number>());
+
+  useEffect(() => {
+    if (!isActive) setImportOpen(false);
+  }, [isActive]);
 
   const currentItem = useMemo(
     () => batch?.items.find((item) => item.id === activeItemId) ?? null,

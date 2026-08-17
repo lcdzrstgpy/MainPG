@@ -13,6 +13,7 @@ export type WorkspaceTab = {
   draftIds?: number[];
   premiumDraftIds?: number[];
   processingOptions?: unknown;
+  taskRunId?: number;
   taskId?: number;
   dimensionBatchId?: string;
   dimensionItemId?: string;

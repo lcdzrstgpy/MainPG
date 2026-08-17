@@ -2422,6 +2422,203 @@
   color: #9caaba;
 }
 
+/* ── AI 处理历史记录：集中承接所有批次，避免草稿池和任务页各维护一份历史入口 ── */
+.processing-history-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.processing-history-summary span {
+  padding: 8px 11px;
+  border: 1px solid rgba(255, 255, 255, .3);
+  border-radius: 9px;
+  color: #e2f5ff;
+  background: rgba(255, 255, 255, .12);
+  font-size: .82rem;
+}
+
+.processing-history-summary b {
+  margin-left: 4px;
+  color: #fff;
+}
+
+.processing-history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.processing-history-date-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid #d8e7f2;
+  border-radius: 12px;
+  background: #f7fbfe;
+}
+
+.processing-history-filter-label {
+  padding-right: 3px;
+  color: #4a6983;
+  font-size: .76rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.processing-history-date-range label {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: #7a8fa3;
+  font-size: .7rem;
+  font-weight: 750;
+}
+
+.processing-history-date-range input[type="date"] {
+  box-sizing: border-box;
+  width: 142px;
+  height: 34px;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 1px solid #cbdde9;
+  border-radius: 8px;
+  color: #274762;
+  background: #fff;
+  font-size: .82rem;
+  font-weight: 700;
+}
+
+.processing-history-date-divider {
+  margin-top: 0;
+  color: #9bb0c1;
+  font-size: .9rem;
+}
+
+.processing-history-toolbar .verify-actions {
+  gap: 7px;
+}
+
+.processing-history-toolbar .verify-actions button {
+  min-height: 34px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: .82rem;
+}
+
+.processing-history-toolbar .verify-actions button.primary {
+  border-color: #0a8fca;
+  color: #fff;
+  background: #0a8fca;
+  box-shadow: 0 5px 12px rgba(10, 143, 202, .18);
+}
+
+.processing-history-toolbar .processing-history-clear,
+.processing-history-toolbar .processing-history-refresh {
+  border-color: transparent;
+  color: #668098;
+  background: transparent;
+}
+
+.processing-history-toolbar .processing-history-clear:hover:not(:disabled),
+.processing-history-toolbar .processing-history-refresh:hover:not(:disabled) {
+  border-color: #d7e6ef;
+  color: #0a75b5;
+  background: #f3f9fc;
+  box-shadow: none;
+}
+
+.processing-history-refresh .iconfont {
+  margin-right: 4px;
+  font-size: .92rem;
+}
+
+.processing-history-list {
+  display: grid;
+  gap: 14px;
+}
+
+.processing-history-items {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.processing-history-items li {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.1fr) minmax(340px, 1.5fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 1px solid #e0ebf3;
+  border-radius: 13px;
+  background: #fff;
+}
+
+.processing-history-primary,
+.processing-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.processing-history-primary strong {
+  max-width: 100%;
+  overflow: hidden;
+  color: #18334d;
+  font-size: .94rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.processing-history-primary > span:not(.verify-badge),
+.processing-history-meta {
+  color: #72869a;
+  font-size: .8rem;
+}
+
+.processing-history-meta time {
+  color: #96a8ba;
+  font-variant-numeric: tabular-nums;
+}
+
+.processing-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.processing-history-actions button,
+.processing-history-pagination button {
+  padding: 7px 12px;
+  border: 1px solid #cfe0eb;
+  border-radius: 9px;
+  color: #2f5878;
+  background: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.processing-history-actions button.primary {
+  border-color: #0a8fca;
+  color: #fff;
+  background: #0a8fca;
+}
+
+.processing-history-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+}
+
 @media (max-width: 800px) {
   .verify-commandbar {
     flex-direction: column;
@@ -2447,6 +2644,21 @@
   }
   .verify-history-date {
     margin-left: 0;
+  }
+  .processing-history-items li {
+    grid-template-columns: 1fr;
+  }
+  .processing-history-actions {
+    justify-content: flex-start;
+  }
+  .processing-history-date-range {
+    width: 100%;
+  }
+  .processing-history-date-range label {
+    flex: 1 1 0;
+  }
+  .processing-history-date-range input[type="date"] {
+    width: 100%;
   }
 }
 

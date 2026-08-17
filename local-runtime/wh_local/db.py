@@ -563,6 +563,28 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 profit_activity_source_type_sql.read_text(encoding="utf-8"),
             )
         )
+    profit_activity_dynamic_sites_sql = (
+        root / "modules" / "profit_activity" / "migrations" / "003_dynamic_sites.sql"
+    )
+    if profit_activity_dynamic_sites_sql.exists():
+        migrations.append(
+            (
+                "profit_activity:003_dynamic_sites",
+                "profit_activity",
+                profit_activity_dynamic_sites_sql.read_text(encoding="utf-8"),
+            )
+        )
+    profit_activity_attachment_image_sql = (
+        root / "modules" / "profit_activity" / "migrations" / "004_product_library_attachment_image.sql"
+    )
+    if profit_activity_attachment_image_sql.exists():
+        migrations.append(
+            (
+                "profit_activity:004_product_library_attachment_image",
+                "profit_activity",
+                profit_activity_attachment_image_sql.read_text(encoding="utf-8"),
+            )
+        )
     price_verification_sql = root / "price_verification" / "migrations" / "001_price_verification.sql"
     if price_verification_sql.exists():
         migrations.append(

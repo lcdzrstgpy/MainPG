@@ -10,10 +10,10 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
-from ..domain.models import ProfitSettings
+from ..domain.models import ProfitSettings, ProfitSiteProfile
 from ..infrastructure.repository import SettingsSnapshot
 from ..service import ProfitActivityConflict, ProfitActivityNotFound, ProfitActivityService, _local_iso
-from .schemas import ArchiveRequest, FilterRequest, SettingsUpdateRequest
+from .schemas import ArchiveRequest, FilterRequest, SettingsUpdateRequest, SiteProfilePayload
 from ....session import Actor, actor_from_bearer_token, actor_has_permission, require_permission
 from ....config import default_config
 from ....db import connect
@@ -24,7 +24,7 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
     """Router contract for the complete Profit Activity screen."""
     router = APIRouter(prefix="/profit-activity", tags=["profit_activity"])
 
-    def delete_product_and_source_links(skc: str, site: Literal["US", "CO", "EC"], actor: Actor, *, allow_company_delete: bool) -> dict[str, Any]:
+    def delete_product_and_source_links(skc: str, site: str, actor: Actor, *, allow_company_delete: bool) -> dict[str, Any]:
         result = service.delete_product(skc, site, actor, allow_company_delete=allow_company_delete)
         if result.get("status") == "deleted" and database_path is not None:
             PriceVerificationRepository(database_path).soft_remove_skc_source_links_for_skc(
@@ -48,6 +48,29 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
     def get_settings(actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.read", database_path)
         return service.legacy_settings(actor)
+
+    @router.get("/sites")
+    def list_sites(actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+        require_permission(actor, "profit_activity.read", database_path)
+        return {"sites": service.list_sites(actor)}
+
+    @router.post("/sites", status_code=status.HTTP_201_CREATED)
+    def create_site(body: SiteProfilePayload, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+        require_permission(actor, "profit_activity.settings_manage", database_path)
+        try:
+            return {"site": service.create_site(ProfitSiteProfile(**body.model_dump()), actor)}
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    @router.put("/sites/{site_code}")
+    def update_site(site_code: str, body: SiteProfilePayload, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+        require_permission(actor, "profit_activity.settings_manage", database_path)
+        if site_code.upper() != body.site_code:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "site_code_path_mismatch")
+        try:
+            return {"site": service.update_site(ProfitSiteProfile(**body.model_dump()), actor)}
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     @router.put("/settings")
     async def update_settings(request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
@@ -87,7 +110,7 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         return _record_response(record)
 
     @router.get("/records")
-    def list_records(site_code: Literal["US", "CO", "EC"] | None = None, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), scope: str = "default", actor: Actor = Depends(profit_activity_actor)) -> dict[str, list[dict[str, Any]]]:
+    def list_records(site_code: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), scope: str = "default", actor: Actor = Depends(profit_activity_actor)) -> dict[str, list[dict[str, Any]]]:
         require_permission(actor, "profit_activity.read", database_path)
         include_company = _include_company(scope, actor, database_path)
         return {"items": [_record_response(row) for row in service.list_records(site_code, offset, limit, actor, include_workspace_shared=include_company)]}
@@ -117,14 +140,14 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     @router.get("/products")
-    def list_products(site: Literal["US", "CO", "EC"] | None = None, site_code: Literal["US", "CO", "EC"] | None = None, skcs: str = "", product_ids: str = "", scope: str = "default", owner_user_id: int | None = None, source_type: str = "", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+    def list_products(site: str | None = None, site_code: str | None = None, skcs: str = "", product_ids: str = "", scope: str = "default", owner_user_id: int | None = None, source_type: str = "", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.read", database_path)
         requested = [item.strip() for item in re.split(r"[\s,，]+", product_ids or skcs) if item.strip()]
         include_company = _include_company(scope, actor, database_path)
         return {"products": service.list_products(site=site or site_code, skcs=requested, source_type=source_type.strip() or None, actor=actor, include_workspace_shared=include_company), "scope": scope, "owner_user_id": owner_user_id}
 
     @router.get("/products/{skc}/sources")
-    def product_sources(skc: str, site: Literal["US", "CO", "EC"] = "US", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+    def product_sources(skc: str, site: str = "US", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         """Return the active 1688 source links associated with one product.
 
         产品库的 source_groups_json 契约只保留 source_url + image_paths，
@@ -200,8 +223,8 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
     async def create_product(request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.write", database_path)
         try:
-            payload, image, source_image, source_group_images = await _product_form(request)
-            return {"product": service.upsert_product(payload, actor=actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path), require_complete_profile=True, image=image, source_image=source_image, source_group_images=source_group_images)}
+            payload, image, attachment_image, source_image, source_group_images = await _product_form(request)
+            return {"product": service.upsert_product(payload, actor=actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path), require_complete_profile=True, image=image, attachment_image=attachment_image, source_image=source_image, source_group_images=source_group_images)}
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
@@ -214,9 +237,9 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         """
         require_permission(actor, "profit_activity.write", database_path)
         try:
-            payload, image, source_image, source_group_images = await _product_form(request)
+            payload, image, attachment_image, source_image, source_group_images = await _product_form(request)
             payload["skc"] = skc
-            return {"product": service.upsert_product(payload, actor=actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path), require_complete_profile=False, image=image, source_image=source_image, source_group_images=source_group_images)}
+            return {"product": service.upsert_product(payload, actor=actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path), require_complete_profile=False, image=image, attachment_image=attachment_image, source_image=source_image, source_group_images=source_group_images)}
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
@@ -231,7 +254,7 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     @router.delete("/products/{skc}")
-    def delete_product(skc: str, site: Literal["US", "CO", "EC"] = "US", owner_user_id: int | None = None, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+    def delete_product(skc: str, site: str = "US", owner_user_id: int | None = None, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.delete", database_path)
         return delete_product_and_source_links(skc, site, actor, allow_company_delete=actor_has_permission(actor, "profit_activity.company_delete", database_path))
 
@@ -244,7 +267,7 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         return {"deleted": sum(item["status"] == "deleted" for item in results), "results": results}
 
     @router.get("/products/{skc}/image")
-    def product_image(skc: str, site: Literal["US", "CO", "EC"] = "US", kind: str = "product", group: int = 0, index: int = 0, actor: Actor = Depends(profit_activity_actor)):
+    def product_image(skc: str, site: str = "US", kind: str = "product", group: int = 0, index: int = 0, actor: Actor = Depends(profit_activity_actor)):
         require_permission(actor, "profit_activity.read", database_path)
         try:
             path = service.image_path(skc, site, kind, group, index, actor)
@@ -318,9 +341,9 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
     @router.post("/catalog/rebuild")
-    def rebuild_catalog(site: Literal["US", "CO", "EC"] = "US", sites: str = "", scope: str = "default", actor: Actor = Depends(profit_activity_actor)):
+    def rebuild_catalog(site: str = "US", sites: str = "", scope: str = "default", actor: Actor = Depends(profit_activity_actor)):
         require_permission(actor, "profit_activity.export", database_path)
-        selected = [item.strip() for item in re.split(r"[,，\s]+", sites) if item.strip() in ("US", "CO", "EC")]
+        selected = [item.strip().upper() for item in re.split(r"[,，\s]+", sites) if item.strip()]
         if not selected:
             selected = [site]
         path = service.create_catalog(selected, actor, include_workspace_shared=_include_company(scope, actor, database_path))
@@ -392,15 +415,16 @@ def _include_company(scope: str, actor: Actor, database_path: Path | None) -> bo
     return True
 
 
-async def _product_form(request: Request) -> tuple[dict[str, Any], tuple[str, bytes] | None, tuple[str, bytes] | None, dict[int, list[tuple[str, bytes]]]]:
+async def _product_form(request: Request) -> tuple[dict[str, Any], tuple[str, bytes] | None, tuple[str, bytes] | None, tuple[str, bytes] | None, dict[int, list[tuple[str, bytes]]]]:
     if request.headers.get("content-type", "").startswith("application/json"):
         payload = await request.json()
         if not isinstance(payload, dict):
             raise ValueError("product payload must be an object")
-        return payload, None, None, {}
+        return payload, None, None, None, {}
     form = await request.form()
     payload = {key: value for key, value in form.items() if not hasattr(value, "read")}
     image = await _uploaded_file(form.get("image"))
+    attachment_image = await _uploaded_file(form.get("attachment_image"))
     source_image = await _uploaded_file(form.get("source_image"))
     groups: dict[int, list[tuple[str, bytes]]] = {}
     for key, value in form.multi_items():
@@ -418,7 +442,7 @@ async def _product_form(request: Request) -> tuple[dict[str, Any], tuple[str, by
         except ValueError:
             index = 0
         groups.setdefault(index, []).append(uploaded)
-    return payload, image, source_image, groups
+    return payload, image, attachment_image, source_image, groups
 
 
 async def _uploaded_file(value: Any) -> tuple[str, bytes] | None:

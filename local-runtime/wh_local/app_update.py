@@ -39,6 +39,7 @@ _SEMVER_RE = re.compile(
 )
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _LOCAL_HTTP_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_SNOOZE_FILE_NAME = "update-snooze.json"
 
 
 class ManifestValidationError(ValueError):
@@ -194,6 +195,8 @@ class UpdateManager:
             release = self._validate_manifest(self._coerce_manifest(self._manifest_fetcher(self.settings.manifest_url)))
             if SemanticVersion.parse(release.version) <= SemanticVersion.parse(self.settings.current_version):
                 self._set_state("idle", release=None)
+            elif self._snoozed_version() == release.version:
+                self._set_state("unavailable", release=None)
             else:
                 self._set_state("available", release=release)
         except Exception as error:
@@ -215,6 +218,30 @@ class UpdateManager:
         if not self._begin("downloading"):
             return self.status()
         return self._install_after_begin()
+
+    def snooze(self) -> dict[str, object]:
+        """Suppress the currently verified optional release on this device only."""
+        if not self._operation_lock.acquire(blocking=False):
+            return self.status()
+        try:
+            release = self._release
+            if release is None:
+                raise RuntimeError("No verified update is available to suppress.")
+            if release.mandatory:
+                raise RuntimeError("Mandatory updates cannot be suppressed.")
+            self._snooze_path().parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._snooze_path().with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps({"version": release.version}, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            os.replace(temporary, self._snooze_path())
+            self._set_state("unavailable", release=None, error=None, progress=None)
+        except Exception as error:
+            self._set_state("failed", error=self._safe_error(error))
+        finally:
+            self._operation_lock.release()
+        return self.status()
 
     def _install_after_begin(self) -> dict[str, object]:
         installer_launched = False
@@ -293,6 +320,23 @@ class UpdateManager:
             release_notes=manifest["release_notes"],
             published_at=manifest["published_at"],
         )
+
+    def _snooze_path(self) -> Path:
+        return self.settings.runtime_root / _SNOOZE_FILE_NAME
+
+    def _snoozed_version(self) -> str | None:
+        try:
+            stored = json.loads(self._snooze_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        version = stored.get("version") if isinstance(stored, Mapping) else None
+        if not isinstance(version, str):
+            return None
+        try:
+            SemanticVersion.parse(version)
+        except ValueError:
+            return None
+        return version
 
     def _validate_allowed_url(self, value: str) -> None:
         parsed = urlparse(value)
@@ -433,6 +477,11 @@ def create_router(manager: UpdateManager) -> APIRouter:
     def install_update(request: Request) -> dict[str, object]:
         require_same_origin(request)
         return manager.start_install()
+
+    @router.post("/snooze")
+    def snooze_update(request: Request) -> dict[str, object]:
+        require_same_origin(request)
+        return manager.snooze()
 
     return router
 

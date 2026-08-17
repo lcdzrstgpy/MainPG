@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
   isWorkspaceNavigationGroup,
@@ -18,6 +18,7 @@ import { ProfitActivityTestPage } from "../../modules/profit_activity/pages/Prof
 import { PriceVerificationPage } from "../../modules/price_verification/pages/PriceVerificationPage";
 import { ProductProcessingVerifyPage } from "../../modules/product_processing/pages/ProductProcessingVerifyPage";
 import { ProductProcessingTaskPage } from "../../modules/product_processing/pages/ProductProcessingTaskPage";
+import { ProductProcessingHistoryPage } from "../../modules/product_processing/pages/ProductProcessingHistoryPage";
 import { ProductProcessingPrecheckPage } from "../../modules/product_processing/pages/ProductProcessingPrecheckPage";
 import { DimensionCanvasPage } from "../../modules/product_processing/pages/DimensionCanvasPage";
 import {
@@ -31,6 +32,7 @@ import type { ProductProcessingOptions } from "../../modules/product_processing/
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
+import { WorkspaceTabScrollStore } from "./workspaceTabState";
 
 type WorkspaceShellProps = { onSignOut: () => void };
 
@@ -61,19 +63,15 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const [workspaceNotice, setWorkspaceNotice] = useState("");
   const [dimensionNotifications, setDimensionNotifications] = useState<DimensionNotification[]>([]);
   const [showScrollTop, setShowScrollTop] = useState(false);
-  // 利润活动页 keep-alive：首次打开后保持挂载，切换走仅隐藏，表单/文件/过滤进度不丢失
-  const [profitActivityMounted, setProfitActivityMounted] = useState(false);
-  // 核价页 keep-alive：图搜/货源匹配执行中切走不中断，返回时结果仍在（与每日选品面板一致）
-  const [priceVerificationMounted, setPriceVerificationMounted] = useState(false);
   const collectionSequence = useRef(0);
   const processingSequence = useRef(0);
   const precheckSequence = useRef(0);
   const dimensionOpenRequests = useRef(new Map<string, Promise<DimensionCanvasItem>>());
   const contentRef = useRef<HTMLDivElement>(null);
+  const scrollPositions = useRef(new WorkspaceTabScrollStore());
   const modulesById = useMemo(() => new Map(flatModules.map((module) => [module.id, module])), []);
   const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0];
   const activeModuleId = activeTab?.moduleId ?? "dashboard";
-  const activeModule = modulesById.get(activeModuleId)!;
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(NARROW_DESKTOP_QUERY);
@@ -118,10 +116,6 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   useEffect(() => {
     setShowScrollTop(false);
   }, [activeTabKey]);
-
-  useEffect(() => {
-    if (activeModuleId === "profit_activity") setProfitActivityMounted(true);
-  }, [activeModuleId]);
 
   useEffect(() => {
     let stopped = false;
@@ -183,20 +177,38 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
     };
   }, []);
 
-  useEffect(() => {
-    if (activeModuleId === "price_verification") setPriceVerificationMounted(true);
-  }, [activeModuleId]);
+  useLayoutEffect(() => {
+    const position = scrollPositions.current.restore(activeTabKey) ?? { windowY: 0, contentY: 0 };
+    const frame = window.requestAnimationFrame(() => {
+      contentRef.current?.scrollTo({ top: position.contentY, behavior: "auto" });
+      window.scrollTo({ top: position.windowY, behavior: "auto" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTabKey]);
 
   const scrollBackToTop = () => {
     contentRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  const saveActiveTabScroll = () => {
+    scrollPositions.current.save(activeTabKey, {
+      windowY: window.scrollY,
+      contentY: contentRef.current?.scrollTop ?? 0,
+    });
+  };
+
+  const activateTab = (key: string) => {
+    if (key === activeTabKey) return;
+    saveActiveTabScroll();
+    setActiveTabKey(key);
+  };
+
   const openModule = (id: WorkspaceModuleId) => {
     if (id === "daily_selection_collection") return;
     setExpandedGroupId(navigationGroupForModule(id)?.id ?? null);
     setTabs((current) => current.some((tab) => tab.key === id) ? current : [...current, moduleTab(id)]);
-    setActiveTabKey(id);
+    activateTab(id);
     setWorkspaceNotice("");
   };
 
@@ -212,10 +224,12 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const selectTab = (key: string) => {
     const tab = tabs.find((item) => item.key === key);
     if (tab) setExpandedGroupId(navigationGroupForModule(tab.moduleId)?.id ?? null);
-    setActiveTabKey(key);
+    activateTab(key);
   };
 
   const closeTab = (key: string) => {
+    if (key === activeTabKey) saveActiveTabScroll();
+    scrollPositions.current.remove(key);
     setTabs((current) => {
       const next = current.filter((tab) => tab.key !== key);
       if (activeTabKey === key) {
@@ -243,7 +257,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
       icon: "⌕",
       directionId,
     }]);
-    setActiveTabKey(key);
+    activateTab(key);
     setWorkspaceNotice("");
   };
 
@@ -266,27 +280,27 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
       premiumDraftIds,
       processingOptions: options,
     }]);
-    setActiveTabKey(key);
+    activateTab(key);
     setWorkspaceNotice("");
     return true;
   };
 
-  // 历史采集入口：从草稿池直接打开「历史任务」页（无处理参数，仅查看记录与输出）
-  const openHistoryTasks = () => {
-    const openPanelCount = tabs.filter((tab) => tab.moduleId === "product_processing_tasks").length;
-    if (openPanelCount >= MAX_PROCESSING_PANELS) {
-      setWorkspaceNotice(`最多同时打开 ${MAX_PROCESSING_PANELS} 个处理任务，请先关闭一个再继续。`);
+  const openProcessingTaskDetail = (taskId: number) => {
+    const existing = tabs.find((tab) => tab.taskRunId === taskId);
+    if (existing) {
+      selectTab(existing.key);
       return;
     }
     processingSequence.current += 1;
-    const key = `product-processing-tasks-${processingSequence.current}`;
+    const key = `product-processing-task-${taskId}-${processingSequence.current}`;
     setTabs((current) => [...current, {
       key,
       moduleId: "product_processing_tasks",
-      label: "历史任务",
-      icon: "◷",
+      label: `处理·#${taskId}`,
+      icon: "⚙",
+      taskRunId: taskId,
     }]);
-    setActiveTabKey(key);
+    activateTab(key);
     setWorkspaceNotice("");
   };
 
@@ -295,7 +309,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
     if (changeSetId) {
       const existing = tabs.find((tab) => tab.taskId === taskId && tab.dimensionChangeSetId === changeSetId);
       if (existing) {
-        setActiveTabKey(existing.key);
+        activateTab(existing.key);
         return;
       }
     }
@@ -309,7 +323,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
       taskId,
       dimensionChangeSetId: changeSetId,
     }]);
-    setActiveTabKey(key);
+    activateTab(key);
     setWorkspaceNotice("");
   };
 
@@ -337,7 +351,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
         dimensionItemId: item.id,
         returnTaskId: taskId,
       }]);
-      setActiveTabKey(key);
+      activateTab(key);
       setWorkspaceNotice("");
     } catch (cause) {
       setWorkspaceNotice(cause instanceof Error ? cause.message : String(cause));
@@ -346,7 +360,49 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
     }
   };
 
-  const collectionTabs = tabs.filter((tab) => tab.moduleId === "daily_selection_collection");
+  const renderTab = (tab: WorkspaceTab) => {
+    const isActive = activeTabKey === tab.key;
+    switch (tab.moduleId) {
+      case "dashboard":
+        return <WorkspaceHomePage onOpenModule={openModule} />;
+      case "daily_selection":
+      case "daily_selection_collection":
+        return <DailySelectionPage view="collection" initialDirectionId={tab.directionId} topbarStatusVisible={isActive} isActive={isActive} />;
+      case "profit_activity":
+        return <ProfitActivityTestPage isActive={isActive} />;
+      case "profit_activity_products":
+        return <ProfitActivityProductsPage isActive={isActive} />;
+      case "price_verification":
+        return <PriceVerificationPage isActive={isActive} />;
+      case "product_processing":
+        return <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} isActive={isActive} />;
+      case "product_processing_history":
+        return <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} />;
+      case "product_processing_tasks":
+        return tab.taskId != null ? (
+          <ProductProcessingPrecheckPage taskId={tab.taskId} initialChangeSetId={tab.dimensionChangeSetId} onOpenDimensionItem={openDimensionItem} isActive={isActive} />
+        ) : (
+          <ProductProcessingTaskPage
+            initialTaskId={tab.taskRunId}
+            initialDraftIds={tab.draftIds}
+            initialPremiumDraftIds={tab.premiumDraftIds}
+            initialOptions={tab.processingOptions as ProductProcessingOptions | undefined}
+            onOpenPrecheck={openProcessingPrecheck}
+          />
+        );
+      case "dimension_canvas":
+        return <DimensionCanvasPage initialBatchId={tab.dimensionBatchId} initialItemId={tab.dimensionItemId} onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
+      case "ai_service":
+        return <AiServicePage />;
+      case "personal_center":
+        return <PersonalCenterPage />;
+      case "basic_settings":
+        return <BasicSettingsPage />;
+      default:
+        return <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;
+    }
+  };
+
   const sidebarIsCollapsed = sidebarCollapsed || isNarrowDesktop;
   const sidebarTemporarilyExpanded = sidebarIsCollapsed && sidebarHovered;
 
@@ -384,55 +440,11 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
               }}>打开审核</button>
             </div>
           )}
-          {activeModuleId === "dashboard" && <WorkspaceHomePage onOpenModule={openModule} />}
-          {/* 每日选品主面板常驻挂载（隐藏而非卸载），保证采集进行中切走再回来时进度和结果不丢失 */}
-          <div hidden={activeModuleId !== "daily_selection"}>
-            <DailySelectionPage view="collection" topbarStatusVisible={activeModuleId === "daily_selection"} />
-          </div>
-          {profitActivityMounted && (
-            <div hidden={activeModuleId !== "profit_activity"}>
-              <ProfitActivityTestPage />
-            </div>
-          )}
-          {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
-          {activeModuleId === "ai_service" && <AiServicePage />}
-          {activeModuleId === "personal_center" && <PersonalCenterPage />}
-          {activeModuleId === "basic_settings" && <BasicSettingsPage />}
-          {priceVerificationMounted && (
-            <div hidden={activeModuleId !== "price_verification"}>
-              <PriceVerificationPage />
-            </div>
-          )}
-          {activeModuleId === "product_processing" && <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} onOpenHistoryTasks={openHistoryTasks} />}
-          {collectionTabs.map((tab) => (
+          {tabs.map((tab) => (
             <div key={tab.key} hidden={activeTabKey !== tab.key}>
-              <DailySelectionPage view="collection" initialDirectionId={tab.directionId} topbarStatusVisible={activeTabKey === tab.key} />
+              {renderTab(tab)}
             </div>
           ))}
-          {tabs.filter((tab) => tab.moduleId === "product_processing_tasks").map((tab) => (
-            <div key={tab.key} hidden={activeTabKey !== tab.key}>
-              {tab.taskId != null ? (
-                <ProductProcessingPrecheckPage taskId={tab.taskId} initialChangeSetId={tab.dimensionChangeSetId} onOpenDimensionItem={openDimensionItem} />
-              ) : (
-                <ProductProcessingTaskPage
-                  initialDraftIds={tab.draftIds}
-                  initialPremiumDraftIds={tab.premiumDraftIds}
-                  initialOptions={tab.processingOptions as ProductProcessingOptions | undefined}
-                  onOpenPrecheck={openProcessingPrecheck}
-                />
-              )}
-            </div>
-          ))}
-          {tabs.filter((tab) => tab.moduleId === "dimension_canvas").map((tab) => (
-            <div key={tab.key} hidden={activeTabKey !== tab.key}>
-              <DimensionCanvasPage
-                initialBatchId={tab.dimensionBatchId}
-                initialItemId={tab.dimensionItemId}
-                onOpenPrecheck={openProcessingPrecheck}
-              />
-            </div>
-          ))}
-          {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "product_processing" && activeModuleId !== "product_processing_tasks" && activeModuleId !== "dimension_canvas" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "ai_service" && activeModuleId !== "personal_center" && activeModuleId !== "basic_settings" && activeModuleId !== "price_verification" && <EmptyModulePage module={activeModule} />}
         </div>
       </section>
       <button

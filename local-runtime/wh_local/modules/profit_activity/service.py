@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import threading
 import uuid
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .domain.engine import activity_decision, calculate_profit, validate_settings
-from .domain.models import ProfitPreview, ProfitSettings, SiteCode
+from .domain.models import ProfitPreview, ProfitSettings, ProfitSiteProfile, SiteCode
 from .infrastructure.database import ProfitActivityDatabase, create_database
 from .infrastructure.repository import ProfitActivityRepository, SettingsRevisionConflict, SettingsSnapshot
 from .infrastructure.assets import ensure_writable_directory, resolve_asset, save_asset
@@ -77,6 +78,34 @@ class ProfitActivityService:
         settings["workspace"] = asdict(_actor_context(actor))
         return settings
 
+    def list_sites(self, actor: Any | None = None) -> list[dict[str, Any]]:
+        context = _actor_context(actor)
+        builtin = [
+            {"site_code": "US", "display_name": "美区", "builtin": True},
+            {"site_code": "CO", "display_name": "哥伦比亚", "builtin": True},
+            {"site_code": "EC", "display_name": "厄瓜多尔", "builtin": True},
+        ]
+        return [*builtin, *[{**asdict(profile), "builtin": False} for profile in self._repository.list_sites(context.workspace_id)]]
+
+    def create_site(self, profile: ProfitSiteProfile, actor: Any | None = None) -> dict[str, Any]:
+        if profile.site_code in {"US", "CO", "EC"}:
+            raise ValueError("site_code_already_exists")
+        context = _actor_context(actor)
+        return {**asdict(self._repository.create_site(context.workspace_id, profile)), "builtin": False}
+
+    def update_site(self, profile: ProfitSiteProfile, actor: Any | None = None) -> dict[str, Any]:
+        context = _actor_context(actor)
+        return {**asdict(self._repository.update_site(context.workspace_id, profile)), "builtin": False}
+
+    def _resolve_site(self, value: Any, actor: Any | None = None) -> tuple[SiteCode, ProfitSiteProfile | None]:
+        site = _site(value)
+        if site in {"US", "CO", "EC"}:
+            return site, None
+        profile = self._repository.get_site(_actor_context(actor).workspace_id, site)
+        if profile is None:
+            raise ValueError("site_not_found")
+        return site, profile
+
     def update_settings(self, expected_revision: int, settings: ProfitSettings, actor: Any | None = None) -> SettingsSnapshot:
         context = _actor_context(actor)
         try:
@@ -104,7 +133,8 @@ class ProfitActivityService:
 
     def calculate(self, site_code: SiteCode, selling_price: Decimal, cost_price: Decimal, weight_kg: Decimal, actor: Any | None = None) -> dict[str, Any]:
         snapshot = self.get_settings(actor)
-        preview = calculate_profit(site_code=site_code, selling_price=selling_price, cost_price=cost_price, weight_kg=weight_kg, settings=snapshot.settings)
+        site_code, custom_site = self._resolve_site(site_code, actor)
+        preview = calculate_profit(site_code=site_code, selling_price=selling_price, cost_price=cost_price, weight_kg=weight_kg, settings=snapshot.settings, custom_site=custom_site)
         return {
             "preview": preview,
             "settings_revision": snapshot.revision,
@@ -138,15 +168,17 @@ class ProfitActivityService:
 
     def list_products(self, *, site: SiteCode | None = None, skcs: list[str] | None = None, source_type: str | None = None, actor: Any | None = None, include_workspace_shared: bool = False) -> list[dict[str, Any]]:
         context = _actor_context(actor)
+        if site is not None:
+            site, _ = self._resolve_site(site, actor)
         records = self.list_records(site, 0, 10_000, actor, include_workspace_shared=include_workspace_shared, source_type=source_type)
         requested = {item.strip() for item in (skcs or []) if item.strip()}
         if requested:
             records = [record for record in records if record.skc in requested]
         return [_product_payload(record, context) for record in records]
 
-    def upsert_product(self, payload: dict[str, Any], *, actor: Any | None = None, allow_company_write: bool = False, require_complete_profile: bool = False, image: tuple[str, bytes] | None = None, source_image: tuple[str, bytes] | None = None, source_group_images: dict[int, list[tuple[str, bytes]]] | None = None) -> dict[str, Any]:
+    def upsert_product(self, payload: dict[str, Any], *, actor: Any | None = None, allow_company_write: bool = False, require_complete_profile: bool = False, image: tuple[str, bytes] | None = None, attachment_image: tuple[str, bytes] | None = None, source_image: tuple[str, bytes] | None = None, source_group_images: dict[int, list[tuple[str, bytes]]] | None = None) -> dict[str, Any]:
         context = _actor_context(actor)
-        site = _site(payload.get("site", payload.get("site_code", "US")))
+        site, custom_site = self._resolve_site(payload.get("site", payload.get("site_code", "US")), actor)
         # Keep the storage column named skc for backward compatibility, while
         # accepting SKU / SKC / SPU / product_id as the business identifier.
         skc = _product_id_from_payload(payload)
@@ -163,9 +195,11 @@ class ProfitActivityService:
             cost_price=_decimal(payload.get("cost_price", current.cost_price if current else None)),
             weight_kg=_decimal(payload.get("weight_kg", current.weight_kg if current else None)),
             settings=settings.settings,
+            custom_site=custom_site,
         )
         root = self._asset_root(settings.settings)
         image_path = current.image_path if current else ""
+        attachment_image_path = "" if str(payload.get("clear_attachment_image") or "").lower() in {"1", "true", "yes"} else (current.attachment_image_path if current else "")
         source_type = str(payload.get("source_type") or (current.source_type if current else "manual"))
         source_main_image_url = (
             str(payload.get("source_main_image_url") or (current.source_main_image_url if current else "")).strip()
@@ -181,6 +215,8 @@ class ProfitActivityService:
             source_groups[0]["source_url"] = payload_source_url
         if image:
             image_path = save_asset(root, site=site, skc=skc, kind="product", filename=image[0], content=image[1])
+        if attachment_image:
+            attachment_image_path = save_asset(root, site=site, skc=skc, kind="attachment", filename=attachment_image[0], content=attachment_image[1])
         if source_image:
             _ensure_group(source_groups, 0)["image_paths"].append(save_asset(root, site=site, skc=skc, kind="source", filename=source_image[0], content=source_image[1]))
         for group_index, files in (source_group_images or {}).items():
@@ -204,11 +240,11 @@ class ProfitActivityService:
             workspace_id=context.workspace_id, created_by=context.actor_id, created_by_username=context.username,
             skc=skc, note=note, preview=preview,
             calculation_hash=_calculation_hash(preview, settings.revision), settings_revision=settings.revision,
-            refund_rate=settings.settings.ec_refund_rate if site == "EC" else settings.settings.refund_rate,
+            refund_rate=custom_site.refund_rate if custom_site else settings.settings.ec_refund_rate if site == "EC" else settings.settings.refund_rate,
             visibility=str(payload.get("visibility") or (current.visibility if current else "shared")),
             source_type=source_type,
             source_url=source_url,
-            image_path=image_path, source_main_image_url=source_main_image_url,
+            image_path=image_path, attachment_image_path=attachment_image_path, source_main_image_url=source_main_image_url,
             source_image_path=source_image_path, source_groups=source_groups,
         )
         return _product_payload(record, context)
@@ -230,6 +266,7 @@ class ProfitActivityService:
 
     def delete_product(self, skc: str, site: SiteCode, actor: Any | None = None, *, allow_company_delete: bool = False) -> dict[str, Any]:
         context = _actor_context(actor)
+        site, _ = self._resolve_site(site, actor)
         # 核价及货源自动入库的产品属于公司级产品库（跨工作区可见），删除时同样按该语义定位。
         current = self._repository.find_product(skc, site, context.workspace_id, include_price_verification=True)
         if current is not None and current.created_by != context.actor_id and not (allow_company_delete or context.is_admin):
@@ -238,6 +275,7 @@ class ProfitActivityService:
 
     def preview_import(self, workbook: bytes, original_filename: str, site: SiteCode, actor: Any | None = None) -> dict[str, Any]:
         context = _actor_context(actor)
+        site, _ = self._resolve_site(site, actor)
         rows = parse_product_workbook(workbook, site, self._repository.product_keys(context.workspace_id))
         import_id = uuid.uuid4().hex
         image_rows = extract_product_workbook_images(workbook)
@@ -360,6 +398,7 @@ class ProfitActivityService:
         sheet.title = "products"
         sheet.append(["site", "SKC", "售价", "成本", "重量KG", "备注", "货源", "利润", "利润率"])
         for site in sites:
+            site, _ = self._resolve_site(site, actor)
             for product in self.list_products(site=site, actor=actor, include_workspace_shared=include_workspace_shared):
                 sheet.append([product["site"], product["skc"], product["selling_price"], product["cost_price"], product["weight_kg"], product["note"], product["source_url"], product["net_profit"], product["profit_rate"]])
         root = self._asset_root(self.get_settings(actor).settings)
@@ -369,6 +408,7 @@ class ProfitActivityService:
 
     def filter_activity_template(self, workbook: bytes, original_filename: str, site: SiteCode, actor: Any | None = None, *, include_workspace_shared: bool = False, should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
         context = _actor_context(actor)
+        site, custom_site = self._resolve_site(site, actor)
         products = {product["skc"]: product for product in self.list_products(site=site, actor=actor, include_workspace_shared=include_workspace_shared)}
         settings = self.get_settings(actor).settings
         def evaluate(skc: str, price: Decimal) -> dict[str, Any]:
@@ -381,6 +421,7 @@ class ProfitActivityService:
                 cost_price=Decimal(str(product["cost_price"])),
                 weight_kg=Decimal(str(product["weight_kg"])),
                 settings=settings,
+                custom_site=custom_site,
             )
             decision, reason = activity_decision(preview, settings)
             return {
@@ -533,6 +574,8 @@ class ProfitActivityService:
             raise ProfitActivityNotFound("product_not_found")
         if kind == "product":
             return resolve_asset(product.image_path)
+        if kind == "attachment":
+            return resolve_asset(product.attachment_image_path)
         groups = _source_groups(product.source_groups_json, "[]")
         paths = groups[group].get("image_paths", []) if group < len(groups) else []
         return resolve_asset(paths[index] if index < len(paths) else product.source_image_path)
@@ -649,9 +692,9 @@ def _calculation_hash(preview: ProfitPreview, settings_revision: int) -> str:
 
 def _site(value: Any) -> SiteCode:
     site = str(value or "US").upper()
-    if site not in {"US", "CO", "EC"}:
-        raise ValueError("site must be US, CO or EC")
-    return site  # type: ignore[return-value]
+    if not re.fullmatch(r"[A-Z0-9_]{2,12}", site):
+        raise ValueError("site_code_invalid")
+    return site
 
 
 def _product_id_from_payload(payload: dict[str, Any]) -> str:
@@ -741,13 +784,15 @@ def _product_payload(record, actor: ProfitActivityActorContext) -> dict[str, Any
         "created_by": record.created_by, "created_by_username": record.created_by_username,
         "workspace_id": record.workspace_id, "workspace_code": actor.workspace_code, "workspace_name": actor.workspace_name,
         "is_owner": is_owner, "can_edit": is_owner or actor.is_admin,
-        "image_path": record.image_path, "source_main_image_url": record.source_main_image_url,
+        "image_path": record.image_path, "attachment_image_path": record.attachment_image_path,
+        "source_main_image_url": record.source_main_image_url,
         "source_image_path": record.source_image_path, "source_groups": groups,
         "selling_price": float(record.selling_price), "cost_price": float(record.cost_price), "weight_kg": float(record.weight_kg),
         "source_url": record.source_url, "note": record.note, "domestic_fee": float(record.domestic_fee),
         "shipping_subsidy": float(record.shipping_subsidy), "refund_rate": float(record.refund_rate) if hasattr(record, "refund_rate") else 0.0,
         "shipping_cost": float(record.shipping_cost), "end_fee": float(record.end_fee), "total_cost": float(record.total_cost),
         "gross_profit": float(record.gross_profit), "net_profit": float(record.net_profit), "profit_rate": float(record.profit_rate),
+        "library_created_at": record.created_at.isoformat() if record.created_at else "",
         "created_at": record.created_at.isoformat() if record.created_at else "", "updated_at": record.updated_at.isoformat() if record.updated_at else "",
     }
 

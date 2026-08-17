@@ -14,3 +14,11 @@ test("focus recovery layout effect is registered before the dialog can return nu
     "all layout effects must be registered before the hidden dialog guard to preserve hook ordering",
   );
 });
+
+test("optional releases expose a persistent per-version snooze action", async () => {
+  const source = await readFile(new URL("./AppUpdateDialog.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /此次更新不再提醒/);
+  assert.match(source, /appUpdateApi\.snooze\(\)/);
+  assert.match(source, /\{deferAvailable && <>/);
+});

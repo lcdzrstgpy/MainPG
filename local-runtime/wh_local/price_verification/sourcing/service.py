@@ -22,7 +22,7 @@ from ..repository import (
 )
 from ..plugin.service import PluginBridgeService
 from ..plugin.shared_gateway import SharedPluginGateway
-from .normalizer import canonical_source_url, normalize_source_candidates
+from .normalizer import canonical_source_url, normalize_source_candidates, offer_id_from_url
 from .profit_ranking import DEFAULT_CANDIDATE_LIMIT, DEFAULT_WEIGHT_KG, build_candidate_profit
 from .ranking import rank_candidates_by_image_order
 from .contracts import SourceBrowserImageSearchPayload, SourceSearchTask
@@ -240,6 +240,77 @@ class SourcingService:
             "selected_skc_ids": (), "unresolved_skc_ids": (), "matched_products": (),
             "preview": None, "selected_candidates": (), "updated_at": "",
         }
+
+    def add_manual_source_candidate(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        skc_id: str,
+        source_url: str,
+        provider_factory: Callable[[], Any],
+    ) -> Mapping[str, Any]:
+        """Look up one employee-supplied 1688 offer and pin it in this SKC's preview."""
+        actor = _actor(actor)
+        batch_id = _required_text(batch_id, "batch_id")
+        skc_id = _required_text(skc_id, "skc_id")
+        if not callable(provider_factory):
+            raise TypeError("provider_factory must be callable")
+        offer_id = offer_id_from_url(_required_text(source_url, "source_url"))
+        if not offer_id:
+            raise PriceVerificationContractError("source_url must be a standard 1688 product link")
+        source_url = canonical_source_url(source_url, offer_id=offer_id)
+        if not source_url:
+            raise PriceVerificationContractError("source_url must be a valid 1688 offer URL")
+        session = self.get_batch_sourcing_state(actor, batch_id=batch_id)
+        if skc_id not in session["unresolved_skc_ids"]:
+            raise PriceVerificationContractError("SKC does not need source search in this batch")
+        selection = self._repository.get_batch_selection_by_skc(
+            workspace_id=actor.workspace_id, batch_id=batch_id, skc_id=skc_id
+        )
+        provider = provider_factory()
+        detail_result = provider.get_item_detail(offer_id)
+        detail_error = getattr(detail_result, "error", None)
+        if detail_error is not None:
+            message = _text(getattr(detail_error, "message", ""))
+            raise PriceVerificationContractError(message or "万邦商品详情查询失败，请稍后重试")
+        detail = _onebound_detail_item(getattr(detail_result, "response", {}))
+        if not detail:
+            raise PriceVerificationContractError("未找到该 1688 商品，请检查链接是否有效或商品是否已下架")
+        candidates = normalize_source_candidates(
+            {
+                "product_title": selection.product_title,
+                "main_image_url": selection.main_image_url,
+            },
+            (
+                {
+                    **detail,
+                    "offer_id": offer_id,
+                    "source_url": source_url,
+                    "source_channel": "manual",
+                    "manual_lookup": True,
+                    "moq": detail.get("moq") or detail.get("min_num"),
+                },
+            ),
+            quote_key=selection.skc_id,
+        )
+        if not candidates:
+            raise PriceVerificationContractError("万邦返回的商品详情不完整，无法生成货源候选")
+        preview = _prepend_manual_candidate(session.get("preview"), skc_id, candidates[0])
+        preview = _apply_batch_ranking(
+            preview,
+            selections_by_skc={skc_id: selection},
+            ranking_mode="image_order",
+        )
+        return self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            selected_skc_ids=session["selected_skc_ids"],
+            unresolved_skc_ids=session["unresolved_skc_ids"],
+            matched_products=session["matched_products"],
+            preview=preview,
+            selected_candidates=session["selected_candidates"],
+        )
 
     def select_batch_source_candidate(
         self,
@@ -1010,6 +1081,57 @@ def _preview_for_skc_ids(
     return filtered
 
 
+def _onebound_detail_item(response: object) -> Mapping[str, Any]:
+    if not isinstance(response, Mapping):
+        return {}
+    for key in ("item", "data", "result"):
+        value = response.get(key)
+        if isinstance(value, Mapping):
+            return value
+    return {}
+
+
+def _prepend_manual_candidate(
+    preview: object, skc_id: str, candidate: Mapping[str, Any]
+) -> dict[str, Any]:
+    if not isinstance(preview, Mapping):
+        raise PriceVerificationContractError("当前 SKC 没有可更新的图搜候选")
+    updated = dict(preview)
+    items = preview.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        raise PriceVerificationContractError("当前 SKC 没有可更新的图搜候选")
+    candidate_offer_id = _text(candidate.get("offer_id"))
+    found = False
+    updated_items: list[dict[str, Any]] = []
+    for source_item in items:
+        if not isinstance(source_item, Mapping):
+            continue
+        item = dict(source_item)
+        item_skc_id = _text(item.get("skc_id")) or _text(item.get("quote_key"))
+        if item_skc_id == skc_id:
+            existing = item.get("all_candidates")
+            existing_candidates = (
+                [dict(value) for value in existing if isinstance(value, Mapping)]
+                if isinstance(existing, Sequence) and not isinstance(existing, (str, bytes))
+                else []
+            )
+            item["all_candidates"] = [
+                dict(candidate),
+                *[
+                    value
+                    for value in existing_candidates
+                    if (_text(value.get("offer_id")) or _offer_id_from_url(value.get("source_url")))
+                    != candidate_offer_id
+                ],
+            ]
+            found = True
+        updated_items.append(item)
+    if not found:
+        raise PriceVerificationContractError("当前 SKC 没有可更新的图搜候选")
+    updated["items"] = updated_items
+    return updated
+
+
 def _apply_batch_ranking(
     preview: dict[str, Any],
     *,
@@ -1040,7 +1162,9 @@ def _apply_batch_ranking(
             if isinstance(raw_candidates, list)
             else []
         )
-        ranked = rank_candidates_by_image_order(all_candidates)
+        manual_candidates = [candidate for candidate in all_candidates if candidate.get("manual_lookup")]
+        image_candidates = [candidate for candidate in all_candidates if not candidate.get("manual_lookup")]
+        ranked = (*manual_candidates, *rank_candidates_by_image_order(image_candidates))
         selection = selections_by_skc.get(_text(item.get("skc_id")))
         site = _site_code(selection.site) if selection is not None else ""
         selling_price = _text(selection.adjusted_min) if selection is not None else ""
@@ -1065,6 +1189,7 @@ def _apply_batch_ranking(
         item["top_profit"] = _top_candidate_profit(ranked_copies, selection)
     preview["ranking_mode"] = "image_order"
     preview["candidate_limit"] = DEFAULT_CANDIDATE_LIMIT
+    preview["skc_groups"] = _group_source_items_by_skc(preview.get("items") or [])
     return preview
 
 
@@ -1182,7 +1307,9 @@ def _preview_unverified_visual_skc_ids(preview: Mapping[str, Any] | None) -> tup
         if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
             continue
         if any(
-            isinstance(candidate, Mapping) and not candidate.get("image_similarity_selected")
+            isinstance(candidate, Mapping)
+            and not candidate.get("manual_lookup")
+            and not candidate.get("image_similarity_selected")
             for candidate in candidates
         ):
             skc_id = _text(item.get("skc_id")) or _text(item.get("quote_key"))
@@ -1207,7 +1334,10 @@ def _verified_preview_candidate(
         if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
             continue
         for candidate in candidates:
-            if not isinstance(candidate, Mapping) or not candidate.get("image_similarity_selected"):
+            if (
+                not isinstance(candidate, Mapping)
+                or (not candidate.get("manual_lookup") and not candidate.get("image_similarity_selected"))
+            ):
                 continue
             candidate_offer_id = _text(candidate.get("offer_id")) or _offer_id_from_url(candidate.get("source_url"))
             if candidate_offer_id == offer_id:

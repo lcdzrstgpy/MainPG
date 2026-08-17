@@ -7,10 +7,10 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from ..domain.models import ProfitPreview, ProfitSettings, SiteCode
+from ..domain.models import ProfitPreview, ProfitSettings, ProfitSiteProfile, SiteCode
 from .orm import (
     ActivityDecisionRow, ActivityRunRow, FilterTaskRow, ImportSessionRow,
-    ImportTaskRow, ProfitRecordRow, ProfitSettingsRow,
+    ImportTaskRow, ProfitRecordRow, ProfitSettingsRow, ProfitSiteRow,
 )
 
 
@@ -44,14 +44,57 @@ class ProfitActivityRepository:
             session.flush()
             return SettingsSnapshot(row.revision, _settings(row))
 
-    def upsert_record(self, *, workspace_id: str, created_by: str, created_by_username: str, skc: str, note: str, preview: ProfitPreview, calculation_hash: str, settings_revision: int, refund_rate: Decimal = Decimal("0"), visibility: str = "shared", source_type: str = "manual", source_url: str = "", image_path: str = "", source_main_image_url: str = "", source_image_path: str = "", source_groups: list[dict] | None = None) -> ProfitRecordRow:
+    def list_sites(self, workspace_id: str) -> list[ProfitSiteProfile]:
+        with self._sessions() as session:
+            rows = session.scalars(
+                select(ProfitSiteRow)
+                .where(ProfitSiteRow.workspace_id == workspace_id)
+                .order_by(ProfitSiteRow.created_at, ProfitSiteRow.id)
+            )
+            return [_site_profile(row) for row in rows]
+
+    def get_site(self, workspace_id: str, site_code: str) -> ProfitSiteProfile | None:
+        with self._sessions() as session:
+            row = session.scalar(select(ProfitSiteRow).where(
+                ProfitSiteRow.workspace_id == workspace_id,
+                ProfitSiteRow.site_code == site_code,
+            ))
+            return _site_profile(row) if row is not None else None
+
+    def create_site(self, workspace_id: str, site: ProfitSiteProfile) -> ProfitSiteProfile:
+        with self._sessions.begin() as session:
+            exists = session.scalar(select(ProfitSiteRow.id).where(
+                ProfitSiteRow.workspace_id == workspace_id,
+                ProfitSiteRow.site_code == site.site_code,
+            ))
+            if exists is not None:
+                raise ValueError("site_code_already_exists")
+            row = ProfitSiteRow(workspace_id=workspace_id, **asdict(site))
+            session.add(row)
+            session.flush()
+            return _site_profile(row)
+
+    def update_site(self, workspace_id: str, site: ProfitSiteProfile) -> ProfitSiteProfile:
+        with self._sessions.begin() as session:
+            row = session.scalar(select(ProfitSiteRow).where(
+                ProfitSiteRow.workspace_id == workspace_id,
+                ProfitSiteRow.site_code == site.site_code,
+            ))
+            if row is None:
+                raise ValueError("site_not_found")
+            for field, value in asdict(site).items():
+                setattr(row, field, value)
+            session.flush()
+            return _site_profile(row)
+
+    def upsert_record(self, *, workspace_id: str, created_by: str, created_by_username: str, skc: str, note: str, preview: ProfitPreview, calculation_hash: str, settings_revision: int, refund_rate: Decimal = Decimal("0"), visibility: str = "shared", source_type: str = "manual", source_url: str = "", image_path: str = "", attachment_image_path: str = "", source_main_image_url: str = "", source_image_path: str = "", source_groups: list[dict] | None = None) -> ProfitRecordRow:
         with self._sessions.begin() as session:
             row = session.scalar(select(ProfitRecordRow).where(ProfitRecordRow.workspace_id == workspace_id, ProfitRecordRow.site_code == preview.site_code, ProfitRecordRow.skc == skc))
             values = {
                 **asdict(preview), "workspace_id": workspace_id, "note": note, "calculation_hash": calculation_hash,
                 "settings_revision": settings_revision, "refund_rate": refund_rate, "visibility": visibility,
                 "source_type": source_type,
-                "source_url": source_url, "image_path": image_path,
+                "source_url": source_url, "image_path": image_path, "attachment_image_path": attachment_image_path,
                 "source_main_image_url": source_main_image_url,
                 "source_image_path": source_image_path,
                 "source_groups_json": json.dumps(source_groups or [], ensure_ascii=False, separators=(",", ":")),
@@ -218,3 +261,7 @@ class ProfitActivityRepository:
 
 def _settings(row: ProfitSettingsRow) -> ProfitSettings:
     return ProfitSettings(**{name: getattr(row, name) for name in ProfitSettings.__dataclass_fields__})
+
+
+def _site_profile(row: ProfitSiteRow) -> ProfitSiteProfile:
+    return ProfitSiteProfile(**{name: getattr(row, name) for name in ProfitSiteProfile.__dataclass_fields__})

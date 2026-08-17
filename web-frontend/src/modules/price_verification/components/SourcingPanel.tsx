@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import { priceVerificationApi } from "../api/priceVerificationApi";
 import type { SkcSourceLink, SourceCandidate, SourceCandidateSelection, SourcePreview, SourcePreviewItem, SourcePreviewSkcGroup, SourceTopProfit } from "../types";
@@ -13,12 +13,14 @@ type Props = {
   links: SkcSourceLink[];
   selectedCandidates: SourceCandidateSelection[];
   onLink: (skcId: string, offerId: string, candidate: SourceCandidate, priceOverride?: string, weightOverride?: string) => Promise<void>;
+  onManualLookup: (skcId: string, sourceUrl: string) => Promise<void>;
   onUnlink: (linkId: number) => Promise<void>;
   onUnselectCandidate: (skcId: string, offerId: string) => Promise<void>;
   onComplete: () => void;
   onStart: () => void;
   onError: (message: string) => void;
   matchingCompleted?: boolean;
+  isActive?: boolean;
 };
 
 function actionError(error: unknown) {
@@ -136,16 +138,26 @@ function visualAuditText(item?: SourcePreviewItem) {
   return `本地验图 ${audit.verified_count ?? 0}/${audit.input_count ?? 0}${fallback}${distractors}${threshold}`;
 }
 
-export function SourcingPanel({ preview, batchId, busy, sourceCount, links, selectedCandidates, onLink, onUnlink, onUnselectCandidate, onComplete, onStart, onError, matchingCompleted = false }: Props) {
+export function SourcingPanel({ preview, batchId, busy, sourceCount, links, selectedCandidates, onLink, onManualLookup, onUnlink, onUnselectCandidate, onComplete, onStart, onError, matchingCompleted = false, isActive = true }: Props) {
   const [weights, setWeights] = useState<Record<string, string>>({});
   const [priceOverrides, setPriceOverrides] = useState<Record<string, string>>({});
   const [profitOverrides, setProfitOverrides] = useState<Record<string, SourceTopProfit | null>>({});
   const [profitBusy, setProfitBusy] = useState("");
   const [busyLink, setBusyLink] = useState("");
+  const [manualLookupSkcId, setManualLookupSkcId] = useState("");
+  const [manualLookupUrl, setManualLookupUrl] = useState("");
+  const [manualLookupBusy, setManualLookupBusy] = useState(false);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState("");
   const sourceRunButtonRef = useRef<HTMLButtonElement>(null);
   const [showRefloatButton, setShowRefloatButton] = useState(false);
   const canRunSourceSearch = !busy && (sourceCount ?? 0) > 0;
   const canRefloatSourceSearch = Boolean(preview) && canRunSourceSearch;
+
+  useEffect(() => {
+    if (isActive) return;
+    setManualLookupSkcId("");
+    setImagePreviewUrl("");
+  }, [isActive]);
 
   const itemKey = (item: SourcePreviewItem) => item.skc_id ?? item.quote_key;
   const candidateKeyFor = (skcKey: string, candidate: SourceCandidate | null) =>
@@ -155,7 +167,17 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     setProfitOverrides({});
     setPriceOverrides({});
     setWeights({});
+    setImagePreviewUrl("");
   }, [preview]);
+
+  useEffect(() => {
+    if (!imagePreviewUrl) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setImagePreviewUrl("");
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [imagePreviewUrl]);
 
   useEffect(() => {
     const contentCard = document.querySelector<HTMLElement>(".content-card");
@@ -286,6 +308,21 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     }
   };
 
+  const submitManualLookup = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!manualLookupSkcId || !manualLookupUrl.trim()) return;
+    setManualLookupBusy(true);
+    try {
+      await onManualLookup(manualLookupSkcId, manualLookupUrl.trim());
+      setManualLookupSkcId("");
+      setManualLookupUrl("");
+    } catch (error) {
+      onError(`手动查询失败：${actionError(error)}`);
+    } finally {
+      setManualLookupBusy(false);
+    }
+  };
+
   const groups = preview?.skc_groups?.length ? preview.skc_groups : preview?.items.map((item) => ({
     skc_id: item.skc_id ?? item.quote_key,
     quote_keys: [item.quote_key],
@@ -318,21 +355,29 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
         <div className="pv-source-cards">
           {groups.map((group) => {
             const item = group.items[0];
+            const mainImageUrl = item?.main_image_url;
             const cap = item?.max_candidates && item.max_candidates > 0 ? item.max_candidates : 10;
             const all = item?.all_candidates?.length ? item.all_candidates : item?.candidates ?? [];
             const displayLimit = Math.min(CANDIDATE_LIMIT, cap);
-            // 保留万邦原始排序；仅把当前展示范围内的首条放到最后，避免其默认占据首屏。
-            const rankedCandidates = all.slice(0, displayLimit);
-            const candidates = rankedCandidates.length > 1
+            const manualCandidates = all.filter((candidate) => candidate.manual_lookup);
+            const imageCandidates = all.filter((candidate) => !candidate.manual_lookup);
+            // 手动核验的链接必须优先展示；纯图搜候选沿用现有首条后移展示规则。
+            const rankedCandidates = manualCandidates.length
+              ? [...manualCandidates, ...imageCandidates].slice(0, displayLimit)
+              : all.slice(0, displayLimit);
+            const candidates = !manualCandidates.length && rankedCandidates.length > 1
               ? [...rankedCandidates.slice(1), rankedCandidates[0]]
               : rankedCandidates;
             return (
               <div className="pv-source-result-stack" key={group.skc_id}>
-                <div className="pv-source-result-head">
-                  <div className="pv-source-group-title">
-                    {item?.main_image_url ? <img className="pv-source-temu-image" src={item.main_image_url} alt="" loading="lazy" referrerPolicy="no-referrer" /> : null}
+                    <div className="pv-source-result-head">
+                      <div className="pv-source-group-title">
+                        {mainImageUrl ? <button type="button" className="pv-source-temu-image-trigger" onClick={() => setImagePreviewUrl(mainImageUrl)} aria-label="查看商品大图">
+                          <img className="pv-source-temu-image" src={mainImageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
+                        </button> : null}
                     <span className="pv-source-skc-badge">{group.skc_id}</span>
                     <strong>{item?.product_title || "未命名商品"}</strong>
+                    <button type="button" className="pv-source-manual-button" disabled={busy || manualLookupBusy} onClick={() => { setManualLookupSkcId(group.skc_id); setManualLookupUrl(""); }}>手动查1688</button>
                   </div>
                 </div>
                 {candidates.length ? (
@@ -361,7 +406,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                             <div className="pv-source-card-top">
                               <div className="pv-source-card-info">
                                 <span className="pv-source-card-title">{candidate.source_title || "候选商品"}</span>
-                                <div className="pv-source-card-meta">
+                                  <div className="pv-source-card-meta">
+                                  {candidate.manual_lookup ? <em className="is-manual">手动查询</em> : null}
                                   {candidate.source_decision ? <em className="is-plain">{decisionLabel(candidate.source_decision)}</em> : null}
                                   {metaParts.length ? <small>{metaParts.join(" · ")}</small> : null}
                                 </div>
@@ -425,6 +471,28 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       >
         {busy ? "图搜执行中…" : "重新图搜"}
       </button>
+      {manualLookupSkcId ? <div className="pv-source-manual-dialog-backdrop" role="presentation" onMouseDown={() => !manualLookupBusy && setManualLookupSkcId("")}>
+        <form className="pv-source-manual-dialog" role="dialog" aria-modal="true" aria-labelledby="pv-manual-lookup-title" onSubmit={(event) => void submitManualLookup(event)} onMouseDown={(event) => event.stopPropagation()}>
+          <div>
+            <p>SKC {manualLookupSkcId}</p>
+            <h3 id="pv-manual-lookup-title">手动查1688商品</h3>
+          </div>
+          <label>1688 商品详情链接
+            <input autoFocus value={manualLookupUrl} onChange={(event) => setManualLookupUrl(event.target.value)} placeholder="请输入1688商品详情链接" disabled={manualLookupBusy} />
+          </label>
+          <small>支持 detail.1688.com/offer/商品ID.html 或带 offer_id 的商品链接。</small>
+          <div className="pv-source-manual-dialog-actions">
+            <button type="button" onClick={() => setManualLookupSkcId("")} disabled={manualLookupBusy}>取消</button>
+            <button type="submit" disabled={!manualLookupUrl.trim() || manualLookupBusy}>{manualLookupBusy ? "查询中…" : "查询并置顶"}</button>
+          </div>
+        </form>
+      </div> : null}
+      {imagePreviewUrl ? <div className="pv-source-image-preview-backdrop" role="presentation" onMouseDown={() => setImagePreviewUrl("")}>
+        <section className="pv-source-image-preview" role="dialog" aria-modal="true" aria-label="商品大图预览" onMouseDown={(event) => event.stopPropagation()}>
+          <button type="button" className="pv-source-image-preview-close" onClick={() => setImagePreviewUrl("")} aria-label="关闭大图预览" autoFocus>×</button>
+          <img src={imagePreviewUrl} alt="商品大图" referrerPolicy="no-referrer" />
+        </section>
+      </div> : null}
     </section>
   );
 }

@@ -71,6 +71,7 @@ def _migrate_legacy_tables(engine: Engine) -> None:
             "created_by": "TEXT NOT NULL DEFAULT ''",
             "created_by_username": "TEXT NOT NULL DEFAULT 'local'",
             "image_path": "TEXT NOT NULL DEFAULT ''",
+            "attachment_image_path": "TEXT NOT NULL DEFAULT ''",
             "source_main_image_url": "TEXT NOT NULL DEFAULT ''",
             "source_image_path": "TEXT NOT NULL DEFAULT ''",
             "source_groups_json": "TEXT NOT NULL DEFAULT '[]'",

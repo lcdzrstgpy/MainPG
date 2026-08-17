@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP
 
-from .models import ProfitPreview, ProfitSettings, SiteCode
+from .models import ProfitPreview, ProfitSettings, ProfitSiteProfile, SiteCode
 
 
 _MONEY = Decimal("0.0001")
@@ -27,7 +27,7 @@ class ProfitValidationError(ValueError):
 
 def calculate_profit(
     *, site_code: SiteCode, selling_price: Decimal, cost_price: Decimal,
-    weight_kg: Decimal, settings: ProfitSettings,
+    weight_kg: Decimal, settings: ProfitSettings, custom_site: ProfitSiteProfile | None = None,
 ) -> ProfitPreview:
     """计算利润；金额保留 4 位小数，利润率保留 6 位小数。"""
     selling, cost, weight = (_positive(selling_price, "selling_price"), _positive(cost_price, "cost_price"), _positive(weight_kg, "weight_kg"))
@@ -47,6 +47,14 @@ def calculate_profit(
             settings.ec_domestic_fee,
             settings.ec_shipping_subsidy if selling <= settings.ec_shipping_subsidy_price_limit else Decimal("0"),
             weight * settings.ec_first_mile_rate + settings.ec_first_mile_fixed, settings.ec_end_fee, settings.ec_refund_rate,
+        )
+    elif custom_site is not None and custom_site.site_code == site_code:
+        domestic, subsidy, shipping, end_fee, refund = (
+            custom_site.domestic_fee,
+            custom_site.shipping_subsidy,
+            weight * custom_site.first_mile_rate + custom_site.first_mile_fixed,
+            custom_site.end_fee,
+            custom_site.refund_rate,
         )
     else:
         raise ProfitValidationError("site_code_invalid")
@@ -77,8 +85,8 @@ def validate_settings(settings: ProfitSettings) -> None:
     for field in ("domestic_fee", "shipping_subsidy", "us_first_mile_rate", "us_first_mile_fixed", "co_first_mile_rate", "co_first_mile_fixed", "ec_domestic_fee", "ec_shipping_subsidy", "ec_first_mile_rate", "ec_first_mile_fixed", "ec_end_fee", "activity_min_net_profit"):
         if getattr(settings, field) < 0:
             raise ProfitValidationError(f"{field}_must_be_nonnegative")
-    if settings.ec_shipping_subsidy_price_limit <= 0:
-        raise ProfitValidationError("ec_shipping_subsidy_price_limit_must_be_positive")
+    if settings.ec_shipping_subsidy_price_limit < 0:
+        raise ProfitValidationError("ec_shipping_subsidy_price_limit_must_be_nonnegative")
     for field in ("refund_rate", "ec_refund_rate", "activity_profit_rate_threshold"):
         if not Decimal("0") <= getattr(settings, field) <= Decimal("1"):
             raise ProfitValidationError(f"{field}_must_be_between_zero_and_one")

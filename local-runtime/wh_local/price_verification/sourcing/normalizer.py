@@ -74,6 +74,7 @@ def normalize_source_candidate(
         "domestic_freight": freight,
         "weight_kg": weight,
         "source_channel": source_channel,
+        "manual_lookup": bool(raw_candidate.get("manual_lookup")),
         "product_evidence_status": product_status,
         "product_evidence": list(product_evidence),
         "sku_evidence_status": sku_status,
