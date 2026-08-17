@@ -1,9 +1,9 @@
-; 启凡电商平台（MainPG）安装程序定义
+; 界野电商平台（MainPG）安装程序定义
 ; 编译：ISCC.exe mainpg-installer.iss
 ; 前提：先运行 build_installer.ps1 生成 dist\MainPG（PyInstaller onedir）
 ; 注意：本文件含中文，编译时需先转换为 UTF-8 带 BOM（build_installer.ps1 已处理）
 
-#define MyAppName "启凡电商平台"
+#define MyAppName "界野电商平台"
 #define MyAppNameEn "MainPG"
 #ifndef MyAppVersion
   #define MyAppVersion "1.1.0"
@@ -11,7 +11,7 @@
 #ifndef MySetupBaseFilename
   #define MySetupBaseFilename "MainPG-Setup-" + MyAppVersion
 #endif
-#define MyAppPublisher "启凡"
+#define MyAppPublisher "界野"
 #define MyAppExeName "MainPG.exe"
 
 [Setup]

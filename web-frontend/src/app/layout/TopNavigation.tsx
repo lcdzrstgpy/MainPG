@@ -37,7 +37,6 @@ type TopNavigationProps = {
 export function TopNavigation({ sidebarPinned, topbarPinned, activeKey, tabs, onToggleSidebar, onToggleTopbarPin, onSelectTab, onCloseTab, onOpenPersonalCenter, onSignOut }: TopNavigationProps) {
   const [closingKeys, setClosingKeys] = useState<string[]>([]);
   const [topbarStuck, setTopbarStuck] = useState(false);
-  const [showThemePanel, setShowThemePanel] = useState(false);
   const topbarRef = useRef<HTMLElement>(null);
   const { theme, setTheme } = useTheme();
 
@@ -90,36 +89,30 @@ export function TopNavigation({ sidebarPinned, topbarPinned, activeKey, tabs, on
             <summary><span className="avatar">U</span><span>本地用户</span><span className="caret">⌄</span></summary>
             <div className="user-popover">
               <strong>个人中心</strong>
-              <span>管理当前员工账号和个人使用偏好</span>
+              <span>管理当前员工账号</span>
               <div className="user-menu-actions">
                 <button className="user-menu-action" type="button" onClick={onOpenPersonalCenter}>
                   <span className="iconfont icon-edit" aria-hidden="true" />
                   <span>用户账号</span>
                 </button>
-                <button className="user-menu-action" type="button" onClick={() => setShowThemePanel((v) => !v)}>
-                  <span className="iconfont icon-setting" aria-hidden="true" />
-                  <span>偏好设置</span>
-                </button>
               </div>
-              {showThemePanel && (
-                <div className="theme-switcher">
-                  <span className="theme-switcher-label">主题风格</span>
-                  <div className="theme-options">
-                    {(Object.keys(THEME_META) as ThemeId[]).map((id) => (
-                      <button
-                        key={id}
-                        type="button"
-                        className={`theme-option ${theme === id ? "is-active" : ""}`}
-                        onClick={() => setTheme(id)}
-                      >
-                        <span className="theme-swatch" style={{ background: THEME_META[id].swatch }} />
-                        <span className="theme-option-name">{THEME_META[id].label}</span>
-                        {theme === id && <span className="theme-check">✓</span>}
-                      </button>
-                    ))}
-                  </div>
+              <div className="theme-switcher">
+                <span className="theme-switcher-label">主题风格</span>
+                <div className="theme-options">
+                  {(Object.keys(THEME_META) as ThemeId[]).map((id) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={`theme-option ${theme === id ? "is-active" : ""}`}
+                      onClick={() => setTheme(id)}
+                    >
+                      <span className="theme-swatch" style={{ background: THEME_META[id].swatch }} />
+                      <span className="theme-option-name">{THEME_META[id].label}</span>
+                      {theme === id && <span className="theme-check">✓</span>}
+                    </button>
+                  ))}
                 </div>
-              )}
+              </div>
               <button className="user-menu-signout" type="button" onClick={onSignOut}>退出登录</button>
             </div>
           </details>

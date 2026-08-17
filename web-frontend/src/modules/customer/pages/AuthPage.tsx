@@ -202,8 +202,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     <main className="auth-screen">
       <section className="auth-brand-card">
         <img className="brand-logo-large" src={BRAND_LOGO_URL} alt={BRAND_NAME} />
-        <p className="eyebrow">QIFAN ECOMMERCE PLATFORM</p>
-        <h1>启凡电商平台</h1>
+        <p className="eyebrow">JIEYE ECOMMERCE PLATFORM</p>
+        <h1>界野电商平台</h1>
         <p>面向跨境电商团队的本地运营中台。登录/注册已连接真实后端接口，账号数据由后端账号服务统一管理。</p>
         <div className="auth-feature-list"><span>✓ 模块化工作流</span><span>✓ 本地运行时</span><span>✓ 团队协作预留</span></div>
       </section>

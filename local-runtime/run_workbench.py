@@ -90,16 +90,16 @@ def _process_name(pid: int) -> str:
 def _ask_release_port(port: int, pid: int, name: str) -> bool:
     """弹窗征询：用户同意后调用方负责释放端口。返回 True 表示同意。"""
     is_workbench = "mainpg" in name.lower() or "mainpg" in os.path.basename(name).lower()
-    display = "另一个启凡电商平台（残留实例）" if is_workbench else f"「{name}」"
+    display = "另一个界野电商平台（残留实例）" if is_workbench else f"「{name}」"
     text = (
-        f"启凡电商平台需要使用 {port} 端口启动，\n"
+        f"界野电商平台需要使用 {port} 端口启动，\n"
         f"但该端口当前被 {display}（进程号 {pid}）占用。\n\n"
         f"点击“是”：自动关闭该程序，然后用 {port} 端口继续启动；\n"
         f"点击“否”：改用其他端口启动（浏览器插件可能无法连接）。"
     )
     try:
         result = ctypes.windll.user32.MessageBoxW(
-            0, text, "启凡电商平台 - 端口提示",
+            0, text, "界野电商平台 - 端口提示",
             _MB_YESNO | _MB_ICONWARNING | _MB_DEFBUTTON2,
         )
         return result == _IDYES

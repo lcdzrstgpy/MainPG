@@ -27,7 +27,11 @@ export function Sidebar({ collapsed, activeId, expandedGroupId, modules, onOpenM
       onMouseLeave={() => onHoverChange(false)}
     >
       <div className="brand-lockup">
-        <img className={`brand-logo${collapsed ? " is-mark" : ""}`} src={collapsed ? BRAND_MARK_URL : BRAND_LOGO_URL} alt={BRAND_NAME} />
+        <img
+          className={`brand-logo${collapsed ? " is-mark" : ""}`}
+          src={collapsed ? BRAND_MARK_URL : BRAND_LOGO_URL}
+          alt={BRAND_NAME}
+        />
       </div>
       <p className="sidebar-caption">本地运营中台</p>
       <nav className="sidebar-menu">

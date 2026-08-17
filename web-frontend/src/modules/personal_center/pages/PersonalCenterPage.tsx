@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 
-import { getAuthAccount } from "../../../transport/http/client";
-import { createTopupOrder, loadBillingSummary, type BillingPackage, type BillingSummary, type TopupOrderResponse } from "../api/personalCenterApi";
+import { clearAuthSession, getAuthAccount } from "../../../transport/http/client";
+import { changeAccountPassword, createTopupOrder, loadBillingSummary, type BillingPackage, type BillingSummary, type TopupOrderResponse } from "../api/personalCenterApi";
 import "../styles/personalCenter.css";
 
 type AccountSnapshot = {
+  account_id?: string;
   username?: string;
   email?: string;
   role?: string;
@@ -40,6 +41,13 @@ export function PersonalCenterPage() {
   const [provider, setProvider] = useState<"wechat" | "alipay">("wechat");
   const [creating, setCreating] = useState(false);
   const [createdOrder, setCreatedOrder] = useState<TopupOrderResponse | null>(null);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordError, setPasswordError] = useState("");
+  const [passwordSuccess, setPasswordSuccess] = useState("");
   const account = getAuthAccount<AccountSnapshot>();
 
   const activePackage = useMemo(
@@ -62,6 +70,70 @@ export function PersonalCenterPage() {
   useEffect(() => {
     refresh();
   }, []);
+
+  useEffect(() => {
+    if (!passwordOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !passwordBusy) setPasswordOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [passwordBusy, passwordOpen]);
+
+  const openPasswordDialog = () => {
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setPasswordError("");
+    setPasswordSuccess("");
+    setPasswordOpen(true);
+  };
+
+  const closePasswordDialog = () => {
+    if (!passwordBusy) setPasswordOpen(false);
+  };
+
+  const submitPasswordChange = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setPasswordError("");
+    setPasswordSuccess("");
+    if (newPassword.length < 6) {
+      setPasswordError("新密码至少需要 6 个字符");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError("两次输入的新密码不一致");
+      return;
+    }
+    if (currentPassword === newPassword) {
+      setPasswordError("新密码不能与当前密码相同");
+      return;
+    }
+
+    setPasswordBusy(true);
+    try {
+      await changeAccountPassword({
+        account_id: summary?.account.account_id || account?.account_id,
+        username: account?.username || summary?.account.username,
+        email: account?.email,
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setPasswordSuccess("密码修改成功，即将退出并返回登录页…");
+      clearAuthSession();
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : "修改密码失败";
+      setPasswordError(message.includes("invalid username/email or password") ? "当前密码不正确" : message);
+    } finally {
+      setPasswordBusy(false);
+    }
+  };
 
   const submitTopup = async (product?: BillingPackage) => {
     if (!product) return;
@@ -92,12 +164,85 @@ export function PersonalCenterPage() {
             <span>{account?.workspace_name || account?.workspace_code || summary?.account.workspace_code || "默认工作区"}</span>
           </div>
         </div>
-        <div className="personal-security-pill">
-          <span className="iconfont icon-lock-fill" aria-hidden="true" />
-          <strong>服务器账本校验</strong>
-          <span>本地数据不作为余额依据</span>
+        <div className="personal-hero-actions">
+          <div className="personal-security-pill">
+            <span className="iconfont icon-lock-fill" aria-hidden="true" />
+            <strong>服务器账本校验</strong>
+            <span>本地数据不作为余额依据</span>
+          </div>
+          <button className="personal-password-entry" type="button" onClick={openPasswordDialog}>
+            <span className="iconfont icon-key" aria-hidden="true" />
+            修改密码
+          </button>
         </div>
       </div>
+
+      {passwordOpen && (
+        <div className="personal-password-layer" onMouseDown={closePasswordDialog}>
+          <section
+            className="personal-password-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="personal-password-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <span>ACCOUNT SECURITY</span>
+                <h2 id="personal-password-title">修改登录密码</h2>
+                <p>验证当前密码后设置新密码，修改成功会退出当前登录。</p>
+              </div>
+              <button type="button" onClick={closePasswordDialog} disabled={passwordBusy} aria-label="关闭">×</button>
+            </header>
+            <form onSubmit={(event) => void submitPasswordChange(event)}>
+              <label>
+                <span>当前密码</span>
+                <input
+                  autoFocus
+                  type="password"
+                  autoComplete="current-password"
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  placeholder="请输入当前登录密码"
+                  required
+                />
+              </label>
+              <label>
+                <span>新密码</span>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  placeholder="至少 6 个字符"
+                  minLength={6}
+                  required
+                />
+              </label>
+              <label>
+                <span>确认新密码</span>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  placeholder="请再次输入新密码"
+                  minLength={6}
+                  required
+                />
+              </label>
+              {passwordError && <p className="personal-password-message is-error">{passwordError}</p>}
+              {passwordSuccess && <p className="personal-password-message is-success">{passwordSuccess}</p>}
+              <footer>
+                <button type="button" onClick={closePasswordDialog} disabled={passwordBusy || Boolean(passwordSuccess)}>取消</button>
+                <button className="is-primary" type="submit" disabled={passwordBusy || Boolean(passwordSuccess)}>
+                  {passwordBusy ? "正在修改…" : "确认修改"}
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      )}
 
       {error && <div className="personal-alert is-error">{error}</div>}
       {loading && <div className="personal-alert">正在读取服务器账户与积分数据...</div>}

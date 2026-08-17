@@ -63,7 +63,7 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 $dist = Join-Path $PSScriptRoot "dist\MainPG"
 if (-not (Test-Path $dist)) { throw "bundle output missing: $dist" }
 
-# 4. Copy the app icon so shortcuts can use the product logo (qifan-mark).
+# 4. Copy the app icon so shortcuts can use the product logo (jieye-mark).
 # Existing installations keep their app-local credential files because the installer does not
 # delete them. Fresh installations must be configured from System Settings or environment vars.
 Copy-Item "app-icon.ico" $dist -ErrorAction Stop

@@ -39,7 +39,7 @@ export function WorkspaceHomePage({ onOpenModule }: WorkspaceHomePageProps) {
       <span className="dashboard-meteor is-three" aria-hidden="true" />
       <section className="page-hero-card">
         <img className="brand-logo-hero" src={BRAND_LOGO_URL} alt={BRAND_NAME} />
-        <p className="eyebrow">QIFAN ECOMMERCE PLATFORM · 启凡电商平台</p>
+        <p className="eyebrow">JIEYE ECOMMERCE PLATFORM · 界野电商平台</p>
         <h1>{greeting}，准备开始今天的工作。</h1>
       </section>
       <section>

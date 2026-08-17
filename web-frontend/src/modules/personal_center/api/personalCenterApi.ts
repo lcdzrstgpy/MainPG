@@ -93,3 +93,16 @@ export function createTopupOrder(input: {
     },
   });
 }
+
+export function changeAccountPassword(input: {
+  account_id?: string;
+  username?: string;
+  email?: string;
+  current_password: string;
+  new_password: string;
+}) {
+  return httpJson<{ ok: boolean; message: string }>("/api/customer/change-password", {
+    method: "POST",
+    body: input,
+  });
+}
