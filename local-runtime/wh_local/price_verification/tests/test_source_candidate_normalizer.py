@@ -74,14 +74,15 @@ def test_source_preview_exposes_safe_image_search_audit() -> None:
                                 "outcome": "success",
                                 "final_url": "https://img.temu.test/main.jpeg",
                                 "image_size_bytes": 12345,
+                                "elapsed_ms": 12,
                             },
                         },
-                        {"operation": "upload_img", "response_summary": {"outcome": "success"}},
+                        {"operation": "upload_img", "response_summary": {"outcome": "success", "elapsed_ms": 34}},
                         {
                             "operation": "item_search_img",
                             "request_id": "safe-request-id",
                             "captured_at": "2026-08-12T08:00:00+00:00",
-                            "response_summary": {"outcome": "success"},
+                            "response_summary": {"outcome": "success", "elapsed_ms": 56},
                         },
                     ],
                 }
@@ -95,6 +96,9 @@ def test_source_preview_exposes_safe_image_search_audit() -> None:
         "searched": True,
         "reference_image_url": "https://img.temu.test/main.jpeg",
         "image_size_bytes": 12345,
+        "download_elapsed_ms": 12,
+        "upload_elapsed_ms": 34,
+        "search_elapsed_ms": 56,
         "request_id": "safe-request-id",
         "captured_at": "2026-08-12T08:00:00+00:00",
     }

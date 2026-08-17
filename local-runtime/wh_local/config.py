@@ -1,14 +1,28 @@
 from __future__ import annotations
 
-import os
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 
+# Release automation updates this single value when producing a desktop build.
+APP_VERSION = "1.1.0"
+# Replace this host only when the official MainPG release origin moves. Keep the
+# manifest and installer allowlist bound to the same release-owned host.
+UPDATE_RELEASE_HOST = "workbench.haocoming.top"
+UPDATE_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/manifest.json"
+UPDATE_MANIFEST_ALLOWED_HOSTS = frozenset({UPDATE_RELEASE_HOST})
+# Public verification key only. The matching private key belongs in the release
+# signing system and must never be distributed with the application.
+UPDATE_ED25519_PUBLIC_KEY_B64 = "ld1p0SpDI2e//hmBihZ4Y7Ih/8VU299R6md/soa4r5Q="
+
+
 @dataclass(frozen=True)
 class LocalRuntimeConfig:
+    app_version: str
+    runtime_root: Path
     data_dir: Path
     database_path: Path
     dev_admin_token: str
@@ -20,12 +34,14 @@ class LocalRuntimeConfig:
 
 
 def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
-    root = _runtime_root(workspace)
+    root = runtime_root(workspace)
     local_secrets = _local_onebound_config()
     # 允许通过环境变量切换数据目录，方便开发、测试和打包后的桌面端各自使用不同库。
     data_dir = Path(os.environ.get("WH_LOCAL_DATA_DIR", "") or root / "outputs" / "wh-local")
     database_path = Path(os.environ.get("WH_LOCAL_DATABASE_PATH", "") or data_dir / "workbench.sqlite3")
     return LocalRuntimeConfig(
+        app_version=APP_VERSION,
+        runtime_root=root,
         data_dir=data_dir,
         database_path=database_path,
         dev_admin_token=os.environ.get("WH_LOCAL_DEV_ADMIN_TOKEN", "dev-admin-token"),
@@ -49,7 +65,7 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
     )
 
 
-def _runtime_root(workspace: Path | None) -> Path:
+def runtime_root(workspace: Path | None = None) -> Path:
     """数据根目录：显式指定 > 打包（PyInstaller）用户可写目录 > 当前工作目录。
 
     安装包场景下用户双击 exe，cwd 可能是安装目录或系统目录（可能不可写），

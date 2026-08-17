@@ -122,8 +122,8 @@ export function PriceVerificationPage() {
       const preview = await priceVerificationApi.sourceBatchSelections(batchId, state.unresolved_skc_ids);
       setSourcingState({ ...state, preview });
       setNotice(failed
-        ? `已保留 ${retained.length} 个 SKC，${failed} 个写入草稿池失败；其余 SKC 已完成图片+标题双路图搜。`
-        : `已保留 ${retained.length} 个 SKC；产品库复用 ${state.matched_products.length} 个，其余 ${state.unresolved_skc_ids.length} 个已完成图片+标题双路图搜。`);
+        ? `已保留 ${retained.length} 个 SKC，${failed} 个写入草稿池失败；其余 SKC 已完成图片图搜。`
+        : `已保留 ${retained.length} 个 SKC；产品库复用 ${state.matched_products.length} 个，其余 ${state.unresolved_skc_ids.length} 个已完成图片图搜。`);
     } catch (error) { setNotice(`确认并执行图搜失败：${errorMessage(error)}`); } finally { setBusyKey(""); }
   };
 

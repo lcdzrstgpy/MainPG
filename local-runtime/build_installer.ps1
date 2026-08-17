@@ -1,10 +1,31 @@
 # Build the local workbench distribution (PyInstaller onedir + zip + Inno Setup installer).
-# Usage: powershell -ExecutionPolicy Bypass -File build_installer.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File build_installer.ps1 -Version 1.1.0
 # Security: local credential files are never copied into public artifacts.
+# Set MAINPG_RELEASE_SIGNING_KEY_PATH only for signed release-manifest generation.
 # NOTE: keep this file ASCII-only to avoid PowerShell 5 (ANSI) encoding issues.
+
+param(
+    # SemVer 2.0.0, kept in parity with wh_local.app_update.SemanticVersion.
+    [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?\z')]
+    [string]$Version = "1.1.0",
+    [string]$InstallerUrl = "",
+    [switch]$Mandatory,
+    [string]$ReleaseNotes = "",
+    [string]$PublishedAt = ""
+)
 
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
+
+if (-not $PublishedAt) { $PublishedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }
+
+# This module is bundled by PyInstaller and is the runtime's build metadata.
+$runtimeConfig = Join-Path $PSScriptRoot "wh_local\config.py"
+$configText = Get-Content -Raw -LiteralPath $runtimeConfig
+$versionMatch = [regex]::Match($configText, '(?m)^APP_VERSION = "[^"]*"$')
+if (-not $versionMatch.Success) { throw "APP_VERSION metadata entry missing from $runtimeConfig" }
+$updatedConfig = [regex]::Replace($configText, '(?m)^APP_VERSION = "[^"]*"$', "APP_VERSION = `"$Version`"", 1)
+Set-Content -LiteralPath $runtimeConfig -Encoding UTF8 -Value $updatedConfig
 
 # Pin the interpreter that has the packaging dependencies (override with WH_PYTHON);
 # avoids interference from other Pythons in PATH.
@@ -63,7 +84,7 @@ if ($forbiddenFiles) {
 
 # 5. Pack a portable zip
 Write-Host "[build] creating portable zip ..."
-$zip = Join-Path $PSScriptRoot "dist\MainPG-portable.zip"
+$zip = Join-Path $PSScriptRoot "dist\MainPG-portable-$Version.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path $dist -DestinationPath $zip -CompressionLevel Optimal
 
@@ -83,11 +104,39 @@ $issBuild = Join-Path $PSScriptRoot "mainpg-installer.build.iss"
 $issText = Get-Content -Raw -Encoding UTF8 $issSource
 [IO.File]::WriteAllText($issBuild, $issText, [Text.UTF8Encoding]::new($true))
 try {
-    & $iscc $issBuild
+    & $iscc "/DMyAppVersion=$Version" "/DMySetupBaseFilename=MainPG-Setup-$Version" $issBuild
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed" }
 } finally {
     Remove-Item $issBuild -ErrorAction SilentlyContinue
 }
 
+$installer = Join-Path $PSScriptRoot "dist\MainPG-Setup-$Version.exe"
+if (-not (Test-Path -LiteralPath $installer)) { throw "versioned installer output missing: $installer" }
+
+if ($InstallerUrl) {
+    $signingKeyPath = $env:MAINPG_RELEASE_SIGNING_KEY_PATH
+    if (-not $signingKeyPath) {
+        throw "MAINPG_RELEASE_SIGNING_KEY_PATH is required when -InstallerUrl requests release-manifest generation"
+    }
+    if (-not (Test-Path -LiteralPath $signingKeyPath -PathType Leaf)) {
+        throw "MAINPG_RELEASE_SIGNING_KEY_PATH does not point to a readable private key file"
+    }
+
+    $sha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+    $manifest = Join-Path $PSScriptRoot "dist\release-manifest.json"
+    & $python -m wh_local.runtime.release_manifest `
+        --version $Version `
+        --mandatory $Mandatory.IsPresent.ToString().ToLowerInvariant() `
+        --installer-url $InstallerUrl `
+        --sha256 $sha256 `
+        --release-notes $ReleaseNotes `
+        --published-at $PublishedAt `
+        --private-key-path $signingKeyPath `
+        --output $manifest
+    if ($LASTEXITCODE -ne 0) { throw "release-manifest signing failed" }
+    if (-not (Test-Path -LiteralPath $manifest)) { throw "release manifest output missing: $manifest" }
+    Write-Host "[build] signed release manifest: $manifest"
+}
+
 Write-Host "[build] done: $zip"
-Write-Host "[build] done: $(Join-Path $PSScriptRoot 'dist\MainPG-Setup.exe')"
+Write-Host "[build] done: $installer"

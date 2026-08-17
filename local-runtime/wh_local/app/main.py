@@ -5,6 +5,7 @@ import os
 import sys
 
 from collections.abc import Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,14 @@ from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger("wh_local.app")
 
-from ..config import default_config
+from ..app_update import UpdateManager, UpdateSettings, create_router as create_update_router
+from ..config import (
+    APP_VERSION,
+    UPDATE_ED25519_PUBLIC_KEY_B64,
+    UPDATE_MANIFEST_ALLOWED_HOSTS,
+    UPDATE_MANIFEST_URL,
+    default_config,
+)
 from ..customer.auth_service import SQLiteCustomerAuthService
 from ..customer.collect_credentials import CollectCredentialsError, request_collect_credentials
 from ..customer.db_store import SQLiteCustomerSessionStore
@@ -103,7 +111,28 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     init_db(db_path)
     register_system_config_db_path(db_path)
 
-    app = FastAPI(title="H Smart Ecommerce Local Runtime", version="0.1.0")
+    update_manager = UpdateManager(
+        UpdateSettings(
+            current_version=config.app_version,
+            manifest_url=UPDATE_MANIFEST_URL,
+            allowed_hosts=UPDATE_MANIFEST_ALLOWED_HOSTS,
+            public_key_b64=UPDATE_ED25519_PUBLIC_KEY_B64,
+            runtime_root=config.runtime_root,
+        )
+    )
+
+    @asynccontextmanager
+    async def app_lifespan(_: FastAPI):
+        # This method only starts a daemon worker, so an offline release server
+        # cannot delay or make the desktop runtime unhealthy.
+        update_manager.start_check()
+        yield
+
+    app = FastAPI(
+        title="H Smart Ecommerce Local Runtime",
+        version=APP_VERSION,
+        lifespan=app_lifespan,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -112,6 +141,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     _register_frontend_shell(app)
+    app.state.update_manager = update_manager
+    app.include_router(create_update_router(update_manager))
 
     @app.get("/health")
     def health() -> dict[str, Any]:

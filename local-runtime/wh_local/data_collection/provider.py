@@ -47,6 +47,10 @@ _SEARCH_RETRY_BACKOFF_SECONDS = 1.5
 _SEARCH_RETRY_OUTCOMES = frozenset({"timeout", "no_results", "upstream_failed"})
 
 
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, round((time.monotonic() - started_at) * 1000))
+
+
 @dataclass(frozen=True)
 class HttpResponse:
     """The small HTTP boundary used by the provider and its test fake."""
@@ -392,6 +396,7 @@ class OneBound1688Provider:
     def _download_reference_image(
         self, reference_image_url: str
     ) -> tuple[bytes | None, ApiEvidence, DailySelectionError | None]:
+        started_at = time.monotonic()
         safe_url = self._validated_remote_image_url(reference_image_url)
         try:
             image = self._image_fetcher.fetch(reference_image_url)
@@ -400,7 +405,7 @@ class OneBound1688Provider:
                 "download_reference_image",
                 "invalid_request",
                 request_summary={"http_method": "GET", "image_url": safe_url or "[invalid]"},
-                response_summary={"fetch_policy": "rejected"},
+                response_summary={"fetch_policy": "rejected", "elapsed_ms": _elapsed_ms(started_at)},
             )
             return None, audit, self._error("invalid_request", "reference image could not be fetched safely")
         except Exception:
@@ -408,6 +413,7 @@ class OneBound1688Provider:
                 "download_reference_image",
                 "upstream_failed",
                 request_summary={"http_method": "GET", "image_url": safe_url or "[invalid]"},
+                response_summary={"elapsed_ms": _elapsed_ms(started_at)},
             )
             return None, audit, self._error("upstream_failed", "reference image download failed")
         audit = self._audit(
@@ -418,6 +424,7 @@ class OneBound1688Provider:
                 "media_type": image.media_type,
                 "image_size_bytes": len(image.content),
                 "final_url": self._validated_remote_image_url(image.final_url) or "[validated]",
+                "elapsed_ms": _elapsed_ms(started_at),
             },
         )
         return image.content, audit, None
@@ -441,6 +448,7 @@ class OneBound1688Provider:
         max_attempts = 1 + max(_RATE_LIMIT_RETRIES, _SEARCH_RETRIES)
         last_error: ProviderCallResult | None = None
         for attempt in range(max_attempts):
+            started_at = time.monotonic()
             try:
                 upstream = self._transport.request(
                     http_method,
@@ -451,13 +459,23 @@ class OneBound1688Provider:
                     timeout=self._timeout_seconds,
                 )
             except (TimeoutError, socket.timeout):
-                audit = self._audit(operation, "timeout", request_summary=request_summary)
+                audit = self._audit(
+                    operation,
+                    "timeout",
+                    request_summary=request_summary,
+                    response_summary={"elapsed_ms": _elapsed_ms(started_at)},
+                )
                 result = ProviderCallResult({}, prior_audits + (audit,), self._error("timeout", "OneBound request timed out"))
                 outcome = "timeout"
                 http_status = None
                 request_id = None
             except Exception:
-                audit = self._audit(operation, "upstream_failed", request_summary=request_summary)
+                audit = self._audit(
+                    operation,
+                    "upstream_failed",
+                    request_summary=request_summary,
+                    response_summary={"elapsed_ms": _elapsed_ms(started_at)},
+                )
                 result = ProviderCallResult({}, prior_audits + (audit,), self._error("upstream_failed", "OneBound request failed"))
                 outcome = "upstream_failed"
                 http_status = None
@@ -469,6 +487,7 @@ class OneBound1688Provider:
                 response_summary: dict[str, Any] = {
                     "http_status": upstream.status,
                     "outcome": outcome,
+                    "elapsed_ms": _elapsed_ms(started_at),
                 }
                 code = payload.get("code")
                 if isinstance(code, (str, int, float)):
@@ -521,7 +540,12 @@ class OneBound1688Provider:
         code: str,
         message: str,
     ) -> ProviderCallResult:
-        audit = self._audit(operation, code, request_summary={"operation": operation})
+        audit = self._audit(
+            operation,
+            code,
+            request_summary={"operation": operation},
+            response_summary={"elapsed_ms": 0},
+        )
         return ProviderCallResult({}, prior_audits + (audit,), self._error(code, message))
 
     def _audit(

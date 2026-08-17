@@ -13,6 +13,8 @@ import ctypes
 from dataclasses import dataclass
 import os
 import re
+import threading
+import time
 from typing import Any, Protocol
 
 from ..contracts import PriceVerificationActor, redact_sensitive, redact_sensitive_text
@@ -25,11 +27,11 @@ from .title_translation import to_search_keywords, translate_title_to_chinese
 
 
 _PROVIDER_NAME = "onebound-1688"
-_MAX_PARALLEL_SEARCHES = 4
 _OFFER_ID = re.compile(r"(?:offer/|offerId=|offer_id=)(\d{3,})", flags=re.IGNORECASE)
 _LOW_MEMORY_BYTES = 8 * 1024**3
 _LOW_CPU_COUNT = 4
-_MAX_PARALLEL_SKCS = 2
+_MAX_PARALLEL_SKCS = 3
+_MAX_PARALLEL_PROVIDER_REQUESTS = 2
 _SERIAL_FALLBACK_OUTCOMES = frozenset({"rate_limited", "timeout"})
 
 
@@ -69,8 +71,11 @@ class OneBoundSourceAdapter:
             raise TypeError("provider_factory must be callable")
         self._repository = repository
         self._provider_factory = provider_factory
+        # A third SKC may begin its request chain while an earlier one is
+        # verifying candidates locally, without increasing OneBound pressure.
+        self._provider_request_gate = threading.BoundedSemaphore(_MAX_PARALLEL_PROVIDER_REQUESTS)
 
-    def search_by_image(self, actor: PriceVerificationActor, tasks: Sequence[SourceSearchTask], *, keyword_search: bool = True) -> dict[str, Any]:
+    def search_by_image(self, actor: PriceVerificationActor, tasks: Sequence[SourceSearchTask], *, keyword_search: bool = False) -> dict[str, Any]:
         """Run each task independently so one provider failure remains retriable.
 
         There is no daily call budget: every task always executes against the
@@ -126,11 +131,15 @@ class OneBoundSourceAdapter:
         *,
         keyword_search: bool,
     ) -> dict[str, Any]:
+        started_at = time.monotonic()
         try:
             provider = self._provider_factory()
         except Exception as error:
-            return _failed_item(task, _provider_error_message(error))
+            item = _failed_item(task, _provider_error_message(error))
+            item["total_elapsed_ms"] = _elapsed_ms(started_at)
+            return item
         item, _ = self._search_task(provider, task, keyword_search=keyword_search)
+        item["total_elapsed_ms"] = _elapsed_ms(started_at)
         return item
 
     def _search_task(self, provider: _OneBoundProvider, task: SourceSearchTask, *, keyword_search: bool = False) -> tuple[dict[str, Any], int]:
@@ -148,12 +157,13 @@ class OneBoundSourceAdapter:
                     target_count=max(IMAGE_SEARCH_RECALL_LIMIT, int(task.max_candidates or 0)),
                 )
                 search_with_reference = getattr(provider, "search_by_image_with_reference", None)
-                if callable(search_with_reference):
-                    searched, reference_content = search_with_reference(criteria)
-                    if reference_content is not None and not isinstance(reference_content, bytes):
-                        raise TypeError("provider reference content must be bytes")
-                else:
-                    searched = provider.search_by_image(criteria)
+                with self._provider_request_gate:
+                    if callable(search_with_reference):
+                        searched, reference_content = search_with_reference(criteria)
+                        if reference_content is not None and not isinstance(reference_content, bytes):
+                            raise TypeError("provider reference content must be bytes")
+                    else:
+                        searched = provider.search_by_image(criteria)
                 evidence.extend(_redacted_audits(searched))
                 if _result_ok(searched):
                     image_ok = True
@@ -176,13 +186,14 @@ class OneBoundSourceAdapter:
             # language and return noise.
             if keywords and _contains_cjk(keywords):
                 try:
-                    keyword_hits = provider.search_keyword(
-                        DailySelectionCriteria(
-                            collection_mode="keyword",
-                            keywords=(keywords,),
-                            target_count=max(int(task.max_candidates or 0), 1),
+                    with self._provider_request_gate:
+                        keyword_hits = provider.search_keyword(
+                            DailySelectionCriteria(
+                                collection_mode="keyword",
+                                keywords=(keywords,),
+                                target_count=max(int(task.max_candidates or 0), 1),
+                            )
                         )
-                    )
                     evidence.extend(_redacted_audits(keyword_hits))
                     if _result_ok(keyword_hits):
                         keyword_ok = True
@@ -205,6 +216,7 @@ class OneBoundSourceAdapter:
                 _with_title_evidence(task, candidate)
                 for candidate in merged
             ]
+            visual_started_at = time.monotonic()
             if reference_content is None:
                 verified, visual_audit = verify_visual_candidates(task.main_image_url, merged)
             else:
@@ -213,6 +225,7 @@ class OneBoundSourceAdapter:
                     merged,
                     reference_content=reference_content,
                 )
+            visual_audit["elapsed_ms"] = _elapsed_ms(visual_started_at)
             visual_audit["title_evidence"] = {
                 status: sum(
                     candidate.get("title_evidence_status") == status
@@ -272,7 +285,8 @@ class OneBoundSourceAdapter:
                 offer_id = _offer_id(raw_candidate)
                 detailed = dict(raw_candidate)
                 if index == 0 and offer_id and _needs_detail_lookup(raw_candidate):
-                    detail = provider.get_item_detail(offer_id)
+                    with self._provider_request_gate:
+                        detail = provider.get_item_detail(offer_id)
                     evidence.extend(_redacted_audits(detail))
                     # A failed detail lookup must not discard the results: keep
                     # the search payload and skip the enrichment.
@@ -609,3 +623,7 @@ def _text(value: object) -> str:
 def _optional_text(value: object) -> str | None:
     text = _text(value)
     return text or None
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, round((time.monotonic() - started_at) * 1000))

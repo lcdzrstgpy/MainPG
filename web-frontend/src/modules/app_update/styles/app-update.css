@@ -1,0 +1,14 @@
+.app-update-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; background: rgb(15 23 42 / 52%); }
+.app-update-dialog { width: min(100%, 480px); border: 1px solid #d8e0ec; border-radius: 14px; padding: 28px; color: #172033; background: #fff; box-shadow: 0 24px 70px rgb(15 23 42 / 28%); }
+.app-update-heading { display: flex; align-items: center; gap: 10px; }
+.app-update-heading h2 { margin: 0; font-size: 20px; }
+.app-update-badge { border-radius: 999px; padding: 4px 8px; color: #075985; background: #e0f2fe; font-size: 12px; font-weight: 700; }
+.app-update-message { margin: 18px 0; line-height: 1.6; }
+.app-update-versions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.app-update-versions div, .app-update-notes { border-radius: 8px; padding: 12px; background: #f8fafc; }
+.app-update-versions dt, .app-update-notes h3 { color: #64748b; font-size: 12px; font-weight: 600; }
+.app-update-versions dd { margin: 4px 0 0; font-weight: 700; }
+.app-update-notes { margin-top: 14px; }.app-update-notes h3 { margin: 0; }.app-update-notes ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.6; }
+.app-update-progress { margin-top: 18px; color: #334155; }.app-update-progress-track { overflow: hidden; height: 8px; border-radius: 999px; background: #e2e8f0; }.app-update-progress-track span { display: block; height: 100%; border-radius: inherit; background: #2563eb; transition: width .2s ease; }.app-update-progress strong { display: inline-block; margin-top: 7px; font-size: 13px; }.app-update-progress small { display: block; margin-top: 8px; line-height: 1.5; }
+.app-update-error { margin: 18px 0 0; color: #b42318; line-height: 1.5; }.app-update-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }.app-update-actions button { border-radius: 7px; padding: 9px 15px; cursor: pointer; font: inherit; font-weight: 600; }.app-update-actions button:focus-visible { outline: 3px solid rgb(37 99 235 / 35%); outline-offset: 2px; }.app-update-actions button:disabled { cursor: not-allowed; opacity: .65; }.app-update-primary { border: 1px solid #2563eb; color: #fff; background: #2563eb; }.app-update-secondary { border: 1px solid #cbd5e1; color: #334155; background: #fff; }
+@media (max-width: 480px) { .app-update-backdrop { padding: 14px; }.app-update-dialog { padding: 22px; }.app-update-versions { grid-template-columns: 1fr; } }
