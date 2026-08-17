@@ -37,6 +37,29 @@
 
 .pv-source-head-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
 
+.pv-source-inline-stats {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 18px;
+  color: #526a82;
+  font-size: .84rem;
+  font-weight: 750;
+}
+
+.pv-source-inline-stats span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.pv-source-inline-stats strong {
+  color: #172b44;
+  font-size: 1.02em;
+  font-weight: 900;
+}
+
 .pv-source-run-button {
   flex: none;
   border: 0;
