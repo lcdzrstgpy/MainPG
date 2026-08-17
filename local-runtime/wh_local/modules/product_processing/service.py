@@ -3256,15 +3256,47 @@ class ProductProcessingService:
                         if re.fullmatch(r"grid_image_[1-4]", str(getattr(part, "stage", "")))
                     ]
 
+                    printed_design: bool | None = None
+
+                    def _source_has_chinese() -> bool:
+                        """来源参考图是否含中文——用于判定「产品本体印刷设计文字」豁免。
+
+                        麻将牌/定制印刷盒等商品本体印中文，生成图里的中文是产品设计字符、
+                        无法也不应删除。此类商品只拦横幅级 AI 排版文字（prominent），
+                        产品印刷字符放行入库；非印刷设计商品保持现有硬拦截。
+                        任一来源图下载失败按非印刷设计处理（保守走原严格逻辑）。
+                        """
+                        try:
+                            from .infrastructure.media import _download_reference_image
+                        except Exception:  # 导入异常不阻断质检
+                            return False
+                        for url in reference_urls:
+                            try:
+                                content, _ = _download_reference_image(str(url))
+                                if detect_chinese_text(content):
+                                    return True
+                            except Exception:
+                                continue
+                        return False
+
                     def panel_issues(part: Any) -> list[str]:
+                        nonlocal printed_design
                         inspection = inspect_visible_text(bytes(getattr(part, "content", b"")))
                         if inspection is None:
                             raise ValueError("四宫格 OCR 质量门不可用，已阻止未验证生成图")
-                        return list(
-                            dict.fromkeys(
-                                [*inspection.get("chinese", []), *inspection.get("prominent", [])]
-                            )
-                        )
+                        issues: list[str] = list(dict.fromkeys(inspection.get("prominent", [])))
+                        if inspection.get("chinese"):
+                            if printed_design is None:
+                                printed_design = _source_has_chinese()
+                            if printed_design:
+                                if ai_notes is not None and not any(
+                                    note.startswith("four_grid:printed_design:")
+                                    for note in ai_notes
+                                ):
+                                    ai_notes.append("four_grid:printed_design:source-has-chinese")
+                            else:
+                                issues.extend(inspection["chinese"])
+                        return issues
 
                     usable_parts: list[Any] = []
                     if not failed_slots:

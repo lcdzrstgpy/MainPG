@@ -45,7 +45,8 @@ Create one premium standalone marketplace image for the supplied product. Preser
 Visual direction:
 - Make the product large, complete, sharp, and immediately recognizable with 8%-12% breathing room around it.
 - Use category-appropriate premium commercial photography: rich but believable materials, natural highlight control, clean contact shadows, realistic perspective, and a differentiated background that supports rather than competes with the SKU.
-- Use only source-supported use scenes and props. Do not make the product tiny, cropped, obscured, blurry, plastic-looking, or misleadingly retouched.
+- Physical realism: ground the product with a believable contact shadow plus a soft drop shadow that matches its base shape; use directional light so the material shows natural luster and depth. Never render the product flat, shadowless, floating, or pasted onto the background.
+- Use only source-supported use scenes and props. Do not make the product tiny, cropped, obscured, blurry, plastic-looking, or misleadingly retouched. If hands appear, show only partial hands with natural anatomy; never full-body models or complex faces.
 - Render no added text, logo, watermark, badge, arrow, ruler, measurement, price, label, slogan, or UI. Preserve only real printing physically visible on the product.
 
 Image-derived product understanding: {product_visual_identity}
@@ -66,7 +67,8 @@ Create one premium standalone marketplace image with a distinctive character-and
 Visual direction:
 - Build one believable editorial scene rather than a generic plain studio. The product stays complete, sharp, and the visual focal point with 8%-12% breathing room.
 - Use refined but source-compatible styling, realistic material highlights, natural perspective, controlled shadows, and a high-end scene that makes reverse-image comparison less direct without disguising the SKU.
-- Any model, hand, room, or prop supports the product story and never blocks, crops, or changes the product. Do not invent packaging, storage cases, accessories, or claims.
+- Physical realism: ground the product and any prop with believable contact and drop shadows; use directional light so materials show natural luster. Never render flat, shadowless, floating, or pasted-looking elements.
+- Any model, hand, room, or prop supports the product story and never blocks, crops, or changes the product. Show only partial hands with natural anatomy; never full-body models or complex faces. Do not invent packaging, storage cases, accessories, or claims.
 - Render no added text, logo, watermark, badge, arrow, ruler, measurement, price, label, slogan, or UI. Preserve only real printing physically visible on the product.
 
 Image-derived product understanding: {product_visual_identity}
@@ -241,10 +243,15 @@ Return ONLY a JSON object with exactly three keys, no explanation:
 GRID_IMAGE_PROMPT = """Role & Core Mission (fixed):
 You are a senior e-commerce visual designer serving TEMU, TikTok Shop, and Amazon US listings. Treat the uploaded reference image(s) as the ONLY source of truth for the SKU. The task is to rebuild a high-click, high-quality, high-conversion commercial visual system WITHOUT changing the product itself (the product body must stay 100% unchanged).
 
-Execution Priority (fixed): SKU accuracy > structure/pattern accuracy > material/color accuracy > complete per-panel composition > background creativity > visual polish.
+CRITICAL LAYOUT UNDERSTANDING (fixed - read first):
+- The 2x2 grid is a pure "shipping container" for backend code. You are NOT creating a single poster.
+- You are creating FOUR independently perfect, standalone product shots that happen to share one square canvas for local splitting.
+- Generation logic: four distinct finished carousel images, perfectly aligned on one canvas. NEVER build one continuous scene across panels; NEVER share lighting, shadows, surfaces, props, or backgrounds across panels.
+
+Execution Priority (fixed): SKU accuracy > crop-safety (every panel works alone) > physical world realism > complete per-panel composition > background creativity > visual polish.
 
 Product Integrity Constraints (fixed - safety red line):
-- Lock before generating: product silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, text, and digits. Never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure. Do not guess details the reference cannot confirm.
+- Lock before generating: product silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, text, and digits. Never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure. Preserve exact geometry and aspect ratio; never stretch, compress, or deform the product beyond a real camera angle. Do not guess details the reference cannot confirm.
 - Allowed: redesign placement, camera angle, composition, background, lighting, and scene. The product body must never change.
 
 Variable Inputs (batch template - fill per SKU):
@@ -263,13 +270,16 @@ Global Visual Rules (fixed):
 - Typography is rendered locally after the grid is split. Generate NO letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, UI, rulers, or measurement marks anywhere in the AI image. Preserve only markings that are physically printed on the real sellable product in the reference.
 - Forbidden: added Chinese or English text, brand names, logos, watermarks, infringing elements, AI gibberish, or malformed hands.
 
+Physical World Realism (fixed - anti-AI feel):
+- Anchored physicality: every product must be physically grounded. Give it a realistic contact shadow plus a soft drop shadow that matches its base shape and height. Every visible surface needs specular highlights and diffuse lighting that define its form (sharp edge glints for metal, soft sheen for matte materials, clear refraction for glass). Use a directional key light (e.g. a 45-degree main light) so the product has depth and readable volume. Forbidden: flat, shadowless, "floating" compositions, or products that look pasted onto the background.
+- Category-specific detail emphasis (only for details the reference actually shows): game/toy pieces must have real thickness, chamfered edges and smooth enamel/glaze instead of paper-thin stickers; home/kitchen items must show brushed metal, glass refraction and ergonomic handles; jewelry/accessories must show realistic plating, stone facets and chain links.
+- Human & prop integrity: when a lifestyle panel includes hands, show only partial hands (fingers holding or using the product), anatomically natural with defined knuckles and real skin texture, never waxy or deformed. Do not generate full-body models or complex human faces. Props must be high-end editorial objects (smooth river stones, raw linen, solid wood slices, ceramic, glassware); no cheap plastic-looking staging.
+
 Premium feel & material polish (fixed - make every panel look expensive and well-finished):
 - Light is the star: use directional side light or soft window light so the material shows natural luster, subtle highlights, layered shadows and craft detail; never flat, harsh or plasticky lighting.
 - Texture first: deliberately show surface grain, weave, stitching, metal finish, glass refraction, edge polish, transparent thickness, enamel shine, leather pores, ceramic glaze, or wood grain whenever those details are visible in the reference.
-- Gloss & highlight control: add realistic specular highlights, rim light on edges, contact shadows, soft reflections and micro-contrast so the product looks tactile and premium; avoid muddy shadows, dull surfaces, overexposed whites, flat screenshots, plastic-looking renders, or waxy AI texture.
 - Lens & depth realism: use premium product-photography optics (natural perspective, crisp focal product, gentle depth of field only in background/props); the product itself must stay sharp and readable.
 - Tone control: keep one cohesive low-saturation premium palette per set; colors must feel curated, not clashing or garish.
-- Refined props: any prop must look intentional and high-end (real wood, stone, linen, brass, glass, ceramics); no cheap plastic-looking staging.
 
 One square exact four-panel 2x2 e-commerce grid with clean straight dividers, generated for: {title}
 
@@ -282,26 +292,26 @@ Grid construction rules (fixed - clean edges after splitting):
 - The horizontal and vertical cut boundaries must be EXACTLY at the center (50%/50%) of the image. Draw a neutral light-gray separator on both boundaries, 0.4%-0.8% of the full image wide, straight, uniform, and uninterrupted from edge to edge. This separator is mandatory and is validated before splitting.
 - All four panels must be exactly equal in size; no content may cross or touch the divider lines.
 - Each panel must work independently when the grid is cut: its own clear subject, its own background, its own lighting, no dangling props, and no half-composed elements at the panel edges.
-- Keep all product parts and important props at least 8% away from the panel border and divider; long products must be angled or scaled down enough to stay fully inside the panel.
+- Safe Margin Rule (anti-crop logic): in every panel the main product must occupy about 65%-75% of the panel area (Panels 1 and 3), while a detail panel may show the complete product slightly smaller (55%-65%) when it includes an inset close-up. Keep the product fully inside a 10% inner safe zone from ALL panel edges, including the center divider. Long products (spoons, rulers, strips) must be placed at a 10-15 degree angle or scaled down enough to fit entirely inside the safe zone without touching any border.
 - Absolutely forbidden: any global headline, banner, background shape, product, box, prop, shadow, table, frame, or sentence that continues across two or more panels. No half words at panel edges. No shared poster title outside an individual panel.
 - No borders, no double lines, no rounded corners on the outer edge of the grid.
 
 Panel 1 - Hero Image (top-left):
-- Show the complete sellable product or complete verified set; no cropped parts and no partial stacking that hides quantity or structure. Product occupies 68%-82% with a balanced marketplace hero composition.
+- Show the complete sellable product or complete verified set; no cropped parts and no partial stacking that hides quantity or structure. Product occupies 65%-75% with a balanced marketplace hero composition and a slightly elevated camera angle for a tangible, ready-to-ship look.
 - Place the product slightly off-center so it breathes; keep the full product inside the safe area, never touching or clipping the panel edges.
-- Side-backlight or premium commercial photography light; emphasize material, structure, thickness, transparency, and edge details.
+- Side-backlight or premium commercial photography light; emphasize material, structure, thickness, transparency, and edge details. Every product must sit on a believable surface with a grounded shadow - never floating.
 - Background clearly different from the plain white template.
 - No AI-generated copy. No headline, fact card, or typography is added after splitting.
 
 Panel 2 - Editorial/Detail Image (top-right):
 - Must differ from Panel 1 in at least 3 of: background main color, surface material, angle, arrangement, props, lighting.
 - Style options: Editorial, Modern Classic, Organic Modern, Art Deco, Coastal, etc.
-- Keep the complete product visible at 55%-70%, plus at most one small inset close-up of a real detail. A pure macro crop without the complete product is forbidden.
+- Keep the complete product visible at 55%-65%, plus at most one small magnifier-style inset close-up of a real detail (material grain, printing texture, edge finish, hardware). The inset must blend as a soft optical zoom - borderless, seamless, with no frame, ring, or divider around it (nested collage frames are forbidden). A pure macro crop without the complete product is forbidden.
 - No AI-generated copy or labels.
 
 Panel 3 - Lifestyle Image (bottom-left):
 - Place the product in a real American home scene matching [SKU Category] (living room, sunroom, Game Night, Brunch, etc.).
-- May add realistic adult hands (must be natural, no deformities), cups, snacks, tablecloth, plants; the product must stay sharp and exactly the original SKU.
+- May add partial adult hands only (fingers holding or using the product; natural, anatomically correct, no waxy skin or deformities), cups, snacks, tablecloth, plants; the product must stay sharp and exactly the original SKU.
 - Lighting: natural window light, afternoon side light, or warm home lighting that wraps the product in soft highlights.
 - Keep the complete product unobstructed and prominent. No AI-generated copy or scene phrase.
 
@@ -313,6 +323,8 @@ Panel 4 - Dimension Annotation Background (bottom-right):
 
 Generate-then-self-check (fixed):
 - Confirm product quantity, silhouette, proportions, structure, color, material, transparency, texture, edges, and accessory count all match the reference.
+- Confirm every panel stands alone: no element crosses a divider, nothing touches a panel edge, and each panel has its own complete composition.
+- Confirm physical realism: every product is grounded with contact and drop shadows, has directional lighting and readable material texture; no flat, floating, or pasted-looking product.
 - If any SKU error is found, fix the product body first, then adjust background and polish.
 - Final goal: SKU-accurate, instantly recognizable, differentiated backgrounds, full premium composition, matching US consumer taste.
 
@@ -421,11 +433,16 @@ JSON schema:
 GRID_IMAGE_PROMPT_B = """Role & Core Mission (fixed):
 You are a senior visual art director serving TEMU, TikTok Shop, and Amazon US listings. Build on the reference image's model logic but fully upgrade originality. First build a 【character persona + spatial story】 for the product, then shoot it; reject generic studio backgrounds. The final goal: the product looks like an independent designer piece that is hard to reverse-image-search for price comparison.
 
+CRITICAL LAYOUT UNDERSTANDING (fixed - read first):
+- The 2x2 grid is a pure "shipping container" for backend code. You are NOT creating a single editorial poster.
+- You are creating FOUR independently perfect, standalone editorial shots that happen to share one square canvas for local splitting.
+- Generation logic: four distinct finished carousel images, perfectly aligned on one canvas. NEVER build one continuous scene across panels; NEVER share lighting, shadows, surfaces, props, model crops, or backgrounds across panels.
+
 Core Philosophy (fixed - anti-price-comparison core):
 Execution iron rule: 【anti-price-comparison / uniqueness > character & spatial storytelling > premium material feel > creative composition > product accuracy】. (Product accuracy is still the bottom line, but the visual packaging must be full of story.)
 
 Product Integrity Constraints (fixed - safety red line):
-Lock the reference image's silhouette, proportions, color, material, structure, thickness, and texture before generating. Never add, remove, replace, recolor, resize, stretch, or deform. Redesign the model pose, scene, lighting, props, and composition freely, but the product body must never change.
+Lock the reference image's silhouette, proportions, color, material, structure, thickness, and texture before generating. Never add, remove, replace, recolor, resize, stretch, or deform. Preserve exact geometry and aspect ratio; never stretch, compress, or deform the product beyond a real camera angle. Redesign the model pose, scene, lighting, props, and composition freely, but the product body must never change.
 
 Variable Inputs (batch template - fill per SKU):
 [SKU Category]     : {category_path}
@@ -449,6 +466,7 @@ Global Visual Rules (fixed - anti-price-comparison / premium logic):
 - Material emphasis: light must define the product's texture, luster, layers, and craft details; use side light or window light to make the material look expensive.
 - Luxury luster: each panel must show one refined highlight - soft sheen on metal/leather, glass edge light, fabric nap, polished hardware, enamel glow, ceramic glaze, or wood grain catching the light; never flat plastic look; every surface must feel expensive and tactile.
 - Editorial realism: use believable camera optics, natural skin/hand anatomy, cinematic but clean color grading, gentle depth of field, and controlled shadows. Avoid waxy AI skin, generic catalog posing, distorted fingers, muddy low-contrast surfaces, over-smoothed product texture, or fake CGI shine.
+- Human & prop integrity: show only partial hands (fingers, wrist, side profile, collarbone); never full hands with complex gestures, never full-body models, never complex faces. Every product or prop must be physically grounded with a believable contact shadow and soft drop shadow; no floating or pasted-looking elements.
 - Detail placement: the single most premium real detail of the SKU must be placed at a clear focal point (macro zone, golden-ratio spot); nothing dangles at the panel edges.
 - Forbidden (strict): no AI-added text, logo, brand name, watermark, label, badge, number, slogan, arrow, ruler, or distortion in any panel. Preserve only markings physically printed on the real sellable product.
 
@@ -463,20 +481,21 @@ Grid construction rules (fixed - clean edges after splitting):
 - The horizontal and vertical cut boundaries must be EXACTLY at the center (50%/50%) of the image. A clean uniform separator may be used, but it must be no wider than 0.8% of the full image.
 - All four panels must be exactly equal in size; no content may cross or touch the divider lines.
 - Each panel must work independently when the grid is cut: its own clear subject, its own background, its own lighting, no dangling props or half-composed elements at the panel edges.
-- Keep the product at least 8% away from panel borders and dividers; long or thin products must be angled or scaled down enough to avoid any local split/crop loss.
+- Safe Margin Rule (anti-crop logic): the complete product must stay fully inside a 10% inner safe zone from ALL panel edges including the center divider; in hero panels it should occupy about 65%-75% of the panel area. Long or thin products must be angled or scaled down enough to avoid any local split/crop loss.
 - Absolutely forbidden: any global headline, banner, background shape, product, model body, prop, shadow, table, frame, or sentence that continues across two or more panels. No half words at panel edges.
 - No borders, no double lines, no rounded corners on the outer edge of the grid.
 
 Panel 1 - Hero Shot (top-left): the best moment the persona wears/uses the SKU.
 - Framing: magazine-cover close-up or medium shot (only collarbone, wrist, side profile), emphasizing the relationship between product and person.
 - Scene & light: locked in the [Hero Scene]; natural window light, afternoon slanting sun, or moody wall lamp for a storytelling feel.
-- Narrative: the visual center stays on the product; ambient light and [Styling Props] must reinforce the [Target Vibe].
+- Narrative: the visual center stays on the product; ambient light and [Styling Props] must reinforce the [Target Vibe]. The product and model must be physically grounded with believable contact and drop shadows.
 
 Panel 2 - Complete Product + Integrated Detail (top-right): show the complete product at 55%-70% and emphasize one real material, edge, hardware, or structure detail through camera angle, lighting, or depth of field inside one unified scene.
 - A pure macro crop without the complete sellable product is forbidden. Do not add an inset frame, split-panel border, nested collage, or second divider inside this panel.
 
 Panel 3 - Credible Lifestyle (bottom-left): show the complete product in a believable use or display context supported by the source category.
 - Do not invent packaging, storage cases, accessories, cards, ribbons, or set contents that are absent from the reference.
+- If hands appear, show only partial hands (fingers, wrist) with natural anatomy; keep the product sharp, unobstructed, and exactly the original SKU.
 
 Panel 4 - Dimension Annotation Background (bottom-right):
 - Create a clean front, side, or top view that is suitable for later deterministic dimension annotation.
@@ -488,6 +507,7 @@ Generate-then-self-check (fixed):
 - Product integrity check: confirm the product body (proportions, color, structure) strictly matches the reference - no stretching or deformation.
 - Anti-price-comparison check: strong editorial-magazine feel? Clearly not a plain white-background or generic studio image?
 - Premium material check: are luster and texture fully defined by light, looking worth a higher verification price?
+- Physical realism check: every product and prop is grounded with contact and drop shadows and directional lighting; no flat, floating, or pasted-looking elements.
 - Violation check: reconfirm no text, logo, watermark, or AI distortion anywhere.
 
 Grid & splitting infrastructure (fixed - do not change):
@@ -501,10 +521,15 @@ Grid & splitting infrastructure (fixed - do not change):
 PREMIUM_IMAGE_PROMPT = """Role & Core Mission (fixed):
 You are a senior e-commerce visual designer serving TEMU, TikTok Shop, and Amazon US listings. Treat the uploaded reference image(s) as the ONLY source of truth for the SKU. Rebuild ONE exact 2x2 transport grid at 4096 x 4096 resolution. It will be split locally into four independent high-resolution listing images.
 
-Execution Priority (fixed): SKU accuracy > structure/pattern accuracy > material/color accuracy > complete product composition > background creativity > visual polish.
+CRITICAL LAYOUT UNDERSTANDING (fixed - read first):
+- The 2x2 grid is a pure "shipping container" for backend code. You are NOT creating a single poster.
+- You are creating FOUR independently perfect, standalone high-resolution product shots that happen to share one square canvas for local splitting.
+- Generation logic: four distinct finished listing images, perfectly aligned on one canvas. NEVER build one continuous scene across panels; NEVER share lighting, shadows, surfaces, props, or backgrounds across panels.
+
+Execution Priority (fixed): SKU accuracy > crop-safety (every panel works alone) > physical world realism > complete product composition > background creativity > visual polish.
 
 Product Integrity Constraints (fixed - safety red line):
-- Lock before generating: product silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, text, and digits. Never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure. Do not guess details the reference cannot confirm.
+- Lock before generating: product silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, text, and digits. Never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure. Preserve exact geometry and aspect ratio; never stretch, compress, or deform the product beyond a real camera angle. Do not guess details the reference cannot confirm.
 - Allowed: redesign placement, camera angle, composition, background, lighting, and scene. The product body must never change.
 
 Variable Inputs (batch template - fill per SKU):
@@ -522,24 +547,30 @@ Global Visual Rules (fixed):
 - Typography: generate NO letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, UI, rulers, or measurement marks anywhere in the image. Preserve only markings that are physically printed on the real sellable product in the reference.
 - Forbidden: added Chinese or English text, brand names, logos, watermarks, infringing elements, AI gibberish, or malformed hands.
 
+Physical World Realism (fixed - anti-AI feel):
+- Anchored physicality: every product must be physically grounded. Give it a realistic contact shadow plus a soft drop shadow that matches its base shape and height. Every visible surface needs specular highlights and diffuse lighting that define its form (sharp edge glints for metal, soft sheen for matte materials, clear refraction for glass). Use a directional key light (e.g. a 45-degree main light) so the product has depth and readable volume. Forbidden: flat, shadowless, "floating" compositions, or products that look pasted onto the background.
+- Category-specific detail emphasis (only for details the reference actually shows): game/toy pieces must have real thickness, chamfered edges and smooth enamel/glaze instead of paper-thin stickers; home/kitchen items must show brushed metal, glass refraction and ergonomic handles; jewelry/accessories must show realistic plating, stone facets and chain links.
+- Human & prop integrity: when a lifestyle panel includes hands, show only partial hands (fingers holding or using the product), anatomically natural with defined knuckles and real skin texture, never waxy or deformed. Do not generate full-body models or complex human faces. Props must be high-end editorial objects (smooth river stones, raw linen, solid wood slices, ceramic, glassware); no cheap plastic-looking staging.
+
 Premium feel & material polish (fixed - make the image look expensive and well-finished):
 - Light is the star: use directional side light or soft window light so the material shows natural luster, subtle highlights, layered shadows and craft detail; never flat, harsh or plasticky lighting.
 - Texture first: deliberately show surface grain, weave, stitching, metal finish, glass refraction, edge polish, transparent thickness, enamel shine, leather pores, ceramic glaze, or wood grain whenever those details are visible in the reference.
-- Gloss & highlight control: add realistic specular highlights, rim light on edges, contact shadows, soft reflections and micro-contrast so the product looks tactile and premium; avoid muddy shadows, dull surfaces, overexposed whites, flat screenshots, plastic-looking renders, or waxy AI texture.
 - Lens & depth realism: use premium product-photography optics (natural perspective, crisp focal product, gentle depth of field only in background/props); the product itself must stay sharp and readable.
 - Tone control: keep one cohesive low-saturation premium palette; colors must feel curated, not clashing or garish.
-- Refined props: any prop must look intentional and high-end (real wood, stone, linen, brass, glass, ceramics); no cheap plastic-looking staging.
 
 Exact premium 2x2 grid instruction (fixed):
 - Generate exactly FOUR equal square panels in a 2x2 grid on one 4096 x 4096 canvas. Put one narrow, straight, uninterrupted neutral-light divider exactly at the 50% vertical center and one exactly at the 50% horizontal center.
 - Nothing may cross either center divider. Every panel is a complete standalone listing composition with its own background, props, contact shadow, subject, and safe margin. Never make a continuous poster, shared scene, shared surface, or shared shadow across panels.
 - Keep the complete sellable product or verified complete set sharp, prominent, unobstructed, and fully inside an 8%-12% safe margin in every panel. Do not crop parts or hide quantity or structure.
+- Safe Margin Rule (anti-crop logic): the complete product must stay fully inside a 10% inner safe zone from ALL panel edges including the center divider; in hero panels it should occupy about 65%-75% of the panel area, while a detail panel may show it slightly smaller when it includes an inset close-up. Long products must be angled or scaled down enough to fit entirely inside the safe zone.
 - Panel order is fixed: top-left hero, top-right editorial/detail, bottom-left lifestyle, bottom-right clean orthographic-style angle for later deterministic dimension annotation.
 - Panel-specific directions:
 {panel_roles}
 
 Generate-then-self-check (fixed):
 - Confirm product quantity, silhouette, proportions, structure, color, material, transparency, texture, edges, and accessory count all match the reference.
+- Confirm every panel stands alone: no element crosses a divider, nothing touches a panel edge, and each panel has its own complete composition.
+- Confirm physical realism: every product is grounded with contact and drop shadows, has directional lighting and readable material texture; no flat, floating, or pasted-looking product.
 - If any SKU error is found, fix the product body first, then adjust background and polish.
 - Confirm both center dividers remain exact, clean, and uninterrupted, and no subject, prop, surface, or shadow crosses them.
 - Final goal: four SKU-accurate, instantly recognizable premium compositions in one exact split-safe canvas, matching US consumer taste.

@@ -25,6 +25,10 @@ from typing import Any
 # CJK 统一表意文字 + 扩展A（覆盖简体/繁体/日韩汉字）
 _CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
 
+# OCR 推理前的下采样上限：横幅级中文/排版文字在 512px 下几乎不降精度，
+# 但 RapidOCR CPU 推理时间可降 5-20 倍（1024px 面板全分辨率单次约 50-60s）。
+_OCR_MAX_EDGE = 512
+
 _ENGINE: Any = None
 _ENGINE_LOCK = threading.Lock()
 _ENGINE_ERROR: str | None = None
@@ -105,6 +109,15 @@ def inspect_visible_text(content: bytes) -> dict[str, list[str]] | None:
 
         with _OCR_INFERENCE_SEMAPHORE:
             opened = Image.open(io.BytesIO(content)).convert("RGB")
+            width, height = opened.size
+            edge = max(width, height)
+            if edge > _OCR_MAX_EDGE:
+                scale = _OCR_MAX_EDGE / edge
+                opened = opened.resize(
+                    (max(1, int(width * scale)), max(1, int(height * scale))),
+                    Image.LANCZOS,
+                )
+            # 比例类阈值（显著文字≥8%高/≥30%宽）与分辨率无关，用下采样后的尺寸计算即可。
             width, height = opened.size
             array = np.array(opened)
             result, _elapse = engine(array)

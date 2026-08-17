@@ -577,11 +577,18 @@ def test_ocr_inspection_ignores_large_print_on_product_face(monkeypatch) -> None
     """麻将牌这类「产品本体印刷大字符」不得被误判为 AI 显著文字：
     字符再大，只要宽度局限在单面板内（<30%），就不再触发 prominent，避免重绘死循环。"""
     class _Engine:
-        def __call__(self, _array):
+        def __call__(self, array):
+            height, width = array.shape[:2]
+            scale = width / 2048.0  # 假引擎坐标基于 2048 空间，按输入实际尺寸等比换算
             return (
                 [
                     # 牌面数字：高 200px(9.8%) 但宽仅 400px(19.5%) → 产品印刷标记，放过
-                    [[[800, 900], [1200, 900], [1200, 1100], [800, 1100]], "1234567890", 0.99],
+                    [
+                        [[800 * scale, 900 * scale], [1200 * scale, 900 * scale],
+                         [1200 * scale, 1100 * scale], [800 * scale, 1100 * scale]],
+                        "1234567890",
+                        0.99,
+                    ],
                 ],
                 None,
             )

@@ -223,3 +223,89 @@ def test_unsplittable_four_grid_never_repeats_the_paid_whole_grid_call(monkeypat
     assert output.attempt_count == 1
     assert output.provider_status_class == "failed"
     assert output.carousel_urls == ()
+
+
+def test_four_grid_source_with_chinese_allows_printed_design_panels(monkeypatch) -> None:
+    """麻将/定制印刷类商品：来源图含中文 → 面板中文属产品设计，只拦横幅级、放行入库。"""
+    from wh_local.modules.product_processing.infrastructure import media as media_module
+
+    service, processor = _service(monkeypatch)
+    monkeypatch.setattr(
+        service_module,
+        "inspect_visible_text",
+        lambda content: {
+            "chinese": ["中"] if content == b"slot-2" else [],
+            "prominent": [],
+        },
+    )
+    monkeypatch.setattr(
+        media_module,
+        "_download_reference_image",
+        lambda _url: (b"source-with-chinese", "image/jpeg"),
+    )
+    monkeypatch.setattr(service_module, "detect_chinese_text", lambda _content: ["中"])
+
+    ai_notes: list[str] = []
+    output = service._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Mahjong Tile Set",
+        "Toys & Games",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        ai_notes=ai_notes,
+        image_generation_count=4,
+    )
+
+    assert len(processor.calls) == 1  # 豁免生效：不触发 1K 重绘
+    assert output.attempt_count == 1
+    assert output.provider_status_class == "success"
+    assert len(output.carousel_urls) == 4
+    assert any(note.startswith("four_grid:printed_design:") for note in ai_notes)
+    assert [part.content for part in output.carousel_media] == [
+        b"slot-1",
+        b"slot-2",
+        b"slot-3",
+        b"slot-4",
+    ]
+
+
+def test_four_grid_source_without_chinese_still_repairs_chinese_slots(monkeypatch) -> None:
+    """非印刷设计商品：来源图无中文 → 面板中文仍硬拦截并走 1K 槽位重绘。"""
+    from wh_local.modules.product_processing.infrastructure import media as media_module
+
+    service, processor = _service(monkeypatch)
+    monkeypatch.setattr(
+        service_module,
+        "inspect_visible_text",
+        lambda content: {
+            "chinese": ["中"] if content == b"slot-3" else [],
+            "prominent": [],
+        },
+    )
+    monkeypatch.setattr(
+        media_module,
+        "_download_reference_image",
+        lambda _url: (b"clean-source", "image/jpeg"),
+    )
+    monkeypatch.setattr(service_module, "detect_chinese_text", lambda _content: [])
+
+    output = service._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Travel Mug",
+        "Drinkware",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=4,
+    )
+
+    assert len(processor.calls) == 2
+    assert processor.calls[1]["stage"] == "grid_image_3"
+    assert processor.calls[1]["image_size"] == "1024x1024"
+    assert output.provider_status_class == "recovered_slot_retry"
+    assert len(output.carousel_urls) == 4
