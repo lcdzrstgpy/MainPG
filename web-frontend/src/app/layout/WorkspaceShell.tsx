@@ -26,6 +26,7 @@ import {
   markDimensionNotificationRead,
 } from "../../modules/product_processing/api/dimensionCanvasApi";
 import { AiServicePage } from "../../modules/ai_service/pages/AiServicePage";
+import { PersonalCenterPage } from "../../modules/personal_center/pages/PersonalCenterPage";
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
@@ -362,7 +363,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
         badges={{ dimension_canvas: dimensionNotifications.length }}
       />
       <section className="workspace-main">
-        <TopNavigation sidebarPinned={!sidebarIsCollapsed} topbarPinned={topbarPinned} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onToggleTopbarPin={() => setTopbarPinned((value) => !value)} onSelectTab={selectTab} onCloseTab={closeTab} onSignOut={onSignOut} />
+        <TopNavigation sidebarPinned={!sidebarIsCollapsed} topbarPinned={topbarPinned} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onToggleTopbarPin={() => setTopbarPinned((value) => !value)} onSelectTab={selectTab} onCloseTab={closeTab} onOpenPersonalCenter={() => openModule("personal_center")} onSignOut={onSignOut} />
         <div className="content-card" ref={contentRef}>
           {workspaceNotice && (
             <div className="workspace-notice" role="status">
@@ -395,6 +396,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
           )}
           {activeModuleId === "profit_activity_products" && <ProfitActivityProductsPage />}
           {activeModuleId === "ai_service" && <AiServicePage />}
+          {activeModuleId === "personal_center" && <PersonalCenterPage />}
           {activeModuleId === "basic_settings" && <BasicSettingsPage />}
           {priceVerificationMounted && (
             <div hidden={activeModuleId !== "price_verification"}>
@@ -430,7 +432,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
               />
             </div>
           ))}
-          {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "product_processing" && activeModuleId !== "product_processing_tasks" && activeModuleId !== "dimension_canvas" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "ai_service" && activeModuleId !== "basic_settings" && activeModuleId !== "price_verification" && <EmptyModulePage module={activeModule} />}
+          {activeModuleId !== "dashboard" && activeModuleId !== "daily_selection" && activeModuleId !== "daily_selection_collection" && activeModuleId !== "product_processing" && activeModuleId !== "product_processing_tasks" && activeModuleId !== "dimension_canvas" && activeModuleId !== "profit_activity" && activeModuleId !== "profit_activity_products" && activeModuleId !== "ai_service" && activeModuleId !== "personal_center" && activeModuleId !== "basic_settings" && activeModuleId !== "price_verification" && <EmptyModulePage module={activeModule} />}
         </div>
       </section>
       <button

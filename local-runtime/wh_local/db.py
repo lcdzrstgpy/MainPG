@@ -377,6 +377,96 @@ CREATE TABLE IF NOT EXISTS action_logs (
     error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+-- 积分钱包：只允许平台账号服务端写入；本地工作台不得直接修改余额。
+CREATE TABLE IF NOT EXISTS billing_wallets (
+    account_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    points_balance INTEGER NOT NULL DEFAULT 0,
+    locked_points INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 0,
+    ledger_head_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE,
+    CHECK (points_balance >= 0),
+    CHECK (locked_points >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_wallets_workspace
+    ON billing_wallets (workspace_id, account_id);
+
+-- 支付订单：真实支付以第三方异步回调验签为准；前端/本地运行时只能创建 pending 订单。
+CREATE TABLE IF NOT EXISTS billing_payment_orders (
+    order_id TEXT PRIMARY KEY,
+    out_trade_no TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    provider TEXT NOT NULL CHECK (provider IN ('wechat', 'alipay')),
+    package_id TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'CNY',
+    points INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'paid', 'closed', 'failed', 'refunded')),
+    gateway_transaction_id TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    paid_at TEXT NOT NULL DEFAULT '',
+    cancelled_at TEXT NOT NULL DEFAULT '',
+    expires_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    raw_notify_ciphertext TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE,
+    UNIQUE (account_id, idempotency_key),
+    CHECK (amount_cents > 0),
+    CHECK (points > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_payment_orders_account_status
+    ON billing_payment_orders (account_id, status, created_at);
+
+-- 积分账本：后续扣费/充值均追加写入，并用 previous_hash + row_hash 做篡改检测。
+CREATE TABLE IF NOT EXISTS billing_point_ledger (
+    entry_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    direction TEXT NOT NULL CHECK (direction IN ('credit', 'debit', 'lock', 'unlock')),
+    points_delta INTEGER NOT NULL,
+    balance_after INTEGER NOT NULL,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    previous_hash TEXT NOT NULL DEFAULT '',
+    row_hash TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE,
+    UNIQUE (account_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_point_ledger_account_time
+    ON billing_point_ledger (account_id, created_at);
+
+-- 计费事件：业务模块消耗积分时先向服务器登记并由服务器扣减，严禁信任本地自报余额。
+CREATE TABLE IF NOT EXISTS billing_usage_events (
+    usage_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    module TEXT NOT NULL,
+    action TEXT NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    points_charged INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    source_ref TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'charged' CHECK (status IN ('charged', 'reversed')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE,
+    UNIQUE (account_id, idempotency_key),
+    CHECK (quantity > 0),
+    CHECK (points_charged >= 0)
+);
 """
 
 

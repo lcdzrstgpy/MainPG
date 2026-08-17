@@ -61,6 +61,23 @@ class CustomerAuthClient:
             )
         )
 
+    def billing_summary(self, remote_token: str) -> dict[str, Any]:
+        if not remote_token:
+            raise PermissionError("remote customer session is missing")
+        return self._get(
+            "/api/customer/billing/summary",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def create_topup_order(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not remote_token:
+            raise PermissionError("remote customer session is missing")
+        return self._post(
+            "/api/customer/billing/topup-orders",
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def _post(self, path: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
         if not self.base_url:
             raise CustomerAuthUnavailable("customer auth service is not configured")
@@ -73,6 +90,30 @@ class CustomerAuthClient:
             data=body,
             headers=request_headers,
             method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8") or "{}")
+        except HTTPError as exc:
+            detail = _extract_error_message(exc)
+            if exc.code in (401, 403):
+                raise PermissionError(detail or f"customer auth service returned HTTP {exc.code}") from exc
+            if 400 <= exc.code < 500:
+                raise ValueError(detail or f"customer auth service rejected the request (HTTP {exc.code})") from exc
+            raise CustomerAuthUnavailable(f"customer auth service returned HTTP {exc.code}: {detail}") from exc
+        except (URLError, TimeoutError) as exc:
+            raise CustomerAuthUnavailable(str(getattr(exc, "reason", exc))) from exc
+
+    def _get(self, path: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
+        if not self.base_url:
+            raise CustomerAuthUnavailable("customer auth service is not configured")
+        request_headers = {"Accept": "application/json"}
+        if headers:
+            request_headers.update(headers)
+        request = Request(
+            f"{self.base_url}{path}",
+            headers=request_headers,
+            method="GET",
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:

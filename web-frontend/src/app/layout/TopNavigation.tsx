@@ -29,10 +29,11 @@ type TopNavigationProps = {
   onToggleTopbarPin: () => void;
   onSelectTab: (key: string) => void;
   onCloseTab: (key: string) => void;
+  onOpenPersonalCenter: () => void;
   onSignOut: () => void;
 };
 
-export function TopNavigation({ sidebarPinned, topbarPinned, activeKey, tabs, onToggleSidebar, onToggleTopbarPin, onSelectTab, onCloseTab, onSignOut }: TopNavigationProps) {
+export function TopNavigation({ sidebarPinned, topbarPinned, activeKey, tabs, onToggleSidebar, onToggleTopbarPin, onSelectTab, onCloseTab, onOpenPersonalCenter, onSignOut }: TopNavigationProps) {
   const [closingKeys, setClosingKeys] = useState<string[]>([]);
   const [topbarStuck, setTopbarStuck] = useState(false);
   const [showThemePanel, setShowThemePanel] = useState(false);
@@ -90,7 +91,7 @@ export function TopNavigation({ sidebarPinned, topbarPinned, activeKey, tabs, on
               <strong>个人中心</strong>
               <span>管理当前员工账号和个人使用偏好</span>
               <div className="user-menu-actions">
-                <button className="user-menu-action" type="button">
+                <button className="user-menu-action" type="button" onClick={onOpenPersonalCenter}>
                   <span className="iconfont icon-edit" aria-hidden="true" />
                   <span>用户账号</span>
                 </button>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,13 @@ from .contracts import CustomerAuthActionResult, CustomerAuthResult
 
 
 REMOTE_SESSION_TTL = timedelta(hours=12)
+BILLING_POINT_RATIO = 100
+BILLING_TOPUP_PRODUCTS = {
+    "points_10": {"amount_cents": 1000, "points": 1000, "label": "10 元积分包"},
+    "points_30": {"amount_cents": 3000, "points": 3000, "label": "30 元积分包"},
+    "points_100": {"amount_cents": 10000, "points": 10000, "label": "100 元积分包"},
+}
+PAYMENT_PROVIDERS = {"wechat", "alipay"}
 
 
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
@@ -74,6 +82,30 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         if account is None:
             raise HTTPException(status_code=401, detail="invalid bearer token")
         return {"ok": True, "account": account}
+
+    @app.get("/api/customer/billing/summary")
+    def billing_summary(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        return _billing_summary(db_path, account)
+
+    @app.post("/api/customer/billing/topup-orders")
+    def create_billing_topup_order(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        return _create_topup_order(db_path, account, payload)
+
+    @app.post("/api/customer/billing/payment-callback/{provider}")
+    def billing_payment_callback(provider: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        # 真正接入微信/支付宝时，这里必须按 provider 官方规则完成：
+        # 1) 平台证书/公钥验签；2) 解密资源；3) 金额、商户订单号、商户号、币种逐项比对；
+        # 4) 同一 out_trade_no 幂等入账；5) 追加 hash 链账本。
+        # 当前先 fail closed，避免任何未验签回调导致入账。
+        raise HTTPException(
+            status_code=503,
+            detail=f"{provider} payment callback verification is not configured",
+        )
 
     @app.post("/api/customer/logout")
     def logout(authorization: str | None = Header(default=None)) -> dict[str, bool]:
@@ -359,6 +391,7 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
                 a.email,
                 a.display_name,
                 a.role,
+                a.workspace_id,
                 a.account_status,
                 a.login_status,
                 w.workspace_code,
@@ -385,12 +418,215 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
         "email": row["email"],
         "display_name": row["display_name"],
         "role": row["role"],
+        "workspace_id": row["workspace_id"] or "default",
         "account_status": row["account_status"],
         "login_status": row["login_status"] if row["login_status"] is not None else "offline",
         "workspace_code": row["workspace_code"] or "",
         "workspace_name": row["workspace_name"] or "",
         "workspace": {"code": row["workspace_code"] or "", "name": row["workspace_name"] or ""},
     }
+
+
+def _required_account(database_path: Path, authorization: str | None) -> dict[str, Any]:
+    token = _bearer_token(authorization)
+    account = _account_by_token(database_path, token)
+    if account is None:
+        raise HTTPException(status_code=401, detail="invalid bearer token")
+    if str(account.get("account_status") or "").lower() not in {"active", ""}:
+        raise HTTPException(status_code=403, detail="customer account is not active")
+    return account
+
+
+def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, Any]:
+    account_id = str(account["account_id"])
+    workspace_id = str(account.get("workspace_id") or "default")
+    with transaction(database_path) as conn:
+        _ensure_wallet(conn, account_id, workspace_id)
+        wallet = conn.execute(
+            """
+            SELECT points_balance, locked_points, version, ledger_head_hash, updated_at
+            FROM billing_wallets
+            WHERE account_id = ?
+            """,
+            (account_id,),
+        ).fetchone()
+        ledgers = conn.execute(
+            """
+            SELECT entry_id, direction, points_delta, balance_after, source_type, source_id, created_at
+            FROM billing_point_ledger
+            WHERE account_id = ?
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            (account_id,),
+        ).fetchall()
+        orders = conn.execute(
+            """
+            SELECT order_id, out_trade_no, provider, package_id, amount_cents, currency,
+                   points, status, created_at, paid_at, expires_at
+            FROM billing_payment_orders
+            WHERE account_id = ?
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            (account_id,),
+        ).fetchall()
+    return {
+        "ok": True,
+        "account": {
+            "account_id": account_id,
+            "username": account.get("username", ""),
+            "workspace_id": workspace_id,
+            "workspace_code": account.get("workspace_code", ""),
+        },
+        "wallet": {
+            "points_balance": int(wallet["points_balance"] if wallet else 0),
+            "locked_points": int(wallet["locked_points"] if wallet else 0),
+            "available_points": int((wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0)),
+            "version": int(wallet["version"] if wallet else 0),
+            "ledger_head_hash": wallet["ledger_head_hash"] if wallet else "",
+            "updated_at": wallet["updated_at"] if wallet else "",
+        },
+        "pricing": {
+            "currency": "CNY",
+            "point_ratio": BILLING_POINT_RATIO,
+            "ratio_label": f"1 元 = {BILLING_POINT_RATIO} 积分",
+            "status": "draft",
+        },
+        "topup_products": [
+            {
+                "package_id": package_id,
+                "label": item["label"],
+                "amount_cents": item["amount_cents"],
+                "points": item["points"],
+            }
+            for package_id, item in BILLING_TOPUP_PRODUCTS.items()
+        ],
+        "recent_ledger": [dict(row) for row in ledgers],
+        "recent_orders": [dict(row) for row in orders],
+        "security": {
+            "server_authoritative": True,
+            "local_balance_trusted": False,
+            "ledger_hash_chain": True,
+            "settlement_requires_signed_provider_callback": True,
+        },
+    }
+
+
+def _create_topup_order(database_path: Path, account: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    account_id = str(account["account_id"])
+    workspace_id = str(account.get("workspace_id") or "default")
+    provider = str(payload.get("provider") or "").strip().lower()
+    package_id = str(payload.get("package_id") or "").strip()
+    idempotency_key = str(payload.get("idempotency_key") or "").strip()
+    if provider not in PAYMENT_PROVIDERS:
+        raise HTTPException(status_code=400, detail="provider must be wechat or alipay")
+    if package_id not in BILLING_TOPUP_PRODUCTS:
+        raise HTTPException(status_code=400, detail="unknown topup package")
+    if not 16 <= len(idempotency_key) <= 128:
+        raise HTTPException(status_code=400, detail="idempotency_key is required")
+
+    product = BILLING_TOPUP_PRODUCTS[package_id]
+    now = _utc_now()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(timespec="seconds")
+    request_hash = _stable_json_hash(
+        {
+            "account_id": account_id,
+            "workspace_id": workspace_id,
+            "provider": provider,
+            "package_id": package_id,
+            "amount_cents": product["amount_cents"],
+            "points": product["points"],
+            "idempotency_key": idempotency_key,
+        }
+    )
+    with transaction(database_path) as conn:
+        _ensure_wallet(conn, account_id, workspace_id)
+        existing = conn.execute(
+            """
+            SELECT order_id, out_trade_no, provider, package_id, amount_cents, currency,
+                   points, status, created_at, paid_at, expires_at
+            FROM billing_payment_orders
+            WHERE account_id = ? AND idempotency_key = ?
+            """,
+            (account_id, idempotency_key),
+        ).fetchone()
+        if existing is not None:
+            return _topup_order_response(dict(existing), reused=True)
+        order_id = f"billord_{secrets.token_urlsafe(18)}"
+        out_trade_no = f"MP{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(8)}"
+        conn.execute(
+            """
+            INSERT INTO billing_payment_orders (
+                order_id, out_trade_no, account_id, workspace_id, provider, package_id,
+                amount_cents, currency, points, status, idempotency_key, request_hash,
+                expires_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'CNY', ?, 'pending', ?, ?, ?, ?, ?)
+            """,
+            (
+                order_id,
+                out_trade_no,
+                account_id,
+                workspace_id,
+                provider,
+                package_id,
+                product["amount_cents"],
+                product["points"],
+                idempotency_key,
+                request_hash,
+                expires_at,
+                now,
+                now,
+            ),
+        )
+        order = conn.execute(
+            """
+            SELECT order_id, out_trade_no, provider, package_id, amount_cents, currency,
+                   points, status, created_at, paid_at, expires_at
+            FROM billing_payment_orders
+            WHERE order_id = ?
+            """,
+            (order_id,),
+        ).fetchone()
+    return _topup_order_response(dict(order), reused=False)
+
+
+def _topup_order_response(order: dict[str, Any], *, reused: bool) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "reused": reused,
+        "order": order,
+        "payment": {
+            "provider": order["provider"],
+            "mode": "gateway_not_configured",
+            "qr_code_url": "",
+            "pay_url": "",
+            "message": "支付网关尚未配置。订单已在服务器生成 pending 记录，待微信/支付宝商户参数和回调验签接入后才可收款入账。",
+        },
+    }
+
+
+def _ensure_wallet(conn: Any, account_id: str, workspace_id: str) -> None:
+    now = _utc_now()
+    conn.execute(
+        """
+        INSERT INTO billing_wallets (account_id, workspace_id, points_balance, locked_points, version, created_at, updated_at)
+        VALUES (?, ?, 0, 0, 0, ?, ?)
+        ON CONFLICT(account_id) DO NOTHING
+        """,
+        (account_id, workspace_id, now, now),
+    )
+
+
+def _stable_json_hash(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _ledger_row_hash(secret: bytes, payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hmac.new(secret, encoded, hashlib.sha256).hexdigest()
 
 
 def _bearer_token(authorization: str | None) -> str:
