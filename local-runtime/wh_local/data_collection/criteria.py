@@ -1,0 +1,133 @@
+"""Validated Pydantic collection criteria for the daily-selection workflow."""
+
+from __future__ import annotations
+
+from decimal import Decimal, InvalidOperation
+from typing import Any, Literal
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter, ValidationError, field_validator, model_validator
+
+
+class DailySelectionCriteriaError(ValueError):
+    """Raised when a collection request is incomplete or inconsistent."""
+
+
+_HTTP_URL = TypeAdapter(HttpUrl)
+
+
+def _normalized_keywords(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        value = (value,)
+    if not isinstance(value, (list, tuple)):
+        raise DailySelectionCriteriaError("keywords must be a sequence of strings")
+    normalized: list[str] = []
+    for keyword in value:
+        if not isinstance(keyword, str):
+            raise DailySelectionCriteriaError("keywords must contain strings")
+        candidate = " ".join(keyword.split())
+        if candidate and candidate not in normalized:
+            normalized.append(candidate)
+    return tuple(normalized)
+
+
+def _decimal(value: object, field_name: str) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise DailySelectionCriteriaError(f"{field_name} must be a decimal number")
+    try:
+        result = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as error:
+        raise DailySelectionCriteriaError(f"{field_name} must be a decimal number") from error
+    if not result.is_finite():
+        raise DailySelectionCriteriaError(f"{field_name} must be finite")
+    if result < 0:
+        raise DailySelectionCriteriaError(f"{field_name} cannot be negative")
+    return result
+
+
+class DailySelectionCriteria(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    keywords: tuple[str, ...] = ()
+    collection_mode: Literal["keyword", "image"] = "keyword"
+    collection_platform: Literal["1688"] = "1688"
+    selection_scope: Literal["exact", "divergent"] = "divergent"
+    reference_image_url: str | None = None
+    category: str = ""
+    min_price: Decimal | None = None
+    max_price: Decimal | None = None
+    min_moq: int | None = None
+    target_count: int = Field(default=30, ge=1)
+    max_api_calls: int = Field(default=50, ge=1, le=60)
+    detail_count: int = Field(default=10, ge=1)
+    exclude_risks: bool = True
+    site: Literal["US", "CO", "EC"] = "US"
+
+    def __init__(self, **data: Any) -> None:
+        try:
+            super().__init__(**data)
+        except ValidationError as error:
+            raise DailySelectionCriteriaError(str(error)) from error
+
+    @field_validator("keywords", mode="before")
+    @classmethod
+    def _normalize_keywords(cls, value: object) -> tuple[str, ...]:
+        return _normalized_keywords(value)
+
+    @field_validator("reference_image_url", mode="before")
+    @classmethod
+    def _valid_reference_url(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise DailySelectionCriteriaError("reference_image_url must be a URL string")
+        try:
+            return str(_HTTP_URL.validate_python(value.strip()))
+        except ValidationError as error:
+            raise DailySelectionCriteriaError(
+                "reference_image_url must be a valid http or https URL"
+            ) from error
+        raise AssertionError("unreachable")
+
+    @field_validator("min_price", "max_price", mode="before")
+    @classmethod
+    def _decimal_price(cls, value: object, info: Any) -> Decimal | None:
+        return _decimal(value, info.field_name)
+
+    @field_validator("min_moq", "target_count", "max_api_calls", "detail_count", mode="before")
+    @classmethod
+    def _strict_integers(cls, value: object, info: Any) -> object:
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            raise DailySelectionCriteriaError(f"{info.field_name} must be an integer")
+        return value
+
+    @field_validator("exclude_risks", mode="before")
+    @classmethod
+    def _strict_boolean(cls, value: object) -> bool:
+        if not isinstance(value, bool):
+            raise DailySelectionCriteriaError("exclude_risks must be a boolean")
+        return value
+
+    @model_validator(mode="after")
+    def _consistent_request(self) -> "DailySelectionCriteria":
+        if self.collection_mode == "keyword":
+            if not 1 <= len(self.keywords) <= 5:
+                raise DailySelectionCriteriaError(
+                    "keyword mode requires one to five normalized keywords"
+                )
+            if self.reference_image_url is not None:
+                raise DailySelectionCriteriaError(
+                    "keyword mode cannot include reference_image_url"
+                )
+        elif self.reference_image_url is None:
+            raise DailySelectionCriteriaError("image mode requires reference_image_url")
+        if self.min_price is not None and self.max_price is not None and self.min_price > self.max_price:
+            raise DailySelectionCriteriaError("min_price cannot be greater than max_price")
+        if self.min_moq is not None and self.min_moq < 1:
+            raise DailySelectionCriteriaError("min_moq must be a positive integer")
+        return self
+
+    @property
+    def keyword_tags(self) -> tuple[str, ...]:
+        """Keywords are descriptive tags in image mode, never a second query."""
+        return self.keywords if self.collection_mode == "image" else ()
