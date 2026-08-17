@@ -235,6 +235,7 @@ CREATE TABLE IF NOT EXISTS auth_email_verifications (
     purpose TEXT NOT NULL DEFAULT 'verify_email',
     expires_at TEXT NOT NULL,
     used_at TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     request_ip TEXT NOT NULL DEFAULT '',
     user_agent TEXT NOT NULL DEFAULT ''
@@ -643,6 +644,8 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "auth_accounts", "login_status", "TEXT NOT NULL DEFAULT 'offline'")
     # 本地会话表保存远端 wh_auth_* token，登出时联动撤销云端登录态。
     _ensure_column(conn, "customer_sessions", "remote_token", "TEXT NOT NULL DEFAULT ''")
+    # 邮箱验证码失败次数用于限制暴力尝试；旧数据库平滑补列。
+    _ensure_column(conn, "auth_email_verifications", "attempts", "INTEGER NOT NULL DEFAULT 0")
 
 
 DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (

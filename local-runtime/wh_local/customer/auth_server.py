@@ -19,7 +19,8 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from ..config import default_config
 from ..db import init_db, transaction
 from .auth_service import SQLiteCustomerAuthService
-from .contracts import CustomerAuthActionResult, CustomerAuthResult
+from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
+from .email_sender import TencentCloudSESEmailSender
 
 
 REMOTE_SESSION_TTL = timedelta(hours=12)
@@ -44,7 +45,11 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     config = default_config()
     db_path = database_path or config.database_path
     init_db(db_path)
-    service = SQLiteCustomerAuthService(db_path)
+    service = SQLiteCustomerAuthService(
+        db_path,
+        email_sender=TencentCloudSESEmailSender.from_env(),
+        email_code_secret=os.environ.get("WH_EMAIL_CODE_SECRET", ""),
+    )
 
     app = FastAPI(title="W-H Platform Customer Auth Service", version="0.1.0")
 
@@ -154,8 +159,11 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         return _action_response(_call_action(service.activate, payload))
 
     @app.post("/api/customer/email-code")
-    def email_code(payload: dict[str, Any]) -> dict[str, Any]:
-        return _action_response(_call_action(service.email_code, payload))
+    def email_code(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        enriched_payload = dict(payload)
+        enriched_payload.setdefault("request_ip", request.client.host if request.client else "")
+        enriched_payload.setdefault("user_agent", request.headers.get("user-agent", ""))
+        return _action_response(_call_action(service.email_code, enriched_payload))
 
     @app.post("/api/customer/password-reset")
     def password_reset(payload: dict[str, Any]) -> dict[str, Any]:
@@ -720,6 +728,8 @@ def _utc_now() -> str:
 
 
 def _raise_http_error(exc: Exception) -> None:
+    if isinstance(exc, CustomerAuthUnavailable):
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if isinstance(exc, PermissionError):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if isinstance(exc, ValueError):

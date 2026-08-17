@@ -27,6 +27,7 @@ from ..config import (
 from ..customer.auth_service import SQLiteCustomerAuthService
 from ..customer.collect_credentials import CollectCredentialsError, request_collect_credentials
 from ..customer.db_store import SQLiteCustomerSessionStore
+from ..customer.email_sender import TencentCloudSESEmailSender
 from ..customer.local_session import LocalSessionService
 from ..customer.remote_client import CustomerAuthClient
 from ..customer.routes import create_customer_router
@@ -159,7 +160,15 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             return AUTH_FLOW_DEMO_HTML
 
     remote_customer_auth = CustomerAuthClient(config.customer_auth_base_url)
-    customer_auth = remote_customer_auth if remote_customer_auth.configured() else SQLiteCustomerAuthService(db_path)
+    customer_auth = (
+        remote_customer_auth
+        if remote_customer_auth.configured()
+        else SQLiteCustomerAuthService(
+            db_path,
+            email_sender=TencentCloudSESEmailSender.from_env(),
+            email_code_secret=os.environ.get("WH_EMAIL_CODE_SECRET", ""),
+        )
+    )
     customer_sessions = LocalSessionService(SQLiteCustomerSessionStore(db_path))
     app.include_router(create_customer_router(customer_auth, customer_sessions))
 
