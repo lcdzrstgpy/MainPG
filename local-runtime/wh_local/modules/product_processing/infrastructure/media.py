@@ -412,10 +412,10 @@ class ProductImageProcessor:
 
             def encode_panel(index_and_box: tuple[int, tuple[int, int, int, int]]) -> GeneratedMedia:
                 index, _box = index_and_box
-                # Keep premium panels consistent with the standard four-grid path:
-                # trim a small inner edge so model-painted white dividers do not
-                # become part of the exported product image.
-                panel = _inset_grid_panel(panels[index - 1])
+                # Premium panels are already cut at the exact 50/50 transport-grid
+                # boundary.  Keep their full native size so 4K grids yield true 2K
+                # carousel images and 2K gateway fallbacks yield true 1K images.
+                panel = panels[index - 1]
                 if min(panel.size) < DXM_IMAGE_TARGET_SIZE:
                     panel = panel.resize(
                         (DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE),
