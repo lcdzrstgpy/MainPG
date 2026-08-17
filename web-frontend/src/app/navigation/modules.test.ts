@@ -3,16 +3,18 @@ import test from "node:test";
 
 import { workspaceModules } from "./modules.ts";
 
-test("sidebar navigation groups the product workflow around its three entry pages", () => {
+test("sidebar navigation groups the product workflow around its AI history entry", () => {
   const productWorkflow = workspaceModules.find((module) => module.id === "product_workflow");
 
   assert.equal(productWorkflow?.defaultChildId, "daily_selection");
   assert.deepEqual(productWorkflow?.children?.map((child) => child.id), [
     "daily_selection",
     "product_processing",
+    "product_processing_history",
     "dimension_canvas",
   ]);
-  assert.deepEqual(productWorkflow?.children?.map((child) => child.label), ["采集", "AI处理", "尺寸画布"]);
+  assert.deepEqual(productWorkflow?.children?.map((child) => child.label), ["采集", "AI处理", "历史记录", "尺寸画布"]);
+  assert.equal(productWorkflow?.children?.find((child) => child.id === "product_processing_history")?.iconClass, "iconfont icon-time-circle");
 });
 
 test("sidebar navigation prioritizes price and source matching in its default sourcing workflow", () => {

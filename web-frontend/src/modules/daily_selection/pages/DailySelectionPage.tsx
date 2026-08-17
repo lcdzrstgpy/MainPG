@@ -217,9 +217,10 @@ type DailySelectionPageProps = {
   initialDirectionId?: string;
   onOpenCollection?: (directionId: string, directionName: string) => void;
   topbarStatusVisible?: boolean;
+  isActive?: boolean;
 };
 
-export function DailySelectionPage({ view = "directions", initialDirectionId, onOpenCollection, topbarStatusVisible = true }: DailySelectionPageProps) {
+export function DailySelectionPage({ view = "directions", initialDirectionId, onOpenCollection, topbarStatusVisible = true, isActive = true }: DailySelectionPageProps) {
   // 视图支持内部轮转：主模块默认直接进采集视图，点「模板预设」切到预设页，
   // 在预设页点方向卡再回到采集视图，而不再新开独立面板。
   const [internalView, setInternalView] = useState<"directions" | "collection">(view);
@@ -290,6 +291,13 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [editMode, setEditMode] = useState(false);
   const [deleteMode, setDeleteMode] = useState(false);
   const [pendingDeleteDirection, setPendingDeleteDirection] = useState<Direction | null>(null);
+
+  useEffect(() => {
+    if (isActive) return;
+    setHistoryDrawerOpen(false);
+    setPresetDialogOpen(false);
+    setPendingDeleteDirection(null);
+  }, [isActive]);
 
   const filteredCandidates = useMemo(() => {
     if (!activeRun) return [];

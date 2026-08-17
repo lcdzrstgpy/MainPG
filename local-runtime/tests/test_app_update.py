@@ -240,6 +240,28 @@ def test_check_reports_idle_for_the_same_or_older_version(tmp_path: Path, versio
     assert status["release"] is None
 
 
+def test_snoozed_optional_release_stays_hidden_until_a_newer_version(tmp_path: Path) -> None:
+    manager, private_key = _manager(tmp_path)
+    current_release = _signed_manifest(private_key, version="1.2.0")
+    manager.with_manifest_fetcher(lambda _url: current_release)
+
+    assert manager.check()["state"] == "available"
+    assert manager.snooze()["state"] == "unavailable"
+    assert manager.status()["release"] is None
+
+    from wh_local.app_update import UpdateManager
+
+    restarted = UpdateManager(manager.settings)
+    restarted.with_manifest_fetcher(lambda _url: current_release)
+    assert restarted.check()["state"] == "unavailable"
+
+    newer_release = _signed_manifest(private_key, version="1.3.0")
+    restarted.with_manifest_fetcher(lambda _url: newer_release)
+    status = restarted.check()
+    assert status["state"] == "available"
+    assert status["release"]["version"] == "1.3.0"
+
+
 def test_check_does_not_fetch_updates_on_unsupported_platform(tmp_path: Path) -> None:
     manager, _ = _manager(tmp_path, platform="darwin")
     manager = manager.with_manifest_fetcher(lambda _url: pytest.fail("must not fetch"))

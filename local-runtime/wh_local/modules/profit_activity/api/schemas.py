@@ -20,7 +20,7 @@ class SettingsPayload(_StrictModel):
     co_first_mile_fixed: Decimal = Field(ge=0)
     ec_domestic_fee: Decimal = Field(ge=0)
     ec_shipping_subsidy: Decimal = Field(ge=0)
-    ec_shipping_subsidy_price_limit: Decimal = Field(gt=0)
+    ec_shipping_subsidy_price_limit: Decimal = Field(ge=0)
     ec_first_mile_rate: Decimal = Field(ge=0)
     ec_first_mile_fixed: Decimal = Field(ge=0)
     ec_end_fee: Decimal = Field(ge=0)
@@ -35,8 +35,19 @@ class SettingsUpdateRequest(_StrictModel):
     settings: SettingsPayload
 
 
+class SiteProfilePayload(_StrictModel):
+    site_code: str = Field(pattern=r"^[A-Z0-9_]{2,12}$")
+    display_name: str = Field(min_length=1, max_length=80)
+    first_mile_rate: Decimal = Field(default=Decimal("0"), ge=0)
+    first_mile_fixed: Decimal = Field(default=Decimal("0"), ge=0)
+    domestic_fee: Decimal = Field(default=Decimal("0"), ge=0)
+    shipping_subsidy: Decimal = Field(default=Decimal("0"), ge=0)
+    end_fee: Decimal = Field(default=Decimal("0"), ge=0)
+    refund_rate: Decimal = Field(default=Decimal("0"), ge=0, le=1)
+
+
 class CalculateRequest(_StrictModel):
-    site_code: Literal["US", "CO", "EC"]
+    site_code: str = Field(pattern=r"^[A-Z0-9_]{2,12}$")
     selling_price: Decimal = Field(gt=0)
     cost_price: Decimal = Field(gt=0)
     weight_kg: Decimal = Field(gt=0)
@@ -59,7 +70,7 @@ class ArchiveRequest(CalculateRequest):
 
 
 class FilterRequest(_StrictModel):
-    site_code: Literal["US", "CO", "EC"] | None = None
+    site_code: str | None = Field(default=None, pattern=r"^[A-Z0-9_]{2,12}$")
     record_ids: list[int] | None = Field(default=None, min_length=1)
 
     @field_validator("record_ids")

@@ -41,6 +41,7 @@ type Props = {
   taskId: number;
   initialChangeSetId?: string;
   onOpenDimensionItem: (taskId: number, taskItemId: number) => void;
+  isActive?: boolean;
 };
 
 type ItemEdits = {
@@ -181,7 +182,7 @@ function removeSession(key: string): void {
   }
 }
 
-export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOpenDimensionItem }: Props) {
+export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOpenDimensionItem, isActive = true }: Props) {
   const ctx = useMemo(() => api(), []);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [edits, setEdits] = useState<Record<number, ItemEdits>>({});
@@ -198,6 +199,10 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [activeImage, setActiveImage] = useState<string | null>(null);
   const [undoSnackbar, setUndoSnackbar] = useState<UndoSnackbar | null>(null);
   const refreshRef = useRef<PrecheckFinalizeRefresh | null>(null);
+
+  useEffect(() => {
+    if (!isActive) setActiveImage(null);
+  }, [isActive]);
 
   const runStorageKey = `pp-preview-finalize:${ctx.workspaceId}:${taskId}`;
   const idempotencyStorageKey = `${runStorageKey}:idempotency`;

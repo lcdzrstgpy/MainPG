@@ -1,5 +1,7 @@
 import type { ProductQueryParams, ProductSources, ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
 
+export type ProfitActivitySiteOption = { site_code: ProfitActivitySite; display_name: string; builtin: boolean };
+
 // 与 ProfitActivityTestPage 保持一致：默认同源请求（后端由当前站点服务，
 // 如 8000 的 wh_local；可通过 localStorage profitActivityApiBase 覆盖）。
 // token 解析优先级：页面手动设置（whLocalApiToken）→ 登录用户会话
@@ -56,13 +58,18 @@ export async function listProfitActivityProducts(params: ProductQueryParams) {
   return data.products ?? [];
 }
 
+export async function listProfitActivitySites() {
+  const data = await request<{ sites: ProfitActivitySiteOption[] }>("/api/profit-activity/sites");
+  return data.sites ?? [];
+}
+
 export async function listProductSources({ skc, site }: { skc: string; site: ProfitActivitySite }) {
   return request<ProductSources>(
     `/api/profit-activity/products/${encodeURIComponent(skc)}/sources?site=${site}`,
   );
 }
 
-export type ProductImageKind = "product" | "source";
+export type ProductImageKind = "product" | "source" | "attachment";
 
 /**
  * 加载产品/货源图片。接口需要 Bearer 鉴权，不能直接用 <img src>，
@@ -174,6 +181,56 @@ export async function updateProfitActivityProduct({
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+/** 产品库统一编辑弹窗保存：数值、备注和两类图片使用同一个 multipart 请求提交。 */
+export async function saveProfitActivityProductEdit({
+  site,
+  skc,
+  sellingPrice,
+  costPrice,
+  weightKg,
+  note,
+  productImage,
+  attachmentImage,
+  clearAttachmentImage,
+}: {
+  site: ProfitActivitySite;
+  skc: string;
+  sellingPrice: string;
+  costPrice: string;
+  weightKg: string;
+  note: string;
+  productImage?: File | null;
+  attachmentImage?: File | null;
+  clearAttachmentImage?: boolean;
+}) {
+  const { apiBase } = resolveEndpoint();
+  const token = candidateTokens()[0];
+  const form = new FormData();
+  form.set("site", site);
+  form.set("skc", skc);
+  form.set("selling_price", sellingPrice);
+  form.set("cost_price", costPrice);
+  form.set("weight_kg", weightKg);
+  form.set("note", note);
+  if (productImage) form.set("image", productImage);
+  if (attachmentImage) form.set("attachment_image", attachmentImage);
+  if (clearAttachmentImage) form.set("clear_attachment_image", "true");
+  const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  const text = await response.text();
+  let data: unknown = text;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    // 非 JSON 响应时保留原文
+  }
+  if (!response.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+  return data as { product: ProfitActivityProduct };
 }
 
 /**

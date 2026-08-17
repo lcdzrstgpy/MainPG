@@ -215,13 +215,17 @@
 }
 
 .profit-source-open {
+  width: 48px;
+  min-width: 48px;
   border: 1px solid #cfe0eb !important;
   border-radius: 9px;
-  padding: 6px 10px !important;
+  padding: 3px 1px !important;
   color: #0a8cf2 !important;
   background: #f4fbff !important;
-  font-size: 0.8rem !important;
-  font-weight: 800;
+  font-size: .56rem !important;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -922,78 +926,42 @@
   border-right: 0;
 }
 
-/* 行内编辑单元格：输入框 + 保存/撤销按钮（聚焦时显示） */
-.profit-table .profit-edit-cell {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-}
-
-.profit-table .profit-edit-input {
-  flex: 1 1 auto;
-  min-width: 56px;
-  padding: 6px 8px;
-  border: 1px solid #d5e4ee;
-  border-radius: 9px;
-  color: #18334d;
-  background: #fff;
-  outline-color: #13a9f2;
-  text-align: right;
-  font-weight: 750;
-  font-size: .82rem;
-}
-
-.profit-table .profit-edit-input.profit-edit-text {
-  text-align: left;
-}
-
-.profit-edit-actions {
-  display: inline-flex;
-  flex: none;
-  gap: 4px;
-}
-
-.profit-edit-actions button {
-  border: 1px solid #cfe0eb;
-  border-radius: 7px;
-  padding: 3px 6px;
+/* 紧凑只读产品表格 */
+.profit-table {
+  width: 100%;
+  min-width: 752px;
+  table-layout: fixed;
   font-size: .72rem;
-  font-weight: 800;
-  line-height: 1.2;
+}
+
+.profit-table tbody tr {
+  height: 34px;
+}
+
+.profit-table th,
+.profit-table td {
+  padding: 2px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
-}
-
-.profit-edit-save {
-  color: #fff;
-  border-color: #0a8cf2;
-  background: #0a8cf2;
-}
-
-.profit-edit-cancel {
-  color: #526a82;
-  background: #fff;
-}
-
-.profit-edit-actions button:disabled {
-  cursor: not-allowed;
-  opacity: .6;
 }
 
 /* SKC 对应图单元格 */
 .profit-product-image-cell {
-  display: grid;
-  gap: 6px;
-  justify-items: center;
-  min-width: 84px;
+  display: inline-grid;
+  place-items: center;
+  min-width: 38px;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 .profit-product-image,
 .profit-product-image-empty {
-  width: 64px;
-  height: 64px;
-  border-radius: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
   object-fit: cover;
   border: 1px solid #e2eef6;
   display: block;
@@ -1009,37 +977,10 @@
   font-weight: 750;
 }
 
-.profit-product-image-upload {
-  padding: 4px 10px !important;
-  border-radius: 8px !important;
-  color: #0a8cf2 !important;
-  background: #f2faff !important;
-  font-size: .74rem !important;
-  line-height: 1.3;
-}
-
-.profit-product-image-upload:hover:not(:disabled) {
-  border-color: #82c9ef !important;
-}
-
-.profit-product-image-error {
-  color: #b42318;
-  font-size: .7rem;
-  font-weight: 750;
-}
-
-/* 图片列：标准审核表识别的货源截图缩略图 */
-.profit-source-thumbs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  max-width: 200px;
-}
-
 .profit-source-thumb {
-  width: 52px;
-  height: 52px;
-  border-radius: 9px;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
   object-fit: cover;
   border: 1px solid #e2eef6;
   background: #f4f8fb;
@@ -1114,18 +1055,149 @@
   background: rgba(13, 32, 52, 0.8) !important;
 }
 
-.profit-table .profit-edit-input:focus {
-  border-color: #0a8cf2;
-  box-shadow: 0 0 0 3px #0a8cf214;
-}
-
 .profit-table .profit-note-input {
   flex: 1 1 160px;
   min-width: 120px;
 }
 
+.profit-product-edit-button {
+  width: 42px;
+  min-width: 42px;
+  padding: 3px 4px !important;
+  border-radius: 8px !important;
+  color: #0a8cf2 !important;
+  background: #f2faff !important;
+  font-size: .74rem !important;
+  line-height: 1.25;
+}
+
+.profit-product-edit-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(10, 22, 36, .55);
+  backdrop-filter: blur(2px);
+}
+
+.profit-product-edit-dialog {
+  width: min(620px, 100%);
+  max-height: min(760px, calc(100vh - 40px));
+  overflow: auto;
+  border: 1px solid #d8e7f2;
+  border-radius: 16px;
+  background: #fbfdff;
+  box-shadow: 0 24px 64px rgba(5, 16, 28, .34);
+}
+
+.profit-product-edit-dialog header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid #e2edf5;
+}
+
+.profit-product-edit-dialog h2 {
+  margin: 3px 0 0;
+  color: #172b44;
+  font-size: 1.2rem;
+}
+
+.profit-product-edit-close {
+  width: 32px;
+  height: 32px;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  font-size: 20px !important;
+  line-height: 1 !important;
+}
+
+.profit-product-edit-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 12px 20px;
+  color: #6d8399;
+  font-size: .78rem;
+  font-weight: 750;
+}
+
+.profit-product-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 4px 20px 18px;
+}
+
+.profit-product-edit-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.profit-product-edit-grid input,
+.profit-product-edit-grid textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid #cfe0eb;
+  border-radius: 9px;
+  padding: 8px 10px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+}
+
+.profit-product-edit-grid textarea {
+  min-height: 78px;
+  resize: vertical;
+}
+
+.profit-product-edit-grid small {
+  color: #7a93ab;
+  font-size: .74rem;
+  font-weight: 650;
+}
+
+.profit-product-edit-note {
+  grid-column: span 3;
+}
+
+.profit-product-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid #e2edf5;
+}
+
+.profit-product-edit-actions > span {
+  flex: 1;
+}
+
+.profit-product-edit-actions p {
+  flex-basis: 100%;
+  margin: 0;
+  color: #b42318;
+  font-size: .8rem;
+  font-weight: 750;
+}
+
+@media (max-width: 560px) {
+  .profit-product-edit-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .profit-product-edit-note {
+    grid-column: auto;
+  }
+}
+
 .profit-table .profit-note-cell {
-  max-width: 200px;
+  max-width: 48px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1133,53 +1205,19 @@
   font-size: .82rem;
 }
 
-/* 表头列宽拖拽手柄 */
 .profit-table th {
-  position: relative;
   border-right: 1px solid #d3e2ee;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.profit-table .profit-source-cell,
+.profit-table .profit-product-action-cell {
+  padding-inline: 1px;
 }
 
 .profit-table th:last-child {
   border-right: 0;
-}
-
-.profit-col-resizer {
-  position: absolute;
-  top: 0;
-  right: -4px;
-  width: 10px;
-  height: 100%;
-  z-index: 2;
-  cursor: col-resize;
-  user-select: none;
-  touch-action: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* 列交界处的拖动把手：默认一条细竖条，悬停/拖动时加宽加亮 */
-.profit-col-resizer::after {
-  content: "";
-  width: 3px;
-  height: 44%;
-  min-height: 16px;
-  border-radius: 3px;
-  background: #9db6ca;
-  opacity: 0.85;
-  transition: background 0.15s ease, height 0.15s ease;
-}
-
-.profit-col-resizer:hover::after,
-.profit-col-resizer.is-dragging::after {
-  background: #0a8cf2;
-  height: 62%;
-  min-height: 22px;
-}
-
-.profit-col-resizer:hover,
-.profit-col-resizer.is-dragging {
-  background: rgba(10, 140, 242, 0.12);
 }
 
 @media (max-width: 640px) {

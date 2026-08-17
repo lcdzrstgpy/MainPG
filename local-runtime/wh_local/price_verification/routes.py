@@ -369,6 +369,31 @@ def register_price_verification_routes(
             logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
+    @router.post("/api/v1/price-verification/capture-batches/{batch_id}/sourcing/manual-candidate")
+    def add_manual_source_candidate(
+        batch_id: str,
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        """Query one employee-supplied 1688 detail link and pin it for its SKC."""
+        try:
+            if dependencies.provider_config_resolver is None or dependencies.provider_factory is None:
+                raise HTTPException(status_code=503, detail="OneBound provider is unavailable")
+            return sourcing_service.add_manual_source_candidate(
+                actor,
+                batch_id=batch_id,
+                skc_id=_required(request, "skc_id"),
+                source_url=_required(request, "source_url"),
+                provider_factory=lambda: dependencies.provider_factory(
+                    dependencies.provider_config_resolver(actor)
+                ),
+            )
+        except HTTPException:
+            raise
+        except Exception as error:
+            logging.getLogger(__name__).warning("manual 1688 candidate rejected: %s", error)
+            _raise_http(error)
+
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/sourcing/prepare")
     def prepare_batch_sourcing(
         batch_id: str,

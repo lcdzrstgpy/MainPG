@@ -3,6 +3,7 @@ export type WorkspaceModuleId =
   | "daily_selection"
   | "daily_selection_collection"
   | "product_processing"
+  | "product_processing_history"
   | "product_processing_tasks"
   | "dimension_canvas"
   | "profit_activity"
@@ -68,6 +69,14 @@ const dimensionCanvas: WorkspaceModule = {
   icon: "",
   iconClass: "iconfont icon-column-width",
   description: "精确制作并审核商品尺寸图",
+};
+
+const productProcessingHistory: WorkspaceModule = {
+  id: "product_processing_history",
+  label: "历史记录",
+  icon: "",
+  iconClass: "iconfont icon-time-circle",
+  description: "查看并找回 AI 处理批次",
 };
 
 const priceVerification: WorkspaceModule = {
@@ -137,7 +146,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     iconClass: "iconfont icon-build",
     description: "采集、处理与尺寸图制作",
     defaultChildId: "daily_selection",
-    children: [collection, productProcessing, dimensionCanvas],
+    children: [collection, productProcessing, productProcessingHistory, dimensionCanvas],
   },
   {
     id: "sourcing_workflow",
@@ -157,6 +166,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   collection,
   collectionPanel,
   productProcessing,
+  productProcessingHistory,
   processingTasks,
   dimensionCanvas,
   priceVerification,

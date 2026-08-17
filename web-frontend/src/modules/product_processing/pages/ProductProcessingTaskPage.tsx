@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ppRequest, type ApiContext } from '../api/client';
+import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import type {
   ProductProcessingOptions,
-  TaskHistoryItem,
   TaskOutputsResponse,
 } from '../types';
 import '../styles/ProductProcessingVerifyPage.css';
@@ -37,8 +36,6 @@ const FAILURE_CLASS_LABELS: Record<string, string> = {
   logistics_review_required: '尺寸待复核',
 };
 
-const HISTORY_PAGE_SIZE = 10;
-
 // AI 配置/额度类失败（401 key 无效、403 权限、402/429 额度或限流、key 未配置、连接不可达等），
 // 用户需要去「系统配置」检查 AI key 或账户余额，而不是修改商品数据。
 const AI_CONFIG_ERROR_RE =
@@ -53,6 +50,8 @@ const AI_CONFIG_HINT =
   '似乎 api key 配置有问题哦，可以先去系统配置保存一下或者检查一下余额亲~（当前失败为 AI 服务鉴权/额度问题，与商品数据无关）';
 
 type Props = {
+  /** 从历史记录重新打开时传入，任务会从服务端恢复并在处理中继续轮询。 */
+  initialTaskId?: number;
   initialDraftIds?: number[];
   /** 精品模式草稿：一次 4K 四宫格，本地拆成四张高清独立图 */
   initialPremiumDraftIds?: number[];
@@ -86,7 +85,7 @@ function formatDuration(seconds?: number): string {
   return `${secs}秒`;
 }
 
-export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck }: Props) {
+export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck }: Props) {
   const ctx = api();
   const [options, setOptions] = useState<ProductProcessingOptions>(
     initialOptions || {
@@ -103,11 +102,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
-  const [history, setHistory] = useState<TaskHistoryItem[]>([]);
-  const [historyPage, setHistoryPage] = useState(1);
-  const [historyTotal, setHistoryTotal] = useState(0);
-  const [historyDateFrom, setHistoryDateFrom] = useState('');
-  const [historyDateTo, setHistoryDateTo] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -140,22 +134,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
   const notify = (ok: string) => { setMessage(ok); setError(''); };
   const fail = (err: unknown) => { setError(err instanceof Error ? err.message : String(err)); setMessage(''); };
 
-  const loadHistory = async (p?: number, dateFrom?: string, dateTo?: string) => {
-    const page = p || historyPage;
-    const params = new URLSearchParams();
-    params.set('limit', String(HISTORY_PAGE_SIZE));
-    params.set('offset', String((page - 1) * HISTORY_PAGE_SIZE));
-    if (dateFrom) params.set('date_from', dateFrom);
-    if (dateTo) params.set('date_to', dateTo);
-    try {
-      const data = await ppRequest<{ tasks: TaskHistoryItem[]; total?: number }>(
-        ctx, `${API_BASE}/tasks/history?${params.toString()}`
-      );
-      setHistory(data.tasks || []);
-      if (data.total !== undefined) setHistoryTotal(data.total);
-    } catch (err) { fail(err); }
-  };
-
   const loadTask = async (taskId: number) => {
     try {
       const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${taskId}/outputs`);
@@ -164,9 +142,17 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
   };
 
   useEffect(() => {
-    loadHistory(1);
+    if (initialTaskId != null) void loadTask(initialTaskId);
+    // initialTaskId only changes when WorkspaceShell opens another task tab.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [initialTaskId]);
+
+  const downloadOutput = async (kind: 'dxm' | 'errors' | 'video_manifest', filename: string) => {
+    if (!batch) return;
+    try {
+      await ppDownload(ctx, `${API_BASE}/tasks/${batch.task_id}/download?kind=${kind}`, filename);
+    } catch (err) { fail(err); }
+  };
 
   useEffect(() => {
     if (!batch) return;
@@ -181,7 +167,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
         if (stopped || pollGenerationRef.current !== generation) return;
         setBatch(data);
         if (!running.includes(data.task.status)) {
-          loadHistory(1);
           return;
         }
       } catch (err) {
@@ -245,7 +230,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
     if (!batch || batchProcessing) return;
     try {
       await ppRequest(ctx, `${API_BASE}/tasks/${batch.task_id}/clear`, { body: {} });
-      setBatch(null); loadHistory(1); notify('已清空当前任务');
+      setBatch(null); notify('已清空当前任务');
     } catch (err) { fail(err); }
   };
 
@@ -262,7 +247,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
       });
       setBatch(data);
       notify(data.message || `已提交 ${draftIds.length} 个失败项重新处理`);
-      loadHistory(1);
     } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
   };
 
@@ -294,11 +278,8 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
       });
       setBatch(data);
       notify(data.message || `已提交 ${draftIds.length} 个失败项强制入库`);
-      loadHistory(1);
     } catch (err) { fail(err); } finally { setLoading(false); }
   };
-
-  const historyTotalPages = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
 
   return (
     <div className="verify-page">
@@ -315,8 +296,8 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <span className="verify-eyebrow">PRODUCT PROCESSING · 处理任务</span>
-          <h1>处理设置与进度</h1>
-          <p>配置处理参数后开始，结果实时轮询；已对齐 five-stage 流水线（文本合并一次调用 + 尺寸确定性提取 + 详情图本地合成 + AI 阶段缓存），典型单商品 AI 调用 2~3 次；右侧查看历史任务记录。</p>
+          <h1>{initialTaskId != null ? '历史任务详情' : '处理设置与进度'}</h1>
+          <p>{initialTaskId != null ? '继续处理中的历史任务；关闭本页不会停止后台任务，可从左侧“历史记录”再次打开。' : '配置处理参数后开始，结果实时轮询；已对齐 five-stage 流水线（文本合并一次调用 + 尺寸确定性提取 + 详情图本地合成 + AI 阶段缓存），典型单商品 AI 调用 2~3 次。'}</p>
         </div>
       </header>
 
@@ -328,7 +309,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
         {/* 左侧：处理设置 + 处理结果 */}
         <div className="task-main">
 
-          <section className="verify-section">
+          {initialTaskId == null && <section className="verify-section">
             <div className="verify-section-head">
               <h2>处理设置</h2>
               <span className="verify-sub">站点 / 语言 / 范围 / 数量</span>
@@ -406,7 +387,7 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
                 <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条：一次 4K 四宫格，拆为 4 张高清图</span>
               )}
             </div>
-          </section>
+          </section>}
 
           <section className="verify-section">
             <div className="verify-section-head">
@@ -456,6 +437,9 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
                     onClick={() => onOpenPrecheck?.(batch.task_id)}
                     title={batchProcessing ? '处理完成后可进入预检' : '打开预检页：核对标题/图片/字段，修改后导出最终版表格'}
                   >预检并导出最终版</button>
+                  {batch.outputs.dxm_import && <button onClick={() => void downloadOutput('dxm', `dxm_import_task_${batch.task_id}.xlsx`)}>下载导入表</button>}
+                  {batch.outputs.error_report && <button onClick={() => void downloadOutput('errors', `error_report_task_${batch.task_id}.csv`)}>下载错误报告</button>}
+                  {batch.outputs.product_video_manifest && <button onClick={() => void downloadOutput('video_manifest', `product_video_manifest_task_${batch.task_id}.csv`)}>下载视频清单</button>}
                 </div>
               </>
             )}
@@ -528,42 +512,6 @@ export function ProductProcessingTaskPage({ initialDraftIds, initialPremiumDraft
           )}
         </div>
 
-        {/* 右侧：历史任务 */}
-        <aside className="task-history">
-          <div className="verify-section-head">
-            <h2>历史任务</h2>
-          </div>
-          <div className="task-history-filters">
-            <label>从
-              <input type="date" value={historyDateFrom} onChange={(e) => setHistoryDateFrom(e.target.value)} />
-            </label>
-            <label>至
-              <input type="date" value={historyDateTo} onChange={(e) => setHistoryDateTo(e.target.value)} />
-            </label>
-            <button className="btn-mini" onClick={() => { setHistoryPage(1); loadHistory(1, historyDateFrom, historyDateTo); }}>筛选</button>
-            <button className="btn-mini" onClick={() => { setHistoryDateFrom(''); setHistoryDateTo(''); setHistoryPage(1); loadHistory(1, '', ''); }}>清除</button>
-          </div>
-          {history.length === 0 && <p className="verify-empty">暂无历史任务</p>}
-          <ul className="verify-history">
-            {history.map((task) => (
-              <li key={task.task_id}>
-                <span className="verify-history-title">{task.title}</span>
-                <span className="verify-badge">{taskStatusLabel(task.status)}</span>
-                <span className="verify-history-counts">{task.total_count}/{task.success_count}/{task.failed_count}</span>
-                {task.elapsed_seconds !== undefined && <span className="verify-history-elapsed">耗时 {formatDuration(task.elapsed_seconds)}</span>}
-                <span className="verify-history-date">{new Date(task.created_at).toLocaleString('zh-CN')}</span>
-                <button onClick={() => loadTask(task.task_id)}>查看</button>
-              </li>
-            ))}
-          </ul>
-          {historyTotalPages > 1 && (
-            <footer className="verify-pagination task-history-pagination">
-              <button type="button" onClick={() => { const p = Math.max(1, historyPage - 1); setHistoryPage(p); loadHistory(p, historyDateFrom, historyDateTo); }} disabled={historyPage <= 1}>上一页</button>
-              <span>第 {historyPage}/{historyTotalPages} 页</span>
-              <button type="button" onClick={() => { const p = Math.min(historyTotalPages, historyPage + 1); setHistoryPage(p); loadHistory(p, historyDateFrom, historyDateTo); }} disabled={historyPage >= historyTotalPages}>下一页</button>
-            </footer>
-          )}
-        </aside>
       </div>
     </div>
   );

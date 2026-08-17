@@ -245,6 +245,93 @@ def test_complete_sourcing_keeps_unresolved_skc_and_its_preview(tmp_path) -> Non
     assert state["preview"]["all_failed"] is True
 
 
+def test_manual_1688_lookup_replaces_duplicate_candidate_and_pins_it_first(tmp_path) -> None:
+    repository = PriceVerificationRepository(tmp_path / "manual-source.sqlite3")
+    actor = PriceVerificationActor(actor_id="actor-1", workspace_id="workspace-1")
+    batch = repository.create_quote_capture_batch(
+        workspace_id=actor.workspace_id, name="batch", created_by=actor.actor_id
+    )
+    _retained_selection(repository, batch.batch_id, "SKC-1")
+    repository.save_batch_sourcing_session(
+        workspace_id=actor.workspace_id,
+        batch_id=batch.batch_id,
+        selected_skc_ids=("SKC-1",),
+        unresolved_skc_ids=("SKC-1",),
+        matched_products=(),
+        preview={
+            "items": [
+                {
+                    "quote_key": "SKC-1",
+                    "skc_id": "SKC-1",
+                    "product_title": "Product SKC-1",
+                    "source_search_status": "succeeded",
+                    "all_candidates": [
+                        {
+                            "offer_id": "601824709263",
+                            "source_url": "https://detail.1688.com/offer/601824709263.html",
+                            "source_title": "old image-search title",
+                            "price": 9.9,
+                            "main_image_url": "https://images.example/old.jpg",
+                            "image_similarity_selected": True,
+                            "source_channel": "image",
+                        },
+                        {
+                            "offer_id": "700000000001",
+                            "source_url": "https://detail.1688.com/offer/700000000001.html",
+                            "source_title": "other candidate",
+                            "price": 8.8,
+                            "main_image_url": "https://images.example/other.jpg",
+                            "image_similarity_selected": True,
+                            "source_channel": "image",
+                        },
+                    ],
+                }
+            ]
+        },
+        selected_candidates=(),
+    )
+
+    class Provider:
+        def get_item_detail(self, offer_id):
+            assert offer_id == "601824709263"
+            return SimpleNamespace(
+                error=None,
+                audits=(),
+                response={
+                    "item": {
+                        "num_iid": offer_id,
+                        "title": "manual item detail",
+                        "detail_url": f"https://detail.1688.com/offer/{offer_id}.html",
+                        "pic_url": "https://images.example/manual.jpg",
+                        "price": "2.2",
+                        "min_num": 2,
+                    }
+                },
+            )
+
+    service = SourcingService(
+        repository=repository,
+        plugin_bridge=PluginBridgeService(repository=repository),
+    )
+
+    state = service.add_manual_source_candidate(
+        actor,
+        batch_id=batch.batch_id,
+        skc_id="SKC-1",
+        source_url="https://detail.1688.com/offer/601824709263.html",
+        provider_factory=Provider,
+    )
+
+    candidates = state["preview"]["items"][0]["all_candidates"]
+    assert [candidate["offer_id"] for candidate in candidates] == ["601824709263", "700000000001"]
+    assert candidates[0]["manual_lookup"] is True
+    assert candidates[0]["source_channel"] == "manual"
+    assert candidates[0]["source_title"] == "manual item detail"
+    assert candidates[0]["price"] == 2.2
+    assert candidates[0]["moq"] == 2.0
+    assert service.get_batch_sourcing_state(actor, batch_id=batch.batch_id)["preview"]["items"][0]["all_candidates"][0]["manual_lookup"] is True
+
+
 @dataclass
 class _ProviderState:
     active: int = 0
