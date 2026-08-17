@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { WorkspaceShell } from "./layout/WorkspaceShell";
 import { AuthPage } from "../modules/customer/pages/AuthPage";
+import { AppUpdateDialog } from "../modules/app_update/components/AppUpdateDialog";
 import { clearAuthSession, getAuthToken, httpJson } from "../transport/http/client";
 
 type MeResponse = {
@@ -43,5 +44,8 @@ export function App() {
 
   if (!ready) return null;
 
-  return enteredWorkspace ? <WorkspaceShell onSignOut={signOut} /> : <AuthPage onEnter={() => setEnteredWorkspace(true)} />;
+  return <>
+    {enteredWorkspace ? <WorkspaceShell onSignOut={signOut} /> : <AuthPage onEnter={() => setEnteredWorkspace(true)} />}
+    <AppUpdateDialog />
+  </>;
 }

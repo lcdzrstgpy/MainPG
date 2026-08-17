@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { workspaceModules, type WorkspaceModuleId } from "../navigation/modules";
+import {
+  isWorkspaceNavigationGroup,
+  workspaceModules,
+  workspacePageModules,
+  type WorkspaceModuleId,
+  type WorkspaceNavigationGroup,
+  type WorkspaceNavigationGroupId,
+} from "../navigation/modules";
 import { Sidebar } from "./Sidebar";
 import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
 import { WorkspaceHomePage } from "../../modules/dashboard/pages/WorkspaceHomePage";
@@ -28,8 +35,14 @@ type WorkspaceShellProps = { onSignOut: () => void };
 
 const MAX_COLLECTION_PANELS = 6;
 const MAX_PROCESSING_PANELS = 3;
+const NARROW_DESKTOP_QUERY = "(min-width: 801px) and (max-width: 1100px)";
 
-const flatModules = workspaceModules.flatMap((module) => [module, ...(module.children ?? [])]);
+const flatModules = workspacePageModules;
+const navigationGroups = workspaceModules.filter(isWorkspaceNavigationGroup);
+
+function navigationGroupForModule(id: WorkspaceModuleId) {
+  return navigationGroups.find((group) => group.children.some((child) => child.id === id));
+}
 
 function moduleTab(id: WorkspaceModuleId): WorkspaceTab {
   const module = flatModules.find((item) => item.id === id)!;
@@ -39,7 +52,9 @@ function moduleTab(id: WorkspaceModuleId): WorkspaceTab {
 export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarHovered, setSidebarHovered] = useState(false);
+  const [isNarrowDesktop, setIsNarrowDesktop] = useState(() => window.matchMedia(NARROW_DESKTOP_QUERY).matches);
   const [topbarPinned, setTopbarPinned] = useState(true);
+  const [expandedGroupId, setExpandedGroupId] = useState<WorkspaceNavigationGroupId | null>(null);
   const [activeTabKey, setActiveTabKey] = useState("dashboard");
   const [tabs, setTabs] = useState<WorkspaceTab[]>([moduleTab("dashboard")]);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
@@ -58,6 +73,14 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0];
   const activeModuleId = activeTab?.moduleId ?? "dashboard";
   const activeModule = modulesById.get(activeModuleId)!;
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(NARROW_DESKTOP_QUERY);
+    const updateNarrowDesktop = () => setIsNarrowDesktop(mediaQuery.matches);
+    updateNarrowDesktop();
+    mediaQuery.addEventListener("change", updateNarrowDesktop);
+    return () => mediaQuery.removeEventListener("change", updateNarrowDesktop);
+  }, []);
 
   useEffect(() => {
     const content = contentRef.current;
@@ -170,15 +193,35 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
 
   const openModule = (id: WorkspaceModuleId) => {
     if (id === "daily_selection_collection") return;
+    setExpandedGroupId(navigationGroupForModule(id)?.id ?? null);
     setTabs((current) => current.some((tab) => tab.key === id) ? current : [...current, moduleTab(id)]);
     setActiveTabKey(id);
     setWorkspaceNotice("");
   };
 
+  const openNavigationGroup = (group: WorkspaceNavigationGroup) => {
+    if (expandedGroupId === group.id) {
+      setExpandedGroupId(null);
+      return;
+    }
+    setExpandedGroupId(group.id);
+    openModule(group.defaultChildId);
+  };
+
+  const selectTab = (key: string) => {
+    const tab = tabs.find((item) => item.key === key);
+    if (tab) setExpandedGroupId(navigationGroupForModule(tab.moduleId)?.id ?? null);
+    setActiveTabKey(key);
+  };
+
   const closeTab = (key: string) => {
     setTabs((current) => {
       const next = current.filter((tab) => tab.key !== key);
-      if (activeTabKey === key) setActiveTabKey(next[next.length - 1]?.key ?? "dashboard");
+      if (activeTabKey === key) {
+        const nextActive = next[next.length - 1] ?? moduleTab("dashboard");
+        setExpandedGroupId(navigationGroupForModule(nextActive.moduleId)?.id ?? null);
+        setActiveTabKey(nextActive.key);
+      }
       return next;
     });
   };
@@ -280,7 +323,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
       const item = await request;
       const existing = tabs.find((tab) => tab.dimensionItemId === item.id);
       if (existing) {
-        setActiveTabKey(existing.key);
+        selectTab(existing.key);
         return;
       }
       const key = `dimension-canvas-${item.id}`;
@@ -303,22 +346,23 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   };
 
   const collectionTabs = tabs.filter((tab) => tab.moduleId === "daily_selection_collection");
-  const expandedSidebarModuleIds = tabs.map((tab) => tab.moduleId);
-  const sidebarTemporarilyExpanded = sidebarCollapsed && sidebarHovered;
+  const sidebarIsCollapsed = sidebarCollapsed || isNarrowDesktop;
+  const sidebarTemporarilyExpanded = sidebarIsCollapsed && sidebarHovered;
 
   return (
     <main className="workspace-shell">
       <Sidebar
-        collapsed={sidebarCollapsed && !sidebarTemporarilyExpanded}
+        collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}
         activeId={activeModuleId}
-        expandedModuleIds={expandedSidebarModuleIds}
+        expandedGroupId={expandedGroupId}
         modules={workspaceModules}
-        onSelect={openModule}
+        onOpenModule={openModule}
+        onToggleGroup={openNavigationGroup}
         onHoverChange={setSidebarHovered}
         badges={{ dimension_canvas: dimensionNotifications.length }}
       />
       <section className="workspace-main">
-        <TopNavigation sidebarPinned={!sidebarCollapsed} topbarPinned={topbarPinned} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onToggleTopbarPin={() => setTopbarPinned((value) => !value)} onSelectTab={setActiveTabKey} onCloseTab={closeTab} onSignOut={onSignOut} />
+        <TopNavigation sidebarPinned={!sidebarIsCollapsed} topbarPinned={topbarPinned} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onToggleTopbarPin={() => setTopbarPinned((value) => !value)} onSelectTab={selectTab} onCloseTab={closeTab} onSignOut={onSignOut} />
         <div className="content-card" ref={contentRef}>
           {workspaceNotice && (
             <div className="workspace-notice" role="status">

@@ -108,10 +108,10 @@ def _ask_release_port(port: int, pid: int, name: str) -> bool:
 
 
 def _kill_pid(pid: int) -> bool:
-    """强制结束指定进程（含子进程）。"""
+    """强制结束指定进程，不终止由 MainPG 启动的更新安装器。"""
     try:
         subprocess.run(
-            ["taskkill", "/PID", str(pid), "/F", "/T"],
+            ["taskkill", "/PID", str(pid), "/F"],
             capture_output=True,
             timeout=20,
         )

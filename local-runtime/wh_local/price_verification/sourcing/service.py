@@ -127,7 +127,7 @@ class SourcingService:
         if not tasks:
             raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
         adapter = OneBoundSourceAdapter(self._repository, provider_factory)
-        result = adapter.search_by_image(actor, tasks)
+        result = adapter.search_by_image(actor, tasks, keyword_search=False)
         quotes = [task.to_payload() for task in tasks]
         preview = _apply_batch_ranking(
             build_source_preview(quotes, result),
@@ -949,6 +949,7 @@ def build_source_preview(
             "source_search_error": _text(result.get("error")) if result else "",
             "image_search_audit": _image_search_audit(result),
             "visual_verification": dict(result.get("visual_verification") or {}) if result else {},
+            "total_elapsed_ms": _safe_nonnegative_int(result.get("total_elapsed_ms")) if result else None,
             "source_decision": item_decision,
             "max_candidates": _quote_candidate_cap(quote),
             "candidates": recommended,
@@ -1103,6 +1104,9 @@ def _image_search_audit(result: Mapping[str, Any] | None) -> dict[str, Any]:
         "searched": _audit_succeeded(searched),
         "reference_image_url": _text(download_summary.get("final_url")),
         "image_size_bytes": _safe_positive_int(download_summary.get("image_size_bytes")),
+        "download_elapsed_ms": _safe_nonnegative_int(download_summary.get("elapsed_ms")),
+        "upload_elapsed_ms": _audit_elapsed_ms(uploaded),
+        "search_elapsed_ms": _safe_nonnegative_int(search_summary.get("elapsed_ms")),
         "request_id": _text(search_summary.get("request_id")) or _text(searched.get("request_id") if isinstance(searched, Mapping) else ""),
         "captured_at": _text(searched.get("captured_at") if isinstance(searched, Mapping) else ""),
     }
@@ -1123,6 +1127,23 @@ def _safe_positive_int(value: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _safe_nonnegative_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _audit_elapsed_ms(entry: Mapping[str, Any] | None) -> int | None:
+    if not isinstance(entry, Mapping):
+        return None
+    summary = entry.get("response_summary")
+    return _safe_nonnegative_int(summary.get("elapsed_ms")) if isinstance(summary, Mapping) else None
 
 
 def _preview_keyword_skc_ids(preview: Mapping[str, Any] | None) -> tuple[str, ...]:

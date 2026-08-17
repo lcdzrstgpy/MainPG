@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { workspaceModules } from "../../../app/navigation/modules.ts";
+import { workspacePageModules } from "../../../app/navigation/modules.ts";
 
 const pageSource = readFileSync(new URL("../pages/DimensionCanvasPage.tsx", import.meta.url), "utf8");
 const styleSource = readFileSync(new URL("../styles/dimension-canvas.css", import.meta.url), "utf8");
@@ -12,7 +12,7 @@ const iconfontSource = readFileSync(
 );
 
 test("dimension canvas uses icon classes that exist in the bundled font", () => {
-  const module = workspaceModules.find((candidate) => candidate.id === "dimension_canvas");
+  const module = workspacePageModules.find((candidate) => candidate.id === "dimension_canvas");
   assert.equal(module?.iconClass, "iconfont icon-column-width");
   for (const name of ["column-width", "upload", "sync", "check-circle"]) {
     assert.match(iconfontSource, new RegExp(`\\.icon-${name}:before\\s*\\{`));

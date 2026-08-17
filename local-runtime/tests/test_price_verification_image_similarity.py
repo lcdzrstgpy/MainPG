@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+import threading
+import time
 
 from PIL import Image, ImageDraw
 
@@ -115,6 +118,46 @@ def test_visual_verification_reuses_reference_bytes_without_downloading_referenc
     assert fetched == [candidate_url]
     assert audit["reference_available"] is True
     assert audit["reference_reused"] is True
+
+
+def test_candidate_downloads_are_globally_limited_across_three_skc_verifications(tmp_path) -> None:
+    reference_content = _image_bytes()
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+    start = threading.Barrier(3, timeout=2)
+
+    def verify_group(group: int) -> None:
+        nonlocal active, maximum_active
+        candidates = [
+            {"offer_id": f"{group}-{index}", "image": f"https://images.example/{group}-{index}.png"}
+            for index in range(6)
+        ]
+
+        def fetch(url: str) -> FetchedPublicImage:
+            nonlocal active, maximum_active
+            with lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return FetchedPublicImage(content=_image_bytes(), media_type="image/png", final_url=url)
+
+        start.wait()
+        verify_visual_candidates(
+            f"https://images.example/reference-{group}.png",
+            candidates,
+            reference_content=reference_content,
+            fetcher=fetch,
+            feature_cache=ImageFeatureCache(tmp_path / f"features-{group}", feature_method="test"),
+            minimum_results=1,
+        )
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        list(executor.map(verify_group, range(3)))
+
+    assert maximum_active <= 12
 
 
 def test_candidate_feature_cache_expires_after_three_days(tmp_path) -> None:

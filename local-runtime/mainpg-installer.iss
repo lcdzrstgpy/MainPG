@@ -5,7 +5,12 @@
 
 #define MyAppName "启凡电商平台"
 #define MyAppNameEn "MainPG"
-#define MyAppVersion "1.1.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "1.1.0"
+#endif
+#ifndef MySetupBaseFilename
+  #define MySetupBaseFilename "MainPG-Setup-" + MyAppVersion
+#endif
 #define MyAppPublisher "启凡"
 #define MyAppExeName "MainPG.exe"
 
@@ -21,7 +26,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 Uninstallable=yes
 OutputDir=dist
-OutputBaseFilename={#MyAppNameEn}-Setup
+OutputBaseFilename={#MySetupBaseFilename}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -43,6 +48,7 @@ Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingD
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait skipifnotsilent
 
 [Code]
 // 安装前自动结束正在运行的旧版 MainPG.exe，避免文件占用导致升级不完整
@@ -51,6 +57,6 @@ var
   ResultCode: Integer;
 begin
   Result := '';
-  Exec('taskkill.exe', '/F /IM MainPG.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('taskkill.exe', '/F /IM MainPG.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Sleep(1200);
 end;

@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from io import BytesIO
 import os
+import threading
+import time
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -36,6 +38,7 @@ _MAX_IMAGE_BYTES = 5 * 1024 * 1024
 # Two SKCs may now verify candidates concurrently. Keep each SKC at six image
 # workers or fewer so a packaged low-memory client is not flooded with threads.
 _MAX_WORKERS = min(6, max(2, os.cpu_count() or 2))
+_CANDIDATE_IMAGE_DOWNLOAD_CAPACITY = threading.BoundedSemaphore(12)
 
 
 ImageFetcher = Callable[[str], FetchedPublicImage]
@@ -69,6 +72,7 @@ def verify_visual_candidates(
     candidates below threshold fill the remaining slots and are explicitly
     marked as fallbacks. Download/decode failures remain excluded.
     """
+    started_at = time.monotonic()
     active_fetcher = fetcher or _safe_fetch
     reference_reused = reference_content is not None
     input_candidates = [dict(candidate) for candidate in candidates]
@@ -87,7 +91,7 @@ def verify_visual_candidates(
     }
     if not reference_image_url or not input_candidates:
         audit["unavailable_count"] = len(input_candidates)
-        return [], audit
+        return [], _with_elapsed_ms(audit, started_at)
 
     try:
         if reference_content is None:
@@ -100,7 +104,7 @@ def verify_visual_candidates(
         audit["distractor_suppression"] = distractor_audit
     except (OSError, ValueError, UnidentifiedImageError):
         audit["unavailable_count"] = len(input_candidates)
-        return [], audit
+        return [], _with_elapsed_ms(audit, started_at)
     audit["reference_available"] = True
 
     passing: list[dict[str, Any]] = []
@@ -150,7 +154,7 @@ def verify_visual_candidates(
     retained = [*passing, *selected_fallback]
     audit["verified_count"] = len(passing)
     audit["fallback_count"] = len(selected_fallback)
-    return retained, audit
+    return retained, _with_elapsed_ms(audit, started_at)
 
 
 def similarity_score(reference_content: bytes, candidate_content: bytes) -> float:
@@ -181,7 +185,9 @@ def _score_candidate(
             cached = None
             cache_hit = False
     if cached is None:
-        candidate = _feature_variants(fetcher(candidate_url).content)
+        with _CANDIDATE_IMAGE_DOWNLOAD_CAPACITY:
+            content = fetcher(candidate_url).content
+        candidate = _feature_variants(content)
         if feature_cache is not None:
             feature_cache.store(canonical_url, _serialize_feature_variants(candidate))
     score = max(_feature_similarity(left, right) for left in reference for right in candidate)
@@ -346,6 +352,11 @@ def _safe_fetch(url: str) -> FetchedPublicImage:
         max_bytes=_MAX_IMAGE_BYTES,
         timeout_seconds=_FETCH_TIMEOUT_SECONDS,
     )
+
+
+def _with_elapsed_ms(audit: dict[str, Any], started_at: float) -> dict[str, Any]:
+    audit["elapsed_ms"] = max(0, round((time.monotonic() - started_at) * 1000))
+    return audit
 
 
 @lru_cache(maxsize=1)
