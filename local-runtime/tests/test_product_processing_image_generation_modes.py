@@ -169,6 +169,7 @@ def test_four_grid_repairs_only_failed_slot_with_one_1k_call(monkeypatch) -> Non
 
     assert len(processor.calls) == 2
     assert processor.calls[0]["layout_scaffold"] is True
+    assert processor.calls[0]["image_size"] == "2048x2048"
     assert processor.calls[1]["stage"] == "grid_image_3"
     assert processor.calls[1]["image_size"] == "1024x1024"
     assert processor.calls[1]["model_override"] == "gpt-image-2-1k"
@@ -219,7 +220,7 @@ def test_unsplittable_four_grid_never_repeats_the_paid_whole_grid_call(monkeypat
     assert all(call["stage"] == "grid_image" for call in processor.calls)
     assert all(call["layout_scaffold"] is True for call in processor.calls)
     assert all("model_override" not in call for call in processor.calls)
-    assert "image_size" not in processor.calls[0]
+    assert processor.calls[0]["image_size"] == "2048x2048"
     assert output.attempt_count == 1
     assert output.provider_status_class == "failed"
     assert output.carousel_urls == ()

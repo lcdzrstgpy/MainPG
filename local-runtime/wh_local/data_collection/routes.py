@@ -533,10 +533,17 @@ def register_daily_selection_routes(
                         "message": "产品处理服务暂不可用，确认记录已保留，稍后可重试",
                     },
                 ) from error
-            # 确认即入池：为新入池草稿调度来源图本地同步（下载副本供草稿池展示）。
-            for draft in consumed.get("drafts") or []:
+            # 确认即入池：V1 草稿调度来源图同步，V2 草稿调度统一资产物化。
+            drafts = consumed.get("drafts") or []
+            for draft in drafts:
+                if int(draft.get("media_contract_version") or 1) >= 2:
+                    continue
                 _schedule_source_image_sync(
                     plugin_draft_writer, background_tasks, draft, actor.workspace_id
+                )
+            if any(int(d.get("media_contract_version") or 1) >= 2 for d in drafts):
+                _schedule_media_materialization(
+                    plugin_draft_writer, background_tasks, actor.workspace_id
                 )
             acknowledged = service.mark_handoffs_consumed(actor=actor, handoffs=handoffs)
             return DailySelectionConfirmResult(
@@ -759,6 +766,20 @@ def _schedule_source_image_sync(
             draft_writer.sync_draft_source_images,
             int(draft["id"]),
             workspace_id,
+        )
+
+
+def _schedule_media_materialization(
+    draft_writer: Any,
+    background_tasks: BackgroundTasks | None,
+    workspace_id: str,
+) -> None:
+    if background_tasks is not None:
+        # V2 assets are registered inside the same transaction that created the
+        # draft, so they are safe to materialize immediately after commit.
+        background_tasks.add_task(
+            draft_writer.media_assets.materialize_until_idle,
+            workspace_id=workspace_id,
         )
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Mapping
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import select, update
@@ -23,6 +23,8 @@ from .dimension_canvas_orm import (
 )
 from .orm import ProcessingTaskItemRow, ProcessingTaskRow, ProductDraftRow, utc_now
 from .preview_image_orm import PreviewImageAssetRow
+from .media_asset_orm import MediaAssetRow, MediaBindingRow
+from .media_asset_repository import media_binding_key
 
 
 class StaleCanvasRevision(RuntimeError):
@@ -929,6 +931,7 @@ class DimensionCanvasRepository:
         change_item_id: str,
         workspace_id: str,
         preview_managed_path: str | None = None,
+        dimension_media_asset_id: str = "",
     ) -> dict[str, Any]:
         """Atomically merge one immutable slot patch; no client revision is trusted."""
         with self.database.sessions.begin() as session:
@@ -997,6 +1000,7 @@ class DimensionCanvasRepository:
                 managed_asset,
                 workspace_id,
                 preview_managed_path=preview_managed_path,
+                media_asset_id=dimension_media_asset_id,
             )
             manifest = self._manifest_for_acceptance(
                 session, canvas_item, draft, overrides, workspace_id
@@ -1038,9 +1042,73 @@ class DimensionCanvasRepository:
             change_item.status = "accepted"
             change_item.resolved_at = utc_now()
             change_item.conflict_json = "{}"
+            if dimension_media_asset_id:
+                self._replace_dimension_binding(
+                    session,
+                    workspace_id,
+                    draft.id,
+                    change_item.target_slot_id,
+                    dimension_media_asset_id,
+                )
             self._refresh_change_set_counts(session, change_item.change_set_id, workspace_id)
             session.flush()
             return self._change_item(change_item)
+
+    def _replace_dimension_binding(
+        self,
+        session,
+        workspace_id: str,
+        product_draft_id: int,
+        slot_id: str,
+        media_asset_id: str,
+    ) -> None:
+        """Activate the new dimension binding and deactivate the former one."""
+        media = session.scalar(
+            select(MediaAssetRow).where(
+                MediaAssetRow.id == media_asset_id,
+                MediaAssetRow.workspace_id == workspace_id,
+            )
+        )
+        if media is None:
+            return
+        source_identity = str(media.content_hash or media.id or "")
+        session.execute(
+            update(MediaBindingRow)
+            .where(
+                MediaBindingRow.workspace_id == workspace_id,
+                MediaBindingRow.product_draft_id == int(product_draft_id),
+                MediaBindingRow.role == "dimension",
+                MediaBindingRow.slot_id == str(slot_id or ""),
+                MediaBindingRow.active == 1,
+            )
+            .values(active=0, updated_at=utc_now())
+        )
+        binding_key = media_binding_key(
+            product_draft_id, "dimension", str(slot_id or ""), "", "", source_identity, 0
+        )
+        existing = session.scalar(
+            select(MediaBindingRow).where(
+                MediaBindingRow.workspace_id == workspace_id,
+                MediaBindingRow.binding_key == binding_key,
+            )
+        )
+        if existing is None:
+            session.add(
+                MediaBindingRow(
+                    workspace_id=workspace_id,
+                    asset_id=media_asset_id,
+                    product_draft_id=int(product_draft_id),
+                    role="dimension",
+                    slot_id=str(slot_id or ""),
+                    sort_order=0,
+                    binding_key=binding_key,
+                    active=1,
+                )
+            )
+        else:
+            existing.asset_id = media_asset_id
+            existing.active = 1
+            existing.updated_at = utc_now()
 
     def reject_change_item(self, change_item_id: str, workspace_id: str) -> dict[str, Any]:
         with self.database.sessions.begin() as session:
@@ -1092,6 +1160,9 @@ class DimensionCanvasRepository:
         draft: ProductDraftRow,
         workspace_id: str,
     ) -> None:
+        if int(draft.media_contract_version or 1) >= 2:
+            self._register_v2_media_assets(session, item, task_item, draft, workspace_id)
+            return
         result = _loads(task_item.result_json, {})
         candidates: list[tuple[str, str]] = []
         if draft.image_path:
@@ -1121,6 +1192,82 @@ class DimensionCanvasRepository:
                     source_url=value if is_remote else "",
                     managed_path="" if is_remote else value,
                     availability="metadata",
+                )
+            )
+
+    def _register_v2_media_assets(
+        self,
+        session,
+        item: DimensionCanvasItemRow,
+        task_item: ProcessingTaskItemRow,
+        draft: ProductDraftRow,
+        workspace_id: str,
+    ) -> None:
+        """Register V2 canvas assets by asset_id from the manifest and bindings.
+
+        Ready assets stay ``metadata`` until the service snapshots their bytes into
+        the dimension workspace; non-ready assets are marked ``unavailable`` so the
+        editor never yields a broken URL.
+        """
+        result = _loads(task_item.result_json, {})
+        manifest = result.get("image_manifest_v2") or {}
+        ordered: list[tuple[str, str]] = []
+
+        def add(asset_id: Any, role: str) -> None:
+            normalized = str(asset_id or "").strip()
+            if not normalized or any(existing == normalized for existing, _ in ordered):
+                return
+            ordered.append((normalized, str(role)[:64]))
+
+        add(manifest.get("main_asset_id"), "source")
+        for index, value in enumerate(manifest.get("carousel_asset_ids") or []):
+            add(value, f"carousel_{index + 1}")
+        for index, value in enumerate(manifest.get("detail_asset_ids") or []):
+            add(value, f"detail_{index + 1}")
+        semantic = manifest.get("semantic_asset_ids") or {}
+        if isinstance(semantic, dict):
+            for slot_id, value in semantic.items():
+                if isinstance(value, str):
+                    add(value, str(slot_id))
+        bindings = session.scalars(
+            select(MediaBindingRow)
+            .where(
+                MediaBindingRow.workspace_id == workspace_id,
+                MediaBindingRow.product_draft_id == draft.id,
+                MediaBindingRow.active == 1,
+            )
+            .order_by(MediaBindingRow.sort_order, MediaBindingRow.created_at, MediaBindingRow.id)
+        ).all()
+        for binding in bindings:
+            role = str(binding.role or "gallery")
+            if role == "sku" and binding.sku_id:
+                role = f"sku_{binding.sku_id}"
+            add(binding.asset_id, role)
+
+        for asset_id, role in ordered:
+            media = session.scalar(
+                select(MediaAssetRow).where(
+                    MediaAssetRow.id == asset_id,
+                    MediaAssetRow.workspace_id == workspace_id,
+                )
+            )
+            if media is None:
+                continue
+            ready = str(media.status or "") == "ready"
+            session.add(
+                DimensionCanvasAssetRow(
+                    id=str(uuid5(NAMESPACE_URL, f"mainpg:{workspace_id}:{item.id}:v2:{asset_id}")),
+                    workspace_id=workspace_id,
+                    item_id=item.id,
+                    role=role,
+                    source_url="",
+                    managed_path="",
+                    source_media_asset_id=asset_id,
+                    content_hash=str(media.content_hash or "") if ready else "",
+                    width=int(media.width or 0),
+                    height=int(media.height or 0),
+                    content_type=str(media.content_type or ""),
+                    availability="metadata" if ready else "unavailable",
                 )
             )
 
@@ -1183,6 +1330,7 @@ class DimensionCanvasRepository:
         workspace_id: str,
         *,
         preview_managed_path: str | None = None,
+        media_asset_id: str = "",
     ) -> PreviewImageAssetRow:
         identity_hash = hashlib.sha256(f"dimension:{asset.id}".encode("utf-8")).hexdigest()
         preview_id = str(
@@ -1200,6 +1348,7 @@ class DimensionCanvasRepository:
                 product_draft_id=item.product_draft_id,
                 origin="dimension",
                 source_asset_id=asset.id,
+                media_asset_id=str(media_asset_id or ""),
                 identity_hash=identity_hash,
                 managed_path=str(preview_managed_path or asset.managed_path),
                 source_url="",
@@ -1312,6 +1461,8 @@ class DimensionCanvasRepository:
             return PreviewImageManifest.from_value(overrides.get(MANIFEST_KEY))
 
         result = self._task_result(session, item)
+        if int(draft.media_contract_version or 1) >= 2:
+            return self._v2_preview_manifest(session, item, result, workspace_id)
         source_values = {
             str(value or "").strip()
             for value in result.get("source_image_urls") or []
@@ -1372,6 +1523,72 @@ class DimensionCanvasRepository:
                     if index < len(carousel_ids)
                 },
             }
+        )
+
+    @staticmethod
+    def _v2_preview_manifest(
+        session,
+        item: DimensionCanvasItemRow,
+        result: Mapping[str, Any],
+        workspace_id: str,
+    ) -> PreviewImageManifest:
+        """Translate V2 media identities only through their preview-asset binding.
+
+        ``image_manifest`` and ``carousel_image_paths`` may contain old browser
+        URLs for backwards compatibility.  Those are display values, not files;
+        accepting a dimension change must not turn one into a fake local asset.
+        """
+        raw = result.get("image_manifest_v2") or {}
+        manifest = raw if isinstance(raw, Mapping) else {}
+        media_ids = {
+            str(value or "").strip()
+            for value in (
+                manifest.get("main_asset_id"),
+                *(manifest.get("carousel_asset_ids") or []),
+                *(manifest.get("detail_asset_ids") or []),
+                *(dict(manifest.get("semantic_asset_ids") or {}).values()),
+            )
+            if str(value or "").strip()
+        }
+        if not media_ids:
+            return PreviewImageManifest()
+        rows = session.scalars(
+            select(PreviewImageAssetRow)
+            .where(
+                PreviewImageAssetRow.workspace_id == workspace_id,
+                PreviewImageAssetRow.task_id == item.task_id,
+                PreviewImageAssetRow.product_draft_id == item.product_draft_id,
+                PreviewImageAssetRow.media_asset_id.in_(media_ids),
+            )
+            .order_by(PreviewImageAssetRow.created_at, PreviewImageAssetRow.id)
+        ).all()
+        preview_by_media: dict[str, str] = {}
+        for row in rows:
+            preview_by_media.setdefault(str(row.media_asset_id or ""), str(row.id))
+
+        def preview_id(media_asset_id: Any) -> str:
+            return preview_by_media.get(str(media_asset_id or "").strip(), "")
+
+        carousel = tuple(
+            preview_id(value)
+            for value in manifest.get("carousel_asset_ids") or []
+            if preview_id(value)
+        )
+        detail = tuple(
+            preview_id(value)
+            for value in manifest.get("detail_asset_ids") or []
+            if preview_id(value)
+        )
+        semantic = {
+            str(slot_id): identifier
+            for slot_id, value in dict(manifest.get("semantic_asset_ids") or {}).items()
+            if (identifier := preview_id(value))
+        }
+        return PreviewImageManifest(
+            main_asset_id=preview_id(manifest.get("main_asset_id")),
+            carousel_asset_ids=carousel,
+            detail_asset_ids=detail,
+            semantic_asset_ids=semantic,
         )
 
     def _current_review_inputs(
@@ -1516,6 +1733,7 @@ class DimensionCanvasRepository:
             "role": row.role,
             "source_url": row.source_url,
             "managed_path": row.managed_path,
+            "source_media_asset_id": row.source_media_asset_id,
             "content_hash": row.content_hash,
             "width": row.width,
             "height": row.height,

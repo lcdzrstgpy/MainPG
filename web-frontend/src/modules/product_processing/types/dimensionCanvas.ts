@@ -1,5 +1,7 @@
 export type DimensionKey = "length" | "width" | "height" | "custom";
 export type DimensionUnit = "cm" | "mm" | "in" | "ft";
+export type DimensionLineWidth = "thin" | "normal" | "thick";
+export type DimensionEndpointStyle = "arrow" | "bar" | "none";
 
 export type DimensionProvenance =
   | "source_confirmed"
@@ -32,7 +34,9 @@ export interface DimensionAnnotation {
   start: NormalizedPoint;
   end: NormalizedPoint;
   label: NormalizedPoint;
-  style: "auto" | "dark" | "light";
+  style: "auto" | "dark" | "light" | "gray_dashed";
+  lineWidth: DimensionLineWidth;
+  endpointStyle: DimensionEndpointStyle;
   unit: DimensionUnit;
 }
 
@@ -68,6 +72,7 @@ export interface EditorState {
   selectedAnnotationId: string | null;
   displayUnit: DimensionUnit;
   customValueCm: number | null;
+  endpointStyle: DimensionEndpointStyle;
 }
 
 export interface DimensionCanvasItem {
@@ -135,6 +140,7 @@ export interface SaveDimensionItemRequest {
     style: "auto" | "dark" | "light";
     display_unit: DimensionUnit;
     custom_value_cm: number | null;
+    endpoint_style: DimensionEndpointStyle;
   };
 }
 

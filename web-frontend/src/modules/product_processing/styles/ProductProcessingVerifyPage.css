@@ -1116,6 +1116,8 @@
 
 /* 预检环节 */
 .precheck-card {
+  display: grid;
+  gap: 16px;
   border: 1px solid #e2edf5;
   border-left: 4px solid #cfdce8;
 }
@@ -1126,15 +1128,19 @@
 
 .precheck-grid {
   display: grid;
-  grid-template-columns: minmax(340px, 5fr) minmax(420px, 6fr);
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
   align-items: start;
 }
 
 .precheck-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.4fr);
+  gap: 16px;
+}
+
+.precheck-fields .precheck-core-grid {
+  grid-column: 1 / -1;
 }
 
 .precheck-label {
@@ -1183,9 +1189,9 @@
 }
 
 .precheck-images {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  min-width: 0;
+  display: grid;
+  gap: 18px;
 }
 
 .precheck-image-block {
@@ -1322,6 +1328,72 @@
   line-height: 1.45;
 }
 
+.precheck-v2-media-registry {
+  border-color: #b8d7e7;
+  background: linear-gradient(135deg, #f4fbff, #fbfdff);
+}
+
+.precheck-v2-media-group {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.precheck-v2-media-group + .precheck-v2-media-group {
+  border-top: 1px solid #dce9f2;
+  padding-top: 12px;
+}
+
+.precheck-v2-media-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #41657f;
+  font-size: 0.72rem;
+}
+
+.precheck-v2-media-group > header span {
+  color: #7c91a6;
+  font-size: 0.66rem;
+}
+
+.precheck-v2-sku,
+.precheck-v2-error {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.64rem;
+  line-height: 1.4;
+}
+
+.precheck-v2-sku {
+  color: #476b85;
+  font-weight: 750;
+}
+
+.precheck-v2-error {
+  color: #b34b42;
+}
+
+.precheck-publication.status-pending,
+.precheck-publication.status-materializing {
+  border-color: #9acff0;
+  background: #eaf6ff;
+  color: #0a6ba8;
+}
+
+.precheck-publication.status-retryable {
+  border-color: #ead38d;
+  background: #fff9df;
+  color: #896414;
+}
+
+.precheck-publication.status-failed {
+  border-color: #efc6c3;
+  background: #fff0ef;
+  color: #bd3e34;
+}
+
 .precheck-library {
   background: linear-gradient(135deg, #f8fcff, #f2f8fc);
 }
@@ -1329,6 +1401,100 @@
 .precheck-main-section {
   border-color: #bddbf0;
   background: #f8fcff;
+}
+
+.precheck-source-pool {
+  border-color: #bcd9e8;
+  background: linear-gradient(135deg, #fbfeff, #f4fafd);
+}
+
+.precheck-material-library {
+  background: linear-gradient(135deg, #f8fcff, #f2f8fc);
+}
+
+.precheck-source-group,
+.precheck-material-group {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.precheck-source-group + .precheck-source-group,
+.precheck-material-group + .precheck-material-group {
+  border-top: 1px solid #dce9f2;
+  padding-top: 12px;
+}
+
+.precheck-source-group > header,
+.precheck-material-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #41657f;
+  font-size: 0.72rem;
+}
+
+.precheck-source-group > header span,
+.precheck-material-group > header span {
+  color: #7c91a6;
+  font-size: 0.66rem;
+}
+
+.precheck-source-group-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.precheck-source-toggle {
+  min-width: 68px;
+  padding: 7px 15px;
+  border: 1px solid #b9d8e9;
+  border-radius: 8px;
+  background: #f5fbff;
+  color: #176e9b;
+  font-size: 0.74rem;
+  font-weight: 800;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.precheck-source-toggle:hover {
+  border-color: #76bddf;
+  background: #eaf7ff;
+  color: #075f91;
+}
+
+.precheck-source-toggle:focus-visible {
+  outline: 2px solid rgba(10, 143, 202, 0.28);
+  outline-offset: 2px;
+}
+
+.precheck-source-group.is-collapsed {
+  gap: 0;
+}
+
+.precheck-main-badge {
+  position: absolute;
+  z-index: 1;
+  top: 12px;
+  right: 12px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: linear-gradient(100deg, #0a8fca, #0ab3c0);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 800;
+  box-shadow: 0 2px 7px rgba(10, 155, 202, 0.28);
+}
+
+.precheck-origin-badge.origin-source {
+  border-color: #bcd9e8;
+  background: #f1f8fc;
+  color: #2d6f96;
 }
 
 .precheck-file-input {
@@ -1344,7 +1510,7 @@
 
 .precheck-asset-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
   gap: 10px;
 }
 

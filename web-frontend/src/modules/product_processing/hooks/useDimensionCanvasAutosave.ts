@@ -63,6 +63,7 @@ export function useDimensionCanvasAutosave(
       style: "auto",
       display_unit: snapshot.displayUnit,
       custom_value_cm: snapshot.customValueCm,
+      endpoint_style: snapshot.endpointStyle,
     },
   });
 

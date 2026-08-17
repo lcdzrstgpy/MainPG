@@ -12,6 +12,7 @@ import {
   startSkuRepull,
 } from "../api/dailySelectionApi";
 import { getApiToken } from "../../../shared/api/apiClient";
+import { checkAiApiKeyReadiness } from "../../basic_settings/api/systemConfigApi";
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -648,6 +649,19 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       return;
     }
 
+    try {
+      const readiness = await checkAiApiKeyReadiness();
+      const missing: string[] = [];
+      if (!readiness.textConfigured) missing.push("文本模型");
+      if (!readiness.imageConfigured) missing.push("图片模型");
+      if (missing.length) {
+        setError(`请先在「系统配置」中配置${missing.join("、")}的 API Key，再开始采集`);
+        return;
+      }
+    } catch {
+      // 读取配置失败时不拦截，交由后端在采集时返回可读错误。
+    }
+
     setBusy(true);
     setCollecting(true);
     setCollectionProgress(2);
@@ -1164,7 +1178,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                       <span title={`${candidate.source_variant_records.length} 个 SKU 规格`}><b>{candidate.source_variant_records.length || "未知"}</b><em>SKU</em></span>
                     </div>
                     <div className="candidate-meta"><span>{candidate.shop_name || "店铺待补齐"}</span><span>{candidate.location || "产地待补齐"}</span></div>
-                    <div className="candidate-score"><span>选品分</span><b>{Number(candidate.selection_score).toFixed(1)}</b></div>
                     {candidate.selection_reasons.length > 0 && (
                       <div className="candidate-reasons">
                         {candidate.selection_reasons.slice(0, 2).map((reason) => <span key={reason}>{reason}</span>)}

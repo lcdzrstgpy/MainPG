@@ -297,6 +297,21 @@
   gap: 12px;
 }
 
+.settings-card-wide {
+  grid-column: 1 / -1;
+}
+
+.settings-card-description {
+  margin: 6px 0 0;
+  color: #71879e;
+  font-size: .86rem;
+  line-height: 1.55;
+}
+
+.settings-grid-inner {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .settings-card-head {
   display: flex;
   align-items: center;

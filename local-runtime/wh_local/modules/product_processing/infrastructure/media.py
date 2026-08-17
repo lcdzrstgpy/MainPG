@@ -55,6 +55,9 @@ DXM_IMAGE_TARGET_SIZE = 800
 # 四宫格由 2048px 拆为 1024px 象限后再缩至 800px；使用 94 + 4:4:4，
 # 保留商品边缘、透明材质和本地排版细节，避免默认 4:2:0 二次损失。
 DXM_IMAGE_JPEG_QUALITY = 94
+# 拆分后每格向内裁掉的比例：避开模型实际画出的、比 scaffold 更宽的白线。
+# 裁掉后统一缩放到 DXM_IMAGE_TARGET_SIZE(800×800)，不足 800 时自动放大。
+FOUR_GRID_EDGE_INSET_FRACTION = 0.04
 # Some OpenAI-compatible gateways accept a 4K model/size request but return a
 # 2048px square transport image.  That is still sufficient for four native
 # 1024px carousel panels, so validate the usable result instead of trusting the
@@ -333,6 +336,8 @@ class ProductImageProcessor:
         try:
             self.validate_four_grid(media)
             source = Image.open(BytesIO(media.content)).convert("RGB")
+            # 自适应：非正方形时居中裁方，保证 2x2 拆分几何正确。
+            source = _center_crop_to_square(source)
             try:
                 guides = locate_split_guides(source)
             except GridLayoutError:
@@ -341,11 +346,17 @@ class ProductImageProcessor:
                 guides = center_split_guides(source)
             panels = extract_grid_panels(source, guides)
         except Exception as exc:
-            raise MediaProcessingError("generated four-grid image cannot be split") from exc
+            detail = str(exc).strip()
+            message = "generated four-grid image cannot be split"
+            if detail:
+                message = f"{message}: {detail}"
+            raise MediaProcessingError(message) from exc
 
         target_size = DXM_IMAGE_TARGET_SIZE
         result: list[GeneratedMedia] = []
         for index, panel in enumerate(panels, start=1):
+            # 裁掉拆分后边缘残留的白色分隔线（模型实际画的分隔线常宽于 scaffold）。
+            panel = _inset_grid_panel(panel)
             resized = panel.resize((target_size, target_size), Image.Resampling.LANCZOS)
             content = _image_to_jpeg_bytes(resized)
             result.append(
@@ -401,7 +412,15 @@ class ProductImageProcessor:
 
             def encode_panel(index_and_box: tuple[int, tuple[int, int, int, int]]) -> GeneratedMedia:
                 index, _box = index_and_box
-                panel = panels[index - 1]
+                # Keep premium panels consistent with the standard four-grid path:
+                # trim a small inner edge so model-painted white dividers do not
+                # become part of the exported product image.
+                panel = _inset_grid_panel(panels[index - 1])
+                if min(panel.size) < DXM_IMAGE_TARGET_SIZE:
+                    panel = panel.resize(
+                        (DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE),
+                        Image.Resampling.LANCZOS,
+                    )
                 return GeneratedMedia(
                     stage=f"premium_image_{index}",
                     content=_image_to_jpeg_bytes(panel, quality=PREMIUM_IMAGE_JPEG_QUALITY),
@@ -578,25 +597,28 @@ class ProductImageProcessor:
 
     @staticmethod
     def validate_four_grid(media: GeneratedMedia) -> None:
-        """Require a 2K square; divider evidence is best-effort (center fallback splits)."""
+        """Require a decodable grid; size is soft-gated so a 2K size wobble never blocks splitting.
+
+        普通 2K 四宫格偶发返回非正方形或缩水图；这里仅要求最小边 >=1024，
+        非正方形交由 split 阶段居中裁方后再切 4 格。
+        """
         try:
             from PIL import Image  # type: ignore
 
             source = Image.open(BytesIO(media.content)).convert("RGB")
             width, height = source.size
-            if min(width, height) < 1800:
-                raise ValueError("four-grid source must be at least 1800px on each edge")
-            if abs(width - height) / max(width, height) > 0.02:
-                raise ValueError("four-grid source must be square")
-            try:
-                locate_split_guides(source)
-            except Exception:
-                # 无分隔线证据不再阻断：拆图阶段回退正中切分，由面板独立性校验兜底。
-                pass
+            if min(width, height) < 1024:
+                raise ValueError(
+                    f"four-grid source is {width}x{height}; at least 1024px is required on each edge"
+                )
         except MediaConfigurationError:
             raise
         except Exception as exc:
-            raise MediaProcessingError("generated four-grid structure failed validation") from exc
+            detail = str(exc).strip()
+            message = "generated four-grid structure failed validation"
+            if detail:
+                message = f"{message}: {detail}"
+            raise MediaProcessingError(message) from exc
 
     def upload_to_cos(
         self,
@@ -1054,7 +1076,9 @@ def _retry_class(error: BaseException) -> str:
         return "server_error"
     if isinstance(error, (requests.Timeout, TimeoutError)):
         return "unknown_outcome_timeout"
-    if isinstance(error, requests.ConnectionError):
+    if isinstance(error, (requests.ConnectionError, requests.exceptions.ChunkedEncodingError)):
+        # ChunkedEncodingError 常见于「Response ended prematurely」：服务端声明了
+        # 分块传输但流提前中断，属于网络瞬断，应重试而不是当作本地不可重试错误。
         return "connection_error"
     return "non_retryable_local"
 
@@ -1107,6 +1131,18 @@ def _center_crop_to_square(image: Any) -> Any:
     left = max((width - side) // 2, 0)
     top = max((height - side) // 2, 0)
     return image.crop((left, top, left + side, top + side))
+
+
+def _inset_grid_panel(image: Any) -> Any:
+    """向内裁掉固定比例边缘，避开模型画出的过宽白线。
+
+    偏移量刻意取得小，只舍弃边缘一点点商品图；裁小后由调用方统一缩放到
+    800×800（不足 800 时自动放大），尺寸保持达标。
+    """
+    width, height = image.size
+    inset_x = max(1, round(width * FOUR_GRID_EDGE_INSET_FRACTION))
+    inset_y = max(1, round(height * FOUR_GRID_EDGE_INSET_FRACTION))
+    return image.crop((inset_x, inset_y, width - inset_x, height - inset_y))
 
 
 def _image_to_jpeg_bytes(image: Any, *, quality: int = DXM_IMAGE_JPEG_QUALITY) -> bytes:

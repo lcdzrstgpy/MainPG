@@ -30,6 +30,7 @@ export function persistentEditorSignature(editor: EditorState): string {
     annotations: editor.annotations,
     displayUnit: editor.displayUnit,
     customValueCm: editor.customValueCm,
+    endpointStyle: editor.endpointStyle,
   });
 }
 

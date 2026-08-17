@@ -22,21 +22,18 @@ def test_valid_five_points_are_normalized_without_rewriting_content() -> None:
     assert all(line.startswith("- ") for line in normalized.splitlines())
 
 
-def test_four_points_with_mixed_case_headings_are_accepted() -> None:
-    """适当放松：少于 5 条 + 非全大写标题不再判失败。"""
+def test_four_points_are_rejected_even_with_mixed_case_headings() -> None:
     four = "\n".join(VALID.splitlines()[:4]).replace("VERIFIED SOLID BUILD", "Verified Solid Build")
-    normalized = normalize_five_point_description(four)
-    assert normalized.count("\n") == 3
-    assert normalized.startswith("- Verified Solid Build: ")
+    with pytest.raises(DescriptionContractError, match="exactly five"):
+        normalize_five_point_description(four)
 
 
-def test_three_points_are_accepted() -> None:
-    normalized = normalize_five_point_description("\n".join(VALID.splitlines()[:3]))
-    assert normalized.count("\n") == 2
+def test_three_points_are_rejected() -> None:
+    with pytest.raises(DescriptionContractError, match="exactly five"):
+        normalize_five_point_description("\n".join(VALID.splitlines()[:3]))
 
 
-def test_points_without_heading_separators_are_accepted() -> None:
-    """适当放松：无标题分隔符的纯要点行也接受（不再强制 heading: body 结构）。"""
+def test_four_plain_points_are_rejected() -> None:
     plain = "\n".join(
         [
             "First selling point is about the sturdy construction used for regular sessions.",
@@ -45,17 +42,14 @@ def test_points_without_heading_separators_are_accepted() -> None:
             "Fourth point describes simple daily handling after the play area is cleared.",
         ]
     )
-    normalized = normalize_five_point_description(plain)
-    assert normalized.count("\n") == 3
-    assert all(line.startswith("- ") for line in normalized.splitlines())
+    with pytest.raises(DescriptionContractError, match="exactly five"):
+        normalize_five_point_description(plain)
 
 
-def test_two_points_are_accepted_after_loosening() -> None:
-    """最简校验：行数/词数不再限制，2 条也接受。"""
+def test_two_points_are_rejected() -> None:
     two = "\n".join(VALID.splitlines()[:2])
-    normalized = normalize_five_point_description(two)
-    assert normalized.count("\n") == 1
-    assert all(line.startswith("- ") for line in normalized.splitlines())
+    with pytest.raises(DescriptionContractError, match="exactly five"):
+        normalize_five_point_description(two)
 
 
 @pytest.mark.parametrize(

@@ -22,6 +22,8 @@ from .orm import (
     SourceImageAssetRow,
     utc_now,
 )
+from .media_asset_orm import MediaAssetRow, MediaBindingRow
+from .media_asset_repository import media_binding_key
 
 
 def dumps(value: Any) -> str:
@@ -55,6 +57,97 @@ class ProductProcessingRepository:
             session.add(row)
             session.flush()
             return self._draft(row)
+
+    def create_draft_with_media(
+        self,
+        *,
+        draft_values: dict[str, Any],
+        media_entries: list[dict[str, Any]],
+        handoff_id: str,
+        idempotency_key: str,
+        workspace_id: str,
+        run_id: str,
+        candidate_id: str,
+        source_status: str,
+        payload_sha256: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Create a V2 draft plus its media assets, bindings, and receipt atomically."""
+        with self.database.sessions.begin() as session:
+            draft_row = ProductDraftRow(media_contract_version=2, **draft_values)
+            session.add(draft_row)
+            session.flush()
+            draft_id = int(draft_row.id)
+            asset_by_identity: dict[str, MediaAssetRow] = {}
+            for entry in media_entries:
+                source_identity_hash = str(entry.get("source_identity_hash") or "")
+                asset_row = asset_by_identity.get(source_identity_hash)
+                if asset_row is None:
+                    asset_row = session.scalar(
+                        select(MediaAssetRow).where(
+                            MediaAssetRow.workspace_id == workspace_id,
+                            MediaAssetRow.source_identity_hash == source_identity_hash,
+                        )
+                    )
+                    if asset_row is None:
+                        asset_row = MediaAssetRow(
+                            workspace_id=workspace_id,
+                            origin="remote_source",
+                            source_url=str(entry.get("source_url") or ""),
+                            source_identity_hash=source_identity_hash,
+                            status="pending",
+                        )
+                        session.add(asset_row)
+                        session.flush()
+                    asset_by_identity[source_identity_hash] = asset_row
+                role = str(entry.get("role") or "gallery")
+                slot_id = str(entry.get("slot_id") or "")
+                sku_id = str(entry.get("sku_id") or "")
+                variant_label = str(entry.get("variant_label") or "")
+                sort_order = int(entry.get("sort_order") or 0)
+                session.add(
+                    MediaBindingRow(
+                        workspace_id=workspace_id,
+                        asset_id=asset_row.id,
+                        product_draft_id=draft_id,
+                        task_id=int(entry.get("task_id") or 0),
+                        task_item_id=int(entry.get("task_item_id") or 0),
+                        role=role,
+                        slot_id=slot_id,
+                        sku_id=sku_id,
+                        variant_label=variant_label,
+                        sort_order=sort_order,
+                        binding_key=media_binding_key(
+                            draft_id,
+                            role,
+                            slot_id,
+                            sku_id,
+                            variant_label,
+                            source_identity_hash,
+                            sort_order,
+                        ),
+                        active=1,
+                    )
+                )
+            receipt_row = session.scalar(
+                select(DailySelectionHandoffReceiptRow).where(
+                    DailySelectionHandoffReceiptRow.handoff_id == handoff_id
+                )
+            )
+            if receipt_row is None:
+                receipt_row = DailySelectionHandoffReceiptRow(
+                    handoff_id=handoff_id,
+                    idempotency_key=idempotency_key,
+                    workspace_id=workspace_id,
+                    run_id=run_id,
+                    candidate_id=candidate_id,
+                    product_draft_id=draft_id,
+                    source_status=source_status,
+                    consumer_status="consumed",
+                    payload_sha256=payload_sha256,
+                )
+                session.add(receipt_row)
+                session.flush()
+            return self._draft(draft_row), self._handoff_receipt(receipt_row)
 
     def draft_by_candidate(self, candidate_id: str, workspace_id: str = "local") -> dict[str, Any] | None:
         if not candidate_id:
@@ -1185,6 +1278,7 @@ class ProductProcessingRepository:
             "raw_payload": loads(row.raw_payload_json, {}),
             "preview_overrides": loads(row.preview_overrides_json, {}),
             "preview_revision": int(row.preview_revision or 0),
+            "media_contract_version": int(row.media_contract_version or 1),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }

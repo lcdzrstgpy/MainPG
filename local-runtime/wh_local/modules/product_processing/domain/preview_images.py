@@ -49,12 +49,19 @@ class PreviewImageManifest:
     main_asset_id: str = ""
     carousel_asset_ids: tuple[str, ...] = ()
     detail_asset_ids: tuple[str, ...] = ()
+    library_asset_ids: tuple[str, ...] = ()
     semantic_asset_ids: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "main_asset_id", str(self.main_asset_id or "").strip())
-        object.__setattr__(self, "carousel_asset_ids", _ordered_ids(_id_values(self.carousel_asset_ids)))
-        object.__setattr__(self, "detail_asset_ids", _ordered_ids(_id_values(self.detail_asset_ids)))
+        carousel = _ordered_ids(_id_values(self.carousel_asset_ids))
+        detail = _ordered_ids(_id_values(self.detail_asset_ids))
+        library = _ordered_ids(_id_values(self.library_asset_ids))
+        main = str(self.main_asset_id or "").strip()
+        # 主图严格等于轮播第一张；缺轮播时把唯一主图提升为第一张。
+        if carousel:
+            main = carousel[0]
+        elif main:
+            carousel = (main,)
         raw_semantics = (
             self.semantic_asset_ids
             if isinstance(self.semantic_asset_ids, Mapping)
@@ -65,6 +72,14 @@ class PreviewImageManifest:
             for slot_id, asset_id in raw_semantics.items()
             if str(slot_id or "").strip() and str(asset_id or "").strip()
         }
+        if carousel:
+            semantics["carousel.hero"] = carousel[0]
+        carousel_set = set(carousel)
+        semantics = {slot: asset_id for slot, asset_id in semantics.items() if asset_id in carousel_set}
+        object.__setattr__(self, "main_asset_id", main)
+        object.__setattr__(self, "carousel_asset_ids", carousel)
+        object.__setattr__(self, "detail_asset_ids", detail)
+        object.__setattr__(self, "library_asset_ids", library)
         object.__setattr__(self, "semantic_asset_ids", semantics)
 
     @classmethod
@@ -74,6 +89,7 @@ class PreviewImageManifest:
             main_asset_id=str(raw.get("main_asset_id") or "").strip(),
             carousel_asset_ids=_ordered_ids(_id_values(raw.get("carousel_asset_ids"))),
             detail_asset_ids=_ordered_ids(_id_values(raw.get("detail_asset_ids"))),
+            library_asset_ids=_ordered_ids(_id_values(raw.get("library_asset_ids"))),
             semantic_asset_ids=(
                 dict(raw.get("semantic_asset_ids") or {})
                 if isinstance(raw.get("semantic_asset_ids"), Mapping)
@@ -86,6 +102,7 @@ class PreviewImageManifest:
             "main_asset_id": self.main_asset_id,
             "carousel_asset_ids": list(self.carousel_asset_ids),
             "detail_asset_ids": list(self.detail_asset_ids),
+            "library_asset_ids": list(self.library_asset_ids),
             "semantic_asset_ids": dict(self.semantic_asset_ids or {}),
         }
 
@@ -122,6 +139,7 @@ def replace_carousel_slot(
         main_asset_id=manifest.main_asset_id,
         carousel_asset_ids=_ordered_ids(values),
         detail_asset_ids=manifest.detail_asset_ids,
+        library_asset_ids=manifest.library_asset_ids,
         semantic_asset_ids=semantics,
     )
 

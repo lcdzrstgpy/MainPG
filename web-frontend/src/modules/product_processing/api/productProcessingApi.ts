@@ -1,6 +1,8 @@
 import { apiRequest } from "../../../shared/api/apiClient";
 import { ppRequest, ppUpload, type ApiContext } from "./client";
 import type {
+  DraftMediaResponse,
+  MediaAssetView,
   PreviewCoreFields,
   PreviewFinalizeRun,
   PreviewImageAsset,
@@ -110,6 +112,24 @@ export function retryPreviewFinalizeRun(
   return ppRequest(
     ctx,
     `/api/product-processing/tasks/${taskId}/preview/finalize/${encodeURIComponent(runId)}/retry`,
+    { method: "POST", body: {} },
+  );
+}
+
+export function getDraftMedia(
+  ctx: ApiContext,
+  draftId: number,
+): Promise<DraftMediaResponse> {
+  return ppRequest(ctx, `/api/product-processing/drafts/${draftId}/media`);
+}
+
+export function retryMediaAsset(
+  ctx: ApiContext,
+  assetId: string,
+): Promise<MediaAssetView> {
+  return ppRequest(
+    ctx,
+    `/api/product-processing/media-assets/${encodeURIComponent(assetId)}/retry`,
     { method: "POST", body: {} },
   );
 }

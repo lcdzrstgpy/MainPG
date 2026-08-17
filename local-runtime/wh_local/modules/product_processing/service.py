@@ -58,8 +58,12 @@ from .infrastructure.preview_image_repository import (
     PreviewImageRepository,
     PreviewPublicationConflict,
     PreviewRevisionConflict,
+    PreviewSourceNotInLibrary,
+    PreviewSourceNotReady,
 )
 from .preview_image_service import PreviewImageService
+from .infrastructure.media_asset_repository import MediaAssetRepository, MediaMaterializationConflict
+from .media_asset_service import MediaAssetService, canonical_source_url
 from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai_provider
 
 _MEDIA_TYPES: tuple | None = None
@@ -97,12 +101,17 @@ def _ai_enabled() -> bool:
 
 
 def _media_public_base_url() -> str:
-    """后端静态图床对外地址：WH_MEDIA_BASE_URL（如 https://media.example.com 或 http://公网IP:8010）。
+    """Return the configured public base for the existing ``/pp-media`` host.
 
-    生成图本地保存于 assets/outputs，后端通过 /pp-media 静态挂载对外提供；
-    设置该地址后，即使未配置 COS，导出表也能写入可访问的生成图 URL（出图效果不再回退来源图）。
+    Environment configuration is retained for packaged deployments.  The system
+    settings value is the normal desktop path and was previously left unused by
+    the deferred preview-finalization flow.
     """
-    return str(os.environ.get("WH_MEDIA_BASE_URL", "")).strip().rstrip("/")
+    configured = str(os.environ.get("WH_MEDIA_BASE_URL", "")).strip().rstrip("/")
+    if configured:
+        return configured
+    updates = resolve_ai_provider().get("_sys_updates") or {}
+    return str(updates.get("public_base_url") or "").strip().rstrip("/")
 
 
 def _cos_local_config_paths() -> list[Path]:
@@ -172,6 +181,10 @@ class ProductProcessingNotFound(LookupError):
 
 class ProductProcessingConflict(RuntimeError):
     pass
+
+
+class ProductProcessingValidationError(ValueError):
+    """A semantically invalid client request (mapped to HTTP 422)."""
 
 
 class MediaUnavailableError(RuntimeError):
@@ -286,8 +299,15 @@ class ProductProcessingService:
         self._submission_lock = threading.RLock()
         self._task_worker_lock = threading.Lock()
         self._task_workers: dict[tuple[str, int], threading.Thread] = {}
+        self._media_materialization_lock = threading.Lock()
+        self._media_materialization_workers: dict[str, threading.Thread] = {}
         # 任务级串行闸门：限制同时执行的任务数，避免旧任务与新任务并发叠加打爆 AI 供应商。
         self._task_execution_gate = threading.BoundedSemaphore(_max_concurrent_tasks())
+        self.media_assets = MediaAssetService(
+            MediaAssetRepository(repository.database),
+            assets,
+            public_image_fetcher=public_image_fetcher,
+        )
         self.preview_images = PreviewImageService(
             PreviewImageRepository(repository.database),
             repository,
@@ -296,6 +316,7 @@ class ProductProcessingService:
             trusted_public_url=self.is_trusted_cos_url,
             public_image_fetcher=public_image_fetcher,
             max_publish_workers=4,
+            media_assets=self.media_assets,
         )
         # 主体识别结果缓存：同一来源主图只识别一次（批量任务大量重复商品时省 N 次 AI 调用）
         self._subject_cache: dict[str, dict[str, str]] = {}
@@ -822,14 +843,33 @@ class ProductProcessingService:
         workspace_id: str,
     ) -> str:
         """Publish immutable original bytes for the final retained precheck set."""
+        digest = hashlib.sha256(content).hexdigest()
+        if content_hash and digest != str(content_hash).strip().lower():
+            raise ValueError("preview image hash mismatch")
+
+        # COS remains the preferred durable publisher.  When it is intentionally
+        # absent, reuse the pre-existing static image-host export interface rather
+        # than blocking finalization merely because no COS credentials exist.
+        if not bool(self.engine_status()["diagnostics"]["config"].get("cos_configured")):
+            base = _media_public_base_url()
+            if not base or not base.lower().startswith("https://") or not is_safe_external_url(base):
+                raise MediaUnavailableError(
+                    "未配置可导出的图床：请配置 COS 或公共媒体地址（public_base_url）"
+                )
+            path = self.assets.save_preview_asset(
+                bytes(content),
+                digest,
+                str(suffix or ".jpg"),
+                workspace_id=workspace_id,
+            )
+            relative = path.relative_to(self.assets.output_root).as_posix()
+            return f"{base}/pp-media/{relative}"
+
         media_types = _media_types()
         if not media_types:
             raise MediaUnavailableError("图片处理依赖缺失：无法发布最终预审图片")
         from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
 
-        digest = hashlib.sha256(content).hexdigest()
-        if content_hash and digest != str(content_hash).strip().lower():
-            raise ValueError("preview image hash mismatch")
         namespace = hashlib.sha256(str(workspace_id).encode("utf-8")).hexdigest()[:20]
         media = GeneratedMedia(
             stage="preview-final",
@@ -851,7 +891,16 @@ class ProductProcessingService:
         return url
 
     def is_trusted_cos_url(self, value: str) -> bool:
-        """Verify a legacy/final URL against the configured bucket with COS HEAD."""
+        """Validate a final URL from either configured publication backend."""
+        base = _media_public_base_url()
+        static_prefix = f"{base}/pp-media/" if base else ""
+        if (
+            static_prefix
+            and str(value or "").startswith(static_prefix)
+            and base.lower().startswith("https://")
+            and is_safe_external_url(base)
+        ):
+            return True
         return self._media_processor().is_configured_cos_url(value, require_public=True)
 
     def sync_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
@@ -902,29 +951,10 @@ class ProductProcessingService:
                 continue
             if handoff.status == "failed":
                 raise ValueError("failed daily-selection handoffs cannot be consumed")
-            # A new handoff means the operator explicitly chose to process the
-            # product again, even when the same source candidate was completed
-            # in an older run. Only replaying this exact handoff is idempotent.
-            draft, _created = self.create_draft(
-                self._draft_payload_from_handoff(handoff),
-                selection_run_id=handoff.run_id,
-                workspace_id=handoff.workspace_id,
-                handoff_id=handoff.handoff_id,
-                handoff_idempotency_key=handoff.idempotency_key,
-                allow_duplicate_candidate=True,
-            )
-            if _created:
-                created_count += 1
-            receipt = self.repository.save_handoff_receipt(
-                handoff_id=handoff.handoff_id,
-                idempotency_key=handoff.idempotency_key,
-                workspace_id=handoff.workspace_id,
-                run_id=handoff.run_id,
-                candidate_id=handoff.candidate_id,
-                product_draft_id=draft["id"],
-                source_status=handoff.status,
-                payload_sha256=hashlib.sha256(handoff.payload_json.encode("utf-8")).hexdigest(),
-            )
+            # A new handoff creates a V2 draft with its media assets and bindings
+            # in one transaction. Only replaying this exact handoff is idempotent.
+            draft, receipt = self.create_draft_with_media(handoff)
+            created_count += 1
             receipts.append(receipt)
             drafts.append(draft)
         return {
@@ -992,6 +1022,126 @@ class ProductProcessingService:
             "selection_reasons": list(selection.get("selection_reasons") or []),
             "risk_tags": list(selection.get("risk_tags") or []),
         }
+
+    def create_draft_with_media(
+        self, handoff: DailySelectionHandoffEnvelope
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Create a V2 draft with registered media assets and bindings atomically."""
+        raw = self._draft_payload_from_handoff(handoff)
+        draft_values = self._draft_values_from_handoff(handoff, raw)
+        media_entries = self._handoff_media_entries(raw)
+        return self.repository.create_draft_with_media(
+            draft_values=draft_values,
+            media_entries=media_entries,
+            handoff_id=handoff.handoff_id,
+            idempotency_key=handoff.idempotency_key,
+            workspace_id=handoff.workspace_id,
+            run_id=handoff.run_id,
+            candidate_id=handoff.candidate_id,
+            source_status=handoff.status,
+            payload_sha256=hashlib.sha256(handoff.payload_json.encode("utf-8")).hexdigest(),
+        )
+
+    def _draft_values_from_handoff(
+        self,
+        handoff: DailySelectionHandoffEnvelope,
+        raw: dict[str, Any],
+    ) -> dict[str, Any]:
+        title = self._text(raw.get("title") or raw.get("product_name") or raw.get("source_title"))
+        product_name = self._text(raw.get("product_name") or title)
+        image_url = self._text(
+            raw.get("image_url")
+            or raw.get("main_image_url")
+            or self._first(raw.get("source_image_urls"))
+        )
+        source_ref = self._text(
+            raw.get("source_ref")
+            or raw.get("source_url")
+            or raw.get("product_link")
+            or raw.get("candidate_id")
+            or raw.get("offer_id")
+        )
+        cost = self._number(raw.get("cost") if raw.get("cost") is not None else raw.get("price_cny"))
+        declared_price = self._number(raw.get("declared_price"))
+        return {
+            "workspace_id": handoff.workspace_id,
+            "source_type": self._text(raw.get("source_type")) or "onebound_api",
+            "source_ref": source_ref,
+            "candidate_id": self._text(raw.get("candidate_id")) or None,
+            "selection_run_id": handoff.run_id,
+            "handoff_id": handoff.handoff_id,
+            "handoff_idempotency_key": handoff.idempotency_key,
+            "skc": self._text(raw.get("skc")) or None,
+            "sku": self._text(raw.get("sku")) or None,
+            "product_name": product_name,
+            "title": title,
+            "description": self._text(raw.get("description")),
+            "image_url": image_url,
+            "image_path": self._text(raw.get("image_path")),
+            "cost": cost,
+            "declared_price": declared_price,
+            "status": "draft",
+            "raw_payload_json": self._json(raw),
+        }
+
+    def _handoff_media_entries(self, raw: dict[str, Any]) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+
+        def add(
+            url: Any,
+            role: str,
+            *,
+            slot_id: str = "",
+            sku_id: str = "",
+            variant_label: str = "",
+            sort_order: int = 0,
+        ) -> None:
+            text = self._text(url)
+            if not text:
+                return
+            canonical = canonical_source_url(text)
+            if not canonical:
+                return
+            entries.append(
+                {
+                    "source_url": canonical,
+                    "source_identity_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    "role": role,
+                    "slot_id": slot_id,
+                    "sku_id": sku_id,
+                    "variant_label": variant_label,
+                    "sort_order": sort_order,
+                }
+            )
+
+        add(raw.get("image_url"), "main")
+        for index, url in enumerate(self._url_list(raw.get("source_image_urls"))):
+            add(url, "gallery", sort_order=index)
+        for index, url in enumerate(self._url_list(raw.get("source_detail_image_urls"))):
+            add(url, "detail", sort_order=index)
+        for index, record in enumerate(raw.get("source_variant_records") or []):
+            if not isinstance(record, dict):
+                continue
+            image_url = record.get("image_url")
+            if not image_url:
+                continue
+            attributes = record.get("attributes") or {}
+            if isinstance(attributes, dict):
+                attribute_label = " ".join(
+                    str(value)
+                    for value in attributes.values()
+                    if value is not None and str(value).strip()
+                )
+            else:
+                attribute_label = ""
+            add(
+                image_url,
+                "sku",
+                sku_id=str(record.get("sku_id") or ""),
+                variant_label=str(record.get("spec_text") or attribute_label or ""),
+                sort_order=index,
+            )
+        return entries
 
     @staticmethod
     def _normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -1151,6 +1301,30 @@ class ProductProcessingService:
             worker.start()
         return True
 
+    def _launch_media_materialization(self, workspace_id: str) -> bool:
+        """Start one bounded materialization worker per workspace."""
+
+        def _run() -> None:
+            try:
+                self.media_assets.materialize_until_idle(workspace_id=workspace_id, batch_size=20)
+            finally:
+                with self._media_materialization_lock:
+                    if self._media_materialization_workers.get(workspace_id) is threading.current_thread():
+                        self._media_materialization_workers.pop(workspace_id, None)
+
+        with self._media_materialization_lock:
+            current = self._media_materialization_workers.get(workspace_id)
+            if current is not None and current.is_alive():
+                return False
+            worker = threading.Thread(
+                target=_run,
+                daemon=True,
+                name=f"pp-media-materialize-{workspace_id}",
+            )
+            self._media_materialization_workers[workspace_id] = worker
+            worker.start()
+        return True
+
     def recover_background_work(self) -> dict[str, int]:
         """Recover safe queued work and make process-lost calls explicitly retryable."""
         interrupted = self.repository.recover_interrupted_tasks()
@@ -1160,12 +1334,17 @@ class ProductProcessingService:
             for task in queued
         )
         finalize = self.preview_images.recover_background_work()
+        media = self.media_assets.materialize_until_idle(batch_size=50)
         return {
             "interrupted": len(interrupted),
             "queued": len(queued),
             "launched": launched,
             "finalize_queued": int(finalize.get("queued") or 0),
             "finalize_launched": int(finalize.get("launched") or 0),
+            "media_claimed": int(media.get("claimed") or 0),
+            "media_ready": int(media.get("ready") or 0),
+            "media_retryable": int(media.get("retryable") or 0),
+            "media_failed": int(media.get("failed") or 0),
         }
 
     def task_outputs(
@@ -1323,6 +1502,7 @@ class ProductProcessingService:
                 result=result,
                 saved=saved,
                 workspace_id=workspace_id,
+                media_contract_version=int((draft or {}).get("media_contract_version") or 1),
             )
             items.append({
                 **self._preview_item(
@@ -1331,6 +1511,7 @@ class ProductProcessingService:
                     saved,
                     preview_revision=int((draft or {}).get("preview_revision") or 0),
                 ),
+                "media_contract_version": int((draft or {}).get("media_contract_version") or 1),
                 **projected,
             })
         return {
@@ -1378,6 +1559,10 @@ class ProductProcessingService:
             )
         except PreviewRevisionConflict as exc:
             raise ProductProcessingConflict(str(exc)) from exc
+        except PreviewSourceNotInLibrary as exc:
+            raise ProductProcessingValidationError(str(exc)) from exc
+        except PreviewSourceNotReady as exc:
+            raise ProductProcessingValidationError(str(exc)) from exc
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
         return {"task_id": task_id, "saved_count": len(saved_items), "items": saved_items}
@@ -1436,6 +1621,44 @@ class ProductProcessingService:
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
 
+    def draft_media(self, draft_id: int, *, workspace_id: str = "local") -> dict[str, Any]:
+        draft = self.get_draft(draft_id, workspace_id)
+        if int(draft.get("media_contract_version") or 1) < 2:
+            raise ProductProcessingConflict("media registry is only available for V2 drafts")
+        return {
+            "contract_version": 2,
+            "draft_id": draft_id,
+            "groups": self.media_assets.list_draft_media(workspace_id, draft_id),
+        }
+
+    def media_asset_content(
+        self,
+        asset_id: str,
+        *,
+        workspace_id: str,
+        expires: int,
+        signature: str,
+    ) -> tuple[Path, str]:
+        try:
+            return self.media_assets.media_asset_content(
+                asset_id,
+                workspace_id=workspace_id,
+                expires=expires,
+                signature=signature,
+            )
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+
+    def retry_media_asset(self, asset_id: str, *, workspace_id: str = "local") -> dict[str, Any]:
+        try:
+            asset = self.media_assets.retry_asset(asset_id, workspace_id=workspace_id)
+            self._launch_media_materialization(workspace_id)
+            return asset
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+        except MediaMaterializationConflict as exc:
+            raise ProductProcessingConflict(str(exc)) from exc
+
     def begin_preview_finalize(
         self,
         task_id: int,
@@ -1445,8 +1668,16 @@ class ProductProcessingService:
         idempotency_key: str = "",
     ) -> dict[str, Any]:
         self._require_task(task_id, workspace_id)
-        if not bool(self.engine_status()["diagnostics"]["config"].get("cos_configured")):
-            raise ProductProcessingConflict("COS 图床未配置，请先在系统设置完成配置")
+        config = self.engine_status()["diagnostics"]["config"]
+        media_publish_configured = config.get("media_publish_configured")
+        if media_publish_configured is None:
+            # Test/extension adapters that predate the dual-publisher status
+            # contract may only report COS readiness.
+            media_publish_configured = config.get("cos_configured")
+        if not bool(media_publish_configured):
+            raise ProductProcessingConflict(
+                "未配置可导出的图床：请配置 COS 或公共媒体地址（public_base_url）"
+            )
         normalized = [
             {
                 **entry,
@@ -1465,6 +1696,8 @@ class ProductProcessingService:
             )
         except (PreviewRevisionConflict, PreviewIdempotencyConflict, PreviewPublicationConflict) as exc:
             raise ProductProcessingConflict(str(exc)) from exc
+        except PreviewSourceNotReady as exc:
+            raise ProductProcessingValidationError(str(exc)) from exc
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
 
@@ -2670,6 +2903,33 @@ class ProductProcessingService:
             slot_id, role = image_roles[index] if index < len(image_roles) else (f"carousel.extra.{index + 1}", "extra")
             image_manifest.append({"slot_id": slot_id, "role": role, "value": value})
 
+        preview_images = getattr(self, "preview_images", None)
+        grid_media_asset_ids: list[str] = []
+        detail_media_asset_ids: list[str] = []
+        if preview_images is not None:
+            grid_media_asset_ids = [
+                preview_images.media_asset_id_for_preview_url(value, workspace_id)
+                for value in grid_image_paths
+            ]
+            detail_media_asset_ids = [
+                preview_images.media_asset_id_for_preview_url(value, workspace_id)
+                for value in detail_image_paths
+            ]
+        semantic_asset_ids: dict[str, str] = {}
+        for slot_id, asset_id in zip(
+            ("carousel.hero", "carousel.detail", "carousel.lifestyle", "carousel.dimension_background"),
+            grid_media_asset_ids,
+        ):
+            if asset_id:
+                semantic_asset_ids[slot_id] = asset_id
+        carousel_asset_ids = [asset_id for asset_id in grid_media_asset_ids if asset_id]
+        image_manifest_v2 = {
+            "main_asset_id": carousel_asset_ids[0] if carousel_asset_ids else "",
+            "carousel_asset_ids": carousel_asset_ids,
+            "detail_asset_ids": [asset_id for asset_id in detail_media_asset_ids if asset_id],
+            "semantic_asset_ids": semantic_asset_ids,
+        }
+
         result = {
             "product_draft_id": draft["id"],
             "candidate_id": raw.get("candidate_id") or draft.get("candidate_id"),
@@ -2701,6 +2961,8 @@ class ProductProcessingService:
             "target_language_label": language_profile(target_language)["label"],
             "carousel_image_paths": grid_image_paths,
             "image_manifest": image_manifest,
+            "image_manifest_v2": image_manifest_v2,
+            "media_contract_version": int(draft.get("media_contract_version") or 1),
             "grid_image_summary_path": grid_summary_path,
             "detail_image_paths": detail_image_paths,
             "ai_notes": ai_notes,
@@ -3236,7 +3498,13 @@ class ProductProcessingService:
                 # after the deterministic split so one bad quadrant never redraws the
                 # three usable quadrants.
                 grid_prompt = f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}"
-                media = generate_one(grid_prompt, layout_scaffold=True)
+                # Do not rely on the provider default here. Some OpenAI-compatible
+                # gateways silently fall back to 1024 when size is omitted.
+                media = generate_one(
+                    grid_prompt,
+                    image_size="2048x2048",
+                    layout_scaffold=True,
+                )
                 record_media(media)
                 validation_started = time.perf_counter()
                 try:
@@ -4647,6 +4915,7 @@ class ProductProcessingService:
         # 已配置安装可从程序目录读取 gitignored 本地配置；公开安装包不携带密钥，
         # 新安装需由系统设置或环境变量提供 COS 凭据。
         cos_config: dict[str, Any] = {}
+        local_cos_prefix = ""
         for local_cos in _cos_local_config_paths():
             try:
                 if local_cos.is_file():
@@ -4658,6 +4927,7 @@ class ProductProcessingService:
                             "secret_id": str(loaded.get("secret_id") or "").strip(),
                             "secret_key": str(loaded.get("secret_key") or "").strip(),
                         }
+                        local_cos_prefix = str(loaded.get("cos_prefix") or "").strip("/")
                         break
             except (OSError, ValueError):
                 cos_config = {}
@@ -4702,6 +4972,10 @@ class ProductProcessingService:
         sys_updates = provider.get("_sys_updates") or {}
         if sys_updates.get("cos_prefix"):
             limits["cos_prefix"] = sys_updates["cos_prefix"]
+        elif local_cos_prefix:
+            # 系统未显式设置上传前缀时，使用项目内 cos.local.json 固化的前缀
+            # （例如子账号只允许 temu-y2-control/* 的受限图床）。
+            limits["cos_prefix"] = local_cos_prefix
         return {
             "image": image_section,
             "backup_image": backup_image,
@@ -4716,8 +4990,14 @@ class ProductProcessingService:
         draft_id: int,
         workspace_id: str,
     ) -> list[str]:
-        """Register original generated bytes locally; never call COS here."""
+        """Register generated bytes and bind their business slots to V2 media."""
         values: list[str] = []
+        carousel_slots = {
+            "grid_image_1": ("carousel.hero", 0),
+            "grid_image_2": ("carousel.detail", 1),
+            "grid_image_3": ("carousel.lifestyle", 2),
+            "grid_image_4": ("carousel.dimension_background", 3),
+        }
         for part in parts:
             asset = self.preview_images.register_generated(
                 task_id=task_id,
@@ -4725,7 +5005,23 @@ class ProductProcessingService:
                 workspace_id=workspace_id,
                 media=part,
             )
-            values.append(str(asset.get("preview_url") or ""))
+            preview_url = str(asset.get("preview_url") or "")
+            values.append(preview_url)
+            slot = carousel_slots.get(str(getattr(part, "stage", "") or ""))
+            unified_asset_id = self.preview_images.media_asset_id_for_preview_url(
+                preview_url, workspace_id
+            )
+            if slot and unified_asset_id:
+                slot_id, sort_order = slot
+                self.media_assets.bind_asset(
+                    workspace_id=workspace_id,
+                    asset_id=unified_asset_id,
+                    product_draft_id=draft_id,
+                    task_id=task_id,
+                    role="carousel",
+                    slot_id=slot_id,
+                    sort_order=sort_order,
+                )
         return values
 
     @staticmethod

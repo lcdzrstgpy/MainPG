@@ -30,8 +30,10 @@ from .infrastructure.preview_image_files import validate_preview_image
 from .infrastructure.preview_image_repository import (
     PreviewImageRepository,
     PreviewPublicationConflict,
+    PreviewSourceNotReady,
 )
 from .infrastructure.repository import ProductProcessingRepository
+from .media_asset_service import MediaAssetService
 
 
 class PreviewImageService:
@@ -46,12 +48,14 @@ class PreviewImageService:
         trusted_public_url: Callable[[str], bool] | None = None,
         public_image_fetcher: Callable[[str], FetchedPublicImage] | None = None,
         max_publish_workers: int = 4,
+        media_assets: MediaAssetService | None = None,
     ):
         if not 1 <= int(max_publish_workers) <= 6:
             raise ValueError("preview publish workers must be between 1 and 6")
         self.repository = repository
         self.product_repository = product_repository
         self.assets = assets
+        self.media_assets = media_assets
         self.publisher = publisher
         self.trusted_public_url = trusted_public_url or (lambda _value: False)
         if public_image_fetcher is None:
@@ -74,6 +78,14 @@ class PreviewImageService:
             raise LookupError("preview image target does not belong to this task")
 
     def public_asset(self, asset: Mapping[str, Any]) -> dict[str, Any]:
+        media_asset_id = str(asset.get("media_asset_id") or "")
+        is_proxy = bool(
+            media_asset_id
+            and not str(asset.get("managed_path") or "")
+            and not str(asset.get("source_url") or "")
+        )
+        if is_proxy and self.media_assets is not None:
+            return self._public_media_backed_asset(asset, media_asset_id)
         return {
             "id": str(asset.get("id") or ""),
             "origin": str(asset.get("origin") or "source"),
@@ -82,7 +94,139 @@ class PreviewImageService:
             "public_url": self._safe_public_value(asset.get("public_url")),
             "width": int(asset.get("width") or 0),
             "height": int(asset.get("height") or 0),
+            "bucket": self._bucket_for_preview_origin(str(asset.get("origin") or "")),
+            "source_kind": str(asset.get("source_kind") or ""),
+            "media_asset_id": media_asset_id,
+            "media_status": "",
         }
+
+    def _public_media_backed_asset(
+        self,
+        asset: Mapping[str, Any],
+        media_asset_id: str,
+    ) -> dict[str, Any]:
+        workspace_id = str(asset.get("workspace_id") or "")
+        media_asset = self.media_assets.get_asset(media_asset_id, workspace_id)
+        if media_asset is None:
+            return {
+                "id": str(asset.get("id") or ""),
+                "origin": str(asset.get("origin") or "source"),
+                "preview_url": "",
+                "publication_status": str(asset.get("availability") or "local"),
+                "public_url": self._safe_public_value(asset.get("public_url")),
+                "width": int(asset.get("width") or 0),
+                "height": int(asset.get("height") or 0),
+                "bucket": "source" if str(asset.get("source_kind") or "") else "processed",
+                "source_kind": str(asset.get("source_kind") or ""),
+                "media_asset_id": media_asset_id,
+                "media_status": "failed",
+            }
+        media_view = self.media_assets.public_asset(media_asset)
+        return {
+            "id": str(asset.get("id") or ""),
+            "origin": str(asset.get("origin") or "source"),
+            "preview_url": str(media_view.get("preview_url") or ""),
+            "publication_status": str(asset.get("availability") or "local"),
+            "public_url": self._safe_public_value(asset.get("public_url")),
+            "width": int(media_asset.get("width") or 0),
+            "height": int(media_asset.get("height") or 0),
+            "bucket": self._bucket_for_media_origin(str(media_asset.get("origin") or "")),
+            "source_kind": str(asset.get("source_kind") or ""),
+            "media_asset_id": media_asset_id,
+            "media_status": str(media_asset.get("status") or "pending"),
+        }
+
+    @staticmethod
+    def _bucket_for_preview_origin(origin: str) -> str:
+        return "source" if str(origin or "") in {"source", "remote_source"} else "processed"
+
+    @staticmethod
+    def _bucket_for_media_origin(origin: str) -> str:
+        return "source" if str(origin or "") == "remote_source" else "processed"
+
+    @staticmethod
+    def _preview_origin_for_media(origin: str) -> str:
+        return {
+            "remote_source": "source",
+            "ai_generated": "generated",
+            "preview_upload": "upload",
+            "dimension_rendered": "dimension",
+        }.get(str(origin or ""), "source")
+
+    @staticmethod
+    def _source_kind_for_role(role: str) -> str:
+        return {
+            "main": "main",
+            "gallery": "gallery",
+            "sku": "sku",
+            "detail": "detail",
+        }.get(str(role or ""), "")
+
+    def media_asset_id_for_preview_url(self, value: str, workspace_id: str) -> str:
+        """Resolve the unified media asset id referenced by a preview URL."""
+        asset_id = self._preview_asset_id(value)
+        if not asset_id:
+            return ""
+        asset = self.repository.get_asset(asset_id, workspace_id)
+        return str(asset.get("media_asset_id") or "") if asset else ""
+
+    def _unified_media_asset_id(
+        self,
+        workspace_id: str,
+        origin: str,
+        content: bytes,
+        content_type: str,
+    ) -> str:
+        if self.media_assets is None:
+            return ""
+        unified = self.media_assets.register_local_asset(
+            workspace_id, origin, content, content_type
+        )
+        return str(unified.get("id") or "")
+
+    def register_media_proxy(
+        self,
+        *,
+        task_id: int,
+        product_draft_id: int,
+        workspace_id: str,
+        media_asset_id: str,
+        source_kind: str = "",
+        origin: str = "source",
+    ) -> dict[str, Any]:
+        """Register a stable, no-copy precheck proxy for one unified media asset.
+
+        The proxy keeps ``managed_path``/``source_url`` empty so it never reads or
+        writes preview bytes; content and status come from the unified asset.
+        """
+        media_asset_id = str(media_asset_id or "").strip()
+        if not media_asset_id:
+            raise ValueError("media proxy requires a media asset id")
+        # One upstream asset may be bound as both main and gallery.  Preserve
+        # those business roles as separate no-copy proxies so the source pool
+        # never loses a category during media-id de-duplication.
+        identity = (
+            "media-proxy:"
+            f"{str(workspace_id or '')}:{int(task_id)}:{int(product_draft_id)}:"
+            f"{media_asset_id}:{str(source_kind or '').strip()}"
+        )
+        identity_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        return self.repository.register_asset(
+            workspace_id=workspace_id,
+            task_id=task_id,
+            product_draft_id=product_draft_id,
+            origin=origin,
+            identity_hash=identity_hash,
+            managed_path="",
+            source_url="",
+            content_hash="",
+            content_type="",
+            byte_size=0,
+            width=0,
+            height=0,
+            media_asset_id=media_asset_id,
+            source_kind=source_kind,
+        )
 
     def register_upload(
         self,
@@ -103,6 +247,9 @@ class PreviewImageService:
             decoded.suffix,
             workspace_id=workspace_id,
         )
+        media_asset_id = self._unified_media_asset_id(
+            workspace_id, "preview_upload", decoded.content, decoded.content_type
+        )
         row = self.repository.register_asset(
             workspace_id=workspace_id,
             task_id=task_id,
@@ -116,6 +263,7 @@ class PreviewImageService:
             byte_size=len(decoded.content),
             width=decoded.width,
             height=decoded.height,
+            media_asset_id=media_asset_id,
         )
         return self.public_asset(row)
 
@@ -135,6 +283,9 @@ class PreviewImageService:
             decoded.suffix,
             workspace_id=workspace_id,
         )
+        media_asset_id = self._unified_media_asset_id(
+            workspace_id, "ai_generated", decoded.content, decoded.content_type
+        )
         row = self.repository.register_asset(
             workspace_id=workspace_id,
             task_id=task_id,
@@ -148,6 +299,7 @@ class PreviewImageService:
             byte_size=len(decoded.content),
             width=decoded.width,
             height=decoded.height,
+            media_asset_id=media_asset_id,
         )
         return self.public_asset(row)
 
@@ -159,8 +311,17 @@ class PreviewImageService:
         result: Mapping[str, Any],
         saved: Mapping[str, Any],
         workspace_id: str,
+        media_contract_version: int = 1,
     ) -> dict[str, Any]:
         self.require_task_draft(task_id, product_draft_id, workspace_id)
+        if media_contract_version >= 2 and self.media_assets is not None:
+            return self._project_item_images_v2(
+                task_id=task_id,
+                product_draft_id=product_draft_id,
+                result=result,
+                saved=saved,
+                workspace_id=workspace_id,
+            )
         existing = self.repository.list_assets(
             product_draft_id,
             workspace_id,
@@ -353,6 +514,209 @@ class PreviewImageService:
             "exportable": bool(str(result.get("optimized_title") or "").strip()),
         }
 
+    def _project_item_images_v2(
+        self,
+        *,
+        task_id: int,
+        product_draft_id: int,
+        result: Mapping[str, Any],
+        saved: Mapping[str, Any],
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        entries: list[dict[str, Any]] = []
+        indexed: dict[tuple[str, str], dict[str, Any]] = {}
+        proxy_id_by_media: dict[str, str] = {}
+
+        def add_entry(
+            media_id: str,
+            source_kind: str,
+            role: str,
+            sort_order: int,
+        ) -> None:
+            media_id = str(media_id or "").strip()
+            if not media_id:
+                return
+            entry_key = (media_id, source_kind)
+            if entry_key in indexed:
+                return
+            media_asset = self.media_assets.get_asset(media_id, workspace_id)
+            if media_asset is None:
+                return
+            bucket = self._bucket_for_media_origin(str(media_asset.get("origin") or ""))
+            proxy = self.register_media_proxy(
+                task_id=task_id,
+                product_draft_id=product_draft_id,
+                workspace_id=workspace_id,
+                media_asset_id=media_id,
+                source_kind=source_kind,
+                origin=self._preview_origin_for_media(str(media_asset.get("origin") or "")),
+            )
+            entry = {
+                "proxy": proxy,
+                "media_id": media_id,
+                "bucket": bucket,
+                "source_kind": source_kind,
+                "role": role,
+                "sort_order": sort_order,
+            }
+            indexed[entry_key] = entry
+            proxy_id_by_media.setdefault(media_id, str(proxy["id"]))
+            entries.append(entry)
+
+        for binding in self.media_assets.list_bindings(
+            workspace_id, product_draft_id=product_draft_id, active_only=True
+        ):
+            media_id = str(binding.get("asset_id") or "")
+            media_asset = self.media_assets.get_asset(media_id, workspace_id)
+            if media_asset is None:
+                continue
+            role = str(binding.get("role") or "")
+            is_source = str(media_asset.get("origin") or "") == "remote_source"
+            source_kind = self._source_kind_for_role(role) if is_source else ""
+            add_entry(
+                media_id,
+                source_kind,
+                role,
+                int(binding.get("sort_order") or 0),
+            )
+
+        # Processed media referenced by an existing preview asset (generated detail
+        # images, uploads) but not yet bound still belong to the processed library.
+        for asset in self.repository.list_assets(
+            product_draft_id, workspace_id, task_id=task_id
+        ):
+            media_id = str(asset.get("media_asset_id") or "")
+            if not media_id or (media_id, "") in indexed:
+                continue
+            media_asset = self.media_assets.get_asset(media_id, workspace_id)
+            if media_asset is None or str(media_asset.get("origin") or "") == "remote_source":
+                continue
+            add_entry(media_id, "", "", 0)
+
+        source_rank = {"main": 0, "gallery": 1, "sku": 2, "detail": 3}
+        entries.sort(
+            key=lambda entry: (
+                0 if entry["bucket"] == "source" else 1,
+                source_rank.get(entry["source_kind"], 99)
+                if entry["bucket"] == "source"
+                else entry["sort_order"],
+            )
+        )
+
+        def proxy_id_for_media(media_id: str) -> str:
+            return proxy_id_by_media.get(str(media_id or "").strip(), "")
+
+        proxy_by_id = {str(entry["proxy"]["id"]): entry for entry in entries}
+
+        def resolve_saved_asset_id(saved_id: str) -> str:
+            """Map a persisted precheck ID back to the current V2 proxy identity.
+
+            Canvas acceptance and earlier manifests may store a preview-asset row
+            ID (``654c..``) or a raw unified media ID, while this projection now
+            serves stable no-copy proxy rows (``e388..``).  Resolving both keeps
+            previously rendered AI images and dimension renders visible after a
+            reload without ever guessing a file path.
+            """
+            saved_id = str(saved_id or "").strip()
+            if not saved_id or saved_id in proxy_by_id:
+                return saved_id
+            row = self.repository.get_asset(saved_id, workspace_id)
+            media_id = str((row or {}).get("media_asset_id") or "")
+            if media_id:
+                return proxy_id_by_media.get(media_id, "")
+            return proxy_id_by_media.get(saved_id, "")
+
+        saved_manifest: PreviewImageManifest | None = None
+        if MANIFEST_KEY in saved:
+            saved_manifest = PreviewImageManifest.from_value(saved.get(MANIFEST_KEY))
+            manifest = PreviewImageManifest(
+                main_asset_id=resolve_saved_asset_id(saved_manifest.main_asset_id),
+                carousel_asset_ids=tuple(
+                    resolve_saved_asset_id(value) for value in saved_manifest.carousel_asset_ids
+                ),
+                detail_asset_ids=tuple(
+                    resolve_saved_asset_id(value) for value in saved_manifest.detail_asset_ids
+                ),
+                library_asset_ids=tuple(
+                    resolve_saved_asset_id(value) for value in saved_manifest.library_asset_ids
+                ),
+                semantic_asset_ids={
+                    str(slot_id or "").strip(): resolve_saved_asset_id(value)
+                    for slot_id, value in (saved_manifest.semantic_asset_ids or {}).items()
+                    if str(slot_id or "").strip() and str(value or "").strip()
+                },
+            )
+        else:
+            v2 = result.get("image_manifest_v2")
+            v2 = v2 if isinstance(v2, Mapping) else {}
+            raw_semantics = v2.get("semantic_asset_ids") or {}
+            semantic = {
+                str(slot_id or "").strip(): proxy_id_for_media(asset_id)
+                for slot_id, asset_id in (
+                    raw_semantics.items()
+                    if isinstance(raw_semantics, Mapping)
+                    else ()
+                )
+                if str(slot_id or "").strip() and proxy_id_for_media(asset_id)
+            }
+            carousel = [
+                proxy_id
+                for value in (v2.get("carousel_asset_ids") or [])
+                if (proxy_id := proxy_id_for_media(value))
+            ]
+            detail = [
+                proxy_id
+                for value in (v2.get("detail_asset_ids") or [])
+                if (proxy_id := proxy_id_for_media(value))
+            ]
+            main = proxy_id_for_media(str(v2.get("main_asset_id") or ""))
+            manifest = PreviewImageManifest(
+                main_asset_id=main,
+                carousel_asset_ids=tuple(carousel),
+                detail_asset_ids=tuple(detail),
+                library_asset_ids=(),
+                semantic_asset_ids=semantic,
+            )
+
+        # The library always auto-contains every processed proxy. Source proxies
+        # only appear when the operator explicitly added them (persisted as
+        # library_asset_ids). This keeps the source pool read-only.
+        processed_ids = [
+            str(entry["proxy"]["id"]) for entry in entries if entry["bucket"] == "processed"
+        ]
+        source_id_set = {
+            str(entry["proxy"]["id"]) for entry in entries if entry["bucket"] == "source"
+        }
+        library_ids = processed_ids + [
+            asset_id for asset_id in manifest.library_asset_ids if asset_id in source_id_set
+        ]
+        manifest = PreviewImageManifest(
+            main_asset_id=manifest.main_asset_id,
+            carousel_asset_ids=manifest.carousel_asset_ids,
+            detail_asset_ids=manifest.detail_asset_ids,
+            library_asset_ids=tuple(library_ids),
+            semantic_asset_ids=manifest.semantic_asset_ids,
+        )
+
+        public_assets = [self.public_asset(entry["proxy"]) for entry in entries]
+        preview_by_id = {asset["id"]: asset["preview_url"] for asset in public_assets}
+        return {
+            "assets": public_assets,
+            "image_manifest": manifest.as_dict(),
+            "main_image": preview_by_id.get(manifest.main_asset_id, ""),
+            "carousel_images": [
+                preview_by_id[asset_id]
+                for asset_id in manifest.carousel_asset_ids
+                if asset_id in preview_by_id
+            ],
+            "detail_images": [
+                preview_by_id[asset_id]
+                for asset_id in manifest.detail_asset_ids
+                if asset_id in preview_by_id
+            ],
+            "exportable": bool(str(result.get("optimized_title") or "").strip()),
+        }
+
     def save_preview(
         self,
         task_id: int,
@@ -360,6 +724,7 @@ class PreviewImageService:
         *,
         workspace_id: str,
     ) -> list[dict[str, Any]]:
+        self._require_ready_source_media(task_id, items, workspace_id)
         snapshots = self.repository.save_preview_manifests(
             task_id,
             items,
@@ -374,6 +739,36 @@ class PreviewImageService:
             for entry in snapshots
         ]
 
+    def _require_ready_source_media(
+        self,
+        task_id: int,
+        items: Sequence[Mapping[str, Any]],
+        workspace_id: str,
+    ) -> None:
+        """Prevent pending source proxies from entering the library or export manifest."""
+        if self.media_assets is None:
+            return
+        for item in items:
+            draft_id = int(item.get("product_draft_id") or 0)
+            overrides = item.get("overrides") or {}
+            if not draft_id or not isinstance(overrides, Mapping) or MANIFEST_KEY not in overrides:
+                continue
+            manifest = PreviewImageManifest.from_value(overrides.get(MANIFEST_KEY))
+            referenced = tuple(dict.fromkeys((*manifest.live_asset_ids(), *manifest.library_asset_ids)))
+            for asset in self.repository.get_assets(
+                referenced,
+                workspace_id,
+                task_id=task_id,
+                product_draft_id=draft_id,
+            ):
+                if not asset.get("source_kind"):
+                    continue
+                media = self.media_assets.get_asset(
+                    str(asset.get("media_asset_id") or ""), workspace_id
+                )
+                if media is None or str(media.get("status") or "") != "ready":
+                    raise PreviewSourceNotReady("处理前图片尚未同步完成，暂不能加入素材库或用于导出")
+
     def begin_finalize(
         self,
         task_id: int,
@@ -383,6 +778,7 @@ class PreviewImageService:
         idempotency_key: str = "",
         launch: bool = True,
     ) -> dict[str, Any]:
+        self._require_ready_source_media(task_id, items, workspace_id)
         run = self.repository.create_finalize_run(
             workspace_id=workspace_id,
             task_id=task_id,
@@ -417,6 +813,11 @@ class PreviewImageService:
         def execute() -> None:
             try:
                 self.run_finalize(run_id, workspace_id=workspace_id)
+            except PreviewPublicationConflict:
+                # A retry/recovery worker may have acquired the lease first.
+                # The durable run record is authoritative; this worker exits
+                # quietly instead of leaking an unhandled daemon exception.
+                pass
             finally:
                 with self._finalize_worker_lock:
                     self._finalize_workers.pop(key, None)
@@ -614,6 +1015,18 @@ class PreviewImageService:
         return path, str(asset.get("content_type") or "image/jpeg")
 
     def _materialize(self, asset: dict[str, Any], workspace_id: str) -> dict[str, Any]:
+        media_asset_id = str(asset.get("media_asset_id") or "")
+        if media_asset_id and self.media_assets is not None:
+            path, content_type = self.media_assets.require_ready_managed_file(
+                media_asset_id, workspace_id=workspace_id
+            )
+            content = path.read_bytes()
+            return {
+                **asset,
+                "content_hash": hashlib.sha256(content).hexdigest(),
+                "content_type": content_type,
+                "byte_size": len(content),
+            }
         managed = str(asset.get("managed_path") or "")
         if managed and asset.get("content_hash"):
             path = self.assets.require_workspace_preview_asset(managed, workspace_id=workspace_id)
@@ -709,10 +1122,16 @@ class PreviewImageService:
             raise ValueError("persisted COS object is no longer publicly readable")
         token = str(claim.pop("claim_token", ""))
         try:
-            path = self.assets.require_workspace_preview_asset(
-                str(asset.get("managed_path") or ""),
-                workspace_id=workspace_id,
-            )
+            media_asset_id = str(asset.get("media_asset_id") or "")
+            if media_asset_id and self.media_assets is not None:
+                path, _content_type = self.media_assets.require_ready_managed_file(
+                    media_asset_id, workspace_id=workspace_id
+                )
+            else:
+                path = self.assets.require_workspace_preview_asset(
+                    str(asset.get("managed_path") or ""),
+                    workspace_id=workspace_id,
+                )
             content = path.read_bytes()
             if hashlib.sha256(content).hexdigest() != digest:
                 raise ValueError("preview publication bytes do not match content hash")
@@ -823,6 +1242,26 @@ class PreviewImageService:
                     workspace_id=str(asset.get("workspace_id") or ""),
                 )
             except (ValueError, OSError):
+                # Compatibility for a former canvas acceptance path which stored
+                # this API display URL in ``managed_path``.  Resolve only an
+                # asset from the same task/draft/workspace; a browser URL never
+                # becomes a storage authority.
+                referenced_id = self._preview_asset_id(managed)
+                referenced = (
+                    self.repository.get_asset(
+                        referenced_id, str(asset.get("workspace_id") or "")
+                    )
+                    if referenced_id
+                    else None
+                )
+                if (
+                    referenced is not None
+                    and str(referenced.get("id") or "") != str(asset.get("id") or "")
+                    and int(referenced.get("task_id") or 0) == int(asset.get("task_id") or 0)
+                    and int(referenced.get("product_draft_id") or 0)
+                    == int(asset.get("product_draft_id") or 0)
+                ):
+                    return self._preview_url(referenced)
                 return ""
             expires = ((int(time.time()) // 3600) + 2) * 3600
             query = urlencode(
