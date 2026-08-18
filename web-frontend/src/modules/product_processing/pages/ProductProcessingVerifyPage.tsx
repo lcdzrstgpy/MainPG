@@ -117,12 +117,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
       const nextTop = `${topbarBottom + 6}px`;
       const nextLeft = contentRect ? `${Math.round(contentRect.left)}px` : '0px';
       const nextWidth = contentRect ? `${Math.round(contentRect.width)}px` : '100%';
-      if (toolbar.style.position !== 'fixed') toolbar.style.position = 'fixed';
+      if (toolbar.style.position !== 'fixed') {
+        // 先按普通流下的真实高度给 spacer 占位，再切 fixed：
+        // 若先改 fixed 再读 offsetHeight，宽度变化会触发 flex-wrap 重排，读到错误高度，
+        // spacer 占位跳变导致页面整体高度抖动、滚动上下抽搐。
+        spacer.style.height = `${toolbar.offsetHeight}px`;
+        toolbar.style.position = 'fixed';
+      }
       if (toolbar.style.top !== nextTop) toolbar.style.top = nextTop;
       if (toolbar.style.left !== nextLeft) toolbar.style.left = nextLeft;
       if (toolbar.style.width !== nextWidth) toolbar.style.width = nextWidth;
-      const nextHeight = `${toolbar.offsetHeight}px`;
-      if (spacer.style.height !== nextHeight) spacer.style.height = nextHeight;
     };
 
     const apply = () => {
@@ -156,11 +160,20 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     window.addEventListener('resize', scheduleApply);
     const observer = topbar ? new ResizeObserver(scheduleApply) : null;
     if (topbar) observer?.observe(topbar);
+    // 吸顶期间工具栏自身高度变化时同步 spacer 占位高度，避免占位与 fixed 高度不一致造成跳动。
+    const toolbarObserver = new ResizeObserver(() => {
+      if (!stickyToolbarStateRef.current) return;
+      const rect = toolbar.getBoundingClientRect();
+      const nextHeight = `${Math.round(rect.height)}px`;
+      if (spacer.style.height !== nextHeight) spacer.style.height = nextHeight;
+    });
+    toolbarObserver.observe(toolbar);
     return () => {
       if (frame) window.cancelAnimationFrame(frame);
       window.removeEventListener('scroll', scheduleApply);
       window.removeEventListener('resize', scheduleApply);
       observer?.disconnect();
+      toolbarObserver.disconnect();
       clearStickyLayout();
     };
   }, [isActive]);
