@@ -3,12 +3,13 @@ import { createPortal } from "react-dom";
 
 import {
   cancelSkuRepull,
-  collectByCriteria,
   confirmCandidates,
+  getCollectionTask,
   getSelectionRun,
   getSkuRepullState,
   listSelectionRuns,
   rejectCandidate,
+  startCollectionTask,
   startSkuRepull,
 } from "../api/dailySelectionApi";
 import { getApiToken } from "../../../shared/api/apiClient";
@@ -268,6 +269,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [busy, setBusy] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const [collectionProgress, setCollectionProgress] = useState(0);
+  const [collectionProgressMessage, setCollectionProgressMessage] = useState("正在准备采集");
+  const [collectionProgressCompleted, setCollectionProgressCompleted] = useState(0);
+  const [collectionProgressTotal, setCollectionProgressTotal] = useState(0);
+  const [collectionTaskId, setCollectionTaskId] = useState<string | null>(null);
   const [historyBusy, setHistoryBusy] = useState(true);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [skuRepull, setSkuRepull] = useState<SkuRepullState | null>(null);
@@ -350,16 +355,69 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   }, [notice]);
 
   useEffect(() => {
-    if (!collecting) return;
-    const timer = window.setInterval(() => {
-      setCollectionProgress((current) => {
-        if (current >= 92) return current;
-        const step = Math.max(1, Math.ceil((92 - current) * 0.08));
-        return Math.min(92, current + step);
-      });
-    }, 420);
-    return () => window.clearInterval(timer);
-  }, [collecting]);
+    if (!collecting || !collectionTaskId || !isActive) return;
+    let stopped = false;
+    let timer: number | null = null;
+
+    const schedule = (delay: number) => {
+      if (stopped || document.visibilityState !== "visible") return;
+      timer = window.setTimeout(poll, delay);
+    };
+
+    const poll = async () => {
+      if (stopped || document.visibilityState !== "visible") return;
+      try {
+        const task = await getCollectionTask(collectionTaskId);
+        if (stopped) return;
+        setCollectionProgress(task.progress);
+        setCollectionProgressMessage(task.message);
+        setCollectionProgressCompleted(task.completed);
+        setCollectionProgressTotal(task.total);
+
+        if (task.status === "completed") {
+          if (!task.run_id) throw new Error("采集已完成，但未返回批次编号");
+          const run = await getSelectionRun(task.run_id);
+          if (stopped) return;
+          setActiveRun(run);
+          setSelectedCandidates([]);
+          setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选`);
+          setCollecting(false);
+          setCollectionTaskId(null);
+          void listSelectionRuns().then(setRuns).catch(() => undefined);
+          return;
+        }
+        if (task.status === "failed") {
+          setError(task.error || "采集请求失败");
+          setCollecting(false);
+          setCollectionTaskId(null);
+          return;
+        }
+        schedule(2000);
+      } catch (requestError) {
+        if (stopped) return;
+        setError(requestError instanceof Error ? requestError.message : "采集进度读取失败");
+        setCollecting(false);
+        setCollectionTaskId(null);
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        if (timer !== null) window.clearTimeout(timer);
+        timer = null;
+        return;
+      }
+      schedule(0);
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    schedule(600);
+    return () => {
+      stopped = true;
+      if (timer !== null) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [collecting, collectionTaskId, isActive]);
 
   useEffect(() => {
     if (!historyDrawerOpen) return;
@@ -658,22 +716,22 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
     setBusy(true);
     setCollecting(true);
-    setCollectionProgress(2);
+    setCollectionProgress(0);
+    setCollectionProgressMessage("正在创建采集任务");
+    setCollectionProgressCompleted(0);
+    setCollectionProgressTotal(0);
     try {
       const criteria = buildCriteria();
-      const run = await collectByCriteria(criteria);
-      setCollectionProgress(100);
-      setActiveRun(run);
-      setSelectedCandidates([]);
-      // 采集预览不再自动写入草稿池；候选需确认入池后才会出现在草稿池。
-      setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选`);
-      await refreshRuns();
-      await new Promise((resolve) => window.setTimeout(resolve, 320));
+      const task = await startCollectionTask(criteria);
+      setCollectionTaskId(task.task_id);
+      setCollectionProgress(task.progress);
+      setCollectionProgressMessage(task.message);
     } catch (requestError) {
       setCollectionProgress(0);
+      setCollectionTaskId(null);
+      setCollecting(false);
       setError(requestError instanceof Error ? requestError.message : "采集请求失败");
     } finally {
-      setCollecting(false);
       setBusy(false);
     }
   }
@@ -767,7 +825,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         collecting ? (
           <div className="daily-topbar-status is-progress" role="status">
             <span className="daily-topbar-status-icon" aria-hidden="true">↻</span>
-            <strong>正在采集</strong>
+            <strong>
+              {collectionProgressMessage}
+              {collectionProgressTotal > 0 ? ` ${collectionProgressCompleted}/${collectionProgressTotal}` : ""}
+            </strong>
             <div className="topbar-collection-progress" role="progressbar" aria-label="采集进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={collectionProgress}>
               <span style={{ width: `${collectionProgress}%` }} />
             </div>
@@ -1026,7 +1087,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           <div className="collection-actions">
             <span>{platform === "1688" ? "1688 每批最多调用 200 次 API，并在预算内尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。" : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
             <div className="collection-submit-area">
-              <button className="collect-button" type="submit" disabled={busy}>{collecting ? "正在采集…" : "开始采集"}</button>
+              <button className="collect-button" type="submit" disabled={busy || collecting}>{collecting ? `采集中 ${collectionProgress}%` : "开始采集"}</button>
             </div>
           </div>
         </form>

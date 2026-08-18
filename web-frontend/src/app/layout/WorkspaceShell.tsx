@@ -32,9 +32,14 @@ import type { ProductProcessingOptions } from "../../modules/product_processing/
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
+import { BrandEntryAnimation } from "../../shared/components/BrandEntryAnimation";
 import { WorkspaceTabScrollStore } from "./workspaceTabState";
 
-type WorkspaceShellProps = { onSignOut: () => void };
+type WorkspaceShellProps = {
+  onSignOut: () => void;
+  playEntryAnimation?: boolean;
+  onEntryAnimationComplete?: () => void;
+};
 
 const MAX_COLLECTION_PANELS = 6;
 const MAX_PROCESSING_PANELS = 3;
@@ -52,7 +57,7 @@ function moduleTab(id: WorkspaceModuleId): WorkspaceTab {
   return { key: id, moduleId: id, label: module.label, icon: module.icon, iconClass: module.iconClass };
 }
 
-export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
+export function WorkspaceShell({ onSignOut, playEntryAnimation = false, onEntryAnimationComplete = () => undefined }: WorkspaceShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [isNarrowDesktop, setIsNarrowDesktop] = useState(() => window.matchMedia(NARROW_DESKTOP_QUERY).matches);
@@ -406,7 +411,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
   const sidebarTemporarilyExpanded = sidebarIsCollapsed && sidebarHovered;
 
   return (
-    <main className="workspace-shell">
+    <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`}>
       <Sidebar
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}
         activeId={activeModuleId}
@@ -440,7 +445,11 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
             </div>
           )}
           {tabs.map((tab) => (
-            <div key={tab.key} hidden={activeTabKey !== tab.key}>
+            <div
+              key={tab.key}
+              className={`workspace-tab-panel${activeTabKey === tab.key ? " is-active" : ""}`}
+              hidden={activeTabKey !== tab.key}
+            >
               {renderTab(tab)}
             </div>
           ))}
@@ -455,6 +464,7 @@ export function WorkspaceShell({ onSignOut }: WorkspaceShellProps) {
       >
         <span aria-hidden="true">↑</span>
       </button>
+      <BrandEntryAnimation active={playEntryAnimation} onComplete={onEntryAnimationComplete} />
     </main>
   );
 }

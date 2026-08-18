@@ -3,6 +3,7 @@ import { BRAND_LOGO_URL, BRAND_MARK_URL, BRAND_NAME } from "../../../shared/bran
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
 import { DashboardStats } from "../components/DashboardStats";
 import { useUiMode } from "../../../shared/hooks/useUiMode";
+import { AppleAppGlyph } from "../../../shared/components/AppleAppGlyph";
 
 function getGreeting(): string {
   const hour = Number(
@@ -26,15 +27,15 @@ const shortcuts: ShortcutItem[] = [
   { type: "external", label: "中转查看", text: "打开 AI 中转服务页面", url: "https://station-88.aicoming.top/" },
 ];
 
-const launchpadItems: Array<{ id: WorkspaceModuleId; label: string; iconClass: string; tone: string }> = [
-  { id: "daily_selection", label: "每日选品", iconClass: "iconfont icon-compass", tone: "blue" },
-  { id: "product_processing", label: "AI 产品处理", iconClass: "iconfont icon-build", tone: "violet" },
-  { id: "product_processing_history", label: "历史记录", iconClass: "iconfont icon-time-circle", tone: "slate" },
-  { id: "dimension_canvas", label: "尺寸画布", iconClass: "iconfont icon-column-width", tone: "cyan" },
-  { id: "price_verification", label: "核价匹配", iconClass: "iconfont icon-audit", tone: "orange" },
-  { id: "profit_activity", label: "利润活动", iconClass: "iconfont icon-calculator", tone: "green" },
-  { id: "profit_activity_products", label: "产品库", iconClass: "iconfont icon-database", tone: "pink" },
-  { id: "ai_service", label: "AI 服务", iconClass: "iconfont icon-robot", tone: "indigo" },
+const launchpadItems: Array<{ id: WorkspaceModuleId; label: string; tone: string }> = [
+  { id: "daily_selection", label: "每日选品", tone: "blue" },
+  { id: "product_processing", label: "AI 产品处理", tone: "violet" },
+  { id: "product_processing_history", label: "历史记录", tone: "slate" },
+  { id: "dimension_canvas", label: "尺寸画布", tone: "cyan" },
+  { id: "price_verification", label: "核价匹配", tone: "orange" },
+  { id: "profit_activity", label: "利润活动", tone: "green" },
+  { id: "profit_activity_products", label: "产品库", tone: "pink" },
+  { id: "ai_service", label: "AI 服务", tone: "indigo" },
 ];
 
 function formatChineseDate() {
@@ -64,7 +65,7 @@ function AppleWorkspaceHome({ greeting, onOpenModule }: { greeting: string; onOp
         <div className="mac-launchpad">
           {launchpadItems.map((item) => (
             <button type="button" key={item.id} onClick={() => onOpenModule(item.id)}>
-              <span className={`mac-app-icon is-${item.tone}`}><i className={item.iconClass} aria-hidden="true" /></span>
+              <span className={`mac-app-icon is-${item.tone}`}><AppleAppGlyph name={item.id} /></span>
               <strong>{item.label}</strong>
             </button>
           ))}
@@ -75,11 +76,11 @@ function AppleWorkspaceHome({ greeting, onOpenModule }: { greeting: string; onOp
         <div className="mac-section-heading"><div><span>CONTINUE</span><h2>继续处理</h2></div></div>
         <div className="mac-continue-grid">
           <button type="button" onClick={() => onOpenModule("product_processing")}>
-            <span className="mac-continue-icon is-purple"><i className="iconfont icon-build" /></span>
+            <span className="mac-continue-icon is-purple"><AppleAppGlyph name="product_processing" /></span>
             <span><small>产品处理</small><strong>检查草稿与 AI 处理任务</strong><em>继续工作 →</em></span>
           </button>
           <button type="button" onClick={() => onOpenModule("profit_activity_products")}>
-            <span className="mac-continue-icon is-blue"><i className="iconfont icon-database" /></span>
+            <span className="mac-continue-icon is-blue"><AppleAppGlyph name="profit_activity_products" /></span>
             <span><small>货源产品库</small><strong>查看最近入库的产品</strong><em>打开产品库 →</em></span>
           </button>
         </div>

@@ -19,6 +19,7 @@ LOCAL_EXPANSION_RULESET_VERSION = "local-v1"
 _LOCAL_EXPANSIONS = {"露营灯": ("便携露营灯",)}
 _IMAGE_OPERATION_BUDGET_COST = 3  # download, upload, then image search
 _NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
+CollectionProgressCallback = Callable[[str, int, int], None]
 
 
 class DailySelectionProvider(Protocol):
@@ -77,11 +78,13 @@ class DailySelectionCollector:
         provider_credentials: Mapping[str, Any] | str | None = None,
         provider_credential_fingerprint: str | None = None,
         clock: Callable[[], datetime] | None = None,
+        progress_callback: CollectionProgressCallback | None = None,
     ) -> None:
         self._workspace_id = workspace_id
         self._provider = provider
         self._budget = budget
         self._clock = clock or datetime.now
+        self._progress_callback = progress_callback
         inherited = getattr(provider, "credential_fingerprint", None)
         fingerprint = provider_credential_fingerprint or inherited
         if fingerprint is None and provider_credentials is not None:
@@ -107,6 +110,7 @@ class DailySelectionCollector:
         )
 
         if criteria.collection_mode == "image":
+            self._progress("searching", 0, 1)
             latest_budget = self._reserve(criteria, _IMAGE_OPERATION_BUDGET_COST, collection_time)
             if not latest_budget.reservation_granted:
                 errors.append(_budget_error())
@@ -123,8 +127,11 @@ class DailySelectionCollector:
                     candidates.extend(_collected_candidates(response, criteria.reference_image_url))
                 if response.error is not None:
                     errors.append(response.error)
+                self._progress("searching", 1, 1)
         else:
             queries = _queries(criteria)
+            search_completed = 0
+            self._progress("searching", 0, len(queries))
             if max_parallel <= 1:
                 # 串行模式：保持原有行为
                 for query, expanded in queries:
@@ -150,6 +157,8 @@ class DailySelectionCollector:
                     candidates.extend(_tagged_candidates(response, query, expanded=expanded))
                     if response.error is not None:
                         errors.append(response.error)
+                    search_completed += 1
+                    self._progress("searching", search_completed, len(queries))
             else:
                 # 并行关键词搜索
                 response_by_keyword: dict[str, ProviderCallResult] = {}
@@ -178,6 +187,8 @@ class DailySelectionCollector:
                         for future in as_completed(future_map):
                             kw, response = future.result()
                             response_by_keyword[kw] = response
+                            search_completed += 1
+                            self._progress("searching", search_completed, len(ordered_queries))
                     # Settle（超额 audit 释放差值）
                     total_audits = sum(len(r.audits) for r in response_by_keyword.values())
                     latest_budget = self._settle(criteria, len(ordered_queries), total_audits, collection_time)
@@ -217,6 +228,7 @@ class DailySelectionCollector:
         if not has_sku_filter:
             detail_targets = detail_targets[: max(criteria.detail_count, len(unique))]
         if max_parallel <= 1:
+            self._progress("details", 0, len(detail_targets))
             for index, collected in detail_targets:
                 latest_budget = self._reserve(criteria, 1, collection_time)
                 if not latest_budget.reservation_granted:
@@ -241,6 +253,7 @@ class DailySelectionCollector:
                         enrich_candidate_with_detail(collected.candidate, response.response, evidence=response.audit),
                         collected.reference_image_url,
                     )
+                self._progress("details", detail_calls, len(detail_targets))
         else:
             # 并行拉取详情：按候选顺序逐个预占预算，预算不足时只处理已预占的候选
             budgeted_items: list[tuple[int, CollectedCandidate]] = []
@@ -254,6 +267,7 @@ class DailySelectionCollector:
                 from concurrent.futures import ThreadPoolExecutor, as_completed
 
                 detail_results: dict[int, ProviderCallResult] = {}
+                self._progress("details", 0, len(budgeted_items))
 
                 def _fetch_detail(offer_id: str) -> ProviderCallResult:
                     return self._provider.get_item_detail(offer_id)
@@ -294,6 +308,7 @@ class DailySelectionCollector:
                                     enrich_candidate_with_detail(collected.candidate, response.response, evidence=response.audit),
                                     collected.reference_image_url,
                                 )
+                            self._progress("details", detail_calls, len(budgeted_items))
                             # 补充一个新任务，保持并发窗口稳定
                             try:
                                 nidx, nitem = next(it)
@@ -303,6 +318,8 @@ class DailySelectionCollector:
                 # 逐个结算实际调用并释放未用额度
                 for idx, response in detail_results.items():
                     latest_budget = self._settle(criteria, 1, len(response.audits), collection_time)
+            else:
+                self._progress("details", 0, 0)
 
         derived_terms = _titles(unique) if criteria.collection_mode == "image" and criteria.selection_scope == "divergent" else ()
         status = _status(unique, errors)
@@ -347,6 +364,10 @@ class DailySelectionCollector:
             api_calls=reserved_calls - actual_calls,
             now=now,
         )
+
+    def _progress(self, stage: str, completed: int, total: int) -> None:
+        if self._progress_callback is not None:
+            self._progress_callback(stage, completed, total)
 
 
 def _queries(criteria: DailySelectionCriteria) -> tuple[tuple[str, bool], ...]:
