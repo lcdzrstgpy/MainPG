@@ -545,13 +545,14 @@ def test_reference_loading_fails_closed_when_first_image_is_unavailable(monkeypa
     assert calls == ["https://example.com/original-main.jpg"]
 
 
-def test_provider_config_exposes_explicit_1k_reference_profile(monkeypatch) -> None:
+def test_provider_config_uses_image_gpt_with_explicit_1k_reference_profile(monkeypatch) -> None:
     monkeypatch.setattr(provider_config_module, "_try_system_runtime_config", lambda: None)
     monkeypatch.setenv("WH_AI_API_KEY", "configured")
 
     provider = provider_config_module.resolve_ai_provider()
 
-    assert provider["reference_image_model"] == "gpt-image-2-2k"
+    assert provider["image_model"] == "image_gpt"
+    assert provider["reference_image_model"] == "image_gpt"
     assert provider["image_size"] == "2048x2048"
     assert provider["reference_image_model_1k"] == "gpt-image-2-1k"
     assert provider["reference_image_size_1k"] == "1024x1024"
