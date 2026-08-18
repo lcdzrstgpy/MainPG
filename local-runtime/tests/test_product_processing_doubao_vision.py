@@ -5,7 +5,7 @@ import json
 import pytest
 import requests
 
-from wh_local.modules.product_processing import doubao_vision
+from wh_local.modules.product_processing import doubao_ark, doubao_vision
 
 
 VALID_ANALYSIS = {
@@ -18,6 +18,8 @@ VALID_ANALYSIS = {
     "confidence": "high",
     "uncertainty_reason": "",
 }
+
+SOURCE_TITLE = "麻将麻将牌麻将手搓家用大号麻将牌"
 
 
 class _Response:
@@ -63,23 +65,28 @@ def test_recognize_subject_sends_fixed_model_image_and_prompt(monkeypatch) -> No
     response = _success_response()
     session = _Session([response])
     monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
-    monkeypatch.setattr(doubao_vision, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
 
     result = doubao_vision.DoubaoVisionClient().recognize_subject(
-        "data:image/jpeg;base64,dGVzdA=="
+        "data:image/jpeg;base64,dGVzdA==",
+        SOURCE_TITLE,
     )
 
     assert result.as_dict() == VALID_ANALYSIS
     assert len(session.requests) == 1
     request = session.requests[0]
-    assert request["url"] == doubao_vision.API_URL
-    assert request["json"]["model"] == doubao_vision.MODEL_ID
+    assert request["url"] == doubao_ark.API_URL
+    assert request["json"]["model"] == doubao_ark.MODEL_ID
     assert request["json"]["messages"][0]["content"][0] == {
         "type": "image_url",
         "image_url": {"url": "data:image/jpeg;base64,dGVzdA=="},
     }
     assert request["json"]["messages"][0]["content"][1]["type"] == "text"
-    assert "sellable_subject" in request["json"]["messages"][0]["content"][1]["text"]
+    prompt = request["json"]["messages"][0]["content"][1]["text"]
+    assert "sellable_subject" in prompt
+    assert "UNTRUSTED ORIGINAL 1688 TITLE" in prompt
+    assert SOURCE_TITLE in prompt
+    assert "If the image and title materially conflict" in prompt
     assert request["headers"]["Authorization"] == "Bearer ark-secret-key"
     assert request["allow_redirects"] is False
     assert response.closed is True
@@ -89,18 +96,30 @@ def test_transient_failure_retries_once_then_succeeds(monkeypatch) -> None:
     busy = _Response({"error": {"message": "busy-secret-detail"}}, status_code=429)
     session = _Session([busy, _success_response()])
     monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
-    monkeypatch.setattr(doubao_vision, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
 
     client = doubao_vision.DoubaoVisionClient()
     result = client.recognize_subject(
-        "data:image/jpeg;base64,dGVzdA=="
+        "data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE
     )
 
     assert result.sellable_subject == VALID_ANALYSIS["sellable_subject"]
     assert len(session.requests) == 2
     assert client.last_attempt_count == 2
     assert busy.closed is True
+
+
+def test_recognize_subject_rejects_missing_original_title(monkeypatch) -> None:
+    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
+
+    with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
+        doubao_vision.DoubaoVisionClient().recognize_subject(
+            "data:image/jpeg;base64,dGVzdA==", "   "
+        )
+
+    assert captured.value.error_kind == "invalid_input"
+    assert captured.value.retryable is False
 
 
 @pytest.mark.parametrize(
@@ -115,11 +134,11 @@ def test_transient_failure_retries_once_then_succeeds(monkeypatch) -> None:
 def test_invalid_contract_is_rejected_without_retry(monkeypatch, content: str) -> None:
     session = _Session([_Response({"choices": [{"message": {"content": content}}]})])
     monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
-    monkeypatch.setattr(doubao_vision, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
 
     with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
         doubao_vision.DoubaoVisionClient().recognize_subject(
-            "data:image/jpeg;base64,dGVzdA=="
+            "data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE
         )
 
     assert captured.value.retryable is False
@@ -131,11 +150,11 @@ def test_provider_error_does_not_expose_key_or_response_body(monkeypatch) -> Non
     secret_body = "provider-secret-response-body"
     session = _Session([_Response(secret_body, status_code=403)])
     monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
-    monkeypatch.setattr(doubao_vision, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
 
     with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
         doubao_vision.DoubaoVisionClient().recognize_subject(
-            "data:image/jpeg;base64,dGVzdA=="
+            "data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE
         )
 
     message = str(captured.value)
@@ -148,12 +167,12 @@ def test_provider_error_does_not_expose_key_or_response_body(monkeypatch) -> Non
 def test_network_failure_retries_once_then_returns_retryable_error(monkeypatch) -> None:
     session = _Session([requests.Timeout("socket details"), requests.Timeout("again")])
     monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
-    monkeypatch.setattr(doubao_vision, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
 
     with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
         doubao_vision.DoubaoVisionClient().recognize_subject(
-            "data:image/jpeg;base64,dGVzdA=="
+            "data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE
         )
 
     assert captured.value.retryable is True
@@ -208,11 +227,11 @@ def test_instruction_like_subject_content_is_rejected(
     analysis = {**VALID_ANALYSIS, field: value}
     session = _Session([_success_response(analysis)])
     monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
-    monkeypatch.setattr(doubao_vision, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
 
     with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
         doubao_vision.DoubaoVisionClient().recognize_subject(
-            "data:image/jpeg;base64,dGVzdA=="
+            "data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE
         )
 
     assert captured.value.error_kind == "invalid_response"

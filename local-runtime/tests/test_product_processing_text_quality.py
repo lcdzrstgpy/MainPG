@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-import json
 import threading
 
 import pytest
 
 import wh_local.modules.product_processing.service as service_module
-from wh_local.modules.product_processing.ai_client import AiProviderError
 from wh_local.modules.product_processing.doubao_vision import (
     DoubaoVisionError,
     SubjectAnalysis,
 )
+from wh_local.modules.product_processing.doubao_text import (
+    DoubaoTextError,
+    DoubaoTextResult,
+)
 from wh_local.modules.product_processing.service import (
     GridImageOutput,
-    ListingTextConfigurationError,
     ProductProcessingService,
 )
 
@@ -53,193 +54,136 @@ class _PromptRepository:
         }
 
 
-class _CombinedClient:
-    def __init__(self, response: str | Exception) -> None:
-        self.response = response
+class _ReceiptRepository(_PromptRepository):
+    def __init__(self) -> None:
+        self.receipts: dict[str, dict] = {}
+
+    def load_stage_receipt(self, _task_id, _item_id, stage, **_kwargs):
+        return self.receipts.get(stage)
+
+    def upsert_stage_receipt(
+        self, _task_id, _item_id, stage, *, input_hash, output_data, **_kwargs
+    ):
+        receipt = {"input_hash": input_hash, "output": output_data}
+        self.receipts[stage] = receipt
+        return receipt
+
+    def delete_invalid_stage_receipt(
+        self, _task_id, _item_id, stage, *, expected_input_hash, **_kwargs
+    ):
+        receipt = self.receipts.get(stage)
+        if receipt and receipt["input_hash"] != expected_input_hash:
+            self.receipts.pop(stage, None)
+            return True
+        return False
+
+    def delete_downstream_stage_receipts(
+        self, _task_id, _item_id, stages, **_kwargs
+    ):
+        for stage in stages:
+            self.receipts.pop(stage, None)
+        return 0
+
+
+class _DoubaoListingClient:
+    def __init__(self, result: DoubaoTextResult) -> None:
+        self.result = result
         self.prompts: list[str] = []
-        self.messages: list[list[dict]] = []
+        self.last_attempt_count = 1
 
-    def chat(self, messages: list[dict]) -> str:
-        self.messages.append(messages)
-        self.prompts.append(messages[0]["content"])
-        if isinstance(self.response, Exception):
-            raise self.response
-        return self.response
+    def generate_listing_text(self, prompt: str, *, validator=None) -> DoubaoTextResult:
+        self.prompts.append(prompt)
+        if validator is not None:
+            validator(self.result)
+        return self.result
 
 
-def _combined_service(monkeypatch, response: str | Exception) -> tuple[ProductProcessingService, _CombinedClient]:
+def test_doubao_text_stage_uses_subject_json_and_source_facts_without_image(monkeypatch) -> None:
     service = object.__new__(ProductProcessingService)
     service.repository = _PromptRepository()
-    client = _CombinedClient(response)
-    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
-    monkeypatch.setattr(service, "_ai_client", lambda: client)
-    monkeypatch.setattr(service, "_load_ai_stage_cache", lambda _stage, _key: None)
-    monkeypatch.setattr(service, "_save_ai_stage_cache", lambda *args, **kwargs: None)
-    return service, client
-
-
-def test_combined_call_embeds_operator_description_prompt_and_enforces_five_points(monkeypatch) -> None:
-    service, client = _combined_service(
-        monkeypatch,
-        json.dumps(
-            {
-                "optimized_title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
-                "description": VALID_DESCRIPTION,
-                "variant_translations": [],
-            }
-        ),
+    client = _DoubaoListingClient(
+        DoubaoTextResult(
+            optimized_title="Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
+            description=VALID_DESCRIPTION,
+            variant_translations=(),
+            product_dimensions={},
+        )
     )
+    monkeypatch.setattr(service, "_doubao_text_client", lambda: client)
+    assert not hasattr(ProductProcessingService, "_ai_client")
 
-    result = service._generate_combined_text(
+    result = service._generate_doubao_text(
         "500 ml Stainless Steel Travel Mug",
         "Kitchen & Dining",
         _raw(),
         "en",
         "US",
         [],
-    )
-
-    assert result is not None
-    assert result["description"].count("\n") == 4
-    assert "CUSTOM OPERATOR DESCRIPTION RULE" in client.prompts[0]
-
-
-def test_combined_partial_description_is_rejected_when_five_points_are_required(monkeypatch) -> None:
-    candidate = "- CUTE KEYCHAINS: Small decorative charms for bags."
-    service, _client = _combined_service(
-        monkeypatch,
-        json.dumps(
-            {
-                "optimized_title": "Cartoon Character Keychain Set, Colorful Resin Bag Charms with Metal Rings",
-                "description": candidate,
-                "variant_translations": [],
-            }
-        ),
-    )
-
-    result = service._generate_combined_text(
-        "Cartoon Character Keychain Set", "Accessories", _raw(), "en", "US", []
-    )
-
-    assert result is not None
-    assert result["description"] == ""
-    assert result["description_candidate"] == candidate
-    assert "exactly five" in result["description_contract_error"]
-
-
-def test_changing_operator_description_prompt_changes_combined_cache_key(monkeypatch) -> None:
-    response = json.dumps(
-        {
-            "optimized_title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
-            "description": VALID_DESCRIPTION,
-            "variant_translations": [],
-        }
-    )
-    service, client = _combined_service(monkeypatch, response)
-    cache_keys: list[str] = []
-
-    class _MutableRepository:
-        marker = "FIRST DESCRIPTION CONTRACT"
-
-        def prompts(self) -> dict[str, str]:
-            return {"desc": f"{self.marker}\nProduct: {{title}}\nOutput exactly five English bullet points."}
-
-    repository = _MutableRepository()
-    service.repository = repository
-    monkeypatch.setattr(
-        service,
-        "_load_ai_stage_cache",
-        lambda _stage, key: cache_keys.append(key) or None,
-    )
-
-    service._generate_combined_text(
-        "500 ml Stainless Steel Travel Mug", "Kitchen & Dining", _raw(), "en", "US", []
-    )
-    repository.marker = "SECOND DESCRIPTION CONTRACT"
-    service._generate_combined_text(
-        "500 ml Stainless Steel Travel Mug", "Kitchen & Dining", _raw(), "en", "US", []
-    )
-
-    assert len(client.prompts) == 2
-    assert cache_keys[0] != cache_keys[1]
-
-
-def test_combined_non_retryable_400_raises_configuration_error(monkeypatch) -> None:
-    service, client = _combined_service(
-        monkeypatch,
-        AiProviderError("AI provider HTTP 400: no routed merchant", status_code=400),
-    )
-
-    with pytest.raises(ListingTextConfigurationError, match="no routed merchant"):
-        service._generate_combined_text(
-            "500 ml Stainless Steel Travel Mug",
-            "Kitchen & Dining",
-            _raw(),
-            "en",
-            "US",
-            [],
-        )
-    assert len(client.prompts) == 1
-
-
-def test_combined_multimodal_call_returns_identity_text_variants_and_dimensions(monkeypatch) -> None:
-    raw = {
-        **_raw(),
-        "source_variant_records": [{"attributes": {"Color": "蓝色"}}],
-    }
-    service, client = _combined_service(
-        monkeypatch,
-        json.dumps(
-            {
-                "sellable_subject": "insulated stainless steel travel mug",
-                "preliminary_title": "Blue Stainless Steel Travel Mug",
-                "optimized_title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
-                "description": VALID_DESCRIPTION,
-                "variant_translations": [{"raw_value": "蓝色", "export_value": "Blue"}],
-                "product_dimensions": {
-                    "length_cm": 10,
-                    "width_cm": 8,
-                    "height_cm": 20,
-                    "weight_g": 350,
-                },
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        service,
-        "_image_to_data_url",
-        lambda _url: "data:image/jpeg;base64,dGVzdA==",
-    )
-
-    result = service._generate_combined_text(
-        "500 ml Stainless Steel Travel Mug",
-        "Kitchen & Dining",
-        raw,
-        "en",
-        "US",
-        [],
         vision_identity={
             "sellable_subject": "insulated stainless steel travel mug",
             "subject_explanation": "The foreground mug is the complete sellable product.",
-            "visible_attributes": ["blue body", "metallic finish"],
+            "visible_attributes": ["blue cylindrical body", "fitted lid"],
             "excluded_elements": ["table"],
             "confidence": "high",
             "uncertainty_reason": "",
         },
-        image_url="https://example.com/source.jpg",
-        known_dimensions={"weight_g": 300},
-        include_dimensions=True,
+        needs_title=True,
+        needs_description=True,
+        needs_dimensions=False,
     )
 
-    assert len(client.messages) == 1
-    assert client.messages[0][0]["content"][1]["type"] == "image_url"
-    assert "AUTHORITATIVE SUBJECT ANALYSIS FROM THE ORIGINAL 1688 IMAGE:" in (
-        client.messages[0][0]["content"][0]["text"]
+    assert result["title"].startswith("Insulated Stainless Steel Travel Mug")
+    prompt = client.prompts[0]
+    assert "AUTHORITATIVE SUBJECT ANALYSIS FROM THE ORIGINAL 1688 IMAGE:" in prompt
+    assert '"sellable_subject": "insulated stainless steel travel mug"' in prompt
+    assert '"Capacity": "500 ml"' in prompt
+    assert "data:image" not in prompt
+    assert "image_url" not in prompt
+
+
+def test_doubao_text_dimension_scope_requests_complete_numeric_estimates(monkeypatch) -> None:
+    service = object.__new__(ProductProcessingService)
+    service.repository = _PromptRepository()
+    client = _DoubaoListingClient(
+        DoubaoTextResult(
+            optimized_title="",
+            description="",
+            variant_translations=(),
+            product_dimensions={
+                "length_cm": 4.2,
+                "width_cm": 2.9,
+                "height_cm": 2.0,
+                "weight_g": 20,
+            },
+        )
     )
-    assert result["vision_subject"] == "insulated stainless steel travel mug"
-    assert result["variant_translations"] == {"蓝色": "Blue"}
-    assert result["product_dimensions"]["weight_g"] == 300
-    assert result["product_dimensions"]["height_cm"] == 20
+    monkeypatch.setattr(service, "_doubao_text_client", lambda: client)
+
+    result = service._generate_doubao_text(
+        "42 mm Ivory Mahjong Tile Set",
+        "Tabletop Games",
+        _raw(),
+        "en",
+        "US",
+        [],
+        vision_identity={
+            "sellable_subject": "home hand-play mahjong set",
+            "subject_explanation": "The foreground tiles are the sellable product.",
+            "visible_attributes": ["ivory-colored tiles"],
+            "excluded_elements": ["background"],
+            "confidence": "high",
+            "uncertainty_reason": "",
+        },
+        needs_title=False,
+        needs_description=False,
+        needs_dimensions=True,
+    )
+
+    assert result["product_dimensions"]["length_cm"] == 4.2
+    prompt = client.prompts[0]
+    assert "return all four positive numeric fields" in prompt
+    assert "Conservatively estimate only missing dimension values" in prompt
+    assert "Do not use dimension estimates in the title or description" in prompt
 
 
 def test_prompt_evidence_is_ordered_deduplicated_and_used_by_combined_cache(monkeypatch) -> None:
@@ -275,34 +219,14 @@ def test_prompt_evidence_is_ordered_deduplicated_and_used_by_combined_cache(monk
     assert size_text.count("Stainless Steel") == 1
     assert size_text.count("Large") == 2  # distinct ordered attributes remain evidence
 
-    service, _client = _combined_service(
-        monkeypatch,
-        json.dumps(
-            {
-                "optimized_title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
-                "description": VALID_DESCRIPTION,
-                "variant_translations": [],
-            }
-        ),
-    )
-    cache_inputs: list[dict] = []
-    monkeypatch.setattr(
-        service,
-        "_ai_stage_cache_key",
-        lambda _stage, **kwargs: cache_inputs.append(kwargs["input_data"]) or "cache-key",
-    )
-    service._generate_combined_text(
-        "Travel Mug", "Kitchen & Dining", raw, "en", "US", []
-    )
-
-    assert cache_inputs[0]["raw"] == evidence
-    assert "stock" not in cache_inputs[0]["raw"]
-    assert "source_image_urls" not in cache_inputs[0]["raw"]
-
-
 def _process_service(monkeypatch) -> ProductProcessingService:
     service = object.__new__(ProductProcessingService)
-    service.repository = object()
+    class _Repository:
+        @staticmethod
+        def prompts() -> dict[str, str]:
+            return {}
+
+    service.repository = _Repository()
     monkeypatch.setattr(service_module, "product_policy_issue", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         service,
@@ -316,16 +240,30 @@ def _process_service(monkeypatch) -> ProductProcessingService:
             uncertainty_reason="",
         ),
     )
+    monkeypatch.setattr(
+        service,
+        "_generate_doubao_text",
+        lambda *args, **kwargs: {
+            "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
+            "description": VALID_DESCRIPTION,
+            "variant_translations": {},
+            "vision_subject": "travel mug",
+            "vision_preliminary_title": "",
+            "product_dimensions": {},
+        },
+        raising=False,
+    )
     return service
 
 
-def test_doubao_subject_is_resolved_before_gpt_and_cannot_be_overridden(monkeypatch) -> None:
+def test_doubao_subject_precedes_independent_text_and_image_branches(monkeypatch) -> None:
     service = _process_service(monkeypatch)
     order: list[str] = []
     captured: dict[str, object] = {}
 
     def recognize(*_args, **_kwargs) -> SubjectAnalysis:
         order.append("doubao")
+        captured["vision_source_title"] = _args[1]
         return SubjectAnalysis(
             sellable_subject="rectangular bamboo cooling mat",
             subject_explanation="The foreground woven mat is the complete sellable product.",
@@ -336,7 +274,7 @@ def test_doubao_subject_is_resolved_before_gpt_and_cannot_be_overridden(monkeypa
         )
 
     def combined(*_args, **kwargs):
-        order.append("gpt-text")
+        order.append("doubao-text")
         captured["combined_identity"] = kwargs["vision_identity"]
         return {
             "title": "Rectangular Bamboo Cooling Mat, Woven Summer Sleeping Pad",
@@ -357,19 +295,104 @@ def test_doubao_subject_is_resolved_before_gpt_and_cannot_be_overridden(monkeypa
         )
 
     monkeypatch.setattr(service, "_recognize_doubao_subject", recognize)
-    monkeypatch.setattr(service, "_generate_combined_text", combined)
-    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
+    monkeypatch.setattr(service, "_generate_doubao_text", combined)
     monkeypatch.setattr(service, "_generate_grid_images", grid)
 
-    result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
+    source_title = "1688 ORIGINAL TRAVEL MUG TITLE"
+    draft = {
+        **_draft(),
+        "title": "PREVIOUSLY OPTIMIZED TITLE",
+        "raw_payload": {**_raw(), "source_title": source_title},
+    }
+    result = service._process_one({"id": 1}, draft, _settings(), False, task_id=12)
 
     assert result["status"] == "completed"
-    assert order == ["doubao", "gpt-text", "gpt-image"]
+    assert order[0] == "doubao"
+    assert set(order[1:]) == {"doubao-text", "gpt-image"}
     assert result["result"]["vision_identity"]["sellable_subject"] == (
         "rectangular bamboo cooling mat"
     )
     assert captured["combined_identity"] == result["result"]["vision_identity"]
     assert captured["grid_identity"] == result["result"]["vision_identity"]
+    assert captured["vision_source_title"] == source_title
+
+
+def test_doubao_text_failure_keeps_gpt_image_result_and_requires_attention(monkeypatch) -> None:
+    service = _process_service(monkeypatch)
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        service,
+        "_generate_doubao_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            DoubaoTextError(
+                "text contract exhausted",
+                error_kind="invalid_response",
+                retryable=True,
+                attempt_count=3,
+            )
+        ),
+        raising=False,
+    )
+
+    def grid(*args, **kwargs):
+        captured["title"] = args[3]
+        return GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
+            attempt_count=1,
+            provider_status_class="success",
+        )
+
+    monkeypatch.setattr(service, "_generate_grid_images", grid)
+    assert not hasattr(ProductProcessingService, "_generate_title")
+    assert not hasattr(ProductProcessingService, "_generate_description")
+    assert not hasattr(ProductProcessingService, "_translate_variant_values")
+    assert not hasattr(ProductProcessingService, "_generate_size")
+
+    result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
+
+    assert result["status"] == "attention_required"
+    assert len(result["result"]["carousel_image_paths"]) == 4
+    assert result["result"]["provider_attempts"]["doubao_text"] == 3
+    assert result["result"]["provider_status_classes"]["doubao_text"] == "invalid_response"
+    assert result["result"]["text_generation"]["status"] == "failed"
+    assert captured["title"] == _draft()["title"]
+
+
+def test_image_branch_never_uses_doubao_optimized_title(monkeypatch) -> None:
+    service = _process_service(monkeypatch)
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        service,
+        "_generate_doubao_text",
+        lambda *args, **kwargs: {
+            "title": "DOUBAO OPTIMIZED TITLE MUST NOT REACH IMAGE",
+            "description": VALID_DESCRIPTION,
+            "variant_translations": {},
+            "vision_subject": "travel mug",
+            "vision_preliminary_title": "",
+            "product_dimensions": {},
+        },
+        raising=False,
+    )
+
+    def grid(*args, **kwargs):
+        captured["title"] = args[3]
+        return GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
+            attempt_count=1,
+            provider_status_class="success",
+        )
+
+    monkeypatch.setattr(service, "_generate_grid_images", grid)
+    result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
+
+    assert result["status"] == "completed"
+    assert result["result"]["optimized_title"].startswith("DOUBAO OPTIMIZED")
+    assert captured["title"] == _draft()["title"]
 
 
 def test_low_confidence_doubao_subject_blocks_all_gpt_calls(monkeypatch) -> None:
@@ -388,7 +411,7 @@ def test_low_confidence_doubao_subject_blocks_all_gpt_calls(monkeypatch) -> None
     )
     monkeypatch.setattr(
         service,
-        "_generate_combined_text",
+        "_generate_doubao_text",
         lambda *_args, **_kwargs: pytest.fail("GPT text must not run"),
     )
     monkeypatch.setattr(
@@ -447,7 +470,7 @@ def test_doubao_failure_blocks_gpt_with_stable_task_status(
     )
     monkeypatch.setattr(
         service,
-        "_generate_combined_text",
+        "_generate_doubao_text",
         lambda *_args, **_kwargs: pytest.fail("GPT text must not run"),
     )
     monkeypatch.setattr(
@@ -538,7 +561,7 @@ def test_doubao_identity_receipt_avoids_repeat_recognition_on_task_retry(monkeyp
     monkeypatch.setattr(service, "_recognize_doubao_subject", recognize)
     monkeypatch.setattr(
         service,
-        "_generate_combined_text",
+        "_generate_doubao_text",
         lambda *args, **kwargs: {
             "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
             "description": VALID_DESCRIPTION,
@@ -546,7 +569,6 @@ def test_doubao_identity_receipt_avoids_repeat_recognition_on_task_retry(monkeyp
             "product_dimensions": {},
         },
     )
-    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         service,
         "_generate_grid_images",
@@ -560,6 +582,7 @@ def test_doubao_identity_receipt_avoids_repeat_recognition_on_task_retry(monkeyp
     first = service._process_one(
         {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
     )
+    assert "images" in service.repository.receipts
     second = service._process_one(
         {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
     )
@@ -568,6 +591,195 @@ def test_doubao_identity_receipt_avoids_repeat_recognition_on_task_retry(monkeyp
     assert recognition_calls == 1
     assert second["result"]["provider_attempts"]["doubao_vision"] == 0
     assert second["result"]["provider_status_classes"]["doubao_vision"] == "receipt_hit"
+
+
+def test_source_title_change_invalidates_doubao_identity_receipt(monkeypatch) -> None:
+    service = _process_service(monkeypatch)
+    service.repository = _ReceiptRepository()
+    recognition_titles: list[str] = []
+
+    def recognize(_image_url: str, source_title: str) -> SubjectAnalysis:
+        recognition_titles.append(source_title)
+        return SubjectAnalysis(
+            sellable_subject="travel mug",
+            subject_explanation="The foreground travel mug is the complete product.",
+            visible_attributes=("cylindrical body",),
+            excluded_elements=("table",),
+            confidence="high",
+            uncertainty_reason="",
+        )
+
+    monkeypatch.setattr(service, "_recognize_doubao_subject", recognize)
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
+            attempt_count=1,
+            provider_status_class="success",
+        ),
+    )
+
+    first_draft = {
+        **_draft(),
+        "raw_payload": {**_raw(), "source_title": "1688 ORIGINAL MUG TITLE"},
+    }
+    second_draft = {
+        **_draft(),
+        "raw_payload": {**_raw(), "source_title": "1688 CORRECTED MUG TITLE"},
+    }
+    first = service._process_one(
+        {"id": 1, "item_id": 101}, first_draft, _settings(), False, task_id=12
+    )
+    second = service._process_one(
+        {"id": 1, "item_id": 101}, second_draft, _settings(), False, task_id=12
+    )
+
+    assert first["status"] == second["status"] == "completed"
+    assert recognition_titles == [
+        first_draft["raw_payload"]["source_title"],
+        second_draft["raw_payload"]["source_title"],
+    ]
+    assert second["result"]["provider_attempts"]["doubao_vision"] == 1
+
+
+def test_source_title_is_part_of_in_memory_doubao_subject_cache(monkeypatch) -> None:
+    service = object.__new__(ProductProcessingService)
+    service._doubao_subject_cache = {}
+    service._doubao_subject_cache_lock = threading.Lock()
+    calls: list[str] = []
+
+    class Client:
+        last_attempt_count = 1
+
+        def recognize_subject(
+            self, _image_data_url: str, source_title: str
+        ) -> SubjectAnalysis:
+            calls.append(source_title)
+            return SubjectAnalysis(
+                sellable_subject="mahjong tile set",
+                subject_explanation="The foreground tiles are the sellable product.",
+                visible_attributes=("ivory-colored tiles",),
+                excluded_elements=("table cloth",),
+                confidence="high",
+                uncertainty_reason="",
+            )
+
+    monkeypatch.setattr(
+        service,
+        "_image_to_data_url",
+        lambda _url: "data:image/jpeg;base64,dGVzdA==",
+    )
+    monkeypatch.setattr(service, "_doubao_vision_client", Client)
+
+    first = service._recognize_doubao_subject(
+        "https://example.com/mahjong.jpg", "象牙色家用麻将牌"
+    )
+    repeated = service._recognize_doubao_subject(
+        "https://example.com/mahjong.jpg", "象牙色家用麻将牌"
+    )
+    changed = service._recognize_doubao_subject(
+        "https://example.com/mahjong.jpg", "象牙色家用麻将套装"
+    )
+
+    assert first == repeated == changed
+    assert calls == ["象牙色家用麻将牌", "象牙色家用麻将套装"]
+    assert service._attempt_state().doubao_vision == 1
+
+
+def test_retry_reuses_successful_images_and_only_retries_failed_doubao_text(monkeypatch) -> None:
+    service = _process_service(monkeypatch)
+
+    class ReceiptRepository:
+        def __init__(self) -> None:
+            self.receipts: dict[str, dict] = {}
+
+        @staticmethod
+        def prompts() -> dict[str, str]:
+            return {}
+
+        def load_stage_receipt(self, _task_id, _item_id, stage, **_kwargs):
+            return self.receipts.get(stage)
+
+        def upsert_stage_receipt(
+            self, _task_id, _item_id, stage, *, input_hash, output_data, **_kwargs
+        ):
+            receipt = {"input_hash": input_hash, "output": output_data}
+            self.receipts[stage] = receipt
+            return receipt
+
+        def delete_invalid_stage_receipt(
+            self, _task_id, _item_id, stage, *, expected_input_hash, **_kwargs
+        ):
+            receipt = self.receipts.get(stage)
+            if receipt and receipt["input_hash"] != expected_input_hash:
+                self.receipts.pop(stage, None)
+                return True
+            return False
+
+        def delete_downstream_stage_receipts(
+            self, _task_id, _item_id, stages, **_kwargs
+        ):
+            for stage in stages:
+                self.receipts.pop(stage, None)
+            return 0
+
+    service.repository = ReceiptRepository()
+    text_calls = 0
+    grid_calls = 0
+
+    def text(*args, **kwargs):
+        nonlocal text_calls
+        text_calls += 1
+        if text_calls == 1:
+            raise DoubaoTextError(
+                "temporary text failure",
+                error_kind="transient",
+                retryable=True,
+                attempt_count=3,
+            )
+        return {
+            "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
+            "description": VALID_DESCRIPTION,
+            "variant_translations": {},
+            "vision_subject": "travel mug",
+            "vision_preliminary_title": "",
+            "product_dimensions": {},
+        }
+
+    def grid(*args, **kwargs):
+        nonlocal grid_calls
+        grid_calls += 1
+        return GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
+            summary_url="https://example.com/grid-summary.jpg",
+            attempt_count=1,
+            provider_status_class="success",
+        )
+
+    monkeypatch.setattr(service, "_generate_doubao_text", text)
+    monkeypatch.setattr(service, "_generate_grid_images", grid)
+
+    first = service._process_one(
+        {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
+    )
+    assert "images" in service.repository.receipts
+    first_image_hash = service.repository.receipts["images"]["input_hash"]
+    second = service._process_one(
+        {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
+    )
+
+    assert first["status"] == "attention_required"
+    assert second["status"] == "completed"
+    assert text_calls == 2
+    assert service.repository.receipts["images"]["input_hash"] == first_image_hash
+    assert grid_calls == 1
+    assert second["result"]["provider_attempts"]["four_grid"] == 0
+    assert second["result"]["provider_status_classes"]["four_grid"] == "receipt_hit"
 
 
 def _draft() -> dict:
@@ -591,126 +803,18 @@ def _settings() -> dict:
     }
 
 
-def test_process_stops_after_combined_400_before_any_image_call(monkeypatch) -> None:
-    service = _process_service(monkeypatch)
-    monkeypatch.setattr(
-        service,
-        "_generate_combined_text",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            ListingTextConfigurationError("HTTP 400", status_code=400)
-        ),
-    )
-    monkeypatch.setattr(
-        service,
-        "_generate_grid_images",
-        lambda *args, **kwargs: pytest.fail("image generation must not run after text configuration failure"),
-    )
-
-    result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
-
-    assert result["status"] == "attention_required"
-    assert result["result"]["error_type"] == "text_provider_configuration"
-    assert "stage_timings_ms" in result["result"]
-
-
-def test_process_only_rejects_when_no_usable_description_was_generated(monkeypatch) -> None:
-    service = _process_service(monkeypatch)
-    monkeypatch.setattr(
-        service,
-        "_generate_combined_text",
-        lambda *args, **kwargs: {
-            "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
-            "description": "",
-            "variant_translations": {},
-        },
-    )
-    monkeypatch.setattr(service, "_generate_description", lambda *args, **kwargs: "")
-    monkeypatch.setattr(
-        service,
-        "_generate_grid_images",
-        lambda *args, **kwargs: pytest.fail("image generation must not run with invalid description"),
-    )
-
-    result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
-
-    assert result["status"] == "attention_required"
-    assert result["result"]["error_type"] == "description_content_unavailable"
-    assert "Source information preserved" not in json.dumps(result, ensure_ascii=False)
-
-
-def test_process_sends_failed_combined_candidate_to_the_single_description_repair(monkeypatch) -> None:
-    service = _process_service(monkeypatch)
-    repair_calls: list[dict] = []
-    monkeypatch.setattr(
-        service,
-        "_generate_combined_text",
-        lambda *args, **kwargs: {
-            "title": "Cartoon Character Keychain Set, Colorful Resin Bag Charms with Metal Rings",
-            "description": "",
-            "description_candidate": "产品描述生成失败",
-            "description_contract_error": "description must be English only",
-            "variant_translations": {},
-        },
-    )
-
-    def repaired_description(*args, **kwargs) -> str:
-        repair_calls.append(kwargs)
-        return VALID_DESCRIPTION
-
-    monkeypatch.setattr(service, "_generate_description", repaired_description)
-    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
-    monkeypatch.setattr(
-        service,
-        "_generate_grid_images",
-        lambda *args, **kwargs: GridImageOutput(
-            carousel_urls=tuple(f"https://example.com/grid-{index}.jpg" for index in range(4)),
-            summary_url="https://example.com/grid-summary.jpg",
-            attempt_count=1,
-            provider_status_class="success",
-        ),
-    )
-
-    result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
-
-    assert result["status"] == "completed"
-    assert repair_calls[0]["prior_description"] == "产品描述生成失败"
-    assert repair_calls[0]["contract_error"] == "description must be English only"
-    assert "description_contract:repaired" in result["result"]["ai_notes"]
-
-
-def test_description_repair_prompt_uses_failed_candidate_as_data_only(monkeypatch) -> None:
-    service, client = _combined_service(monkeypatch, VALID_DESCRIPTION)
-
-    result = service._generate_description(
-        "Cartoon Character Keychain Set, Colorful Resin Bag Charms with Metal Rings",
-        "Accessories",
-        _raw(),
-        "en",
-        "US",
-        [],
-        prior_description="- Cute Keychains: Small decorative charms for bags.",
-        contract_error="description must contain exactly five bullet points",
-    )
-
-    assert result.count("\n") == 4
-    assert "PREVIOUS CANDIDATE" in client.prompts[0]
-    assert "16-24 English words" in client.prompts[0]
-    assert "untrusted formatting input only" in client.prompts[0]
-
-
 def test_process_success_exposes_five_points_grid_attempts_and_stage_timings(monkeypatch) -> None:
     service = _process_service(monkeypatch)
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(
         service,
-        "_generate_combined_text",
+        "_generate_doubao_text",
         lambda *args, **kwargs: {
             "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
             "description": VALID_DESCRIPTION,
             "variant_translations": {},
         },
     )
-    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         service,
         "_generate_grid_images",
@@ -734,7 +838,7 @@ def test_process_success_exposes_five_points_grid_attempts_and_stage_timings(mon
     assert len(result["result"]["carousel_image_paths"]) == 4
     assert result["result"]["provider_attempts"] == {
         "doubao_vision": 1,
-        "combined_text": 1,
+        "doubao_text": 1,
         "four_grid": 1,
     }
     assert result["result"]["provider_status_classes"]["four_grid"] == "success"
@@ -742,89 +846,47 @@ def test_process_success_exposes_five_points_grid_attempts_and_stage_timings(mon
     assert result["result"]["stage_timings_ms"]["total_processing_ms"] >= 0
 
 
-def test_process_repairs_only_invalid_title_field(monkeypatch) -> None:
+def test_image_only_scope_does_not_validate_or_generate_listing_text(monkeypatch) -> None:
     service = _process_service(monkeypatch)
-    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
-    calls = {"combined": 0, "title": 0}
-
-    def combined(*args, **kwargs):
-        calls["combined"] += 1
-        return {
-            "title": "",
-            "description": VALID_DESCRIPTION,
-            "variant_translations": {},
-            "vision_subject": "travel mug",
-            "vision_preliminary_title": "Travel Mug",
-            "product_dimensions": {},
-        }
-
-    def title_repair(*args, **kwargs):
-        calls["title"] += 1
-        return "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup"
-
-    monkeypatch.setattr(service, "_generate_combined_text", combined)
-    monkeypatch.setattr(service, "_generate_title", title_repair)
+    draft = _draft()
+    draft["title"] = "不锈钢保温杯"
     monkeypatch.setattr(
         service,
-        "_generate_description",
-        lambda *args, **kwargs: pytest.fail("valid description must not be regenerated"),
+        "_generate_doubao_text",
+        lambda *args, **kwargs: pytest.fail("image-only scope must not call text"),
     )
-    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         service,
         "_generate_grid_images",
         lambda *args, **kwargs: GridImageOutput(
-            carousel_urls=tuple(f"https://example.com/grid-{index}.jpg" for index in range(4)),
-            summary_url="https://example.com/grid-summary.jpg",
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
             attempt_count=1,
             provider_status_class="success",
         ),
     )
+    settings = {**_settings(), "processing_scope": ["four_grid"]}
 
-    result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
-
-    assert result["status"] == "completed"
-    assert calls == {"combined": 1, "title": 1}
-
-
-def test_title_repair_uses_doubao_subject_when_gpt_returns_no_preliminary_title(
-    monkeypatch,
-) -> None:
-    service = _process_service(monkeypatch)
-    captured: dict[str, str] = {}
-    monkeypatch.setattr(
-        service,
-        "_generate_combined_text",
-        lambda *args, **kwargs: {
-            "title": "",
-            "description": VALID_DESCRIPTION,
-            "variant_translations": {},
-            "vision_subject": "wrong GPT subject",
-            "vision_preliminary_title": "",
-            "product_dimensions": {},
-        },
-    )
-
-    def title_repair(*_args, **kwargs) -> str:
-        captured["image_derived_title"] = kwargs["image_derived_title"]
-        return "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup"
-
-    monkeypatch.setattr(service, "_generate_title", title_repair)
-    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
-    monkeypatch.setattr(
-        service,
-        "_generate_grid_images",
-        lambda *args, **kwargs: GridImageOutput(
-            carousel_urls=tuple(f"https://example.com/grid-{index}.jpg" for index in range(4)),
-            attempt_count=1,
-            provider_status_class="success",
-        ),
-    )
-
-    result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
+    result = service._process_one({"id": 1}, draft, settings, False, task_id=12)
 
     assert result["status"] == "completed"
-    assert captured["image_derived_title"] == "travel mug"
+    assert result["result"]["optimized_title"] == "不锈钢保温杯"
+    assert result["result"]["text_generation"]["status"] == "not_requested"
+
+
+def test_deterministic_dimensions_remain_instance_callable() -> None:
+    service = object.__new__(ProductProcessingService)
+
+    result = service._extract_deterministic_size(
+        {"source_attributes": {"包装尺寸": "15*10*4cm", "重量": "180g"}}
+    )
+
+    assert result is not None
+    assert result["length_cm"] == 15
+    assert result["width_cm"] == 10
+    assert result["height_cm"] == 4
+    assert result["weight_g"] == 180
 
 
 def test_detail_generation_keeps_original_main_before_1688_detail_images(
@@ -839,7 +901,7 @@ def test_detail_generation_keeps_original_main_before_1688_detail_images(
     }
     monkeypatch.setattr(
         service,
-        "_generate_combined_text",
+        "_generate_doubao_text",
         lambda *args, **kwargs: {
             "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
             "description": VALID_DESCRIPTION,
@@ -847,8 +909,6 @@ def test_detail_generation_keeps_original_main_before_1688_detail_images(
             "product_dimensions": {},
         },
     )
-    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
-
     def detail(*args, **_kwargs):
         captured["references"] = args[5]
         return ["https://example.com/generated-detail.jpg"]
@@ -868,48 +928,78 @@ def test_detail_generation_keeps_original_main_before_1688_detail_images(
     ]
 
 
-def test_dimension_repair_runs_in_parallel_with_grid_generation(monkeypatch) -> None:
+def test_empty_detail_image_result_is_retryable_failure(monkeypatch) -> None:
     service = _process_service(monkeypatch)
-    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
-    grid_started = threading.Event()
-    size_finished = threading.Event()
-    monkeypatch.setattr(
-        service,
-        "_generate_combined_text",
-        lambda *args, **kwargs: {
-            "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
-            "description": VALID_DESCRIPTION,
-            "variant_translations": {},
-            "vision_subject": "travel mug",
-            "vision_preliminary_title": "Travel Mug",
-            "product_dimensions": {},
-        },
-    )
-    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
-
-    def size_repair(*args, **kwargs):
-        assert grid_started.wait(1), "grid generation did not start before dimension repair"
-        size_finished.set()
-        return {"length_cm": 10, "width_cm": 8, "height_cm": 20, "weight_g": 300}
-
-    def grid(*args, **kwargs):
-        grid_started.set()
-        assert size_finished.wait(1), "dimension repair did not overlap grid generation"
-        return GridImageOutput(
-            carousel_urls=tuple(f"https://example.com/grid-{index}.jpg" for index in range(4)),
-            summary_url="https://example.com/grid-summary.jpg",
-            attempt_count=1,
-            provider_status_class="success",
-        )
-
-    monkeypatch.setattr(service, "_generate_size", size_repair)
-    monkeypatch.setattr(service, "_generate_grid_images", grid)
-    settings = {**_settings(), "processing_scope": ["title", "details", "product_dimensions", "four_grid"]}
+    monkeypatch.setattr(service, "_generate_detail_images", lambda *args, **kwargs: [])
+    settings = {
+        **_settings(),
+        "processing_scope": ["title", "details", "detail_images"],
+    }
 
     result = service._process_one({"id": 1}, _draft(), settings, False, task_id=12)
 
+    assert result["status"] == "failed"
+    assert result["result"]["error_type"] == "detail_images_incomplete"
+    assert result["result"]["retryable"] is True
+
+
+def test_images_receipt_hash_changes_with_real_image_prompt_key() -> None:
+    service = object.__new__(ProductProcessingService)
+
+    class _MutablePromptRepository:
+        values = {"grid_image": "grid-v1"}
+
+        @classmethod
+        def prompts(cls):
+            return dict(cls.values)
+
+    service.repository = _MutablePromptRepository()
+    first = service._processing_stage_input_hash("images", {"source": "same"})
+    _MutablePromptRepository.values["grid_image"] = "grid-v2"
+    second = service._processing_stage_input_hash("images", {"source": "same"})
+
+    assert first != second
+
+
+def test_branch_receipt_inputs_track_real_dependencies_without_cross_scope(monkeypatch) -> None:
+    service = _process_service(monkeypatch)
+    service.repository = _ReceiptRepository()
+    captured: dict[str, dict] = {}
+    original_hash = service._processing_stage_input_hash
+
+    def capture(stage, input_data):
+        captured[stage] = input_data
+        return original_hash(stage, input_data)
+
+    monkeypatch.setattr(service, "_processing_stage_input_hash", capture)
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
+            attempt_count=1,
+            provider_status_class="success",
+        ),
+    )
+    draft = _draft()
+    draft["raw_payload"] = {
+        **draft["raw_payload"],
+        "description": "Source description changes the real image prompt context.",
+    }
+
+    result = service._process_one(
+        {"id": 1, "item_id": 101}, draft, _settings(), False, task_id=12
+    )
+
     assert result["status"] == "completed"
-    assert result["result"]["product_dimensions"]["weight_g"] == 300
+    assert captured["doubao_text"]["scope"] == ["details", "title"]
+    assert "four_grid" not in captured["doubao_text"]["scope"]
+    assert (
+        captured["images"]["source_facts"]["description"]
+        == "Source description changes the real image prompt context."
+    )
 
 
 def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(monkeypatch) -> None:
@@ -918,14 +1008,13 @@ def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(mon
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(
         service,
-        "_generate_combined_text",
+        "_generate_doubao_text",
         lambda *args, **kwargs: {
             "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
             "description": VALID_DESCRIPTION,
             "variant_translations": {},
         },
     )
-    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         service,
         "_generate_grid_images",
@@ -938,7 +1027,37 @@ def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(mon
     assert result["result"]["error_type"] == "image_grid_incomplete"
     assert result["result"]["failure_class"] == "technical_retryable"
     assert result["result"]["retryable"] is True
+    assert result["result"]["optimized_title"].startswith(
+        "Insulated Stainless Steel Travel Mug"
+    )
+    assert result["result"]["description"] == VALID_DESCRIPTION
+    assert result["result"]["text_generation"]["status"] == "success"
     assert "force_import_acknowledged" not in "|".join(result["result"]["ai_notes"])
+
+
+def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> None:
+    service = _process_service(monkeypatch)
+    service.repository = _ReceiptRepository()
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(
+            carousel_urls=(),
+            attempt_count=1,
+            provider_status_class="failed",
+        ),
+    )
+
+    result = service._process_one(
+        {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
+    )
+
+    assert result["status"] == "failed"
+    assert "doubao_text" in service.repository.receipts
+    assert service.repository.receipts["doubao_text"]["output"]["title"].startswith(
+        "Insulated Stainless Steel Travel Mug"
+    )
+    assert "images" not in service.repository.receipts
 
 
 def test_process_force_import_cannot_bypass_grid_completeness(monkeypatch) -> None:
@@ -947,14 +1066,13 @@ def test_process_force_import_cannot_bypass_grid_completeness(monkeypatch) -> No
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(
         service,
-        "_generate_combined_text",
+        "_generate_doubao_text",
         lambda *args, **kwargs: {
             "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
             "description": VALID_DESCRIPTION,
             "variant_translations": {},
         },
     )
-    monkeypatch.setattr(service, "_translate_variant_values", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         service,
         "_generate_grid_images",
