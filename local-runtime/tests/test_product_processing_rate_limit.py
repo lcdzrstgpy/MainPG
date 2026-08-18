@@ -72,7 +72,8 @@ def test_media_request_edit_waits_on_global_limiter(monkeypatch) -> None:
             return
 
     monkeypatch.setattr(media_module._SESSION, "post", lambda *a, **k: _FakeResponse())
-    result = ProductImageProcessor._request_edit(
+    processor = ProductImageProcessor.__new__(ProductImageProcessor)
+    result = processor._request_edit(
         {"base_url": "https://example.test", "api_key": "k", "model": "m", "reference_model": ""},
         "prompt",
         [("x".encode(), "ref.png", "image/png")],
