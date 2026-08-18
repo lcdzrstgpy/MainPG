@@ -5,6 +5,7 @@ import threading
 import pytest
 
 import wh_local.modules.product_processing.service as service_module
+from wh_local.data_collection.public_image_fetch import FetchedPublicImage, PublicImageFetchError
 from wh_local.modules.product_processing.doubao_vision import (
     DoubaoVisionError,
     SubjectAnalysis,
@@ -28,6 +29,30 @@ VALID_DESCRIPTION = "\n".join(
         "- USEFUL PORTABLE FORMAT: Its travel-oriented form combines the confirmed capacity and construction in one practical item for supported on-the-go use.",
     ]
 )
+
+
+def test_doubao_source_image_download_retries_transient_failure(monkeypatch) -> None:
+    service = object.__new__(ProductProcessingService)
+    service._source_data_url_cache = {}
+    service._source_data_url_lock = threading.Lock()
+    calls = 0
+
+    def fetcher(_url: str, **_kwargs) -> FetchedPublicImage:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise PublicImageFetchError("temporary CDN failure")
+        return FetchedPublicImage(b"\xff\xd8\xffimage", "image/jpeg", _url)
+
+    service._public_image_fetcher = fetcher
+    monkeypatch.setattr(service_module.time, "sleep", lambda _seconds: None)
+
+    value = service._image_to_data_url("https://example.com/source.jpg")
+
+    assert value.startswith("data:image/jpeg;base64,")
+    assert calls == 3
+    assert service._image_to_data_url("https://example.com/source.jpg") == value
+    assert calls == 3
 
 
 def _raw() -> dict:
@@ -1018,7 +1043,9 @@ def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(mon
     monkeypatch.setattr(
         service,
         "_generate_grid_images",
-        lambda *args, **kwargs: GridImageOutput(),  # 空输出 = 质量门/拆图失败
+        lambda *args, **kwargs: GridImageOutput(
+            rejected_image_paths=("/tmp/provider-original.png",)
+        ),  # 空轮播 + 原图留存 = 质量门/拆图失败
     )
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
@@ -1032,6 +1059,7 @@ def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(mon
     )
     assert result["result"]["description"] == VALID_DESCRIPTION
     assert result["result"]["text_generation"]["status"] == "success"
+    assert result["result"]["rejected_image_paths"] == ["/tmp/provider-original.png"]
     assert "force_import_acknowledged" not in "|".join(result["result"]["ai_notes"])
 
 
@@ -1060,9 +1088,9 @@ def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> 
     assert "images" not in service.repository.receipts
 
 
-def test_process_force_import_cannot_bypass_grid_completeness(monkeypatch) -> None:
-    """历史 force-import 参数也不能把零轮播结果标成成功。"""
+def test_process_force_import_enables_explicit_grid_quality_override(monkeypatch) -> None:
     service = _process_service(monkeypatch)
+    captured: dict[str, object] = {}
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(
         service,
@@ -1073,16 +1101,20 @@ def test_process_force_import_cannot_bypass_grid_completeness(monkeypatch) -> No
             "variant_translations": {},
         },
     )
-    monkeypatch.setattr(
-        service,
-        "_generate_grid_images",
-        lambda *args, **kwargs: GridImageOutput(),  # 空输出 = 质量门失败
-    )
+    def generate_grid(*_args, **kwargs):
+        captured["allow_quality_override"] = kwargs.get("allow_quality_override")
+        return GridImageOutput(
+            carousel_urls=tuple(f"https://example.com/forced-{index}.jpg" for index in range(4)),
+            attempt_count=1,
+            provider_status_class="quality_override",
+        )
+
+    monkeypatch.setattr(service, "_generate_grid_images", generate_grid)
 
     settings = {**_settings(), "force_import_draft_ids": [7]}
     result = service._process_one({"id": 1}, _draft(), settings, False, task_id=12)
 
-    assert result["status"] == "failed"
-    assert result["result"]["error_type"] == "image_grid_incomplete"
-    assert result["result"]["retryable"] is True
-    assert "force_import_acknowledged" not in "|".join(result["result"]["ai_notes"])
+    assert captured["allow_quality_override"] is True
+    assert result["status"] == "completed"
+    assert len(result["result"]["carousel_image_paths"]) == 4
+    assert result["result"]["provider_status_classes"]["four_grid"] == "quality_override"

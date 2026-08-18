@@ -192,6 +192,8 @@ class GridImageOutput:
     attempt_count: int = 0
     provider_status_class: str = ""
     stage_timings_ms: dict[str, int] = field(default_factory=dict)
+    rejected_image_paths: tuple[str, ...] = ()
+    provider_original_image_paths: tuple[str, ...] = ()
 
     def __iter__(self):
         # Keep existing direct-call tests and integrations source compatible.
@@ -2683,6 +2685,12 @@ class ProductProcessingService:
                         {
                             "image_template": str(settings.get("image_template") or "A"),
                             "image_generation_count": image_generation_count,
+                            "allow_quality_override": int(draft["id"])
+                            in {
+                                int(value)
+                                for value in settings.get("force_import_draft_ids", [])
+                                if str(value).isdigit()
+                            },
                         }
                     )
                 grid_future = media_executor.submit(
@@ -2998,6 +3006,9 @@ class ProductProcessingService:
             (images_receipt_output or {}).get("grid_image_summary_path") or ""
         )
         grid_carousel_media: list[Any] = []
+        provider_original_image_paths: list[str] = list(
+            (images_receipt_output or {}).get("provider_original_image_paths") or []
+        )
         detail_image_paths: list[str] = list(
             (images_receipt_output or {}).get("detail_image_paths") or []
         )
@@ -3035,10 +3046,17 @@ class ProductProcessingService:
                     image_generation_count=image_generation_count,
                     vision_identity=vision_identity,
                     workspace_id=workspace_id,
+                    allow_quality_override=int(draft["id"])
+                    in {
+                        int(value)
+                        for value in settings.get("force_import_draft_ids", [])
+                        if str(value).isdigit()
+                    },
                 )
                 record_stage("grid_pipeline", stage_started)
             grid_image_paths, grid_summary_path = grid_output
             grid_carousel_media = list(grid_output.carousel_media)
+            provider_original_image_paths = list(grid_output.provider_original_image_paths)
             provider_attempts["four_grid"] = grid_output.attempt_count
             provider_status_classes["four_grid"] = grid_output.provider_status_class
             stage_timings_ms.update(grid_output.stage_timings_ms)
@@ -3056,8 +3074,9 @@ class ProductProcessingService:
                     "result": {
                         "error_type": "image_grid_incomplete",
                         "failure_class": "technical_retryable",
-                        "operator_hint": "已阻止缺图结果进入预检；请重试或检查图片模型实际输出尺寸",
+                        "operator_hint": "生成图未通过本地质量门；可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警",
                         "retryable": True,
+                        "rejected_image_paths": list(grid_output.rejected_image_paths),
                         "optimized_title": optimized_title,
                         "description": description,
                         "variant_value_translations": variant_value_translations,
@@ -3159,6 +3178,7 @@ class ProductProcessingService:
                     "carousel_image_paths": grid_image_paths,
                     "grid_image_summary_path": grid_summary_path,
                     "detail_image_paths": detail_image_paths,
+                    "provider_original_image_paths": provider_original_image_paths,
                 },
                 workspace_id=workspace_id,
             )
@@ -3239,6 +3259,7 @@ class ProductProcessingService:
             "media_contract_version": int(draft.get("media_contract_version") or 1),
             "grid_image_summary_path": grid_summary_path,
             "detail_image_paths": detail_image_paths,
+            "provider_original_image_paths": provider_original_image_paths,
             "vision_identity": vision_identity,
             "text_generation": text_generation,
             "ai_notes": ai_notes,
@@ -3482,6 +3503,7 @@ class ProductProcessingService:
         image_generation_count: int = 4,
         vision_identity: dict[str, Any] | None = None,
         workspace_id: str = "local",
+        allow_quality_override: bool = False,
     ) -> GridImageOutput:
         """Generate four carousel images with a selectable 1/2/4-image transport layout."""
         if not _ai_enabled() or not reference_urls:
@@ -3496,8 +3518,11 @@ class ProductProcessingService:
         provider_status_class = "success"
         grid_timings_ms: dict[str, int] = {}
         parts: list[Any] = []
+        provider_originals: list[Any] = []
+        provider_original_paths: tuple[str, ...] = ()
         failed_slots: list[tuple[int, str]] = []
         slot_recovery_used = False
+        quality_override_used = False
         try:
             processor = self._media_processor()
             is_b_template = str(image_template).strip().upper() == "B"
@@ -3593,6 +3618,12 @@ class ProductProcessingService:
                     image_size="2048x2048",
                     layout_scaffold=True,
                 )
+                provider_originals.append(media)
+                provider_original_paths = self._persist_provider_grid_originals(
+                    provider_originals,
+                    task_id,
+                    draft_id,
+                )
                 record_media(media)
                 validation_started = time.perf_counter()
                 try:
@@ -3665,9 +3696,14 @@ class ProductProcessingService:
                                 ),
                                 None,
                             )
-                            if part is None or panel_issues(part):
+                            issues = panel_issues(part) if part is not None else []
+                            if part is None or (issues and not allow_quality_override):
                                 failed_slots.append((slot, role))
                             else:
+                                if issues:
+                                    quality_override_used = True
+                                    if ai_notes is not None:
+                                        ai_notes.append(f"four_grid:quality_override:{slot}")
                                 usable_parts.append(part)
 
                     if failed_slots:
@@ -3822,8 +3858,12 @@ class ProductProcessingService:
                 attempt_count=attempt_count,
                 provider_status_class=provider_status_class,
                 stage_timings_ms=grid_timings_ms,
+                rejected_image_paths=provider_original_paths,
+                provider_original_image_paths=provider_original_paths,
             )
-        if slot_recovery_used:
+        if quality_override_used:
+            provider_status_class = "quality_override"
+        elif slot_recovery_used:
             provider_status_class = "recovered_slot_retry"
         parts.sort(
             key=lambda value: int(match.group(1)) if (match := re.fullmatch(r"grid_image_(\d+)", str(getattr(value, "stage", "")))) else 99
@@ -3844,13 +3884,44 @@ class ProductProcessingService:
                 carousel.append(str(value))
                 carousel_media.append(part)
         return GridImageOutput(
-            tuple(carousel[:4]),
-            summary_path,
-            tuple(carousel_media[:4]),
-            attempt_count,
-            provider_status_class,
-            grid_timings_ms,
+            carousel_urls=tuple(carousel[:4]),
+            summary_url=summary_path,
+            carousel_media=tuple(carousel_media[:4]),
+            attempt_count=attempt_count,
+            provider_status_class=provider_status_class,
+            stage_timings_ms=grid_timings_ms,
+            provider_original_image_paths=provider_original_paths,
         )
+
+    def _persist_provider_grid_originals(
+        self,
+        media_items: list[Any],
+        task_id: int,
+        draft_id: int,
+    ) -> tuple[str, ...]:
+        """Keep provider originals that failed local validation for operator review."""
+        save_generated_image = getattr(getattr(self, "assets", None), "save_generated_image", None)
+        if not callable(save_generated_image):
+            return ()
+        paths: list[str] = []
+        for index, media in enumerate(media_items, start=1):
+            content = bytes(getattr(media, "content", b"") or b"")
+            if not content:
+                continue
+            stage = str(getattr(media, "stage", "grid_image") or "grid_image")
+            suffix = str(getattr(media, "suffix", ".jpg") or ".jpg")
+            try:
+                path = save_generated_image(
+                    task_id,
+                    draft_id,
+                    f"{stage}_provider_original_{index}",
+                    content,
+                    suffix,
+                )
+            except (OSError, ValueError):
+                continue
+            paths.append(str(path))
+        return tuple(paths)
 
     def _generate_premium_images(
         self,
@@ -4810,9 +4881,16 @@ class ProductProcessingService:
             cached = self._source_data_url_cache.get(image_url)
         if cached:
             return cached
-        try:
-            image = fetch_public_image(image_url, max_bytes=8 * 1024 * 1024, timeout_seconds=30)
-        except Exception:
+        image = None
+        fetcher = getattr(self, "_public_image_fetcher", fetch_public_image)
+        for attempt in range(3):
+            try:
+                image = fetcher(image_url, max_bytes=8 * 1024 * 1024, timeout_seconds=30)
+                break
+            except Exception:
+                if attempt < 2:
+                    time.sleep(0.25 * (attempt + 1))
+        if image is None:
             return ""
         content = getattr(image, "content", None) or b""
         if not content:
