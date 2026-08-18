@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import mimetypes
 import re
 import threading
@@ -71,6 +72,9 @@ IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS = 600.0
 IMAGE_GENERATION_TOTAL_TIMEOUT_SECONDS = 660.0
 PROVIDER_TRANSIENT_FAILURE_THRESHOLD = 2
 PROVIDER_TRANSIENT_COOLDOWN_SECONDS = 45.0
+WUYIN_IMAGE_SUBMIT_PATH = "/api/async/image_gpt"
+WUYIN_IMAGE_DETAIL_PATH = "/api/async/detail"
+WUYIN_IMAGE_POLL_INTERVAL_SECONDS = 3.0
 
 # 图片 provider 轮巡游标（对齐原项目 native_product_engine._PROVIDER_CURSORS）：
 # 进程内全局共享、线程锁保护，按"每次图片请求"取模轮转起始 provider，实现负载均衡。
@@ -923,8 +927,8 @@ class ProductImageProcessor:
             self._provider_transient_failures.pop(key, None)
             self._provider_cooldown_until.pop(key, None)
 
-    def _load_references(self, values: Iterable[str], *, limit: int) -> list[tuple[bytes, str, str]]:
-        references: list[tuple[bytes, str, str]] = []
+    def _load_references(self, values: Iterable[str], *, limit: int) -> list[tuple[bytes, str, str] | tuple[bytes, str, str, str]]:
+        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]] = []
         seen: set[str] = set()
         errors: list[str] = []
         for raw in values:
@@ -977,7 +981,7 @@ class ProductImageProcessor:
                         )
                     errors.append(detail)
                     continue
-                references.append((content, _filename_for_url(value), content_type))
+                references.append((content, _filename_for_url(value), content_type, value))
         if not references:
             detail = f" ({errors[0]})" if errors else ""
             raise MediaProcessingError(f"reference image download failed{detail}")
@@ -1015,24 +1019,32 @@ class ProductImageProcessor:
             pending.set()
         return downloaded
 
-    @staticmethod
     def _request_edit(
+        self,
         provider: dict[str, str],
         prompt: str,
-        references: list[tuple[bytes, str, str]],
+        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
         *,
         timeout_seconds: float = IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS,
         image_size: str | None = None,
         reference_model: str | None = None,
     ) -> tuple[bytes, str]:
+        if _is_wuyin_image_provider(provider):
+            return self._request_wuyin_image(
+                provider,
+                prompt,
+                references,
+                timeout_seconds=timeout_seconds,
+                image_size=image_size,
+            )
         files: Any
         if len(references) == 1:
-            content, filename, content_type = references[0]
+            content, filename, content_type = references[0][:3]
             files = {"image": (filename, BytesIO(content), content_type)}
         else:
             files = [
                 ("image[]", (filename, BytesIO(content), content_type))
-                for content, filename, content_type in references
+                for content, filename, content_type in (ref[:3] for ref in references)
             ]
         # 与文本请求共享全局速率限制：图片生成最重且最容易被供应商限流。
         global_ai_request_limiter().acquire()
@@ -1078,6 +1090,187 @@ class ProductImageProcessor:
         if not content or not content_type.startswith("image/"):
             raise MediaProcessingError("provider result is not an image")
         return content, content_type
+
+    def _request_wuyin_image(
+        self,
+        provider: dict[str, str],
+        prompt: str,
+        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
+        *,
+        timeout_seconds: float,
+        image_size: str | None = None,
+    ) -> tuple[bytes, str]:
+        urls = [
+            str(ref[3]).strip()
+            for ref in references
+            if len(ref) >= 4 and is_safe_external_url(str(ref[3]).strip())
+        ]
+        global_ai_request_limiter().acquire()
+        response = _SESSION.post(
+            f"{provider['base_url']}{WUYIN_IMAGE_SUBMIT_PATH}",
+            params={"key": provider["api_key"]},
+            headers={
+                "Authorization": provider["api_key"],
+                "Content-Type": "application/json",
+            },
+            json={
+                "prompt": prompt,
+                "size": _wuyin_size(image_size or provider.get("image_size")),
+                **({"urls": urls} if urls else {}),
+            },
+            timeout=max(1.0, min(30.0, float(timeout_seconds))),
+        )
+        try:
+            if not response.ok:
+                raise MediaProcessingError(
+                    f"provider returned HTTP {response.status_code}",
+                    status_code=response.status_code,
+                )
+            payload = response.json()
+        finally:
+            response.close()
+        if not isinstance(payload, dict) or int(payload.get("code") or 0) != 200:
+            raise MediaProcessingError(f"provider submit failed: {_provider_message(payload)}")
+        data = payload.get("data") or {}
+        task_id = str(data.get("id") or data.get("task_id") or "").strip() if isinstance(data, dict) else ""
+        if not task_id:
+            raise MediaProcessingError("provider response does not contain image task id")
+        result_url = self._poll_wuyin_image_result(provider, task_id, timeout_seconds=timeout_seconds)
+        downloaded = _SESSION.get(result_url, timeout=360, allow_redirects=False)
+        try:
+            downloaded.raise_for_status()
+            content = bytes(downloaded.content)
+            content_type = str(downloaded.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
+        finally:
+            downloaded.close()
+        if not content or not content_type.startswith("image/"):
+            raise MediaProcessingError("provider result is not an image")
+        return content, content_type
+
+    def _poll_wuyin_image_result(
+        self,
+        provider: dict[str, str],
+        task_id: str,
+        *,
+        timeout_seconds: float,
+    ) -> str:
+        deadline = time.monotonic() + max(10.0, min(float(timeout_seconds), IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS))
+        last_message = ""
+        while time.monotonic() < deadline:
+            time.sleep(WUYIN_IMAGE_POLL_INTERVAL_SECONDS)
+            response = _SESSION.get(
+                f"{provider['base_url']}{WUYIN_IMAGE_DETAIL_PATH}",
+                params={"key": provider["api_key"], "id": task_id},
+                headers={"Authorization": provider["api_key"]},
+                timeout=30,
+            )
+            try:
+                if not response.ok:
+                    last_message = f"detail HTTP {response.status_code}"
+                    continue
+                payload = response.json()
+            finally:
+                response.close()
+            if not isinstance(payload, dict):
+                last_message = "detail response is incompatible"
+                continue
+            code = int(payload.get("code") or 0)
+            if code and code != 200:
+                last_message = _provider_message(payload)
+                if code in {400, 401, 403, 404}:
+                    raise MediaProcessingError(f"provider image task failed: {last_message}")
+                continue
+            data = payload.get("data") or {}
+            status_value = str(data.get("status") or payload.get("status") or "").strip().lower() if isinstance(data, dict) else ""
+            result_url = _first_image_url(data) or _first_image_url(payload)
+            if result_url:
+                return result_url
+            message = _provider_message(payload)
+            message_lower = message.lower()
+            if status_value in {"2", "success", "succeeded", "finish", "finished", "completed", "done"}:
+                raise MediaProcessingError(f"provider image task succeeded without image url: {message}")
+            if status_value == "5" and ("成功" in message or "success" in message_lower):
+                last_message = message or "status=5"
+                continue
+            if status_value in {"3", "4", "5", "fail", "failed", "error", "cancelled", "canceled"}:
+                raise MediaProcessingError(f"provider image task failed: {message}")
+            last_message = message or f"status={status_value or 'processing'}"
+        raise MediaProcessingError(f"provider image task timed out: {last_message}")
+
+
+def _is_wuyin_image_provider(provider: dict[str, str]) -> bool:
+    return urlsplit(str(provider.get("base_url") or "")).netloc.lower() == "api.wuyinkeji.com"
+
+
+def _wuyin_size(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"1024x1024", "2048x2048", "4096x4096"}:
+        return "1:1"
+    if raw in {
+        "auto",
+        "1:1",
+        "3:2",
+        "2:3",
+        "16:9",
+        "9:16",
+        "4:3",
+        "3:4",
+        "21:9",
+        "9:21",
+        "1:3",
+        "3:1",
+        "2:1",
+        "1:2",
+    }:
+        return raw
+    return "1:1"
+
+
+def _first_image_url(value: Any) -> str:
+    if isinstance(value, str):
+        candidate = value.strip()
+        if is_safe_external_url(candidate):
+            return candidate
+        if candidate.startswith(("{", "[")):
+            try:
+                return _first_image_url(json.loads(candidate))
+            except json.JSONDecodeError:
+                return ""
+        return ""
+    if isinstance(value, dict):
+        for key in ("url", "image_url", "image", "src", "href"):
+            found = _first_image_url(value.get(key))
+            if found:
+                return found
+        for key in ("result", "results", "images", "urls", "output", "outputs"):
+            found = _first_image_url(value.get(key))
+            if found:
+                return found
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            found = _first_image_url(item)
+            if found:
+                return found
+    return ""
+
+
+def _provider_message(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return "provider response is incompatible"
+    for key in ("msg", "message", "error", "reason"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:180]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        for key in ("msg", "message", "error", "reason"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:180]
+    try:
+        return json.dumps(payload, ensure_ascii=False)[:180]
+    except Exception:
+        return "provider returned an error"
 
 
 def _safe_error(error: BaseException) -> str:

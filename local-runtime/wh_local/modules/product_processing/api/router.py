@@ -4,10 +4,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
+from ....config import default_config
+from ....db import transaction
+from ....session import Actor, actor_from_authorization
 from ..dimension_canvas_service import DimensionCanvasService
 from ..infrastructure.assets import ProductProcessingAssets
 from ..infrastructure.database import create_database
@@ -328,8 +331,14 @@ def create_product_processing_router(
         request: Request,
         body: DraftProcessRequest,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         payload = {**body.model_dump(), **extras(body)}
+        _attach_billing_context_and_require_points(
+            payload,
+            actor,
+            source_ref="product_processing:drafts/process",
+        )
         return _call(
             service.process_drafts,
             payload,
@@ -343,14 +352,21 @@ def create_product_processing_router(
     async def process_workbook(
         request: Request,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         form, file = await _upload_form(request, "file")
         try:
+            normalized = _normalize_form(form)
+            _attach_billing_context_and_require_points(
+                normalized,
+                actor,
+                source_ref="product_processing:workbook",
+            )
             return _call(
                 service.process_workbook,
                 _filename(file, "products.xlsx"),
                 await file.read(),
-                _normalize_form(form),
+                normalized,
                 idempotency_key=request.headers.get("Idempotency-Key"),
                 workspace_id=_workspace(workspace_id),
             )
@@ -361,14 +377,24 @@ def create_product_processing_router(
     async def process_single(
         request: Request,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         form = await request.form()
         image = form.get("image_file")
         content = await image.read() if image is not None and hasattr(image, "read") else None
         try:
+            normalized = _normalize_form(dict(form))
+            billing_payload = {**normalized, "max_products": 1, "draft_ids": [1]}
+            _attach_billing_context_and_require_points(
+                billing_payload,
+                actor,
+                source_ref="product_processing:single",
+            )
+            if "_billing" in billing_payload:
+                normalized["_billing"] = billing_payload["_billing"]
             return _call(
                 service.process_single,
-                _normalize_form(dict(form)),
+                normalized,
                 image_content=content,
                 image_filename=_filename(image, "product.jpg") if image else "",
                 image_content_type=str(getattr(image, "content_type", "") or "") if image else "",
@@ -638,6 +664,91 @@ def _call(function, *args, **kwargs):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except (ValueError, ValidationError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+def _attach_billing_context_and_require_points(
+    payload: dict[str, Any],
+    actor: Actor,
+    *,
+    source_ref: str,
+) -> None:
+    if bool(payload.get("preflight_only")) or bool(payload.get("category_preflight_only")):
+        return
+    quantity = _billing_quantity(payload)
+    estimated_points = quantity * _billing_points_per_item(payload)
+    if estimated_points <= 0:
+        return
+    db_path = default_config().database_path
+    with transaction(db_path) as conn:
+        wallet = conn.execute(
+            """
+            SELECT points_balance, locked_points
+            FROM billing_wallets
+            WHERE account_id = ? AND workspace_id = ?
+            """,
+            (actor.id, actor.workspace_id),
+        ).fetchone()
+        available = (
+            int(wallet["points_balance"]) - int(wallet["locked_points"])
+            if wallet is not None
+            else 0
+        )
+    if available < estimated_points:
+        raise HTTPException(
+            status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"积分不足：本次预计需要 {estimated_points} 积分，当前可用 {available} 积分。",
+        )
+    payload["_billing"] = {
+        "account_id": actor.id,
+        "username": actor.username,
+        "role": actor.role,
+        "workspace_id": actor.workspace_id,
+        "workspace_code": actor.workspace_code,
+        "source_ref": source_ref,
+        "estimated_points": estimated_points,
+        "pricing_version": "product-processing-fixed-test-v1",
+    }
+
+
+def _billing_points_per_item(payload: dict[str, Any]) -> int:
+    scope = set(payload.get("processing_scope") or [])
+    text_enabled = (
+        "title" in scope
+        or "details" in scope
+        or "product_dimensions" in scope
+        or bool(payload.get("title_optimize", True))
+        or bool(payload.get("description", True))
+        or bool(payload.get("size", True))
+    )
+    image_enabled = (
+        "four_grid" in scope
+        or bool(payload.get("grid_image", True))
+        or bool(payload.get("image_rewrite", True))
+    )
+    return (30 if text_enabled else 0) + (599 if image_enabled else 0)
+
+
+def _billing_quantity(payload: dict[str, Any]) -> int:
+    raw_ids = payload.get("draft_ids")
+    if isinstance(raw_ids, list):
+        count = len(
+            {
+                int(item)
+                for item in raw_ids
+                if str(item).strip().isdigit() and int(item) > 0
+            }
+        )
+    else:
+        count = 0
+    try:
+        max_count = int(payload.get("max_products") or 0)
+    except (TypeError, ValueError):
+        max_count = 0
+    if count and max_count > 0:
+        return min(count, max_count)
+    if count:
+        return count
+    return max(1, max_count)
 
 
 async def _upload_form(request: Request, field: str):

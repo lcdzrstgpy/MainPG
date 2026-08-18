@@ -1,4 +1,5 @@
 import { ppRequest, ppUpload, type ApiContext } from "./client";
+import { productProcessingApiContext } from "./context";
 import {
   mapChangeSet,
   mapDimensionNotifications,
@@ -24,7 +25,10 @@ import type {
 } from "../types/dimensionCanvas";
 
 const API_BASE = "/api/product-processing/dimension-canvas";
-const context: ApiContext = { baseUrl: "", token: "", workspaceId: "default" };
+
+function apiContext(): ApiContext {
+  return productProcessingApiContext();
+}
 
 type Json = Record<string, unknown>;
 
@@ -149,7 +153,7 @@ export async function importPreviewItem(request: {
   task_id: number;
   task_item_id: number;
 }): Promise<DimensionCanvasItem> {
-  const payload = await ppRequest<unknown>(context, `${API_BASE}/items/import-preview-item`, {
+  const payload = await ppRequest<unknown>(apiContext(), `${API_BASE}/items/import-preview-item`, {
     method: "POST",
     body: request,
   });
@@ -157,7 +161,7 @@ export async function importPreviewItem(request: {
 }
 
 export async function getDimensionItem(itemId: string): Promise<DimensionCanvasItem> {
-  const payload = await ppRequest<unknown>(context, `${API_BASE}/items/${encodeURIComponent(itemId)}`);
+  const payload = await ppRequest<unknown>(apiContext(), `${API_BASE}/items/${encodeURIComponent(itemId)}`);
   return unwrap(payload, "item", mapItem);
 }
 
@@ -165,7 +169,7 @@ export async function saveDimensionItem(
   itemId: string,
   request: SaveDimensionItemRequest,
 ): Promise<DimensionCanvasItem> {
-  const payload = await ppRequest<unknown>(context, `${API_BASE}/items/${encodeURIComponent(itemId)}`, {
+  const payload = await ppRequest<unknown>(apiContext(), `${API_BASE}/items/${encodeURIComponent(itemId)}`, {
     method: "PATCH",
     body: serializeSaveDimensionItemRequest(request),
   });
@@ -176,7 +180,7 @@ export async function uploadDimensionAsset(itemId: string, file: File): Promise<
   const formData = new FormData();
   formData.append("file", file);
   const payload = await ppUpload<unknown>(
-    context,
+    apiContext(),
     `${API_BASE}/items/${encodeURIComponent(itemId)}/assets`,
     formData,
   );
@@ -192,7 +196,7 @@ export async function completeDimensionItem(
   expectedRevision: number,
 ): Promise<DimensionCanvasItem> {
   const payload = await ppRequest<unknown>(
-    context,
+    apiContext(),
     `${API_BASE}/items/${encodeURIComponent(itemId)}/complete`,
     { method: "POST", body: { expected_revision: expectedRevision } },
   );
@@ -201,7 +205,7 @@ export async function completeDimensionItem(
 
 export async function retryDimensionRender(itemId: string, expectedRevision: number): Promise<DimensionCanvasItem> {
   const payload = await ppRequest<unknown>(
-    context,
+    apiContext(),
     `${API_BASE}/items/${encodeURIComponent(itemId)}/retry-render`,
     { method: "POST", body: { expected_revision: expectedRevision } },
   );
@@ -209,19 +213,19 @@ export async function retryDimensionRender(itemId: string, expectedRevision: num
 }
 
 export async function listDimensionBatches(): Promise<DimensionCanvasBatch[]> {
-  const payload = await ppRequest<unknown>(context, `${API_BASE}/batches`);
+  const payload = await ppRequest<unknown>(apiContext(), `${API_BASE}/batches`);
   const raw = record(payload);
   return (Array.isArray(raw.batches) ? raw.batches : Array.isArray(payload) ? payload : []).map(mapBatch);
 }
 
 export async function getDimensionBatch(batchId: string): Promise<DimensionCanvasBatch> {
-  const payload = await ppRequest<unknown>(context, `${API_BASE}/batches/${encodeURIComponent(batchId)}`);
+  const payload = await ppRequest<unknown>(apiContext(), `${API_BASE}/batches/${encodeURIComponent(batchId)}`);
   return unwrap(payload, "batch", mapBatch);
 }
 
 export async function submitDimensionBatchReview(batchId: string): Promise<DimensionChangeSet> {
   const payload = await ppRequest<unknown>(
-    context,
+    apiContext(),
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/submit-review`,
     { method: "POST", body: {} },
   );
@@ -229,7 +233,7 @@ export async function submitDimensionBatchReview(batchId: string): Promise<Dimen
 }
 
 export async function listImportableDimensionTasks(): Promise<ImportableDimensionTask[]> {
-  const payload = await ppRequest<unknown>(context, `${API_BASE}/importable-tasks`);
+  const payload = await ppRequest<unknown>(apiContext(), `${API_BASE}/importable-tasks`);
   const raw = record(payload);
   const tasks = Array.isArray(raw.tasks) ? raw.tasks : Array.isArray(payload) ? payload : [];
   return tasks.map((value) => {
@@ -255,7 +259,7 @@ export async function getDimensionTaskEligibility(
   taskId: number,
 ): Promise<DimensionTaskEligibility> {
   const payload = await ppRequest<unknown>(
-    context,
+    apiContext(),
     `${API_BASE}/tasks/${encodeURIComponent(String(taskId))}/eligibility`,
   );
   const raw = record(payload);
@@ -272,7 +276,7 @@ export async function importDimensionTask(request: {
   task_item_ids: number[];
   existing_dimension_actions?: Record<string, "keep" | "remake" | "skip">;
 }): Promise<DimensionCanvasBatch> {
-  const payload = await ppRequest<unknown>(context, `${API_BASE}/batches/import-task`, {
+  const payload = await ppRequest<unknown>(apiContext(), `${API_BASE}/batches/import-task`, {
     method: "POST",
     body: request,
   });
@@ -281,7 +285,7 @@ export async function importDimensionTask(request: {
 
 export async function getDimensionChangeSet(changeSetId: string): Promise<DimensionChangeSet> {
   const payload = await ppRequest<unknown>(
-    context,
+    apiContext(),
     `${API_BASE}/change-sets/${encodeURIComponent(changeSetId)}`,
   );
   return unwrap(payload, "change_set", mapChangeSet);
@@ -289,7 +293,7 @@ export async function getDimensionChangeSet(changeSetId: string): Promise<Dimens
 
 export async function acceptDimensionChangeSet(changeSetId: string): Promise<DimensionChangeSet> {
   const payload = await ppRequest<unknown>(
-    context,
+    apiContext(),
     `${API_BASE}/change-sets/${encodeURIComponent(changeSetId)}/accept`,
     { method: "POST", body: {} },
   );
@@ -301,7 +305,7 @@ export async function acceptDimensionChangeItem(
   changeItemId: string,
 ): Promise<DimensionChangeSet> {
   const payload = await ppRequest<unknown>(
-    context,
+    apiContext(),
     `${API_BASE}/change-sets/${encodeURIComponent(changeSetId)}/items/${encodeURIComponent(changeItemId)}/accept`,
     { method: "POST", body: {} },
   );
@@ -313,7 +317,7 @@ export async function rejectDimensionChangeItem(
   changeItemId: string,
 ): Promise<DimensionChangeSet> {
   const payload = await ppRequest<unknown>(
-    context,
+    apiContext(),
     `${API_BASE}/change-sets/${encodeURIComponent(changeSetId)}/items/${encodeURIComponent(changeItemId)}/reject`,
     { method: "POST", body: {} },
   );
@@ -322,13 +326,13 @@ export async function rejectDimensionChangeItem(
 
 export async function listDimensionNotifications(after = "", signal?: AbortSignal): Promise<DimensionNotification[]> {
   const query = after ? `?after=${encodeURIComponent(after)}` : "";
-  const payload = await ppRequest<unknown>(context, `${API_BASE}/notifications${query}`, { signal });
+  const payload = await ppRequest<unknown>(apiContext(), `${API_BASE}/notifications${query}`, { signal });
   return mapDimensionNotifications(payload);
 }
 
 export async function markDimensionNotificationRead(notificationId: string): Promise<void> {
   await ppRequest<unknown>(
-    context,
+    apiContext(),
     `${API_BASE}/notifications/${encodeURIComponent(notificationId)}/read`,
     { method: "POST", body: {} },
   );

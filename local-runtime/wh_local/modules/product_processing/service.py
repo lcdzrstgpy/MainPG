@@ -16,6 +16,9 @@ from typing import Any
 
 from wh_local.data_collection.contracts import DailySelectionError
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
+from wh_local.billing import reserve_ai_usage, settle_ai_usage_success
+from wh_local.config import default_config
+from wh_local.session import Actor
 
 from .ai_client import AiClient, AiProviderError
 from .doubao_vision import (
@@ -168,6 +171,23 @@ def _is_non_retryable_provider_4xx(exc: Exception) -> bool:
     return isinstance(status_code, int) and 400 <= status_code < 500 and status_code != 429
 
 
+def _is_retryable_provider_failure(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 429 or (isinstance(status_code, int) and status_code >= 500):
+        return True
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "timed out",
+            "timeout",
+            "unreachable",
+            "connection pool timed out",
+            "exceeded its total timeout budget",
+        )
+    )
+
+
 def _media_types() -> tuple:
     """Lazily import the image adapter; requests/Pillow are optional at import time."""
     global _MEDIA_TYPES
@@ -202,6 +222,14 @@ class MediaUnavailableError(RuntimeError):
 
 class ListingTextConfigurationError(RuntimeError):
     """A provider-side 4xx cannot be repaired by another listing-text stage."""
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ListingTextTransientError(RuntimeError):
+    """A provider-side transient text failure should stop this item and retry later."""
 
     def __init__(self, message: str, *, status_code: int | None = None):
         super().__init__(message)
@@ -2065,6 +2093,13 @@ class ProductProcessingService:
                     result=processed.get("result") or {},
                     workspace_id=workspace_id,
                 )
+                if str(processed.get("status") or "") == "completed":
+                    self._settle_product_processing_item_success(
+                        task_id,
+                        int(item_id),
+                        settings,
+                        processed.get("result") or {},
+                    )
             except LookupError:
                 # 任务已被清理时忽略进度写入，不阻塞整体流程
                 pass
@@ -2155,6 +2190,77 @@ class ProductProcessingService:
             video_manifest_file=str(paths.video_manifest) if paths.video_manifest else "",
             workspace_id=workspace_id,
         )
+
+    def _settle_product_processing_item_success(
+        self,
+        task_id: int,
+        item_id: int,
+        settings: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        billing = settings.get("_billing")
+        if not isinstance(billing, dict):
+            return
+        account_id = self._text(billing.get("account_id"))
+        if not account_id:
+            return
+        actor = Actor(
+            id=account_id,
+            username=self._text(billing.get("username")) or account_id,
+            role=self._text(billing.get("role")) or "user",
+            workspace_id=self._text(billing.get("workspace_id")) or "default",
+            workspace_code=self._text(billing.get("workspace_code")) or "local-demo",
+        )
+        db_path = default_config().database_path
+        source_ref = self._text(billing.get("source_ref")) or "product_processing:item_success"
+        ai_notes = [str(note) for note in (result.get("ai_notes") or [])]
+        scope = set(settings.get("processing_scope") or [])
+        text_enabled = (
+            "title" in scope
+            or "details" in scope
+            or "product_dimensions" in scope
+            or bool(settings.get("title_optimize", True))
+            or bool(settings.get("description", True))
+            or bool(settings.get("size", True))
+        )
+        image_enabled = (
+            "four_grid" in scope
+            or bool(settings.get("grid_image", True))
+            or bool(settings.get("image_rewrite", True))
+            or any(note.startswith("image_set:4:ai") for note in ai_notes)
+        )
+
+        def settle(feature_key: str, suffix: str, provider: str, model: str) -> None:
+            reservation = reserve_ai_usage(
+                db_path,
+                actor,
+                feature_key=feature_key,
+                idempotency_key=f"product_processing:{task_id}:{item_id}:{suffix}",
+                quantity=1,
+                source_ref=source_ref,
+                metadata={
+                    "task_id": task_id,
+                    "item_id": item_id,
+                    "pricing_version": billing.get("pricing_version")
+                    or "product-processing-fixed-test-v1",
+                },
+            )
+            settle_ai_usage_success(
+                db_path,
+                str(reservation["usage_id"]),
+                provider=provider,
+                model=model,
+                metadata={
+                    "task_id": task_id,
+                    "item_id": item_id,
+                    "ai_notes": ai_notes[-8:],
+                },
+            )
+
+        if text_enabled:
+            settle("product_processing.text", "text", "ark/station", "combined_text")
+        if image_enabled:
+            settle("product_processing.image_grid_2k", "image_grid", "wuyin", "image_gpt")
 
     def _run_with_item_heartbeat(
         self,
@@ -2612,6 +2718,25 @@ class ProductProcessingService:
                         known_dimensions=deterministic_dimensions,
                         include_dimensions=needs_dimensions,
                     )
+                except ListingTextTransientError as exc:
+                    record_stage("combined_text", stage_started)
+                    return {
+                        **item,
+                        "title": local_title,
+                        "image_url": image_url,
+                        "status": "attention_required",
+                        "reason": "AI 文本服务临时不可用",
+                        "result": {
+                            "error_type": "text_provider_transient",
+                            "failure_class": "technical_retryable",
+                            "operator_hint": "文本模型上游暂时不可用或超时；请稍后重试，系统不会把该问题误判为商品描述内容问题。",
+                            "retryable": True,
+                            "ai_notes": ai_notes,
+                            "provider_attempts": {"combined_text": 1},
+                            "provider_status_classes": {"combined_text": "retryable_provider_failure"},
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
                 except ListingTextConfigurationError as exc:
                     record_stage("combined_text", stage_started)
                     return {
@@ -2685,6 +2810,25 @@ class ProductProcessingService:
                         ai_notes,
                         image_derived_title=vision_preliminary_title or vision_subject,
                     )
+                except ListingTextTransientError as exc:
+                    record_stage("title_generation", stage_started)
+                    return {
+                        **item,
+                        "title": local_title,
+                        "image_url": image_url,
+                        "status": "attention_required",
+                        "reason": "AI 文本服务临时不可用",
+                        "result": {
+                            "error_type": "text_provider_transient",
+                            "failure_class": "technical_retryable",
+                            "operator_hint": "文本模型上游暂时不可用或超时；请稍后重试。",
+                            "retryable": True,
+                            "ai_notes": ai_notes,
+                            "provider_attempts": {"title_generation": 1},
+                            "provider_status_classes": {"title_generation": "retryable_provider_failure"},
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
                 except ListingTextConfigurationError as exc:
                     record_stage("title_generation", stage_started)
                     return {
@@ -2726,6 +2870,25 @@ class ProductProcessingService:
                         prior_description=description_candidate,
                         contract_error=description_contract_error,
                     )
+                except ListingTextTransientError as exc:
+                    record_stage("description_repair", stage_started)
+                    return {
+                        **item,
+                        "title": local_title,
+                        "image_url": image_url,
+                        "status": "attention_required",
+                        "reason": "AI 文本服务临时不可用",
+                        "result": {
+                            "error_type": "text_provider_transient",
+                            "failure_class": "technical_retryable",
+                            "operator_hint": "文本模型上游暂时不可用或超时；请稍后重试。",
+                            "retryable": True,
+                            "ai_notes": ai_notes,
+                            "provider_attempts": {"description_repair": 1},
+                            "provider_status_classes": {"description_repair": "retryable_provider_failure"},
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
                 except ListingTextConfigurationError as exc:
                     record_stage("description_repair", stage_started)
                     return {
@@ -3410,6 +3573,11 @@ class ProductProcessingService:
                     _ai_error_reason(exc),
                     status_code=exc.status_code,
                 ) from exc
+            if _is_retryable_provider_failure(exc):
+                raise ListingTextTransientError(
+                    _ai_error_reason(exc),
+                    status_code=exc.status_code,
+                ) from exc
             return None
         except (ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "text", _ai_error_reason(exc))
@@ -3456,6 +3624,11 @@ class ProductProcessingService:
             self._note_ai_failure(ai_notes, "title", _ai_error_reason(exc))
             if _is_non_retryable_provider_4xx(exc):
                 raise ListingTextConfigurationError(
+                    _ai_error_reason(exc),
+                    status_code=exc.status_code,
+                ) from exc
+            if _is_retryable_provider_failure(exc):
+                raise ListingTextTransientError(
                     _ai_error_reason(exc),
                     status_code=exc.status_code,
                 ) from exc
@@ -3510,6 +3683,11 @@ class ProductProcessingService:
             self._note_ai_failure(ai_notes, "details", _ai_error_reason(exc))
             if _is_non_retryable_provider_4xx(exc):
                 raise ListingTextConfigurationError(
+                    _ai_error_reason(exc),
+                    status_code=exc.status_code,
+                ) from exc
+            if _is_retryable_provider_failure(exc):
+                raise ListingTextTransientError(
                     _ai_error_reason(exc),
                     status_code=exc.status_code,
                 ) from exc
@@ -3747,7 +3925,12 @@ class ProductProcessingService:
                         nonlocal printed_design
                         inspection = inspect_visible_text(bytes(getattr(part, "content", b"")))
                         if inspection is None:
-                            raise ValueError("四宫格 OCR 质量门不可用，已阻止未验证生成图")
+                            if ai_notes is not None and not any(
+                                note == "four_grid:ocr_gate:unavailable_soft_pass"
+                                for note in ai_notes
+                            ):
+                                ai_notes.append("four_grid:ocr_gate:unavailable_soft_pass")
+                            return []
                         issues: list[str] = list(dict.fromkeys(inspection.get("prominent", [])))
                         if inspection.get("chinese"):
                             if printed_design is None:
@@ -3763,7 +3946,9 @@ class ProductProcessingService:
                         return issues
 
                     usable_parts: list[Any] = []
-                    if not failed_slots:
+                    if not ocr_gate_enabled():
+                        usable_parts = list(carousel_parts)
+                    elif not failed_slots:
                         for slot, role in enumerate(panel_roles, start=1):
                             part = next(
                                 (

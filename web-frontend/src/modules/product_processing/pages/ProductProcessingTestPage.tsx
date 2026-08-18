@@ -5,6 +5,7 @@ import {
   ppUpload,
   type ApiContext,
 } from '../api/client';
+import { productProcessingApiContext } from '../api/context';
 import {
   type DraftSummary,
   type DraftUpdateRequest,
@@ -53,11 +54,7 @@ const DEFAULT_OPTIONS: ProductProcessingOptions = {
 };
 
 function getApiContext(): ApiContext {
-  return {
-    baseUrl: '',
-    token: '',
-    workspaceId: 'default',
-  };
+  return productProcessingApiContext();
 }
 
 function formatDateTime(value: string): string {

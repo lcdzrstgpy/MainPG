@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { ppRequest, type ApiContext } from "../api/client";
+import { productProcessingApiContext } from "../api/context";
 import type { TaskHistoryItem } from "../types";
 import "../styles/ProductProcessingVerifyPage.css";
 
@@ -13,7 +14,7 @@ type Props = {
 };
 
 function api(): ApiContext {
-  return { baseUrl: "", token: "", workspaceId: "default" };
+  return productProcessingApiContext();
 }
 
 function statusLabel(status: string): string {
