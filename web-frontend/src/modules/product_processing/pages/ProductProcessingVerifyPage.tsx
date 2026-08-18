@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useChangePoller } from '../../../shared/hooks/useChangePoller';
 import { SkuBatchManager } from '../components/SkuBatchManager';
 import { ppRequest, type ApiContext } from '../api/client';
-import { checkAiApiKeyReadiness } from '../../basic_settings/api/systemConfigApi';
+import { productProcessingApiContext } from '../api/context';
 import type {
   DraftSummary,
   DraftVariant,
@@ -25,7 +25,7 @@ type Props = {
 };
 
 function api(): ApiContext {
-  return { baseUrl: '', token: '', workspaceId: 'default' };
+  return productProcessingApiContext();
 }
 
 function draftDirty(draft: DraftSummary, edits: Record<number, DraftEdit>): boolean {
@@ -441,18 +441,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
 
   const handleProcess = async (preflightOnly = false) => {
     if (!selectedIds.size) { setError('请先勾选需要处理的草稿'); return; }
-    try {
-      const readiness = await checkAiApiKeyReadiness();
-      const missing: string[] = [];
-      if (!readiness.textConfigured) missing.push('文本模型');
-      if (!readiness.imageConfigured) missing.push('图片模型');
-      if (missing.length) {
-        setError(`请先在「系统配置」中配置${missing.join('、')}的 API Key，再开始处理`);
-        return;
-      }
-    } catch {
-      // 读取配置失败时不拦截，交由后端在处理时返回可读错误。
-    }
     const ids = Array.from(selectedIds);
     const dirtyTargets = drafts.filter((draft) => selectedIds.has(draft.id) && draftDirty(draft, edits));
     if (dirtyTargets.length) {

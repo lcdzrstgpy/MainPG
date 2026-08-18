@@ -5,10 +5,16 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from wh_local.customer.auth_server import create_auth_app
+from wh_local.customer.auth_service import _email_code_digest
 from wh_local.db import transaction
+
+_EMAIL_CODE_SECRET = "billing-test-secret-that-is-at-least-32-chars"
 
 
 def _register_and_login(client: TestClient, db_path: Path) -> str:
+    verification_id = "ver_billing_test"
+    email = "billing@example.test"
+    email_code = "654321"
     with transaction(db_path) as conn:
         conn.execute(
             """
@@ -16,11 +22,30 @@ def _register_and_login(client: TestClient, db_path: Path) -> str:
             VALUES ('MAINPG-BILL-TEST', 10, 0, '', 'test', datetime('now'))
             """
         )
+        conn.execute(
+            """
+            INSERT INTO auth_email_verifications (
+                verification_id, email, token_hash, purpose, expires_at
+            ) VALUES (?, ?, ?, 'register', '9999-12-31T00:00:00+00:00')
+            """,
+            (
+                verification_id,
+                email,
+                _email_code_digest(
+                    _EMAIL_CODE_SECRET,
+                    verification_id,
+                    email,
+                    "register",
+                    email_code,
+                ),
+            ),
+        )
     response = client.post(
         "/api/customer/register",
         json={
             "username": "billing_user",
-            "email": "billing@example.test",
+            "email": email,
+            "email_code": email_code,
             "password": "StrongPassword123!",
             "invitation_code": "MAINPG-BILL-TEST",
             "workspace_code": "billing-ws",
@@ -43,8 +68,13 @@ def test_billing_summary_requires_server_session(tmp_path: Path) -> None:
     assert response.status_code == 401
 
 
-def test_billing_topup_order_is_pending_and_idempotent(tmp_path: Path) -> None:
+def test_billing_topup_order_is_pending_and_idempotent(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "auth.sqlite3"
+    monkeypatch.setenv("WH_EMAIL_CODE_SECRET", _EMAIL_CODE_SECRET)
+    monkeypatch.setattr(
+        "wh_local.customer.auth_server.TencentCloudSESEmailSender.from_env",
+        lambda: object(),
+    )
     client = TestClient(create_auth_app(db_path))
     token = _register_and_login(client, db_path)
     headers = {"Authorization": f"Bearer {token}"}

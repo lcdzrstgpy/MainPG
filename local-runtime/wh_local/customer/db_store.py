@@ -88,6 +88,45 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                     now,
                 ),
             )
+            conn.execute(
+                """
+                INSERT INTO auth_accounts (
+                    account_id,
+                    username,
+                    email,
+                    display_name,
+                    role,
+                    workspace_id,
+                    account_status,
+                    email_verified_at,
+                    created_at,
+                    updated_at,
+                    login_status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+                ON CONFLICT(account_id) DO UPDATE SET
+                    username = excluded.username,
+                    email = excluded.email,
+                    display_name = excluded.display_name,
+                    role = excluded.role,
+                    workspace_id = excluded.workspace_id,
+                    account_status = excluded.account_status,
+                    updated_at = excluded.updated_at,
+                    login_status = excluded.login_status
+                """,
+                (
+                    user_id,
+                    customer.username,
+                    customer.email,
+                    customer.username,
+                    "admin",
+                    workspace_id,
+                    customer.account_status or "active",
+                    now,
+                    now,
+                    customer.login_status or "online",
+                ),
+            )
         return user_id, workspace_id
 
     def save_session(self, session: LocalSession, customer: CustomerAuthResult) -> None:

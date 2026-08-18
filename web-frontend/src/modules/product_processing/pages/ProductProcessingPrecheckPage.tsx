@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
+import { productProcessingApiContext } from '../api/context';
 import {
   finalizeProductPreview,
   getPreviewFinalizeRun,
@@ -59,7 +60,7 @@ type UndoSnackbar = {
 };
 
 function api(): ApiContext {
-  return { baseUrl: '', token: '', workspaceId: 'default' };
+  return productProcessingApiContext();
 }
 
 function taskStatusLabel(status: string): string {

@@ -33,7 +33,7 @@ const initialVisibility: Record<ApiKeyField, boolean> = {
 
 const defaultStatus: BasicSettingsStatus = {
   tone: "muted",
-  message: "填入模型名或 API Key 后保存，修改将应用到产品处理模块。",
+  message: "AI 文本与生图密钥由服务端统一托管，客户端只配置导出图床等本地参数。",
 };
 
 function validateForm(form: BasicSettingsForm, config: SystemConfigResponse | null): BasicSettingsFieldErrors {
@@ -171,41 +171,21 @@ export function BasicSettingsPage() {
         <div>
           <p className="eyebrow">BASIC SETTINGS</p>
           <h1>系统配置</h1>
-          <p>配置 AI 中转提供方参数：模型名称与 API Key。修改后重启服务或刷新产品处理模块生效。</p>
+          <p>AI 文本模型、生图模型和上游密钥由服务端统一托管，用户侧不需要也不应该填写模型 API Key。</p>
         </div>
       </section>
 
       <section className="settings-grid" aria-label="AI 提供方配置">
-        {/* 文本模型 API Key（仅保留用户填写入口） */}
-        <div className="settings-card">
-          <ApiKeyPanel
-            fieldId="textModelApiKey"
-            title="文本模型 API Key"
-            description="用于标题、卖点、描述、翻译和运营文案等文本 AI 能力。"
-            value={form.textModelApiKey}
-            placeholder="留空不修改文本模型 API Key"
-            visible={visibleFields.textModelApiKey}
-            configured={Boolean(config?.secrets.ai?.api_key_configured)}
-            error={fieldErrors.textModelApiKey}
-            onChange={(value) => updateField("textModelApiKey", value)}
-            onToggleVisible={() => toggleVisible("textModelApiKey")}
-          />
-        </div>
-
-        {/* 生图模型 API Key（仅保留用户填写入口） */}
-        <div className="settings-card">
-          <ApiKeyPanel
-            fieldId="imageModelApiKey"
-            title="生图模型 API Key"
-            description="用于四宫格拼接、详情图生成和图片处理相关能力。"
-            value={form.imageModelApiKey}
-            placeholder="留空不修改生图模型 API Key"
-            visible={visibleFields.imageModelApiKey}
-            configured={Boolean(config?.secrets.image?.api_key_configured)}
-            error={fieldErrors.imageModelApiKey}
-            onChange={(value) => updateField("imageModelApiKey", value)}
-            onToggleVisible={() => toggleVisible("imageModelApiKey")}
-          />
+        <div className="settings-card settings-card-wide">
+          <div className="settings-card-head">
+            <div>
+              <h3>AI 服务密钥</h3>
+              <p className="settings-card-description">
+                文本识别、生图、标题生成等调用统一走服务端密钥与积分账本；本地页面不再展示或保存 AI API Key，避免用户自行配置导致串账。
+              </p>
+            </div>
+            <span className="api-key-configured-badge is-configured">服务端托管</span>
+          </div>
         </div>
 
         <div className="settings-card settings-card-wide">
