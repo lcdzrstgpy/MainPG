@@ -214,14 +214,14 @@ class ProductImageProcessor:
                 4,
             ),
         )
-        references = list(extra_references or [])
-        references.extend(self._load_references(reference_values, limit=reference_limit))
+        references = self._load_references(reference_values, limit=reference_limit)
         if not references:
             raise MediaProcessingError("a confirmed source image is required for image processing")
         ordinary_reference_count = len(references)
+        references.extend(extra_references or [])
         if layout_scaffold:
             scaffold = build_grid_scaffold(references[0][0])
-            references = [(scaffold, "fixed-four-grid-layout.png", "image/png"), *references]
+            references = [*references, (scaffold, "fixed-four-grid-layout.png", "image/png")]
         retries = max(1, min(int((config.get("limits") or {}).get("image_retry_attempts") or 3), 5))
         errors: list[str] = []
         attempt_count = 0
@@ -298,10 +298,10 @@ class ProductImageProcessor:
         image_size: str | None = None,
         model: str | None = None,
     ) -> GeneratedMedia:
-        """定向重绘：把上一轮生成图作为第一参考回传给模型，仅修文字不换商品。
+        """定向重绘：原始商品图保持第一参考，上一轮生成图仅用于指示待修内容。
 
-        OCR 质量门检出中文后调用（对齐原项目 AI 修复语义）：附加的上一轮生成图优先，
-        再叠加最多 limit 张来源图保证商品身份一致。
+        OCR 质量门检出中文后调用：先传最多 limit 张来源图锁定商品身份，
+        再附加上一轮生成图指示需要修复的画面。
         """
         config = self._config()
         providers = self._providers(config)
@@ -939,7 +939,12 @@ class ProductImageProcessor:
                     header, payload = value.split(",", 1)
                     content = base64.b64decode(payload)
                 except Exception as exc:
-                    errors.append(f"data image invalid: {_safe_error(exc)}")
+                    detail = f"data image invalid: {_safe_error(exc)}"
+                    if not references:
+                        raise MediaProcessingError(
+                            f"required first reference image failed ({detail})"
+                        ) from exc
+                    errors.append(detail)
                     continue
                 references.append((content, "reference.png", _data_url_content_type(header)))
             elif Path(value).is_file():
@@ -947,16 +952,30 @@ class ProductImageProcessor:
                 references.append((path.read_bytes(), path.name, mimetypes.guess_type(path.name)[0] or "image/jpeg"))
             else:
                 if not is_safe_external_url(value):
-                    errors.append("reference URL is not a safe public HTTP(S) URL")
+                    detail = "reference URL is not a safe public HTTP(S) URL"
+                    if not references:
+                        raise MediaProcessingError(
+                            f"required first reference image failed ({detail})"
+                        )
+                    errors.append(detail)
                     continue
                 try:
                     content, content_type = self._download_reference_image_cached(value)
                 except requests.RequestException as exc:
-                    # 1688 来源图偶发防盗链（cbu01.alicdn.com 420）：跳过失败 URL，继续尝试后续来源图
-                    errors.append(f"download failed: {_safe_error(exc)}")
+                    detail = f"download failed: {_safe_error(exc)}"
+                    if not references:
+                        raise MediaProcessingError(
+                            f"required first reference image failed ({detail})"
+                        ) from exc
+                    errors.append(detail)
                     continue
                 if not content or not content_type.startswith("image/"):
-                    errors.append("reference URL did not return an image")
+                    detail = "reference URL did not return an image"
+                    if not references:
+                        raise MediaProcessingError(
+                            f"required first reference image failed ({detail})"
+                        )
+                    errors.append(detail)
                     continue
                 references.append((content, _filename_for_url(value), content_type))
         if not references:

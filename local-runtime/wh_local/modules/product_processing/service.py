@@ -18,6 +18,15 @@ from wh_local.data_collection.contracts import DailySelectionError
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 
 from .ai_client import AiClient, AiProviderError
+from .doubao_vision import (
+    MODEL_ID as DOUBAO_VISION_MODEL_ID,
+    PROMPT_VERSION as DOUBAO_VISION_PROMPT_VERSION,
+    DoubaoVisionClient,
+    DoubaoVisionError,
+    SubjectAnalysis,
+    append_subject_analysis,
+    subject_analysis_from_dict,
+)
 from .domain.content_reference_library import (
     append_content_reference,
     select_image_reference,
@@ -294,6 +303,8 @@ class ProductProcessingService:
         self._public_image_fetcher = public_image_fetcher
         self._ai_instance: AiClient | None = None
         self._ai_lock = threading.Lock()  # 保护 AiClient 懒加载（多线程并行处理时避免重复创建）
+        self._doubao_instance: DoubaoVisionClient | None = None
+        self._doubao_lock = threading.Lock()
         self._media_instance = None  # ProductImageProcessor (懒加载，可选依赖)
         self._media_lock = threading.Lock()
         self._submission_lock = threading.RLock()
@@ -318,9 +329,8 @@ class ProductProcessingService:
             max_publish_workers=4,
             media_assets=self.media_assets,
         )
-        # 主体识别结果缓存：同一来源主图只识别一次（批量任务大量重复商品时省 N 次 AI 调用）
-        self._subject_cache: dict[str, dict[str, str]] = {}
-        self._subject_cache_lock = threading.Lock()
+        self._doubao_subject_cache: dict[str, SubjectAnalysis] = {}
+        self._doubao_subject_cache_lock = threading.Lock()
         self._source_data_url_cache: dict[str, str] = {}
         self._source_data_url_lock = threading.Lock()
 
@@ -2318,8 +2328,23 @@ class ProductProcessingService:
         except ValueError:
             target_language = "en"
         category = self._text(raw.get("category") or raw.get("source_category_path"))
-        source_image_urls = self._url_list(raw.get("source_image_urls")) or ([image_url] if image_url else [])
+        source_image_urls = list(
+            dict.fromkeys(
+                value
+                for value in [image_url, *self._url_list(raw.get("source_image_urls"))]
+                if value
+            )
+        )
         source_detail_image_urls = self._url_list(raw.get("source_detail_image_urls"))
+        detail_reference_urls = list(
+            dict.fromkeys(
+                [
+                    source_image_urls[0],
+                    *source_detail_image_urls,
+                    *source_image_urls[1:],
+                ]
+            )
+        )
         source_attributes = self._source_attributes_text(raw)
 
         ai_notes: list[str] = []
@@ -2341,6 +2366,7 @@ class ProductProcessingService:
         # 其余标题、描述、详情图与导出合同保持一致。
         premium_mode = int(draft["id"]) in {int(x) for x in (settings.get("premium_draft_ids") or [])}
         vision_subject = ""
+        vision_identity: dict[str, Any] = {}
         vision_preliminary_title = ""
         combined_variant_translations: dict[str, str] = {}
         product_dimensions: dict[str, Any] = {}
@@ -2354,6 +2380,156 @@ class ProductProcessingService:
                 "delete_downstream_stage_receipts",
             )
         )
+        requires_doubao_identity = bool(
+            not preflight_only
+            and _ai_enabled()
+            and source_image_urls
+            and (need_grid or need_detail or "title" in scope or "details" in scope)
+        )
+        if requires_doubao_identity:
+            stage_started = time.perf_counter()
+            analysis: SubjectAnalysis | None = None
+            vision_receipt_input = (
+                self._processing_stage_input_hash(
+                    "vision_identity",
+                    {
+                        "draft_id": int(draft["id"]),
+                        "main_image_url": source_image_urls[0],
+                        "model": DOUBAO_VISION_MODEL_ID,
+                        "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
+                    },
+                )
+                if task_item_id and supports_stage_receipts
+                else ""
+            )
+            vision_receipt: dict[str, Any] | None = None
+            if vision_receipt_input:
+                vision_receipt = self.repository.load_stage_receipt(
+                    task_id,
+                    task_item_id,
+                    "vision_identity",
+                    workspace_id=workspace_id,
+                )
+                if vision_receipt and vision_receipt.get("input_hash") != vision_receipt_input:
+                    self.repository.delete_invalid_stage_receipt(
+                        task_id,
+                        task_item_id,
+                        "vision_identity",
+                        expected_input_hash=vision_receipt_input,
+                        workspace_id=workspace_id,
+                    )
+                    self.repository.delete_downstream_stage_receipts(
+                        task_id,
+                        task_item_id,
+                        ["structured_text", "images"],
+                        workspace_id=workspace_id,
+                    )
+                    vision_receipt = None
+                receipt_output = vision_receipt.get("output") if vision_receipt else None
+                if isinstance(receipt_output, dict):
+                    try:
+                        analysis = subject_analysis_from_dict(receipt_output)
+                    except DoubaoVisionError:
+                        analysis = None
+            if analysis is not None:
+                provider_attempts["doubao_vision"] = 0
+                provider_status_classes["doubao_vision"] = "receipt_hit"
+            else:
+                self._last_doubao_attempt_count = None
+                try:
+                    analysis = self._recognize_doubao_subject(source_image_urls[0])
+                except DoubaoVisionError as exc:
+                    record_stage("doubao_subject", stage_started)
+                    configuration_error = exc.error_kind == "configuration"
+                    identity_error = exc.error_kind in {"invalid_input", "invalid_response"}
+                    return {
+                        **item,
+                        "title": title,
+                        "image_url": image_url,
+                        "status": (
+                            "attention_required"
+                            if configuration_error or identity_error
+                            else "failed"
+                        ),
+                        "reason": str(exc),
+                        "result": {
+                            "error_type": "doubao_vision_unavailable",
+                            "failure_class": (
+                                "configuration_blocked"
+                                if configuration_error
+                                else (
+                                    "identity_review_required"
+                                    if identity_error
+                                    else "technical_retryable"
+                                )
+                            ),
+                            "operator_hint": (
+                                "豆包识图配置或权限不可用，请检查服务端 ARK_API_KEY 与模型权限后重试"
+                                if configuration_error
+                                else (
+                                    "豆包返回的主体解释不符合结构化合同；已阻止 GPT 文案和生图"
+                                    if identity_error
+                                    else "豆包主体识别暂时不可用；未调用 GPT 文案或生图，请稍后重试"
+                                )
+                            ),
+                            "retryable": True,
+                            "vision_identity": {},
+                            "provider_attempts": {
+                                "doubao_vision": max(0, int(exc.attempt_count))
+                            },
+                            "provider_status_classes": {
+                                "doubao_vision": exc.error_kind
+                            },
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
+                measured_attempts = getattr(self, "_last_doubao_attempt_count", None)
+                provider_attempts["doubao_vision"] = (
+                    1 if measured_attempts is None else max(0, int(measured_attempts))
+                )
+                provider_status_classes["doubao_vision"] = "success"
+            record_stage("doubao_subject", stage_started)
+            vision_identity = {
+                **analysis.as_dict(),
+                "provider": "doubao",
+                "model": DOUBAO_VISION_MODEL_ID,
+                "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
+                "status": "accepted" if analysis.confidence in {"high", "medium"} else "rejected",
+            }
+            if vision_receipt_input and provider_attempts["doubao_vision"] > 0:
+                self.repository.upsert_stage_receipt(
+                    task_id,
+                    task_item_id,
+                    "vision_identity",
+                    input_hash=vision_receipt_input,
+                    output_data=vision_identity,
+                    workspace_id=workspace_id,
+                )
+            if analysis.confidence == "low":
+                return {
+                    **item,
+                    "title": title,
+                    "image_url": image_url,
+                    "status": "attention_required",
+                    "reason": analysis.uncertainty_reason or "豆包无法确认可售主体",
+                    "result": {
+                        "error_type": "doubao_subject_low_confidence",
+                        "failure_class": "identity_review_required",
+                        "operator_hint": "1688 主图存在多个或遮挡主体；已阻止 GPT 文案和外贸图生成",
+                        "retryable": True,
+                        "vision_identity": vision_identity,
+                        "provider_attempts": provider_attempts,
+                        "provider_status_classes": provider_status_classes,
+                        "stage_timings_ms": timing_snapshot(),
+                    },
+                }
+            vision_subject = analysis.sellable_subject
+            ai_notes.extend(
+                [
+                    "subject_identity:doubao",
+                    f"subject_identity:confidence:{analysis.confidence}",
+                ]
+            )
         structured_receipt_input = (
             self._processing_stage_input_hash(
                 "structured_text",
@@ -2365,6 +2541,8 @@ class ProductProcessingService:
                     "target_site": target_site,
                     "target_language": target_language,
                     "scope": sorted(scope),
+                    "vision_identity": vision_identity,
+                    "vision_prompt_version": DOUBAO_VISION_PROMPT_VERSION,
                 },
             )
             if supports_stage_receipts
@@ -2429,6 +2607,7 @@ class ProductProcessingService:
                         target_language,
                         target_site,
                         ai_notes,
+                        vision_identity=vision_identity,
                         image_url=(source_image_urls[0] if needs_visual_identity else ""),
                         known_dimensions=deterministic_dimensions,
                         include_dimensions=needs_dimensions,
@@ -2474,11 +2653,12 @@ class ProductProcessingService:
                         workspace_id=workspace_id,
                     )
             if isinstance(combined, dict):
-                vision_subject = self._text(combined.get("vision_subject"))
+                if not vision_subject:
+                    vision_subject = self._text(combined.get("vision_subject"))
                 vision_preliminary_title = self._text(
                     combined.get("vision_preliminary_title")
                 )
-                if vision_subject:
+                if vision_subject and not vision_identity:
                     ai_notes.append("subject_identity:combined")
                 if combined.get("title") and needs_title:
                     local_title = self._normalized_title(combined["title"])
@@ -2493,16 +2673,6 @@ class ProductProcessingService:
                 if needs_dimensions:
                     product_dimensions = dict(combined.get("product_dimensions") or {})
                 ai_notes.append("text:ai-combined")
-            # Old cached entries and providers without image input may omit the visual
-            # fields. Repair only that field; do not repeat the full structured call.
-            if needs_visual_identity and not vision_subject:
-                stage_started = time.perf_counter()
-                vision_subject, fallback_preliminary_title = self._identify_subject(
-                    source_image_urls[0], title, category, ai_notes
-                )
-                if not vision_preliminary_title:
-                    vision_preliminary_title = fallback_preliminary_title
-                record_stage("subject_identity_repair", stage_started)
             if needs_title:
                 stage_started = time.perf_counter()
                 try:
@@ -2513,7 +2683,7 @@ class ProductProcessingService:
                         target_language,
                         target_site,
                         ai_notes,
-                        image_derived_title=vision_preliminary_title,
+                        image_derived_title=vision_preliminary_title or vision_subject,
                     )
                 except ListingTextConfigurationError as exc:
                     record_stage("title_generation", stage_started)
@@ -2552,7 +2722,7 @@ class ProductProcessingService:
                         target_language,
                         target_site,
                         ai_notes,
-                        image_derived_title=vision_preliminary_title,
+                        image_derived_title=vision_preliminary_title or vision_subject,
                         prior_description=description_candidate,
                         contract_error=description_contract_error,
                     )
@@ -2642,6 +2812,7 @@ class ProductProcessingService:
                     "description": description,
                     "variant_translations": combined_variant_translations,
                     "vision_subject": vision_subject,
+                    "vision_identity": vision_identity,
                     "vision_preliminary_title": vision_preliminary_title,
                     "product_dimensions": product_dimensions,
                 },
@@ -2678,6 +2849,7 @@ class ProductProcessingService:
                         target_site,
                         media_ai_notes,
                         vision_subject,
+                        vision_identity=vision_identity,
                         workspace_id=workspace_id,
                     )
                 else:
@@ -2695,6 +2867,7 @@ class ProductProcessingService:
                         vision_subject,
                         image_template=str(settings.get("image_template") or "A"),
                         image_generation_count=image_generation_count,
+                        vision_identity=vision_identity,
                         workspace_id=workspace_id,
                     )
             elif need_detail:
@@ -2705,11 +2878,12 @@ class ProductProcessingService:
                     raw,
                     optimized_title,
                     category,
-                    source_detail_image_urls or source_image_urls,
+                    detail_reference_urls,
                     target_language,
                     target_site,
                     media_ai_notes,
                     vision_subject,
+                    vision_identity=vision_identity,
                     workspace_id=workspace_id,
                 )
 
@@ -2792,6 +2966,7 @@ class ProductProcessingService:
                     vision_subject,
                     image_template=str(settings.get("image_template") or "A"),
                     image_generation_count=image_generation_count,
+                    vision_identity=vision_identity,
                     workspace_id=workspace_id,
                 )
                 record_stage("grid_pipeline", stage_started)
@@ -2857,11 +3032,12 @@ class ProductProcessingService:
                         raw,
                         optimized_title,
                         category,
-                        source_detail_image_urls or source_image_urls,
+                        detail_reference_urls,
                         target_language,
                         target_site,
                         ai_notes,
                         vision_subject,
+                        vision_identity=vision_identity,
                         workspace_id=workspace_id,
                     )
                     record_stage("detail_generation", stage_started)
@@ -2965,6 +3141,7 @@ class ProductProcessingService:
             "media_contract_version": int(draft.get("media_contract_version") or 1),
             "grid_image_summary_path": grid_summary_path,
             "detail_image_paths": detail_image_paths,
+            "vision_identity": vision_identity,
             "ai_notes": ai_notes,
             "provider_attempts": provider_attempts,
             "provider_status_classes": provider_status_classes,
@@ -3062,6 +3239,7 @@ class ProductProcessingService:
         target_site: str,
         ai_notes: list[str] | None = None,
         image_derived_title: str = "",
+        vision_identity: dict[str, Any] | None = None,
         image_url: str = "",
         known_dimensions: dict[str, Any] | None = None,
         include_dimensions: bool = False,
@@ -3122,12 +3300,15 @@ class ProductProcessingService:
         )
         reference = select_title_reference(raw, title=source_title, category=category)
         prompt = append_content_reference(prompt, reference, kind="title")
+        if vision_identity:
+            prompt = append_subject_analysis(prompt, vision_identity)
         self._note_content_reference(ai_notes, "title_reference", reference.reference_id)
         input_data = {
             "title": source_title,
             "category": category,
             "raw": self._canonical_prompt_evidence(raw),
             "image_derived_title": image_derived_title,
+            "vision_identity": vision_identity or {},
             "image_url": image_url,
             "known_dimensions": known,
             "include_dimensions": bool(include_dimensions),
@@ -3159,7 +3340,10 @@ class ProductProcessingService:
                     "description_candidate": "",
                     "description_contract_error": "",
                     "variant_translations": cached.get("variant_translations") or {},
-                    "vision_subject": self._text(cached.get("vision_subject")),
+                    "vision_subject": self._text(
+                        (vision_identity or {}).get("sellable_subject")
+                        or cached.get("vision_subject")
+                    ),
                     "vision_preliminary_title": self._text(cached.get("vision_preliminary_title")),
                     "product_dimensions": self._combined_dimensions(
                         cached.get("product_dimensions"), known
@@ -3201,7 +3385,10 @@ class ProductProcessingService:
                 "description_candidate": "" if description else description_candidate,
                 "description_contract_error": "" if description else description_contract_error,
                 "variant_translations": self._combined_variant_translations(data, variant_values),
-                "vision_subject": self._text(data.get("sellable_subject"))[:160],
+                "vision_subject": self._text(
+                    (vision_identity or {}).get("sellable_subject")
+                    or data.get("sellable_subject")
+                )[:160],
                 "vision_preliminary_title": (
                     self._normalized_title(data.get("preliminary_title"))
                     if data.get("preliminary_title")
@@ -3401,6 +3588,7 @@ class ProductProcessingService:
         vision_subject: str = "",
         image_template: str = "A",
         image_generation_count: int = 4,
+        vision_identity: dict[str, Any] | None = None,
         workspace_id: str = "local",
     ) -> GridImageOutput:
         """Generate four carousel images with a selectable 1/2/4-image transport layout."""
@@ -3460,13 +3648,18 @@ class ProductProcessingService:
                 )
 
             def single_prompt(role: str) -> str:
-                return (
+                return append_subject_analysis(
                     f"{standalone_prompt.rstrip()}\n\n"
-                    f"{format_prompt(SINGLE_IMAGE_RUNTIME_CONTRACT, panel_role=role)}"
+                    f"{format_prompt(SINGLE_IMAGE_RUNTIME_CONTRACT, panel_role=role)}",
+                    vision_identity,
                 )
 
             def two_image_prompt(left_role: str, right_role: str) -> str:
-                return f"{prompt.rstrip()}\n\n{format_prompt(TWO_IMAGE_RUNTIME_CONTRACT, left_panel_role=left_role, right_panel_role=right_role)}"
+                return append_subject_analysis(
+                    f"{prompt.rstrip()}\n\n"
+                    f"{format_prompt(TWO_IMAGE_RUNTIME_CONTRACT, left_panel_role=left_role, right_panel_role=right_role)}",
+                    vision_identity,
+                )
 
             def generate_one(
                 image_prompt: str,
@@ -3497,7 +3690,10 @@ class ProductProcessingService:
                 # Generate the economical 2K transport grid once.  Validation happens
                 # after the deterministic split so one bad quadrant never redraws the
                 # three usable quadrants.
-                grid_prompt = f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}"
+                grid_prompt = append_subject_analysis(
+                    f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}",
+                    vision_identity,
+                )
                 # Do not rely on the provider default here. Some OpenAI-compatible
                 # gateways silently fall back to 1024 when size is omitted.
                 media = generate_one(
@@ -3776,6 +3972,7 @@ class ProductProcessingService:
         target_site: str,
         ai_notes: list[str] | None = None,
         vision_subject: str = "",
+        vision_identity: dict[str, Any] | None = None,
         workspace_id: str = "local",
     ) -> GridImageOutput:
         """精品模式：一次 4K 四宫格，本地拆成四张不降采样的高清轮播图。"""
@@ -3811,6 +4008,7 @@ class ProductProcessingService:
             **context,
         )
         base_prompt = append_content_reference(base_prompt, reference, kind="image")
+        base_prompt = append_subject_analysis(base_prompt, vision_identity)
         self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
         attempt_count = 0
         provider_status_class = "success"
@@ -3885,15 +4083,19 @@ class ProductProcessingService:
 
                         def repair_premium_slot(slot: int) -> tuple[int, Any, Any]:
                             role = _PREMIUM_PANEL_ROLES[slot - 1][1]
-                            replacement = processor.generate(
-                                stage=f"premium_image_{slot}",
-                                prompt=(
+                            repair_prompt = append_subject_analysis(
+                                (
                                     "Create ONE square premium ecommerce product image. "
                                     f"Required panel role: {role}. Preserve the exact product identity, "
                                     "shape, material, color and visible accessories from the references. "
                                     "Show one complete product composition only. Add no title, caption, "
                                     "badge, dimensions, watermark, logo or decorative text."
                                 ),
+                                vision_identity,
+                            )
+                            replacement = processor.generate(
+                                stage=f"premium_image_{slot}",
+                                prompt=repair_prompt,
                                 reference_values=reference_urls,
                                 image_size="1024x1024",
                                 model_override="gpt-image-2-1k",
@@ -3995,6 +4197,7 @@ class ProductProcessingService:
         target_site: str,
         ai_notes: list[str] | None = None,
         vision_subject: str = "",
+        vision_identity: dict[str, Any] | None = None,
         workspace_id: str = "local",
     ) -> list[str]:
         if not _ai_enabled() or not reference_urls:
@@ -4013,10 +4216,19 @@ class ProductProcessingService:
             prompt = format_prompt(contracted, title=optimized_title, **context)
             reference = select_image_reference(raw, title=optimized_title, category=category)
             prompt = append_content_reference(prompt, reference, kind="image")
+            prompt = append_subject_analysis(prompt, vision_identity)
             self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
             media = processor.generate(stage="detail_image", prompt=prompt, reference_values=reference_urls)
             # OCR 质量门：检出中文 → 定向重绘为英文（本地 OCR 后置验证器，对齐原型）
-            media = self._repair_until_clean(processor, "detail_image", "detail_images", media, reference_urls, ai_notes)
+            media = self._repair_until_clean(
+                processor,
+                "detail_image",
+                "detail_images",
+                media,
+                reference_urls,
+                ai_notes,
+                vision_identity=vision_identity,
+            )
         except (media_config_error, media_error, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
             return []
@@ -4272,6 +4484,7 @@ class ProductProcessingService:
         ai_notes: list[str] | None = None,
         *,
         allow_paid_repair: bool = True,
+        vision_identity: dict[str, Any] | None = None,
     ) -> Any:
         """Run deterministic text/structure gates, repair once on failure, then revalidate.
 
@@ -4315,11 +4528,15 @@ class ProductProcessingService:
         while reparables and rounds < max_repair_rounds():
             rounds += 1
             try:
-                media = processor.repair_generated(
-                    stage=stage,
-                    prompt=self._effective_prompt(
+                repair_prompt = append_subject_analysis(
+                    self._effective_prompt(
                         "image_repair_grid" if note_key == "four_grid" else "image_repair_chinese"
                     ),
+                    vision_identity,
+                )
+                media = processor.repair_generated(
+                    stage=stage,
+                    prompt=repair_prompt,
                     prior_content=media.content,
                     prior_content_type=media.content_type,
                     reference_values=reference_urls,
@@ -4792,7 +5009,11 @@ class ProductProcessingService:
         content = getattr(image, "content", None) or b""
         if not content:
             return ""
-        content_type = str(getattr(image, "content_type", None) or "image/jpeg").split(";", 1)[0].strip()
+        content_type = str(
+            getattr(image, "media_type", None)
+            or getattr(image, "content_type", None)
+            or "image/jpeg"
+        ).split(";", 1)[0].strip()
         value = f"data:{content_type or 'image/jpeg'};base64,{base64.b64encode(content).decode('ascii')}"
         with self._source_data_url_lock:
             if len(self._source_data_url_cache) >= 64:
@@ -4800,77 +5021,49 @@ class ProductProcessingService:
             self._source_data_url_cache[image_url] = value
         return value
 
-    def _identify_subject(
-        self,
-        image_url: str,
-        title: str,
-        category: str,
-        ai_notes: list[str] | None = None,
-    ) -> tuple[str, str]:
-        """多模态识别主图中的可售主体 + 基于主图的初步标题（对齐原型 NativeVisualModelClient.judge）。
+    def _doubao_vision_client(self) -> DoubaoVisionClient:
+        configured_key = str(os.environ.get("ARK_API_KEY") or "").strip()
+        current = getattr(self, "_doubao_instance", None)
+        if current is None or current.api_key != configured_key:
+            lock = getattr(self, "_doubao_lock", None)
+            if lock is None:
+                lock = threading.Lock()
+                self._doubao_lock = lock
+            with lock:
+                current = getattr(self, "_doubao_instance", None)
+                if current is None or current.api_key != configured_key:
+                    self._doubao_instance = DoubaoVisionClient()
+        return self._doubao_instance
 
-        返回 (subject, preliminary_title)：
-        - subject：英文主体描述，用于替换生图提示词 ``Product:`` 行的标题猜测，减少主体误判；
-        - preliminary_title：仅依据主图可见内容生成的英文初步标题草稿，作为文本生成
-          （标题/描述）的图像证据——标题据此生成而非直译来源标题。
-        任何失败返回 ("", "")，调用方回退原标题/描述流程。
-        """
-        if not _ai_enabled() or not image_url:
-            return "", ""
-        # 缓存：同一来源主图只识别一次（批量任务重复商品省 N 次多模态调用）
-        with self._subject_cache_lock:
-            cached = self._subject_cache.get(image_url)
-        if cached:
-            return cached["subject"], cached["preliminary_title"]
+    def _recognize_doubao_subject(self, image_url: str) -> SubjectAnalysis:
+        cache_key = f"{DOUBAO_VISION_PROMPT_VERSION}:{str(image_url or '').strip()}"
+        cache = getattr(self, "_doubao_subject_cache", None)
+        lock = getattr(self, "_doubao_subject_cache_lock", None)
+        if cache is None or lock is None:
+            cache = {}
+            lock = threading.Lock()
+            self._doubao_subject_cache = cache
+            self._doubao_subject_cache_lock = lock
+        with lock:
+            cached = cache.get(cache_key)
+        if cached is not None:
+            self._last_doubao_attempt_count = 0
+            return cached
         data_url = self._image_to_data_url(image_url)
         if not data_url:
-            return "", ""
-        prompt = (
-            "Analyze the actual sellable product shown in the main image. "
-            "The foreground sellable subject is the product to sell; ignore houses, rooms, tables, "
-            "people, props, and background scenes. Reply with strict JSON only: "
-            '{"sellable_subject": "<one short English noun phrase describing the sellable product, '
-            'e.g. a round acrylic keychain with letter charms>", '
-            '"preliminary_title": "<one draft English listing title (80-180 letters) written ONLY from '
-            'what is visible in the image: exact product type + 2-4 real visible attributes such as '
-            'material, color, size, shape, quantity + intended use only if clearly shown; never invent '
-            'facts that are not visible in the image>", '
-            '"material_evidence": "<visible material and structure details>", '
-            '"background_scene": "<what the background shows>"}'
-        )
-        try:
-            # 视觉识别与文本统一走便宜优先链：gpt-5.6-terra 打头（低价档+支持图像输入），
-            # chat 降级链自动落 gpt-5.6-luna / gpt-5.4-mini
-            text = self._ai_client().chat(
-                [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": data_url}},
-                        ],
-                    }
-                ],
-                model="gpt-5.6-terra",
+            raise DoubaoVisionError(
+                "The original 1688 image could not be prepared for Doubao vision",
+                error_kind="transient",
+                retryable=True,
             )
-            data = _extract_json_object(text) or {}
-            subject = self._text(data.get("sellable_subject"))
-            preliminary_title = self._text(data.get("preliminary_title"))
-            if not subject and not preliminary_title:
-                return "", ""
-            ai_notes.append("subject_identity:ai")
-            if preliminary_title:
-                ai_notes.append("subject_identity:preliminary-title")
-            result = {
-                "subject": str(subject).strip()[:160],
-                "preliminary_title": self._normalized_title(preliminary_title) if preliminary_title else "",
-            }
-            with self._subject_cache_lock:
-                self._subject_cache[image_url] = result
-            return result["subject"], result["preliminary_title"]
-        except (AiProviderError, ValueError, OSError) as exc:
-            self._note_ai_failure(ai_notes, "subject_identity", _ai_error_reason(exc))
-            return "", ""
+        client = self._doubao_vision_client()
+        try:
+            analysis = client.recognize_subject(data_url)
+        finally:
+            self._last_doubao_attempt_count = client.last_attempt_count
+        with lock:
+            cache[cache_key] = analysis
+        return analysis
 
     def _media_processor(self) -> Any:
         if self._media_instance is None:

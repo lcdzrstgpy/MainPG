@@ -306,6 +306,56 @@ def test_image_early_500_retries_only_once(monkeypatch, tmp_path) -> None:
     assert media.reference_count == 1
 
 
+def test_layout_scaffold_keeps_original_1688_image_as_first_provider_reference(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "original-1688.png"
+    source.write_bytes(_grid_bytes())
+    captured_names: list[str] = []
+
+    def respond(_provider, _prompt, references, **_kwargs):
+        captured_names.extend(name for _content, name, _content_type in references)
+        return _grid_bytes(), "image/png"
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(respond))
+    processor = ProductImageProcessor(lambda: _image_provider_config(source))
+
+    processor.generate(
+        stage="grid_image",
+        prompt="contract",
+        reference_values=[str(source)],
+        layout_scaffold=True,
+    )
+
+    assert captured_names == ["original-1688.png", "fixed-four-grid-layout.png"]
+
+
+def test_repair_keeps_original_1688_image_before_previous_generated_image(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "original-1688.png"
+    source.write_bytes(_grid_bytes())
+    captured_names: list[str] = []
+
+    def respond(_provider, _prompt, references, **_kwargs):
+        captured_names.extend(name for _content, name, _content_type in references)
+        return _grid_bytes(), "image/png"
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(respond))
+    processor = ProductImageProcessor(lambda: _image_provider_config(source))
+
+    media = processor.repair_generated(
+        stage="detail_image",
+        prompt="repair contract",
+        prior_content=_grid_bytes(),
+        prior_content_type="image/png",
+        reference_values=[str(source)],
+    )
+
+    assert captured_names == ["original-1688.png", "generated_previous.png"]
+    assert media.reference_count == 1
+
+
 def test_second_grid_attempt_uses_only_the_remaining_total_timeout_budget(monkeypatch, tmp_path) -> None:
     source = tmp_path / "source.png"
     source.write_bytes(_grid_bytes())
@@ -469,6 +519,30 @@ def test_reference_download_cache_is_bounded_and_does_not_cache_failures(monkeyp
     assert calls[flaky] == 2
     assert calls[first] == 2
     assert calls[second] == 1
+
+
+def test_reference_loading_fails_closed_when_first_image_is_unavailable(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def download(url: str) -> tuple[bytes, str]:
+        calls.append(url)
+        if url.endswith("original-main.jpg"):
+            raise requests.ConnectionError("main unavailable")
+        return b"fallback-image", "image/jpeg"
+
+    monkeypatch.setattr(media_module, "_download_reference_image", download)
+    processor = ProductImageProcessor(lambda: {})
+
+    with pytest.raises(MediaProcessingError, match="required first reference"):
+        processor._load_references(
+            [
+                "https://example.com/original-main.jpg",
+                "https://example.com/detail.jpg",
+            ],
+            limit=2,
+        )
+
+    assert calls == ["https://example.com/original-main.jpg"]
 
 
 def test_provider_config_exposes_explicit_1k_reference_profile(monkeypatch) -> None:

@@ -39,6 +39,17 @@ def _raw() -> dict:
     }
 
 
+def _vision_identity() -> dict:
+    return {
+        "sellable_subject": "insulated stainless steel travel mug",
+        "subject_explanation": "The foreground mug is the complete sellable product.",
+        "visible_attributes": ["cylindrical body", "metallic finish"],
+        "excluded_elements": ["table", "room background"],
+        "confidence": "high",
+        "uncertainty_reason": "",
+    }
+
+
 def _call_name(node: ast.Call) -> str:
     return node.func.id if isinstance(node.func, ast.Name) else ""
 
@@ -312,13 +323,16 @@ def test_grid_image_reference_does_not_add_provider_calls(monkeypatch) -> None:
         "en",
         "US",
         notes,
+        vision_identity=_vision_identity(),
     )
 
     assert len(processor.prompts) == 1
     assert "CONTENT REFERENCE ONLY — IMAGE:" in processor.prompts[0]
     assert "exact four-panel 2x2" in processor.prompts[0]
+    assert "AUTHORITATIVE SUBJECT ANALYSIS FROM THE ORIGINAL 1688 IMAGE:" in processor.prompts[0]
+    assert '"sellable_subject": "insulated stainless steel travel mug"' in processor.prompts[0]
     assert processor.prompts[0].rstrip().endswith(
-        "Keep Panel 4 clean for later deterministic dimension annotation."
+        "props, people, packaging, or background objects."
     )
     # A 模板与 B 模板一致使用固定 2x2 scaffold，保证四等分 + 直线分隔线的结构遵循度
     assert processor.layout_scaffold_values == [True]
@@ -500,6 +514,7 @@ def test_premium_images_generates_one_4k_grid_and_splits_four_high_resolution_im
         "en",
         "US",
         notes,
+        vision_identity=_vision_identity(),
     )
 
     assert processor.stages == ["premium_image"]
@@ -517,7 +532,64 @@ def test_premium_images_generates_one_4k_grid_and_splits_four_high_resolution_im
     assert "editorial/detail shot" in joined_lower
     assert "lifestyle scene" in joined_lower
     assert "clean front, side, or top view" in joined_lower
+    assert "authoritative subject analysis from the original 1688 image" in joined_lower
+    assert '"sellable_subject": "insulated stainless steel travel mug"' in joined_lower
     assert sum(note.startswith("image_reference:") for note in notes) == 1
+
+
+class _CapturingDetailImageProcessor:
+    def __init__(self) -> None:
+        self.prompt = ""
+        self.reference_values: list[str] = []
+
+    def generate(self, *, stage: str, prompt: str, reference_values: list[str]):
+        assert stage == "detail_image"
+        self.prompt = prompt
+        self.reference_values = reference_values
+        return SimpleNamespace(
+            stage=stage,
+            content=b"detail",
+            content_type="image/png",
+            suffix=".png",
+            reference_count=1,
+        )
+
+
+def test_detail_image_receives_doubao_json_and_original_1688_reference(monkeypatch) -> None:
+    service = object.__new__(ProductProcessingService)
+    service.repository = _PromptRepository()
+    processor = _CapturingDetailImageProcessor()
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(service_module, "_media_types", lambda: (object, RuntimeError, ValueError))
+    monkeypatch.setattr(service_module, "ocr_gate_enabled", lambda: False)
+    monkeypatch.setattr(service, "_media_processor", lambda: processor)
+    monkeypatch.setattr(
+        service,
+        "_persist_media_for_preview",
+        lambda _parts, _task_id, _draft_id, _workspace_id: [
+            "https://example.com/detail.png"
+        ],
+    )
+
+    result = service._generate_detail_images(
+        1,
+        2,
+        _raw(),
+        "Insulated Travel Mug Stainless Steel 500 ml",
+        "Kitchen & Dining",
+        ["https://example.com/original-1688.jpg"],
+        "en",
+        "US",
+        vision_subject="insulated stainless steel travel mug",
+        vision_identity=_vision_identity(),
+    )
+
+    assert result == ["https://example.com/detail.png"]
+    assert processor.reference_values == ["https://example.com/original-1688.jpg"]
+    assert "AUTHORITATIVE SUBJECT ANALYSIS FROM THE ORIGINAL 1688 IMAGE:" in processor.prompt
+    assert processor.prompt.rstrip().endswith(
+        "props, people, packaging, or background objects."
+    )
 
 
 def test_premium_images_never_repeats_a_paid_whole_grid_call(monkeypatch) -> None:
