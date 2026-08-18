@@ -5,6 +5,7 @@ import { App } from "./app/App";
 import "./shared/styles/global.css";
 import "./shared/styles/themes.css";
 import "./modules/product_processing/styles/product-processing.css";
+import "./shared/styles/apple-workspace.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
