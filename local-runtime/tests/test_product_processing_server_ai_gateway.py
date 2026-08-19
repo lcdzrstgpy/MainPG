@@ -1672,7 +1672,7 @@ def test_provider_result_download_pins_validated_ip_and_keeps_original_tls_host(
     connections: list[tuple[str, str, int, float]] = []
     requests_seen: list[tuple[str, str, dict[str, str]]] = []
 
-    def resolve(url: str):
+    def resolve(url: str, **_kwargs):
         nonlocal resolver_calls
         resolver_calls += 1
         return SimpleNamespace(
@@ -1715,10 +1715,60 @@ def test_provider_result_download_pins_validated_ip_and_keeps_original_tls_host(
     ]
 
 
+def test_provider_result_download_uses_hardened_resolver_behind_proxy_fake_ip(
+    monkeypatch,
+) -> None:
+    resolver_calls: list[tuple[str, int]] = []
+    connections: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        url_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.30", 443))
+        ],
+    )
+
+    def hardened_resolver(hostname: str, port: int) -> tuple[str, ...]:
+        resolver_calls.append((hostname, port))
+        return ("93.184.216.34",)
+
+    class PinnedConnection:
+        def __init__(self, hostname: str, pinned_address: str, *_args, **_kwargs):
+            connections.append((hostname, pinned_address))
+
+        def request(self, *_args, **_kwargs) -> None:
+            return None
+
+        def getresponse(self):
+            return SimpleNamespace(
+                status=200,
+                getheader=lambda name, default="": "image/png" if name == "Content-Type" else default,
+                read=lambda _limit: b"pinned-image",
+            )
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        media_module,
+        "resolve_public_image_addresses",
+        hardened_resolver,
+        raising=False,
+    )
+    monkeypatch.setattr(media_module, "_PinnedHTTPSConnection", PinnedConnection)
+
+    assert media_module._download_pinned_public_image(
+        "https://images.example.test/result.png"
+    ) == (b"pinned-image", "image/png")
+    assert resolver_calls == [("images.example.test", 443)]
+    assert connections == [("images.example.test", "93.184.216.34")]
+
+
 def test_provider_result_download_rejects_redirect_without_re_resolving(monkeypatch) -> None:
     resolver_calls = 0
 
-    def resolve(url: str):
+    def resolve(url: str, **_kwargs):
         nonlocal resolver_calls
         resolver_calls += 1
         if resolver_calls > 1:
@@ -1760,7 +1810,7 @@ def test_provider_result_download_rejects_redirect_without_re_resolving(monkeypa
 
 
 def test_provider_result_download_rejects_unresolved_url_with_stable_error(monkeypatch) -> None:
-    monkeypatch.setattr(media_module, "resolve_safe_external_url", lambda _url: None)
+    monkeypatch.setattr(media_module, "resolve_safe_external_url", lambda _url, **_kwargs: None)
 
     with pytest.raises(media_module.MediaProcessingError, match="safe public URL"):
         media_module._download_pinned_public_image(
@@ -1772,7 +1822,7 @@ def test_pinned_image_download_rejects_oversized_stream(monkeypatch) -> None:
     monkeypatch.setattr(
         media_module,
         "resolve_safe_external_url",
-        lambda url: SimpleNamespace(
+        lambda url, **_kwargs: SimpleNamespace(
             url=url,
             hostname="images.example.test",
             port=443,

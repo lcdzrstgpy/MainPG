@@ -348,6 +348,27 @@ def test_remote_billing_summary_retries_transient_unavailable(monkeypatch) -> No
     assert calls == 2
 
 
+def test_remote_billing_reserve_survives_four_transient_failures(monkeypatch) -> None:
+    client = CustomerAuthClient("https://customer.example.test")
+    calls = 0
+
+    def flaky_post(*_args, **_kwargs) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls < 5:
+            raise CustomerAuthUnavailable("tls eof")
+        return {"usage": {"usage_id": "usage-5", "status": "reserved"}}
+
+    monkeypatch.setattr(client, "_post", flaky_post)
+    monkeypatch.setattr("wh_local.customer.remote_client.time.sleep", lambda _seconds: None)
+
+    assert client.reserve_ai_usage(
+        "remote-token",
+        {"idempotency_key": "same-key", "feature_key": "product_processing.text"},
+    ) == {"usage": {"usage_id": "usage-5", "status": "reserved"}}
+    assert calls == 5
+
+
 def test_remote_billing_requests_share_two_slot_gate(monkeypatch) -> None:
     client = CustomerAuthClient("https://customer.example.test")
     lock = threading.Lock()

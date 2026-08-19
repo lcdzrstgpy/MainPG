@@ -17,8 +17,8 @@ from .contracts import (
 )
 
 
-_BILLING_MAX_ATTEMPTS = 3
-_BILLING_RETRY_DELAYS = (0.2, 0.6)
+_BILLING_MAX_ATTEMPTS = 5
+_BILLING_RETRY_DELAYS = (0.2, 0.6, 1.2, 2.0)
 _BILLING_REQUEST_GATE = threading.BoundedSemaphore(2)
 
 

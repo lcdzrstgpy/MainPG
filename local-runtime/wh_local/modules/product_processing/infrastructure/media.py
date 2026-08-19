@@ -29,6 +29,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from ....data_collection.public_image_fetch import resolve_public_image_addresses
 from ..domain.policy import is_safe_external_url, resolve_safe_external_url
 from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
 from .grid_layout import (
@@ -157,8 +158,14 @@ def _download_pinned_public_image(
 ) -> tuple[bytes, str]:
     """Resolve once, pin the connection, reject redirects, and bound the body."""
 
+    def hardened_getaddrinfo(hostname: str, port: int, **_kwargs: Any) -> list[tuple[Any, ...]]:
+        return [
+            (0, socket.SOCK_STREAM, 0, "", (address, port))
+            for address in resolve_public_image_addresses(hostname, port)
+        ]
+
     try:
-        resolved = resolve_safe_external_url(url)
+        resolved = resolve_safe_external_url(url, resolver=hardened_getaddrinfo)
     except ValueError as exc:
         raise MediaProcessingError("provider result URL is not a safe public URL") from exc
     if resolved is None:

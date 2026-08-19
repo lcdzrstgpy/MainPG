@@ -77,6 +77,12 @@ PublicImageTransport = Callable[
 ]
 
 
+def resolve_public_image_addresses(hostname: str, port: int) -> tuple[str, ...]:
+    """Resolve through the hardened image DNS path, including proxy-DNS fallback."""
+
+    return tuple(_default_resolver(hostname, port))
+
+
 def fetch_public_image(
     value: str,
     *,
