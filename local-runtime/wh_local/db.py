@@ -535,6 +535,36 @@ CREATE TABLE IF NOT EXISTS billing_ai_gateway_requests (
 
 CREATE INDEX IF NOT EXISTS idx_billing_ai_gateway_requests_usage_status
     ON billing_ai_gateway_requests (usage_id, status, created_at);
+
+-- Server-side billing rules.  Monetary values stay in integer tenths of a
+-- point so pricing such as 3.5 points is exact and never relies on float
+-- arithmetic.  Only the platform server writes this singleton row.
+CREATE TABLE IF NOT EXISTS billing_pricing_rules (
+    rule_id INTEGER PRIMARY KEY CHECK (rule_id = 1),
+    rule_version INTEGER NOT NULL DEFAULT 1,
+    point_unit_scale INTEGER NOT NULL DEFAULT 10,
+    points_per_cny INTEGER NOT NULL DEFAULT 10,
+    text_reserve_units INTEGER NOT NULL DEFAULT 5,
+    text_charge_units INTEGER NOT NULL DEFAULT 5,
+    image_reserve_units INTEGER NOT NULL DEFAULT 40,
+    image_charge_units INTEGER NOT NULL DEFAULT 35,
+    min_client_version TEXT NOT NULL DEFAULT '',
+    effective_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by TEXT NOT NULL DEFAULT 'system',
+    CHECK (point_unit_scale = 10),
+    CHECK (points_per_cny > 0),
+    CHECK (text_reserve_units >= text_charge_units),
+    CHECK (image_reserve_units >= image_charge_units),
+    CHECK (text_charge_units >= 0),
+    CHECK (image_charge_units >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS billing_runtime_meta (
+    meta_key TEXT PRIMARY KEY,
+    meta_value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -757,6 +787,51 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_ai_gateway_requests", "lease_expires_at", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "billing_ai_gateway_requests", "phase", "TEXT NOT NULL DEFAULT 'claimed'")
     _ensure_column(conn, "billing_ai_gateway_requests", "provider_task_id", "TEXT NOT NULL DEFAULT ''")
+    _migrate_billing_points_to_tenths(conn)
+
+
+def _migrate_billing_points_to_tenths(conn: sqlite3.Connection) -> None:
+    """Move the legacy integer-point ledger to exact 0.1-point units once.
+
+    The public balance remains numerically unchanged because API responses
+    divide by the active scale.  The marker makes startup safe to repeat on
+    both existing server databases and fresh local development databases.
+    """
+    marker = conn.execute(
+        "SELECT meta_value FROM billing_runtime_meta WHERE meta_key = 'point_unit_scale'"
+    ).fetchone()
+    if marker is None:
+        for table, columns in (
+            ("billing_wallets", ("points_balance", "locked_points", "manual_frozen_points")),
+            ("billing_payment_orders", ("points",)),
+            ("billing_point_ledger", ("points_delta", "balance_after")),
+            ("billing_usage_events", ("points_charged",)),
+            (
+                "billing_ai_usage_events",
+                ("reserved_points", "charged_points", "refunded_points", "min_charge_points"),
+            ),
+        ):
+            present = {
+                str(row["name"])
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for column in columns:
+                if column in present:
+                    conn.execute(f"UPDATE {table} SET {column} = {column} * 10")
+        conn.execute(
+            "INSERT INTO billing_runtime_meta (meta_key, meta_value) VALUES ('point_unit_scale', '10')"
+        )
+    conn.execute(
+        """
+        INSERT INTO billing_pricing_rules (
+            rule_id, rule_version, point_unit_scale, points_per_cny,
+            text_reserve_units, text_charge_units,
+            image_reserve_units, image_charge_units, updated_by
+        )
+        VALUES (1, 1, 10, 10, 5, 5, 40, 35, 'system')
+        ON CONFLICT(rule_id) DO NOTHING
+        """
+    )
 
 
 DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (

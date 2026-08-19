@@ -24,7 +24,14 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, Header, HTTPException, Request
 
-from ..billing import reserve_ai_usage, settle_ai_usage_failure, settle_ai_usage_success
+from ..billing import (
+    active_pricing,
+    reserve_ai_usage,
+    settle_ai_usage_failure,
+    settle_ai_usage_success,
+    update_active_pricing,
+    usage_history,
+)
 from ..config import default_config
 from ..db import init_db, transaction
 from ..modules.product_processing.domain.policy import is_safe_external_url
@@ -41,6 +48,15 @@ BILLING_TOPUP_PRODUCTS = {
     "points_10": {"amount_cents": 1000, "points": 1000, "label": "10 元积分包"},
     "points_30": {"amount_cents": 3000, "points": 3000, "label": "30 元积分包"},
     "points_100": {"amount_cents": 10000, "points": 10000, "label": "100 元积分包"},
+}
+# Monetary amount and label are stable package metadata. Point quantity is
+# calculated from the active server-side pricing rule at order creation time.
+TOPUP_PACKAGE_CENTS = {
+    package_id: {
+        "amount_cents": int(product["amount_cents"]),
+        "label": str(product["label"]),
+    }
+    for package_id, product in BILLING_TOPUP_PRODUCTS.items()
 }
 PAYMENT_PROVIDERS = {"wechat", "alipay"}
 TEXT_CHAT_URL = "https://api.aicoming.top/v1/chat/completions"
@@ -167,6 +183,29 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         account = _required_account(db_path, authorization)
         return _billing_summary(db_path, account)
 
+    @app.get("/api/customer/billing/rules")
+    def billing_rules(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        _required_account(db_path, authorization)
+        return {"ok": True, "pricing": active_pricing(db_path)}
+
+    @app.get("/api/customer/billing/usage")
+    def billing_usage_history(
+        cursor: str = "",
+        limit: int = 30,
+        feature_key: str = "",
+        usage_status: str = "",
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        return usage_history(
+            db_path,
+            account_id=str(account["account_id"]),
+            cursor=cursor,
+            limit=limit,
+            feature_key=feature_key,
+            usage_status=usage_status,
+        )
+
     @app.post("/api/customer/billing/topup-orders")
     def create_billing_topup_order(
         payload: dict[str, Any],
@@ -187,6 +226,17 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="unsupported billing feature")
         if not 16 <= len(idempotency_key) <= 200:
             raise HTTPException(status_code=400, detail="idempotency_key is required")
+        pricing = active_pricing(db_path)
+        supplied = payload.get("pricing_rule_version")
+        try:
+            supplied_rule_version = int(supplied) if supplied is not None else None
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=428, detail="billing_rules_sync_required") from exc
+        # Older desktop builds do not send a rule version. Their reservation is
+        # still safe because the server computes and snapshots the amount; new
+        # builds receive a deterministic stale-rule response instead.
+        if supplied_rule_version is not None and supplied_rule_version != int(pricing["rule_version"]):
+            raise HTTPException(status_code=428, detail="billing_rules_sync_required")
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
         return {
             "ok": True,
@@ -200,6 +250,47 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 metadata=_safe_billing_metadata(metadata),
             ),
         }
+
+    @app.get("/api/admin/billing/pricing")
+    def admin_billing_pricing(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        _require_billing_admin(db_path, authorization)
+        return {"ok": True, "pricing": active_pricing(db_path)}
+
+    @app.put("/api/admin/billing/pricing")
+    def update_admin_billing_pricing(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        admin = _require_billing_admin(db_path, authorization)
+        return {
+            "ok": True,
+            "pricing": update_active_pricing(
+                db_path,
+                payload=payload,
+                updated_by=str(admin["account_id"]),
+            ),
+        }
+
+    @app.get("/api/admin/billing/usage")
+    def admin_billing_usage(
+        account_id: str,
+        cursor: str = "",
+        limit: int = 50,
+        feature_key: str = "",
+        usage_status: str = "",
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _require_billing_admin(db_path, authorization)
+        if not account_id.strip():
+            raise HTTPException(status_code=400, detail="account_id is required")
+        return usage_history(
+            db_path,
+            account_id=account_id.strip(),
+            cursor=cursor,
+            limit=limit,
+            feature_key=feature_key,
+            usage_status=usage_status,
+        )
 
     @app.post("/api/customer/billing/usage/{usage_id}/succeed")
     def settle_billing_usage_success(
@@ -711,6 +802,13 @@ def _required_account(database_path: Path, authorization: str | None) -> dict[st
         raise HTTPException(status_code=401, detail="invalid bearer token")
     if str(account.get("account_status") or "").lower() not in {"active", ""}:
         raise HTTPException(status_code=403, detail="customer account is not active")
+    return account
+
+
+def _require_billing_admin(database_path: Path, authorization: str | None) -> dict[str, Any]:
+    account = _required_account(database_path, authorization)
+    if str(account.get("role") or "").lower() not in {"admin", "owner"}:
+        raise HTTPException(status_code=403, detail="billing admin role required")
     return account
 
 
@@ -1527,6 +1625,7 @@ def _safe_billing_metadata(value: dict[str, Any]) -> dict[str, Any]:
 def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, Any]:
     account_id = str(account["account_id"])
     workspace_id = str(account.get("workspace_id") or "default")
+    pricing = active_pricing(database_path)
     with transaction(database_path) as conn:
         _ensure_wallet(conn, account_id, workspace_id)
         wallet = conn.execute(
@@ -1567,30 +1666,20 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             "workspace_code": account.get("workspace_code", ""),
         },
         "wallet": {
-            "points_balance": int(wallet["points_balance"] if wallet else 0),
-            "locked_points": int(wallet["locked_points"] if wallet else 0),
-            "available_points": int((wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0)),
+            "points_balance": _display_billing_points(int(wallet["points_balance"] if wallet else 0), pricing),
+            "locked_points": _display_billing_points(int(wallet["locked_points"] if wallet else 0), pricing),
+            "available_points": _display_billing_points(int((wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0)), pricing),
             "version": int(wallet["version"] if wallet else 0),
             "ledger_head_hash": wallet["ledger_head_hash"] if wallet else "",
             "updated_at": wallet["updated_at"] if wallet else "",
         },
-        "pricing": {
-            "currency": "CNY",
-            "point_ratio": BILLING_POINT_RATIO,
-            "ratio_label": f"1 元 = {BILLING_POINT_RATIO} 积分",
-            "status": "draft",
-        },
-        "topup_products": [
-            {
-                "package_id": package_id,
-                "label": item["label"],
-                "amount_cents": item["amount_cents"],
-                "points": item["points"],
-            }
-            for package_id, item in BILLING_TOPUP_PRODUCTS.items()
+        "pricing": pricing,
+        "topup_products": _topup_products(pricing),
+        "recent_ledger": [_display_ledger_row(dict(row), pricing) for row in ledgers],
+        "recent_orders": [
+            {**dict(row), "points": _display_billing_points(int(row["points"]), pricing)}
+            for row in orders
         ],
-        "recent_ledger": [dict(row) for row in ledgers],
-        "recent_orders": [dict(row) for row in orders],
         "security": {
             "server_authoritative": True,
             "local_balance_trusted": False,
@@ -1598,6 +1687,35 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             "settlement_requires_signed_provider_callback": True,
         },
     }
+
+
+def _display_billing_points(units: int, pricing: dict[str, Any]) -> int | float:
+    scale = int(pricing.get("point_unit_scale") or 10)
+    value = int(units) / scale
+    return int(value) if value.is_integer() else value
+
+
+def _topup_products(pricing: dict[str, Any]) -> list[dict[str, Any]]:
+    points_per_cny = int(pricing["points_per_cny"])
+    scale = int(pricing["point_unit_scale"])
+    return [
+        {
+            "package_id": package_id,
+            "label": item["label"],
+            "amount_cents": item["amount_cents"],
+            "points": _display_billing_points(
+                (int(item["amount_cents"]) // 100) * points_per_cny * scale,
+                pricing,
+            ),
+        }
+        for package_id, item in TOPUP_PACKAGE_CENTS.items()
+    ]
+
+
+def _display_ledger_row(row: dict[str, Any], pricing: dict[str, Any]) -> dict[str, Any]:
+    row["points_delta"] = _display_billing_points(int(row.get("points_delta") or 0), pricing)
+    row["balance_after"] = _display_billing_points(int(row.get("balance_after") or 0), pricing)
+    return row
 
 
 def _create_topup_order(database_path: Path, account: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -1608,12 +1726,20 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
     idempotency_key = str(payload.get("idempotency_key") or "").strip()
     if provider not in PAYMENT_PROVIDERS:
         raise HTTPException(status_code=400, detail="provider must be wechat or alipay")
-    if package_id not in BILLING_TOPUP_PRODUCTS:
+    if package_id not in TOPUP_PACKAGE_CENTS:
         raise HTTPException(status_code=400, detail="unknown topup package")
     if not 16 <= len(idempotency_key) <= 128:
         raise HTTPException(status_code=400, detail="idempotency_key is required")
 
-    product = BILLING_TOPUP_PRODUCTS[package_id]
+    pricing = active_pricing(database_path)
+    product = TOPUP_PACKAGE_CENTS[package_id]
+    # Payment orders store raw 0.1-point units; user-facing responses always
+    # convert through the active pricing rule.
+    product_points = (
+        (int(product["amount_cents"]) // 100)
+        * int(pricing["points_per_cny"])
+        * int(pricing["point_unit_scale"])
+    )
     now = _utc_now()
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(timespec="seconds")
     request_hash = _stable_json_hash(
@@ -1623,7 +1749,7 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
             "provider": provider,
             "package_id": package_id,
             "amount_cents": product["amount_cents"],
-            "points": product["points"],
+            "points": product_points,
             "idempotency_key": idempotency_key,
         }
     )
@@ -1639,7 +1765,7 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
             (account_id, idempotency_key),
         ).fetchone()
         if existing is not None:
-            return _topup_order_response(dict(existing), reused=True)
+            return _topup_order_response(dict(existing), reused=True, pricing=pricing)
         order_id = f"billord_{secrets.token_urlsafe(18)}"
         out_trade_no = f"MP{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(8)}"
         conn.execute(
@@ -1659,7 +1785,7 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
                 provider,
                 package_id,
                 product["amount_cents"],
-                product["points"],
+                product_points,
                 idempotency_key,
                 request_hash,
                 expires_at,
@@ -1676,10 +1802,17 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
             """,
             (order_id,),
         ).fetchone()
-    return _topup_order_response(dict(order), reused=False)
+    return _topup_order_response(dict(order), reused=False, pricing=pricing)
 
 
-def _topup_order_response(order: dict[str, Any], *, reused: bool) -> dict[str, Any]:
+def _topup_order_response(
+    order: dict[str, Any],
+    *,
+    reused: bool,
+    pricing: dict[str, Any],
+) -> dict[str, Any]:
+    order = dict(order)
+    order["points"] = _display_billing_points(int(order.get("points") or 0), pricing)
     return {
         "ok": True,
         "reused": reused,
