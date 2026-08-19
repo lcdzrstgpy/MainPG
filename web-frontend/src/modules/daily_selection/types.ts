@@ -86,6 +86,19 @@ export type DailySelectionRun = DailySelectionRunSummary & {
   candidates: DailySelectionCandidate[];
 };
 
+export type DailySelectionTaskStatus = {
+  task_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  stage: string;
+  progress: number;
+  completed: number;
+  total: number;
+  message: string;
+  run_id: string | null;
+  error: string | null;
+  updated_at: string;
+};
+
 export type DailySelectionHandoff = {
   handoff_id: string;
   run_id: string;

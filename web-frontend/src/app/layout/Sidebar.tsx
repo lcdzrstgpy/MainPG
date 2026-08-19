@@ -1,4 +1,5 @@
 import { BRAND_LOGO_URL, BRAND_MARK_URL, BRAND_NAME } from "../../shared/brand";
+import { AppleAppGlyph } from "../../shared/components/AppleAppGlyph";
 import {
   isWorkspaceNavigationGroup,
   type WorkspaceModuleId,
@@ -31,6 +32,7 @@ export function Sidebar({ collapsed, activeId, expandedGroupId, modules, onOpenM
           className={`brand-logo${collapsed ? " is-mark" : ""}`}
           src={collapsed ? BRAND_MARK_URL : BRAND_LOGO_URL}
           alt={BRAND_NAME}
+          data-brand-entry-target
         />
       </div>
       <p className="sidebar-caption">本地运营中台</p>
@@ -50,6 +52,7 @@ export function Sidebar({ collapsed, activeId, expandedGroupId, modules, onOpenM
                 aria-expanded={isGroup ? groupExpanded : undefined}
               >
                 <span className={module.iconClass} aria-hidden="true">{module.icon}</span>
+                <span className="dock-apple-icon" aria-hidden="true"><AppleAppGlyph name={module.id} /></span>
                 <span className="sidebar-label dock-label">{module.label}</span>
                 {!isGroup && Boolean(badges[module.id]) && <span className="sidebar-module-badge" aria-label={`${badges[module.id]} 条待处理通知`}>{badges[module.id]}</span>}
                 {isGroup && <span className={`sidebar-group-caret iconfont icon-down ${groupExpanded ? "is-expanded" : ""}`} aria-hidden="true" />}

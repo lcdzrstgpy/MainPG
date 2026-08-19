@@ -25,6 +25,11 @@ from .repository import (
 from .handoff import DailySelectionConfirmResult, DailySelectionHandoff
 from .normalizer import sanitize_raw_payload
 from .plugin_queue import DataCollectionPluginQueue, PluginCommand
+from .progress import (
+    DailySelectionProgressTracker,
+    DailySelectionTaskNotFound,
+    DailySelectionTaskStatus,
+)
 from .service import (
     CachedDailySelectionImage,
     DailySelectionActor,
@@ -126,8 +131,9 @@ class DailySelectionRouteDependencies:
 def register_daily_selection_routes(
     router: APIRouter, dependencies: DailySelectionRouteDependencies
 ) -> None:
-    """Register six routes on a host-provided router."""
+    """Register daily-selection routes on a host-provided router."""
     service = dependencies.build_service()
+    progress_tracker = DailySelectionProgressTracker()
     plugin_queue = dependencies.plugin_queue
     if plugin_queue is None and dependencies.database_path is not None:
         plugin_queue = DataCollectionPluginQueue(dependencies.database_path)
@@ -179,6 +185,71 @@ def register_daily_selection_routes(
                     workspace_id=actor_id,
                 )
             raise HTTPException(status_code=401, detail="authenticated workspace required") from error
+
+    def run_preview_task(
+        task_id: str,
+        actor: DailySelectionActor,
+        request: dict[str, Any],
+    ) -> None:
+        def report(
+            stage: str,
+            progress: int,
+            completed: int,
+            total: int,
+            message: str,
+        ) -> None:
+            progress_tracker.update(
+                task_id,
+                stage=stage,
+                progress=progress,
+                completed=completed,
+                total=total,
+                message=message,
+            )
+
+        try:
+            run = service.preview(actor=actor, request=request, progress_callback=report)
+            progress_tracker.complete(task_id, run_id=run.run_id)
+            # 与同步接口保持一致：结果返回后才启动 SKU 缺失项的低频后台补齐。
+            service.auto_start_sku_repull(actor=actor, run_id=run.run_id)
+        except (
+            DailySelectionCriteriaError,
+            DailySelectionContractError,
+            DailySelectionProviderUnavailable,
+            ValidationError,
+            TypeError,
+            ValueError,
+        ) as error:
+            progress_tracker.fail(task_id, error=str(error))
+        except Exception:
+            progress_tracker.fail(task_id, error="采集任务执行失败，请稍后重试")
+
+    @router.post(
+        "/desktop/daily-selection/preview-tasks",
+        response_model=DailySelectionTaskStatus,
+        status_code=202,
+    )
+    def start_preview_task(
+        background_tasks: BackgroundTasks,
+        request: dict[str, Any] = Body(...),
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> DailySelectionTaskStatus:
+        task = progress_tracker.create(workspace_id=actor.workspace_id)
+        background_tasks.add_task(run_preview_task, task.task_id, actor, request)
+        return task
+
+    @router.get(
+        "/desktop/daily-selection/preview-tasks/{task_id}",
+        response_model=DailySelectionTaskStatus,
+    )
+    def preview_task_status(
+        task_id: str,
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> DailySelectionTaskStatus:
+        try:
+            return progress_tracker.get(task_id, workspace_id=actor.workspace_id)
+        except DailySelectionTaskNotFound as error:
+            raise HTTPException(status_code=404, detail="daily-selection task not found") from error
 
     @router.post(
         "/desktop/daily-selection/preview",

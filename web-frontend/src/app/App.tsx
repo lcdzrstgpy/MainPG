@@ -14,6 +14,7 @@ type MeResponse = {
 
 export function App() {
   const [enteredWorkspace, setEnteredWorkspace] = useState(false);
+  const [playEntryAnimation, setPlayEntryAnimation] = useState(false);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -38,14 +39,28 @@ export function App() {
       // 退出接口异常不阻塞本地登出
     } finally {
       clearAuthSession();
+      setPlayEntryAnimation(false);
       setEnteredWorkspace(false);
     }
+  }
+
+  function enterWorkspaceAfterLogin() {
+    setPlayEntryAnimation(true);
+    setEnteredWorkspace(true);
   }
 
   if (!ready) return null;
 
   return <>
-    {enteredWorkspace ? <WorkspaceShell onSignOut={signOut} /> : <AuthPage onEnter={() => setEnteredWorkspace(true)} />}
+    {enteredWorkspace ? (
+      <WorkspaceShell
+        onSignOut={signOut}
+        playEntryAnimation={playEntryAnimation}
+        onEntryAnimationComplete={() => setPlayEntryAnimation(false)}
+      />
+    ) : (
+      <AuthPage onEnter={enterWorkspaceAfterLogin} />
+    )}
     <AppUpdateDialog />
   </>;
 }
