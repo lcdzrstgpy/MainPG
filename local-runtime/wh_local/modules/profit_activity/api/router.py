@@ -382,6 +382,14 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         except ProfitActivityNotFound as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
+    @router.get("/activity-filter/{task_id}/eligible")
+    def activity_filter_eligible(task_id: int, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+        require_permission(actor, "profit_activity.read", database_path)
+        try:
+            return {"products": service.eligible_activity_products(task_id, actor)}
+        except ProfitActivityNotFound as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
     @router.post("/activity-filter/{task_id}/pause")
     def pause_filter_task(task_id: int, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.filter", database_path)
