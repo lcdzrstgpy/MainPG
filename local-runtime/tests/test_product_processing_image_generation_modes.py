@@ -273,6 +273,83 @@ def test_four_grid_source_with_chinese_allows_printed_design_panels(monkeypatch)
     ]
 
 
+def test_force_import_accepts_generated_panels_that_only_fail_ocr(monkeypatch) -> None:
+    service, processor = _service(monkeypatch)
+    monkeypatch.setattr(
+        service,
+        "_persist_provider_grid_originals",
+        lambda media, *_args: ("/tmp/provider-original.png",) if media else (),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "inspect_visible_text",
+        lambda content: {
+            "chinese": [],
+            "prominent": ["VISIBLE MODEL TEXT"] if content == b"slot-4" else [],
+        },
+    )
+
+    ai_notes: list[str] = []
+    output = service._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Mahjong Tile Set",
+        "Toys & Games",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        ai_notes=ai_notes,
+        image_generation_count=4,
+        allow_quality_override=True,
+    )
+
+    assert len(processor.calls) == 1
+    assert len(output.carousel_urls) == 4
+    assert output.provider_status_class == "quality_override"
+    assert output.provider_original_image_paths == ("/tmp/provider-original.png",)
+    assert "four_grid:quality_override:4" in ai_notes
+
+
+def test_rejected_grid_keeps_provider_original_for_diagnostics(monkeypatch) -> None:
+    service, _processor = _service(monkeypatch)
+    monkeypatch.setattr(
+        service_module,
+        "inspect_visible_text",
+        lambda content: {
+            "chinese": [],
+            "prominent": ["VISIBLE MODEL TEXT"]
+            if content in {b"slot-4", b"generated-image"}
+            else [],
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_persist_provider_grid_originals",
+        lambda media, *_args: ("/tmp/task-1-grid-provider-original.png",)
+        if media
+        else (),
+    )
+
+    output = service._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Mahjong Tile Set",
+        "Toys & Games",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=4,
+    )
+
+    assert output.carousel_urls == ()
+    assert output.rejected_image_paths == (
+        "/tmp/task-1-grid-provider-original.png",
+    )
+
+
 def test_four_grid_source_without_chinese_still_repairs_chinese_slots(monkeypatch) -> None:
     """非印刷设计商品：来源图无中文 → 面板中文仍硬拦截并走 1K 槽位重绘。"""
     from wh_local.modules.product_processing.infrastructure import media as media_module

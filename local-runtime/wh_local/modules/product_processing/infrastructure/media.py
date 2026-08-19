@@ -1136,13 +1136,34 @@ class ProductImageProcessor:
         if not task_id:
             raise MediaProcessingError("provider response does not contain image task id")
         result_url = self._poll_wuyin_image_result(provider, task_id, timeout_seconds=timeout_seconds)
-        downloaded = _SESSION.get(result_url, timeout=360, allow_redirects=False)
-        try:
-            downloaded.raise_for_status()
-            content = bytes(downloaded.content)
-            content_type = str(downloaded.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
-        finally:
-            downloaded.close()
+        download_error: requests.RequestException | None = None
+        for download_attempt in range(1, 4):
+            try:
+                downloaded = _SESSION.get(result_url, timeout=360, allow_redirects=False)
+                try:
+                    downloaded.raise_for_status()
+                    content = bytes(downloaded.content)
+                    content_type = str(downloaded.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
+                finally:
+                    downloaded.close()
+                download_error = None
+                break
+            except requests.RequestException as exc:
+                download_error = exc
+                if download_attempt < 3:
+                    time.sleep(0.5 * download_attempt)
+        if download_error is not None:
+            parsed_result = urlsplit(result_url)
+            if not isinstance(download_error, requests.exceptions.SSLError) or parsed_result.scheme != "https":
+                raise download_error
+            http_result_url = parsed_result._replace(scheme="http").geturl()
+            downloaded = _SESSION.get(http_result_url, timeout=360, allow_redirects=False)
+            try:
+                downloaded.raise_for_status()
+                content = bytes(downloaded.content)
+                content_type = str(downloaded.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
+            finally:
+                downloaded.close()
         if not content or not content_type.startswith("image/"):
             raise MediaProcessingError("provider result is not an image")
         return content, content_type

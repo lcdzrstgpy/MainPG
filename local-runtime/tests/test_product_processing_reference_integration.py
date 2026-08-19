@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import json
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +18,7 @@ from wh_local.modules.product_processing.domain.prompts import (
     default_image_context,
     format_prompt,
 )
+from wh_local.modules.product_processing.doubao_text import DoubaoTextResult
 from wh_local.modules.product_processing.service import ProductProcessingService
 
 
@@ -125,8 +125,7 @@ def test_service_has_exactly_four_narrow_content_reference_integration_points() 
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     expected = {
-        "_generate_combined_text": "select_title_reference",
-        "_generate_title": "select_title_reference",
+        "_generate_doubao_text": "select_title_reference",
         "_generate_grid_images": "select_image_reference",
         "_generate_detail_images": "select_image_reference",
         "_generate_premium_images": "select_image_reference",
@@ -158,15 +157,14 @@ def test_service_has_exactly_four_narrow_content_reference_integration_points() 
             )
 
     assert integration_owners == {
-        "select_title_reference": ["_generate_combined_text", "_generate_title"],
+        "select_title_reference": ["_generate_doubao_text"],
         "select_image_reference": [
             "_generate_grid_images",
             "_generate_premium_images",
             "_generate_detail_images",
         ],
         "append_content_reference": [
-            "_generate_combined_text",
-            "_generate_title",
+            "_generate_doubao_text",
             "_generate_grid_images",
             "_generate_premium_images",
             "_generate_detail_images",
@@ -213,43 +211,47 @@ class _PromptRepository:
 class _CapturingTextClient:
     def __init__(self) -> None:
         self.prompts: list[str] = []
+        self.last_attempt_count = 1
 
-    def chat(self, messages: list[dict]) -> str:
-        self.prompts.append(messages[0]["content"])
-        return json.dumps(
-            {
-                "optimized_title": "Insulated Travel Mug Stainless Steel 500 ml",
-                "description": "\n".join(
-                    [
-                        "- VERIFIED STEEL BUILD: Confirmed stainless steel construction supports dependable everyday drink service while preserving the source-supported product identity and clean travel mug shape.",
-                        "- PRACTICAL DRINK USE: The mug is suited to routine beverage use at a desk, during a commute, or in other ordinary daily settings.",
-                        "- CONFIRMED CAPACITY SIZE: The verified 500 ml capacity provides a clear volume reference without adding unsupported dimensions or package claims.",
-                        "- SIMPLE DAILY HANDLING: The straightforward mug format is easy to place, carry, and incorporate into a regular beverage routine with normal care.",
-                        "- USEFUL PORTABLE FORMAT: Its travel-oriented form combines the confirmed capacity and construction in one practical item for supported on-the-go use.",
-                    ]
-                ),
-                "variant_translations": [],
-            }
+    def generate_listing_text(self, prompt: str, *, validator=None) -> DoubaoTextResult:
+        self.prompts.append(prompt)
+        result = DoubaoTextResult(
+            optimized_title="Insulated Travel Mug Stainless Steel 500 ml",
+            description="\n".join(
+                [
+                    "- VERIFIED STEEL BUILD: Confirmed stainless steel construction supports dependable everyday drink service while preserving the source-supported product identity and clean travel mug shape.",
+                    "- PRACTICAL DRINK USE: The mug is suited to routine beverage use at a desk, during a commute, or in other ordinary daily settings.",
+                    "- CONFIRMED CAPACITY SIZE: The verified 500 ml capacity provides a clear volume reference without adding unsupported dimensions or package claims.",
+                    "- SIMPLE DAILY HANDLING: The straightforward mug format is easy to place, carry, and incorporate into a regular beverage routine with normal care.",
+                    "- USEFUL PORTABLE FORMAT: Its travel-oriented form combines the confirmed capacity and construction in one practical item for supported on-the-go use.",
+                ]
+            ),
+            variant_translations=(),
+            product_dimensions={},
         )
+        if validator is not None:
+            validator(result)
+        return result
 
 
-def test_combined_text_reference_does_not_add_provider_calls(monkeypatch) -> None:
+def test_doubao_text_reference_does_not_add_provider_calls(monkeypatch) -> None:
     service = object.__new__(ProductProcessingService)
     service.repository = _PromptRepository()
     client = _CapturingTextClient()
-    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
-    monkeypatch.setattr(service, "_ai_client", lambda: client)
-    monkeypatch.setattr(service, "_load_ai_stage_cache", lambda stage, key: None)
-    monkeypatch.setattr(service, "_save_ai_stage_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "_doubao_text_client", lambda: client)
     notes: list[str] = []
 
-    result = service._generate_combined_text(
+    result = service._generate_doubao_text(
         "500 ml Stainless Steel Travel Mug",
         "Kitchen & Dining",
         _raw(),
         "en",
         "US",
         notes,
+        vision_identity=_vision_identity(),
+        needs_title=True,
+        needs_description=True,
+        needs_dimensions=False,
     )
 
     assert result is not None

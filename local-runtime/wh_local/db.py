@@ -468,6 +468,46 @@ CREATE TABLE IF NOT EXISTS billing_usage_events (
     CHECK (quantity > 0),
     CHECK (points_charged >= 0)
 );
+
+-- AI 调用计费事件：先冻结预估积分，提供方完成后按实际成本结算或失败解锁。
+-- 与上面的旧版即时扣费表并存，供采用 reserve/settle 协议的新业务模块使用。
+CREATE TABLE IF NOT EXISTS billing_ai_usage_events (
+    usage_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    feature_key TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    reserved_points INTEGER NOT NULL,
+    charged_points INTEGER NOT NULL DEFAULT 0,
+    refunded_points INTEGER NOT NULL DEFAULT 0,
+    cost_multiplier REAL NOT NULL DEFAULT 1,
+    min_charge_points INTEGER NOT NULL DEFAULT 0,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    actual_cost_cny REAL NOT NULL DEFAULT 0,
+    provider TEXT NOT NULL DEFAULT '',
+    provider_key_id TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT '',
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    source_ref TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'reserved'
+        CHECK (status IN ('reserved', 'succeeded', 'failed')),
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    settled_at TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE,
+    UNIQUE (account_id, idempotency_key),
+    CHECK (reserved_points >= 0),
+    CHECK (charged_points >= 0),
+    CHECK (refunded_points >= 0),
+    CHECK (quantity > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_ai_usage_events_account_status
+    ON billing_ai_usage_events (account_id, status, created_at);
 """
 
 

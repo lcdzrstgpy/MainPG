@@ -78,7 +78,8 @@ def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
     The API key/secret never ship with the client software. Each collection
     obtains them from the server (which verifies the user account) using an
     RSA-wrapped one-time AES session key, so credentials stay out of the
-    client's disk and source code.
+    client's disk and source code. Source/dev runtimes may use their existing
+    local OneBound configuration only when the remote service is unreachable.
     """
     config = default_config()
     try:
@@ -92,6 +93,20 @@ def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
             workspace_code="",
         )
     except CollectCredentialsError as error:
+        local_credentials_ready = bool(
+            config.onebound_1688_enabled
+            and config.onebound_1688_api_key
+            and config.onebound_1688_api_secret
+            and config.onebound_1688_base_url
+        )
+        if str(error).startswith("cannot reach collect-key service:") and local_credentials_ready:
+            logger.warning("collect-key service unavailable; using configured local OneBound credentials")
+            return {
+                "api_key": config.onebound_1688_api_key,
+                "api_secret": config.onebound_1688_api_secret,
+                "base_url": config.onebound_1688_base_url,
+                "enabled": True,
+            }
         raise HTTPException(status_code=403, detail=str(error)) from error
     return {
         "api_key": credentials.get("api_key", ""),

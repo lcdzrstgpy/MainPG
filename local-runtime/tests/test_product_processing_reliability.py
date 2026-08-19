@@ -170,6 +170,7 @@ def test_engine_status_reports_enabled_capability_blockers_without_provider_prob
             return {"image_configured": False}
 
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.delenv("ARK_API_KEY", raising=False)
     monkeypatch.setattr(service_module, "ocr_gate_enabled", lambda: True)
     monkeypatch.setattr(
         service_module,
@@ -189,12 +190,6 @@ def test_engine_status_reports_enabled_capability_blockers_without_provider_prob
             "reference_image_model": "image-model",
         },
     )
-    monkeypatch.setattr(
-        service_module.AiClient,
-        "__init__",
-        lambda _self, *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("provider probe forbidden")),
-    )
-
     status = service.engine_status()
 
     assert status["ready"] is False
@@ -202,10 +197,50 @@ def test_engine_status_reports_enabled_capability_blockers_without_provider_prob
     assert status["diagnostics"]["capabilities"]["image_ai"]["ready"] is False
     assert status["diagnostics"]["capabilities"]["ocr"]["reason"] == "RapidOCR 模型不可用"
     assert status["unavailable_reasons"] == [
-        "文本 AI 已启用，但未配置可用的服务地址和 API Key",
+        "文本 AI 已启用，但服务端未配置 ARK_API_KEY",
         "图片 AI 已启用，但未配置可用的图片服务地址/API Key，或 Pillow 图片依赖不可用",
         "RapidOCR 模型不可用",
     ]
+
+
+def test_engine_status_splits_doubao_text_key_from_image_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+
+    class _LocalMediaStatus:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def status(self) -> dict:
+            return {"image_configured": False}
+
+    monkeypatch.setenv("ARK_API_KEY", "server-side-ark-key")
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(service_module, "ocr_gate_enabled", lambda: False)
+    monkeypatch.setattr(
+        service_module,
+        "_media_types",
+        lambda: (_LocalMediaStatus, RuntimeError, RuntimeError),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "resolve_ai_provider",
+        lambda: {
+            "provider": "test",
+            "base_url": "",
+            "api_key": "",
+            "image_model": "",
+            "reference_image_model": "",
+        },
+    )
+
+    status = service.engine_status()
+
+    assert status["diagnostics"]["capabilities"]["text_ai"]["ready"] is True
+    assert status["diagnostics"]["capabilities"]["image_ai"]["ready"] is False
+    assert status["diagnostics"]["config"]["ai_provider"] == "doubao"
+    assert status["diagnostics"]["config"]["ai_configured"] is True
 
 
 def test_long_item_refreshes_employee_visible_heartbeat(tmp_path: Path, monkeypatch) -> None:

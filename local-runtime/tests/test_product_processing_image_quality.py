@@ -64,6 +64,121 @@ def _media(content: bytes) -> GeneratedMedia:
     )
 
 
+def test_wuyin_result_download_retries_transient_ssl_failure(monkeypatch) -> None:
+    class _SubmitResponse:
+        ok = True
+
+        def json(self) -> dict:
+            return {"code": 200, "data": {"id": "task-1"}}
+
+        def close(self) -> None:
+            return
+
+    class _ImageResponse:
+        content = b"generated-image"
+        headers = {"Content-Type": "image/png"}
+
+        def raise_for_status(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+    download_attempts = 0
+
+    def _get(url: str, **kwargs):  # noqa: ANN003
+        nonlocal download_attempts
+        assert url == "https://scapi.net/result.png"
+        download_attempts += 1
+        if download_attempts == 1:
+            raise requests.exceptions.SSLError("unexpected eof")
+        return _ImageResponse()
+
+    monkeypatch.setattr(media_module._SESSION, "post", lambda *args, **kwargs: _SubmitResponse())
+    monkeypatch.setattr(media_module._SESSION, "get", _get)
+    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+    processor = ProductImageProcessor(lambda: {})
+    monkeypatch.setattr(
+        processor,
+        "_poll_wuyin_image_result",
+        lambda *_args, **_kwargs: "https://scapi.net/result.png",
+    )
+
+    content, content_type = processor._request_wuyin_image(
+        {
+            "base_url": "https://api.wuyinkeji.com",
+            "api_key": "secret",
+            "image_size": "2K",
+        },
+        "prompt",
+        [(b"reference", "source.png", "image/png", "https://example.test/source.png")],
+        timeout_seconds=600,
+    )
+
+    assert content == b"generated-image"
+    assert content_type == "image/png"
+    assert download_attempts == 2
+
+
+def test_wuyin_result_download_falls_back_to_http_after_https_ssl_failures(monkeypatch) -> None:
+    class _SubmitResponse:
+        ok = True
+
+        def json(self) -> dict:
+            return {"code": 200, "data": {"id": "task-1"}}
+
+        def close(self) -> None:
+            return
+
+    class _ImageResponse:
+        content = b"generated-image"
+        headers = {"Content-Type": "image/png"}
+
+        def raise_for_status(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+    download_urls: list[str] = []
+
+    def _get(url: str, **kwargs):  # noqa: ANN003
+        download_urls.append(url)
+        if url.startswith("https://"):
+            raise requests.exceptions.SSLError("unexpected eof")
+        return _ImageResponse()
+
+    monkeypatch.setattr(media_module._SESSION, "post", lambda *args, **kwargs: _SubmitResponse())
+    monkeypatch.setattr(media_module._SESSION, "get", _get)
+    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+    processor = ProductImageProcessor(lambda: {})
+    monkeypatch.setattr(
+        processor,
+        "_poll_wuyin_image_result",
+        lambda *_args, **_kwargs: "https://scapi.net/result.png",
+    )
+
+    content, content_type = processor._request_wuyin_image(
+        {
+            "base_url": "https://api.wuyinkeji.com",
+            "api_key": "secret",
+            "image_size": "2K",
+        },
+        "prompt",
+        [(b"reference", "source.png", "image/png", "https://example.test/source.png")],
+        timeout_seconds=600,
+    )
+
+    assert content == b"generated-image"
+    assert content_type == "image/png"
+    assert download_urls == [
+        "https://scapi.net/result.png",
+        "https://scapi.net/result.png",
+        "https://scapi.net/result.png",
+        "http://scapi.net/result.png",
+    ]
+
+
 def test_four_grid_prompt_forbids_all_typography_and_requires_validated_dividers() -> None:
     assert "zero AI-added visible text" in GRID_IMAGE_PROMPT
     assert "No AI-generated copy" in GRID_IMAGE_PROMPT
@@ -558,6 +673,28 @@ def test_provider_config_uses_image_gpt_with_explicit_1k_reference_profile(monke
     assert provider["reference_image_size_1k"] == "1024x1024"
     assert provider["premium_image_model"] == "gpt-image-2-4k"
     assert provider["premium_image_size"] == "4096x4096"
+
+
+def test_provider_config_routes_saved_image_key_to_wuyin(monkeypatch) -> None:
+    runtime_config = SimpleNamespace(
+        text_ai=SimpleNamespace(base_url="https://text.example/v1", api_key="text-key"),
+        image_ai=SimpleNamespace(
+            base_url="https://legacy-image.example/v1",
+            api_key="image-key",
+            model="gpt-image-2-2k",
+            configured=True,
+        ),
+        backup_image_ai=SimpleNamespace(configured=False),
+        cos=SimpleNamespace(configured=False),
+        limits={},
+        updates={},
+    )
+    monkeypatch.setattr(provider_config_module, "_try_system_runtime_config", lambda: runtime_config)
+    monkeypatch.delenv("WH_IMAGE_AI_BASE_URL", raising=False)
+
+    provider = provider_config_module.resolve_ai_provider()
+
+    assert provider["_sys_image_ai"]["base_url"] == "https://api.wuyinkeji.com"
 
 
 def test_b_grid_quality_failure_never_triggers_a_paid_repair(monkeypatch) -> None:
