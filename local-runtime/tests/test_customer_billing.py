@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from wh_local.customer.auth_server import create_auth_app
-from wh_local.customer.remote_client import CustomerAuthClient
 from wh_local.customer.auth_service import _email_code_digest
+from wh_local.customer.contracts import CustomerAuthResult
+from wh_local.customer.local_session import LocalSessionService
+from wh_local.customer.remote_client import CustomerAuthClient
+from wh_local.customer.routes import create_customer_router
 from wh_local.db import transaction
 
 _EMAIL_CODE_SECRET = "billing-test-secret-that-is-at-least-32-chars"
@@ -265,3 +271,62 @@ def test_remote_client_posts_authoritative_usage_with_remote_session(monkeypatch
         "/api/customer/billing/usage/use_123/fail",
     ]
     assert all(item[2] == {"Authorization": "Bearer remote-token"} for item in posted)
+
+
+def _customer_router_client(remote_auth: object) -> tuple[TestClient, str]:
+    sessions = LocalSessionService()
+    session = sessions.login_customer(
+        CustomerAuthResult(
+            customer_id="customer-1",
+            username="billing-user",
+            remote_token="remote-session-token",
+        )
+    )
+    app = FastAPI()
+    app.include_router(create_customer_router(remote_auth, sessions))
+    return TestClient(app), session.token
+
+
+@pytest.mark.parametrize(
+    ("status_code", "detail"),
+    [(402, "insufficient points"), (404, "usage event not found")],
+)
+def test_customer_router_preserves_remote_billing_rejection_status(
+    monkeypatch,
+    status_code: int,
+    detail: str,
+) -> None:
+    remote_auth = CustomerAuthClient("https://customer.example.test")
+
+    def reject_remote_request(*_args, **_kwargs):
+        raise HTTPError(
+            "https://customer.example.test/api/customer/billing/topup-orders",
+            status_code,
+            "rejected",
+            None,
+            BytesIO(f'{{"detail": "{detail}"}}'.encode("utf-8")),
+        )
+
+    monkeypatch.setattr("wh_local.customer.remote_client.urlopen", reject_remote_request)
+    client, local_token = _customer_router_client(remote_auth)
+
+    response = client.post(
+        "/api/customer/billing/topup-orders",
+        json={"package_id": "points_10"},
+        headers={"Authorization": f"Bearer {local_token}"},
+    )
+
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+
+
+def test_customer_router_returns_503_when_development_fallback_has_no_billing_summary() -> None:
+    client, local_token = _customer_router_client(object())
+
+    response = client.get(
+        "/api/customer/billing/summary",
+        headers={"Authorization": f"Bearer {local_token}"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "remote billing service is not configured"}

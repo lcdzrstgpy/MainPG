@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from .contracts import CustomerAuthUnavailable
+from .contracts import CustomerAuthRejected, CustomerAuthUnavailable
 from .local_session import LocalSessionService
 from .remote_client import CustomerAuthClient
 
@@ -22,6 +22,8 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
     def handle_auth_error(exc: Exception):
         if isinstance(exc, CustomerAuthUnavailable):
             raise HTTPException(status_code=503, detail=str(exc))
+        if isinstance(exc, CustomerAuthRejected):
+            raise HTTPException(status_code=exc.status_code, detail=exc.message)
         if isinstance(exc, PermissionError):
             raise HTTPException(status_code=403, detail=str(exc))
         if isinstance(exc, ValueError):

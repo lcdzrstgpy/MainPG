@@ -5,7 +5,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
+from .contracts import CustomerAuthActionResult, CustomerAuthRejected, CustomerAuthResult, CustomerAuthUnavailable
 
 
 class CustomerAuthClient:
@@ -113,7 +113,10 @@ class CustomerAuthClient:
             if exc.code in (401, 403):
                 raise PermissionError(detail or f"customer auth service returned HTTP {exc.code}") from exc
             if 400 <= exc.code < 500:
-                raise ValueError(detail or f"customer auth service rejected the request (HTTP {exc.code})") from exc
+                raise CustomerAuthRejected(
+                    exc.code,
+                    detail or f"customer auth service rejected the request (HTTP {exc.code})",
+                ) from exc
             raise CustomerAuthUnavailable(f"customer auth service returned HTTP {exc.code}: {detail}") from exc
         except (URLError, TimeoutError) as exc:
             raise CustomerAuthUnavailable(str(getattr(exc, "reason", exc))) from exc
@@ -137,7 +140,10 @@ class CustomerAuthClient:
             if exc.code in (401, 403):
                 raise PermissionError(detail or f"customer auth service returned HTTP {exc.code}") from exc
             if 400 <= exc.code < 500:
-                raise ValueError(detail or f"customer auth service rejected the request (HTTP {exc.code})") from exc
+                raise CustomerAuthRejected(
+                    exc.code,
+                    detail or f"customer auth service rejected the request (HTTP {exc.code})",
+                ) from exc
             raise CustomerAuthUnavailable(f"customer auth service returned HTTP {exc.code}: {detail}") from exc
         except (URLError, TimeoutError) as exc:
             raise CustomerAuthUnavailable(str(getattr(exc, "reason", exc))) from exc
