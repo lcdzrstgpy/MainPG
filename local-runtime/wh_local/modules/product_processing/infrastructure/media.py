@@ -88,6 +88,10 @@ MAX_PROVIDER_JSON_BYTES = 8 * 1024 * 1024
 _PROVIDER_CURSOR_LOCK = threading.Lock()
 _PROVIDER_CURSORS: dict[str, int] = {}
 
+# 服务器托管图片生成串行闸：网关对并发图片生成不稳定（上游 image_gpt 并发受限），
+# 并发请求会被重置 TLS 或排队超时。本地一次只发一条，失败重试一次后放行下一条商品。
+_SERVER_MANAGED_IMAGE_GATE = threading.BoundedSemaphore(1)
+
 
 class MediaConfigurationError(RuntimeError):
     pass
@@ -364,18 +368,35 @@ class ProductImageProcessor:
                 4,
             ),
         )
-        references = self._load_references(reference_values, limit=reference_limit)
-        if not references:
-            raise MediaProcessingError("a confirmed source image is required for image processing")
+        server_managed_only = bool(providers) and all(
+            _is_server_managed_wuyin_provider(provider) for provider in providers
+        )
+        if server_managed_only:
+            # 服务器统一走中转：本地不下载参考图，只做结构校验后把 URL 交给网关，
+            # 由网关自行下载。避免本地代理 TUN fake-ip 下 DNS/下载不稳定导致失败。
+            url_references = [
+                (b"", "reference.png", "image/jpeg", str(raw).strip())
+                for raw in reference_values
+                if _plausible_public_http_url(str(raw or "").strip())
+            ][:reference_limit]
+            if not url_references:
+                raise MediaProcessingError("a confirmed source image URL is required for image processing")
+            references = url_references
+        else:
+            references = self._load_references(reference_values, limit=reference_limit)
+            if not references:
+                raise MediaProcessingError("a confirmed source image is required for image processing")
         ordinary_reference_count = len(references)
         references.extend(extra_references or [])
-        if layout_scaffold:
+        if layout_scaffold and not server_managed_only:
             scaffold = build_grid_scaffold(references[0][0])
             references = [*references, (scaffold, "fixed-four-grid-layout.png", "image/png")]
         retries = max(1, min(int((config.get("limits") or {}).get("image_retry_attempts") or 3), 5))
         errors: list[str] = []
         attempt_count = 0
         generation_deadline = time.monotonic() + IMAGE_GENERATION_TOTAL_TIMEOUT_SECONDS
+        # 四宫格单次生成成本高：串行闸下一条一条发，失败最多重试一次即放行下一条商品
+        # （provider 轮巡叠加时按 provider 数放行）。
         max_total_attempts = min(retries, 2) if stage == "grid_image" else retries * max(1, len(providers))
         for provider in self._provider_order(providers, config):
             for attempt in range(1, retries + 1):
@@ -1262,38 +1283,47 @@ class ProductImageProcessor:
         urls = [
             str(ref[3]).strip()
             for ref in references
-            if len(ref) >= 4 and is_safe_external_url(str(ref[3]).strip())
+            if len(ref) >= 4 and _plausible_public_http_url(str(ref[3]).strip())
         ]
         response: requests.Response | None = None
         try:
-            response = _SESSION.post(
-                f"{gateway_base_url()}/api/customer/ai/image",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "usage_id": reservation,
-                    "prompt": prompt,
-                    "size": _wuyin_size(image_size or provider.get("image_size")),
-                    **({"urls": urls} if urls else {}),
-                },
-                timeout=max(30.0, min(float(timeout_seconds), 660.0)),
-                allow_redirects=False,
-                stream=True,
-            )
-            status_code = int(response.status_code)
-            if not 200 <= status_code < 300:
-                raise _gateway_image_status_error(status_code)
-            payload = _bounded_response_json(response)
+            with _SERVER_MANAGED_IMAGE_GATE:
+                response = _SESSION.post(
+                    f"{gateway_base_url()}/api/customer/ai/image",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "usage_id": reservation,
+                        "prompt": prompt,
+                        "size": _wuyin_size(image_size or provider.get("image_size")),
+                        **({"urls": urls} if urls else {}),
+                    },
+                    timeout=max(30.0, min(float(timeout_seconds), 660.0)),
+                    allow_redirects=False,
+                    stream=True,
+                )
+                status_code = int(response.status_code)
+                if not 200 <= status_code < 300:
+                    raise _gateway_image_status_error(status_code)
+                payload = _bounded_response_json(response)
         except MediaProcessingError:
             raise
         except requests.RequestException as exc:
+            print(
+                f"[image-gateway-diag] RequestException: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
             raise MediaProcessingError("server image gateway is temporarily unavailable") from exc
         finally:
             if response is not None:
                 response.close()
         if not isinstance(payload, dict) or not bool(payload.get("ok")):
+            print(
+                f"[image-gateway-diag] non-ok payload: {str(payload)[:300]}",
+                flush=True,
+            )
             raise MediaProcessingError("server image gateway rejected the request")
         result_url = str(payload.get("result_url") or "").strip()
         if not result_url or not is_safe_external_url(result_url):
@@ -1406,6 +1436,31 @@ def _is_wuyin_image_provider(provider: dict[str, str]) -> bool:
 
 def _is_server_managed_wuyin_provider(provider: dict[str, str]) -> bool:
     return str(provider.get("base_url") or "") == "server-managed-wuyin"
+
+
+def _plausible_public_http_url(value: str) -> bool:
+    """Structural http(s) URL check that never touches DNS.
+
+    Server-managed image generation forwards source URLs to the platform
+    gateway, which downloads them itself.  The local desktop only needs a
+    syntactic sanity check; requiring a DNS round-trip here makes the request
+    flaky under proxy TUN fake-ip setups.
+    """
+    text = str(value or "").strip()
+    if not text or len(text) > 4096 or any(ord(char) < 32 or ord(char) == 127 for char in text):
+        return False
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return False
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        return False
+    if parts.username is not None or parts.password is not None or parts.fragment:
+        return False
+    hostname = parts.hostname.lower().rstrip(".")
+    if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith((".local", ".localhost")):
+        return False
+    return True
 
 
 def _wuyin_size(value: str | None) -> str:

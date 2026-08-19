@@ -175,11 +175,42 @@ def resolve_safe_external_url(
         except ValueError:
             return None
         if not all(_is_global_address(item) for item in parsed_addresses):
-            return None
+            if resolver is not None:
+                return None
+            # 系统 DNS 可能被本地代理（TUN fake-ip）劫持，返回 198.18.0.0/15
+            # 等保留段地址；这类域名本身是合法公网 CDN，改用固定公网 DNS 兜底。
+            return _resolve_public_via_doh(value, hostname, port)
         return ResolvedExternalURL(str(value), hostname, port, addresses)
     if not _is_global_address(address):
         return None
     return ResolvedExternalURL(str(value), hostname, port, (str(address),))
+
+
+def _resolve_public_via_doh(
+    value: str,
+    hostname: str,
+    port: int,
+) -> ResolvedExternalURL | None:
+    """Resolve a host through the pinned public-DNS path used by image fetches.
+
+    Only reached when the caller used the default system resolver and every
+    answer was a non-global address.  Callers that inject their own resolver
+    keep the fail-closed behavior above.
+    """
+    try:
+        from wh_local.data_collection.public_image_fetch import resolve_public_image_addresses
+        addresses = tuple(dict.fromkeys(resolve_public_image_addresses(hostname, port)))
+    except Exception:
+        return None
+    if not addresses:
+        return None
+    try:
+        parsed_addresses = tuple(ipaddress.ip_address(item) for item in addresses)
+    except ValueError:
+        return None
+    if not all(_is_global_address(item) for item in parsed_addresses):
+        return None
+    return ResolvedExternalURL(value, hostname, port, addresses)
 
 
 def is_safe_external_url(

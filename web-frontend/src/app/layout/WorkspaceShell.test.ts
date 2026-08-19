@@ -42,3 +42,13 @@ test("personal center owns the system configuration section", () => {
   assert.match(personalCenterSource, /BasicSettingsPage/);
   assert.match(personalCenterSource, /<BasicSettingsPage \/>/);
 });
+
+test("product processing distinguishes remote service outages from API key failures", () => {
+  assert.match(taskPageSource, /function isRemoteServiceError/);
+  assert.match(taskPageSource, /服务器计费或 AI 服务暂时不可用/);
+  assert.match(taskPageSource, /hasRemoteServiceIssue/);
+  assert.doesNotMatch(
+    taskPageSource,
+    /const AI_CONFIG_ERROR_RE\s*=\s*\/[^/\n]*unreachable[^/\n]*\/i/,
+  );
+});

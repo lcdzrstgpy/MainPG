@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
@@ -15,6 +18,7 @@ from wh_local.customer.auth_service import _email_code_digest
 from wh_local.customer.contracts import (
     CustomerAuthRejected,
     CustomerAuthResult,
+    CustomerAuthUnavailable,
     CustomerBillingPermissionError,
     CustomerBillingProtocolError,
 )
@@ -324,6 +328,93 @@ def test_remote_client_posts_authoritative_usage_with_remote_session(monkeypatch
         "/api/customer/billing/usage/use_123/fail",
     ]
     assert all(item[2] == {"Authorization": "Bearer remote-token"} for item in posted)
+
+
+def test_remote_billing_summary_retries_transient_unavailable(monkeypatch) -> None:
+    client = CustomerAuthClient("https://customer.example.test")
+    calls = 0
+
+    def flaky_get(*_args, **_kwargs) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise CustomerAuthUnavailable("tls eof")
+        return {"wallet": {"available_points": 100}}
+
+    monkeypatch.setattr(client, "_get", flaky_get)
+    assert client.billing_summary("remote-token") == {
+        "wallet": {"available_points": 100}
+    }
+    assert calls == 2
+
+
+def test_remote_billing_reserve_survives_four_transient_failures(monkeypatch) -> None:
+    client = CustomerAuthClient("https://customer.example.test")
+    calls = 0
+
+    def flaky_post(*_args, **_kwargs) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls < 5:
+            raise CustomerAuthUnavailable("tls eof")
+        return {"usage": {"usage_id": "usage-5", "status": "reserved"}}
+
+    monkeypatch.setattr(client, "_post", flaky_post)
+    monkeypatch.setattr("wh_local.customer.remote_client.time.sleep", lambda _seconds: None)
+
+    assert client.reserve_ai_usage(
+        "remote-token",
+        {"idempotency_key": "same-key", "feature_key": "product_processing.text"},
+    ) == {"usage": {"usage_id": "usage-5", "status": "reserved"}}
+    assert calls == 5
+
+
+def test_remote_billing_requests_share_two_slot_gate(monkeypatch) -> None:
+    client = CustomerAuthClient("https://customer.example.test")
+    lock = threading.Lock()
+    in_flight = 0
+    peak = 0
+
+    def slow_get(*_args, **_kwargs) -> dict[str, object]:
+        nonlocal in_flight, peak
+        with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        time.sleep(0.03)
+        with lock:
+            in_flight -= 1
+        return {"wallet": {"available_points": 100}}
+
+    monkeypatch.setattr(client, "_get", slow_get)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(
+            pool.map(lambda _index: client.billing_summary("remote-token"), range(6))
+        )
+
+    assert len(results) == 6
+    assert peak == 2
+
+
+def test_remote_billing_deterministic_rejection_is_not_retried(monkeypatch) -> None:
+    client = CustomerAuthClient("https://customer.example.test")
+    calls = 0
+
+    def rejected_post(*_args, **_kwargs) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        raise CustomerAuthRejected(402, "insufficient")
+
+    monkeypatch.setattr(client, "_post", rejected_post)
+
+    with pytest.raises(CustomerAuthRejected) as caught:
+        client.reserve_ai_usage(
+            "remote-token",
+            {"idempotency_key": "same-key", "feature_key": "product_processing.text"},
+        )
+
+    assert caught.value.status_code == 402
+    assert calls == 1
 
 
 @pytest.mark.parametrize(

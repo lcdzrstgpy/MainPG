@@ -585,6 +585,26 @@ def test_reference_loading_uses_shared_pinned_public_transport(monkeypatch) -> N
     assert calls == [url]
 
 
+def test_reference_loading_skips_system_dns_preflight_before_pinned_transport(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(media_module, "is_safe_external_url", lambda _url: False)
+    monkeypatch.setattr(
+        media_module,
+        "_download_pinned_public_image",
+        lambda url, **_kwargs: calls.append(url) or (b"safe-reference", "image/jpeg"),
+    )
+    processor = ProductImageProcessor(lambda: {})
+    url = "https://reference.example.test/source.jpg"
+
+    loaded = processor._load_references([url], limit=1)
+
+    assert loaded[0][:3] == (b"safe-reference", "source.jpg", "image/jpeg")
+    assert calls == [url]
+
+
 def test_reference_download_never_downgrades_https_or_uses_domain_session(monkeypatch) -> None:
     calls: list[str] = []
 
