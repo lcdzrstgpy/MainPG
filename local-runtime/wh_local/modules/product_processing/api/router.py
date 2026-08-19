@@ -610,10 +610,43 @@ def create_product_processing_router(
 
     @router.post("/tasks/{task_id}/resume")
     def resume_task(
+        request: Request,
         task_id: int,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
-        return _call(service.resume_task, task_id, _workspace(workspace_id))
+        normalized_workspace = _workspace(workspace_id)
+        snapshot = _task_billing_snapshot(service, task_id, normalized_workspace, actor)
+        token = _remote_token(request, customer_sessions)
+        task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
+        metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
+        settings = metadata.get("settings") if isinstance(metadata, dict) else {}
+        pending_ids = [
+            int(item["product_draft_id"])
+            for item in snapshot.get("items", [])
+            if isinstance(item, dict)
+            and item.get("status") in {"pending", "running"}
+            and item.get("product_draft_id")
+        ]
+        billing_payload = {
+            **(settings if isinstance(settings, dict) else {}),
+            "draft_ids": pending_ids,
+            "preflight_only": bool(metadata.get("preflight_only")) if isinstance(metadata, dict) else False,
+        }
+        if pending_ids:
+            _attach_billing_context_and_require_points(
+                billing_payload,
+                actor,
+                source_ref=f"product_processing:tasks/{task_id}/resume",
+                remote_token=token,
+                remote_customer_auth=remote_customer_auth,
+            )
+        return _call(
+            service.resume_task,
+            task_id,
+            normalized_workspace,
+            remote_token=token,
+        )
 
     @router.post("/tasks/{task_id}/retry-attention")
     def retry_attention(
@@ -624,7 +657,7 @@ def create_product_processing_router(
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         normalized_workspace = _workspace(workspace_id)
-        snapshot = _call(service.task_outputs, task_id, workspace_id=normalized_workspace)
+        snapshot = _task_billing_snapshot(service, task_id, normalized_workspace, actor)
         items = snapshot.get("items") if isinstance(snapshot, dict) else []
         requested_ids = set(body.draft_ids or []) if body else set()
         retry_draft_ids = [
@@ -663,8 +696,11 @@ def create_product_processing_router(
     def clear_task(
         task_id: int,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
-        return _call(service.clear_task, task_id, _workspace(workspace_id))
+        normalized_workspace = _workspace(workspace_id)
+        _task_billing_snapshot(service, task_id, normalized_workspace, actor)
+        return _call(service.clear_task, task_id, normalized_workspace)
 
     @router.get("/tasks/{task_id}/download")
     def download(
@@ -702,8 +738,43 @@ def _call(function, *args, **kwargs):
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except ProductProcessingValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except CustomerAuthUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "remote billing service is unavailable",
+        ) from exc
+    except CustomerAuthRejected as exc:
+        remote_status = getattr(exc, "status_code", None)
+        if type(remote_status) is int and 400 <= remote_status < 500:
+            raise HTTPException(remote_status, "remote billing request was rejected") from exc
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "remote billing service returned an invalid error status",
+        ) from exc
+    except PermissionError as exc:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "remote billing session was rejected",
+        ) from exc
     except (ValueError, ValidationError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+def _task_billing_snapshot(
+    service: ProductProcessingService,
+    task_id: int,
+    workspace_id: str,
+    actor: Actor,
+) -> dict[str, Any]:
+    snapshot = _call(service.task_outputs, task_id, workspace_id=workspace_id)
+    task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
+    metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
+    settings = metadata.get("settings") if isinstance(metadata, dict) else {}
+    billing = settings.get("_billing") if isinstance(settings, dict) else {}
+    account_id = str(billing.get("account_id") or "").strip() if isinstance(billing, dict) else ""
+    if account_id and account_id != actor.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "product processing task not found")
+    return snapshot
 
 
 def _attach_billing_context_and_require_points(
@@ -751,17 +822,23 @@ def _remote_available_points(
     try:
         summary = remote_customer_auth.billing_summary(remote_token)
     except CustomerAuthUnavailable as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "remote billing service is unavailable",
+        ) from exc
     except CustomerAuthRejected as exc:
         remote_status = getattr(exc, "status_code", None)
         if type(remote_status) is int and 400 <= remote_status < 500:
-            raise HTTPException(remote_status, str(getattr(exc, "message", exc))) from exc
+            raise HTTPException(remote_status, "remote billing request was rejected") from exc
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
             "remote billing service returned an invalid error status",
         ) from exc
     except PermissionError as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "remote billing session was rejected",
+        ) from exc
     except (TypeError, ValueError) as exc:
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,

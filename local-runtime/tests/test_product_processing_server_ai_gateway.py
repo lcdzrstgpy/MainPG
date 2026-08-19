@@ -17,8 +17,13 @@ from wh_local.db import init_db, transaction
 from wh_local.modules.basic_settings import service as basic_settings_service
 from wh_local.modules.product_processing.server_ai_proxy import remote_token, server_ai_context, usage_id
 from wh_local.modules.product_processing import provider_config
+import wh_local.modules.product_processing.service as product_service_module
+from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
+from wh_local.modules.product_processing.infrastructure.database import create_database
 from wh_local.modules.product_processing.infrastructure import media as media_module
 from wh_local.modules.product_processing.infrastructure.media import ProductImageProcessor
+from wh_local.modules.product_processing.infrastructure.repository import ProductProcessingRepository
+from wh_local.modules.product_processing.service import ProductProcessingService
 
 
 _EMAIL_CODE_SECRET = "gateway-test-secret-that-is-at-least-32-chars"
@@ -51,6 +56,31 @@ class _InvalidJsonResponse(_Response):
 
     def json(self) -> dict:
         raise ValueError("invalid provider json")
+
+
+class _TestServerBillingClient:
+    """Exercise the real auth-server billing routes from the local service."""
+
+    def __init__(self, client: TestClient) -> None:
+        self.client = client
+
+    @staticmethod
+    def _headers(token: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}"}
+
+    def _post(self, path: str, token: str, payload: dict) -> dict:
+        response = self.client.post(path, headers=self._headers(token), json=payload)
+        response.raise_for_status()
+        return response.json()
+
+    def reserve_ai_usage(self, token: str, payload: dict) -> dict:
+        return self._post("/api/customer/billing/usage/reserve", token, payload)
+
+    def settle_ai_usage_success(self, token: str, usage: str, payload: dict) -> dict:
+        return self._post(f"/api/customer/billing/usage/{usage}/succeed", token, payload)
+
+    def settle_ai_usage_failure(self, token: str, usage: str, payload: dict) -> dict:
+        return self._post(f"/api/customer/billing/usage/{usage}/fail", token, payload)
 
 
 def _register_and_login(
@@ -295,7 +325,7 @@ def test_gateway_rejects_malicious_payload_after_invalid_usage_check(tmp_path: P
     assert image.status_code == 404
 
 
-def test_failure_settlement_rejects_succeeded_gateway_request(tmp_path: Path, monkeypatch) -> None:
+def test_failure_settlement_charges_succeeded_gateway_request(tmp_path: Path, monkeypatch) -> None:
     client, headers = _client(tmp_path, monkeypatch)
     usage = _reserved_usage(client, headers, "product_processing.text", "success-fail")
     monkeypatch.setenv("WH_TEXT_API_KEY", "server-secret")
@@ -314,12 +344,129 @@ def test_failure_settlement_rejects_succeeded_gateway_request(tmp_path: Path, mo
         json={"error_message": "client claims failure"},
     )
 
-    assert failed.status_code == 409
+    assert failed.status_code == 200
+    assert failed.json()["status"] == "succeeded"
     with transaction(tmp_path / "auth.sqlite3") as conn:
         row = conn.execute(
-            "SELECT status FROM billing_ai_usage_events WHERE usage_id = ?", (usage,)
+            "SELECT status, charged_points, refunded_points FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage,),
         ).fetchone()
-    assert row["status"] == "reserved"
+    assert dict(row) == {"status": "succeeded", "charged_points": 30, "refunded_points": 20}
+
+
+def test_local_durable_attempt_defers_to_gateway_provider_activity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    auth_db = tmp_path / "auth.sqlite3"
+    with transaction(auth_db) as conn:
+        account_id = str(
+            conn.execute(
+                "SELECT account_id FROM auth_accounts WHERE username = 'gateway_user'"
+            ).fetchone()["account_id"]
+        )
+    token = headers["Authorization"].removeprefix("Bearer ")
+    local_service = ProductProcessingService(
+        ProductProcessingRepository(
+            create_database(f"sqlite:///{tmp_path / 'product-processing.sqlite3'}")
+        ),
+        ProductProcessingAssets(tmp_path / "product-assets"),
+    )
+    draft, _created = local_service.create_draft(
+        {
+            "source_type": "manual",
+            "title": "gateway billed product",
+            "image_url": "https://images.example.test/product.jpg",
+        }
+    )
+    settings = {
+        "processing_scope": ["title"],
+        "title_optimize": True,
+        "description": False,
+        "size": False,
+        "grid_image": False,
+        "image_rewrite": False,
+        "_billing": {
+            "account_id": account_id,
+            "source_ref": "integration:gateway-provider-activity",
+            "pricing_version": "v1",
+        },
+    }
+    task = local_service.repository.create_task(
+        title="gateway billing integration",
+        preflight_only=False,
+        settings=settings,
+        drafts=[draft],
+        idempotency_key=None,
+    )
+    item_id = int(task["items"][0]["id"])
+    local_service._task_remote_tokens[int(task["id"])] = token
+    test_server = _TestServerBillingClient(client)
+    monkeypatch.setattr(
+        product_service_module,
+        "CustomerAuthClient",
+        lambda *_args, **_kwargs: test_server,
+    )
+
+    usages = local_service._reserve_product_processing_item_usage(
+        int(task["id"]), item_id, settings
+    )
+    usage = usages["text"]
+    monkeypatch.setenv("WH_TEXT_API_KEY", "server-secret")
+    monkeypatch.setattr(
+        auth_server.requests,
+        "post",
+        lambda *_args, **_kwargs: _Response(
+            {"choices": [{"message": {"content": "provider completed"}}]}
+        ),
+    )
+    assert client.post(
+        "/api/customer/ai/chat",
+        headers=headers,
+        json={
+            "usage_id": usage,
+            "messages": [{"role": "user", "content": "bill this call"}],
+        },
+    ).status_code == 200
+
+    local_service._settle_product_processing_item_failure_for_item(
+        int(task["id"]), item_id, {"reason": "later business validation failed"}
+    )
+    # Re-entering the local failure path must not charge or refund again.
+    local_service._settle_product_processing_item_failure_for_item(
+        int(task["id"]), item_id, {"reason": "duplicate callback"}
+    )
+    repeated_server_settlement = client.post(
+        f"/api/customer/billing/usage/{usage}/fail",
+        headers=headers,
+        json={"error_message": "replayed network request"},
+    )
+    assert repeated_server_settlement.status_code == 200
+    assert repeated_server_settlement.json()["status"] == "succeeded"
+
+    attempts = local_service.repository.product_billing_attempts(
+        task_id=int(task["id"]), item_id=item_id
+    )
+    assert attempts[0]["settlement_state"] == "settled_succeeded"
+    assert attempts[0]["remote_status"] == "succeeded"
+    with transaction(auth_db) as conn:
+        event = conn.execute(
+            "SELECT status, charged_points, refunded_points FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage,),
+        ).fetchone()
+        settlement_entries = conn.execute(
+            """
+            SELECT direction, points_delta FROM billing_point_ledger
+            WHERE source_id = ? AND direction IN ('debit', 'unlock')
+            ORDER BY direction
+            """,
+            (usage,),
+        ).fetchall()
+    assert dict(event) == {"status": "succeeded", "charged_points": 30, "refunded_points": 20}
+    assert [dict(row) for row in settlement_entries] == [
+        {"direction": "debit", "points_delta": 30},
+        {"direction": "unlock", "points_delta": 20},
+    ]
 
 
 def test_failure_settlement_rejects_in_progress_gateway_request(tmp_path: Path, monkeypatch) -> None:
@@ -345,6 +492,7 @@ def test_failure_settlement_rejects_in_progress_gateway_request(tmp_path: Path, 
     )
 
     assert failed.status_code == 409
+    assert failed.json() == {"detail": "provider request is still in progress"}
 
 
 def test_failure_settlement_releases_usage_when_all_gateway_attempts_failed(tmp_path: Path, monkeypatch) -> None:

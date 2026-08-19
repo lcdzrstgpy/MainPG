@@ -37,7 +37,13 @@ class RecordingBillingClient:
         if self.fail_reserve_at and len(self.reserved) == self.fail_reserve_at:
             raise RuntimeError("reserve rejected")
         kind = "text" if payload["feature_key"].endswith(".text") else "image"
-        return {"usage": {"usage_id": f"use-{kind}"}}
+        return {
+            "usage": {
+                "usage_id": f"use-{kind}",
+                "status": "reserved",
+                "feature_key": payload["feature_key"],
+            }
+        }
 
     def settle_ai_usage_success(
         self, token: str, usage: str, _payload: dict[str, Any]
@@ -45,7 +51,7 @@ class RecordingBillingClient:
         self.succeeded.append((token, usage))
         if usage in self.fail_success_ids:
             raise RuntimeError("success settlement unavailable")
-        return {"ok": True}
+        return {"ok": True, "usage": {"usage_id": usage, "status": "succeeded"}}
 
     def settle_ai_usage_failure(
         self, token: str, usage: str, payload: dict[str, Any]
@@ -53,7 +59,7 @@ class RecordingBillingClient:
         self.failed.append((token, usage, str(payload.get("error_message") or "")))
         if usage in self.fail_failure_ids:
             raise RuntimeError("failure settlement unavailable")
-        return {"ok": True}
+        return {"ok": True, "usage_id": usage, "status": "failed"}
 
 
 def _service(tmp_path: Path, *, file_database: bool = False) -> ProductProcessingService:
@@ -76,6 +82,37 @@ def _settings(*, scope: list[str]) -> dict[str, Any]:
         "grid_image": "four_grid" in scope,
         "image_rewrite": "sku_images" in scope,
     }
+
+
+def _task_with_item(
+    service: ProductProcessingService,
+    *,
+    account_id: str = "account-1",
+    preflight_only: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    draft, _created = service.create_draft(
+        {
+            "source_type": "manual",
+            "title": "billing-ledger-product",
+            "image_url": "https://example.test/product.jpg",
+        }
+    )
+    task = service.repository.create_task(
+        title="billing-ledger",
+        preflight_only=preflight_only,
+        settings={
+            **_settings(scope=["title"]),
+            "async_mode": True,
+            "_billing": {
+                "account_id": account_id,
+                "source_ref": "task:test",
+                "pricing_version": "v1",
+            },
+        },
+        drafts=[draft],
+        idempotency_key=None,
+    )
+    return task, task["items"][0]
 
 
 def _install_remote(
@@ -229,9 +266,10 @@ def test_failure_settlement_preserves_only_unreleased_usage_for_retry(
         7, 11, {"text": "use-text", "image_grid": "use-image"}
     )
 
-    service._settle_product_processing_item_failure_for_item(
-        7, 11, {"status": "failed", "reason": "provider failed"}
-    )
+    with pytest.raises(RuntimeError, match="settlement unavailable"):
+        service._settle_product_processing_item_failure_for_item(
+            7, 11, {"status": "failed", "reason": "provider failed"}
+        )
 
     assert service._reserved_usage_ids(7, 11) == {"image_grid": "use-image"}
 
@@ -400,3 +438,246 @@ def test_retry_attention_keeps_reacquired_token_only_in_memory(
     assert response["async_mode"] is True
     assert launched == [(7, "local", "reacquired-token")]
     assert "reacquired-token" not in json.dumps(task, default=str)
+
+
+def test_billing_attempt_ordinal_and_state_are_durable_without_token(tmp_path: Path) -> None:
+    service = _service(tmp_path, file_database=True)
+    task, item = _task_with_item(service)
+
+    first = service.repository.begin_product_billing_attempt(
+        task_id=task["id"],
+        item_id=item["item_id"],
+        workspace_id="local",
+        kind="text",
+        feature_key="product_processing.text",
+        account_id="account-1",
+    )
+    replay = service.repository.begin_product_billing_attempt(
+        task_id=task["id"],
+        item_id=item["item_id"],
+        workspace_id="local",
+        kind="text",
+        feature_key="product_processing.text",
+        account_id="account-1",
+    )
+    assert replay["id"] == first["id"]
+    assert first["attempt_ordinal"] == 1
+    assert first["idempotency_key"].endswith(":attempt:1")
+
+    service.repository.record_product_billing_reservation(
+        first["id"], usage_id="use-first", remote_status="reserved"
+    )
+    service.repository.mark_product_billing_desired_outcome(
+        first["id"], desired_outcome="failed", error_message="business failure"
+    )
+    service.repository.mark_product_billing_settled(first["id"], remote_status="failed")
+
+    restarted = _service(tmp_path, file_database=True)
+    second = restarted.repository.begin_product_billing_attempt(
+        task_id=task["id"],
+        item_id=item["item_id"],
+        workspace_id="local",
+        kind="text",
+        feature_key="product_processing.text",
+        account_id="account-1",
+    )
+    assert second["attempt_ordinal"] == 2
+    assert second["idempotency_key"].endswith(":attempt:2")
+    database_bytes = (tmp_path / "workbench.sqlite3").read_bytes()
+    assert b"remote-token" not in database_bytes
+    assert second["account_id"] == "account-1"
+
+
+def test_crash_after_remote_reserve_reuses_durable_attempt_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path, file_database=True)
+    task, item = _task_with_item(service)
+    attempt = service.repository.begin_product_billing_attempt(
+        task_id=task["id"],
+        item_id=item["item_id"],
+        workspace_id="local",
+        kind="text",
+        feature_key="product_processing.text",
+        account_id="account-1",
+    )
+    restarted = _service(tmp_path, file_database=True)
+    remote = RecordingBillingClient()
+    _install_remote(monkeypatch, remote)
+    restarted._task_remote_tokens[task["id"]] = "remote-token"
+
+    usage = restarted._reserve_product_processing_item_usage(
+        task["id"], item["item_id"], task["settings"]
+    )
+
+    assert usage == {"text": "use-text"}
+    assert remote.reserved[0][1]["idempotency_key"] == attempt["idempotency_key"]
+    persisted = restarted.repository.product_billing_attempts(task_id=task["id"])
+    assert persisted[0]["usage_id"] == "use-text"
+    assert persisted[0]["settlement_state"] == "reserved"
+
+
+def test_malformed_or_non_reserved_reservation_never_enters_gateway_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    task, item = _task_with_item(service)
+    service._task_remote_tokens[task["id"]] = "remote-token"
+
+    class InvalidReserve(RecordingBillingClient):
+        def reserve_ai_usage(self, token: str, payload: dict[str, Any]) -> dict[str, Any]:
+            response = super().reserve_ai_usage(token, payload)
+            response["usage"]["status"] = "failed"
+            return response
+
+    _install_remote(monkeypatch, InvalidReserve())
+
+    with pytest.raises(RuntimeError, match="reserved usage"):
+        service._reserve_product_processing_item_usage(
+            task["id"], item["item_id"], task["settings"]
+        )
+
+    assert service._reserved_usage_ids(task["id"], item["item_id"]) == {}
+
+
+def test_restart_reconciles_completed_item_pending_settlement_with_fresh_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path, file_database=True)
+    task, item = _task_with_item(service)
+    attempt = service.repository.begin_product_billing_attempt(
+        task_id=task["id"],
+        item_id=item["item_id"],
+        workspace_id="local",
+        kind="text",
+        feature_key="product_processing.text",
+        account_id="account-1",
+    )
+    service.repository.record_product_billing_reservation(
+        attempt["id"], usage_id="use-text", remote_status="reserved"
+    )
+    service.repository.mark_product_billing_desired_outcome(
+        attempt["id"], desired_outcome="succeeded", error_message=""
+    )
+    restarted = _service(tmp_path, file_database=True)
+    remote = RecordingBillingClient()
+    _install_remote(monkeypatch, remote)
+
+    restarted.reconcile_product_billing(task["id"], "remote-token")
+
+    assert remote.succeeded == [("remote-token", "use-text")]
+    persisted = restarted.repository.product_billing_attempts(task_id=task["id"])
+    assert persisted[0]["settlement_state"] == "settled_succeeded"
+
+
+@pytest.mark.parametrize("entrypoint", ["resume", "retry"])
+def test_terminal_task_entrypoint_reconciles_completed_item_pending_settlement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+) -> None:
+    service = _service(tmp_path, file_database=True)
+    task, item = _task_with_item(service)
+    attempt = service.repository.begin_product_billing_attempt(
+        task_id=task["id"],
+        item_id=item["item_id"],
+        workspace_id="local",
+        kind="text",
+        feature_key="product_processing.text",
+        account_id="account-1",
+    )
+    service.repository.record_product_billing_reservation(
+        attempt["id"], usage_id="use-text", remote_status="reserved"
+    )
+    service.repository.mark_product_billing_desired_outcome(
+        attempt["id"], desired_outcome="succeeded", error_message="settlement network timeout"
+    )
+    service.repository.set_task_status(task["id"], "completed")
+    remote = RecordingBillingClient()
+    _install_remote(monkeypatch, remote)
+
+    if entrypoint == "resume":
+        service.resume_task(task["id"], remote_token="fresh-token")
+    else:
+        service.retry_attention(task["id"], remote_token="fresh-token")
+
+    assert remote.succeeded == [("fresh-token", "use-text")]
+    persisted = service.repository.product_billing_attempts(task_id=task["id"])
+    assert persisted[0]["settlement_state"] == "settled_succeeded"
+
+
+def test_recovery_rejects_reservation_for_a_different_feature(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path, file_database=True)
+    task, item = _task_with_item(service)
+    service.repository.begin_product_billing_attempt(
+        task_id=task["id"],
+        item_id=item["item_id"],
+        workspace_id="local",
+        kind="text",
+        feature_key="product_processing.text",
+        account_id="account-1",
+    )
+
+    class WrongFeatureReserve(RecordingBillingClient):
+        def reserve_ai_usage(self, token: str, payload: dict[str, Any]) -> dict[str, Any]:
+            response = super().reserve_ai_usage(token, payload)
+            response["usage"]["feature_key"] = "product_processing.image_grid_2k"
+            return response
+
+    _install_remote(monkeypatch, WrongFeatureReserve())
+
+    with pytest.raises(RuntimeError, match="reserved usage"):
+        service.reconcile_product_billing(task["id"], "remote-token")
+
+    persisted = service.repository.product_billing_attempts(task_id=task["id"])
+    assert persisted[0]["usage_id"] == ""
+    assert persisted[0]["settlement_state"] == "reserving"
+    assert persisted[0]["last_error"] == "remote billing did not return a reserved usage"
+
+
+def test_clear_fails_closed_for_durable_pending_settlement_after_restart(tmp_path: Path) -> None:
+    service = _service(tmp_path, file_database=True)
+    task, item = _task_with_item(service)
+    attempt = service.repository.begin_product_billing_attempt(
+        task_id=task["id"],
+        item_id=item["item_id"],
+        workspace_id="local",
+        kind="text",
+        feature_key="product_processing.text",
+        account_id="account-1",
+    )
+    service.repository.record_product_billing_reservation(
+        attempt["id"], usage_id="use-text", remote_status="reserved"
+    )
+    service.repository.mark_product_billing_desired_outcome(
+        attempt["id"], desired_outcome="succeeded", error_message=""
+    )
+    service.repository.set_task_status(task["id"], "failed")
+    restarted = _service(tmp_path, file_database=True)
+
+    with pytest.raises(service_module.ProductProcessingConflict, match="计费结算"):
+        restarted.clear_task(task["id"])
+
+
+def test_recover_background_work_skips_billed_queued_task_without_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    billed, _item = _task_with_item(service)
+    preflight, _preflight_item = _task_with_item(service, preflight_only=True)
+    launched: list[int] = []
+    monkeypatch.setattr(
+        service,
+        "_launch_background_execute",
+        lambda task_id, _workspace_id: launched.append(task_id) or True,
+    )
+    monkeypatch.setattr(service.preview_images, "recover_background_work", lambda: {})
+    monkeypatch.setattr(service.media_assets, "materialize_until_idle", lambda **_kwargs: {})
+
+    result = service.recover_background_work()
+
+    assert billed["id"] not in launched
+    assert preflight["id"] in launched
+    assert result["billing_auth_required"] == 1

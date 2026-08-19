@@ -257,7 +257,7 @@ def settle_ai_usage_failure(
     error_message: str,
     expected_account_id: str | None = None,
     reject_gateway_activity: bool = False,
-) -> None:
+) -> dict[str, Any]:
     now = _utc_now()
     with transaction(database_path) as conn:
         row = conn.execute(
@@ -267,25 +267,34 @@ def settle_ai_usage_failure(
         if row is None:
             if expected_account_id is not None:
                 raise HTTPException(status_code=404, detail="usage event not found")
-            return
+            return {"usage_id": usage_id, "status": "missing"}
         if expected_account_id is not None and str(row["account_id"]) != str(expected_account_id):
             raise HTTPException(status_code=404, detail="usage event not found")
         if row["status"] != "reserved":
-            return
+            return dict(row)
         if reject_gateway_activity:
-            active_gateway = conn.execute(
+            gateway_statuses = {
+                str(gateway_row["status"])
+                for gateway_row in conn.execute(
                 """
-                SELECT 1
+                SELECT status
                 FROM billing_ai_gateway_requests
-                WHERE usage_id = ? AND status IN ('in_progress', 'succeeded')
-                LIMIT 1
+                WHERE usage_id = ?
                 """,
                 (usage_id,),
-            ).fetchone()
-            if active_gateway is not None:
+                ).fetchall()
+            }
+            if "in_progress" in gateway_statuses:
                 raise HTTPException(
                     status_code=409,
-                    detail="usage has an active or successful provider request",
+                    detail="provider request is still in progress",
+                )
+            if "succeeded" in gateway_statuses:
+                return _settle_consumed_usage_after_business_failure(
+                    conn,
+                    row,
+                    error_message=error_message,
+                    settled_at=now,
                 )
         conn.execute(
             """
@@ -315,6 +324,83 @@ def settle_ai_usage_failure(
             idempotency_key=f"{row['idempotency_key']}:fail-unlock",
             metadata={"error": str(error_message)[:300]},
         )
+        settled = conn.execute(
+            "SELECT * FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
+        return dict(settled)
+
+
+def _settle_consumed_usage_after_business_failure(
+    conn: Any,
+    row: Any,
+    *,
+    error_message: str,
+    settled_at: str,
+) -> dict[str, Any]:
+    """Charge a reserved usage when the authoritative gateway already succeeded."""
+    pricing = _pricing(str(row["feature_key"]))
+    charge_points = min(
+        int(row["reserved_points"]),
+        max(int(row["min_charge_points"]), pricing.fixed_charge_points * int(row["quantity"])),
+    )
+    refund_points = int(row["reserved_points"]) - charge_points
+    provider = "wuyin" if str(row["feature_key"]) == "product_processing.image_grid_2k" else "aicoming"
+    model = "image_gpt" if provider == "wuyin" else "gpt-5.6-terra"
+    conn.execute(
+        """
+        UPDATE billing_wallets
+        SET points_balance = points_balance - ?, locked_points = locked_points - ?,
+            version = version + 1, updated_at = ?
+        WHERE account_id = ?
+        """,
+        (charge_points, int(row["reserved_points"]), settled_at, row["account_id"]),
+    )
+    conn.execute(
+        """
+        UPDATE billing_ai_usage_events
+        SET charged_points = ?, refunded_points = ?, provider = ?, model = ?,
+            status = 'succeeded', error_message = ?, settled_at = ?
+        WHERE usage_id = ? AND status = 'reserved'
+        """,
+        (
+            charge_points,
+            refund_points,
+            provider,
+            model,
+            str(error_message)[:500],
+            settled_at,
+            row["usage_id"],
+        ),
+    )
+    _append_ledger(
+        conn,
+        account_id=row["account_id"],
+        workspace_id=row["workspace_id"],
+        direction="debit",
+        points_delta=charge_points,
+        source_type="ai_usage",
+        source_id=row["usage_id"],
+        idempotency_key=f"{row['idempotency_key']}:settle",
+        metadata={"feature_key": row["feature_key"], "business_outcome": "failed_after_provider_success"},
+    )
+    if refund_points:
+        _append_ledger(
+            conn,
+            account_id=row["account_id"],
+            workspace_id=row["workspace_id"],
+            direction="unlock",
+            points_delta=refund_points,
+            source_type="ai_usage",
+            source_id=row["usage_id"],
+            idempotency_key=f"{row['idempotency_key']}:unlock",
+            metadata={"feature_key": row["feature_key"]},
+        )
+    settled = conn.execute(
+        "SELECT * FROM billing_ai_usage_events WHERE usage_id = ?",
+        (row["usage_id"],),
+    ).fetchone()
+    return dict(settled)
 
 
 def grant_test_points(database_path: Path, account_id: str | None = None) -> int:

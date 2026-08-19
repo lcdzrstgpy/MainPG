@@ -192,14 +192,19 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
-        settle_ai_usage_failure(
+        usage = settle_ai_usage_failure(
             db_path,
             usage_id,
             error_message=str(payload.get("error_message") or "AI operation failed")[:500],
             expected_account_id=str(account["account_id"]),
             reject_gateway_activity=True,
         )
-        return {"ok": True, "usage_id": usage_id, "status": "failed"}
+        return {
+            "ok": True,
+            "usage_id": usage_id,
+            "status": str(usage.get("status") or "failed"),
+            "usage": usage,
+        }
 
     @app.post("/api/customer/ai/chat")
     def server_managed_ai_chat(
