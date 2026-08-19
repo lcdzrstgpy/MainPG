@@ -241,23 +241,23 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     [directions, selectedDirectionId],
   );
   const [mode, setMode] = useState<CollectionMode>("keyword");
-  const [platform, setPlatform] = useState<CollectionPlatform>("1688");
-  const [keywords, setKeywords] = useState(selectedDirection.keywords.join("，"));
+  const [platform, setPlatform] = useState<CollectionPlatform | "">("");
+  const [keywords, setKeywords] = useState("");
   const [referenceImageUrl, setReferenceImageUrl] = useState("");
-  const [scope, setScope] = useState<SelectionScope>("divergent");
-  const [site, setSite] = useState<TargetSite>("US");
-  const [minPrice, setMinPrice] = useState(String(selectedDirection.price[0]));
-  const [maxPrice, setMaxPrice] = useState(String(selectedDirection.price[1]));
-  const [minMoq, setMinMoq] = useState("2");
+  const [scope, setScope] = useState<SelectionScope | "">("");
+  const [site, setSite] = useState<TargetSite | "">("");
+  const [minPrice, setMinPrice] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
+  const [minMoq, setMinMoq] = useState("");
   const [minSkuCount, setMinSkuCount] = useState("");
   const [maxSkuCount, setMaxSkuCount] = useState("");
   const [minSkuPrice, setMinSkuPrice] = useState("");
   const [maxSkuPrice, setMaxSkuPrice] = useState("");
   const [minSkuStock, setMinSkuStock] = useState("");
   const [maxSkuStock, setMaxSkuStock] = useState("");
-  const [targetCount, setTargetCount] = useState(String(selectedDirection.target));
-  const [excludeRisks, setExcludeRisks] = useState(true);
-  const [maxParallelCollect, setMaxParallelCollect] = useState(6);
+  const [targetCount, setTargetCount] = useState("");
+  const [excludeRisks, setExcludeRisks] = useState(false);
+  const [maxParallelCollect, setMaxParallelCollect] = useState(1);
   const [advancedCollectionOpen, setAdvancedCollectionOpen] = useState(false);
   const [runs, setRuns] = useState<DailySelectionRunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<DailySelectionRun | null>(null);
@@ -467,11 +467,16 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
   function chooseDirection(direction: Direction) {
     setSelectedDirectionId(direction.id);
+    setPlatform("1688");
     setKeywords(direction.keywords.join("，"));
+    setScope("divergent");
     setSite(direction.site ?? "US");
     setMinPrice(String(direction.price[0]));
     setMaxPrice(String(direction.price[1]));
+    setMinMoq("2");
     setTargetCount(String(direction.target));
+    setExcludeRisks(true);
+    setMaxParallelCollect(6);
   }
 
   function resetPresetForm() {
@@ -601,12 +606,19 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   }
 
   function buildCriteria(): DailySelectionCriteria {
+    if (!platform || !site || !scope) {
+      throw new Error("采集平台、站点和选品范围不能为空");
+    }
+    const parsedTargetCount = numberOrUndefined(targetCount);
+    if (parsedTargetCount === undefined || !Number.isInteger(parsedTargetCount) || parsedTargetCount < 1) {
+      throw new Error("采集数量必须是正整数");
+    }
     const normalizedKeywords = keywords.split(/[，,\n]/).map((item) => item.trim()).filter(Boolean).slice(0, 5);
     const criteria: DailySelectionCriteria = {
       keywords: mode === "image" ? normalizedKeywords : normalizedKeywords,
       selection_scope: scope,
       category: selectedDirection.name,
-      target_count: numberOrUndefined(targetCount) ?? selectedDirection.target,
+      target_count: parsedTargetCount,
       max_api_calls: 200,
       detail_count: 50,
       exclude_risks: excludeRisks,
@@ -642,6 +654,15 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     event.preventDefault();
     setError("");
     setNotice("");
+    if (!platform || !site || !scope) {
+      setError("请选择采集平台、站点和选品范围");
+      return;
+    }
+    const parsedTargetCount = numberOrUndefined(targetCount);
+    if (parsedTargetCount === undefined || !Number.isInteger(parsedTargetCount) || parsedTargetCount < 1) {
+      setError("请填写正确的采集数量");
+      return;
+    }
     if (mode === "keyword" && !keywords.trim()) {
       setError("请至少填写一个关键词");
       return;
@@ -962,14 +983,15 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           <div className={`collection-primary-fields ${mode === "image" ? "is-image-mode" : ""}`}>
             <label>
               <span>采集平台</span>
-              <select value={platform} onChange={(event) => setPlatform(event.target.value as CollectionPlatform)}>
+              <select value={platform} onChange={(event) => setPlatform(event.target.value as CollectionPlatform | "")}>
+                <option value="" disabled>请选择</option>
                 <option value="1688">1688</option>
                 <option value="taobao">淘宝</option>
                 <option value="1688+taobao">1688 + 淘宝</option>
               </select>
             </label>
-            <label><span>站点</span><select value={site} onChange={(event) => setSite(event.target.value as TargetSite)}><option value="US">美国站 US</option><option value="CO">哥伦比亚 CO</option><option value="EC">厄瓜多尔 EC</option></select></label>
-            <label><span>选品范围</span><select value={scope} onChange={(event) => setScope(event.target.value as SelectionScope)}><option value="divergent">发散相似款</option><option value="exact">精准匹配</option></select></label>
+            <label><span>站点</span><select value={site} onChange={(event) => setSite(event.target.value as TargetSite | "")}><option value="" disabled>请选择</option><option value="US">美国站 US</option><option value="CO">哥伦比亚 CO</option><option value="EC">厄瓜多尔 EC</option></select></label>
+            <label><span>选品范围</span><select value={scope} onChange={(event) => setScope(event.target.value as SelectionScope | "")}><option value="" disabled>请选择</option><option value="divergent">发散相似款</option><option value="exact">精准匹配</option></select></label>
             <label><span>采集数量</span><input type="number" min="1" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
             <label className="collection-keyword-field">
               <span>采集关键词 <em>{mode === "keyword" ? "必填" : "作为图片描述标签"}</em></span>
@@ -1016,7 +1038,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             </div>
           </div>
 
-          {platform !== "1688" && (
+          {platform && platform !== "1688" && (
             <div className="channel-placeholder-note">
               <span>前端预留</span>
               {platform === "taobao" ? "淘宝采集" : "1688 与淘宝组合采集"}暂不调用后端，后续接口接入后可直接补充请求逻辑。
@@ -1024,7 +1046,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           )}
 
           <div className="collection-actions">
-            <span>{platform === "1688" ? "1688 每批最多调用 200 次 API，并在预算内尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。" : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
+            <span>{!platform || platform === "1688"
+              ? "1688 每批最多调用 200 次 API，并在预算内尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。"
+              : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
             <div className="collection-submit-area">
               <button className="collect-button" type="submit" disabled={busy}>{collecting ? "正在采集…" : "开始采集"}</button>
             </div>
