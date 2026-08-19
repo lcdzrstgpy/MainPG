@@ -4881,13 +4881,11 @@ class ProductProcessingService:
                 return Path(value).read_bytes()
             except OSError:
                 return None
-        if is_safe_external_url(value):
-            try:
-                image = fetch_public_image(value, max_bytes=8 * 1024 * 1024, timeout_seconds=30)
-            except Exception:
-                return None
-            return getattr(image, "content", None) or b""
-        return None
+        try:
+            image = fetch_public_image(value, max_bytes=8 * 1024 * 1024, timeout_seconds=30)
+        except Exception:
+            return None
+        return getattr(image, "content", None) or b""
 
     @staticmethod
     def _compose_local_detail_image(
@@ -5491,8 +5489,6 @@ class ProductProcessingService:
 
     def _image_to_data_url(self, image_url: str) -> str:
         """安全下载图片并转 base64 data URL（供多模态视觉识别，隔离下载/限字节）。"""
-        if not is_safe_external_url(image_url):
-            return ""
         with self._source_data_url_lock:
             cached = self._source_data_url_cache.get(image_url)
         if cached:
