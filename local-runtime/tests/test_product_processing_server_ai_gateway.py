@@ -1014,20 +1014,26 @@ def test_image_submit_crash_before_task_persistence_never_automatically_resubmit
     )
     monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
     submit_calls = 0
+    record_calls = 0
 
     def fake_post(*_args, **_kwargs):
         nonlocal submit_calls
         submit_calls += 1
         return _Response({"code": 200, "data": {"id": f"task-{submit_calls}"}})
 
+    def crash_first_record(*_args, **_kwargs):
+        nonlocal record_calls
+        record_calls += 1
+        if record_calls == 1:
+            raise KeyboardInterrupt("crash after upstream accepted submit")
+        raise AssertionError("uncertain usage must not submit again")
+
     original_record = auth_server._record_gateway_provider_task
     monkeypatch.setattr(auth_server.requests, "post", fake_post)
     monkeypatch.setattr(
         auth_server,
         "_record_gateway_provider_task",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            KeyboardInterrupt("crash after upstream accepted submit")
-        ),
+        crash_first_record,
     )
     payload = {"usage_id": usage, "prompt": "uncertain submit", "size": "1:1"}
 
@@ -1042,6 +1048,21 @@ def test_image_submit_crash_before_task_persistence_never_automatically_resubmit
             """,
             (usage,),
         ).fetchone()
+    assert dict(after_crash) == {
+        "status": "in_progress",
+        "phase": "submitting",
+        "provider_task_id": "",
+    }
+
+    fresh_changed_hash = client.post(
+        "/api/customer/ai/image",
+        headers=headers,
+        json={**payload, "prompt": "changed while submit lease is fresh"},
+    )
+    assert fresh_changed_hash.status_code == 409
+    assert submit_calls == 1
+
+    with transaction(tmp_path / "auth.sqlite3") as conn:
         conn.execute(
             """
             UPDATE billing_ai_gateway_requests
@@ -1050,16 +1071,20 @@ def test_image_submit_crash_before_task_persistence_never_automatically_resubmit
             """,
             (usage,),
         )
-    assert dict(after_crash) == {
-        "status": "in_progress",
-        "phase": "submitting",
-        "provider_task_id": "",
-    }
 
-    replay = client.post("/api/customer/ai/image", headers=headers, json=payload)
+    replay = client.post(
+        "/api/customer/ai/image",
+        headers=headers,
+        json={**payload, "size": "16:9"},
+    )
     assert replay.status_code == 503
     assert replay.json() == {"detail": "server image submit outcome is uncertain"}
     assert submit_calls == 1
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM billing_ai_gateway_requests WHERE usage_id = ?",
+            (usage,),
+        ).fetchone()[0] == 1
 
     failed = client.post(
         f"/api/customer/billing/usage/{usage}/fail",
@@ -1118,7 +1143,11 @@ def test_image_submit_database_failure_after_acceptance_is_submit_uncertain(
     payload = {"usage_id": usage, "prompt": "uncertain database save", "size": "1:1"}
 
     first = client.post("/api/customer/ai/image", headers=headers, json=payload)
-    second = client.post("/api/customer/ai/image", headers=headers, json=payload)
+    second = client.post(
+        "/api/customer/ai/image",
+        headers=headers,
+        json={**payload, "prompt": "changed hash after database failure", "size": "3:2"},
+    )
 
     assert first.status_code == second.status_code == 503
     assert first.json() == second.json() == {
@@ -1164,7 +1193,11 @@ def test_image_submit_uncertain_response_is_not_retried_same_usage(
     payload = {"usage_id": usage, "prompt": "uncertain network", "size": "1:1"}
 
     first = client.post("/api/customer/ai/image", headers=headers, json=payload)
-    second = client.post("/api/customer/ai/image", headers=headers, json=payload)
+    second = client.post(
+        "/api/customer/ai/image",
+        headers=headers,
+        json={**payload, "prompt": "changed hash after uncertain response", "size": "2:3"},
+    )
 
     assert first.status_code == second.status_code == 503
     assert first.json() == second.json() == {
@@ -1176,7 +1209,12 @@ def test_image_submit_uncertain_response_is_not_retried_same_usage(
             "SELECT status, phase FROM billing_ai_gateway_requests WHERE usage_id = ?",
             (usage,),
         ).fetchone()
+        row_count = conn.execute(
+            "SELECT COUNT(*) FROM billing_ai_gateway_requests WHERE usage_id = ?",
+            (usage,),
+        ).fetchone()[0]
     assert dict(row) == {"status": "failed", "phase": "submit_uncertain"}
+    assert row_count == 1
 
 
 @pytest.mark.parametrize(

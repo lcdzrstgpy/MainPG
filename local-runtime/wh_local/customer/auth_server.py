@@ -792,6 +792,54 @@ def _claim_gateway_request(
         if str(usage["status"]) != "reserved":
             raise HTTPException(status_code=409, detail="usage event is not reserved")
 
+        if feature_key == "product_processing.image_grid_2k":
+            # A submit without a durable provider task is uncertain for the
+            # whole reserved usage, not merely for one request hash.  Check it
+            # before exact-hash lookup and distinct-slot accounting so changing
+            # prompt/size can never cause duplicate provider egress.
+            uncertain = conn.execute(
+                """
+                SELECT request_hash
+                FROM billing_ai_gateway_requests
+                WHERE usage_id = ? AND feature_key = ?
+                  AND phase = 'submit_uncertain' AND provider_task_id = ''
+                LIMIT 1
+                """,
+                (usage_id, feature_key),
+            ).fetchone()
+            if uncertain is not None:
+                return _GatewayRequestClaim(submit_uncertain=True)
+            submitting = conn.execute(
+                """
+                SELECT request_hash, status, response_json, attempt_count,
+                       lease_expires_at, phase, provider_task_id, updated_at
+                FROM billing_ai_gateway_requests
+                WHERE usage_id = ? AND feature_key = ? AND status = 'in_progress'
+                  AND phase = 'submitting' AND provider_task_id = ''
+                LIMIT 1
+                """,
+                (usage_id, feature_key),
+            ).fetchone()
+            if submitting is not None:
+                if _gateway_claim_is_fresh(submitting, feature_key):
+                    detail = (
+                        "identical gateway request is already in progress"
+                        if str(submitting["request_hash"]) == request_hash
+                        else "image submit is already in progress"
+                    )
+                    raise HTTPException(status_code=409, detail=detail)
+                conn.execute(
+                    """
+                    UPDATE billing_ai_gateway_requests
+                    SET status = 'failed', phase = 'submit_uncertain',
+                        lease_expires_at = '', response_json = '', updated_at = ?
+                    WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+                      AND phase = 'submitting' AND provider_task_id = ''
+                    """,
+                    (_utc_now(), usage_id, str(submitting["request_hash"])),
+                )
+                return _GatewayRequestClaim(submit_uncertain=True)
+
         existing = conn.execute(
             """
             SELECT status, response_json, attempt_count, lease_expires_at,
@@ -815,18 +863,6 @@ def _claim_gateway_request(
                 if _gateway_claim_is_fresh(existing, feature_key):
                     raise HTTPException(status_code=409, detail="identical gateway request is already in progress")
                 provider_task_id = str(existing["provider_task_id"] or "").strip()
-                phase = str(existing["phase"] or "").strip()
-                if feature_key == "product_processing.image_grid_2k" and phase == "submitting" and not provider_task_id:
-                    conn.execute(
-                        """
-                        UPDATE billing_ai_gateway_requests
-                        SET status = 'failed', phase = 'submit_uncertain',
-                            lease_expires_at = '', response_json = '', updated_at = ?
-                        WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
-                        """,
-                        (_utc_now(), usage_id, request_hash),
-                    )
-                    return _GatewayRequestClaim(submit_uncertain=True)
                 lease_expires_at = _new_gateway_lease(feature_key)
                 if provider_task_id:
                     conn.execute(
@@ -852,11 +888,6 @@ def _claim_gateway_request(
                 )
                 return _GatewayRequestClaim()
             attempt_limit = GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS[feature_key]
-            if (
-                feature_key == "product_processing.image_grid_2k"
-                and str(existing["phase"] or "") == "submit_uncertain"
-            ):
-                return _GatewayRequestClaim(submit_uncertain=True)
             if int(existing["attempt_count"] or 0) >= attempt_limit:
                 raise HTTPException(status_code=409, detail="gateway retry limit reached for reserved usage")
             conn.execute(
