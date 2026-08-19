@@ -221,6 +221,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   const [scope, setScope] = useState<Scope>("default");
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [siteSettings, setSiteSettings] = useState<Record<string, string>>({});
+  const [activityThresholdConfigured, setActivityThresholdConfigured] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [settingsSite, setSettingsSite] = useState<Site>("US");
   const [settingsDraft, setSettingsDraft] = useState<Record<string, string>>({});
@@ -305,6 +306,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   useEffect(() => {
     if (!settings) return;
     setSiteSettings(extractSiteSettings(settings, site));
+    setActivityThresholdConfigured(settings.activity_threshold_configured === true);
   }, [settings, site]);
 
   useEffect(() => {
@@ -373,6 +375,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     // 后端返回的是实际生效的本地保存目录；不在此处注入写死的兜底路径，避免展示与真实落盘位置不一致
     setSettings(data);
     setSiteSettings(extractSiteSettings(data, site));
+    setActivityThresholdConfigured(data.activity_threshold_configured === true);
     return data;
   }
 
@@ -510,6 +513,11 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   }, "新站点已创建并切换，可直接设置费率。");
 
   // 活动申报门槛：三区共用同一个全局值，保存/恢复只提交这两个字段
+  const updateActivityThreshold = (key: "activity_min_net_profit" | "activity_profit_rate_threshold", value: string) => {
+    setSiteSettings((current) => ({ ...current, [key]: value }));
+    setActivityThresholdConfigured(false);
+  };
+
   const saveActivityThreshold = () => withBusy("保存活动门槛", async () => {
     if (!activityThresholds) throw new Error("请填写正确的活动最低实际利润和最低利润率。");
     const payload: Record<string, unknown> = {
@@ -522,6 +530,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     const data = await putSettings(payload);
     setSettings(data);
     setSiteSettings(extractSiteSettings(data, site));
+    setActivityThresholdConfigured(data.activity_threshold_configured === true);
   });
 
   const restoreActivityThreshold = () => withBusy("恢复活动门槛默认", async () => {
@@ -535,6 +544,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     const data = await putSettings(payload);
     setSettings(data);
     setSiteSettings(extractSiteSettings(data, site));
+    setActivityThresholdConfigured(false);
   }, "已恢复活动门槛为默认值并保存。");
 
   const queryProducts = async (overrideSkcs = querySkcs) => {
@@ -768,7 +778,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
 
   // 产品过滤：上传活动 Excel 并异步启动过滤任务，轮询进度
   const runActivityFilter = async () => {
-    if (!activityThresholds) {
+    if (!activityThresholds || !activityThresholdConfigured) {
       setMessage("请先填写并保存活动最低实际利润和最低利润率。");
       return;
     }
@@ -801,7 +811,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   };
 
   const generateFiltered = async () => {
-    if (!activityThresholds) {
+    if (!activityThresholds || !activityThresholdConfigured) {
       setMessage("请先填写并保存活动最低实际利润和最低利润率。");
       return;
     }
@@ -1026,8 +1036,8 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
             <h3>活动申报门槛</h3>
             <p className="profit-formula-note">跟随当前站点 {displaySiteLabel(site)}（所有已配置站点共用同一门槛值）。</p>
             <div className="profit-threshold-fields">
-              <label>活动最低实际利润 元<input type="number" value={siteSettings.activity_min_net_profit ?? ""} onChange={(event) => setSiteSettings((current) => ({ ...current, activity_min_net_profit: event.target.value }))} /></label>
-              <label>活动最低利润率 %<input type="number" value={siteSettings.activity_profit_rate_threshold ?? ""} onChange={(event) => setSiteSettings((current) => ({ ...current, activity_profit_rate_threshold: event.target.value }))} /></label>
+              <label>活动最低实际利润 元<input type="number" value={siteSettings.activity_min_net_profit ?? ""} onChange={(event) => updateActivityThreshold("activity_min_net_profit", event.target.value)} /></label>
+              <label>活动最低利润率 %<input type="number" value={siteSettings.activity_profit_rate_threshold ?? ""} onChange={(event) => updateActivityThreshold("activity_profit_rate_threshold", event.target.value)} /></label>
             </div>
             <div className="profit-threshold-actions">
               <button onClick={saveActivityThreshold} disabled={!!busy}>保存设置</button>
