@@ -385,13 +385,15 @@ CREATE TABLE IF NOT EXISTS billing_wallets (
     workspace_id TEXT NOT NULL DEFAULT 'default',
     points_balance INTEGER NOT NULL DEFAULT 0,
     locked_points INTEGER NOT NULL DEFAULT 0,
+    manual_frozen_points INTEGER NOT NULL DEFAULT 0,
     version INTEGER NOT NULL DEFAULT 0,
     ledger_head_hash TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE,
     CHECK (points_balance >= 0),
-    CHECK (locked_points >= 0)
+    CHECK (locked_points >= 0),
+    CHECK (manual_frozen_points >= 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_billing_wallets_workspace
@@ -702,6 +704,12 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     """Keep local SQLite files created by earlier dev builds usable."""
     _ensure_column(conn, "action_logs", "workspace_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "action_logs", "module", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(
+        conn,
+        "billing_wallets",
+        "manual_frozen_points",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
     # 登录状态字段：账号级单端登录限制（云端认证服务与本地工作台共用同一 schema）。
     _ensure_column(conn, "auth_accounts", "login_status", "TEXT NOT NULL DEFAULT 'offline'")
     # 本地会话表保存远端 wh_auth_* token，登出时联动撤销云端登录态。

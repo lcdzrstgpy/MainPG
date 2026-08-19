@@ -67,13 +67,17 @@ def reserve_ai_usage(
             return dict(existing)
         wallet = conn.execute(
             """
-            SELECT points_balance, locked_points
+            SELECT points_balance, locked_points, manual_frozen_points
             FROM billing_wallets
             WHERE account_id = ?
             """,
             (actor.id,),
         ).fetchone()
-        available = int(wallet["points_balance"]) - int(wallet["locked_points"])
+        available = (
+            int(wallet["points_balance"])
+            - int(wallet["locked_points"])
+            - int(wallet["manual_frozen_points"])
+        )
         if available < reserve_points:
             raise HTTPException(
                 status_code=402,

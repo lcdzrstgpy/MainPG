@@ -260,7 +260,7 @@ export function PersonalCenterPage() {
           </div>
           <div className="wallet-metrics">
             <div><span>总积分</span><b>{summary?.wallet.points_balance.toLocaleString() ?? "--"}</b></div>
-            <div><span>冻结积分</span><b>{summary?.wallet.locked_points.toLocaleString() ?? "--"}</b></div>
+            <div><span>冻结积分</span><b>{summary?.wallet.frozen_points.toLocaleString() ?? "--"}</b></div>
             <div><span>换算比例</span><b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b></div>
           </div>
           <p className="wallet-note">充值、扣费、退款都以服务器账本为准；客户端仅展示结果，不能本地改余额。</p>

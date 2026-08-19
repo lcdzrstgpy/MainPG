@@ -42,6 +42,8 @@ export type BillingSummary = {
   wallet: {
     points_balance: number;
     locked_points: number;
+    manual_frozen_points: number;
+    frozen_points: number;
     available_points: number;
     version: number;
     ledger_head_hash: string;

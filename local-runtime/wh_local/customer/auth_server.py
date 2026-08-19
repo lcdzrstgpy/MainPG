@@ -883,7 +883,8 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         _ensure_wallet(conn, account_id, workspace_id)
         wallet = conn.execute(
             """
-            SELECT points_balance, locked_points, version, ledger_head_hash, updated_at
+            SELECT points_balance, locked_points, manual_frozen_points,
+                   version, ledger_head_hash, updated_at
             FROM billing_wallets
             WHERE account_id = ?
             """,
@@ -921,7 +922,16 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         "wallet": {
             "points_balance": int(wallet["points_balance"] if wallet else 0),
             "locked_points": int(wallet["locked_points"] if wallet else 0),
-            "available_points": int((wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0)),
+            "manual_frozen_points": int(wallet["manual_frozen_points"] if wallet else 0),
+            "frozen_points": int(
+                (wallet["locked_points"] if wallet else 0)
+                + (wallet["manual_frozen_points"] if wallet else 0)
+            ),
+            "available_points": int(
+                (wallet["points_balance"] if wallet else 0)
+                - (wallet["locked_points"] if wallet else 0)
+                - (wallet["manual_frozen_points"] if wallet else 0)
+            ),
             "version": int(wallet["version"] if wallet else 0),
             "ledger_head_hash": wallet["ledger_head_hash"] if wallet else "",
             "updated_at": wallet["updated_at"] if wallet else "",
