@@ -91,6 +91,10 @@ def test_created_site_is_used_by_calculation_and_product_archive(tmp_path) -> No
     )
     try:
         service.create_site(profile)
+        service.update_legacy_settings({
+            "activity_min_net_profit": 8,
+            "activity_profit_rate_threshold": "0.20",
+        })
         calculated = service.calculate("BR", Decimal("100"), Decimal("20"), Decimal("2"))
         product = service.upsert_product({
             "site": "BR", "skc": "BR-SKC-1", "selling_price": "100", "cost_price": "20", "weight_kg": "2",

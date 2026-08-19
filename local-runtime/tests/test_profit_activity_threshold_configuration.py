@@ -4,6 +4,9 @@ import sqlite3
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
+from wh_local.modules.profit_activity.domain.engine import ProfitValidationError
 from wh_local.modules.profit_activity.domain.models import ProfitSettings
 from wh_local.modules.profit_activity.infrastructure.database import create_database
 from wh_local.modules.profit_activity.infrastructure.repository import ProfitActivityRepository
@@ -111,5 +114,42 @@ def test_legacy_settings_update_preserves_threshold_configuration_state(tmp_path
         assert stored.activity_threshold_configured is True
         assert isinstance(stored.activity_threshold_configured, bool)
         assert stored.domestic_fee == Decimal("6")
+    finally:
+        service.close()
+
+
+def test_legacy_threshold_save_is_persisted_and_restore_clears_it(tmp_path: Path) -> None:
+    database = create_database(tmp_path / "settings.sqlite3")
+    service = ProfitActivityService(ProfitActivityRepository(database.sessions), database)
+    try:
+        saved = service.update_legacy_settings({
+            "activity_min_net_profit": 12,
+            "activity_profit_rate_threshold": 0.25,
+        })
+        assert saved["activity_min_net_profit"] == Decimal("12")
+        assert saved["activity_profit_rate_threshold"] == Decimal("0.25")
+        assert saved["activity_threshold_configured"] is True
+
+        restored = service.update_legacy_settings({
+            "expected_revision": saved["revision"],
+            "activity_min_net_profit": 0,
+            "activity_profit_rate_threshold": 0,
+            "activity_threshold_configured": False,
+        })
+        assert restored["activity_min_net_profit"] == Decimal("0")
+        assert restored["activity_profit_rate_threshold"] == Decimal("0")
+        assert restored["activity_threshold_configured"] is False
+    finally:
+        service.close()
+
+
+def test_unconfigured_thresholds_block_filter_entry_points(tmp_path: Path) -> None:
+    database = create_database(tmp_path / "filter.sqlite3")
+    service = ProfitActivityService(ProfitActivityRepository(database.sessions), database)
+    try:
+        with pytest.raises(ProfitValidationError, match="activity_threshold_not_configured"):
+            service.run_filter("US", None)
+        with pytest.raises(ProfitValidationError, match="activity_threshold_not_configured"):
+            service.start_activity_filter(b"not-read", "activity.xlsx", "US")
     finally:
         service.close()

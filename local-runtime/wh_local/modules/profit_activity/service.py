@@ -15,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, get_type_hints
 
-from .domain.engine import activity_decision, calculate_profit, validate_settings
+from .domain.engine import ProfitValidationError, activity_decision, calculate_profit, validate_settings
 from .domain.models import ProfitPreview, ProfitSettings, ProfitSiteProfile, SiteCode
 from .infrastructure.database import ProfitActivityDatabase, create_database
 from .infrastructure.repository import ProfitActivityRepository, SettingsRevisionConflict, SettingsSnapshot
@@ -36,6 +36,11 @@ class ProfitActivityConflict(ValueError):
 
 class ProfitActivityNotFound(ValueError):
     pass
+
+
+def _require_activity_thresholds(settings: ProfitSettings) -> None:
+    if not settings.activity_threshold_configured:
+        raise ProfitValidationError("activity_threshold_not_configured")
 
 
 @dataclass(frozen=True)
@@ -123,6 +128,9 @@ class ProfitActivityService:
             if name not in payload:
                 continue
             values[name] = payload[name]
+        threshold_fields = {"activity_min_net_profit", "activity_profit_rate_threshold"}
+        if "activity_threshold_configured" not in payload and threshold_fields.intersection(payload):
+            values["activity_threshold_configured"] = True
         if "activity_filter_rule_version" in payload:
             values["rule_version"] = payload["activity_filter_rule_version"]
         settings = ProfitSettings(**_decimal_settings(values))
@@ -408,9 +416,10 @@ class ProfitActivityService:
 
     def filter_activity_template(self, workbook: bytes, original_filename: str, site: SiteCode, actor: Any | None = None, *, include_workspace_shared: bool = False, should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
         context = _actor_context(actor)
+        settings = self.get_settings(actor).settings
+        _require_activity_thresholds(settings)
         site, custom_site = self._resolve_site(site, actor)
         products = {product["skc"]: product for product in self.list_products(site=site, actor=actor, include_workspace_shared=include_workspace_shared)}
-        settings = self.get_settings(actor).settings
         def evaluate(skc: str, price: Decimal) -> dict[str, Any]:
             product = products.get(skc)
             if product is None:
@@ -450,6 +459,7 @@ class ProfitActivityService:
 
     def start_activity_filter(self, workbook: bytes, original_filename: str, site: SiteCode, actor: Any | None = None, *, include_workspace_shared: bool = False) -> int:
         """异步启动活动过滤：立即返回任务编号，过滤在后台线程执行，支持暂停。"""
+        _require_activity_thresholds(self.get_settings(actor).settings)
         context = _actor_context(actor)
         task = self._repository.create_filter_task(
             context.workspace_id, "running",
@@ -610,6 +620,7 @@ class ProfitActivityService:
     def run_filter(self, site_code: SiteCode | None, record_ids: list[int] | None, actor: Any | None = None, *, include_workspace_shared: bool = False):
         context = _actor_context(actor)
         settings = self.get_settings(actor).settings
+        _require_activity_thresholds(settings)
         records = self._repository.get_records_for_filter(context.workspace_id, site_code, record_ids, actor_id=context.actor_id, include_workspace_shared=include_workspace_shared or context.is_admin)
         decisions = []
         for record in records:
