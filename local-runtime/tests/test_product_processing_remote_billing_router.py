@@ -375,3 +375,150 @@ def test_all_processing_routes_forward_remote_billing_context(
     finally:
         getattr(service, "_dimension_canvas_service").close()
         database.dispose()
+
+
+def test_retry_attention_reacquires_remote_token_and_prechecks_balance_over_http(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = create_database(f"sqlite:///{(tmp_path / 'retry-router.sqlite3').as_posix()}")
+    service = ProductProcessingService(
+        ProductProcessingRepository(database),
+        ProductProcessingAssets(tmp_path / "assets"),
+    )
+    captured: dict[str, Any] = {}
+    settings = {
+        "processing_scope": ["title"],
+        "title_optimize": True,
+        "description": False,
+        "size": False,
+        "grid_image": False,
+        "image_rewrite": False,
+    }
+    monkeypatch.setattr(
+        service,
+        "task_outputs",
+        lambda *_args, **_kwargs: {
+            "task": {"metadata": {"settings": settings, "preflight_only": False}},
+            "items": [
+                {"product_draft_id": 41, "status": "completed"},
+                {"product_draft_id": 42, "status": "failed"},
+                {"product_draft_id": 43, "status": "attention_required"},
+            ],
+        },
+    )
+
+    def record_retry(
+        task_id: int,
+        workspace_id: str,
+        *,
+        draft_ids: list[int] | None,
+        remote_token: str,
+    ) -> dict[str, Any]:
+        captured.update(
+            task_id=task_id,
+            workspace_id=workspace_id,
+            draft_ids=draft_ids,
+            remote_token=remote_token,
+        )
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "retry_attention", record_retry)
+    sessions = LocalSessionService()
+    session = sessions.login_customer(
+        CustomerAuthResult(
+            customer_id="customer-1",
+            username="user",
+            remote_token="remote-retry-session",
+        )
+    )
+    remote = RecordingRemoteBilling(30)
+    app = FastAPI()
+    app.dependency_overrides[actor_from_authorization] = _actor
+    app.include_router(
+        product_processing_router.create_product_processing_router(
+            service,
+            customer_sessions=sessions,
+            remote_customer_auth=remote,
+        )
+    )
+
+    response = TestClient(app).post(
+        "/product-processing/tasks/9/retry-attention",
+        json={"draft_ids": [42]},
+        headers={"Authorization": f"Bearer {session.token}"},
+    )
+
+    assert response.status_code == 200
+    assert remote.tokens == ["remote-retry-session"]
+    assert captured == {
+        "task_id": 9,
+        "workspace_id": "local",
+        "draft_ids": [42],
+        "remote_token": "remote-retry-session",
+    }
+    getattr(service, "_dimension_canvas_service").close()
+    database.dispose()
+
+
+def test_retry_attention_rejects_insufficient_remote_balance_before_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = create_database(f"sqlite:///{(tmp_path / 'retry-insufficient.sqlite3').as_posix()}")
+    service = ProductProcessingService(
+        ProductProcessingRepository(database),
+        ProductProcessingAssets(tmp_path / "assets"),
+    )
+    monkeypatch.setattr(
+        service,
+        "task_outputs",
+        lambda *_args, **_kwargs: {
+            "task": {
+                "metadata": {
+                    "settings": {
+                        "processing_scope": ["title"],
+                        "title_optimize": True,
+                        "description": False,
+                        "size": False,
+                        "grid_image": False,
+                        "image_rewrite": False,
+                    },
+                    "preflight_only": False,
+                }
+            },
+            "items": [{"product_draft_id": 42, "status": "failed"}],
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "retry_attention",
+        lambda *_args, **_kwargs: pytest.fail("retry must not run without enough points"),
+    )
+    sessions = LocalSessionService()
+    session = sessions.login_customer(
+        CustomerAuthResult(
+            customer_id="customer-1",
+            username="user",
+            remote_token="remote-retry-session",
+        )
+    )
+    app = FastAPI()
+    app.dependency_overrides[actor_from_authorization] = _actor
+    app.include_router(
+        product_processing_router.create_product_processing_router(
+            service,
+            customer_sessions=sessions,
+            remote_customer_auth=RecordingRemoteBilling(29),
+        )
+    )
+
+    response = TestClient(app).post(
+        "/product-processing/tasks/9/retry-attention",
+        json={"draft_ids": [42]},
+        headers={"Authorization": f"Bearer {session.token}"},
+    )
+
+    assert response.status_code == 402
+    getattr(service, "_dimension_canvas_service").close()
+    database.dispose()

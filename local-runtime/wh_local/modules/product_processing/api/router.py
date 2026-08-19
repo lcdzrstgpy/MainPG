@@ -617,15 +617,46 @@ def create_product_processing_router(
 
     @router.post("/tasks/{task_id}/retry-attention")
     def retry_attention(
+        request: Request,
         task_id: int,
         body: RetryTaskRequest | None = None,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
+        normalized_workspace = _workspace(workspace_id)
+        snapshot = _call(service.task_outputs, task_id, workspace_id=normalized_workspace)
+        items = snapshot.get("items") if isinstance(snapshot, dict) else []
+        requested_ids = set(body.draft_ids or []) if body else set()
+        retry_draft_ids = [
+            int(item["product_draft_id"])
+            for item in items or []
+            if isinstance(item, dict)
+            and item.get("status") in {"failed", "attention_required"}
+            and (not requested_ids or int(item.get("product_draft_id") or 0) in requested_ids)
+        ]
+        token = _remote_token(request, customer_sessions)
+        if retry_draft_ids:
+            task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
+            metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
+            settings = metadata.get("settings") if isinstance(metadata, dict) else {}
+            billing_payload = {
+                **(settings if isinstance(settings, dict) else {}),
+                "draft_ids": retry_draft_ids,
+                "preflight_only": bool(metadata.get("preflight_only")) if isinstance(metadata, dict) else False,
+            }
+            _attach_billing_context_and_require_points(
+                billing_payload,
+                actor,
+                source_ref=f"product_processing:tasks/{task_id}/retry-attention",
+                remote_token=token,
+                remote_customer_auth=remote_customer_auth,
+            )
         return _call(
             service.retry_attention,
             task_id,
-            _workspace(workspace_id),
+            normalized_workspace,
             draft_ids=body.draft_ids if body else None,
+            remote_token=token,
         )
 
     @router.post("/tasks/{task_id}/clear")
