@@ -18,7 +18,7 @@ from .doubao_ark import (
 
 
 PROMPT_VERSION = "doubao-subject-v3"
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.5
 
 SUBJECT_ANALYSIS_PROMPT = """Analyze the original 1688 product image and identify the actual sellable product.

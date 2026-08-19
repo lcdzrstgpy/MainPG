@@ -173,7 +173,13 @@ def test_provider_error_does_not_expose_key_or_response_body(monkeypatch) -> Non
 
 
 def test_network_failure_retries_once_then_returns_retryable_error(monkeypatch) -> None:
-    session = _Session([requests.Timeout("socket details"), requests.Timeout("again")])
+    session = _Session(
+        [
+            requests.Timeout("socket details"),
+            requests.Timeout("again"),
+            requests.Timeout("thrice"),
+        ]
+    )
     monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
@@ -185,9 +191,9 @@ def test_network_failure_retries_once_then_returns_retryable_error(monkeypatch) 
 
     assert captured.value.retryable is True
     assert captured.value.error_kind == "transient"
-    assert captured.value.attempt_count == 2
+    assert captured.value.attempt_count == 3
     assert "socket details" not in str(captured.value)
-    assert len(session.requests) == 2
+    assert len(session.requests) == 3
 
 
 def test_missing_reserved_usage_is_configuration_error() -> None:
