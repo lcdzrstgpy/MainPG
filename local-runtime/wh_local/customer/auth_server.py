@@ -75,10 +75,15 @@ GATEWAY_LEASE_SECONDS = {
 class _GatewayRequestClaim:
     cached_response: dict[str, Any] | None = None
     provider_task_id: str = ""
+    submit_uncertain: bool = False
 
 
 class _ImageProviderTerminalFailure(RuntimeError):
     """The provider confirmed that an image task cannot succeed."""
+
+
+class _ImageSubmitUncertain(RuntimeError):
+    """The upstream may have accepted an image submit without a durable task id."""
 
 
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
@@ -283,7 +288,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         if not 1 <= len(prompt) <= 24_000 or not isinstance(urls, list) or len(urls) > 4:
             raise HTTPException(status_code=400, detail="image request is invalid")
         urls = [str(value).strip() for value in urls]
-        if any(not _safe_provider_image_url(value) for value in urls):
+        if any(not _trusted_provider_reference_url(value) for value in urls):
             raise HTTPException(status_code=400, detail="image reference URL is invalid")
         if size not in {
             "auto", "1:1", "3:2", "2:3", "16:9", "9:16", "4:3", "3:4",
@@ -305,11 +310,19 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         )
         if claim.cached_response is not None:
             return claim.cached_response
+        if claim.submit_uncertain:
+            raise HTTPException(status_code=503, detail="server image submit outcome is uncertain")
         try:
             task_id = claim.provider_task_id
             if not task_id:
+                _mark_gateway_submitting(db_path, usage_id, request_hash)
                 task_id = _submit_server_wuyin(api_key, prompt, urls, size)
-                _record_gateway_provider_task(db_path, usage_id, request_hash, task_id)
+                try:
+                    _record_gateway_provider_task(db_path, usage_id, request_hash, task_id)
+                except Exception as exc:
+                    # The provider may already have accepted the request.  Never
+                    # turn a local persistence failure into an automatic resubmit.
+                    raise _ImageSubmitUncertain() from exc
             result_url = _poll_server_wuyin(api_key, task_id)
             response_payload = {"ok": True, "task_id": task_id, "result_url": result_url}
             _complete_gateway_request(db_path, usage_id, request_hash, response_payload)
@@ -323,6 +336,12 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 clear_provider_task=True,
             )
             raise HTTPException(status_code=502, detail="server image provider task failed") from exc
+        except _ImageSubmitUncertain as exc:
+            _mark_gateway_submit_uncertain(db_path, usage_id, request_hash)
+            raise HTTPException(
+                status_code=503,
+                detail="server image submit outcome is uncertain",
+            ) from exc
         except Exception:
             if _gateway_provider_task_id(db_path, usage_id, request_hash):
                 _pause_gateway_request(db_path, usage_id, request_hash)
@@ -796,6 +815,18 @@ def _claim_gateway_request(
                 if _gateway_claim_is_fresh(existing, feature_key):
                     raise HTTPException(status_code=409, detail="identical gateway request is already in progress")
                 provider_task_id = str(existing["provider_task_id"] or "").strip()
+                phase = str(existing["phase"] or "").strip()
+                if feature_key == "product_processing.image_grid_2k" and phase == "submitting" and not provider_task_id:
+                    conn.execute(
+                        """
+                        UPDATE billing_ai_gateway_requests
+                        SET status = 'failed', phase = 'submit_uncertain',
+                            lease_expires_at = '', response_json = '', updated_at = ?
+                        WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+                        """,
+                        (_utc_now(), usage_id, request_hash),
+                    )
+                    return _GatewayRequestClaim(submit_uncertain=True)
                 lease_expires_at = _new_gateway_lease(feature_key)
                 if provider_task_id:
                     conn.execute(
@@ -821,6 +852,11 @@ def _claim_gateway_request(
                 )
                 return _GatewayRequestClaim()
             attempt_limit = GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS[feature_key]
+            if (
+                feature_key == "product_processing.image_grid_2k"
+                and str(existing["phase"] or "") == "submit_uncertain"
+            ):
+                return _GatewayRequestClaim(submit_uncertain=True)
             if int(existing["attempt_count"] or 0) >= attempt_limit:
                 raise HTTPException(status_code=409, detail="gateway retry limit reached for reserved usage")
             conn.execute(
@@ -938,6 +974,48 @@ def _record_gateway_provider_task(
         )
         if cursor.rowcount != 1:
             raise HTTPException(status_code=409, detail="gateway request claim is no longer active")
+
+
+def _mark_gateway_submitting(
+    database_path: Path,
+    usage_id: str,
+    request_hash: str,
+) -> None:
+    with transaction(database_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET phase = 'submitting', lease_expires_at = ?, updated_at = ?
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+              AND provider_task_id = ''
+            """,
+            (
+                _new_gateway_lease("product_processing.image_grid_2k"),
+                _utc_now(),
+                usage_id,
+                request_hash,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise HTTPException(status_code=409, detail="gateway request claim is no longer active")
+
+
+def _mark_gateway_submit_uncertain(
+    database_path: Path,
+    usage_id: str,
+    request_hash: str,
+) -> None:
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET status = 'failed', phase = 'submit_uncertain', response_json = '',
+                lease_expires_at = '', updated_at = ?
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+              AND provider_task_id = ''
+            """,
+            (_utc_now(), usage_id, request_hash),
+        )
 
 
 def _gateway_provider_task_id(database_path: Path, usage_id: str, request_hash: str) -> str:
@@ -1108,6 +1186,33 @@ def _safe_provider_image_url(value: str) -> bool:
     )
 
 
+def _trusted_provider_reference_url(value: str) -> bool:
+    """Forward references only for explicitly trusted platform/COS hostnames."""
+
+    normalized = str(value or "").strip()
+    try:
+        hostname = str(urlsplit(normalized).hostname or "").strip().lower().rstrip(".")
+    except ValueError:
+        return False
+    entries = [
+        item.strip().lower().rstrip(".")
+        for item in str(os.environ.get("WH_AI_REFERENCE_HOST_ALLOWLIST") or "").split(",")
+        if item.strip()
+    ]
+    if not hostname or not entries:
+        return False
+    allowed = any(
+        (
+            hostname.endswith(f".{entry[2:]}")
+            and hostname != entry[2:]
+        )
+        if entry.startswith("*.") and len(entry) > 2
+        else hostname == entry
+        for entry in entries
+    )
+    return allowed and _safe_provider_image_url(normalized)
+
+
 def _bounded_provider_json(response: requests.Response, *, provider: str) -> Any:
     chunks: list[bytes] = []
     total = 0
@@ -1209,20 +1314,27 @@ def _submit_server_wuyin(
             raise HTTPException(status_code=503, detail="server image provider is temporarily unavailable")
         if not 200 <= status_code < 300:
             raise HTTPException(status_code=502, detail="server image provider rejected the request")
-        submitted = _bounded_provider_json(response, provider="image")
+        try:
+            submitted = _bounded_provider_json(response, provider="image")
+        except HTTPException as exc:
+            raise _ImageSubmitUncertain() from exc
     except requests.RequestException as exc:
-        raise HTTPException(status_code=503, detail="server image request failed") from exc
+        raise _ImageSubmitUncertain() from exc
     finally:
         if response is not None:
             response.close()
-    data = submitted.get("data") if isinstance(submitted, dict) else None
-    task_id = str(data.get("id") or "").strip() if isinstance(data, dict) else ""
-    if (
-        not isinstance(submitted, dict)
-        or _provider_code(submitted.get("code")) != 200
-        or not task_id
-    ):
+    if not isinstance(submitted, dict):
+        raise _ImageSubmitUncertain()
+    try:
+        provider_code = _provider_code(submitted.get("code"))
+    except HTTPException as exc:
+        raise _ImageSubmitUncertain() from exc
+    if provider_code != 200:
         raise HTTPException(status_code=502, detail="server image provider rejected the request")
+    data = submitted.get("data")
+    task_id = str(data.get("id") or "").strip() if isinstance(data, dict) else ""
+    if not task_id:
+        raise _ImageSubmitUncertain()
     return task_id
 
 

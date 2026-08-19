@@ -678,7 +678,7 @@ def test_image_gateway_caps_failed_same_hash_retries(tmp_path: Path, monkeypatch
     def fail(*_args, **_kwargs):
         nonlocal provider_calls
         provider_calls += 1
-        raise requests.Timeout("provider failed")
+        return _Response({}, status_code=503)
 
     monkeypatch.setattr(auth_server.requests, "post", fail)
     payload = {"usage_id": usage, "prompt": "same image", "size": "1:1"}
@@ -782,6 +782,80 @@ def test_image_gateway_uses_server_secret_and_returns_only_result_url(tmp_path: 
     assert "server-secret" not in json.dumps(image.json())
 
 
+def test_image_gateway_forwards_only_allowlisted_public_reference_url(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(
+        client, headers, "product_processing.image_grid_2k", "allowlisted-reference"
+    )
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
+    monkeypatch.setenv(
+        "WH_AI_REFERENCE_HOST_ALLOWLIST",
+        "trusted.example.test,*.assets.example.test",
+    )
+    submitted: list[dict] = []
+
+    def provider_post(*_args, **kwargs):
+        submitted.append(kwargs["json"])
+        return _Response({"code": 200, "data": {"id": "task-allowlisted"}})
+
+    monkeypatch.setattr(auth_server.requests, "post", provider_post)
+    monkeypatch.setattr(
+        auth_server.requests,
+        "get",
+        lambda *_args, **_kwargs: _Response(
+            {"code": 200, "data": {"url": "https://images.example.test/result.png"}}
+        ),
+    )
+    reference_url = "https://cdn.assets.example.test/source.jpg"
+    response = client.post(
+        "/api/customer/ai/image",
+        headers=headers,
+        json={
+            "usage_id": usage,
+            "prompt": "product",
+            "size": "1:1",
+            "urls": [reference_url],
+        },
+    )
+
+    assert response.status_code == 200
+    assert submitted[0]["urls"] == [reference_url]
+
+
+def test_image_gateway_rejects_public_reference_outside_trusted_allowlist(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(
+        client, headers, "product_processing.image_grid_2k", "untrusted-reference"
+    )
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
+    monkeypatch.setenv("WH_AI_REFERENCE_HOST_ALLOWLIST", "trusted.example.test")
+    provider_calls = 0
+
+    def provider_post(*_args, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        return _Response({"code": 200, "data": {"id": "must-not-run"}})
+
+    monkeypatch.setattr(auth_server.requests, "post", provider_post)
+    response = client.post(
+        "/api/customer/ai/image",
+        headers=headers,
+        json={
+            "usage_id": usage,
+            "prompt": "product",
+            "size": "1:1",
+            "urls": ["https://rebind.example.test/source.jpg"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert provider_calls == 0
+
+
 @pytest.mark.parametrize(
     "answers",
     [
@@ -796,6 +870,7 @@ def test_image_gateway_rejects_reference_url_when_dns_is_not_all_public(
     client, headers = _client(tmp_path, monkeypatch)
     usage = _reserved_usage(client, headers, "product_processing.image_grid_2k", "ssrf-dns")
     monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
+    monkeypatch.setenv("WH_AI_REFERENCE_HOST_ALLOWLIST", "reference.example.test")
     provider_calls = 0
 
     def resolve(_host, port, **_kwargs):
@@ -827,6 +902,38 @@ def test_image_gateway_rejects_reference_url_when_dns_is_not_all_public(
             "prompt": "product",
             "size": "1:1",
             "urls": ["https://reference.example.test/source.jpg"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert provider_calls == 0
+
+
+def test_image_gateway_rejects_invalid_reference_port_without_provider_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(
+        client, headers, "product_processing.image_grid_2k", "invalid-reference-port"
+    )
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
+    monkeypatch.setenv("WH_AI_REFERENCE_HOST_ALLOWLIST", "reference.example.test")
+    provider_calls = 0
+
+    def provider_post(*_args, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        return _Response({"code": 200, "data": {"id": "must-not-run"}})
+
+    monkeypatch.setattr(auth_server.requests, "post", provider_post)
+    response = client.post(
+        "/api/customer/ai/image",
+        headers=headers,
+        json={
+            "usage_id": usage,
+            "prompt": "product",
+            "size": "1:1",
+            "urls": ["https://reference.example.test:99999/source.jpg"],
         },
     )
 
@@ -893,6 +1000,183 @@ def test_image_gateway_persists_submit_before_poll_and_resumes_without_duplicate
     assert recovered.status_code == 200
     assert recovered.json()["result_url"] == "https://images.example.test/recovered.png"
     assert submit_calls == 1
+
+
+def test_image_submit_crash_before_task_persistence_never_automatically_resubmits(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(
+        client,
+        headers,
+        "product_processing.image_grid_2k",
+        "submit-uncertain-crash",
+    )
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
+    submit_calls = 0
+
+    def fake_post(*_args, **_kwargs):
+        nonlocal submit_calls
+        submit_calls += 1
+        return _Response({"code": 200, "data": {"id": f"task-{submit_calls}"}})
+
+    original_record = auth_server._record_gateway_provider_task
+    monkeypatch.setattr(auth_server.requests, "post", fake_post)
+    monkeypatch.setattr(
+        auth_server,
+        "_record_gateway_provider_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            KeyboardInterrupt("crash after upstream accepted submit")
+        ),
+    )
+    payload = {"usage_id": usage, "prompt": "uncertain submit", "size": "1:1"}
+
+    with pytest.raises(KeyboardInterrupt):
+        client.post("/api/customer/ai/image", headers=headers, json=payload)
+
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        after_crash = conn.execute(
+            """
+            SELECT status, phase, provider_task_id
+            FROM billing_ai_gateway_requests WHERE usage_id = ?
+            """,
+            (usage,),
+        ).fetchone()
+        conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET lease_expires_at = '2000-01-01T00:00:00+00:00'
+            WHERE usage_id = ?
+            """,
+            (usage,),
+        )
+    assert dict(after_crash) == {
+        "status": "in_progress",
+        "phase": "submitting",
+        "provider_task_id": "",
+    }
+
+    replay = client.post("/api/customer/ai/image", headers=headers, json=payload)
+    assert replay.status_code == 503
+    assert replay.json() == {"detail": "server image submit outcome is uncertain"}
+    assert submit_calls == 1
+
+    failed = client.post(
+        f"/api/customer/billing/usage/{usage}/fail",
+        headers=headers,
+        json={"error_message": "submit outcome uncertain"},
+    )
+    assert failed.status_code == 200
+    assert failed.json()["usage"]["status"] == "failed"
+
+    replacement = _reserved_usage(
+        client,
+        headers,
+        "product_processing.image_grid_2k",
+        "submit-uncertain-replacement",
+    )
+    monkeypatch.setattr(auth_server, "_record_gateway_provider_task", original_record)
+    monkeypatch.setattr(
+        auth_server,
+        "_poll_server_wuyin",
+        lambda *_args, **_kwargs: "https://images.example.test/replacement.png",
+    )
+    replacement_response = client.post(
+        "/api/customer/ai/image",
+        headers=headers,
+        json={**payload, "usage_id": replacement},
+    )
+
+    assert replacement_response.status_code == 200
+    assert submit_calls == 2
+
+
+def test_image_submit_database_failure_after_acceptance_is_submit_uncertain(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(
+        client,
+        headers,
+        "product_processing.image_grid_2k",
+        "submit-uncertain-database",
+    )
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
+    submit_calls = 0
+
+    def fake_post(*_args, **_kwargs):
+        nonlocal submit_calls
+        submit_calls += 1
+        return _Response({"code": 200, "data": {"id": "accepted-upstream-task"}})
+
+    monkeypatch.setattr(auth_server.requests, "post", fake_post)
+    monkeypatch.setattr(
+        auth_server,
+        "_record_gateway_provider_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("database unavailable")),
+    )
+    payload = {"usage_id": usage, "prompt": "uncertain database save", "size": "1:1"}
+
+    first = client.post("/api/customer/ai/image", headers=headers, json=payload)
+    second = client.post("/api/customer/ai/image", headers=headers, json=payload)
+
+    assert first.status_code == second.status_code == 503
+    assert first.json() == second.json() == {
+        "detail": "server image submit outcome is uncertain"
+    }
+    assert submit_calls == 1
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT status, phase FROM billing_ai_gateway_requests WHERE usage_id = ?",
+            (usage,),
+        ).fetchone()
+    assert dict(row) == {"status": "failed", "phase": "submit_uncertain"}
+
+
+@pytest.mark.parametrize(
+    "submit_result",
+    [
+        requests.Timeout("body containing server-secret"),
+        _InvalidJsonResponse(status_code=200),
+    ],
+)
+def test_image_submit_uncertain_response_is_not_retried_same_usage(
+    tmp_path: Path, monkeypatch, submit_result: object
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(
+        client,
+        headers,
+        "product_processing.image_grid_2k",
+        "submit-uncertain-network",
+    )
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
+    submit_calls = 0
+
+    def uncertain(*_args, **_kwargs):
+        nonlocal submit_calls
+        submit_calls += 1
+        if isinstance(submit_result, BaseException):
+            raise submit_result
+        return submit_result
+
+    monkeypatch.setattr(auth_server.requests, "post", uncertain)
+    payload = {"usage_id": usage, "prompt": "uncertain network", "size": "1:1"}
+
+    first = client.post("/api/customer/ai/image", headers=headers, json=payload)
+    second = client.post("/api/customer/ai/image", headers=headers, json=payload)
+
+    assert first.status_code == second.status_code == 503
+    assert first.json() == second.json() == {
+        "detail": "server image submit outcome is uncertain"
+    }
+    assert submit_calls == 1
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT status, phase FROM billing_ai_gateway_requests WHERE usage_id = ?",
+            (usage,),
+        ).fetchone()
+    assert dict(row) == {"status": "failed", "phase": "submit_uncertain"}
 
 
 @pytest.mark.parametrize(
@@ -996,7 +1280,8 @@ def test_image_gateway_rejects_malformed_provider_envelope(tmp_path: Path, monke
         json={"usage_id": usage, "prompt": "a product image", "size": "1:1"},
     )
 
-    assert response.status_code == 502
+    assert response.status_code == 503
+    assert response.json() == {"detail": "server image submit outcome is uncertain"}
 
 
 @pytest.mark.parametrize(
@@ -1152,7 +1437,8 @@ def test_image_submit_rejects_invalid_json(tmp_path: Path, monkeypatch) -> None:
         "usage_id": usage, "prompt": "product", "size": "1:1",
     })
 
-    assert response.status_code == 502
+    assert response.status_code == 503
+    assert response.json() == {"detail": "server image submit outcome is uncertain"}
 
 
 def test_image_submit_rejects_malformed_provider_code(tmp_path: Path, monkeypatch) -> None:
@@ -1168,7 +1454,8 @@ def test_image_submit_rejects_malformed_provider_code(tmp_path: Path, monkeypatc
         "usage_id": usage, "prompt": "product", "size": "1:1",
     })
 
-    assert response.status_code == 502
+    assert response.status_code == 503
+    assert response.json() == {"detail": "server image submit outcome is uncertain"}
 
 
 def test_provider_config_is_server_managed_and_ignores_local_upstream_keys(monkeypatch) -> None:
@@ -1440,4 +1727,41 @@ def test_provider_result_download_rejects_unresolved_url_with_stable_error(monke
     with pytest.raises(media_module.MediaProcessingError, match="safe public URL"):
         media_module._download_pinned_public_image(
             "https://unresolved.example.test/result.png"
+        )
+
+
+def test_pinned_image_download_rejects_oversized_stream(monkeypatch) -> None:
+    monkeypatch.setattr(
+        media_module,
+        "resolve_safe_external_url",
+        lambda url: SimpleNamespace(
+            url=url,
+            hostname="images.example.test",
+            port=443,
+            addresses=("8.8.8.8",),
+        ),
+    )
+
+    class OversizedConnection:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def request(self, *_args, **_kwargs) -> None:
+            pass
+
+        def getresponse(self):
+            return SimpleNamespace(
+                status=200,
+                getheader=lambda *_args, **_kwargs: "image/png",
+                read=lambda limit: b"x" * limit,
+            )
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(media_module, "_PinnedHTTPSConnection", OversizedConnection)
+
+    with pytest.raises(media_module.MediaProcessingError, match="download limit"):
+        media_module._download_pinned_public_image(
+            "https://images.example.test/large.png"
         )

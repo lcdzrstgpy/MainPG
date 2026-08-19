@@ -149,7 +149,10 @@ def resolve_safe_external_url(
     hostname = parsed.hostname.strip().lower()
     if hostname == "localhost" or hostname.endswith(".localhost"):
         return None
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return None
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:

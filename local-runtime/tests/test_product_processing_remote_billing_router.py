@@ -488,18 +488,6 @@ def test_workbook_rechecks_reserve_points_after_real_import_count(
         ProductProcessingAssets(tmp_path / "assets"),
     )
 
-    def parsed_workbook(
-        _filename: str,
-        _content: bytes,
-        payload: dict[str, Any],
-        **kwargs: Any,
-    ) -> dict[str, bool]:
-        callback = kwargs.get("final_billing_check")
-        if callback is not None:
-            callback({**payload, "draft_ids": [1, 2, 3]})
-        return {"ok": True}
-
-    monkeypatch.setattr(service, "process_workbook", parsed_workbook)
     sessions = LocalSessionService()
     session = sessions.login_customer(
         CustomerAuthResult(
@@ -519,24 +507,45 @@ def test_workbook_rechecks_reserve_points_after_real_import_count(
         )
     )
     client = TestClient(app)
+    workbook = "商品标题,价格\nProduct A,1\nProduct B,2\nProduct C,3\n".encode()
+    idempotency_key = "workbook-no-side-effects"
+
+    def counts() -> tuple[int, bool, set[str]]:
+        drafts = len(service.repository.list_drafts(None, 100, 0, workspace_id="local")[0])
+        task_exists = service.repository.task_by_idempotency_key(idempotency_key, "local") is not None
+        files = {
+            str(path.relative_to(service.assets.root))
+            for path in service.assets.root.rglob("*")
+            if path.is_file()
+        }
+        return drafts, task_exists, files
+
+    before = counts()
 
     try:
-        response = client.post(
-            "/product-processing/engine/batch",
-            data={
-                "title_optimize": "true",
-                "description": "false",
-                "size": "false",
-                "grid_image": "false",
-                "image_rewrite": "false",
-            },
-            files={"file": ("products.xlsx", b"three products", "application/octet-stream")},
-            headers={"Authorization": f"Bearer {session.token}"},
-        )
+        responses = [
+            client.post(
+                "/product-processing/engine/batch",
+                data={
+                    "title_optimize": "true",
+                    "description": "false",
+                    "size": "false",
+                    "grid_image": "false",
+                    "image_rewrite": "false",
+                },
+                files={"file": ("products.csv", workbook, "text/csv")},
+                headers={
+                    "Authorization": f"Bearer {session.token}",
+                    "Idempotency-Key": idempotency_key,
+                },
+            )
+            for _ in range(2)
+        ]
 
-        assert response.status_code == 402
-        assert "150" in response.json()["detail"]
-        assert remote.tokens == ["remote-session", "remote-session"]
+        assert [response.status_code for response in responses] == [402, 402]
+        assert all("150" in response.json()["detail"] for response in responses)
+        assert counts() == before == (0, False, set())
+        assert remote.tokens == ["remote-session"] * 4
     finally:
         getattr(service, "_dimension_canvas_service").close()
         database.dispose()

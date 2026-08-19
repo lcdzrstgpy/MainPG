@@ -45,3 +45,7 @@ def test_url_policy_fails_closed_when_dns_resolution_fails() -> None:
         "https://images.example.test/result.png",
         resolver=fail,
     )
+
+
+def test_url_policy_fails_closed_for_invalid_port() -> None:
+    assert not is_safe_external_url("https://images.example.test:99999/result.png")

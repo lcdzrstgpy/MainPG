@@ -433,6 +433,83 @@ def test_idempotent_replay_allows_legacy_unbilled_task_without_token_handoff(
     assert service._task_remote_token(first["task_id"]) == ""
 
 
+@pytest.mark.parametrize("entrypoint", ["workbook", "single"])
+def test_cross_account_replay_is_rejected_before_all_submission_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+) -> None:
+    service = _service(tmp_path)
+    owner_draft, _ = service.create_draft(
+        {"source_type": "manual", "title": "owner-secret-title"},
+        workspace_id="shared",
+    )
+    monkeypatch.setattr(service, "_launch_background_execute", lambda *_args: True)
+    first = service.process_drafts(
+        {
+            "draft_ids": [owner_draft["id"]],
+            "async_mode": True,
+            "title": "owner-secret-task-title",
+            "_billing": {"account_id": "account-a", "remote_token": "token-a"},
+        },
+        idempotency_key="shared-all-entrypoints",
+        workspace_id="shared",
+    )
+    task_id = int(first["task_id"])
+    original_token = service._task_remote_token(task_id)
+    before_drafts = len(service.repository.list_drafts(None, 100, 0, workspace_id="shared")[0])
+    side_effects: list[str] = []
+    monkeypatch.setattr(
+        service_module,
+        "CustomerAuthClient",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cross-account replay must not call remote billing")
+        ),
+    )
+
+    if entrypoint == "workbook":
+        monkeypatch.setattr(
+            service,
+            "import_workbook",
+            lambda *_args, **_kwargs: side_effects.append("import") or {"ids": [999]},
+        )
+        invoke = lambda: service.process_workbook(
+            "products.xlsx",
+            b"untrusted-workbook",
+            {
+                "async_mode": True,
+                "_billing": {"account_id": "account-b", "remote_token": "token-b"},
+            },
+            idempotency_key="shared-all-entrypoints",
+            workspace_id="shared",
+        )
+    else:
+        original_create = service.create_draft
+
+        def forbidden_create(*args, **kwargs):
+            side_effects.append("create_draft")
+            return original_create(*args, **kwargs)
+
+        monkeypatch.setattr(service, "create_draft", forbidden_create)
+        invoke = lambda: service.process_single(
+            {
+                "title": "account-b-title",
+                "async_mode": True,
+                "_billing": {"account_id": "account-b", "remote_token": "token-b"},
+            },
+            idempotency_key="shared-all-entrypoints",
+            workspace_id="shared",
+        )
+
+    with pytest.raises(ProductProcessingNotFound) as caught:
+        invoke()
+
+    assert "owner-secret" not in str(caught.value)
+    assert side_effects == []
+    assert service._task_remote_token(task_id) == original_token == "token-a"
+    assert len(service.repository.list_drafts(None, 100, 0, workspace_id="shared")[0]) == before_drafts
+
+
 def test_terminal_cleanup_removes_token_and_empty_item_usage_state(tmp_path: Path) -> None:
     service = _service(tmp_path)
     service._task_remote_tokens[7] = "remote-token"

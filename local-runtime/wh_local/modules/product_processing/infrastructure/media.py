@@ -1120,7 +1120,7 @@ class ProductImageProcessor:
                     continue
                 try:
                     content, content_type = self._download_reference_image_cached(value)
-                except requests.RequestException as exc:
+                except (requests.RequestException, MediaProcessingError) as exc:
                     detail = f"download failed: {_safe_error(exc)}"
                     if not references:
                         raise MediaProcessingError(
@@ -1599,34 +1599,6 @@ def _filename_for_url(value: str) -> str:
 
 
 def _download_reference_image(url: str) -> tuple[bytes, str]:
-    """下载来源参考图，带 UA 头并做防盗链容错。
+    """Download one reference through the shared DNS-pinned bounded transport."""
 
-    1688 来源图（cbu01.alicdn.com 等）偶发 420 防盗链：裸 requests.get 无 UA 易被拦。
-    策略：1) 带浏览器 UA 直下；2) 失败追加 ``?__r__=<毫秒时间戳>`` 缓存爆破参数重试；
-    3) 仍失败换 ``http`` 再试一次。全部失败抛 requests.RequestException 由调用方转错误。
-    """
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
-    variants = [url]
-    parsed = urlsplit(url)
-    if "__r__" not in parsed.query:
-        ts = str(int(time.time() * 1000))
-        separator = "&" if parsed.query else "?"
-        variants.append(f"{url}{separator}__r__={ts}")
-    if parsed.scheme == "https":
-        variants.append(f"http://{parsed.netloc}{parsed.path}" + (f"?{parsed.query}" if parsed.query else ""))
-    last_error: requests.RequestException | None = None
-    for variant in variants:
-        response = None
-        try:
-            response = _SESSION.get(variant, timeout=30, allow_redirects=False, headers=headers)
-            response.raise_for_status()
-            content = bytes(response.content)
-            content_type = str(response.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
-            if content and content_type.startswith("image/"):
-                return content, content_type
-        except requests.RequestException as exc:
-            last_error = exc
-        finally:
-            if response is not None:
-                response.close()
-    raise last_error or requests.RequestException("reference image download failed")
+    return _download_pinned_public_image(url, timeout_seconds=30)

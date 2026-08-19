@@ -561,6 +561,52 @@ def test_reference_download_cache_single_flights_concurrent_reads(monkeypatch) -
     assert [result[0][0] for result in results] == [b"same-image"] * 4
 
 
+def test_reference_loading_uses_shared_pinned_public_transport(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def pinned(url: str, **_kwargs) -> tuple[bytes, str]:
+        calls.append(url)
+        return b"safe-reference", "image/jpeg"
+
+    monkeypatch.setattr(media_module, "_download_pinned_public_image", pinned)
+    monkeypatch.setattr(
+        media_module._SESSION,
+        "get",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("reference download must not resolve the hostname through requests")
+        ),
+    )
+    processor = ProductImageProcessor(lambda: {})
+    url = "https://reference.example.test/source.jpg"
+
+    loaded = processor._load_references([url], limit=1)
+
+    assert loaded[0][:3] == (b"safe-reference", "source.jpg", "image/jpeg")
+    assert calls == [url]
+
+
+def test_reference_download_never_downgrades_https_or_uses_domain_session(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def pinned(url: str, **_kwargs):
+        calls.append(url)
+        raise media_module.MediaProcessingError("TLS certificate verification failed")
+
+    monkeypatch.setattr(media_module, "_download_pinned_public_image", pinned)
+    monkeypatch.setattr(
+        media_module._SESSION,
+        "get",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("requests hostname transport is forbidden")
+        ),
+    )
+
+    with pytest.raises(media_module.MediaProcessingError, match="TLS certificate"):
+        media_module._download_reference_image("https://reference.example.test/source.jpg")
+
+    assert calls == ["https://reference.example.test/source.jpg"]
+
+
 def test_prime_references_uses_existing_safe_single_flight_cache(monkeypatch) -> None:
     calls = 0
 

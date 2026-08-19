@@ -707,14 +707,19 @@ class ProductProcessingService:
         source_type: str,
         max_products: int = 0,
         workspace_id: str = "local",
+        *,
+        prepared_rows: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        if not content:
-            raise ValueError("uploaded product file is empty")
-        rows = read_product_workbook(filename, content)
-        selected = rows[: max_products or None]
+        preview = (
+            {"rows": [dict(row) for row in prepared_rows]}
+            if prepared_rows is not None
+            else self.preview_workbook_import(filename, content, max_products=max_products)
+        )
+        selected = preview["rows"]
         drafts: list[dict[str, Any]] = []
         skipped = 0
-        for row in selected:
+        for source_row in selected:
+            row = dict(source_row)
             row.update({"source_type": source_type, "source_filename": filename})
             draft, created = self.create_draft(row, workspace_id=workspace_id)
             if created:
@@ -727,6 +732,25 @@ class ProductProcessingService:
             "ids": [draft["id"] for draft in drafts],
             "drafts": drafts,
             "filename": filename,
+        }
+
+    def preview_workbook_import(
+        self,
+        filename: str,
+        content: bytes,
+        *,
+        max_products: int = 0,
+    ) -> dict[str, Any]:
+        """Parse/count a workbook without creating drafts, files, or tasks."""
+
+        if not content:
+            raise ValueError("uploaded product file is empty")
+        rows = read_product_workbook(filename, content)
+        selected = [dict(row) for row in rows[: max_products or None]]
+        return {
+            "filename": filename,
+            "processable_count": len(selected),
+            "rows": selected,
         }
 
     def intake_daily_selection(self, run: DailySelectionRun) -> dict[str, Any]:
@@ -1250,29 +1274,14 @@ class ProductProcessingService:
         if max_products:
             draft_ids = draft_ids[:max_products]
         with self._submission_lock:
-            existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
+            existing = self._existing_task_for_submission(
+                payload,
+                idempotency_key=idempotency_key,
+                workspace_id=workspace_id,
+                request_billing_account=request_billing_account,
+                remote_token=remote_token,
+            )
             if existing is not None:
-                existing_settings = (
-                    existing.get("settings") if isinstance(existing.get("settings"), dict) else {}
-                )
-                existing_billing = (
-                    existing_settings.get("_billing")
-                    if isinstance(existing_settings.get("_billing"), dict)
-                    else {}
-                )
-                existing_billing_account = self._text(existing_billing.get("account_id"))
-                if (existing_billing_account or request_billing_account) and (
-                    not existing_billing_account
-                    or not request_billing_account
-                    or existing_billing_account != request_billing_account
-                ):
-                    raise ProductProcessingNotFound("product processing task not found")
-                if (
-                    existing_billing_account
-                    and remote_token
-                    and existing["status"] not in {"completed", "failed", "partial_failure"}
-                ):
-                    self._task_remote_tokens[int(existing["id"])] = remote_token
                 return self._task_response(existing, "重复提交已返回原任务")
             drafts = self.repository.get_drafts(draft_ids, workspace_id=workspace_id)
             missing = sorted(set(draft_ids) - {draft["id"] for draft in drafts})
@@ -1311,6 +1320,52 @@ class ProductProcessingService:
             return {**self._task_response(task, "任务已提交，正在后台处理"), "async_mode": True}
         completed = self._execute_task(task["id"], workspace_id)
         return self._task_response(completed, "草稿池预检已完成" if preflight_only else "产品处理任务已完成")
+
+    def _existing_task_for_submission(
+        self,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None,
+        workspace_id: str,
+        request_billing_account: str | None = None,
+        remote_token: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return an idempotent task only after the shared billing-owner gate."""
+
+        existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
+        if existing is None:
+            return None
+        billing = payload.get("_billing") if isinstance(payload.get("_billing"), dict) else {}
+        request_account = self._text(
+            request_billing_account if request_billing_account is not None else billing.get("account_id")
+        )
+        existing_settings = (
+            existing.get("settings") if isinstance(existing.get("settings"), dict) else {}
+        )
+        existing_billing = (
+            existing_settings.get("_billing")
+            if isinstance(existing_settings.get("_billing"), dict)
+            else {}
+        )
+        existing_account = self._text(existing_billing.get("account_id"))
+        if (existing_account or request_account) and (
+            not existing_account
+            or not request_account
+            or existing_account != request_account
+        ):
+            raise ProductProcessingNotFound("product processing task not found")
+        token = self._text(
+            remote_token
+            if remote_token is not None
+            else billing.get("remote_token") or payload.get("remote_token")
+        )
+        if (
+            existing_account
+            and token
+            and existing["status"] not in {"completed", "failed", "partial_failure"}
+        ):
+            self._task_remote_tokens[int(existing["id"])] = token
+        return existing
 
     def _launch_background_execute(self, task_id: int, workspace_id: str) -> bool:
         """后台线程执行任务，立即返回让前端轮询实时进度。"""
@@ -2014,15 +2069,34 @@ class ProductProcessingService:
         final_billing_check: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         with self._submission_lock:
-            existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
+            existing = self._existing_task_for_submission(
+                form,
+                idempotency_key=idempotency_key,
+                workspace_id=workspace_id,
+            )
             if existing is not None:
                 return self._task_response(existing, "重复提交已返回原任务")
+            preview = self.preview_workbook_import(
+                filename,
+                content,
+                max_products=int(form.get("max_products") or 0),
+            )
+            if not preview["processable_count"]:
+                raise ValueError("workbook did not contain any processable drafts")
+            if final_billing_check is not None:
+                final_billing_check(
+                    {
+                        **form,
+                        "draft_ids": list(range(1, int(preview["processable_count"]) + 1)),
+                    }
+                )
             imported = self.import_workbook(
                 filename,
                 content,
                 self._text(form.get("source_type")) or "excel",
                 int(form.get("max_products") or 0),
                 workspace_id,
+                prepared_rows=preview["rows"],
             )
             if not imported["ids"]:
                 raise ValueError("workbook did not create any processable drafts")
@@ -2031,8 +2105,6 @@ class ProductProcessingService:
                 "draft_ids": imported["ids"],
                 "title": form.get("title") or "产品处理任务-Excel 导入",
             }
-            if final_billing_check is not None:
-                final_billing_check(payload)
             return self.process_drafts(payload, idempotency_key=idempotency_key, workspace_id=workspace_id)
 
     def process_single(
@@ -2046,7 +2118,11 @@ class ProductProcessingService:
         workspace_id: str = "local",
     ) -> dict[str, Any]:
         with self._submission_lock:
-            existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
+            existing = self._existing_task_for_submission(
+                form,
+                idempotency_key=idempotency_key,
+                workspace_id=workspace_id,
+            )
             if existing is not None:
                 return self._task_response(existing, "重复提交已返回原任务")
             draft, _ = self.create_draft(
