@@ -1110,14 +1110,6 @@ class ProductImageProcessor:
                 path = Path(value)
                 references.append((path.read_bytes(), path.name, mimetypes.guess_type(path.name)[0] or "image/jpeg"))
             else:
-                if not is_safe_external_url(value):
-                    detail = "reference URL is not a safe public HTTP(S) URL"
-                    if not references:
-                        raise MediaProcessingError(
-                            f"required first reference image failed ({detail})"
-                        )
-                    errors.append(detail)
-                    continue
                 try:
                     content, content_type = self._download_reference_image_cached(value)
                 except (requests.RequestException, MediaProcessingError) as exc:
