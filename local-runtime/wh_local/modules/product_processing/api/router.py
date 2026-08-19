@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
+from ....customer.contracts import CustomerAuthRejected, CustomerAuthUnavailable
 from ....customer.local_session import LocalSessionService
 from ....customer.remote_client import CustomerAuthClient
 from ....session import Actor, actor_from_authorization
@@ -693,9 +694,7 @@ def _attach_billing_context_and_require_points(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "server billing session is unavailable",
         )
-    summary = remote_customer_auth.billing_summary(remote_token)
-    wallet = summary.get("wallet") if isinstance(summary.get("wallet"), dict) else {}
-    available = int(wallet.get("available_points") or 0)
+    available = _remote_available_points(remote_customer_auth, remote_token)
     if available < estimated_points:
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
@@ -712,6 +711,53 @@ def _attach_billing_context_and_require_points(
         "estimated_points": estimated_points,
         "pricing_version": "product-processing-fixed-test-v1",
     }
+
+
+def _remote_available_points(
+    remote_customer_auth: CustomerAuthClient,
+    remote_token: str,
+) -> int:
+    try:
+        summary = remote_customer_auth.billing_summary(remote_token)
+    except CustomerAuthUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except CustomerAuthRejected as exc:
+        remote_status = getattr(exc, "status_code", None)
+        if type(remote_status) is int and 400 <= remote_status < 500:
+            raise HTTPException(remote_status, str(getattr(exc, "message", exc))) from exc
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "remote billing service returned an invalid error status",
+        ) from exc
+    except PermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "remote billing service returned an invalid response",
+        ) from exc
+
+    if not isinstance(summary, dict):
+        _raise_invalid_remote_wallet_summary()
+    wallet = summary.get("wallet")
+    if not isinstance(wallet, dict) or "available_points" not in wallet:
+        _raise_invalid_remote_wallet_summary()
+    raw_available = wallet.get("available_points")
+    if type(raw_available) is int:
+        return raw_available
+    if isinstance(raw_available, str):
+        normalized = raw_available.strip()
+        digits = normalized[1:] if normalized.startswith("-") else normalized
+        if digits.isdigit():
+            return int(normalized)
+    _raise_invalid_remote_wallet_summary()
+
+
+def _raise_invalid_remote_wallet_summary() -> NoReturn:
+    raise HTTPException(
+        status.HTTP_502_BAD_GATEWAY,
+        "remote billing service returned an invalid wallet summary",
+    )
 
 
 def _remote_token(request: Request, sessions: LocalSessionService | None) -> str:
