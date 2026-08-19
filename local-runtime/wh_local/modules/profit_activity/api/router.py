@@ -118,7 +118,10 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
     @router.post("/filter-runs", status_code=status.HTTP_201_CREATED)
     def run_filter(body: FilterRequest, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.filter", database_path)
-        run, decision_items = service.run_filter(**body.model_dump(), actor=actor, include_workspace_shared=actor_has_permission(actor, "profit_activity.company_read", database_path))
+        try:
+            run, decision_items = service.run_filter(**body.model_dump(), actor=actor, include_workspace_shared=actor_has_permission(actor, "profit_activity.company_read", database_path))
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
         return _run_response(run, decision_items)
 
     @router.get("/filter-runs/{run_id}")

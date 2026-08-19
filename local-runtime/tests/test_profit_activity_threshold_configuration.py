@@ -5,7 +5,11 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from wh_local.config import default_config
+from wh_local.modules.profit_activity.api.router import create_profit_activity_router
 from wh_local.modules.profit_activity.domain.engine import ProfitValidationError
 from wh_local.modules.profit_activity.domain.models import ProfitSettings
 from wh_local.modules.profit_activity.infrastructure.database import create_database
@@ -151,5 +155,26 @@ def test_unconfigured_thresholds_block_filter_entry_points(tmp_path: Path) -> No
             service.run_filter("US", None)
         with pytest.raises(ProfitValidationError, match="activity_threshold_not_configured"):
             service.start_activity_filter(b"not-read", "activity.xlsx", "US")
+    finally:
+        service.close()
+
+
+def test_filter_run_api_rejects_unconfigured_thresholds_without_creating_run(tmp_path: Path) -> None:
+    database = create_database(tmp_path / "filter-api.sqlite3")
+    repository = ProfitActivityRepository(database.sessions)
+    service = ProfitActivityService(repository, database)
+    app = FastAPI()
+    app.include_router(create_profit_activity_router(service))
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        response = client.post(
+            "/profit-activity/filter-runs",
+            json={},
+            headers={"Authorization": f"Bearer {default_config().dev_admin_token}"},
+        )
+
+        assert repository.get_activity_run(1) is None
+        assert response.status_code == 400
+        assert response.json() == {"detail": "activity_threshold_not_configured"}
     finally:
         service.close()
