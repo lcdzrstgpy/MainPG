@@ -545,7 +545,7 @@ def test_workbook_rechecks_reserve_points_after_real_import_count(
         assert [response.status_code for response in responses] == [402, 402]
         assert all("150" in response.json()["detail"] for response in responses)
         assert counts() == before == (0, False, set())
-        assert remote.tokens == ["remote-session"] * 2
+        assert remote.tokens == ["remote-session"] * 4
     finally:
         getattr(service, "_dimension_canvas_service").close()
         database.dispose()

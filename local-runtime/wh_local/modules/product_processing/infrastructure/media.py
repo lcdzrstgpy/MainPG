@@ -29,7 +29,6 @@ from urllib.parse import urlsplit
 
 import requests
 
-from ....data_collection.public_image_fetch import resolve_public_image_addresses
 from ..domain.policy import is_safe_external_url, resolve_safe_external_url
 from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
 from .grid_layout import (
@@ -158,14 +157,8 @@ def _download_pinned_public_image(
 ) -> tuple[bytes, str]:
     """Resolve once, pin the connection, reject redirects, and bound the body."""
 
-    def hardened_getaddrinfo(hostname: str, port: int, **_kwargs: Any) -> list[tuple[Any, ...]]:
-        return [
-            (0, socket.SOCK_STREAM, 0, "", (address, port))
-            for address in resolve_public_image_addresses(hostname, port)
-        ]
-
     try:
-        resolved = resolve_safe_external_url(url, resolver=hardened_getaddrinfo)
+        resolved = resolve_safe_external_url(url)
     except ValueError as exc:
         raise MediaProcessingError("provider result URL is not a safe public URL") from exc
     if resolved is None:
@@ -1117,6 +1110,14 @@ class ProductImageProcessor:
                 path = Path(value)
                 references.append((path.read_bytes(), path.name, mimetypes.guess_type(path.name)[0] or "image/jpeg"))
             else:
+                if not is_safe_external_url(value):
+                    detail = "reference URL is not a safe public HTTP(S) URL"
+                    if not references:
+                        raise MediaProcessingError(
+                            f"required first reference image failed ({detail})"
+                        )
+                    errors.append(detail)
+                    continue
                 try:
                     content, content_type = self._download_reference_image_cached(value)
                 except (requests.RequestException, MediaProcessingError) as exc:
@@ -1288,10 +1289,7 @@ class ProductImageProcessor:
         except MediaProcessingError:
             raise
         except requests.RequestException as exc:
-            raise MediaProcessingError(
-                "server image gateway is temporarily unavailable",
-                status_class="gateway_unavailable",
-            ) from exc
+            raise MediaProcessingError("server image gateway is temporarily unavailable") from exc
         finally:
             if response is not None:
                 response.close()
