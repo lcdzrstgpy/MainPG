@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from ....customer.contracts import (
     CustomerAuthRejected,
     CustomerAuthUnavailable,
+    CustomerBillingPermissionError,
     CustomerBillingProtocolError,
 )
 from ....customer.local_session import LocalSessionService
@@ -776,7 +777,7 @@ def _call(function, *args, **kwargs):
             status.HTTP_502_BAD_GATEWAY,
             "remote billing service returned an invalid error status",
         ) from exc
-    except PermissionError as exc:
+    except CustomerBillingPermissionError as exc:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "remote billing session was rejected",
@@ -891,7 +892,7 @@ def _remote_available_points(
             status.HTTP_502_BAD_GATEWAY,
             "remote billing service returned an invalid error status",
         ) from exc
-    except PermissionError as exc:
+    except CustomerBillingPermissionError as exc:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "remote billing session was rejected",

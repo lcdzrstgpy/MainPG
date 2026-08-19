@@ -597,6 +597,35 @@ def test_malformed_or_non_reserved_reservation_never_enters_gateway_context(
     assert service._reserved_usage_ids(task["id"], item["item_id"]) == {}
 
 
+@pytest.mark.parametrize("returned_feature", [None, "product_processing.image_grid_2k"])
+def test_reservation_requires_the_exact_requested_feature(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returned_feature: str | None,
+) -> None:
+    service = _service(tmp_path)
+    task, item = _task_with_item(service)
+    service._task_remote_tokens[task["id"]] = "remote-token"
+
+    class InvalidFeatureReserve(RecordingBillingClient):
+        def reserve_ai_usage(self, token: str, payload: dict[str, Any]) -> dict[str, Any]:
+            response = super().reserve_ai_usage(token, payload)
+            if returned_feature is None:
+                response["usage"].pop("feature_key")
+            else:
+                response["usage"]["feature_key"] = returned_feature
+            return response
+
+    _install_remote(monkeypatch, InvalidFeatureReserve())
+
+    with pytest.raises(CustomerBillingProtocolError):
+        service._reserve_product_processing_item_usage(
+            task["id"], item["item_id"], task["settings"]
+        )
+
+    assert service._reserved_usage_ids(task["id"], item["item_id"]) == {}
+
+
 def test_remote_reserve_failure_persists_only_stable_ledger_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -654,6 +683,74 @@ def test_malformed_settlement_persists_stable_protocol_error(
     attempts = service.repository.product_billing_attempts(task_id=task["id"])
     assert attempts[0]["last_error"] == "remote billing service returned an invalid response"
     assert "remote-token" not in json.dumps(attempts)
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "invalid_response"),
+    [
+        ("success", {"usage": {"status": "succeeded"}}),
+        ("failure", {"usage_id": "use-other", "status": "failed"}),
+        (
+            "reconcile",
+            {
+                "usage_id": "use-other",
+                "status": "failed",
+                "usage": {"usage_id": "use-text", "status": "failed"},
+            },
+        ),
+    ],
+)
+def test_settlement_requires_exact_usage_id_and_preserves_pending_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+    invalid_response: dict[str, Any],
+) -> None:
+    service = _service(tmp_path, file_database=True)
+    task, item = _task_with_item(service)
+    service._task_remote_tokens[task["id"]] = "remote-token"
+
+    class InvalidUsageSettlement(RecordingBillingClient):
+        def settle_ai_usage_success(
+            self, token: str, usage: str, payload: dict[str, Any]
+        ) -> dict[str, Any]:
+            self.succeeded.append((token, usage))
+            return invalid_response
+
+        def settle_ai_usage_failure(
+            self, token: str, usage: str, payload: dict[str, Any]
+        ) -> dict[str, Any]:
+            self.failed.append((token, usage, str(payload.get("error_message") or "")))
+            return invalid_response
+
+    _install_remote(monkeypatch, InvalidUsageSettlement())
+    usage_ids = service._reserve_product_processing_item_usage(
+        task["id"], item["item_id"], task["settings"]
+    )
+    assert usage_ids == {"text": "use-text"}
+
+    with pytest.raises(CustomerBillingProtocolError):
+        if entrypoint == "success":
+            service._settle_product_processing_item_success(
+                task["id"], item["item_id"], task["settings"], {}
+            )
+        elif entrypoint == "failure":
+            service._settle_product_processing_item_failure_for_item(
+                task["id"], item["item_id"], {"reason": "business failure"}
+            )
+        else:
+            attempt = service.repository.product_billing_attempts(task_id=task["id"])[0]
+            service.repository.mark_product_billing_desired_outcome(
+                attempt["id"], desired_outcome="failed", error_message="interrupted"
+            )
+            service.reconcile_product_billing(task["id"], "fresh-token")
+
+    attempts = service.repository.product_billing_attempts(task_id=task["id"])
+    assert attempts[0]["settlement_state"] == "settlement_pending"
+    assert attempts[0]["last_error"] == "remote billing service returned an invalid response"
+    assert service._reserved_usage_ids(task["id"], item["item_id"]) == {
+        "text": "use-text"
+    }
 
 
 def test_restart_reconciles_completed_item_pending_settlement_with_fresh_token(
@@ -722,8 +819,11 @@ def test_terminal_task_entrypoint_reconciles_completed_item_pending_settlement(
     assert persisted[0]["settlement_state"] == "settled_succeeded"
 
 
-def test_recovery_rejects_reservation_for_a_different_feature(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("returned_feature", [None, "product_processing.image_grid_2k"])
+def test_recovery_requires_the_exact_requested_feature(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returned_feature: str | None,
 ) -> None:
     service = _service(tmp_path, file_database=True)
     task, item = _task_with_item(service)
@@ -739,7 +839,10 @@ def test_recovery_rejects_reservation_for_a_different_feature(
     class WrongFeatureReserve(RecordingBillingClient):
         def reserve_ai_usage(self, token: str, payload: dict[str, Any]) -> dict[str, Any]:
             response = super().reserve_ai_usage(token, payload)
-            response["usage"]["feature_key"] = "product_processing.image_grid_2k"
+            if returned_feature is None:
+                response["usage"].pop("feature_key")
+            else:
+                response["usage"]["feature_key"] = returned_feature
             return response
 
     _install_remote(monkeypatch, WrongFeatureReserve())

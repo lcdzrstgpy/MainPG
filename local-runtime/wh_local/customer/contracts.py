@@ -31,6 +31,13 @@ class CustomerBillingProtocolError(CustomerAuthError):
         super().__init__("remote billing service returned an invalid response")
 
 
+class CustomerBillingPermissionError(PermissionError):
+    """Raised when the remote billing service rejects the current session."""
+
+    def __init__(self) -> None:
+        super().__init__("remote billing session was rejected")
+
+
 @dataclass(frozen=True)
 class CustomerAuthResult:
     """Normalized successful login response from the platform auth service."""

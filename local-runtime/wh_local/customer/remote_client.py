@@ -10,6 +10,7 @@ from .contracts import (
     CustomerAuthRejected,
     CustomerAuthResult,
     CustomerAuthUnavailable,
+    CustomerBillingPermissionError,
     CustomerBillingProtocolError,
 )
 
@@ -69,7 +70,7 @@ class CustomerAuthClient:
 
     def billing_summary(self, remote_token: str) -> dict[str, Any]:
         if not remote_token:
-            raise PermissionError("remote customer session is missing")
+            raise CustomerBillingPermissionError()
         return self._billing_result(
             self._get,
             "/api/customer/billing/summary",
@@ -78,7 +79,7 @@ class CustomerAuthClient:
 
     def create_topup_order(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not remote_token:
-            raise PermissionError("remote customer session is missing")
+            raise CustomerBillingPermissionError()
         return self._post(
             "/api/customer/billing/topup-orders",
             payload,
@@ -96,7 +97,7 @@ class CustomerAuthClient:
 
     def _billing_post(self, path: str, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not remote_token:
-            raise PermissionError("remote customer session is missing")
+            raise CustomerBillingPermissionError()
         return self._billing_result(
             self._post,
             path,
@@ -110,7 +111,7 @@ class CustomerAuthClient:
             response = function(*args, **kwargs)
         except CustomerBillingProtocolError:
             raise
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeError) as exc:
             raise CustomerBillingProtocolError() from exc
         except CustomerAuthUnavailable as exc:
             raise CustomerAuthUnavailable("remote billing service is unavailable") from exc
@@ -119,8 +120,10 @@ class CustomerAuthClient:
             if type(status_code) is not int or not 400 <= status_code < 500:
                 raise CustomerBillingProtocolError() from exc
             raise CustomerAuthRejected(status_code, "remote billing request was rejected") from exc
+        except CustomerBillingPermissionError:
+            raise
         except PermissionError as exc:
-            raise PermissionError("remote billing session was rejected") from exc
+            raise CustomerBillingPermissionError() from exc
         if not isinstance(response, dict):
             raise CustomerBillingProtocolError()
         return response

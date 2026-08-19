@@ -15,6 +15,7 @@ from wh_local.customer.auth_service import _email_code_digest
 from wh_local.customer.contracts import (
     CustomerAuthRejected,
     CustomerAuthResult,
+    CustomerBillingPermissionError,
     CustomerBillingProtocolError,
 )
 from wh_local.customer.local_session import LocalSessionService
@@ -27,6 +28,10 @@ _EMAIL_CODE_SECRET = "billing-test-secret-that-is-at-least-32-chars"
 
 def test_remote_billing_protocol_has_a_dedicated_error_contract() -> None:
     assert hasattr(customer_contracts, "CustomerBillingProtocolError")
+
+
+def test_remote_billing_permission_has_a_dedicated_error_contract() -> None:
+    assert hasattr(customer_contracts, "CustomerBillingPermissionError")
 
 
 def _register_and_login(client: TestClient, db_path: Path, *, username: str = "billing_user") -> str:
@@ -272,7 +277,10 @@ def test_remote_client_posts_authoritative_usage_with_remote_session(monkeypatch
     assert client.reserve_ai_usage("remote-token", {"feature_key": "product_processing.text"}) == {"ok": True}
     assert client.settle_ai_usage_success("remote-token", "use_123", {}) == {"ok": True}
     assert client.settle_ai_usage_failure("remote-token", "use_123", {}) == {"ok": True}
-    with pytest.raises(PermissionError, match="remote customer session is missing"):
+    with pytest.raises(
+        CustomerBillingPermissionError,
+        match="remote billing session was rejected",
+    ):
         client.reserve_ai_usage("", {})
 
     assert [item[0] for item in posted] == [
@@ -326,6 +334,46 @@ def test_remote_billing_client_rejects_malformed_remote_error_status(monkeypatch
         client.reserve_ai_usage("remote-token", {"feature_key": "product_processing.text"})
 
     assert str(caught.value) == "remote billing service returned an invalid response"
+
+
+def test_remote_billing_client_normalizes_non_utf8_http_response(monkeypatch) -> None:
+    client = CustomerAuthClient("https://customer.example.test")
+
+    class NonUtf8Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        @staticmethod
+        def read() -> bytes:
+            return b"\xff\xfe\xfd"
+
+    monkeypatch.setattr(
+        "wh_local.customer.remote_client.urlopen",
+        lambda *_args, **_kwargs: NonUtf8Response(),
+    )
+
+    with pytest.raises(CustomerBillingProtocolError) as caught:
+        client.reserve_ai_usage("remote-token", {"feature_key": "product_processing.text"})
+
+    assert str(caught.value) == "remote billing service returned an invalid response"
+
+
+def test_remote_billing_client_normalizes_remote_permission_error(monkeypatch) -> None:
+    client = CustomerAuthClient("https://customer.example.test")
+    monkeypatch.setattr(
+        client,
+        "_post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("remote secret")),
+    )
+
+    with pytest.raises(CustomerBillingPermissionError) as caught:
+        client.reserve_ai_usage("remote-token", {"feature_key": "product_processing.text"})
+
+    assert str(caught.value) == "remote billing session was rejected"
+    assert "remote secret" not in str(caught.value)
 
 
 def _customer_router_client(remote_auth: object) -> tuple[TestClient, str]:

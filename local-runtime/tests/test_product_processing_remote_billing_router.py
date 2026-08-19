@@ -10,6 +10,7 @@ from starlette.requests import Request
 
 from wh_local.customer.contracts import (
     CustomerBillingProtocolError,
+    CustomerBillingPermissionError,
     CustomerAuthRejected,
     CustomerAuthResult,
     CustomerAuthUnavailable,
@@ -174,7 +175,7 @@ def test_billing_context_rejects_invalid_customer_rejection_status(bad_status: o
 
 
 def test_billing_context_maps_remote_permission_error_to_403() -> None:
-    remote = RaisingRemoteBilling(PermissionError("remote session rejected remote-secret"))
+    remote = RaisingRemoteBilling(CustomerBillingPermissionError())
 
     with pytest.raises(HTTPException) as caught:
         product_processing_router._attach_billing_context_and_require_points(
@@ -195,7 +196,7 @@ def test_billing_context_maps_remote_permission_error_to_403() -> None:
         (CustomerBillingProtocolError(), 502, "remote billing service returned an invalid response"),
         (CustomerAuthUnavailable("remote-token-sensitive"), 503, "remote billing service is unavailable"),
         (CustomerAuthRejected(402, "remote-token-sensitive"), 402, "remote billing request was rejected"),
-        (PermissionError("remote-token-sensitive"), 403, "remote billing session was rejected"),
+        (CustomerBillingPermissionError(), 403, "remote billing session was rejected"),
     ],
 )
 def test_call_never_echoes_remote_billing_exception_content(
@@ -222,6 +223,17 @@ def test_call_keeps_ordinary_local_value_error_as_400() -> None:
 
     assert caught.value.status_code == 400
     assert caught.value.detail == "local input is invalid"
+
+
+def test_call_does_not_misclassify_ordinary_local_permission_error_as_billing() -> None:
+    error = PermissionError("ordinary local permission failure")
+
+    with pytest.raises(PermissionError) as caught:
+        product_processing_router._call(
+            lambda: (_ for _ in ()).throw(error)
+        )
+
+    assert caught.value is error
 
 
 @pytest.mark.parametrize(

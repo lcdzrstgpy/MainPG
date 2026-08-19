@@ -21,6 +21,7 @@ from wh_local.config import default_config
 from wh_local.customer.contracts import (
     CustomerAuthRejected,
     CustomerAuthUnavailable,
+    CustomerBillingPermissionError,
     CustomerBillingProtocolError,
 )
 from wh_local.customer.remote_client import CustomerAuthClient
@@ -1474,7 +1475,7 @@ class ProductProcessingService:
         if billed:
             token = self._text(remote_token)
             if not token:
-                raise PermissionError("remote billing session is missing")
+                raise CustomerBillingPermissionError()
             with self._submission_lock:
                 self._task_remote_tokens[task_id] = token
         self.repository.set_task_status(task_id, "queued", workspace_id)
@@ -1505,7 +1506,7 @@ class ProductProcessingService:
             return {**self._task_response(task), "message": "当前任务没有可重试的失败商品"}
         token = self._text(remote_token)
         if billed and not token:
-            raise PermissionError("remote billing session is missing")
+            raise CustomerBillingPermissionError()
         self.repository.reset_failed_items(task_id, workspace_id, draft_ids=draft_ids)
         task = self._require_task(task_id, workspace_id)
         if token:
@@ -2362,7 +2363,7 @@ class ProductProcessingService:
                     usage,
                     {"metadata": metadata},
                 )
-                remote_status = self._remote_settlement_status(response)
+                remote_status = self._remote_settlement_status(response, usage)
                 if remote_status != "succeeded":
                     raise CustomerBillingProtocolError()
             except Exception as exc:
@@ -2466,7 +2467,7 @@ class ProductProcessingService:
                 value = self._text(usage.get("usage_id")) if isinstance(usage, dict) else ""
                 status_value = self._text(usage.get("status")) if isinstance(usage, dict) else ""
                 response_feature = self._text(usage.get("feature_key")) if isinstance(usage, dict) else ""
-                if not value or status_value != "reserved" or (response_feature and response_feature != feature_key):
+                if not value or status_value != "reserved" or response_feature != feature_key:
                     raise CustomerBillingProtocolError()
                 if attempt is not None:
                     self.repository.record_product_billing_reservation(
@@ -2498,7 +2499,7 @@ class ProductProcessingService:
                     CustomerBillingProtocolError,
                     CustomerAuthUnavailable,
                     CustomerAuthRejected,
-                    PermissionError,
+                    CustomerBillingPermissionError,
                 ),
             ):
                 raise error
@@ -2570,8 +2571,8 @@ class ProductProcessingService:
             if type(status_code) is int and 400 <= status_code < 500:
                 return CustomerAuthRejected(status_code, "remote billing request was rejected")
             return CustomerBillingProtocolError()
-        if isinstance(error, PermissionError):
-            return PermissionError("remote billing session was rejected")
+        if isinstance(error, CustomerBillingPermissionError):
+            return CustomerBillingPermissionError()
         return error
 
     def _product_billing_attempt_for_usage(
@@ -2594,10 +2595,27 @@ class ProductProcessingService:
         )
 
     @staticmethod
-    def _remote_settlement_status(response: Any) -> str:
+    def _remote_settlement_status(response: Any, expected_usage_id: str) -> str:
         if not isinstance(response, dict):
-            return ""
-        usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+            raise CustomerBillingProtocolError()
+        usage_value = response.get("usage")
+        if "usage" in response and not isinstance(usage_value, dict):
+            raise CustomerBillingProtocolError()
+        usage = usage_value if isinstance(usage_value, dict) else {}
+        returned_ids: list[str] = []
+        if "usage" in response:
+            nested_usage_id = str(usage.get("usage_id") or "").strip()
+            if not nested_usage_id:
+                raise CustomerBillingProtocolError()
+            returned_ids.append(nested_usage_id)
+        if "usage_id" in response:
+            top_level_usage_id = str(response.get("usage_id") or "").strip()
+            if not top_level_usage_id:
+                raise CustomerBillingProtocolError()
+            returned_ids.append(top_level_usage_id)
+        expected = str(expected_usage_id or "").strip()
+        if not expected or not returned_ids or any(value != expected for value in returned_ids):
+            raise CustomerBillingProtocolError()
         return str(usage.get("status") or response.get("status") or "").strip()
 
     def _settle_product_processing_item_failure_for_item(
@@ -2628,7 +2646,7 @@ class ProductProcessingService:
                     usage,
                     {"error_message": self._task_safe_error_reason(task_id, RuntimeError(reason))[:500]},
                 )
-                remote_status = self._remote_settlement_status(response)
+                remote_status = self._remote_settlement_status(response, usage)
                 if remote_status not in {"succeeded", "failed"}:
                     raise CustomerBillingProtocolError()
             except Exception as exc:
@@ -2658,7 +2676,7 @@ class ProductProcessingService:
         """Recover durable reservations/settlements using a freshly authenticated token."""
         token = self._text(remote_token)
         if not token:
-            raise PermissionError("remote billing session is missing")
+            raise CustomerBillingPermissionError()
         client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
         reconciled = 0
         pending = self.repository.product_billing_attempts(task_id=task_id, pending_only=True)
@@ -2688,7 +2706,7 @@ class ProductProcessingService:
                     if (
                         not usage_id
                         or status_value != "reserved"
-                        or (response_feature and response_feature != current["feature_key"])
+                        or response_feature != current["feature_key"]
                     ):
                         raise CustomerBillingProtocolError()
                     current = self.repository.record_product_billing_reservation(
@@ -2709,7 +2727,7 @@ class ProductProcessingService:
                         usage_id,
                         {"error_message": self._text(current.get("last_error")) or "interrupted billing attempt"},
                     )
-                remote_status = self._remote_settlement_status(response)
+                remote_status = self._remote_settlement_status(response, usage_id)
                 valid_statuses = {"succeeded"} if desired == "succeeded" else {"succeeded", "failed"}
                 if remote_status not in valid_statuses:
                     raise CustomerBillingProtocolError()
