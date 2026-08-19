@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { workspaceModules } from "./modules.ts";
+import { workspaceModules, workspacePageModules } from "./modules.ts";
 
 test("sidebar navigation groups the product workflow around its AI history entry", () => {
   const productWorkflow = workspaceModules.find((module) => module.id === "product_workflow");
@@ -31,4 +31,14 @@ test("sidebar navigation prioritizes price and source matching in its default so
     "利润活动",
     "货源关联产品库",
   ]);
+});
+
+test("AI service is not registered in user-visible workspace navigation or pages", () => {
+  assert.equal(workspaceModules.some((module) => module.id === "ai_service"), false);
+  assert.equal(workspacePageModules.some((module) => module.id === "ai_service"), false);
+});
+
+test("system configuration is not a standalone workspace module", () => {
+  assert.equal(workspaceModules.some((module) => module.id === "basic_settings"), false);
+  assert.equal(workspacePageModules.some((module) => module.id === "basic_settings"), false);
 });

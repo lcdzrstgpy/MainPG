@@ -20,7 +20,6 @@ const fallbackConfig: SystemConfigResponse = {
     reference_model: "gpt-image-2-2k",
   },
   backup_image: { base_url: "", model: "", reference_model: "" },
-  cos: { bucket: "", region: "ap-guangzhou" },
   limits: {
     text_workers: 30,
     image_workers: 15,
@@ -39,14 +38,10 @@ const fallbackConfig: SystemConfigResponse = {
 export function toSaveBasicSettingsPayload(form: BasicSettingsForm): SaveBasicSettingsPayload {
   const textModelApiKey = form.textModelApiKey.trim();
   const imageModelApiKey = form.imageModelApiKey.trim();
-  const cosSecretId = form.cosSecretId.trim();
-  const cosSecretKey = form.cosSecretKey.trim();
 
   return {
     ...(textModelApiKey ? { textModelApiKey } : {}),
     ...(imageModelApiKey ? { imageModelApiKey } : {}),
-    ...(cosSecretId ? { cosSecretId } : {}),
-    ...(cosSecretKey ? { cosSecretKey } : {}),
   };
 }
 
@@ -92,17 +87,8 @@ export function createSystemConfigUpdatePayload(
       model: base.backup_image.model,
       reference_model: base.backup_image.reference_model,
     },
-    cos: {
-      bucket: form.cosBucket.trim() || base.cos.bucket,
-      region: form.cosRegion.trim() || base.cos.region,
-      ...(payload.cosSecretId ? { secret_id: payload.cosSecretId } : {}),
-      ...(payload.cosSecretKey ? { secret_key: payload.cosSecretKey } : {}),
-    },
     limits: base.limits,
-    updates: {
-      ...base.updates,
-      public_base_url: form.publicMediaBaseUrl.trim() || base.updates.public_base_url,
-    },
+    updates: base.updates,
   };
 }
 

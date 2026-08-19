@@ -9,9 +9,7 @@ export type WorkspaceModuleId =
   | "profit_activity"
   | "profit_activity_products"
   | "price_verification"
-  | "ai_service"
-  | "personal_center"
-  | "basic_settings";
+  | "personal_center";
 
 export type WorkspaceNavigationGroupId = "product_workflow" | "sourcing_workflow";
 
@@ -104,28 +102,12 @@ const productLibrary: WorkspaceModule = {
   description: "查询、批量管理和下载利润活动产品档案",
 };
 
-const aiService: WorkspaceModule = {
-  id: "ai_service",
-  label: "AI 服务",
-  icon: "",
-  iconClass: "iconfont icon-robot",
-  description: "本地多模态商品创作与图片辅助",
-};
-
 const personalCenter: WorkspaceModule = {
   id: "personal_center",
   label: "个人中心",
   icon: "",
   iconClass: "iconfont icon-user",
   description: "账户资料、积分钱包、充值订单与服务器账本安全状态",
-};
-
-const basicSettings: WorkspaceModule = {
-  id: "basic_settings",
-  label: "系统配置",
-  icon: "",
-  iconClass: "iconfont icon-setting",
-  description: "管理本地运行参数和服务配置",
 };
 
 const collectionPanel: WorkspaceModule = {
@@ -166,9 +148,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     defaultChildId: "price_verification",
     children: [priceVerification, profitActivity, productLibrary],
   },
-  aiService,
   personalCenter,
-  basicSettings,
 ];
 
 export const workspacePageModules: WorkspaceModule[] = [
@@ -182,7 +162,5 @@ export const workspacePageModules: WorkspaceModule[] = [
   priceVerification,
   profitActivity,
   productLibrary,
-  aiService,
   personalCenter,
-  basicSettings,
 ];
