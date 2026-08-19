@@ -74,7 +74,7 @@ class DoubaoArkClient:
             body = bytes(response.content)
         except (requests.RequestException, TimeoutError, OSError) as exc:
             raise DoubaoArkError(
-                "Doubao Ark provider is temporarily unreachable",
+                "server text-and-vision gateway is temporarily unreachable",
                 error_kind="transient",
                 retryable=True,
             ) from exc
@@ -91,7 +91,7 @@ class DoubaoArkClient:
             else:
                 error_kind, retryable = "provider_http", False
             raise DoubaoArkError(
-                f"Doubao Ark provider returned HTTP {status_code}",
+                f"server text-and-vision gateway returned HTTP {status_code}",
                 error_kind=error_kind,
                 retryable=retryable,
                 status_code=status_code,
@@ -102,13 +102,13 @@ class DoubaoArkClient:
             content = payload["choices"][0]["message"]["content"]
         except (UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
             raise DoubaoArkError(
-                "Doubao Ark provider returned an invalid response",
+                "server text-and-vision gateway returned an invalid response",
                 error_kind="invalid_response",
                 retryable=False,
             ) from exc
         if not isinstance(content, str) or not content.strip():
             raise DoubaoArkError(
-                "Doubao Ark provider returned empty content",
+                "server text-and-vision gateway returned empty content",
                 error_kind="invalid_response",
                 retryable=False,
             )

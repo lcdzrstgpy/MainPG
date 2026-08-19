@@ -3129,12 +3129,12 @@ class ProductProcessingService:
                                 )
                             ),
                             "operator_hint": (
-                                "豆包识图配置或权限不可用，请检查服务端 ARK_API_KEY 与模型权限后重试"
+                                "服务器主体识别服务未就绪；请检查服务器文本/识图路由、密钥与余额后重试"
                                 if configuration_error
                                 else (
-                                    "豆包返回的主体解释不符合结构化合同；已阻止 GPT 文案和生图"
+                                    "服务器主体识别结果不符合结构化合同；已阻止后续文案和生图"
                                     if identity_error
-                                    else "豆包主体识别暂时不可用；未调用 GPT 文案或生图，请稍后重试"
+                                    else "服务器主体识别暂时不可用；未调用后续文本或生图，请稍后重试"
                                 )
                             ),
                             "retryable": True,
