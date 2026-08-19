@@ -26,6 +26,7 @@ from ..db import init_db, transaction
 from ..billing import reserve_ai_usage, settle_ai_usage_failure, settle_ai_usage_success
 from ..session import Actor
 from .auth_service import SQLiteCustomerAuthService
+from .credential_vault import CredentialVaultError, active_secret
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
 
@@ -180,7 +181,10 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         messages = _validated_chat_messages(payload.get("messages"))
         if str(payload.get("model") or TEXT_MODEL).strip() != TEXT_MODEL:
             raise HTTPException(status_code=400, detail="unsupported server-managed text model")
-        api_key = str(os.environ.get("WH_TEXT_API_KEY") or "").strip()
+        try:
+            api_key = str(active_secret("text") or os.environ.get("WH_TEXT_API_KEY") or "").strip()
+        except CredentialVaultError as exc:
+            raise HTTPException(status_code=503, detail="server text credential vault is unavailable") from exc
         if not api_key:
             raise HTTPException(status_code=503, detail="server text credential is not configured")
         return _server_text_chat(api_key, messages)
@@ -201,7 +205,10 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="image reference URL is invalid")
         if size not in {"auto", "1:1", "3:2", "2:3", "16:9", "9:16", "4:3", "3:4", "21:9", "9:21", "1:3", "3:1", "2:1", "1:2"}:
             raise HTTPException(status_code=400, detail="image size is invalid")
-        api_key = str(os.environ.get("WH_WUYIN_IMAGE_API_KEY") or "").strip()
+        try:
+            api_key = str(active_secret("image") or os.environ.get("WH_WUYIN_IMAGE_API_KEY") or "").strip()
+        except CredentialVaultError as exc:
+            raise HTTPException(status_code=503, detail="server image credential vault is unavailable") from exc
         if not api_key:
             raise HTTPException(status_code=503, detail="server image credential is not configured")
         try:
