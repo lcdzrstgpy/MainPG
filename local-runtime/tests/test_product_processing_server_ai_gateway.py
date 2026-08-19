@@ -13,7 +13,8 @@ from fastapi.testclient import TestClient
 from wh_local.customer import auth_server
 from wh_local.customer.auth_server import create_auth_app
 from wh_local.customer.auth_service import _email_code_digest
-from wh_local.db import transaction
+from wh_local.db import init_db, transaction
+from wh_local.modules.basic_settings import service as basic_settings_service
 from wh_local.modules.product_processing.server_ai_proxy import remote_token, server_ai_context, usage_id
 from wh_local.modules.product_processing import provider_config
 from wh_local.modules.product_processing.infrastructure import media as media_module
@@ -275,6 +276,140 @@ def test_chat_gateway_blocks_cross_account_usage_before_provider_call(tmp_path: 
 
     assert response.status_code == 404
     assert provider_calls == 0
+
+
+def test_gateway_rejects_malicious_payload_after_invalid_usage_check(tmp_path: Path, monkeypatch) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+
+    chat = client.post("/api/customer/ai/chat", headers=headers, json={
+        "usage_id": "use_missing",
+        "messages": [{"role": "user", "content": [{"type": "tool", "payload": {"nested": "bad"}}]}],
+    })
+    image = client.post("/api/customer/ai/image", headers=headers, json={
+        "usage_id": "use_missing",
+        "prompt": "",
+        "urls": ["https://127.0.0.1/private.png"],
+    })
+
+    assert chat.status_code == 404
+    assert image.status_code == 404
+
+
+def test_failure_settlement_rejects_succeeded_gateway_request(tmp_path: Path, monkeypatch) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "product_processing.text", "success-fail")
+    monkeypatch.setenv("WH_TEXT_API_KEY", "server-secret")
+    monkeypatch.setattr(
+        auth_server.requests,
+        "post",
+        lambda *_args, **_kwargs: _Response({"choices": [{"message": {"content": "ok"}}]}),
+    )
+    assert client.post("/api/customer/ai/chat", headers=headers, json={
+        "usage_id": usage, "messages": [{"role": "user", "content": "hello"}],
+    }).status_code == 200
+
+    failed = client.post(
+        f"/api/customer/billing/usage/{usage}/fail",
+        headers=headers,
+        json={"error_message": "client claims failure"},
+    )
+
+    assert failed.status_code == 409
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT status FROM billing_ai_usage_events WHERE usage_id = ?", (usage,)
+        ).fetchone()
+    assert row["status"] == "reserved"
+
+
+def test_failure_settlement_rejects_in_progress_gateway_request(tmp_path: Path, monkeypatch) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "product_processing.text", "progress-fail")
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        account = conn.execute(
+            "SELECT account_id FROM auth_accounts WHERE username = 'gateway_user'"
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO billing_ai_gateway_requests (
+                usage_id, request_hash, account_id, feature_key, status
+            ) VALUES (?, ?, ?, 'product_processing.text', 'in_progress')
+            """,
+            (usage, "request-in-progress", account["account_id"]),
+        )
+
+    failed = client.post(
+        f"/api/customer/billing/usage/{usage}/fail",
+        headers=headers,
+        json={"error_message": "racing failure"},
+    )
+
+    assert failed.status_code == 409
+
+
+def test_failure_settlement_releases_usage_when_all_gateway_attempts_failed(tmp_path: Path, monkeypatch) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "product_processing.text", "failed-release")
+    monkeypatch.setenv("WH_TEXT_API_KEY", "server-secret")
+    monkeypatch.setattr(
+        auth_server.requests,
+        "post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(requests.Timeout("provider failed")),
+    )
+    assert client.post("/api/customer/ai/chat", headers=headers, json={
+        "usage_id": usage, "messages": [{"role": "user", "content": "hello"}],
+    }).status_code == 503
+
+    failed = client.post(
+        f"/api/customer/billing/usage/{usage}/fail",
+        headers=headers,
+        json={"error_message": "provider failed"},
+    )
+
+    assert failed.status_code == 200
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT status FROM billing_ai_usage_events WHERE usage_id = ?", (usage,)
+        ).fetchone()
+    assert row["status"] == "failed"
+
+
+def test_chat_gateway_caps_failed_same_hash_retries(tmp_path: Path, monkeypatch) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "product_processing.text", "retry-cap")
+    monkeypatch.setenv("WH_TEXT_API_KEY", "server-secret")
+    provider_calls = 0
+
+    def fail(*_args, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        raise requests.Timeout("provider failed")
+
+    monkeypatch.setattr(auth_server.requests, "post", fail)
+    payload = {"usage_id": usage, "messages": [{"role": "user", "content": "retry"}]}
+    statuses = [client.post("/api/customer/ai/chat", headers=headers, json=payload).status_code for _ in range(4)]
+
+    assert statuses == [503, 503, 503, 409]
+    assert provider_calls == 3
+
+
+def test_image_gateway_caps_failed_same_hash_retries(tmp_path: Path, monkeypatch) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "product_processing.image_grid_2k", "image-retry-cap")
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
+    provider_calls = 0
+
+    def fail(*_args, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        raise requests.Timeout("provider failed")
+
+    monkeypatch.setattr(auth_server.requests, "post", fail)
+    payload = {"usage_id": usage, "prompt": "same image", "size": "1:1"}
+    statuses = [client.post("/api/customer/ai/image", headers=headers, json=payload).status_code for _ in range(6)]
+
+    assert statuses == [503, 503, 503, 503, 503, 409]
+    assert provider_calls == 5
 
 
 def test_chat_gateway_rejects_missing_secret_wrong_feature_and_settled_usage(tmp_path: Path, monkeypatch) -> None:
@@ -605,6 +740,43 @@ def test_provider_config_is_server_managed_and_ignores_local_upstream_keys(monke
     })
     assert [item["base_url"] for item in providers] == ["server-managed-wuyin"]
     assert "local-backup-secret" not in json.dumps(providers)
+
+
+def test_provider_resolution_uses_public_and_cos_only_runtime_accessor(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "settings.sqlite3"
+    init_db(db_path)
+    with transaction(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO secret_values(scope, name, ciphertext, updated_at) VALUES (?, ?, ?, datetime('now'))",
+            [
+                ("ai", "api_key", "ai-secret-ciphertext"),
+                ("image", "api_key", "image-secret-ciphertext"),
+                ("backup_image", "api_key", "backup-secret-ciphertext"),
+                ("cos", "secret_id", "cos-id-ciphertext"),
+                ("cos", "secret_key", "cos-key-ciphertext"),
+            ],
+        )
+    decrypted: list[str] = []
+
+    def fake_decrypt(ciphertext: str) -> str:
+        decrypted.append(ciphertext)
+        if not ciphertext.startswith("cos-"):
+            raise AssertionError("AI provider secret must not be decrypted")
+        return "cos-value"
+
+    monkeypatch.setattr(basic_settings_service, "decrypt_secret", fake_decrypt)
+    monkeypatch.setattr(
+        basic_settings_service.SystemConfigService,
+        "get_runtime_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("secret runtime path called")),
+    )
+    monkeypatch.setattr(provider_config, "_system_config_db_path", str(db_path))
+
+    resolved = provider_config.resolve_ai_provider()
+
+    assert resolved["_sys_cos"]["secret_id"] == "cos-value"
+    assert resolved["_sys_cos"]["secret_key"] == "cos-value"
+    assert decrypted == ["cos-id-ciphertext", "cos-key-ciphertext"]
 
 
 def test_image_adapter_calls_platform_gateway_and_downloads_safe_result(monkeypatch) -> None:

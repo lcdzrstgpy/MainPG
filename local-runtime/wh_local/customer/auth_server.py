@@ -56,6 +56,13 @@ GATEWAY_DISTINCT_REQUEST_LIMITS = {
     "product_processing.text": 2,
     "product_processing.image_grid_2k": 13,
 }
+# Text adapters retry an identical upstream request at most three times; the
+# image generation adapter has a five-attempt outer budget.  Keep the server
+# ledger at those same bounds so a reserved usage cannot be replayed forever.
+GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS = {
+    "product_processing.text": 3,
+    "product_processing.image_grid_2k": 5,
+}
 
 
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
@@ -185,11 +192,12 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
-        _ensure_usage_owner(db_path, usage_id, str(account["account_id"]))
         settle_ai_usage_failure(
             db_path,
             usage_id,
             error_message=str(payload.get("error_message") or "AI operation failed")[:500],
+            expected_account_id=str(account["account_id"]),
+            reject_gateway_activity=True,
         )
         return {"ok": True, "usage_id": usage_id, "status": "failed"}
 
@@ -200,12 +208,21 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
         usage_id = str(payload.get("usage_id") or "")
+        _require_reserved_usage(
+            db_path,
+            usage_id=usage_id,
+            account_id=str(account["account_id"]),
+            feature_key="product_processing.text",
+        )
         messages = _validated_chat_messages(payload.get("messages"))
         if str(payload.get("model") or TEXT_MODEL).strip() != TEXT_MODEL:
             raise HTTPException(status_code=400, detail="unsupported server-managed text model")
         request_hash = _gateway_request_hash(
             {"model": TEXT_MODEL, "messages": messages}
         )
+        api_key = str(os.environ.get("WH_TEXT_API_KEY") or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=503, detail="server text credential is not configured")
         cached = _claim_gateway_request(
             db_path,
             usage_id=usage_id,
@@ -215,10 +232,6 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         )
         if cached is not None:
             return cached
-        api_key = str(os.environ.get("WH_TEXT_API_KEY") or "").strip()
-        if not api_key:
-            _fail_gateway_request(db_path, usage_id, request_hash)
-            raise HTTPException(status_code=503, detail="server text credential is not configured")
         try:
             response_payload = _sanitized_gateway_response(
                 _server_text_chat(api_key, messages),
@@ -237,6 +250,12 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
         usage_id = str(payload.get("usage_id") or "")
+        _require_reserved_usage(
+            db_path,
+            usage_id=usage_id,
+            account_id=str(account["account_id"]),
+            feature_key="product_processing.image_grid_2k",
+        )
         prompt = str(payload.get("prompt") or "").strip()
         urls = payload.get("urls") or []
         size = str(payload.get("size") or "1:1").strip().lower()
@@ -253,6 +272,9 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         request_hash = _gateway_request_hash(
             {"prompt": prompt, "size": size, "urls": urls}
         )
+        api_key = str(os.environ.get("WH_WUYIN_IMAGE_API_KEY") or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=503, detail="server image credential is not configured")
         cached = _claim_gateway_request(
             db_path,
             usage_id=usage_id,
@@ -262,10 +284,6 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         )
         if cached is not None:
             return cached
-        api_key = str(os.environ.get("WH_WUYIN_IMAGE_API_KEY") or "").strip()
-        if not api_key:
-            _fail_gateway_request(db_path, usage_id, request_hash)
-            raise HTTPException(status_code=503, detail="server image credential is not configured")
         try:
             response_payload = _server_image_request(api_key, prompt, urls, size)
             _complete_gateway_request(db_path, usage_id, request_hash, response_payload)
@@ -667,6 +685,34 @@ def _gateway_request_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _require_reserved_usage(
+    database_path: Path,
+    *,
+    usage_id: str,
+    account_id: str,
+    feature_key: str,
+) -> None:
+    """Perform the cheap authorization check before parsing attacker payloads.
+
+    The atomic claim repeats every check below while holding BEGIN IMMEDIATE;
+    this first pass is only an ordering/security gate and is not trusted for
+    concurrency correctness.
+    """
+    if not usage_id:
+        raise HTTPException(status_code=400, detail="usage_id is required")
+    with transaction(database_path) as conn:
+        usage = conn.execute(
+            "SELECT account_id, feature_key, status FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
+    if usage is None or str(usage["account_id"]) != account_id:
+        raise HTTPException(status_code=404, detail="usage event not found")
+    if str(usage["feature_key"]) != feature_key:
+        raise HTTPException(status_code=400, detail="usage feature does not match operation")
+    if str(usage["status"]) != "reserved":
+        raise HTTPException(status_code=409, detail="usage event is not reserved")
+
+
 def _claim_gateway_request(
     database_path: Path,
     *,
@@ -690,7 +736,7 @@ def _claim_gateway_request(
             raise HTTPException(status_code=409, detail="usage event is not reserved")
 
         existing = conn.execute(
-            "SELECT status, response_json FROM billing_ai_gateway_requests WHERE usage_id = ? AND request_hash = ?",
+            "SELECT status, response_json, attempt_count FROM billing_ai_gateway_requests WHERE usage_id = ? AND request_hash = ?",
             (usage_id, request_hash),
         ).fetchone()
         if existing is not None:
@@ -705,6 +751,9 @@ def _claim_gateway_request(
                 return cached
             if status == "in_progress":
                 raise HTTPException(status_code=409, detail="identical gateway request is already in progress")
+            attempt_limit = GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS[feature_key]
+            if int(existing["attempt_count"] or 0) >= attempt_limit:
+                raise HTTPException(status_code=409, detail="gateway retry limit reached for reserved usage")
             conn.execute(
                 """
                 UPDATE billing_ai_gateway_requests

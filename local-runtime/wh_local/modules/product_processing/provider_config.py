@@ -71,7 +71,7 @@ def _try_system_runtime_config() -> Any | None:
     except Exception:
         return None
     try:
-        return SystemConfigService(Path(db_path)).get_runtime_config()
+        return SystemConfigService(Path(db_path)).get_product_processing_runtime_config()
     except Exception:
         return None
 
@@ -107,12 +107,12 @@ def resolve_ai_provider() -> dict[str, Any]:
     # 解密后的 COS 配置仅作为后端内部运行时数据传给图片发布器；安全摘要不会回显它。
     sys_cos: dict[str, str] = (
         {
-            "bucket": str(sys_cfg.cos.bucket).strip(),
-            "region": str(sys_cfg.cos.region).strip(),
-            "secret_id": str(sys_cfg.cos.secret_id).strip(),
-            "secret_key": str(sys_cfg.cos.secret_key).strip(),
+            "bucket": str(getattr(sys_cfg.cos, "bucket", "")).strip(),
+            "region": str(getattr(sys_cfg.cos, "region", "")).strip(),
+            "secret_id": str(getattr(sys_cfg.cos, "secret_id", "")).strip(),
+            "secret_key": str(getattr(sys_cfg.cos, "secret_key", "")).strip(),
         }
-        if sys_cfg and sys_cfg.cos.configured
+        if sys_cfg
         else _try_system_cos_public()
     )
 

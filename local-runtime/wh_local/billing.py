@@ -255,6 +255,8 @@ def settle_ai_usage_failure(
     usage_id: str,
     *,
     error_message: str,
+    expected_account_id: str | None = None,
+    reject_gateway_activity: bool = False,
 ) -> None:
     now = _utc_now()
     with transaction(database_path) as conn:
@@ -262,8 +264,29 @@ def settle_ai_usage_failure(
             "SELECT * FROM billing_ai_usage_events WHERE usage_id = ?",
             (usage_id,),
         ).fetchone()
-        if row is None or row["status"] != "reserved":
+        if row is None:
+            if expected_account_id is not None:
+                raise HTTPException(status_code=404, detail="usage event not found")
             return
+        if expected_account_id is not None and str(row["account_id"]) != str(expected_account_id):
+            raise HTTPException(status_code=404, detail="usage event not found")
+        if row["status"] != "reserved":
+            return
+        if reject_gateway_activity:
+            active_gateway = conn.execute(
+                """
+                SELECT 1
+                FROM billing_ai_gateway_requests
+                WHERE usage_id = ? AND status IN ('in_progress', 'succeeded')
+                LIMIT 1
+                """,
+                (usage_id,),
+            ).fetchone()
+            if active_gateway is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="usage has an active or successful provider request",
+                )
         conn.execute(
             """
             UPDATE billing_wallets
