@@ -198,13 +198,26 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     TemporaryCosStore(runtime.cos).cleanup_stale()
     plugin_queue = DataCollectionPluginQueue(db_path)
     product_processing = _product_processing_service(db_path)
-    app.include_router(create_product_processing_router(product_processing))
+    app.include_router(
+        create_product_processing_router(
+            product_processing,
+            customer_sessions=customer_sessions,
+            remote_customer_auth=remote_customer_auth,
+        )
+    )
     # 后端静态图床：生成图目录对外挂载（assets/outputs → /pp-media）。
     # 配合 WH_MEDIA_BASE_URL 可把生成图转成公开 URL 写进导入表，无需 COS 凭据。
     app.mount("/pp-media", StaticFiles(directory=product_processing.assets.output_root), name="pp-media")
     _register_data_collection(app, db_path, plugin_queue, product_processing)
     profit_activity_service = _register_profit_activity(app, db_path)
-    app.include_router(create_product_processing_router(product_processing), prefix="/api")
+    app.include_router(
+        create_product_processing_router(
+            product_processing,
+            customer_sessions=customer_sessions,
+            remote_customer_auth=remote_customer_auth,
+        ),
+        prefix="/api",
+    )
 
     # 核价及货源模块
     _register_price_verification(

@@ -8,8 +8,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
-from ....config import default_config
-from ....db import transaction
+from ....customer.local_session import LocalSessionService
+from ....customer.remote_client import CustomerAuthClient
 from ....session import Actor, actor_from_authorization
 from ..dimension_canvas_service import DimensionCanvasService
 from ..infrastructure.assets import ProductProcessingAssets
@@ -44,6 +44,8 @@ def create_product_processing_router(
     *,
     database_url: str | None = None,
     assets_root: Path | None = None,
+    customer_sessions: LocalSessionService | None = None,
+    remote_customer_auth: CustomerAuthClient | None = None,
 ) -> APIRouter:
     """Create the complete local API used by the Product Processing screen."""
     owned_database = None
@@ -338,6 +340,8 @@ def create_product_processing_router(
             payload,
             actor,
             source_ref="product_processing:drafts/process",
+            remote_token=_remote_token(request, customer_sessions),
+            remote_customer_auth=remote_customer_auth,
         )
         return _call(
             service.process_drafts,
@@ -361,6 +365,8 @@ def create_product_processing_router(
                 normalized,
                 actor,
                 source_ref="product_processing:workbook",
+                remote_token=_remote_token(request, customer_sessions),
+                remote_customer_auth=remote_customer_auth,
             )
             return _call(
                 service.process_workbook,
@@ -389,6 +395,8 @@ def create_product_processing_router(
                 billing_payload,
                 actor,
                 source_ref="product_processing:single",
+                remote_token=_remote_token(request, customer_sessions),
+                remote_customer_auth=remote_customer_auth,
             )
             if "_billing" in billing_payload:
                 normalized["_billing"] = billing_payload["_billing"]
@@ -671,6 +679,8 @@ def _attach_billing_context_and_require_points(
     actor: Actor,
     *,
     source_ref: str,
+    remote_token: str,
+    remote_customer_auth: CustomerAuthClient | None,
 ) -> None:
     if bool(payload.get("preflight_only")) or bool(payload.get("category_preflight_only")):
         return
@@ -678,21 +688,14 @@ def _attach_billing_context_and_require_points(
     estimated_points = quantity * _billing_points_per_item(payload)
     if estimated_points <= 0:
         return
-    db_path = default_config().database_path
-    with transaction(db_path) as conn:
-        wallet = conn.execute(
-            """
-            SELECT points_balance, locked_points
-            FROM billing_wallets
-            WHERE account_id = ? AND workspace_id = ?
-            """,
-            (actor.id, actor.workspace_id),
-        ).fetchone()
-        available = (
-            int(wallet["points_balance"]) - int(wallet["locked_points"])
-            if wallet is not None
-            else 0
+    if remote_customer_auth is None or not remote_token:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "server billing session is unavailable",
         )
+    summary = remote_customer_auth.billing_summary(remote_token)
+    wallet = summary.get("wallet") if isinstance(summary.get("wallet"), dict) else {}
+    available = int(wallet.get("available_points") or 0)
     if available < estimated_points:
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
@@ -705,9 +708,19 @@ def _attach_billing_context_and_require_points(
         "workspace_id": actor.workspace_id,
         "workspace_code": actor.workspace_code,
         "source_ref": source_ref,
+        "remote_token": remote_token,
         "estimated_points": estimated_points,
         "pricing_version": "product-processing-fixed-test-v1",
     }
+
+
+def _remote_token(request: Request, sessions: LocalSessionService | None) -> str:
+    if sessions is None:
+        return ""
+    authorization = request.headers.get("authorization") or ""
+    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    session = sessions.store.get_session(token) if token else None
+    return str(session.remote_token or "") if session is not None else ""
 
 
 def _billing_points_per_item(payload: dict[str, Any]) -> int:
