@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import threading
 import time
@@ -675,7 +676,7 @@ def test_provider_config_uses_image_gpt_with_explicit_1k_reference_profile(monke
     assert provider["premium_image_size"] == "4096x4096"
 
 
-def test_provider_config_routes_saved_image_key_to_wuyin(monkeypatch) -> None:
+def test_provider_config_ignores_saved_image_key_for_server_managed_wuyin(monkeypatch) -> None:
     runtime_config = SimpleNamespace(
         text_ai=SimpleNamespace(base_url="https://text.example/v1", api_key="text-key"),
         image_ai=SimpleNamespace(
@@ -694,7 +695,9 @@ def test_provider_config_routes_saved_image_key_to_wuyin(monkeypatch) -> None:
 
     provider = provider_config_module.resolve_ai_provider()
 
-    assert provider["_sys_image_ai"]["base_url"] == "https://api.wuyinkeji.com"
+    assert provider["_sys_image_ai"]["base_url"] == "server-managed-wuyin"
+    assert provider["_sys_image_ai"]["api_key"] == "server-managed"
+    assert "image-key" not in json.dumps(provider)
 
 
 def test_b_grid_quality_failure_never_triggers_a_paid_repair(monkeypatch) -> None:

@@ -8,7 +8,12 @@ import json
 import os
 from pathlib import Path
 import secrets
+import threading
+import time
 from typing import Any
+from urllib.parse import urlsplit
+
+import requests
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
@@ -33,7 +38,11 @@ BILLING_TOPUP_PRODUCTS = {
     "points_100": {"amount_cents": 10000, "points": 10000, "label": "100 元积分包"},
 }
 PAYMENT_PROVIDERS = {"wechat", "alipay"}
-TEXT_BILLING_MODEL = "gpt-5.6-terra"
+TEXT_CHAT_URL = "https://api.aicoming.top/v1/chat/completions"
+TEXT_MODEL = "gpt-5.6-terra"
+WUYIN_IMAGE_SUBMIT_URL = "https://api.wuyinkeji.com/api/async/image_gpt"
+WUYIN_IMAGE_DETAIL_URL = "https://api.wuyinkeji.com/api/async/detail"
+_TEXT_GATEWAY_SEMAPHORE = threading.BoundedSemaphore(value=4)
 
 
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
@@ -170,6 +179,85 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             error_message=str(payload.get("error_message") or "AI operation failed")[:500],
         )
         return {"ok": True, "usage_id": usage_id, "status": "failed"}
+
+    @app.post("/api/customer/ai/chat")
+    def server_managed_ai_chat(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        _require_reserved_usage(
+            db_path,
+            str(payload.get("usage_id") or ""),
+            str(account["account_id"]),
+            "product_processing.text",
+        )
+        messages = _validated_chat_messages(payload.get("messages"))
+        if str(payload.get("model") or TEXT_MODEL).strip() != TEXT_MODEL:
+            raise HTTPException(status_code=400, detail="unsupported server-managed text model")
+        api_key = str(os.environ.get("WH_TEXT_API_KEY") or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=503, detail="server text credential is not configured")
+        return _server_text_chat(api_key, messages)
+
+    @app.post("/api/customer/ai/image")
+    def server_managed_ai_image(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        _require_reserved_usage(
+            db_path,
+            str(payload.get("usage_id") or ""),
+            str(account["account_id"]),
+            "product_processing.image_grid_2k",
+        )
+        prompt = str(payload.get("prompt") or "").strip()
+        urls = payload.get("urls") or []
+        size = str(payload.get("size") or "1:1").strip().lower()
+        if not 1 <= len(prompt) <= 24_000 or not isinstance(urls, list) or len(urls) > 4:
+            raise HTTPException(status_code=400, detail="image request is invalid")
+        urls = [str(value).strip() for value in urls]
+        if any(not _safe_provider_image_url(value) for value in urls):
+            raise HTTPException(status_code=400, detail="image reference URL is invalid")
+        if size not in {
+            "auto", "1:1", "3:2", "2:3", "16:9", "9:16", "4:3", "3:4",
+            "21:9", "9:21", "1:3", "3:1", "2:1", "1:2",
+        }:
+            raise HTTPException(status_code=400, detail="image size is invalid")
+        api_key = str(os.environ.get("WH_WUYIN_IMAGE_API_KEY") or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=503, detail="server image credential is not configured")
+        response: requests.Response | None = None
+        try:
+            response = requests.post(
+                WUYIN_IMAGE_SUBMIT_URL,
+                params={"key": api_key},
+                headers={"Authorization": api_key, "Content-Type": "application/json"},
+                json={"prompt": prompt, "size": size, **({"urls": urls} if urls else {})},
+                timeout=35,
+                allow_redirects=False,
+            )
+            submitted = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise HTTPException(status_code=503, detail="server image request failed") from exc
+        finally:
+            if response is not None:
+                response.close()
+        data = submitted.get("data") if isinstance(submitted, dict) else None
+        task_id = str(data.get("id") or "").strip() if isinstance(data, dict) else ""
+        if (
+            not isinstance(submitted, dict)
+            or not 200 <= int(response.status_code) < 300
+            or int(submitted.get("code") or 0) != 200
+            or not task_id
+        ):
+            raise HTTPException(status_code=502, detail="server image provider rejected the request")
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "result_url": _poll_server_wuyin(api_key, task_id),
+        }
 
     @app.post("/api/customer/billing/payment-callback/{provider}")
     def billing_payment_callback(provider: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -550,8 +638,148 @@ def _fixed_usage_provider(feature_key: str) -> tuple[str, str]:
     return (
         ("wuyin", "image_gpt")
         if feature_key == "product_processing.image_grid_2k"
-        else ("aicoming", TEXT_BILLING_MODEL)
+        else ("aicoming", TEXT_MODEL)
     )
+
+
+def _require_reserved_usage(
+    database_path: Path,
+    usage_id: str,
+    account_id: str,
+    expected_feature: str,
+) -> None:
+    if not usage_id:
+        raise HTTPException(status_code=400, detail="usage_id is required")
+    with transaction(database_path) as conn:
+        row = conn.execute(
+            "SELECT account_id, feature_key, status FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
+    if row is None or str(row["account_id"]) != account_id:
+        raise HTTPException(status_code=404, detail="usage event not found")
+    if str(row["feature_key"]) != expected_feature:
+        raise HTTPException(status_code=400, detail="usage feature does not match operation")
+    if str(row["status"]) != "reserved":
+        raise HTTPException(status_code=409, detail="usage event is not reserved")
+
+
+def _validated_chat_messages(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= 8:
+        raise HTTPException(status_code=400, detail="chat messages are invalid")
+    if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="chat request is too large")
+    messages: list[dict[str, Any]] = []
+    for message in value:
+        if (
+            not isinstance(message, dict)
+            or str(message.get("role") or "") not in {"system", "user", "assistant"}
+        ):
+            raise HTTPException(status_code=400, detail="chat message is invalid")
+        content = message.get("content")
+        if not isinstance(content, (str, list)):
+            raise HTTPException(status_code=400, detail="chat message content is invalid")
+        messages.append({"role": str(message["role"]), "content": content})
+    return messages
+
+
+def _safe_provider_image_url(value: str) -> bool:
+    parsed = urlsplit(str(value or "").strip())
+    return parsed.scheme == "https" and bool(parsed.netloc) and len(str(value)) <= 2048
+
+
+def _server_text_chat(api_key: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    if not _TEXT_GATEWAY_SEMAPHORE.acquire(timeout=300):
+        raise HTTPException(status_code=503, detail="server text request queue timed out")
+    try:
+        response: requests.Response | None = None
+        try:
+            response = requests.post(
+                TEXT_CHAT_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": TEXT_MODEL, "messages": messages, "temperature": 0.7},
+                timeout=240,
+                allow_redirects=False,
+            )
+            status_code = int(response.status_code)
+            decoded = response.json() if 200 <= status_code < 300 else None
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=503, detail="server text request failed") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail="server text provider returned invalid JSON") from exc
+        finally:
+            if response is not None:
+                response.close()
+        if not 200 <= status_code < 300:
+            if 300 <= status_code < 400:
+                raise HTTPException(status_code=502, detail="server text provider redirected the request")
+            if status_code == 429 or status_code >= 500:
+                raise HTTPException(status_code=503, detail="server text provider is temporarily unavailable")
+            raise HTTPException(status_code=status_code, detail="server text provider rejected the request")
+        if not isinstance(decoded, dict):
+            raise HTTPException(status_code=502, detail="server text provider returned an invalid response")
+        return decoded
+    finally:
+        _TEXT_GATEWAY_SEMAPHORE.release()
+
+
+def _first_provider_image_url(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip() if _safe_provider_image_url(value) else ""
+    if isinstance(value, dict):
+        for key in (
+            "url", "image_url", "image", "src", "href", "result", "results",
+            "images", "urls", "output", "outputs",
+        ):
+            found = _first_provider_image_url(value.get(key))
+            if found:
+                return found
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            found = _first_provider_image_url(item)
+            if found:
+                return found
+    return ""
+
+
+def _poll_server_wuyin(api_key: str, task_id: str) -> str:
+    deadline = time.monotonic() + 620
+    while time.monotonic() < deadline:
+        time.sleep(3)
+        response: requests.Response | None = None
+        try:
+            response = requests.get(
+                WUYIN_IMAGE_DETAIL_URL,
+                params={"key": api_key, "id": task_id},
+                headers={"Authorization": api_key},
+                timeout=35,
+                allow_redirects=False,
+            )
+            payload = response.json()
+        except (requests.RequestException, ValueError):
+            continue
+        finally:
+            if response is not None:
+                response.close()
+        if not isinstance(payload, dict):
+            continue
+        code = int(payload.get("code") or 0)
+        if code and code != 200:
+            raise HTTPException(status_code=502, detail="server image provider task failed")
+        data = payload.get("data") or {}
+        result_url = _first_provider_image_url(data) or _first_provider_image_url(payload)
+        if result_url:
+            return result_url
+        status = (
+            str(data.get("status") or payload.get("status") or "").lower()
+            if isinstance(data, dict)
+            else ""
+        )
+        if status in {"3", "4", "5", "fail", "failed", "error", "cancelled", "canceled"}:
+            raise HTTPException(status_code=502, detail="server image provider task failed")
+    raise HTTPException(status_code=504, detail="server image provider timed out")
 
 
 def _safe_int(value: Any) -> int:

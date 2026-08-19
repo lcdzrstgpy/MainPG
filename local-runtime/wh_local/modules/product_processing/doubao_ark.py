@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 import requests
+
+from .server_ai_proxy import gateway_base_url, remote_token, usage_id
 
 
 API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
@@ -15,6 +16,7 @@ REQUEST_TIMEOUT_SECONDS = 60.0
 USER_AGENT = "MainPG-Doubao/1.0"
 
 _HTTP_SESSION = requests.Session()
+_HTTP_SESSION.trust_env = False
 
 
 class DoubaoArkError(RuntimeError):
@@ -37,28 +39,35 @@ class DoubaoArkError(RuntimeError):
 
 
 class DoubaoArkClient:
-    """One-attempt OpenAI-compatible chat client for the fixed Ark model."""
+    """One-attempt chat client routed through the platform gateway."""
 
     def __init__(self) -> None:
-        self.api_key = str(os.environ.get("ARK_API_KEY") or "").strip()
-        if not self.api_key:
+        self.platform_token = remote_token()
+        self.usage_id = usage_id("text")
+        if not self.platform_token or not self.usage_id:
             raise DoubaoArkError(
-                "Doubao Ark API key is not configured",
+                "server-managed text usage is not reserved",
                 error_kind="configuration",
                 retryable=False,
             )
+        # Compatibility for existing diagnostics; never an upstream credential.
+        self.api_key = "server-managed"
 
     def complete(self, messages: list[dict[str, Any]]) -> str:
         response: requests.Response | None = None
         try:
             response = _HTTP_SESSION.post(
-                API_URL,
+                f"{gateway_base_url()}/api/customer/ai/chat",
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
+                    "Authorization": f"Bearer {self.platform_token}",
                     "Content-Type": "application/json",
                     "User-Agent": USER_AGENT,
                 },
-                json={"model": MODEL_ID, "messages": messages},
+                json={
+                    "model": "gpt-5.6-terra",
+                    "messages": messages,
+                    "usage_id": self.usage_id,
+                },
                 timeout=REQUEST_TIMEOUT_SECONDS,
                 allow_redirects=False,
             )
