@@ -78,6 +78,20 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def reserve_ai_usage(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._billing_post("/api/customer/billing/usage/reserve", remote_token, payload)
+
+    def settle_ai_usage_success(self, remote_token: str, usage_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._billing_post(f"/api/customer/billing/usage/{usage_id}/succeed", remote_token, payload)
+
+    def settle_ai_usage_failure(self, remote_token: str, usage_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._billing_post(f"/api/customer/billing/usage/{usage_id}/fail", remote_token, payload)
+
+    def _billing_post(self, path: str, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not remote_token:
+            raise PermissionError("remote customer session is missing")
+        return self._post(path, payload, headers={"Authorization": f"Bearer {remote_token}"})
+
     def _post(self, path: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
         if not self.base_url:
             raise CustomerAuthUnavailable("customer auth service is not configured")

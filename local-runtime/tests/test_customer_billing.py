@@ -2,23 +2,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from wh_local.customer.auth_server import create_auth_app
+from wh_local.customer.remote_client import CustomerAuthClient
 from wh_local.customer.auth_service import _email_code_digest
 from wh_local.db import transaction
 
 _EMAIL_CODE_SECRET = "billing-test-secret-that-is-at-least-32-chars"
 
 
-def _register_and_login(client: TestClient, db_path: Path) -> str:
-    verification_id = "ver_billing_test"
-    email = "billing@example.test"
+def _register_and_login(client: TestClient, db_path: Path, *, username: str = "billing_user") -> str:
+    verification_id = f"ver_{username}"
+    email = f"{username}@example.test"
     email_code = "654321"
     with transaction(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO invitation_codes (code, max_uses, used_count, expires_at, created_by, created_at)
+            INSERT OR IGNORE INTO invitation_codes (code, max_uses, used_count, expires_at, created_by, created_at)
             VALUES ('MAINPG-BILL-TEST', 10, 0, '', 'test', datetime('now'))
             """
         )
@@ -43,7 +45,7 @@ def _register_and_login(client: TestClient, db_path: Path) -> str:
     response = client.post(
         "/api/customer/register",
         json={
-            "username": "billing_user",
+            "username": username,
             "email": email,
             "email_code": email_code,
             "password": "StrongPassword123!",
@@ -54,10 +56,27 @@ def _register_and_login(client: TestClient, db_path: Path) -> str:
     assert response.status_code == 200
     login = client.post(
         "/api/customer/login",
-        json={"username": "billing_user", "password": "StrongPassword123!"},
+        json={"username": username, "password": "StrongPassword123!"},
     )
     assert login.status_code == 200
     return login.json()["token"]
+
+
+def _grant_points(db_path: Path, points: int = 1000, *, username: str = "billing_user") -> str:
+    with transaction(db_path) as conn:
+        account = conn.execute(
+            "SELECT account_id, workspace_id FROM auth_accounts WHERE username = ?",
+            (username,),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO billing_wallets (account_id, workspace_id, points_balance)
+            VALUES (?, ?, ?)
+            ON CONFLICT(account_id) DO UPDATE SET points_balance = excluded.points_balance
+            """,
+            (account["account_id"], account["workspace_id"], points),
+        )
+    return str(account["account_id"])
 
 
 def test_billing_summary_requires_server_session(tmp_path: Path) -> None:
@@ -118,3 +137,131 @@ def test_unverified_payment_callback_fails_closed(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 503
+
+
+def test_ai_usage_api_reserves_settles_and_reuses_idempotency(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "auth.sqlite3"
+    monkeypatch.setenv("WH_EMAIL_CODE_SECRET", _EMAIL_CODE_SECRET)
+    monkeypatch.setattr(
+        "wh_local.customer.auth_server.TencentCloudSESEmailSender.from_env",
+        lambda: object(),
+    )
+    client = TestClient(create_auth_app(db_path))
+    token = _register_and_login(client, db_path)
+    account_id = _grant_points(db_path)
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "feature_key": "product_processing.text",
+        "idempotency_key": "product-processing-api-test-0001",
+        "source_ref": "test:item",
+        "metadata": {"task_id": 1, "api_key": "must-not-persist"},
+    }
+
+    first = client.post("/api/customer/billing/usage/reserve", json=payload, headers=headers)
+    repeated = client.post("/api/customer/billing/usage/reserve", json=payload, headers=headers)
+
+    assert first.status_code == 200
+    assert repeated.json()["usage"]["usage_id"] == first.json()["usage"]["usage_id"]
+
+    usage_id = first.json()["usage"]["usage_id"]
+    settled = client.post(
+        f"/api/customer/billing/usage/{usage_id}/succeed",
+        json={"metadata": {"task_id": 1}},
+        headers=headers,
+    )
+    assert settled.status_code == 200
+    assert settled.json()["usage"]["status"] == "succeeded"
+
+    with transaction(db_path) as conn:
+        usage = conn.execute(
+            "SELECT account_id, metadata_json FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
+    assert usage["account_id"] == account_id
+    assert "api_key" not in usage["metadata_json"]
+
+
+def test_ai_usage_api_rejects_invalid_reservation_payload(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "auth.sqlite3"
+    monkeypatch.setenv("WH_EMAIL_CODE_SECRET", _EMAIL_CODE_SECRET)
+    monkeypatch.setattr("wh_local.customer.auth_server.TencentCloudSESEmailSender.from_env", lambda: object())
+    client = TestClient(create_auth_app(db_path))
+    token = _register_and_login(client, db_path)
+    _grant_points(db_path)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    unsupported = client.post(
+        "/api/customer/billing/usage/reserve",
+        json={"feature_key": "unsupported", "idempotency_key": "valid-idempotency-key"},
+        headers=headers,
+    )
+    short_key = client.post(
+        "/api/customer/billing/usage/reserve",
+        json={"feature_key": "product_processing.text", "idempotency_key": "too-short"},
+        headers=headers,
+    )
+
+    assert unsupported.status_code == 400
+    assert short_key.status_code == 400
+
+
+def test_ai_usage_api_hides_other_accounts_usage_and_releases_failed_hold(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "auth.sqlite3"
+    monkeypatch.setenv("WH_EMAIL_CODE_SECRET", _EMAIL_CODE_SECRET)
+    monkeypatch.setattr("wh_local.customer.auth_server.TencentCloudSESEmailSender.from_env", lambda: object())
+    client = TestClient(create_auth_app(db_path))
+    owner_token = _register_and_login(client, db_path)
+    owner_id = _grant_points(db_path, points=1000)
+    other_token = _register_and_login(client, db_path, username="other_billing_user")
+    headers = {"Authorization": f"Bearer {owner_token}"}
+    reservation = client.post(
+        "/api/customer/billing/usage/reserve",
+        json={"feature_key": "product_processing.text", "idempotency_key": "other-account-usage-0001"},
+        headers=headers,
+    )
+    assert reservation.status_code == 200
+    usage_id = reservation.json()["usage"]["usage_id"]
+
+    other_settlement = client.post(
+        f"/api/customer/billing/usage/{usage_id}/succeed",
+        json={},
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+    failed = client.post(
+        f"/api/customer/billing/usage/{usage_id}/fail",
+        json={"error_message": "provider rejected request"},
+        headers=headers,
+    )
+
+    assert other_settlement.status_code == 404
+    assert failed.status_code == 200
+    with transaction(db_path) as conn:
+        wallet = conn.execute(
+            "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
+            (owner_id,),
+        ).fetchone()
+    assert dict(wallet) == {"points_balance": 1000, "locked_points": 0}
+
+
+def test_remote_client_posts_authoritative_usage_with_remote_session(monkeypatch) -> None:
+    client = CustomerAuthClient()
+    posted: list[tuple[str, dict[str, object], dict[str, str] | None]] = []
+
+    def fake_post(path: str, payload: dict[str, object], headers: dict[str, str] | None = None) -> dict[str, object]:
+        posted.append((path, payload, headers))
+        return {"ok": True}
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    assert client.reserve_ai_usage("remote-token", {"feature_key": "product_processing.text"}) == {"ok": True}
+    assert client.settle_ai_usage_success("remote-token", "use_123", {}) == {"ok": True}
+    assert client.settle_ai_usage_failure("remote-token", "use_123", {}) == {"ok": True}
+    with pytest.raises(PermissionError, match="remote customer session is missing"):
+        client.reserve_ai_usage("", {})
+
+    assert [item[0] for item in posted] == [
+        "/api/customer/billing/usage/reserve",
+        "/api/customer/billing/usage/use_123/succeed",
+        "/api/customer/billing/usage/use_123/fail",
+    ]
+    assert all(item[2] == {"Authorization": "Bearer remote-token"} for item in posted)

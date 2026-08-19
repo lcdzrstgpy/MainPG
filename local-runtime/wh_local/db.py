@@ -916,7 +916,7 @@ def init_db(database_path: Path) -> None:
 def transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
     conn = connect(database_path)
     try:
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         yield conn
         conn.commit()
     except Exception:

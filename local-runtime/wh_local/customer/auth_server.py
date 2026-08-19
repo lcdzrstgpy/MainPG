@@ -16,8 +16,10 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, Header, HTTPException, Request
 
+from ..billing import reserve_ai_usage, settle_ai_usage_failure, settle_ai_usage_success
 from ..config import default_config
 from ..db import init_db, transaction
+from ..session import Actor
 from .auth_service import SQLiteCustomerAuthService
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
@@ -31,6 +33,7 @@ BILLING_TOPUP_PRODUCTS = {
     "points_100": {"amount_cents": 10000, "points": 10000, "label": "100 元积分包"},
 }
 PAYMENT_PROVIDERS = {"wechat", "alipay"}
+TEXT_BILLING_MODEL = "gpt-5.6-terra"
 
 
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
@@ -100,6 +103,73 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
         return _create_topup_order(db_path, account, payload)
+
+    @app.post("/api/customer/billing/usage/reserve")
+    def reserve_billing_usage(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        feature_key = str(payload.get("feature_key") or "").strip()
+        idempotency_key = str(payload.get("idempotency_key") or "").strip()
+        if feature_key not in {"product_processing.text", "product_processing.image_grid_2k"}:
+            raise HTTPException(status_code=400, detail="unsupported billing feature")
+        if not 16 <= len(idempotency_key) <= 200:
+            raise HTTPException(status_code=400, detail="idempotency_key is required")
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        return {
+            "ok": True,
+            "usage": reserve_ai_usage(
+                db_path,
+                _billing_actor(account),
+                feature_key=feature_key,
+                idempotency_key=idempotency_key,
+                quantity=1,
+                source_ref=str(payload.get("source_ref") or "")[:200],
+                metadata=_safe_billing_metadata(metadata),
+            ),
+        }
+
+    @app.post("/api/customer/billing/usage/{usage_id}/succeed")
+    def settle_billing_usage_success(
+        usage_id: str,
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        _ensure_usage_owner(db_path, usage_id, str(account["account_id"]))
+        feature_key = _usage_feature(db_path, usage_id)
+        provider, model = _fixed_usage_provider(feature_key)
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        return {
+            "ok": True,
+            "usage": settle_ai_usage_success(
+                db_path,
+                usage_id,
+                provider=provider,
+                model=model,
+                provider_task_id=str(payload.get("provider_task_id") or "")[:240],
+                input_tokens=_safe_int(payload.get("input_tokens")),
+                output_tokens=_safe_int(payload.get("output_tokens")),
+                total_tokens=_safe_int(payload.get("total_tokens")),
+                metadata=_safe_billing_metadata(metadata),
+            ),
+        }
+
+    @app.post("/api/customer/billing/usage/{usage_id}/fail")
+    def settle_billing_usage_failure(
+        usage_id: str,
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        _ensure_usage_owner(db_path, usage_id, str(account["account_id"]))
+        settle_ai_usage_failure(
+            db_path,
+            usage_id,
+            error_message=str(payload.get("error_message") or "AI operation failed")[:500],
+        )
+        return {"ok": True, "usage_id": usage_id, "status": "failed"}
 
     @app.post("/api/customer/billing/payment-callback/{provider}")
     def billing_payment_callback(provider: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -443,6 +513,62 @@ def _required_account(database_path: Path, authorization: str | None) -> dict[st
     if str(account.get("account_status") or "").lower() not in {"active", ""}:
         raise HTTPException(status_code=403, detail="customer account is not active")
     return account
+
+
+def _billing_actor(account: dict[str, Any]) -> Actor:
+    return Actor(
+        id=str(account["account_id"]),
+        username=str(account.get("username") or account["account_id"]),
+        role=str(account.get("role") or "operator"),
+        workspace_id=str(account.get("workspace_id") or "default"),
+        workspace_code=str(account.get("workspace_code") or "default"),
+    )
+
+
+def _ensure_usage_owner(database_path: Path, usage_id: str, account_id: str) -> None:
+    with transaction(database_path) as conn:
+        row = conn.execute(
+            "SELECT account_id FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
+    if row is None or str(row["account_id"]) != account_id:
+        raise HTTPException(status_code=404, detail="usage event not found")
+
+
+def _usage_feature(database_path: Path, usage_id: str) -> str:
+    with transaction(database_path) as conn:
+        row = conn.execute(
+            "SELECT feature_key FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="usage event not found")
+    return str(row["feature_key"])
+
+
+def _fixed_usage_provider(feature_key: str) -> tuple[str, str]:
+    return (
+        ("wuyin", "image_gpt")
+        if feature_key == "product_processing.image_grid_2k"
+        else ("aicoming", TEXT_BILLING_MODEL)
+    )
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return max(0, min(int(value or 0), 100_000_000))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_billing_metadata(value: dict[str, Any]) -> dict[str, Any]:
+    blocked = {"api_key", "authorization", "token", "password", "secret"}
+    return {
+        str(key)[:64]: (str(item)[:500] if isinstance(item, str) else item)
+        for key, item in value.items()
+        if str(key).lower() not in blocked
+        and isinstance(item, (str, int, float, bool, type(None)))
+    }
 
 
 def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, Any]:
