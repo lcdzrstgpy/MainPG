@@ -3,6 +3,7 @@ import type {
   DailySelectionConfirmResult,
   DailySelectionRun,
   DailySelectionRunSummary,
+  DailySelectionTaskStatus,
   SkuRepullState,
 } from "../types";
 import { apiRequest } from "../../../shared/api/apiClient";
@@ -12,6 +13,17 @@ export function collectByCriteria(criteria: DailySelectionCriteria): Promise<Dai
     method: "POST",
     body: JSON.stringify(criteria),
   });
+}
+
+export function startCollectionTask(criteria: DailySelectionCriteria): Promise<DailySelectionTaskStatus> {
+  return apiRequest("/desktop/daily-selection/preview-tasks", {
+    method: "POST",
+    body: JSON.stringify(criteria),
+  });
+}
+
+export function getCollectionTask(taskId: string): Promise<DailySelectionTaskStatus> {
+  return apiRequest(`/desktop/daily-selection/preview-tasks/${encodeURIComponent(taskId)}`);
 }
 
 export function listSelectionRuns(): Promise<DailySelectionRunSummary[]> {

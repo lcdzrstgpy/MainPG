@@ -98,6 +98,17 @@ class RunIdFactory(Protocol):
     def __call__(self) -> str: ...
 
 
+class CollectionProgressCallback(Protocol):
+    def __call__(
+        self,
+        stage: str,
+        progress: int,
+        completed: int,
+        total: int,
+        message: str,
+    ) -> None: ...
+
+
 class DailySelectionService:
     """The sole orchestration entry point used by FastAPI routes."""
 
@@ -144,19 +155,29 @@ class DailySelectionService:
         )
 
     def preview(
-        self, *, actor: DailySelectionActor, request: Mapping[str, Any]
+        self,
+        *,
+        actor: DailySelectionActor,
+        request: Mapping[str, Any],
+        progress_callback: CollectionProgressCallback | None = None,
     ) -> DailySelectionRun:
+        _report_progress(progress_callback, "preparing", 1, 0, 1, "正在准备采集")
         criteria = DailySelectionCriteria.model_validate(dict(request))
         provider_config = self._provider_config_resolver(actor)
         if not isinstance(provider_config, Mapping):
             raise TypeError("provider config resolver must return a mapping")
         provider = self._build_provider(provider_config)
+        _report_progress(progress_callback, "preparing", 4, 1, 1, "采集服务已就绪")
         collected = DailySelectionCollector(
             workspace_id=actor.workspace_id,
             provider=provider,
             budget=self._budget,
             provider_credentials=provider_config,
+            progress_callback=lambda stage, completed, total: _report_collection_progress(
+                progress_callback, stage, completed, total
+            ),
         ).collect(criteria)
+        _report_progress(progress_callback, "filtering", 92, 0, 1, "正在筛选候选商品")
         filtered = filter_and_score_candidates(
             tuple(item.candidate for item in collected.candidates), criteria
         )
@@ -164,7 +185,8 @@ class DailySelectionService:
             *filtered.candidates[: criteria.target_count],
             *filtered.filtered,
         )
-        return self._repository.save_run(
+        _report_progress(progress_callback, "saving", 97, 0, 1, "正在保存采集结果")
+        run = self._repository.save_run(
             workspace_id=actor.workspace_id,
             run_id=self._run_id_factory(),
             status=collected.status,
@@ -172,6 +194,8 @@ class DailySelectionService:
             criteria=criteria,
             metadata=_collection_metadata(collected),
         )
+        _report_progress(progress_callback, "saving", 99, 1, 1, "采集结果已保存")
+        return run
 
     def preview_from_1688_link(
         self, *, actor: DailySelectionActor, request: Mapping[str, Any]
@@ -459,3 +483,31 @@ def _collection_metadata(collected: Any) -> Mapping[str, Any]:
             "api_calls_remaining": budget.api_calls_remaining,
         },
     }
+
+
+def _report_collection_progress(
+    callback: CollectionProgressCallback | None,
+    stage: str,
+    completed: int,
+    total: int,
+) -> None:
+    ratio = 1.0 if total <= 0 else min(1.0, max(0.0, completed / total))
+    if stage == "searching":
+        progress = 5 + round(20 * ratio)
+        message = "正在搜索商品"
+    else:
+        progress = 25 + round(65 * ratio)
+        message = "正在读取商品详情"
+    _report_progress(callback, stage, progress, completed, total, message)
+
+
+def _report_progress(
+    callback: CollectionProgressCallback | None,
+    stage: str,
+    progress: int,
+    completed: int,
+    total: int,
+    message: str,
+) -> None:
+    if callback is not None:
+        callback(stage, progress, completed, total, message)

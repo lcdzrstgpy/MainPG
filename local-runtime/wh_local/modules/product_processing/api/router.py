@@ -8,7 +8,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
-from ....billing import feature_reserve_points
 from ....customer.contracts import (
     CustomerAuthRejected,
     CustomerAuthUnavailable,
@@ -640,7 +639,7 @@ def create_product_processing_router(
         task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
         metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
         settings = metadata.get("settings") if isinstance(metadata, dict) else {}
-        available_points = _reconcile_billing_before_precheck(
+        billing_summary = _reconcile_billing_before_precheck(
             service,
             task_id,
             settings if isinstance(settings, dict) else {},
@@ -666,7 +665,8 @@ def create_product_processing_router(
                 source_ref=f"product_processing:tasks/{task_id}/resume",
                 remote_token=token,
                 remote_customer_auth=remote_customer_auth,
-                available_points=available_points,
+                available_points=billing_summary["available_points"],
+                pricing=billing_summary["pricing"],
             )
         return _call(
             service.resume_task,
@@ -698,7 +698,7 @@ def create_product_processing_router(
         task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
         metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
         settings = metadata.get("settings") if isinstance(metadata, dict) else {}
-        available_points = _reconcile_billing_before_precheck(
+        billing_summary = _reconcile_billing_before_precheck(
             service,
             task_id,
             settings if isinstance(settings, dict) else {},
@@ -717,7 +717,8 @@ def create_product_processing_router(
                 source_ref=f"product_processing:tasks/{task_id}/retry-attention",
                 remote_token=token,
                 remote_customer_auth=remote_customer_auth,
-                available_points=available_points,
+                available_points=billing_summary["available_points"],
+                pricing=billing_summary["pricing"],
             )
         return _call(
             service.retry_attention,
@@ -824,24 +825,27 @@ def _attach_billing_context_and_require_points(
     source_ref: str,
     remote_token: str,
     remote_customer_auth: CustomerAuthClient | None,
-    available_points: int | None = None,
-) -> int | None:
+    available_points: int | float | None = None,
+    pricing: dict[str, Any] | None = None,
+) -> None:
     if bool(payload.get("preflight_only")) or bool(payload.get("category_preflight_only")):
-        return None
-    quantity = _billing_quantity(payload)
-    estimated_points = quantity * _billing_points_per_item(payload)
-    if estimated_points <= 0:
-        return None
+        return
     if remote_customer_auth is None or not remote_token:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "server billing session is unavailable",
         )
-    available = (
-        available_points
-        if available_points is not None
-        else _remote_available_points(remote_customer_auth, remote_token)
+    summary = (
+        {"available_points": available_points, "pricing": pricing}
+        if available_points is not None and isinstance(pricing, dict)
+        else _remote_billing_summary(remote_customer_auth, remote_token)
     )
+    pricing = summary["pricing"]
+    quantity = _billing_quantity(payload)
+    estimated_points = quantity * _billing_points_per_item(payload, pricing)
+    if estimated_points <= 0:
+        return
+    available = available_points if available_points is not None else summary["available_points"]
     if available < estimated_points:
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
@@ -856,7 +860,8 @@ def _attach_billing_context_and_require_points(
         "source_ref": source_ref,
         "remote_token": remote_token,
         "estimated_points": estimated_points,
-        "pricing_version": "product-processing-fixed-test-v1",
+        "pricing_version": pricing["rule_version"],
+        "pricing_rule": pricing,
     }
     return available
 
@@ -867,26 +872,33 @@ def _reconcile_billing_before_precheck(
     settings: dict[str, Any],
     remote_token: str,
     remote_customer_auth: CustomerAuthClient | None,
-) -> int | None:
+) -> dict[str, Any]:
     billing = settings.get("_billing") if isinstance(settings.get("_billing"), dict) else {}
     if not str(billing.get("account_id") or "").strip():
-        return None
+        return {"available_points": None, "pricing": None}
     if remote_customer_auth is None or not remote_token:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "server billing session is unavailable",
         )
-    available = _remote_available_points(remote_customer_auth, remote_token)
+    summary = _remote_billing_summary(remote_customer_auth, remote_token)
     if service.repository.product_billing_attempts(task_id=task_id, pending_only=True):
         _call(service.reconcile_product_billing, task_id, remote_token)
-        available = _remote_available_points(remote_customer_auth, remote_token)
-    return available
+        summary = _remote_billing_summary(remote_customer_auth, remote_token)
+    return summary
 
 
 def _remote_available_points(
     remote_customer_auth: CustomerAuthClient,
     remote_token: str,
-) -> int:
+) -> int | float:
+    return _remote_billing_summary(remote_customer_auth, remote_token)["available_points"]
+
+
+def _remote_billing_summary(
+    remote_customer_auth: CustomerAuthClient,
+    remote_token: str,
+) -> dict[str, Any]:
     try:
         summary = remote_customer_auth.billing_summary(remote_token)
     except CustomerBillingProtocolError as exc:
@@ -921,17 +933,50 @@ def _remote_available_points(
     if not isinstance(summary, dict):
         _raise_invalid_remote_wallet_summary()
     wallet = summary.get("wallet")
+    pricing = summary.get("pricing")
     if not isinstance(wallet, dict) or "available_points" not in wallet:
         _raise_invalid_remote_wallet_summary()
+    versioned_pricing = isinstance(pricing, dict)
+    if not versioned_pricing:
+        pricing = _legacy_billing_pricing()
     raw_available = wallet.get("available_points")
     if type(raw_available) is int:
-        return raw_available
+        available: int | float = raw_available
+    elif type(raw_available) is float and versioned_pricing:
+        available = raw_available
     if isinstance(raw_available, str):
         normalized = raw_available.strip()
-        digits = normalized[1:] if normalized.startswith("-") else normalized
-        if digits.isdigit():
-            return int(normalized)
-    _raise_invalid_remote_wallet_summary()
+        try:
+            available = float(normalized)
+        except ValueError:
+            _raise_invalid_remote_wallet_summary()
+    if "available" not in locals():
+        _raise_invalid_remote_wallet_summary()
+    try:
+        scale = int(pricing.get("point_unit_scale"))
+        features = pricing.get("features")
+    except (TypeError, ValueError):
+        _raise_invalid_remote_wallet_summary()
+    if not str(pricing.get("rule_version") or "").strip() or scale != 10 or not isinstance(features, dict):
+        _raise_invalid_remote_wallet_summary()
+    return {"available_points": available, "pricing": pricing}
+
+
+def _legacy_billing_pricing() -> dict[str, Any]:
+    """Support older account services during the server-rules rollout.
+
+    New account services always return `pricing`; legacy services do not.  The
+    fallback mirrors the previous fixed reservation values and is deliberately
+    used only when the server did not advertise a versioned rule.
+    """
+    return {
+        "rule_version": "legacy-fixed-v1",
+        "point_unit_scale": 10,
+        "features": {
+            "product_processing.text": {"reserve_points": 50},
+            "product_processing.image_grid_2k": {"reserve_points": 650},
+        },
+    }
 
 
 def _raise_invalid_remote_wallet_summary() -> NoReturn:
@@ -950,7 +995,7 @@ def _remote_token(request: Request, sessions: LocalSessionService | None) -> str
     return str(session.remote_token or "") if session is not None else ""
 
 
-def _billing_points_per_item(payload: dict[str, Any]) -> int:
+def _billing_points_per_item(payload: dict[str, Any], pricing: dict[str, Any]) -> float:
     scope = set(payload.get("processing_scope") or [])
     text_enabled = (
         "title" in scope
@@ -965,11 +1010,13 @@ def _billing_points_per_item(payload: dict[str, Any]) -> int:
         or bool(payload.get("grid_image", True))
         or bool(payload.get("image_rewrite", True))
     )
-    return (
-        feature_reserve_points("product_processing.text") if text_enabled else 0
-    ) + (
-        feature_reserve_points("product_processing.image_grid_2k") if image_enabled else 0
-    )
+    features = pricing.get("features") if isinstance(pricing.get("features"), dict) else {}
+    try:
+        text_points = float(features["product_processing.text"]["reserve_points"])
+        image_points = float(features["product_processing.image_grid_2k"]["reserve_points"])
+    except (KeyError, TypeError, ValueError):
+        _raise_invalid_remote_wallet_summary()
+    return (text_points if text_enabled else 0.0) + (image_points if image_enabled else 0.0)
 
 
 def _billing_quantity(payload: dict[str, Any]) -> int:

@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
 import { getDashboardStats, type DashboardStats } from "../api/dashboardApi";
 import "./../styles/dashboardStats.css";
+import { AppleAppGlyph } from "../../../shared/components/AppleAppGlyph";
 
-type DashboardStatsProps = { onOpenModule: (id: WorkspaceModuleId) => void };
+type DashboardStatsProps = { onOpenModule: (id: WorkspaceModuleId) => void; variant?: "classic" | "apple" };
 
-export function DashboardStats({ onOpenModule }: DashboardStatsProps) {
+export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardStatsProps) {
   const [stats, setStats] = useState<DashboardStats | null>(null);
 
   useEffect(() => {
@@ -30,6 +31,28 @@ export function DashboardStats({ onOpenModule }: DashboardStatsProps) {
   }, []);
 
   const format = (value: number | null | undefined) => (value === null || value === undefined ? "--" : String(value));
+
+  if (variant === "apple") {
+    return (
+      <section className="mac-glance-section">
+        <div className="mac-section-heading"><div><span>AT A GLANCE</span><h2>今日概览</h2></div><small>每分钟自动更新</small></div>
+        <div className="mac-glance-grid">
+          <button type="button" onClick={() => onOpenModule("profit_activity_products")}>
+            <span className="mac-glance-icon is-blue"><AppleAppGlyph name="profit_activity_products" /></span>
+            <span><small>产品总数</small><strong>{format(stats?.productCount)}</strong><em>全部市场</em></span>
+          </button>
+          <button type="button" onClick={() => onOpenModule("profit_activity_products")}>
+            <span className="mac-glance-icon is-green"><AppleAppGlyph name="daily_selection" /></span>
+            <span><small>今日入库</small><strong>{format(stats?.todayInboundCount)}</strong><em>北京时间</em></span>
+          </button>
+          <button type="button" onClick={() => onOpenModule("product_processing")}>
+            <span className="mac-glance-icon is-violet"><AppleAppGlyph name="product_processing" /></span>
+            <span><small>今日处理</small><strong>{format(stats?.todayProcessedCount)}</strong><em>AI 处理任务</em></span>
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="dashboard-stats-section">

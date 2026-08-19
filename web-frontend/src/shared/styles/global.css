@@ -268,3 +268,207 @@ button { cursor: pointer; }
     transition: none;
   }
 }
+
+/* 登录成功后的品牌入场：中央亮相，再收束到左上角品牌位。 */
+.workspace-entry-overlay {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: auto;
+  background:
+    radial-gradient(circle at 50% 48%, rgba(255, 255, 255, .98) 0 12%, rgba(235, 247, 255, .92) 34%, rgba(220, 239, 250, .72) 58%, rgba(206, 229, 243, .38) 76%, transparent 100%);
+  backdrop-filter: blur(16px) saturate(120%);
+  animation: workspace-entry-backdrop 2.3s cubic-bezier(.22, .78, .24, 1) both;
+}
+
+.workspace-entry-overlay::before,
+.workspace-entry-overlay::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(68vw, 720px);
+  aspect-ratio: 1;
+  border: 1px solid rgba(53, 151, 199, .22);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  content: "";
+  animation: workspace-entry-ring 1.25s cubic-bezier(.16, .76, .26, 1) .2s both;
+}
+
+.workspace-entry-overlay::after {
+  width: min(48vw, 510px);
+  border-color: rgba(132, 159, 74, .28);
+  animation-delay: .34s;
+}
+
+.workspace-entry-brand {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: var(--brand-entry-start-width);
+  transform: translate(-50%, -50%) scale(.72);
+  transform-origin: center;
+  will-change: top, left, width, transform, filter;
+  animation: workspace-brand-flight 2.3s cubic-bezier(.2, .74, .18, 1) both;
+}
+
+.workspace-entry-brand img {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 18px 30px rgba(18, 51, 70, .2));
+}
+
+.workspace-entry-halo {
+  position: absolute;
+  inset: 4% -12%;
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(255, 255, 255, .92), rgba(127, 198, 225, .28) 42%, transparent 72%);
+  filter: blur(16px);
+  transform: scale(.75);
+  animation: workspace-entry-halo 1.4s ease-out .16s both;
+}
+
+.workspace-shell.is-brand-entering [data-brand-entry-target],
+[data-ui-mode="apple"] .workspace-shell.is-brand-entering .sidebar-pin-button {
+  opacity: 0;
+}
+
+@keyframes workspace-entry-backdrop {
+  0% { opacity: 1; }
+  54% { opacity: 1; }
+  100% { opacity: 0; backdrop-filter: blur(0) saturate(100%); }
+}
+
+@keyframes workspace-entry-ring {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(.5); }
+  45% { opacity: .9; }
+  to { opacity: 0; transform: translate(-50%, -50%) scale(1.18); }
+}
+
+@keyframes workspace-entry-halo {
+  0% { opacity: 0; transform: scale(.72); }
+  36% { opacity: 1; }
+  100% { opacity: 0; transform: scale(1.2); }
+}
+
+@keyframes workspace-brand-flight {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(.72);
+    filter: blur(8px);
+  }
+  14% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.06);
+    filter: blur(0);
+  }
+  27%, 47% {
+    top: 50%;
+    left: 50%;
+    width: var(--brand-entry-start-width);
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+    filter: blur(0);
+  }
+  82%, 100% {
+    top: var(--brand-entry-end-top);
+    left: var(--brand-entry-end-left);
+    width: var(--brand-entry-end-width);
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+    filter: blur(0);
+  }
+}
+
+@media (max-width: 600px) {
+  .workspace-entry-overlay::before { width: 110vw; }
+  .workspace-entry-overlay::after { width: 82vw; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-entry-overlay { display: none; animation: none; }
+}
+
+/* 克制的交互过渡：只在状态变化时播放，避免持续动画造成视觉疲劳。 */
+.workspace-tab-panel.is-active {
+  animation: workspace-panel-enter .24s cubic-bezier(.22, .72, .24, 1) both;
+}
+
+.user-menu[open] .user-popover {
+  transform-origin: calc(100% - 22px) 0;
+  animation: workspace-popover-enter .2s cubic-bezier(.2, .78, .26, 1) both;
+}
+
+.workspace-notice {
+  transform-origin: top center;
+  animation: workspace-notice-enter .22s cubic-bezier(.2, .74, .24, 1) both;
+}
+
+.sidebar-item,
+.sidebar-subitem {
+  transition: color .17s ease, background-color .17s ease, box-shadow .17s ease, transform .17s ease;
+}
+
+.sidebar-item:active,
+.sidebar-subitem:active {
+  transform: scale(.985);
+}
+
+.primary-button,
+.shortcut-card,
+.user-popover button,
+.ui-mode-option,
+.theme-option {
+  transition: transform .17s ease, color .17s ease, border-color .17s ease, background-color .17s ease, box-shadow .17s ease, opacity .17s ease;
+}
+
+.primary-button:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 13px 24px var(--theme-primary-button-shadow, #0b93dc35);
+}
+
+.primary-button:not(:disabled):active,
+.shortcut-card:active,
+.user-popover button:active,
+.ui-mode-option:active,
+.theme-option:active {
+  transform: translateY(0) scale(.985);
+}
+
+@keyframes workspace-panel-enter {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes workspace-popover-enter {
+  from { opacity: 0; transform: translateY(-7px) scale(.975); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes workspace-notice-enter {
+  from { opacity: 0; transform: translateY(-6px) scaleY(.96); }
+  to { opacity: 1; transform: translateY(0) scaleY(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-tab-panel.is-active,
+  .user-menu[open] .user-popover,
+  .workspace-notice {
+    animation: none;
+  }
+
+  .sidebar-item,
+  .sidebar-subitem,
+  .primary-button,
+  .shortcut-card,
+  .user-popover button,
+  .ui-mode-option,
+  .theme-option {
+    transition: none;
+  }
+}

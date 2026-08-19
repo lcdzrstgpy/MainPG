@@ -107,6 +107,14 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
       {items.length ? (
         <div className="batch-review-table-wrap">
           <table className="batch-review-table">
+            <colgroup>
+              <col className="batch-review-col-check" />
+              <col className="batch-review-col-product" />
+              <col className="batch-review-col-site" />
+              <col className="batch-review-col-price" />
+              <col className="batch-review-col-price" />
+              <col className="batch-review-col-action" />
+            </colgroup>
             <thead>
               <tr>
                 <th className="batch-review-check-cell"><input type="checkbox" checked={allSelected} onChange={(event) => toggleAll(event.target.checked)} disabled={busy} /></th>
@@ -125,7 +133,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
                   <Fragment key={item.skc_id}>
                     <tr className={selected[item.skc_id] ? "is-selected" : ""}>
                       <td className="batch-review-check-cell"><input type="checkbox" checked={Boolean(selected[item.skc_id])} onChange={(event) => toggle(item.skc_id, event.target.checked)} disabled={busy} /></td>
-                      <td className="batch-review-sku-info-cell">
+                      <td className="batch-review-sku-info-cell" data-label="商品">
                         <div className="batch-review-sku-info">
                           {item.main_image_url ? <img src={item.main_image_url} alt="" referrerPolicy="no-referrer" /> : <div className="batch-review-no-image">无图</div>}
                           <div>
@@ -135,10 +143,10 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
                           </div>
                         </div>
                       </td>
-                      <td className="batch-review-site-cell">{item.site || "—"}</td>
-                      <td className="batch-review-price-cell">{priceRange(item.original_min, item.original_max)}</td>
-                      <td className="batch-review-price-cell is-adjusted">{priceRange(item.adjusted_min, item.adjusted_max)}</td>
-                      <td className="batch-review-action-cell">
+                      <td className="batch-review-site-cell" data-label="站点">{item.site || "—"}</td>
+                      <td className="batch-review-price-cell" data-label="原申报价格">{priceRange(item.original_min, item.original_max)}</td>
+                      <td className="batch-review-price-cell is-adjusted" data-label="调整后申报价格">{priceRange(item.adjusted_min, item.adjusted_max)}</td>
+                      <td className="batch-review-action-cell" data-label="操作">
                         <button
                           type="button"
                           className="batch-review-delete-button"

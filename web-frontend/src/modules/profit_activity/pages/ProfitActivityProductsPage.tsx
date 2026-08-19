@@ -317,7 +317,13 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   const pointerOverText = (x: number, y: number) => {
     const range = document.caretRangeFromPoint?.(x, y);
     if (range) return range.startContainer.nodeType === Node.TEXT_NODE;
-    const position = document.caretPositionFromPoint?.(x, y);
+    const position = (
+      document as Document & {
+        caretPositionFromPoint?: (clientX: number, clientY: number) =>
+          | { offsetNode: Node }
+          | null;
+      }
+    ).caretPositionFromPoint?.(x, y);
     return !!position && position.offsetNode.nodeType === Node.TEXT_NODE;
   };
   const onTablePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {

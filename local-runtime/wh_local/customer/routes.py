@@ -118,6 +118,23 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.get("/billing/usage")
+    def billing_usage_history(
+        cursor: str = "",
+        limit: int = 30,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "billing_usage_history"):
+                raise CustomerAuthUnavailable("remote billing history is not configured")
+            return remote_auth.billing_usage_history(
+                remote_token_from_local_session(authorization),
+                cursor=cursor,
+                limit=limit,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.post("/billing/topup-orders")
     def create_topup_order(payload: dict[str, Any], authorization: str | None = Header(default=None)) -> dict[str, Any]:
         try:

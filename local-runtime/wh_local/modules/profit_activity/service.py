@@ -420,25 +420,28 @@ class ProfitActivityService:
         _require_activity_thresholds(settings)
         site, custom_site = self._resolve_site(site, actor)
         products = {product["skc"]: product for product in self.list_products(site=site, actor=actor, include_workspace_shared=include_workspace_shared)}
-        def evaluate(skc: str, price: Decimal) -> dict[str, Any]:
-            product = products.get(skc)
-            if product is None:
-                return {"keep": False, "decision": "excluded", "reason_code": "missing_product", "net_profit": None, "profit_rate": None}
-            preview = calculate_profit(
-                site_code=site,
-                selling_price=price,
-                cost_price=Decimal(str(product["cost_price"])),
-                weight_kg=Decimal(str(product["weight_kg"])),
-                settings=settings,
-                custom_site=custom_site,
-            )
-            decision, reason = activity_decision(preview, settings)
-            return {
-                "keep": decision == "eligible", "decision": decision, "reason_code": reason,
-                "net_profit": float(preview.net_profit), "profit_rate": float(preview.profit_rate),
-                "net_profit_passed": preview.net_profit >= settings.activity_min_net_profit,
-                "profit_rate_passed": preview.profit_rate >= settings.activity_profit_rate_threshold,
-            }
+        def evaluate(candidate_ids: list[str], price: Decimal) -> dict[str, Any]:
+            for candidate_id in candidate_ids:
+                product = products.get(candidate_id)
+                if product is None:
+                    continue
+                preview = calculate_profit(
+                    site_code=site,
+                    selling_price=price,
+                    cost_price=Decimal(str(product["cost_price"])),
+                    weight_kg=Decimal(str(product["weight_kg"])),
+                    settings=settings,
+                    custom_site=custom_site,
+                )
+                decision, reason = activity_decision(preview, settings)
+                return {
+                    "keep": decision == "eligible", "decision": decision, "reason_code": reason,
+                    "net_profit": float(preview.net_profit), "profit_rate": float(preview.profit_rate),
+                    "net_profit_passed": preview.net_profit >= settings.activity_min_net_profit,
+                    "profit_rate_passed": preview.profit_rate >= settings.activity_profit_rate_threshold,
+                    "matched_id": candidate_id,
+                }
+            return {"keep": False, "decision": "excluded", "reason_code": "missing_product", "net_profit": None, "profit_rate": None}
 
         filtered = filter_activity_workbook(workbook, site=site, evaluate=evaluate, should_stop=should_stop)
         root = self._asset_root(settings) / "activity_outputs"
@@ -542,6 +545,48 @@ class ProfitActivityService:
         if task is None:
             raise ProfitActivityNotFound("filter_task_not_found")
         return {"task_id": task.id, "filter_task_id": task.id, "operation_task_id": task.id, "status": task.status, "created_at": _local_iso(task.created_at), **self._trim_filter_result(json.loads(task.result_json))}
+
+    def eligible_activity_products(self, task_id: int, actor: Any | None = None) -> list[dict[str, Any]]:
+        """返回活动过滤任务里「可申报」商品的标识与最低申报价格列表。
+
+        供申报价计算器使用：每个可申报商品按 product_id 归组，返回该商品出现的
+        全部标识（SKC/SKU/SPU 等 candidate_ids）以及其中最低的申报价格。
+        """
+        context = _actor_context(actor)
+        task = self._repository.get_filter_task(task_id, context.workspace_id)
+        if task is None:
+            raise ProfitActivityNotFound("filter_task_not_found")
+        decisions = (json.loads(task.result_json) or {}).get("activity_decisions") or []
+        grouped: dict[str, dict[str, Any]] = {}
+        for item in decisions:
+            if not isinstance(item, dict):
+                continue
+            if item.get("decision") != "eligible" and not item.get("keep"):
+                continue
+            product_id = str(item.get("product_id") or item.get("skc") or "").strip()
+            price = item.get("price")
+            if not product_id or price is None:
+                continue
+            try:
+                price_value = float(price)
+            except (TypeError, ValueError):
+                continue
+            entry = grouped.setdefault(product_id, {"identifiers": {product_id}, "price": price_value})
+            candidate_ids = item.get("candidate_ids")
+            if isinstance(candidate_ids, list):
+                for candidate in candidate_ids:
+                    candidate_id = str(candidate or "").strip()
+                    if candidate_id:
+                        entry["identifiers"].add(candidate_id)
+            entry["price"] = min(entry["price"], price_value)
+        return [
+            {
+                "product_id": product_id,
+                "identifiers": sorted(entry["identifiers"]),
+                "price": entry["price"],
+            }
+            for product_id, entry in grouped.items()
+        ]
 
     def output_path(self, task_id: int, kind: str, actor: Any | None = None) -> Path:
         result = self.get_filter_task_legacy(task_id, actor)

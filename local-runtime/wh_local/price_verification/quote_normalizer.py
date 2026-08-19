@@ -144,10 +144,19 @@ def normalize_price_quote_discovery(payload: Mapping[str, Any]) -> QuotePreview:
 
     network_items = [item for record in selected for item in quote_items_from_network_record(record)]
     dom_items: list[QuoteItem] = []
+    parent_dom_item: QuoteItem | None = None
     for row in selected_rows:
         item = quote_item_from_dom_row(row, popup_confirmed=popup_confirmed)
-        if has_quote_signal(item):
-            dom_items.append(item)
+        if not has_quote_signal(item):
+            continue
+        inherited_parent_skc = stringify_id(row.get("parent_skc_id"))
+        if inherited_parent_skc and item.sku_id and parent_dom_item is not None:
+            inherit_parent_dom_item(item, parent_dom_item)
+        elif item.skc_id:
+            parent_dom_item = item
+        elif item.sku_id and parent_dom_item is not None:
+            inherit_parent_dom_item(item, parent_dom_item)
+        dom_items.append(item)
     network_items = attach_sku_only_network_items(network_items, dom_items)
     items = [*align_network_to_dom_page(network_items, dom_items), *dom_items]
     quotes = dedupe_quotes(items)
@@ -276,6 +285,16 @@ def attach_sku_only_network_items(
             item.site = item.site or parent.site
         attached.append(item)
     return attached
+
+
+def inherit_parent_dom_item(item: QuoteItem, parent: QuoteItem) -> QuoteItem:
+    """Attach a visual child SKU row to the nearest parent SKC DOM row."""
+    item.skc_id = parent.skc_id
+    item.product_title = item.product_title or parent.product_title
+    item.main_image_url = item.main_image_url or parent.main_image_url
+    item.official_link_url = item.official_link_url or parent.official_link_url
+    item.site = item.site or parent.site
+    return item
 
 
 def _parse_iso(value: str) -> datetime | None:
@@ -639,16 +658,16 @@ def text_for(mapping: Mapping[str, Any], aliases: Iterable[str]) -> str:
 
 
 def skc_id_from_dom_row(row: Mapping[str, Any], cells: Mapping[str, Any], text: str) -> str:
-    """Read only an explicit SKC marker; never treat a SKU number as an SKC."""
+    """Read only explicit SKC fields/markers; never treat a SKU number as an SKC."""
     inherited = stringify_id(row.get("parent_skc_id"))
     if inherited:
         return inherited
+    direct = stringify_id(first_value(cells, ("SKC", "SKC ID", "skc_id")))
+    if direct:
+        return direct
     pattern = r"\bSKC(?:\s*(?:ID|\u4fe1\u606f))?\s*[:\uFF1A]?\s*([A-Za-z0-9_-]{4,})\b"
-    for value in (text_for(cells, ("SKC", "SKC ID", "skc_id")), text):
-        match = re.search(pattern, value, flags=re.IGNORECASE)
-        if match:
-            return stringify_id(match.group(1))
-    return ""
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+    return stringify_id(match.group(1)) if match else ""
 
 
 def id_from(mapping: Mapping[str, Any], aliases: Iterable[str], text: str, pattern: str) -> str:

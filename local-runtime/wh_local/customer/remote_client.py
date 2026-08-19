@@ -84,6 +84,34 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def billing_rules(self, remote_token: str) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._get,
+            "/api/customer/billing/rules",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def billing_usage_history(
+        self,
+        remote_token: str,
+        *,
+        cursor: str = "",
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        query = f"?limit={max(1, min(int(limit), 100))}"
+        if cursor:
+            from urllib.parse import quote
+            query += f"&cursor={quote(cursor, safe='')}"
+        return self._billing_result(
+            self._get,
+            f"/api/customer/billing/usage{query}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def create_topup_order(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not remote_token:
             raise CustomerBillingPermissionError()

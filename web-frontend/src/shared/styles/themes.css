@@ -2879,7 +2879,7 @@
   overflow: hidden;
   color: #315c57 !important;
   background: #e3ebe6 !important;
-  box-shadow: inset 3px 0 #a74736;
+  box-shadow: none;
 }
 
 [data-theme="chinese"] .sidebar-subitem.is-active::before {
