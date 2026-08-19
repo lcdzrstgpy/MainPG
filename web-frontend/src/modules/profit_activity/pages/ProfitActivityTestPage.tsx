@@ -101,15 +101,6 @@ type SiteSettingField = {
 const defaultToken = localStorage.getItem("whLocalApiToken") || "dev-admin-token";
 const emptyProduct: ProductForm = {
   skc: "",
-  selling_price: "19.99",
-  cost_price: "5.00",
-  weight_kg: "0.35",
-  note: "",
-  source_url: "",
-  source_urls: [],
-};
-const clearedProduct: ProductForm = {
-  skc: "",
   selling_price: "",
   cost_price: "",
   weight_kg: "",
@@ -218,8 +209,8 @@ const DEFAULT_PROFIT_SETTINGS: Record<string, number> = {
   ec_first_mile_fixed: 0,
   ec_end_fee: 0,
   ec_refund_rate: 0,
-  activity_min_net_profit: 8,
-  activity_profit_rate_threshold: 0.2,
+  activity_min_net_profit: 0,
+  activity_profit_rate_threshold: 0,
 };
 
 export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean }) {
@@ -290,6 +281,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
 
   const selectedSkcs = useMemo(() => [...selected], [selected]);
   const displaySiteLabel = (value: Site) => siteProfiles.find((profile) => profile.id === value)?.label || siteLabel(value);
+  const activityThresholds = parseActivityThresholds(siteSettings);
   const formReadyForPreview = productForm.skc.trim() && positive(productForm.selling_price) && positive(productForm.cost_price) && positive(productForm.weight_kg);
   // 每个货源链接都必须有对应的货源图（第一张图对应货源链接 1，追加链接依次对应）
   const sourceLinks = [productForm.source_url, ...productForm.source_urls];
@@ -519,11 +511,13 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
 
   // 活动申报门槛：三区共用同一个全局值，保存/恢复只提交这两个字段
   const saveActivityThreshold = () => withBusy("保存活动门槛", async () => {
+    if (!activityThresholds) throw new Error("请填写正确的活动最低实际利润和最低利润率。");
     const payload: Record<string, unknown> = {
       expected_revision: Number(settings?.revision || 0),
       save_root: String(settings?.save_root || ""),
-      activity_min_net_profit: Number(siteSettings.activity_min_net_profit || 0),
-      activity_profit_rate_threshold: Number(siteSettings.activity_profit_rate_threshold || 0) / 100,
+      activity_min_net_profit: activityThresholds.minNetProfit,
+      activity_profit_rate_threshold: activityThresholds.minProfitRatePercent / 100,
+      activity_threshold_configured: true,
     };
     const data = await putSettings(payload);
     setSettings(data);
@@ -534,8 +528,9 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     const payload: Record<string, unknown> = {
       expected_revision: Number(settings?.revision || 0),
       save_root: String(settings?.save_root || ""),
-      activity_min_net_profit: DEFAULT_PROFIT_SETTINGS.activity_min_net_profit,
-      activity_profit_rate_threshold: DEFAULT_PROFIT_SETTINGS.activity_profit_rate_threshold,
+      activity_min_net_profit: 0,
+      activity_profit_rate_threshold: 0,
+      activity_threshold_configured: false,
     };
     const data = await putSettings(payload);
     setSettings(data);
@@ -628,7 +623,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     localStorage.setItem("profitActivityRecentSaved", JSON.stringify(nextRecent));
     setQuerySkcs(savedSkc);
     await queryProducts(savedSkc);
-    setProductForm(clearedProduct);
+    setProductForm(emptyProduct);
     setProductImage(null);
     setSourceImages([null]);
     setCalculation(null);
@@ -773,6 +768,10 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
 
   // 产品过滤：上传活动 Excel 并异步启动过滤任务，轮询进度
   const runActivityFilter = async () => {
+    if (!activityThresholds) {
+      setMessage("请先填写并保存活动最低实际利润和最低利润率。");
+      return;
+    }
     if (!activityFile) {
       setMessage("先选择活动 Excel。");
       return;
@@ -802,6 +801,10 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   };
 
   const generateFiltered = async () => {
+    if (!activityThresholds) {
+      setMessage("请先填写并保存活动最低实际利润和最低利润率。");
+      return;
+    }
     // 已有本次过滤的完成结果：直接基于该结果保存并下载可申报产品，避免重复过滤
     const currentTaskId = filterTaskId(filterTask);
     if (currentTaskId && filterTask?.status === "completed") {
@@ -1251,12 +1254,28 @@ function extractSiteSettings(settings: Record<string, unknown>, site: Site) {
     result[field.key] = String(field.transform === "percent" ? value * 100 : value);
   }
   // 活动申报门槛为三区共用的全局值，随站点 tab 一起展示
-  for (const key of ["activity_min_net_profit", "activity_profit_rate_threshold"] as const) {
+  const activityThresholdKeys = ["activity_min_net_profit", "activity_profit_rate_threshold"] as const;
+  if (settings.activity_threshold_configured !== true) {
+    for (const key of activityThresholdKeys) result[key] = "";
+    return result;
+  }
+  for (const key of activityThresholdKeys) {
     const raw = settings[key] == null ? (DEFAULT_PROFIT_SETTINGS[key] ?? 0) : settings[key];
     const value = Number(raw);
     result[key] = String(key === "activity_profit_rate_threshold" ? value * 100 : value);
   }
   return result;
+}
+
+function parseActivityThresholds(values: Record<string, string>) {
+  const minNetProfitRaw = (values.activity_min_net_profit ?? "").trim();
+  const minProfitRateRaw = (values.activity_profit_rate_threshold ?? "").trim();
+  if (!minNetProfitRaw || !minProfitRateRaw) return null;
+  const minNetProfit = Number(minNetProfitRaw);
+  const minProfitRatePercent = Number(minProfitRateRaw);
+  if (!Number.isFinite(minNetProfit) || minNetProfit < 0) return null;
+  if (!Number.isFinite(minProfitRatePercent) || minProfitRatePercent < 0 || minProfitRatePercent > 100) return null;
+  return { minNetProfit, minProfitRatePercent };
 }
 
 function numericProductPayload(form: ProductForm) {
