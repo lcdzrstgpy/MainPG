@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from wh_local.customer.contracts import (
+    CustomerBillingProtocolError,
     CustomerAuthRejected,
     CustomerAuthResult,
     CustomerAuthUnavailable,
@@ -191,6 +192,7 @@ def test_billing_context_maps_remote_permission_error_to_403() -> None:
 @pytest.mark.parametrize(
     ("error", "expected_status", "expected_detail"),
     [
+        (CustomerBillingProtocolError(), 502, "remote billing service returned an invalid response"),
         (CustomerAuthUnavailable("remote-token-sensitive"), 503, "remote billing service is unavailable"),
         (CustomerAuthRejected(402, "remote-token-sensitive"), 402, "remote billing request was rejected"),
         (PermissionError("remote-token-sensitive"), 403, "remote billing session was rejected"),
@@ -210,6 +212,16 @@ def test_call_never_echoes_remote_billing_exception_content(
     assert caught.value.status_code == expected_status
     assert caught.value.detail == expected_detail
     assert "remote-token-sensitive" not in str(caught.value.detail)
+
+
+def test_call_keeps_ordinary_local_value_error_as_400() -> None:
+    with pytest.raises(HTTPException) as caught:
+        product_processing_router._call(
+            lambda: (_ for _ in ()).throw(ValueError("local input is invalid"))
+        )
+
+    assert caught.value.status_code == 400
+    assert caught.value.detail == "local input is invalid"
 
 
 @pytest.mark.parametrize(
@@ -399,6 +411,44 @@ def test_all_processing_routes_forward_remote_billing_context(
     finally:
         getattr(service, "_dimension_canvas_service").close()
         database.dispose()
+
+
+def test_processing_http_maps_remote_protocol_failure_to_stable_502(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = ProductProcessingService(
+        ProductProcessingRepository(create_database("sqlite:///:memory:")),
+        ProductProcessingAssets(tmp_path / "assets"),
+    )
+    monkeypatch.setattr(
+        service,
+        "process_drafts",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(CustomerBillingProtocolError()),
+    )
+    sessions = LocalSessionService()
+    session = sessions.login_customer(
+        CustomerAuthResult(customer_id="user", username="user", remote_token="remote-token")
+    )
+    app = FastAPI()
+    app.dependency_overrides[actor_from_authorization] = _actor
+    app.include_router(
+        product_processing_router.create_product_processing_router(
+            service,
+            customer_sessions=sessions,
+            remote_customer_auth=RecordingRemoteBilling(10_000),
+        )
+    )
+
+    response = TestClient(app).post(
+        "/product-processing/drafts/process",
+        json={"draft_ids": [1], **_text_only_payload()},
+        headers={"Authorization": f"Bearer {session.token}"},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": "remote billing service returned an invalid response"
+    }
 
 
 def test_retry_attention_reacquires_remote_token_and_prechecks_balance_over_http(
@@ -636,9 +686,7 @@ def test_resume_terminal_settlement_recovery_skips_new_work_balance_precheck(
     session = sessions.login_customer(
         CustomerAuthResult(customer_id="user", username="user", remote_token="fresh-token")
     )
-    remote = RaisingRemoteBilling(
-        AssertionError("settlement recovery must not require points for new work")
-    )
+    remote = RecordingRemoteBilling(0)
     app = FastAPI()
     app.dependency_overrides[actor_from_authorization] = _actor
     app.include_router(
@@ -656,6 +704,159 @@ def test_resume_terminal_settlement_recovery_skips_new_work_balance_precheck(
 
     assert response.status_code == 200
     assert captured["remote_token"] == "fresh-token"
+    assert remote.tokens == ["fresh-token"]
+
+
+@pytest.mark.parametrize("endpoint", ["resume", "retry-attention"])
+def test_authenticated_recovery_reconciles_locked_usage_before_new_work_precheck(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str,
+) -> None:
+    service = ProductProcessingService(
+        ProductProcessingRepository(create_database("sqlite:///:memory:")),
+        ProductProcessingAssets(tmp_path / "assets"),
+    )
+    item_status = "pending" if endpoint == "resume" else "failed"
+    monkeypatch.setattr(
+        service,
+        "task_outputs",
+        lambda *_args, **_kwargs: {
+            "task": {
+                "metadata": {
+                    "settings": {**_text_only_payload(), "_billing": {"account_id": "user"}},
+                    "preflight_only": False,
+                }
+            },
+            "items": [{"product_draft_id": 42, "status": item_status}],
+        },
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "product_billing_attempts",
+        lambda **_kwargs: [{"id": 1}],
+    )
+    events: list[str] = []
+
+    class LockedBalanceRemote:
+        released = False
+
+        def billing_summary(self, token: str) -> dict[str, Any]:
+            assert token == "fresh-token"
+            events.append("summary-after" if self.released else "summary-before")
+            return {"wallet": {"available_points": 30 if self.released else 0}}
+
+    remote = LockedBalanceRemote()
+
+    def reconcile(task_id: int, token: str) -> dict[str, int]:
+        assert task_id == 9 and token == "fresh-token"
+        events.append("reconcile")
+        remote.released = True
+        return {"reconciled": 1, "pending": 0}
+
+    monkeypatch.setattr(service, "reconcile_product_billing", reconcile)
+    if endpoint == "resume":
+        monkeypatch.setattr(
+            service,
+            "resume_task",
+            lambda *_args, **_kwargs: events.append("mutate") or {"ok": True},
+        )
+    else:
+        monkeypatch.setattr(
+            service,
+            "retry_attention",
+            lambda *_args, **_kwargs: events.append("mutate") or {"ok": True},
+        )
+    sessions = LocalSessionService()
+    session = sessions.login_customer(
+        CustomerAuthResult(customer_id="user", username="user", remote_token="fresh-token")
+    )
+    app = FastAPI()
+    app.dependency_overrides[actor_from_authorization] = _actor
+    app.include_router(
+        product_processing_router.create_product_processing_router(
+            service,
+            customer_sessions=sessions,
+            remote_customer_auth=remote,
+        )
+    )
+
+    response = TestClient(app).post(
+        f"/product-processing/tasks/9/{endpoint}",
+        headers={"Authorization": f"Bearer {session.token}"},
+    )
+
+    assert response.status_code == 200
+    assert events == ["summary-before", "reconcile", "summary-after", "mutate"]
+
+
+def test_restarted_billed_queue_is_resumed_only_by_authenticated_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'restart-resume.sqlite3'}"
+    original = ProductProcessingService(
+        ProductProcessingRepository(create_database(database_url)),
+        ProductProcessingAssets(tmp_path / "original-assets"),
+    )
+    draft, _created = original.create_draft(
+        {
+            "source_type": "manual",
+            "title": "restart resume",
+            "image_url": "https://images.example.test/restart.jpg",
+        }
+    )
+    task = original.repository.create_task(
+        title="restart resume",
+        preflight_only=False,
+        settings={
+            **_text_only_payload(),
+            "async_mode": True,
+            "_billing": {"account_id": "user"},
+        },
+        drafts=[draft],
+        idempotency_key=None,
+    )
+    restarted = ProductProcessingService(
+        ProductProcessingRepository(create_database(database_url)),
+        ProductProcessingAssets(tmp_path / "restarted-assets"),
+    )
+    monkeypatch.setattr(restarted.preview_images, "recover_background_work", lambda: {})
+    monkeypatch.setattr(restarted.media_assets, "materialize_until_idle", lambda **_kwargs: {})
+    launched: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        restarted,
+        "_launch_background_execute",
+        lambda task_id, _workspace: launched.append(
+            (task_id, restarted._task_remote_token(task_id))
+        )
+        or True,
+    )
+    assert restarted.recover_background_work()["billing_auth_required"] == 1
+    assert restarted.repository.get_task(task["id"])["status"] == "paused"
+    sessions = LocalSessionService()
+    session = sessions.login_customer(
+        CustomerAuthResult(customer_id="user", username="user", remote_token="fresh-token")
+    )
+    remote = RecordingRemoteBilling(30)
+    app = FastAPI()
+    app.dependency_overrides[actor_from_authorization] = _actor
+    app.include_router(
+        product_processing_router.create_product_processing_router(
+            restarted,
+            customer_sessions=sessions,
+            remote_customer_auth=remote,
+        )
+    )
+
+    response = TestClient(app).post(
+        f"/product-processing/tasks/{task['id']}/resume",
+        headers={"Authorization": f"Bearer {session.token}"},
+    )
+
+    assert response.status_code == 200
+    assert launched == [(task["id"], "fresh-token")]
+    assert remote.tokens == ["fresh-token"]
+    assert restarted.repository.get_task(task["id"])["status"] == "queued"
 
 
 @pytest.mark.parametrize("endpoint", ["retry-attention", "clear", "resume"])

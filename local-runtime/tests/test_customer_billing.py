@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
@@ -8,15 +9,24 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from wh_local.customer import contracts as customer_contracts
 from wh_local.customer.auth_server import create_auth_app
 from wh_local.customer.auth_service import _email_code_digest
-from wh_local.customer.contracts import CustomerAuthResult
+from wh_local.customer.contracts import (
+    CustomerAuthRejected,
+    CustomerAuthResult,
+    CustomerBillingProtocolError,
+)
 from wh_local.customer.local_session import LocalSessionService
 from wh_local.customer.remote_client import CustomerAuthClient
 from wh_local.customer.routes import create_customer_router
 from wh_local.db import transaction
 
 _EMAIL_CODE_SECRET = "billing-test-secret-that-is-at-least-32-chars"
+
+
+def test_remote_billing_protocol_has_a_dedicated_error_contract() -> None:
+    assert hasattr(customer_contracts, "CustomerBillingProtocolError")
 
 
 def _register_and_login(client: TestClient, db_path: Path, *, username: str = "billing_user") -> str:
@@ -271,6 +281,51 @@ def test_remote_client_posts_authoritative_usage_with_remote_session(monkeypatch
         "/api/customer/billing/usage/use_123/fail",
     ]
     assert all(item[2] == {"Authorization": "Bearer remote-token"} for item in posted)
+
+
+@pytest.mark.parametrize(
+    "invalid_remote_result",
+    [
+        [],
+        json.JSONDecodeError("remote-token api-key payload", "not-json", 0),
+    ],
+)
+def test_remote_billing_client_normalizes_invalid_json_and_envelopes(
+    monkeypatch,
+    invalid_remote_result: object,
+) -> None:
+    client = CustomerAuthClient("https://customer.example.test")
+
+    def invalid_post(*_args, **_kwargs):
+        if isinstance(invalid_remote_result, BaseException):
+            raise invalid_remote_result
+        return invalid_remote_result
+
+    monkeypatch.setattr(client, "_post", invalid_post)
+
+    with pytest.raises(CustomerBillingProtocolError) as caught:
+        client.reserve_ai_usage("remote-token", {"feature_key": "product_processing.text"})
+
+    assert str(caught.value) == "remote billing service returned an invalid response"
+    assert "remote-token" not in str(caught.value)
+
+
+def test_remote_billing_client_rejects_malformed_remote_error_status(monkeypatch) -> None:
+    client = CustomerAuthClient("https://customer.example.test")
+    malformed = CustomerAuthRejected.__new__(CustomerAuthRejected)
+    RuntimeError.__init__(malformed, "remote-token api-key payload")
+    malformed.status_code = 500
+    malformed.message = "remote-token api-key payload"
+    monkeypatch.setattr(
+        client,
+        "_post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(malformed),
+    )
+
+    with pytest.raises(CustomerBillingProtocolError) as caught:
+        client.reserve_ai_usage("remote-token", {"feature_key": "product_processing.text"})
+
+    assert str(caught.value) == "remote billing service returned an invalid response"
 
 
 def _customer_router_client(remote_auth: object) -> tuple[TestClient, str]:

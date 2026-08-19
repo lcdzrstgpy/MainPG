@@ -24,6 +24,13 @@ class CustomerAuthRejected(CustomerAuthError):
         super().__init__(self.message)
 
 
+class CustomerBillingProtocolError(CustomerAuthError):
+    """Raised when a remote billing response violates its public contract."""
+
+    def __init__(self) -> None:
+        super().__init__("remote billing service returned an invalid response")
+
+
 @dataclass(frozen=True)
 class CustomerAuthResult:
     """Normalized successful login response from the platform auth service."""

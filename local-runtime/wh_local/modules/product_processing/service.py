@@ -18,6 +18,11 @@ from typing import Any
 from wh_local.data_collection.contracts import DailySelectionError
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 from wh_local.config import default_config
+from wh_local.customer.contracts import (
+    CustomerAuthRejected,
+    CustomerAuthUnavailable,
+    CustomerBillingProtocolError,
+)
 from wh_local.customer.remote_client import CustomerAuthClient
 
 from .doubao_vision import (
@@ -1346,17 +1351,23 @@ class ProductProcessingService:
         """Recover safe queued work and make process-lost calls explicitly retryable."""
         interrupted = self.repository.recover_interrupted_tasks()
         queued = self.repository.queued_tasks()
-        launchable = [
+        billing_auth_required = [
             task
             for task in queued
-            if bool(task.get("preflight_only"))
-            or not self._text(
+            if not bool(task.get("preflight_only"))
+            and bool(
                 (task.get("settings", {}).get("_billing") or {}).get("account_id")
                 if isinstance(task.get("settings", {}).get("_billing"), dict)
                 else ""
             )
-            or bool(self._task_remote_token(int(task["id"])))
+            and not bool(self._task_remote_token(int(task["id"])))
         ]
+        blocked_ids = {int(task["id"]) for task in billing_auth_required}
+        for task in billing_auth_required:
+            self.repository.set_task_status(
+                int(task["id"]), "paused", str(task["workspace_id"])
+            )
+        launchable = [task for task in queued if int(task["id"]) not in blocked_ids]
         launched = sum(
             self._launch_background_execute(int(task["id"]), str(task["workspace_id"]))
             for task in launchable
@@ -1367,7 +1378,7 @@ class ProductProcessingService:
             "interrupted": len(interrupted),
             "queued": len(queued),
             "launched": launched,
-            "billing_auth_required": len(queued) - len(launchable),
+            "billing_auth_required": len(billing_auth_required),
             "finalize_queued": int(finalize.get("queued") or 0),
             "finalize_launched": int(finalize.get("launched") or 0),
             "media_claimed": int(media.get("claimed") or 0),
@@ -2353,15 +2364,16 @@ class ProductProcessingService:
                 )
                 remote_status = self._remote_settlement_status(response)
                 if remote_status != "succeeded":
-                    raise RuntimeError("remote billing returned an invalid success settlement")
+                    raise CustomerBillingProtocolError()
             except Exception as exc:
+                error = self._stable_remote_billing_error(exc)
                 if attempt is not None:
                     self.repository.mark_product_billing_settlement_pending(
                         int(attempt["id"]),
-                        error_message=self._task_safe_error_reason(task_id, exc),
+                        error_message=self._task_safe_error_reason(task_id, error),
                     )
                 if first_error is None:
-                    first_error = exc
+                    first_error = error
             else:
                 if attempt is not None:
                     self.repository.mark_product_billing_settled(
@@ -2416,6 +2428,7 @@ class ProductProcessingService:
         client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
         usage_ids: dict[str, str] = {}
         account_id = self._text(billing.get("account_id"))
+        attempt = None
         try:
             for kind, feature_key in self._billable_product_processing_features(settings):
                 attempt = None
@@ -2454,7 +2467,7 @@ class ProductProcessingService:
                 status_value = self._text(usage.get("status")) if isinstance(usage, dict) else ""
                 response_feature = self._text(usage.get("feature_key")) if isinstance(usage, dict) else ""
                 if not value or status_value != "reserved" or (response_feature and response_feature != feature_key):
-                    raise RuntimeError("remote billing did not return a reserved usage")
+                    raise CustomerBillingProtocolError()
                 if attempt is not None:
                     self.repository.record_product_billing_reservation(
                         int(attempt["id"]),
@@ -2463,18 +2476,34 @@ class ProductProcessingService:
                     )
                 usage_ids[kind] = value
         except Exception as exc:
+            error = self._stable_remote_billing_error(exc)
+            if attempt is not None:
+                self.repository.mark_product_billing_settlement_pending(
+                    int(attempt["id"]),
+                    error_message=self._task_safe_error_reason(task_id, error),
+                )
             if usage_ids:
                 self._store_reserved_usage_ids(task_id, item_id, usage_ids)
                 try:
                     self._settle_product_processing_item_failure_for_item(
                         task_id,
                         item_id,
-                        {"status": "failed", "reason": self._task_safe_error_reason(task_id, exc)},
+                        {"status": "failed", "reason": self._task_safe_error_reason(task_id, error)},
                     )
                 except Exception:
                     pass
-            safe_reason = self._task_safe_error_reason(task_id, exc)
-            if safe_reason != _ai_error_reason(exc):
+            if isinstance(
+                error,
+                (
+                    CustomerBillingProtocolError,
+                    CustomerAuthUnavailable,
+                    CustomerAuthRejected,
+                    PermissionError,
+                ),
+            ):
+                raise error
+            safe_reason = self._task_safe_error_reason(task_id, error)
+            if safe_reason != _ai_error_reason(error):
                 raise RuntimeError(safe_reason) from None
             raise
         self._store_reserved_usage_ids(task_id, item_id, usage_ids)
@@ -2523,11 +2552,27 @@ class ProductProcessingService:
             return self._text(self._task_remote_tokens.get(task_id))
 
     def _task_safe_error_reason(self, task_id: int, error: BaseException) -> str:
-        reason = str(error).strip() or type(error).__name__
+        stable = self._stable_remote_billing_error(error)
+        reason = str(stable).strip() or type(stable).__name__
         token = self._task_remote_token(task_id)
         if token:
             reason = reason.replace(token, "[redacted]")
         return reason[:200]
+
+    @staticmethod
+    def _stable_remote_billing_error(error: BaseException) -> BaseException:
+        if isinstance(error, CustomerBillingProtocolError):
+            return CustomerBillingProtocolError()
+        if isinstance(error, CustomerAuthUnavailable):
+            return CustomerAuthUnavailable("remote billing service is unavailable")
+        if isinstance(error, CustomerAuthRejected):
+            status_code = getattr(error, "status_code", None)
+            if type(status_code) is int and 400 <= status_code < 500:
+                return CustomerAuthRejected(status_code, "remote billing request was rejected")
+            return CustomerBillingProtocolError()
+        if isinstance(error, PermissionError):
+            return PermissionError("remote billing session was rejected")
+        return error
 
     def _product_billing_attempt_for_usage(
         self,
@@ -2585,15 +2630,16 @@ class ProductProcessingService:
                 )
                 remote_status = self._remote_settlement_status(response)
                 if remote_status not in {"succeeded", "failed"}:
-                    raise RuntimeError("remote billing returned an invalid failure settlement")
+                    raise CustomerBillingProtocolError()
             except Exception as exc:
+                error = self._stable_remote_billing_error(exc)
                 if attempt is not None:
                     self.repository.mark_product_billing_settlement_pending(
                         int(attempt["id"]),
-                        error_message=self._task_safe_error_reason(task_id, exc),
+                        error_message=self._task_safe_error_reason(task_id, error),
                     )
                 if first_error is None:
-                    first_error = exc
+                    first_error = error
             else:
                 if attempt is not None:
                     self.repository.mark_product_billing_settled(
@@ -2613,8 +2659,6 @@ class ProductProcessingService:
         token = self._text(remote_token)
         if not token:
             raise PermissionError("remote billing session is missing")
-        with self._submission_lock:
-            self._task_remote_tokens[task_id] = token
         client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
         reconciled = 0
         pending = self.repository.product_billing_attempts(task_id=task_id, pending_only=True)
@@ -2646,7 +2690,7 @@ class ProductProcessingService:
                         or status_value != "reserved"
                         or (response_feature and response_feature != current["feature_key"])
                     ):
-                        raise RuntimeError("remote billing did not return a reserved usage")
+                        raise CustomerBillingProtocolError()
                     current = self.repository.record_product_billing_reservation(
                         int(current["id"]), usage_id=usage_id, remote_status=status_value
                     )
@@ -2666,18 +2710,26 @@ class ProductProcessingService:
                         {"error_message": self._text(current.get("last_error")) or "interrupted billing attempt"},
                     )
                 remote_status = self._remote_settlement_status(response)
-                if remote_status not in {"succeeded", "failed"}:
-                    raise RuntimeError("remote billing returned an invalid recovery settlement")
+                valid_statuses = {"succeeded"} if desired == "succeeded" else {"succeeded", "failed"}
+                if remote_status not in valid_statuses:
+                    raise CustomerBillingProtocolError()
                 self.repository.mark_product_billing_settled(
                     int(current["id"]), remote_status=remote_status
                 )
+                self._remove_reserved_usage_id(
+                    task_id,
+                    int(current["item_id"]),
+                    self._text(current["kind"]),
+                    usage_id,
+                )
                 reconciled += 1
             except Exception as exc:
+                error = self._stable_remote_billing_error(exc)
                 self.repository.mark_product_billing_settlement_pending(
                     int(current["id"]),
-                    error_message=self._task_safe_error_reason(task_id, exc),
+                    error_message=self._task_safe_error_reason(task_id, error),
                 )
-                raise
+                raise error
         self._cleanup_terminal_billing_state(task_id)
         return {"reconciled": reconciled, "pending": len(pending) - reconciled}
 

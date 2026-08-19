@@ -8,7 +8,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
-from ....customer.contracts import CustomerAuthRejected, CustomerAuthUnavailable
+from ....customer.contracts import (
+    CustomerAuthRejected,
+    CustomerAuthUnavailable,
+    CustomerBillingProtocolError,
+)
 from ....customer.local_session import LocalSessionService
 from ....customer.remote_client import CustomerAuthClient
 from ....session import Actor, actor_from_authorization
@@ -621,6 +625,13 @@ def create_product_processing_router(
         task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
         metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
         settings = metadata.get("settings") if isinstance(metadata, dict) else {}
+        available_points = _reconcile_billing_before_precheck(
+            service,
+            task_id,
+            settings if isinstance(settings, dict) else {},
+            token,
+            remote_customer_auth,
+        )
         pending_ids = [
             int(item["product_draft_id"])
             for item in snapshot.get("items", [])
@@ -640,6 +651,7 @@ def create_product_processing_router(
                 source_ref=f"product_processing:tasks/{task_id}/resume",
                 remote_token=token,
                 remote_customer_auth=remote_customer_auth,
+                available_points=available_points,
             )
         return _call(
             service.resume_task,
@@ -668,10 +680,17 @@ def create_product_processing_router(
             and (not requested_ids or int(item.get("product_draft_id") or 0) in requested_ids)
         ]
         token = _remote_token(request, customer_sessions)
+        task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
+        metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
+        settings = metadata.get("settings") if isinstance(metadata, dict) else {}
+        available_points = _reconcile_billing_before_precheck(
+            service,
+            task_id,
+            settings if isinstance(settings, dict) else {},
+            token,
+            remote_customer_auth,
+        )
         if retry_draft_ids:
-            task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
-            metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
-            settings = metadata.get("settings") if isinstance(metadata, dict) else {}
             billing_payload = {
                 **(settings if isinstance(settings, dict) else {}),
                 "draft_ids": retry_draft_ids,
@@ -683,6 +702,7 @@ def create_product_processing_router(
                 source_ref=f"product_processing:tasks/{task_id}/retry-attention",
                 remote_token=token,
                 remote_customer_auth=remote_customer_auth,
+                available_points=available_points,
             )
         return _call(
             service.retry_attention,
@@ -738,6 +758,11 @@ def _call(function, *args, **kwargs):
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except ProductProcessingValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except CustomerBillingProtocolError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "remote billing service returned an invalid response",
+        ) from exc
     except CustomerAuthUnavailable as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -784,6 +809,7 @@ def _attach_billing_context_and_require_points(
     source_ref: str,
     remote_token: str,
     remote_customer_auth: CustomerAuthClient | None,
+    available_points: int | None = None,
 ) -> None:
     if bool(payload.get("preflight_only")) or bool(payload.get("category_preflight_only")):
         return
@@ -796,7 +822,11 @@ def _attach_billing_context_and_require_points(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "server billing session is unavailable",
         )
-    available = _remote_available_points(remote_customer_auth, remote_token)
+    available = (
+        available_points
+        if available_points is not None
+        else _remote_available_points(remote_customer_auth, remote_token)
+    )
     if available < estimated_points:
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
@@ -815,12 +845,39 @@ def _attach_billing_context_and_require_points(
     }
 
 
+def _reconcile_billing_before_precheck(
+    service: ProductProcessingService,
+    task_id: int,
+    settings: dict[str, Any],
+    remote_token: str,
+    remote_customer_auth: CustomerAuthClient | None,
+) -> int | None:
+    billing = settings.get("_billing") if isinstance(settings.get("_billing"), dict) else {}
+    if not str(billing.get("account_id") or "").strip():
+        return None
+    if remote_customer_auth is None or not remote_token:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "server billing session is unavailable",
+        )
+    available = _remote_available_points(remote_customer_auth, remote_token)
+    if service.repository.product_billing_attempts(task_id=task_id, pending_only=True):
+        _call(service.reconcile_product_billing, task_id, remote_token)
+        available = _remote_available_points(remote_customer_auth, remote_token)
+    return available
+
+
 def _remote_available_points(
     remote_customer_auth: CustomerAuthClient,
     remote_token: str,
 ) -> int:
     try:
         summary = remote_customer_auth.billing_summary(remote_token)
+    except CustomerBillingProtocolError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "remote billing service returned an invalid response",
+        ) from exc
     except CustomerAuthUnavailable as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
