@@ -145,18 +145,9 @@ def resolve_ai_provider() -> dict[str, Any]:
             "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
             "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
         },
-        "_sys_backup_image_ai": (
-            {
-                "base_url": sys_cfg.backup_image_ai.base_url.rstrip("/"),
-                "api_key": sys_cfg.backup_image_ai.api_key,
-                "model": sys_cfg.backup_image_ai.model,
-                "reference_model": sys_cfg.backup_image_ai.reference_model,
-                "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
-                "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
-            }
-            if sys_cfg and sys_cfg.backup_image_ai.configured
-            else None
-        ),
+        # Product processing may only use the billed server-managed route.
+        # Never expose decrypted desktop backup-provider credentials here.
+        "_sys_backup_image_ai": None,
         "_sys_limits": dict(sys_cfg.limits) if sys_cfg and sys_cfg.limits else {},
         "_sys_updates": dict(sys_cfg.updates) if sys_cfg and sys_cfg.updates else {},
         "_sys_cos": sys_cos,

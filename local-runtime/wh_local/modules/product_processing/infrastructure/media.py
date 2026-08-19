@@ -849,11 +849,18 @@ class ProductImageProcessor:
         未配置模型池时退化为单模型条目。primary/backup 两段可各自携带模型池。
         """
         providers: list[dict[str, str]] = []
+        sections = [dict(config.get(name) or {}) for name in ("image", "backup_image")]
+        server_managed = any(
+            str(section.get("base_url") or "").strip().rstrip("/") == "server-managed-wuyin"
+            for section in sections
+        )
         for name, section_name in (("primary", "image"), ("backup", "backup_image")):
             section = dict(config.get(section_name) or {})
             base_url = str(section.get("base_url") or "").strip().rstrip("/")
             api_key = str(section.get("api_key") or "").strip()
             if not (base_url and api_key):
+                continue
+            if server_managed and base_url != "server-managed-wuyin":
                 continue
             parsed = urlsplit(base_url)
             if base_url != "server-managed-wuyin" and (

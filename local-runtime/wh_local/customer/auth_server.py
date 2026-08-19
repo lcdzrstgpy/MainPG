@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -24,6 +25,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from ..billing import reserve_ai_usage, settle_ai_usage_failure, settle_ai_usage_success
 from ..config import default_config
 from ..db import init_db, transaction
+from ..modules.product_processing.domain.policy import is_safe_external_url
 from ..session import Actor
 from .auth_service import SQLiteCustomerAuthService
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
@@ -43,6 +45,17 @@ TEXT_MODEL = "gpt-5.6-terra"
 WUYIN_IMAGE_SUBMIT_URL = "https://api.wuyinkeji.com/api/async/image_gpt"
 WUYIN_IMAGE_DETAIL_URL = "https://api.wuyinkeji.com/api/async/detail"
 _TEXT_GATEWAY_SEMAPHORE = threading.BoundedSemaphore(value=4)
+MAX_CHAT_REQUEST_BYTES = 12 * 1024 * 1024
+MAX_CHAT_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_CHAT_CONTENT_PARTS = 16
+MAX_GATEWAY_RESPONSE_BYTES = 8 * 1024 * 1024
+# One product item bundles one vision request and one listing-text request.
+# Legacy image modes can issue four primary slot calls, four slot recoveries,
+# one detail call, and up to four configured detail repair rounds.
+GATEWAY_DISTINCT_REQUEST_LIMITS = {
+    "product_processing.text": 2,
+    "product_processing.image_grid_2k": 13,
+}
 
 
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
@@ -186,19 +199,36 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
-        _require_reserved_usage(
-            db_path,
-            str(payload.get("usage_id") or ""),
-            str(account["account_id"]),
-            "product_processing.text",
-        )
+        usage_id = str(payload.get("usage_id") or "")
         messages = _validated_chat_messages(payload.get("messages"))
         if str(payload.get("model") or TEXT_MODEL).strip() != TEXT_MODEL:
             raise HTTPException(status_code=400, detail="unsupported server-managed text model")
+        request_hash = _gateway_request_hash(
+            {"model": TEXT_MODEL, "messages": messages}
+        )
+        cached = _claim_gateway_request(
+            db_path,
+            usage_id=usage_id,
+            account_id=str(account["account_id"]),
+            feature_key="product_processing.text",
+            request_hash=request_hash,
+        )
+        if cached is not None:
+            return cached
         api_key = str(os.environ.get("WH_TEXT_API_KEY") or "").strip()
         if not api_key:
+            _fail_gateway_request(db_path, usage_id, request_hash)
             raise HTTPException(status_code=503, detail="server text credential is not configured")
-        return _server_text_chat(api_key, messages)
+        try:
+            response_payload = _sanitized_gateway_response(
+                _server_text_chat(api_key, messages),
+                secrets=(api_key,),
+            )
+            _complete_gateway_request(db_path, usage_id, request_hash, response_payload)
+            return response_payload
+        except Exception:
+            _fail_gateway_request(db_path, usage_id, request_hash)
+            raise
 
     @app.post("/api/customer/ai/image")
     def server_managed_ai_image(
@@ -206,12 +236,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
-        _require_reserved_usage(
-            db_path,
-            str(payload.get("usage_id") or ""),
-            str(account["account_id"]),
-            "product_processing.image_grid_2k",
-        )
+        usage_id = str(payload.get("usage_id") or "")
         prompt = str(payload.get("prompt") or "").strip()
         urls = payload.get("urls") or []
         size = str(payload.get("size") or "1:1").strip().lower()
@@ -225,39 +250,29 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             "21:9", "9:21", "1:3", "3:1", "2:1", "1:2",
         }:
             raise HTTPException(status_code=400, detail="image size is invalid")
+        request_hash = _gateway_request_hash(
+            {"prompt": prompt, "size": size, "urls": urls}
+        )
+        cached = _claim_gateway_request(
+            db_path,
+            usage_id=usage_id,
+            account_id=str(account["account_id"]),
+            feature_key="product_processing.image_grid_2k",
+            request_hash=request_hash,
+        )
+        if cached is not None:
+            return cached
         api_key = str(os.environ.get("WH_WUYIN_IMAGE_API_KEY") or "").strip()
         if not api_key:
+            _fail_gateway_request(db_path, usage_id, request_hash)
             raise HTTPException(status_code=503, detail="server image credential is not configured")
-        response: requests.Response | None = None
         try:
-            response = requests.post(
-                WUYIN_IMAGE_SUBMIT_URL,
-                params={"key": api_key},
-                headers={"Authorization": api_key, "Content-Type": "application/json"},
-                json={"prompt": prompt, "size": size, **({"urls": urls} if urls else {})},
-                timeout=35,
-                allow_redirects=False,
-            )
-            submitted = response.json()
-        except (requests.RequestException, ValueError) as exc:
-            raise HTTPException(status_code=503, detail="server image request failed") from exc
-        finally:
-            if response is not None:
-                response.close()
-        data = submitted.get("data") if isinstance(submitted, dict) else None
-        task_id = str(data.get("id") or "").strip() if isinstance(data, dict) else ""
-        if (
-            not isinstance(submitted, dict)
-            or not 200 <= int(response.status_code) < 300
-            or int(submitted.get("code") or 0) != 200
-            or not task_id
-        ):
-            raise HTTPException(status_code=502, detail="server image provider rejected the request")
-        return {
-            "ok": True,
-            "task_id": task_id,
-            "result_url": _poll_server_wuyin(api_key, task_id),
-        }
+            response_payload = _server_image_request(api_key, prompt, urls, size)
+            _complete_gateway_request(db_path, usage_id, request_hash, response_payload)
+            return response_payload
+        except Exception:
+            _fail_gateway_request(db_path, usage_id, request_hash)
+            raise
 
     @app.post("/api/customer/billing/payment-callback/{provider}")
     def billing_payment_callback(provider: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -642,31 +657,157 @@ def _fixed_usage_provider(feature_key: str) -> tuple[str, str]:
     )
 
 
-def _require_reserved_usage(
+def _gateway_request_hash(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _claim_gateway_request(
     database_path: Path,
+    *,
     usage_id: str,
     account_id: str,
-    expected_feature: str,
-) -> None:
+    feature_key: str,
+    request_hash: str,
+) -> dict[str, Any] | None:
     if not usage_id:
         raise HTTPException(status_code=400, detail="usage_id is required")
     with transaction(database_path) as conn:
-        row = conn.execute(
+        usage = conn.execute(
             "SELECT account_id, feature_key, status FROM billing_ai_usage_events WHERE usage_id = ?",
             (usage_id,),
         ).fetchone()
-    if row is None or str(row["account_id"]) != account_id:
-        raise HTTPException(status_code=404, detail="usage event not found")
-    if str(row["feature_key"]) != expected_feature:
-        raise HTTPException(status_code=400, detail="usage feature does not match operation")
-    if str(row["status"]) != "reserved":
-        raise HTTPException(status_code=409, detail="usage event is not reserved")
+        if usage is None or str(usage["account_id"]) != account_id:
+            raise HTTPException(status_code=404, detail="usage event not found")
+        if str(usage["feature_key"]) != feature_key:
+            raise HTTPException(status_code=400, detail="usage feature does not match operation")
+        if str(usage["status"]) != "reserved":
+            raise HTTPException(status_code=409, detail="usage event is not reserved")
+
+        existing = conn.execute(
+            "SELECT status, response_json FROM billing_ai_gateway_requests WHERE usage_id = ? AND request_hash = ?",
+            (usage_id, request_hash),
+        ).fetchone()
+        if existing is not None:
+            status = str(existing["status"])
+            if status == "succeeded":
+                try:
+                    cached = json.loads(str(existing["response_json"] or ""))
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise HTTPException(status_code=503, detail="cached gateway response is unavailable") from exc
+                if not isinstance(cached, dict):
+                    raise HTTPException(status_code=503, detail="cached gateway response is unavailable")
+                return cached
+            if status == "in_progress":
+                raise HTTPException(status_code=409, detail="identical gateway request is already in progress")
+            conn.execute(
+                """
+                UPDATE billing_ai_gateway_requests
+                SET status = 'in_progress', response_json = '',
+                    attempt_count = attempt_count + 1, updated_at = datetime('now')
+                WHERE usage_id = ? AND request_hash = ? AND status = 'failed'
+                """,
+                (usage_id, request_hash),
+            )
+            return None
+
+        row = conn.execute(
+            "SELECT COUNT(*) AS count FROM billing_ai_gateway_requests WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
+        limit = GATEWAY_DISTINCT_REQUEST_LIMITS[feature_key]
+        if int(row["count"] if row else 0) >= limit:
+            raise HTTPException(status_code=409, detail="gateway request limit reached for reserved usage")
+        conn.execute(
+            """
+            INSERT INTO billing_ai_gateway_requests (
+                usage_id, request_hash, account_id, feature_key, status
+            ) VALUES (?, ?, ?, ?, 'in_progress')
+            """,
+            (usage_id, request_hash, account_id, feature_key),
+        )
+    return None
+
+
+def _complete_gateway_request(
+    database_path: Path,
+    usage_id: str,
+    request_hash: str,
+    response_payload: dict[str, Any],
+) -> None:
+    encoded = json.dumps(
+        response_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(encoded.encode("utf-8")) > MAX_GATEWAY_RESPONSE_BYTES:
+        raise HTTPException(status_code=502, detail="server provider response is too large")
+    with transaction(database_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET status = 'succeeded', response_json = ?, updated_at = datetime('now')
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+            """,
+            (encoded, usage_id, request_hash),
+        )
+        if cursor.rowcount != 1:
+            raise HTTPException(status_code=409, detail="gateway request claim is no longer active")
+
+
+def _fail_gateway_request(database_path: Path, usage_id: str, request_hash: str) -> None:
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET status = 'failed', response_json = '', updated_at = datetime('now')
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+            """,
+            (usage_id, request_hash),
+        )
+
+
+def _sanitized_gateway_response(
+    value: Any,
+    *,
+    secrets: tuple[str, ...] = (),
+    depth: int = 0,
+) -> Any:
+    if depth > 12:
+        raise HTTPException(status_code=502, detail="server provider response is too deeply nested")
+    blocked_keys = {"authorization", "api_key", "access_token", "refresh_token", "password", "secret", "key"}
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitized_gateway_response(item, secrets=secrets, depth=depth + 1)
+            for key, item in value.items()
+            if str(key).strip().lower() not in blocked_keys
+        }
+    if isinstance(value, list):
+        return [
+            _sanitized_gateway_response(item, secrets=secrets, depth=depth + 1)
+            for item in value[:10_000]
+        ]
+    if isinstance(value, str):
+        sanitized = value
+        for secret in secrets:
+            if secret:
+                sanitized = sanitized.replace(secret, "[redacted]")
+        return sanitized
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    raise HTTPException(status_code=502, detail="server provider response contains unsupported data")
 
 
 def _validated_chat_messages(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not 1 <= len(value) <= 8:
         raise HTTPException(status_code=400, detail="chat messages are invalid")
-    if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > 8 * 1024 * 1024:
+    if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > MAX_CHAT_REQUEST_BYTES:
         raise HTTPException(status_code=413, detail="chat request is too large")
     messages: list[dict[str, Any]] = []
     for message in value:
@@ -676,15 +817,82 @@ def _validated_chat_messages(value: Any) -> list[dict[str, Any]]:
         ):
             raise HTTPException(status_code=400, detail="chat message is invalid")
         content = message.get("content")
-        if not isinstance(content, (str, list)):
+        if isinstance(content, str):
+            validated_content: str | list[dict[str, Any]] = content
+        elif isinstance(content, list):
+            validated_content = _validated_chat_content_parts(content)
+        else:
             raise HTTPException(status_code=400, detail="chat message content is invalid")
-        messages.append({"role": str(message["role"]), "content": content})
+        messages.append({"role": str(message["role"]), "content": validated_content})
     return messages
 
 
+def _validated_chat_content_parts(value: list[Any]) -> list[dict[str, Any]]:
+    if not 1 <= len(value) <= MAX_CHAT_CONTENT_PARTS:
+        raise HTTPException(status_code=400, detail="chat content parts are invalid")
+    parts: list[dict[str, Any]] = []
+    for part in value:
+        if not isinstance(part, dict):
+            raise HTTPException(status_code=400, detail="chat content part is invalid")
+        part_type = str(part.get("type") or "")
+        if part_type == "text":
+            if set(part) != {"type", "text"} or not isinstance(part.get("text"), str):
+                raise HTTPException(status_code=400, detail="chat text part is invalid")
+            parts.append({"type": "text", "text": str(part["text"])})
+            continue
+        if part_type != "image_url" or set(part) != {"type", "image_url"}:
+            raise HTTPException(status_code=400, detail="chat content part type is unsupported")
+        image = part.get("image_url")
+        if not isinstance(image, dict) or not set(image).issubset({"url", "detail"}) or "url" not in image:
+            raise HTTPException(status_code=400, detail="chat image part is invalid")
+        url = str(image.get("url") or "").strip()
+        detail = str(image.get("detail") or "").strip().lower()
+        if detail and detail not in {"auto", "low", "high"}:
+            raise HTTPException(status_code=400, detail="chat image detail is invalid")
+        if url.startswith("data:"):
+            _validate_chat_data_image(url)
+        elif not _safe_provider_image_url(url):
+            raise HTTPException(status_code=400, detail="chat image URL is invalid")
+        normalized_image = {"url": url}
+        if detail:
+            normalized_image["detail"] = detail
+        parts.append({"type": "image_url", "image_url": normalized_image})
+    return parts
+
+
+def _validate_chat_data_image(value: str) -> None:
+    try:
+        header, encoded = value.split(",", 1)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="chat data image is invalid") from exc
+    if header.lower() not in {
+        "data:image/jpeg;base64",
+        "data:image/jpg;base64",
+        "data:image/png;base64",
+        "data:image/webp;base64",
+    }:
+        raise HTTPException(status_code=400, detail="chat data image type is unsupported")
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(status_code=400, detail="chat data image is invalid") from exc
+    if not decoded or len(decoded) > MAX_CHAT_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="chat data image is too large")
+
+
 def _safe_provider_image_url(value: str) -> bool:
-    parsed = urlsplit(str(value or "").strip())
-    return parsed.scheme == "https" and bool(parsed.netloc) and len(str(value)) <= 2048
+    normalized = str(value or "").strip()
+    try:
+        parsed = urlsplit(normalized)
+    except ValueError:
+        return False
+    return (
+        len(normalized) <= 2048
+        and parsed.scheme == "https"
+        and not parsed.username
+        and not parsed.password
+        and is_safe_external_url(normalized)
+    )
 
 
 def _server_text_chat(api_key: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -725,20 +933,72 @@ def _server_text_chat(api_key: str, messages: list[dict[str, Any]]) -> dict[str,
         _TEXT_GATEWAY_SEMAPHORE.release()
 
 
-def _first_provider_image_url(value: Any) -> str:
+def _server_image_request(
+    api_key: str,
+    prompt: str,
+    urls: list[str],
+    size: str,
+) -> dict[str, Any]:
+    response: requests.Response | None = None
+    try:
+        response = requests.post(
+            WUYIN_IMAGE_SUBMIT_URL,
+            params={"key": api_key},
+            headers={"Authorization": api_key, "Content-Type": "application/json"},
+            json={"prompt": prompt, "size": size, **({"urls": urls} if urls else {})},
+            timeout=35,
+            allow_redirects=False,
+        )
+        status_code = int(response.status_code)
+        if status_code == 429 or status_code >= 500:
+            raise HTTPException(status_code=503, detail="server image provider is temporarily unavailable")
+        if not 200 <= status_code < 300:
+            raise HTTPException(status_code=502, detail="server image provider rejected the request")
+        try:
+            submitted = response.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail="server image provider returned invalid JSON") from exc
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=503, detail="server image request failed") from exc
+    finally:
+        if response is not None:
+            response.close()
+    data = submitted.get("data") if isinstance(submitted, dict) else None
+    task_id = str(data.get("id") or "").strip() if isinstance(data, dict) else ""
+    if (
+        not isinstance(submitted, dict)
+        or _provider_code(submitted.get("code")) != 200
+        or not task_id
+    ):
+        raise HTTPException(status_code=502, detail="server image provider rejected the request")
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "result_url": _poll_server_wuyin(api_key, task_id),
+    }
+
+
+def _first_provider_image_url(value: Any, *, depth: int = 0) -> str:
+    if depth > 12:
+        raise HTTPException(status_code=502, detail="server image provider response is too deeply nested")
     if isinstance(value, str):
-        return value.strip() if _safe_provider_image_url(value) else ""
+        candidate = value.strip()
+        if candidate.lower().startswith(("http://", "https://")):
+            if not _safe_provider_image_url(candidate):
+                raise HTTPException(status_code=502, detail="server image provider returned an unsafe URL")
+            return candidate
+        return ""
     if isinstance(value, dict):
         for key in (
             "url", "image_url", "image", "src", "href", "result", "results",
             "images", "urls", "output", "outputs",
         ):
-            found = _first_provider_image_url(value.get(key))
+            found = _first_provider_image_url(value.get(key), depth=depth + 1)
             if found:
                 return found
     if isinstance(value, (list, tuple)):
-        for item in value:
-            found = _first_provider_image_url(item)
+        for item in value[:10_000]:
+            found = _first_provider_image_url(item, depth=depth + 1)
             if found:
                 return found
     return ""
@@ -747,7 +1007,6 @@ def _first_provider_image_url(value: Any) -> str:
 def _poll_server_wuyin(api_key: str, task_id: str) -> str:
     deadline = time.monotonic() + 620
     while time.monotonic() < deadline:
-        time.sleep(3)
         response: requests.Response | None = None
         try:
             response = requests.get(
@@ -757,16 +1016,23 @@ def _poll_server_wuyin(api_key: str, task_id: str) -> str:
                 timeout=35,
                 allow_redirects=False,
             )
-            payload = response.json()
-        except (requests.RequestException, ValueError):
-            continue
+            status_code = int(response.status_code)
+            if status_code == 429 or status_code >= 500:
+                raise HTTPException(status_code=503, detail="server image provider is temporarily unavailable")
+            if not 200 <= status_code < 300:
+                raise HTTPException(status_code=502, detail="server image provider rejected the poll request")
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise HTTPException(status_code=502, detail="server image provider returned invalid JSON") from exc
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=503, detail="server image poll request failed") from exc
         finally:
             if response is not None:
                 response.close()
         if not isinstance(payload, dict):
-            continue
-        code = int(payload.get("code") or 0)
-        if code and code != 200:
+            raise HTTPException(status_code=502, detail="server image provider returned an invalid response")
+        if _provider_code(payload.get("code")) != 200:
             raise HTTPException(status_code=502, detail="server image provider task failed")
         data = payload.get("data") or {}
         result_url = _first_provider_image_url(data) or _first_provider_image_url(payload)
@@ -779,7 +1045,20 @@ def _poll_server_wuyin(api_key: str, task_id: str) -> str:
         )
         if status in {"3", "4", "5", "fail", "failed", "error", "cancelled", "canceled"}:
             raise HTTPException(status_code=502, detail="server image provider task failed")
+        time.sleep(3)
     raise HTTPException(status_code=504, detail="server image provider timed out")
+
+
+def _provider_code(value: Any) -> int:
+    if isinstance(value, bool):
+        raise HTTPException(status_code=502, detail="server image provider returned an invalid code")
+    try:
+        normalized = str(value).strip()
+        if not normalized or any(character not in "0123456789" for character in normalized):
+            raise ValueError
+        return int(normalized)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="server image provider returned an invalid code") from exc
 
 
 def _safe_int(value: Any) -> int:

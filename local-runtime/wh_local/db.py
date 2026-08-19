@@ -508,6 +508,28 @@ CREATE TABLE IF NOT EXISTS billing_ai_usage_events (
 
 CREATE INDEX IF NOT EXISTS idx_billing_ai_usage_events_account_status
     ON billing_ai_usage_events (account_id, status, created_at);
+
+-- 服务端 AI 网关请求账本：同一计费用量的同一规范化请求仅调用上游一次。
+-- 只保存已清理的业务响应，不保存平台 token、上游 key 或请求正文。
+CREATE TABLE IF NOT EXISTS billing_ai_gateway_requests (
+    usage_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    feature_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'in_progress'
+        CHECK (status IN ('in_progress', 'succeeded', 'failed')),
+    response_json TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (usage_id, request_hash),
+    FOREIGN KEY (usage_id) REFERENCES billing_ai_usage_events (usage_id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE,
+    CHECK (attempt_count > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_ai_gateway_requests_usage_status
+    ON billing_ai_gateway_requests (usage_id, status, created_at);
 """
 
 
