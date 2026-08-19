@@ -1128,7 +1128,7 @@ def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> 
         lambda *args, **kwargs: GridImageOutput(
             carousel_urls=(),
             attempt_count=1,
-            provider_status_class="failed",
+            provider_status_class="gateway_unavailable",
         ),
     )
 
@@ -1137,6 +1137,10 @@ def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> 
     )
 
     assert result["status"] == "failed"
+    assert result["reason"] == "服务端生图暂时不可用"
+    assert result["result"]["error_type"] == "image_generation_unavailable"
+    assert "本地质量门" not in result["result"]["operator_hint"]
+    assert "本地 API Key" in result["result"]["operator_hint"]
     assert "doubao_text" in service.repository.receipts
     assert service.repository.receipts["doubao_text"]["output"]["title"].startswith(
         "Insulated Stainless Steel Travel Mug"

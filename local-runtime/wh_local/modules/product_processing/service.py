@@ -3660,16 +3660,39 @@ class ProductProcessingService:
                 # generation failure into a misleading completed result, even when
                 # an older task payload contains force-import compatibility flags.
                 mode_label = "精品4K" if premium_mode else "普通四宫格"
+                provider_unavailable = (
+                    not grid_output.rejected_image_paths
+                    and grid_output.provider_status_class
+                    in {
+                        "connection_error",
+                        "gateway_bad_response",
+                        "gateway_unavailable",
+                        "retry_budget_exhausted",
+                        "server_error",
+                    }
+                )
                 return {
                     **item,
                     "title": optimized_title,
                     "image_url": image_url,
                     "status": "failed",
-                    "reason": f"{mode_label}未生成4张可用轮播图",
+                    "reason": (
+                        "服务端生图暂时不可用"
+                        if provider_unavailable
+                        else f"{mode_label}未生成4张可用轮播图"
+                    ),
                     "result": {
-                        "error_type": "image_grid_incomplete",
+                        "error_type": (
+                            "image_generation_unavailable"
+                            if provider_unavailable
+                            else "image_grid_incomplete"
+                        ),
                         "failure_class": "technical_retryable",
-                        "operator_hint": "生成图未通过本地质量门；可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警",
+                        "operator_hint": (
+                            "服务端生图请求失败或超时；无需检查本地 API Key，请稍后重新处理"
+                            if provider_unavailable
+                            else "生成图未通过本地质量门；可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警"
+                        ),
                         "retryable": True,
                         "rejected_image_paths": list(grid_output.rejected_image_paths),
                         "optimized_title": optimized_title,

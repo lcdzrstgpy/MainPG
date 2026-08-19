@@ -1288,7 +1288,10 @@ class ProductImageProcessor:
         except MediaProcessingError:
             raise
         except requests.RequestException as exc:
-            raise MediaProcessingError("server image gateway is temporarily unavailable") from exc
+            raise MediaProcessingError(
+                "server image gateway is temporarily unavailable",
+                status_class="gateway_unavailable",
+            ) from exc
         finally:
             if response is not None:
                 response.close()

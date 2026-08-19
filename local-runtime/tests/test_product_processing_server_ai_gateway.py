@@ -1665,6 +1665,34 @@ def test_image_adapter_preserves_stable_gateway_status_without_body_leak(
     assert (media_module._retry_class(caught.value) not in {"non_retryable_4xx", "non_retryable_local"}) is retryable
 
 
+def test_image_adapter_marks_gateway_transport_failure_retryable(monkeypatch) -> None:
+    class _MediaSession:
+        def post(self, *_args, **_kwargs):
+            raise requests.ConnectionError("transient gateway disconnect")
+
+    monkeypatch.setattr(media_module, "_SESSION", _MediaSession())
+    processor = ProductImageProcessor(lambda: {})
+    provider = {
+        "base_url": "server-managed-wuyin",
+        "api_key": "server-managed",
+        "model": "image_gpt",
+        "reference_model": "image_gpt",
+        "image_size": "2048x2048",
+    }
+
+    with server_ai_context("platform-token", {"image_grid": "usage-image"}):
+        with pytest.raises(media_module.MediaProcessingError) as caught:
+            processor._request_server_managed_wuyin_image(
+                provider,
+                "product prompt",
+                [],
+                timeout_seconds=60,
+            )
+
+    assert caught.value.status_class == "gateway_unavailable"
+    assert media_module._retry_class(caught.value) == "server_error"
+
+
 def test_provider_result_download_pins_validated_ip_and_keeps_original_tls_host(
     monkeypatch,
 ) -> None:
