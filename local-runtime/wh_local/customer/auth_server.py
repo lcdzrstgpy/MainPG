@@ -269,6 +269,37 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             _fail_gateway_request(db_path, usage_id, request_hash)
             raise
 
+    @app.post("/api/customer/ai/image-credentials")
+    def server_managed_image_credentials(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        usage_id = str(payload.get("usage_id") or "").strip()
+        _require_reserved_usage(
+            db_path,
+            usage_id=usage_id,
+            account_id=str(account["account_id"]),
+            feature_key="product_processing.image_grid_2k",
+        )
+        encrypted_session_key = str(payload.get("encrypted_session_key") or "").strip()
+        if not encrypted_session_key:
+            raise HTTPException(status_code=400, detail="encrypted_session_key is required")
+        api_key = str(os.environ.get("WH_WUYIN_IMAGE_API_KEY") or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=503, detail="server image credential is not configured")
+        try:
+            session_key = _rsa_decrypt_session_key(encrypted_session_key)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="cannot decrypt session key") from exc
+        return _encrypted_credentials_payload(
+            session_key,
+            {
+                "api_key": api_key,
+                "base_url": "https://api.wuyinkeji.com",
+            },
+        )
+
     @app.post("/api/customer/ai/image")
     def server_managed_ai_image(
         payload: dict[str, Any],
@@ -1742,6 +1773,22 @@ def _rsa_decrypt_session_key(encrypted_session_key_b64: str) -> bytes:
             label=None,
         ),
     )
+
+
+def _encrypted_credentials_payload(
+    session_key: bytes,
+    credentials: dict[str, str],
+) -> dict[str, Any]:
+    plaintext = json.dumps(credentials, separators=(",", ":")).encode("utf-8")
+    nonce = os.urandom(12)
+    encryptor = Cipher(algorithms.AES(session_key), modes.GCM(nonce)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+    return {
+        "ok": True,
+        "payload": base64.b64encode(ciphertext).decode("ascii"),
+        "nonce": base64.b64encode(nonce).decode("ascii"),
+        "tag": base64.b64encode(encryptor.tag).decode("ascii"),
+    }
 
 
 def _server_onebound_config() -> dict[str, str]:
