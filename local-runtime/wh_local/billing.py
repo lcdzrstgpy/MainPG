@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -19,6 +19,7 @@ from .session import Actor
 
 POINTS_PER_CNY = int(os.environ.get("WH_BILLING_POINTS_PER_CNY", "1000") or "1000")
 TEST_GRANT_POINTS = int(os.environ.get("WH_BILLING_TEST_GRANT_POINTS", "10000") or "10000")
+GATEWAY_LEGACY_LEASE_SECONDS = 900
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,12 @@ FEATURE_PRICING: dict[str, FeaturePricing] = {
     "product_processing.text": FeaturePricing(50, 20, 30, 3.0),
     "product_processing.image_grid_2k": FeaturePricing(650, 200, 599, 3.0),
 }
+
+
+def feature_reserve_points(feature_key: str) -> int:
+    """Return the server-authoritative per-unit reservation for a billing feature."""
+
+    return _pricing(feature_key).reserve_points
 
 
 def reserve_ai_usage(
@@ -273,6 +280,23 @@ def settle_ai_usage_failure(
         if row["status"] != "reserved":
             return dict(row)
         if reject_gateway_activity:
+            stale_cutoff = (
+                datetime.now(timezone.utc) - timedelta(seconds=GATEWAY_LEGACY_LEASE_SECONDS)
+            ).isoformat(timespec="seconds")
+            conn.execute(
+                """
+                UPDATE billing_ai_gateway_requests
+                SET status = 'failed', phase = 'lease_expired', response_json = '',
+                    lease_expires_at = '', updated_at = ?
+                WHERE usage_id = ? AND status = 'in_progress'
+                  AND (
+                    (lease_expires_at <> '' AND julianday(lease_expires_at) <= julianday(?))
+                    OR
+                    (lease_expires_at = '' AND julianday(updated_at) <= julianday(?))
+                  )
+                """,
+                (now, usage_id, now, stale_cutoff),
+            )
             gateway_statuses = {
                 str(gateway_row["status"])
                 for gateway_row in conn.execute(

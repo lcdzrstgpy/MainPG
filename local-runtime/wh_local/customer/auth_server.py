@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import threading
 import time
@@ -15,6 +16,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import requests
+from dataclasses import dataclass
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
@@ -63,6 +65,20 @@ GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS = {
     "product_processing.text": 3,
     "product_processing.image_grid_2k": 5,
 }
+GATEWAY_LEASE_SECONDS = {
+    "product_processing.text": 600,
+    "product_processing.image_grid_2k": 900,
+}
+
+
+@dataclass(frozen=True)
+class _GatewayRequestClaim:
+    cached_response: dict[str, Any] | None = None
+    provider_task_id: str = ""
+
+
+class _ImageProviderTerminalFailure(RuntimeError):
+    """The provider confirmed that an image task cannot succeed."""
 
 
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
@@ -228,15 +244,15 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         api_key = str(os.environ.get("WH_TEXT_API_KEY") or "").strip()
         if not api_key:
             raise HTTPException(status_code=503, detail="server text credential is not configured")
-        cached = _claim_gateway_request(
+        claim = _claim_gateway_request(
             db_path,
             usage_id=usage_id,
             account_id=str(account["account_id"]),
             feature_key="product_processing.text",
             request_hash=request_hash,
         )
-        if cached is not None:
-            return cached
+        if claim.cached_response is not None:
+            return claim.cached_response
         try:
             response_payload = _sanitized_gateway_response(
                 _server_text_chat(api_key, messages),
@@ -280,21 +296,38 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         api_key = str(os.environ.get("WH_WUYIN_IMAGE_API_KEY") or "").strip()
         if not api_key:
             raise HTTPException(status_code=503, detail="server image credential is not configured")
-        cached = _claim_gateway_request(
+        claim = _claim_gateway_request(
             db_path,
             usage_id=usage_id,
             account_id=str(account["account_id"]),
             feature_key="product_processing.image_grid_2k",
             request_hash=request_hash,
         )
-        if cached is not None:
-            return cached
+        if claim.cached_response is not None:
+            return claim.cached_response
         try:
-            response_payload = _server_image_request(api_key, prompt, urls, size)
+            task_id = claim.provider_task_id
+            if not task_id:
+                task_id = _submit_server_wuyin(api_key, prompt, urls, size)
+                _record_gateway_provider_task(db_path, usage_id, request_hash, task_id)
+            result_url = _poll_server_wuyin(api_key, task_id)
+            response_payload = {"ok": True, "task_id": task_id, "result_url": result_url}
             _complete_gateway_request(db_path, usage_id, request_hash, response_payload)
             return response_payload
+        except _ImageProviderTerminalFailure as exc:
+            _fail_gateway_request(
+                db_path,
+                usage_id,
+                request_hash,
+                phase="terminal_failed",
+                clear_provider_task=True,
+            )
+            raise HTTPException(status_code=502, detail="server image provider task failed") from exc
         except Exception:
-            _fail_gateway_request(db_path, usage_id, request_hash)
+            if _gateway_provider_task_id(db_path, usage_id, request_hash):
+                _pause_gateway_request(db_path, usage_id, request_hash)
+            else:
+                _fail_gateway_request(db_path, usage_id, request_hash)
             raise
 
     @app.post("/api/customer/billing/payment-callback/{provider}")
@@ -725,7 +758,7 @@ def _claim_gateway_request(
     account_id: str,
     feature_key: str,
     request_hash: str,
-) -> dict[str, Any] | None:
+) -> _GatewayRequestClaim:
     if not usage_id:
         raise HTTPException(status_code=400, detail="usage_id is required")
     with transaction(database_path) as conn:
@@ -741,7 +774,12 @@ def _claim_gateway_request(
             raise HTTPException(status_code=409, detail="usage event is not reserved")
 
         existing = conn.execute(
-            "SELECT status, response_json, attempt_count FROM billing_ai_gateway_requests WHERE usage_id = ? AND request_hash = ?",
+            """
+            SELECT status, response_json, attempt_count, lease_expires_at,
+                   phase, provider_task_id, updated_at
+            FROM billing_ai_gateway_requests
+            WHERE usage_id = ? AND request_hash = ?
+            """,
             (usage_id, request_hash),
         ).fetchone()
         if existing is not None:
@@ -753,9 +791,35 @@ def _claim_gateway_request(
                     raise HTTPException(status_code=503, detail="cached gateway response is unavailable") from exc
                 if not isinstance(cached, dict):
                     raise HTTPException(status_code=503, detail="cached gateway response is unavailable")
-                return cached
+                return _GatewayRequestClaim(cached_response=cached)
             if status == "in_progress":
-                raise HTTPException(status_code=409, detail="identical gateway request is already in progress")
+                if _gateway_claim_is_fresh(existing, feature_key):
+                    raise HTTPException(status_code=409, detail="identical gateway request is already in progress")
+                provider_task_id = str(existing["provider_task_id"] or "").strip()
+                lease_expires_at = _new_gateway_lease(feature_key)
+                if provider_task_id:
+                    conn.execute(
+                        """
+                        UPDATE billing_ai_gateway_requests
+                        SET lease_expires_at = ?, phase = 'polling', updated_at = ?
+                        WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+                        """,
+                        (lease_expires_at, _utc_now(), usage_id, request_hash),
+                    )
+                    return _GatewayRequestClaim(provider_task_id=provider_task_id)
+                attempt_limit = GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS[feature_key]
+                if int(existing["attempt_count"] or 0) >= attempt_limit:
+                    raise HTTPException(status_code=409, detail="gateway retry limit reached for reserved usage")
+                conn.execute(
+                    """
+                    UPDATE billing_ai_gateway_requests
+                    SET lease_expires_at = ?, phase = 'claimed', response_json = '',
+                        attempt_count = attempt_count + 1, updated_at = ?
+                    WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+                    """,
+                    (lease_expires_at, _utc_now(), usage_id, request_hash),
+                )
+                return _GatewayRequestClaim()
             attempt_limit = GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS[feature_key]
             if int(existing["attempt_count"] or 0) >= attempt_limit:
                 raise HTTPException(status_code=409, detail="gateway retry limit reached for reserved usage")
@@ -763,12 +827,13 @@ def _claim_gateway_request(
                 """
                 UPDATE billing_ai_gateway_requests
                 SET status = 'in_progress', response_json = '',
-                    attempt_count = attempt_count + 1, updated_at = datetime('now')
+                    attempt_count = attempt_count + 1, lease_expires_at = ?,
+                    phase = 'claimed', provider_task_id = '', updated_at = ?
                 WHERE usage_id = ? AND request_hash = ? AND status = 'failed'
                 """,
-                (usage_id, request_hash),
+                (_new_gateway_lease(feature_key), _utc_now(), usage_id, request_hash),
             )
-            return None
+            return _GatewayRequestClaim()
 
         row = conn.execute(
             "SELECT COUNT(*) AS count FROM billing_ai_gateway_requests WHERE usage_id = ?",
@@ -780,12 +845,43 @@ def _claim_gateway_request(
         conn.execute(
             """
             INSERT INTO billing_ai_gateway_requests (
-                usage_id, request_hash, account_id, feature_key, status
-            ) VALUES (?, ?, ?, ?, 'in_progress')
+                usage_id, request_hash, account_id, feature_key, status,
+                lease_expires_at, phase
+            ) VALUES (?, ?, ?, ?, 'in_progress', ?, 'claimed')
             """,
-            (usage_id, request_hash, account_id, feature_key),
+            (
+                usage_id,
+                request_hash,
+                account_id,
+                feature_key,
+                _new_gateway_lease(feature_key),
+            ),
         )
-    return None
+    return _GatewayRequestClaim()
+
+
+def _new_gateway_lease(feature_key: str) -> str:
+    seconds = GATEWAY_LEASE_SECONDS[feature_key]
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def _gateway_claim_is_fresh(row: Any, feature_key: str) -> bool:
+    raw_expiry = str(row["lease_expires_at"] or "").strip()
+    if raw_expiry:
+        try:
+            expiry = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            return expiry > datetime.now(timezone.utc)
+        except ValueError:
+            return False
+    try:
+        updated = datetime.fromisoformat(str(row["updated_at"] or "").replace("Z", "+00:00"))
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return updated + timedelta(seconds=GATEWAY_LEASE_SECONDS[feature_key]) > datetime.now(timezone.utc)
 
 
 def _complete_gateway_request(
@@ -806,24 +902,87 @@ def _complete_gateway_request(
         cursor = conn.execute(
             """
             UPDATE billing_ai_gateway_requests
-            SET status = 'succeeded', response_json = ?, updated_at = datetime('now')
+            SET status = 'succeeded', response_json = ?, phase = 'completed',
+                lease_expires_at = '', updated_at = ?
             WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
             """,
-            (encoded, usage_id, request_hash),
+            (encoded, _utc_now(), usage_id, request_hash),
         )
         if cursor.rowcount != 1:
             raise HTTPException(status_code=409, detail="gateway request claim is no longer active")
 
 
-def _fail_gateway_request(database_path: Path, usage_id: str, request_hash: str) -> None:
+def _record_gateway_provider_task(
+    database_path: Path,
+    usage_id: str,
+    request_hash: str,
+    provider_task_id: str,
+) -> None:
+    task_id = str(provider_task_id or "").strip()
+    if not task_id:
+        raise HTTPException(status_code=502, detail="server image provider returned an invalid task")
+    with transaction(database_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET provider_task_id = ?, phase = 'polling', lease_expires_at = ?, updated_at = ?
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+            """,
+            (
+                task_id[:240],
+                _new_gateway_lease("product_processing.image_grid_2k"),
+                _utc_now(),
+                usage_id,
+                request_hash,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise HTTPException(status_code=409, detail="gateway request claim is no longer active")
+
+
+def _gateway_provider_task_id(database_path: Path, usage_id: str, request_hash: str) -> str:
+    with transaction(database_path) as conn:
+        row = conn.execute(
+            """
+            SELECT provider_task_id FROM billing_ai_gateway_requests
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+            """,
+            (usage_id, request_hash),
+        ).fetchone()
+    return str(row["provider_task_id"] or "").strip() if row is not None else ""
+
+
+def _pause_gateway_request(database_path: Path, usage_id: str, request_hash: str) -> None:
     with transaction(database_path) as conn:
         conn.execute(
             """
             UPDATE billing_ai_gateway_requests
-            SET status = 'failed', response_json = '', updated_at = datetime('now')
+            SET lease_expires_at = ?, phase = 'polling', updated_at = ?
             WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
             """,
-            (usage_id, request_hash),
+            (_utc_now(), _utc_now(), usage_id, request_hash),
+        )
+
+
+def _fail_gateway_request(
+    database_path: Path,
+    usage_id: str,
+    request_hash: str,
+    *,
+    phase: str = "failed",
+    clear_provider_task: bool = False,
+) -> None:
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET status = 'failed', response_json = '', phase = ?,
+                lease_expires_at = '',
+                provider_task_id = CASE WHEN ? THEN '' ELSE provider_task_id END,
+                updated_at = ?
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+            """,
+            (phase[:64], int(clear_provider_task), _utc_now(), usage_id, request_hash),
         )
 
 
@@ -949,6 +1108,28 @@ def _safe_provider_image_url(value: str) -> bool:
     )
 
 
+def _bounded_provider_json(response: requests.Response, *, provider: str) -> Any:
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            raw = bytes(chunk)
+            total += len(raw)
+            if total > MAX_GATEWAY_RESPONSE_BYTES:
+                raise HTTPException(status_code=502, detail="server provider response is too large")
+            chunks.append(raw)
+        return json.loads(b"".join(chunks).decode("utf-8"))
+    except HTTPException:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"server {provider} provider returned invalid JSON",
+        ) from exc
+
+
 def _server_text_chat(api_key: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
     if not _TEXT_GATEWAY_SEMAPHORE.acquire(timeout=300):
         raise HTTPException(status_code=503, detail="server text request queue timed out")
@@ -964,9 +1145,14 @@ def _server_text_chat(api_key: str, messages: list[dict[str, Any]]) -> dict[str,
                 json={"model": TEXT_MODEL, "messages": messages, "temperature": 0.7},
                 timeout=240,
                 allow_redirects=False,
+                stream=True,
             )
             status_code = int(response.status_code)
-            decoded = response.json() if 200 <= status_code < 300 else None
+            decoded = (
+                _bounded_provider_json(response, provider="text")
+                if 200 <= status_code < 300
+                else None
+            )
         except requests.RequestException as exc:
             raise HTTPException(status_code=503, detail="server text request failed") from exc
         except ValueError as exc:
@@ -993,6 +1179,20 @@ def _server_image_request(
     urls: list[str],
     size: str,
 ) -> dict[str, Any]:
+    task_id = _submit_server_wuyin(api_key, prompt, urls, size)
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "result_url": _poll_server_wuyin(api_key, task_id),
+    }
+
+
+def _submit_server_wuyin(
+    api_key: str,
+    prompt: str,
+    urls: list[str],
+    size: str,
+) -> str:
     response: requests.Response | None = None
     try:
         response = requests.post(
@@ -1002,16 +1202,14 @@ def _server_image_request(
             json={"prompt": prompt, "size": size, **({"urls": urls} if urls else {})},
             timeout=35,
             allow_redirects=False,
+            stream=True,
         )
         status_code = int(response.status_code)
         if status_code == 429 or status_code >= 500:
             raise HTTPException(status_code=503, detail="server image provider is temporarily unavailable")
         if not 200 <= status_code < 300:
             raise HTTPException(status_code=502, detail="server image provider rejected the request")
-        try:
-            submitted = response.json()
-        except ValueError as exc:
-            raise HTTPException(status_code=502, detail="server image provider returned invalid JSON") from exc
+        submitted = _bounded_provider_json(response, provider="image")
     except requests.RequestException as exc:
         raise HTTPException(status_code=503, detail="server image request failed") from exc
     finally:
@@ -1025,11 +1223,7 @@ def _server_image_request(
         or not task_id
     ):
         raise HTTPException(status_code=502, detail="server image provider rejected the request")
-    return {
-        "ok": True,
-        "task_id": task_id,
-        "result_url": _poll_server_wuyin(api_key, task_id),
-    }
+    return task_id
 
 
 def _first_provider_image_url(value: Any, *, depth: int = 0) -> str:
@@ -1069,16 +1263,14 @@ def _poll_server_wuyin(api_key: str, task_id: str) -> str:
                 headers={"Authorization": api_key},
                 timeout=35,
                 allow_redirects=False,
+                stream=True,
             )
             status_code = int(response.status_code)
             if status_code == 429 or status_code >= 500:
                 raise HTTPException(status_code=503, detail="server image provider is temporarily unavailable")
             if not 200 <= status_code < 300:
                 raise HTTPException(status_code=502, detail="server image provider rejected the poll request")
-            try:
-                payload = response.json()
-            except ValueError as exc:
-                raise HTTPException(status_code=502, detail="server image provider returned invalid JSON") from exc
+            payload = _bounded_provider_json(response, provider="image")
         except requests.RequestException as exc:
             raise HTTPException(status_code=503, detail="server image poll request failed") from exc
         finally:
@@ -1087,7 +1279,7 @@ def _poll_server_wuyin(api_key: str, task_id: str) -> str:
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="server image provider returned an invalid response")
         if _provider_code(payload.get("code")) != 200:
-            raise HTTPException(status_code=502, detail="server image provider task failed")
+            raise _ImageProviderTerminalFailure()
         data = payload.get("data") or {}
         result_url = _first_provider_image_url(data) or _first_provider_image_url(payload)
         if result_url:
@@ -1098,7 +1290,7 @@ def _poll_server_wuyin(api_key: str, task_id: str) -> str:
             else ""
         )
         if status in {"3", "4", "5", "fail", "failed", "error", "cancelled", "canceled"}:
-            raise HTTPException(status_code=502, detail="server image provider task failed")
+            raise _ImageProviderTerminalFailure()
         time.sleep(3)
     raise HTTPException(status_code=504, detail="server image provider timed out")
 
@@ -1123,13 +1315,49 @@ def _safe_int(value: Any) -> int:
 
 
 def _safe_billing_metadata(value: dict[str, Any]) -> dict[str, Any]:
-    blocked = {"api_key", "authorization", "token", "password", "secret"}
-    return {
-        str(key)[:64]: (str(item)[:500] if isinstance(item, str) else item)
-        for key, item in value.items()
-        if str(key).lower() not in blocked
-        and isinstance(item, (str, int, float, bool, type(None)))
-    }
+    remaining = [256]
+    dropped = object()
+
+    def sensitive_key(key: Any) -> bool:
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        return (
+            not normalized
+            or "authorization" in normalized
+            or "credential" in normalized
+            or "cookie" in normalized
+            or "session" in normalized
+            or normalized == "apikey"
+            or normalized.endswith(("token", "secret", "password", "apikey"))
+        )
+
+    def sanitize(item: Any, *, depth: int) -> Any:
+        if remaining[0] <= 0 or depth > 6:
+            return dropped
+        remaining[0] -= 1
+        if item is None or isinstance(item, (bool, int, float)):
+            return item
+        if isinstance(item, str):
+            return item[:500]
+        if isinstance(item, dict):
+            result: dict[str, Any] = {}
+            for key, nested in list(item.items())[:64]:
+                if sensitive_key(key):
+                    continue
+                safe = sanitize(nested, depth=depth + 1)
+                if safe is not dropped:
+                    result[str(key)[:64]] = safe
+            return result
+        if isinstance(item, (list, tuple)):
+            result_list: list[Any] = []
+            for nested in list(item)[:64]:
+                safe = sanitize(nested, depth=depth + 1)
+                if safe is not dropped:
+                    result_list.append(safe)
+            return result_list
+        return dropped
+
+    sanitized = sanitize(value, depth=0)
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, Any]:

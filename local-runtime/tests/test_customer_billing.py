@@ -21,6 +21,7 @@ from wh_local.customer.contracts import (
 from wh_local.customer.local_session import LocalSessionService
 from wh_local.customer.remote_client import CustomerAuthClient
 from wh_local.customer.routes import create_customer_router
+import wh_local.billing as billing_module
 from wh_local.db import transaction
 
 _EMAIL_CODE_SECRET = "billing-test-secret-that-is-at-least-32-chars"
@@ -28,6 +29,11 @@ _EMAIL_CODE_SECRET = "billing-test-secret-that-is-at-least-32-chars"
 
 def test_remote_billing_protocol_has_a_dedicated_error_contract() -> None:
     assert hasattr(customer_contracts, "CustomerBillingProtocolError")
+
+
+def test_product_processing_reserve_points_have_one_authoritative_accessor() -> None:
+    assert billing_module.feature_reserve_points("product_processing.text") == 50
+    assert billing_module.feature_reserve_points("product_processing.image_grid_2k") == 650
 
 
 def test_remote_billing_permission_has_a_dedicated_error_contract() -> None:
@@ -175,7 +181,22 @@ def test_ai_usage_api_reserves_settles_and_reuses_idempotency(tmp_path: Path, mo
         "feature_key": "product_processing.text",
         "idempotency_key": "product-processing-api-test-0001",
         "source_ref": "test:item",
-        "metadata": {"task_id": 1, "api_key": "must-not-persist"},
+        "metadata": {
+            "task_id": 1,
+            "item": {
+                "item_id": "item-1",
+                "pricing": {"points": 50, "currency": "points"},
+                "accessToken": "nested-access-secret",
+                "children": [
+                    {"label": "safe", "provider_secret": "nested-provider-secret"},
+                    {"refresh_token": "nested-refresh-secret"},
+                ],
+            },
+            "api_key": "must-not-persist",
+            "authorization": "Bearer must-not-persist",
+            "sessionCookie": "nested-cookie-secret",
+            "customerCredential": "nested-credential-secret",
+        },
     }
 
     first = client.post("/api/customer/billing/usage/reserve", json=payload, headers=headers)
@@ -199,7 +220,21 @@ def test_ai_usage_api_reserves_settles_and_reuses_idempotency(tmp_path: Path, mo
             (usage_id,),
         ).fetchone()
     assert usage["account_id"] == account_id
-    assert "api_key" not in usage["metadata_json"]
+    stored_metadata = json.loads(usage["metadata_json"])
+    serialized_metadata = json.dumps(stored_metadata)
+    assert stored_metadata["task_id"] == 1
+    assert stored_metadata["item"]["item_id"] == "item-1"
+    assert stored_metadata["item"]["pricing"] == {"points": 50, "currency": "points"}
+    assert stored_metadata["item"]["children"] == [{"label": "safe"}, {}]
+    for secret in (
+        "must-not-persist",
+        "nested-access-secret",
+        "nested-provider-secret",
+        "nested-refresh-secret",
+        "nested-cookie-secret",
+        "nested-credential-secret",
+    ):
+        assert secret not in serialized_metadata
 
 
 def test_ai_usage_api_rejects_invalid_reservation_payload(tmp_path: Path, monkeypatch) -> None:

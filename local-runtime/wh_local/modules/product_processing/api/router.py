@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
+from ....billing import feature_reserve_points
 from ....customer.contracts import (
     CustomerAuthRejected,
     CustomerAuthUnavailable,
@@ -367,13 +368,24 @@ def create_product_processing_router(
         form, file = await _upload_form(request, "file")
         try:
             normalized = _normalize_form(form)
+            remote_token = _remote_token(request, customer_sessions)
             _attach_billing_context_and_require_points(
                 normalized,
                 actor,
                 source_ref="product_processing:workbook",
-                remote_token=_remote_token(request, customer_sessions),
+                remote_token=remote_token,
                 remote_customer_auth=remote_customer_auth,
             )
+
+            def final_billing_check(parsed_payload: dict[str, Any]) -> None:
+                _attach_billing_context_and_require_points(
+                    parsed_payload,
+                    actor,
+                    source_ref="product_processing:workbook",
+                    remote_token=remote_token,
+                    remote_customer_auth=remote_customer_auth,
+                )
+
             return _call(
                 service.process_workbook,
                 _filename(file, "products.xlsx"),
@@ -381,6 +393,7 @@ def create_product_processing_router(
                 normalized,
                 idempotency_key=request.headers.get("Idempotency-Key"),
                 workspace_id=_workspace(workspace_id),
+                final_billing_check=final_billing_check,
             )
         finally:
             await file.close()
@@ -950,7 +963,11 @@ def _billing_points_per_item(payload: dict[str, Any]) -> int:
         or bool(payload.get("grid_image", True))
         or bool(payload.get("image_rewrite", True))
     )
-    return (30 if text_enabled else 0) + (599 if image_enabled else 0)
+    return (
+        feature_reserve_points("product_processing.text") if text_enabled else 0
+    ) + (
+        feature_reserve_points("product_processing.image_grid_2k") if image_enabled else 0
+    )
 
 
 def _billing_quantity(payload: dict[str, Any]) -> int:

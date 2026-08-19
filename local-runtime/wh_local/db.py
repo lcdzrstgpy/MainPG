@@ -520,6 +520,9 @@ CREATE TABLE IF NOT EXISTS billing_ai_gateway_requests (
         CHECK (status IN ('in_progress', 'succeeded', 'failed')),
     response_json TEXT NOT NULL DEFAULT '',
     attempt_count INTEGER NOT NULL DEFAULT 1,
+    lease_expires_at TEXT NOT NULL DEFAULT '',
+    phase TEXT NOT NULL DEFAULT 'claimed',
+    provider_task_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (usage_id, request_hash),
@@ -741,6 +744,11 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "customer_sessions", "remote_token", "TEXT NOT NULL DEFAULT ''")
     # 邮箱验证码失败次数用于限制暴力尝试；旧数据库平滑补列。
     _ensure_column(conn, "auth_email_verifications", "attempts", "INTEGER NOT NULL DEFAULT 0")
+    # Durable AI gateway recovery state. These fields contain only non-secret
+    # usage/provider task identifiers and are safe to add to legacy databases.
+    _ensure_column(conn, "billing_ai_gateway_requests", "lease_expires_at", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "billing_ai_gateway_requests", "phase", "TEXT NOT NULL DEFAULT 'claimed'")
+    _ensure_column(conn, "billing_ai_gateway_requests", "provider_task_id", "TEXT NOT NULL DEFAULT ''")
 
 
 DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (

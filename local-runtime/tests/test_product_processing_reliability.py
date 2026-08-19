@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, inspect, select
@@ -171,6 +172,11 @@ def test_engine_status_reports_enabled_capability_blockers_without_provider_prob
 
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.delenv("ARK_API_KEY", raising=False)
+    monkeypatch.setattr(
+        service_module,
+        "default_config",
+        lambda: SimpleNamespace(customer_auth_base_url=""),
+    )
     monkeypatch.setattr(service_module, "ocr_gate_enabled", lambda: True)
     monkeypatch.setattr(
         service_module,
@@ -197,8 +203,8 @@ def test_engine_status_reports_enabled_capability_blockers_without_provider_prob
     assert status["diagnostics"]["capabilities"]["image_ai"]["ready"] is False
     assert status["diagnostics"]["capabilities"]["ocr"]["reason"] == "RapidOCR 模型不可用"
     assert status["unavailable_reasons"] == [
-        "文本 AI 已启用，但服务端未配置 ARK_API_KEY",
-        "图片 AI 已启用，但未配置可用的图片服务地址/API Key，或 Pillow 图片依赖不可用",
+        "文本 AI 已启用，但未配置客户认证服务地址",
+        "图片 AI 已启用，但客户认证服务地址、服务端图片网关或 Pillow 图片依赖不可用",
         "RapidOCR 模型不可用",
     ]
 
@@ -239,8 +245,84 @@ def test_engine_status_splits_doubao_text_key_from_image_provider(
 
     assert status["diagnostics"]["capabilities"]["text_ai"]["ready"] is True
     assert status["diagnostics"]["capabilities"]["image_ai"]["ready"] is False
-    assert status["diagnostics"]["config"]["ai_provider"] == "doubao"
+    assert status["diagnostics"]["config"]["ai_provider"] == "server-managed"
     assert status["diagnostics"]["config"]["ai_configured"] is True
+
+
+def test_engine_status_server_managed_ai_needs_auth_base_url_not_local_keys(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+
+    class _ServerMediaStatus:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def status(self) -> dict:
+            return {"image_configured": True, "backup_image_configured": False}
+
+    monkeypatch.delenv("ARK_API_KEY", raising=False)
+    monkeypatch.delenv("WH_AI_API_KEY", raising=False)
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(service_module, "ocr_gate_enabled", lambda: False)
+    monkeypatch.setattr(
+        service_module,
+        "default_config",
+        lambda: SimpleNamespace(customer_auth_base_url="https://auth.example.test"),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "_media_types",
+        lambda: (_ServerMediaStatus, RuntimeError, RuntimeError),
+    )
+    monkeypatch.setattr(
+        service_module.importlib.util,
+        "find_spec",
+        lambda _name: object(),
+    )
+
+    status = service.engine_status()
+
+    assert status["diagnostics"]["capabilities"]["text_ai"] == {
+        "enabled": True,
+        "ready": True,
+        "reason": "",
+    }
+    assert status["diagnostics"]["capabilities"]["image_ai"]["ready"] is True
+    assert status["diagnostics"]["config"]["ai_provider"] == "server-managed"
+    assert status["diagnostics"]["config"]["ai_configured"] is True
+
+
+def test_engine_status_server_managed_ai_fails_closed_without_auth_base_url(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+
+    class _ServerMediaStatus:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def status(self) -> dict:
+            return {"image_configured": True}
+
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(service_module, "ocr_gate_enabled", lambda: False)
+    monkeypatch.setattr(
+        service_module,
+        "default_config",
+        lambda: SimpleNamespace(customer_auth_base_url=""),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "_media_types",
+        lambda: (_ServerMediaStatus, RuntimeError, RuntimeError),
+    )
+
+    status = service.engine_status()
+
+    assert status["diagnostics"]["capabilities"]["text_ai"]["ready"] is False
+    assert status["diagnostics"]["capabilities"]["image_ai"]["ready"] is False
+    assert all("ARK_API_KEY" not in reason for reason in status["unavailable_reasons"])
 
 
 def test_long_item_refreshes_employee_visible_heartbeat(tmp_path: Path, monkeypatch) -> None:

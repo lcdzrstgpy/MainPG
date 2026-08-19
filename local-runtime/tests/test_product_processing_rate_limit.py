@@ -65,8 +65,8 @@ def test_media_request_edit_waits_on_global_limiter(monkeypatch) -> None:
     class _FakeResponse:
         ok = True
 
-        def json(self) -> dict:
-            return {"data": [{"b64_json": "aGVsbG8="}]}
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield b'{"data":[{"b64_json":"aGVsbG8="}]}'
 
         def close(self) -> None:
             return

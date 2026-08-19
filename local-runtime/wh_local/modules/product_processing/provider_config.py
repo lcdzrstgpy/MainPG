@@ -1,10 +1,8 @@
-"""产品处理 AI 提供方中转配置。
+"""产品处理 AI 的服务端托管路由配置。
 
-对照原型程序（ecommerce-automation-workbench）的 native_product_engine 配置，
-AI 调用统一走 OpenAI 兼容中转。
-
-优先级：系统配置（BasicSettings DB） > 环境变量 > 硬编码默认值。
-系统配置通过"系统配置"板块的 Web UI 进行管理，密钥加密存储在 secret_values 表中。
+桌面端只携带当前客户会话和已预留的 usage id；文本与图片上游凭据均由
+平台服务持有。BasicSettings 仍可提供非 AI 密钥配置（例如 COS 发布），但
+不得把已保存的上游 AI key 接回产品处理调用链。
 """
 
 from __future__ import annotations
@@ -77,13 +75,7 @@ def _try_system_runtime_config() -> Any | None:
 
 
 def resolve_ai_provider() -> dict[str, Any]:
-    """返回 AI 中转提供方配置。
-
-    模型名一律写死（控制成本，防止被系统配置/环境变量切到贵模型）：
-    text_model / image_model / reference_image_model / 降级链 / 图片模型池
-    均取本模块常量。仅 base_url / api_key 允许被系统配置 > 环境变量覆盖
-    （换中转站或换 key 需要）。image_size / image_quality 保留环境变量覆盖。
-    """
+    """返回不含上游凭据的服务端托管 AI 配置与固定计费模型。"""
     sys_cfg = _try_system_runtime_config()
 
     # Product-processing upstream credentials belong to the platform server.

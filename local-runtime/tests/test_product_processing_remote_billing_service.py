@@ -16,6 +16,7 @@ from wh_local.modules.product_processing.infrastructure.database import create_d
 from wh_local.modules.product_processing.infrastructure.repository import ProductProcessingRepository
 from wh_local.modules.product_processing.server_ai_proxy import remote_token, server_ai_context, usage_id
 from wh_local.modules.product_processing.service import ProductProcessingService
+from wh_local.modules.product_processing.service import ProductProcessingNotFound
 
 
 class RecordingBillingClient:
@@ -307,6 +308,7 @@ def test_process_drafts_strips_remote_token_before_database_and_response(
             "processing_scope": ["title"],
             "_billing": {
                 "remote_token": secret,
+                "account_id": "account-token-safe",
                 "source_ref": "test",
                 "pricing_version": "v1",
             },
@@ -323,6 +325,112 @@ def test_process_drafts_strips_remote_token_before_database_and_response(
     assert secret not in json.dumps(history, default=str)
     assert secret not in json.dumps(outputs, default=str)
     assert secret.encode() not in (tmp_path / "workbench.sqlite3").read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("first_account", "replay_account"),
+    [
+        ("account-a", "account-b"),
+        ("account-a", ""),
+        ("", "account-b"),
+    ],
+)
+def test_idempotent_replay_rejects_cross_account_before_response_or_token_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first_account: str,
+    replay_account: str,
+) -> None:
+    service = _service(tmp_path)
+    owner_draft, _ = service.create_draft(
+        {"source_type": "manual", "title": "account-a-secret-title"},
+        workspace_id="shared",
+    )
+    other_draft, _ = service.create_draft(
+        {"source_type": "manual", "title": "account-b-own-title"},
+        workspace_id="shared",
+    )
+    launches: list[int] = []
+    monkeypatch.setattr(
+        service,
+        "_launch_background_execute",
+        lambda task_id, *_args: launches.append(task_id) or True,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "CustomerAuthClient",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("idempotent replay must not call remote billing")
+        ),
+    )
+
+    first_payload: dict[str, Any] = {
+        "draft_ids": [owner_draft["id"]],
+        "async_mode": True,
+        "processing_scope": ["title"],
+    }
+    if first_account:
+        first_payload["_billing"] = {
+            "account_id": first_account,
+            "remote_token": "token-a",
+        }
+    first = service.process_drafts(
+        first_payload,
+        idempotency_key="shared-cross-account-replay",
+        workspace_id="shared",
+    )
+    original_token = service._task_remote_token(first["task_id"])
+
+    replay_payload: dict[str, Any] = {
+        "draft_ids": [other_draft["id"]],
+        "async_mode": True,
+        "processing_scope": ["title"],
+        "remote_token": "top-level-token-b",
+    }
+    if replay_account:
+        replay_payload["_billing"] = {
+            "account_id": replay_account,
+            "remote_token": "nested-token-b",
+        }
+
+    with pytest.raises(ProductProcessingNotFound, match="not found"):
+        service.process_drafts(
+            replay_payload,
+            idempotency_key="shared-cross-account-replay",
+            workspace_id="shared",
+        )
+
+    assert launches == [first["task_id"]]
+    assert service._task_remote_token(first["task_id"]) == original_token
+
+
+def test_idempotent_replay_allows_legacy_unbilled_task_without_token_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    draft, _ = service.create_draft(
+        {"source_type": "manual", "title": "legacy-unbilled"},
+        workspace_id="shared",
+    )
+    monkeypatch.setattr(service, "_launch_background_execute", lambda *_args: True)
+    first = service.process_drafts(
+        {"draft_ids": [draft["id"]], "async_mode": True},
+        idempotency_key="legacy-unbilled-replay",
+        workspace_id="shared",
+    )
+
+    replay = service.process_drafts(
+        {
+            "draft_ids": [draft["id"]],
+            "async_mode": True,
+            "remote_token": "legacy-top-level-token-must-not-bind",
+        },
+        idempotency_key="legacy-unbilled-replay",
+        workspace_id="shared",
+    )
+
+    assert replay["task_id"] == first["task_id"]
+    assert service._task_remote_token(first["task_id"]) == ""
 
 
 def test_terminal_cleanup_removes_token_and_empty_item_usage_state(tmp_path: Path) -> None:

@@ -3,6 +3,9 @@ from __future__ import annotations
 import base64
 import contextvars
 import json
+import socket
+import sqlite3
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -24,6 +27,7 @@ from wh_local.modules.product_processing.infrastructure import media as media_mo
 from wh_local.modules.product_processing.infrastructure.media import ProductImageProcessor
 from wh_local.modules.product_processing.infrastructure.repository import ProductProcessingRepository
 from wh_local.modules.product_processing.service import ProductProcessingService
+from wh_local.modules.product_processing.domain import policy as url_policy
 
 
 _EMAIL_CODE_SECRET = "gateway-test-secret-that-is-at-least-32-chars"
@@ -37,6 +41,11 @@ class _Response:
 
     def json(self) -> dict:
         return self.payload
+
+    def iter_content(self, chunk_size: int = 64 * 1024):
+        encoded = json.dumps(self.payload).encode("utf-8")
+        for offset in range(0, len(encoded), chunk_size):
+            yield encoded[offset : offset + chunk_size]
 
     def close(self) -> None:
         self.closed = True
@@ -56,6 +65,9 @@ class _InvalidJsonResponse(_Response):
 
     def json(self) -> dict:
         raise ValueError("invalid provider json")
+
+    def iter_content(self, chunk_size: int = 64 * 1024):
+        yield b"{invalid-json"
 
 
 class _TestServerBillingClient:
@@ -125,6 +137,33 @@ def _reserved_usage(client: TestClient, headers: dict[str, str], feature_key: st
     return str(response.json()["usage"]["usage_id"])
 
 
+def test_init_db_upgrades_legacy_gateway_rows_with_recovery_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-gateway.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE billing_ai_gateway_requests (
+                usage_id TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                feature_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'in_progress',
+                response_json TEXT NOT NULL DEFAULT '',
+                attempt_count INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (usage_id, request_hash)
+            )
+            """
+        )
+
+    init_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(billing_ai_gateway_requests)")}
+    assert {"lease_expires_at", "phase", "provider_task_id"} <= columns
+
+
 def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, dict[str, str]]:
     monkeypatch.setenv("WH_EMAIL_CODE_SECRET", _EMAIL_CODE_SECRET)
     monkeypatch.setattr(auth_server.TencentCloudSESEmailSender, "from_env", lambda: object())
@@ -132,6 +171,13 @@ def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, dict[str, str]]:
     client = TestClient(create_auth_app(db_path))
     headers = {"Authorization": f"Bearer {_register_and_login(client, db_path)}"}
     _grant_points(db_path)
+    monkeypatch.setattr(
+        url_policy.socket,
+        "getaddrinfo",
+        lambda _host, port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))
+        ],
+    )
     return client, headers
 
 
@@ -261,6 +307,52 @@ def test_chat_gateway_fails_closed_for_in_progress_identical_request(tmp_path: P
 
     assert response.status_code == 409
     assert provider_calls == 0
+
+
+def test_chat_gateway_reclaims_expired_in_progress_lease(tmp_path: Path, monkeypatch) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "product_processing.text", "expired-lease")
+    messages = [{"role": "user", "content": "recover stale request"}]
+    request_hash = auth_server._gateway_request_hash(
+        {"model": auth_server.TEXT_MODEL, "messages": messages}
+    )
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        account = conn.execute(
+            "SELECT account_id FROM auth_accounts WHERE username = 'gateway_user'"
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO billing_ai_gateway_requests (
+                usage_id, request_hash, account_id, feature_key, status,
+                lease_expires_at, phase
+            ) VALUES (?, ?, ?, 'product_processing.text', 'in_progress',
+                      '2000-01-01T00:00:00+00:00', 'claimed')
+            """,
+            (usage, request_hash, account["account_id"]),
+        )
+    provider_calls = 0
+    monkeypatch.setenv("WH_TEXT_API_KEY", "server-secret")
+
+    def fake_post(*_args, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        return _Response({"choices": [{"message": {"content": "recovered"}}]})
+
+    monkeypatch.setattr(auth_server.requests, "post", fake_post)
+    response = client.post(
+        "/api/customer/ai/chat",
+        headers=headers,
+        json={"usage_id": usage, "messages": messages},
+    )
+
+    assert response.status_code == 200
+    assert provider_calls == 1
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT status, attempt_count FROM billing_ai_gateway_requests WHERE usage_id = ?",
+            (usage,),
+        ).fetchone()
+    assert dict(row) == {"status": "succeeded", "attempt_count": 2}
 
 
 def test_chat_gateway_retries_same_hash_after_sanitized_provider_failure(tmp_path: Path, monkeypatch) -> None:
@@ -495,6 +587,42 @@ def test_failure_settlement_rejects_in_progress_gateway_request(tmp_path: Path, 
     assert failed.json() == {"detail": "provider request is still in progress"}
 
 
+def test_failure_settlement_expires_stale_gateway_claim_before_refund(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "product_processing.text", "stale-settle")
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        account = conn.execute(
+            "SELECT account_id FROM auth_accounts WHERE username = 'gateway_user'"
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO billing_ai_gateway_requests (
+                usage_id, request_hash, account_id, feature_key, status,
+                lease_expires_at, phase
+            ) VALUES (?, 'stale-request', ?, 'product_processing.text', 'in_progress',
+                      '2000-01-01T00:00:00+00:00', 'claimed')
+            """,
+            (usage, account["account_id"]),
+        )
+
+    failed = client.post(
+        f"/api/customer/billing/usage/{usage}/fail",
+        headers=headers,
+        json={"error_message": "worker crashed"},
+    )
+
+    assert failed.status_code == 200
+    assert failed.json()["status"] == "failed"
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        gateway = conn.execute(
+            "SELECT status, phase FROM billing_ai_gateway_requests WHERE usage_id = ?",
+            (usage,),
+        ).fetchone()
+    assert dict(gateway) == {"status": "failed", "phase": "lease_expired"}
+
+
 def test_failure_settlement_releases_usage_when_all_gateway_attempts_failed(tmp_path: Path, monkeypatch) -> None:
     client, headers = _client(tmp_path, monkeypatch)
     usage = _reserved_usage(client, headers, "product_processing.text", "failed-release")
@@ -598,6 +726,42 @@ def test_chat_gateway_rejects_provider_redirect(tmp_path: Path, monkeypatch) -> 
     assert response.status_code == 502
 
 
+def test_chat_gateway_streams_bounded_json_and_rejects_non_utf8(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "product_processing.text", "non-utf8")
+    monkeypatch.setenv("WH_TEXT_API_KEY", "server-secret")
+    request_kwargs: dict = {}
+
+    class _NonUtf8Response:
+        status_code = 200
+
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield b"\xff\xfe"
+
+        def json(self):
+            raise AssertionError("response.json must not load an unbounded body")
+
+        def close(self) -> None:
+            pass
+
+    def fake_post(*_args, **kwargs):
+        request_kwargs.update(kwargs)
+        return _NonUtf8Response()
+
+    monkeypatch.setattr(auth_server.requests, "post", fake_post)
+    response = client.post(
+        "/api/customer/ai/chat",
+        headers=headers,
+        json={"usage_id": usage, "messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "server text provider returned invalid JSON"}
+    assert request_kwargs["stream"] is True
+
+
 def test_image_gateway_uses_server_secret_and_returns_only_result_url(tmp_path: Path, monkeypatch) -> None:
     client, headers = _client(tmp_path, monkeypatch)
     usage = _reserved_usage(client, headers, "product_processing.image_grid_2k", "image")
@@ -616,6 +780,171 @@ def test_image_gateway_uses_server_secret_and_returns_only_result_url(tmp_path: 
     assert image.json()["result_url"] == "https://images.example.test/result.png"
     assert provider_requests[0]["headers"]["Authorization"] == "server-secret"
     assert "server-secret" not in json.dumps(image.json())
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        ("127.0.0.1",),
+        ("8.8.8.8", "10.0.0.8"),
+        None,
+    ],
+)
+def test_image_gateway_rejects_reference_url_when_dns_is_not_all_public(
+    tmp_path: Path, monkeypatch, answers: tuple[str, ...] | None
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "product_processing.image_grid_2k", "ssrf-dns")
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
+    provider_calls = 0
+
+    def resolve(_host, port, **_kwargs):
+        if answers is None:
+            raise socket.gaierror("DNS unavailable")
+        return [
+            (
+                socket.AF_INET6 if ":" in address else socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                (address, port),
+            )
+            for address in answers
+        ]
+
+    def provider_post(*_args, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        return _Response({"code": 200, "data": {"id": "must-not-run"}})
+
+    monkeypatch.setattr(url_policy.socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(auth_server.requests, "post", provider_post)
+    response = client.post(
+        "/api/customer/ai/image",
+        headers=headers,
+        json={
+            "usage_id": usage,
+            "prompt": "product",
+            "size": "1:1",
+            "urls": ["https://reference.example.test/source.jpg"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert provider_calls == 0
+
+
+def test_image_gateway_persists_submit_before_poll_and_resumes_without_duplicate_submit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "product_processing.image_grid_2k", "image-crash")
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
+    submit_calls = 0
+
+    def fake_post(*_args, **_kwargs):
+        nonlocal submit_calls
+        submit_calls += 1
+        return _Response({"code": 200, "data": {"id": "task-crash-recovery"}})
+
+    poll_results: list[object] = [
+        KeyboardInterrupt("simulated process crash after submit"),
+        "https://images.example.test/recovered.png",
+    ]
+
+    def fake_poll(_api_key: str, task_id: str) -> str:
+        assert task_id == "task-crash-recovery"
+        result = poll_results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return str(result)
+
+    monkeypatch.setattr(auth_server.requests, "post", fake_post)
+    monkeypatch.setattr(auth_server, "_poll_server_wuyin", fake_poll)
+    payload = {"usage_id": usage, "prompt": "recover image", "size": "1:1"}
+
+    with pytest.raises(KeyboardInterrupt):
+        client.post("/api/customer/ai/image", headers=headers, json=payload)
+
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        after_crash = conn.execute(
+            """
+            SELECT status, phase, provider_task_id
+            FROM billing_ai_gateway_requests WHERE usage_id = ?
+            """,
+            (usage,),
+        ).fetchone()
+        conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET lease_expires_at = '2000-01-01T00:00:00+00:00'
+            WHERE usage_id = ?
+            """,
+            (usage,),
+        )
+    assert dict(after_crash) == {
+        "status": "in_progress",
+        "phase": "polling",
+        "provider_task_id": "task-crash-recovery",
+    }
+
+    recovered = client.post("/api/customer/ai/image", headers=headers, json=payload)
+
+    assert recovered.status_code == 200
+    assert recovered.json()["result_url"] == "https://images.example.test/recovered.png"
+    assert submit_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("poll_result", "expected_status"),
+    [
+        (requests.Timeout("poll timeout"), 503),
+        (_InvalidJsonResponse(), 502),
+        (_Response({}, status_code=302), 502),
+        (_Response({}, status_code=503), 503),
+    ],
+)
+def test_image_poll_uncertainty_retains_provider_task_evidence(
+    tmp_path: Path,
+    monkeypatch,
+    poll_result: object,
+    expected_status: int,
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "product_processing.image_grid_2k", "poll-evidence")
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-secret")
+    monkeypatch.setattr(
+        auth_server.requests,
+        "post",
+        lambda *_args, **_kwargs: _Response({"code": 200, "data": {"id": "task-evidence"}}),
+    )
+
+    def fake_get(*_args, **_kwargs):
+        if isinstance(poll_result, BaseException):
+            raise poll_result
+        return poll_result
+
+    monkeypatch.setattr(auth_server.requests, "get", fake_get)
+    response = client.post(
+        "/api/customer/ai/image",
+        headers=headers,
+        json={"usage_id": usage, "prompt": "retain evidence", "size": "1:1"},
+    )
+
+    assert response.status_code == expected_status
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        row = conn.execute(
+            """
+            SELECT status, phase, provider_task_id
+            FROM billing_ai_gateway_requests WHERE usage_id = ?
+            """,
+            (usage,),
+        ).fetchone()
+    assert dict(row) == {
+        "status": "in_progress",
+        "phase": "polling",
+        "provider_task_id": "task-evidence",
+    }
 
 
 def test_image_gateway_enforces_distinct_request_bound_before_provider_call(tmp_path: Path, monkeypatch) -> None:
@@ -935,14 +1264,13 @@ def test_image_adapter_calls_platform_gateway_and_downloads_safe_result(monkeypa
             requests_seen.append((url, kwargs))
             return _Response({"ok": True, "result_url": "https://images.example.test/result.png"})
 
-        def get(self, url, **kwargs):
-            requests_seen.append((url, kwargs))
-            response = _Response({})
-            response.content = b"image-bytes"
-            response.headers = {"Content-Type": "image/png"}
-            return response
-
     monkeypatch.setattr(media_module, "_SESSION", _MediaSession())
+    monkeypatch.setattr(media_module, "is_safe_external_url", lambda _url: True)
+    monkeypatch.setattr(
+        media_module,
+        "_download_pinned_public_image",
+        lambda *_args, **_kwargs: (b"image-bytes", "image/png"),
+    )
     processor = ProductImageProcessor(lambda: {})
     provider = {
         "base_url": "server-managed-wuyin",
@@ -965,3 +1293,151 @@ def test_image_adapter_calls_platform_gateway_and_downloads_safe_result(monkeypa
     assert gateway_request["headers"]["Authorization"] == "Bearer platform-token"
     assert gateway_request["json"]["usage_id"] == "usage-image"
     assert gateway_request["json"]["urls"] == ["https://images.example.test/source.jpg"]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_class", "retryable"),
+    [
+        (402, "billing_payment_required", False),
+        (403, "billing_forbidden", False),
+        (409, "gateway_in_progress", True),
+        (502, "gateway_bad_response", True),
+        (503, "gateway_unavailable", True),
+    ],
+)
+def test_image_adapter_preserves_stable_gateway_status_without_body_leak(
+    monkeypatch, status_code: int, expected_class: str, retryable: bool
+) -> None:
+    secret = "remote-body-secret platform-token"
+
+    class _MediaSession:
+        def post(self, *_args, **_kwargs):
+            return _Response({"detail": secret}, status_code=status_code)
+
+    monkeypatch.setattr(media_module, "_SESSION", _MediaSession())
+    processor = ProductImageProcessor(lambda: {})
+    provider = {
+        "base_url": "server-managed-wuyin",
+        "api_key": "server-managed",
+        "model": "image_gpt",
+        "reference_model": "image_gpt",
+        "image_size": "2048x2048",
+    }
+
+    with server_ai_context("platform-token", {"image_grid": "usage-image"}):
+        with pytest.raises(media_module.MediaProcessingError) as caught:
+            processor._request_server_managed_wuyin_image(
+                provider,
+                "product prompt",
+                [],
+                timeout_seconds=60,
+            )
+
+    assert caught.value.status_code == status_code
+    assert caught.value.status_class == expected_class
+    assert secret not in str(caught.value)
+    assert "platform-token" not in str(caught.value)
+    assert (media_module._retry_class(caught.value) not in {"non_retryable_4xx", "non_retryable_local"}) is retryable
+
+
+def test_provider_result_download_pins_validated_ip_and_keeps_original_tls_host(
+    monkeypatch,
+) -> None:
+    resolver_calls = 0
+    connections: list[tuple[str, str, int, float]] = []
+    requests_seen: list[tuple[str, str, dict[str, str]]] = []
+
+    def resolve(url: str):
+        nonlocal resolver_calls
+        resolver_calls += 1
+        return SimpleNamespace(
+            url=url,
+            hostname="images.example.test",
+            port=443,
+            addresses=("8.8.8.8",),
+        )
+
+    class PinnedConnection:
+        def __init__(self, hostname: str, pinned_address: str, port: int, timeout: float):
+            connections.append((hostname, pinned_address, port, timeout))
+
+        def request(self, method: str, path: str, *, headers: dict[str, str]) -> None:
+            requests_seen.append((method, path, headers))
+
+        def getresponse(self):
+            return SimpleNamespace(
+                status=200,
+                getheader=lambda name, default="": "image/png" if name == "Content-Type" else default,
+                read=lambda limit: b"pinned-image",
+            )
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(media_module, "resolve_safe_external_url", resolve)
+    monkeypatch.setattr(media_module, "_PinnedHTTPSConnection", PinnedConnection)
+
+    content, content_type = media_module._download_pinned_public_image(
+        "https://images.example.test/result.png?x=1",
+        timeout_seconds=20,
+    )
+
+    assert (content, content_type) == (b"pinned-image", "image/png")
+    assert resolver_calls == 1
+    assert connections == [("images.example.test", "8.8.8.8", 443, 20)]
+    assert requests_seen == [
+        ("GET", "/result.png?x=1", {"Host": "images.example.test", "Accept": "image/*"})
+    ]
+
+
+def test_provider_result_download_rejects_redirect_without_re_resolving(monkeypatch) -> None:
+    resolver_calls = 0
+
+    def resolve(url: str):
+        nonlocal resolver_calls
+        resolver_calls += 1
+        if resolver_calls > 1:
+            raise AssertionError("validated hostname must not be resolved again")
+        return SimpleNamespace(
+            url=url,
+            hostname="images.example.test",
+            port=443,
+            addresses=("8.8.8.8",),
+        )
+
+    class RedirectConnection:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def request(self, *_args, **_kwargs) -> None:
+            pass
+
+        def getresponse(self):
+            return SimpleNamespace(
+                status=302,
+                getheader=lambda *_args, **_kwargs: "https://127.0.0.1/private",
+                read=lambda _limit: b"",
+            )
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(media_module, "resolve_safe_external_url", resolve)
+    monkeypatch.setattr(media_module, "_PinnedHTTPSConnection", RedirectConnection)
+
+    with pytest.raises(media_module.MediaProcessingError, match="redirected"):
+        media_module._download_pinned_public_image(
+            "https://images.example.test/result.png",
+            timeout_seconds=20,
+        )
+
+    assert resolver_calls == 1
+
+
+def test_provider_result_download_rejects_unresolved_url_with_stable_error(monkeypatch) -> None:
+    monkeypatch.setattr(media_module, "resolve_safe_external_url", lambda _url: None)
+
+    with pytest.raises(media_module.MediaProcessingError, match="safe public URL"):
+        media_module._download_pinned_public_image(
+            "https://unresolved.example.test/result.png"
+        )

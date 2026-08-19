@@ -338,7 +338,8 @@ class ProductProcessingService:
             "opencv": importlib.util.find_spec("cv2") is not None,
             "rapidocr": importlib.util.find_spec("rapidocr_onnxruntime") is not None,
         }
-        # 文本固定走方舟 ARK_API_KEY；图片继续使用独立图片供应商配置。
+        # Product processing uses the authenticated, billed server gateway.  The
+        # desktop must not depend on or advertise platform-owned upstream keys.
         provider = resolve_ai_provider()
         media: dict[str, Any] = {}
         media_types = _media_types()
@@ -347,8 +348,13 @@ class ProductProcessingService:
         ai_enabled = _ai_enabled()
         ocr_enabled = ocr_gate_enabled()
         ocr_status = ocr_diagnostics() if ocr_enabled else {"ready": False, "reason": "OCR 质量门已关闭"}
-        text_ready = bool(str(os.environ.get("ARK_API_KEY") or "").strip())
-        image_ready = bool(media.get("image_configured")) and dependency_status["pillow"]
+        server_ai_ready = bool(str(default_config().customer_auth_base_url or "").strip())
+        text_ready = server_ai_ready
+        image_ready = (
+            server_ai_ready
+            and bool(media.get("image_configured"))
+            and dependency_status["pillow"]
+        )
         ocr_ready = bool(ocr_status.get("ready")) and dependency_status["pillow"]
         capabilities = {
             "text_ai": {
@@ -357,7 +363,7 @@ class ProductProcessingService:
                 "reason": (
                     "文本 AI 已关闭（WH_PRODUCT_AI_ENABLED）"
                     if not ai_enabled
-                    else ("" if text_ready else "文本 AI 已启用，但服务端未配置 ARK_API_KEY")
+                    else ("" if text_ready else "文本 AI 已启用，但未配置客户认证服务地址")
                 ),
             },
             "image_ai": {
@@ -369,7 +375,7 @@ class ProductProcessingService:
                     else (
                         ""
                         if image_ready
-                        else "图片 AI 已启用，但未配置可用的图片服务地址/API Key，或 Pillow 图片依赖不可用"
+                        else "图片 AI 已启用，但客户认证服务地址、服务端图片网关或 Pillow 图片依赖不可用"
                     )
                 ),
             },
@@ -392,11 +398,11 @@ class ProductProcessingService:
                 unavailable_reasons.append(str(capability["reason"]))
         ready = not unavailable_reasons
         config = {
-            "ai_provider": "doubao" if text_ready else "local-deterministic",
+            "ai_provider": "server-managed" if text_ready else "local-deterministic",
             "ai_model": DOUBAO_TEXT_MODEL_ID if text_ready else "product-processing-local-v1",
             "ai_configured": text_ready,
             "backup_ai_configured": False,
-            "image_provider": provider["provider"] if (provider.get("api_key") and media.get("image_configured")) else "local-source-pass-through",
+            "image_provider": provider["provider"] if image_ready else "local-source-pass-through",
             "image_model": provider.get("reference_image_model") or provider.get("image_model") or "source-image-preservation-v1",
             "image_configured": media.get("image_configured", False),
             "backup_image_configured": media.get("backup_image_configured", False),
@@ -1236,6 +1242,7 @@ class ProductProcessingService:
             payload["_billing"] = billing
         else:
             payload.pop("_billing", None)
+        request_billing_account = self._text(billing.get("account_id"))
         draft_ids = list(dict.fromkeys(int(item) for item in payload.get("draft_ids") or [] if int(item) > 0))
         if not draft_ids:
             raise ValueError("draft_ids is required")
@@ -1245,7 +1252,26 @@ class ProductProcessingService:
         with self._submission_lock:
             existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
             if existing is not None:
-                if remote_token and existing["status"] not in {"completed", "failed", "partial_failure"}:
+                existing_settings = (
+                    existing.get("settings") if isinstance(existing.get("settings"), dict) else {}
+                )
+                existing_billing = (
+                    existing_settings.get("_billing")
+                    if isinstance(existing_settings.get("_billing"), dict)
+                    else {}
+                )
+                existing_billing_account = self._text(existing_billing.get("account_id"))
+                if (existing_billing_account or request_billing_account) and (
+                    not existing_billing_account
+                    or not request_billing_account
+                    or existing_billing_account != request_billing_account
+                ):
+                    raise ProductProcessingNotFound("product processing task not found")
+                if (
+                    existing_billing_account
+                    and remote_token
+                    and existing["status"] not in {"completed", "failed", "partial_failure"}
+                ):
                     self._task_remote_tokens[int(existing["id"])] = remote_token
                 return self._task_response(existing, "重复提交已返回原任务")
             drafts = self.repository.get_drafts(draft_ids, workspace_id=workspace_id)
@@ -1274,7 +1300,7 @@ class ProductProcessingService:
                 idempotency_key=idempotency_key,
                 workspace_id=workspace_id,
             )
-            if remote_token and not preflight_only:
+            if request_billing_account and remote_token and not preflight_only:
                 self._task_remote_tokens[int(task["id"])] = remote_token
             if not preflight_only:
                 self.repository.mark_drafts_status(
@@ -1985,6 +2011,7 @@ class ProductProcessingService:
         *,
         idempotency_key: str | None = None,
         workspace_id: str = "local",
+        final_billing_check: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         with self._submission_lock:
             existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
@@ -2004,6 +2031,8 @@ class ProductProcessingService:
                 "draft_ids": imported["ids"],
                 "title": form.get("title") or "产品处理任务-Excel 导入",
             }
+            if final_billing_check is not None:
+                final_billing_check(payload)
             return self.process_drafts(payload, idempotency_key=idempotency_key, workspace_id=workspace_id)
 
     def process_single(

@@ -66,7 +66,7 @@ def _text_only_payload() -> dict[str, Any]:
 
 def test_billing_context_uses_remote_summary_and_token() -> None:
     payload = _text_only_payload()
-    remote = RecordingRemoteBilling(30)
+    remote = RecordingRemoteBilling(50)
 
     product_processing_router._attach_billing_context_and_require_points(
         payload,
@@ -78,12 +78,12 @@ def test_billing_context_uses_remote_summary_and_token() -> None:
 
     assert remote.tokens == ["remote-session"]
     assert payload["_billing"]["remote_token"] == "remote-session"
-    assert payload["_billing"]["estimated_points"] == 30
+    assert payload["_billing"]["estimated_points"] == 50
 
 
 @pytest.mark.parametrize(
     ("remote_token", "remote_customer_auth"),
-    [("", RecordingRemoteBilling(30)), ("remote-session", None)],
+    [("", RecordingRemoteBilling(50)), ("remote-session", None)],
 )
 def test_billing_context_requires_remote_session_and_client(
     remote_token: str,
@@ -115,9 +115,62 @@ def test_billing_context_rejects_insufficient_remote_balance() -> None:
         )
 
     assert caught.value.status_code == 402
-    assert "30" in caught.value.detail
+    assert "50" in caught.value.detail
     assert "29" in caught.value.detail
     assert remote.tokens == ["remote-session"]
+
+
+@pytest.mark.parametrize(
+    ("available", "payload"),
+    [
+        (30, _text_only_payload()),
+        (49, _text_only_payload()),
+        (
+            599,
+            {
+                "draft_ids": [1],
+                "title_optimize": False,
+                "description": False,
+                "size": False,
+                "grid_image": True,
+                "image_rewrite": False,
+            },
+        ),
+        (
+            649,
+            {
+                "draft_ids": [1],
+                "title_optimize": False,
+                "description": False,
+                "size": False,
+                "grid_image": True,
+                "image_rewrite": False,
+            },
+        ),
+        (
+            629,
+            {**_text_only_payload(), "grid_image": True},
+        ),
+        (
+            699,
+            {**_text_only_payload(), "grid_image": True},
+        ),
+    ],
+)
+def test_submission_precheck_uses_authoritative_reservation_points(
+    available: int,
+    payload: dict[str, Any],
+) -> None:
+    with pytest.raises(HTTPException) as caught:
+        product_processing_router._attach_billing_context_and_require_points(
+            payload,
+            _actor(),
+            source_ref="test",
+            remote_token="remote-session",
+            remote_customer_auth=RecordingRemoteBilling(available),
+        )
+
+    assert caught.value.status_code == 402
 
 
 def test_billing_context_maps_remote_unavailable_to_503() -> None:
@@ -425,6 +478,70 @@ def test_all_processing_routes_forward_remote_billing_context(
         database.dispose()
 
 
+def test_workbook_rechecks_reserve_points_after_real_import_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = create_database(f"sqlite:///{(tmp_path / 'workbook-router.sqlite3').as_posix()}")
+    service = ProductProcessingService(
+        ProductProcessingRepository(database),
+        ProductProcessingAssets(tmp_path / "assets"),
+    )
+
+    def parsed_workbook(
+        _filename: str,
+        _content: bytes,
+        payload: dict[str, Any],
+        **kwargs: Any,
+    ) -> dict[str, bool]:
+        callback = kwargs.get("final_billing_check")
+        if callback is not None:
+            callback({**payload, "draft_ids": [1, 2, 3]})
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "process_workbook", parsed_workbook)
+    sessions = LocalSessionService()
+    session = sessions.login_customer(
+        CustomerAuthResult(
+            customer_id="customer-1",
+            username="user",
+            remote_token="remote-session",
+        )
+    )
+    remote = RecordingRemoteBilling(100)
+    app = FastAPI()
+    app.dependency_overrides[actor_from_authorization] = _actor
+    app.include_router(
+        product_processing_router.create_product_processing_router(
+            service,
+            customer_sessions=sessions,
+            remote_customer_auth=remote,
+        )
+    )
+    client = TestClient(app)
+
+    try:
+        response = client.post(
+            "/product-processing/engine/batch",
+            data={
+                "title_optimize": "true",
+                "description": "false",
+                "size": "false",
+                "grid_image": "false",
+                "image_rewrite": "false",
+            },
+            files={"file": ("products.xlsx", b"three products", "application/octet-stream")},
+            headers={"Authorization": f"Bearer {session.token}"},
+        )
+
+        assert response.status_code == 402
+        assert "150" in response.json()["detail"]
+        assert remote.tokens == ["remote-session", "remote-session"]
+    finally:
+        getattr(service, "_dimension_canvas_service").close()
+        database.dispose()
+
+
 def test_processing_http_maps_remote_protocol_failure_to_stable_502(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -518,7 +635,7 @@ def test_retry_attention_reacquires_remote_token_and_prechecks_balance_over_http
             remote_token="remote-retry-session",
         )
     )
-    remote = RecordingRemoteBilling(30)
+    remote = RecordingRemoteBilling(50)
     app = FastAPI()
     app.dependency_overrides[actor_from_authorization] = _actor
     app.include_router(
@@ -644,7 +761,7 @@ def test_resume_reacquires_remote_token_prechecks_and_passes_only_memory_argumen
     session = sessions.login_customer(
         CustomerAuthResult(customer_id="user", username="user", remote_token="resume-token")
     )
-    remote = RecordingRemoteBilling(30)
+    remote = RecordingRemoteBilling(50)
     app = FastAPI()
     app.dependency_overrides[actor_from_authorization] = _actor
     app.include_router(
@@ -756,7 +873,7 @@ def test_authenticated_recovery_reconciles_locked_usage_before_new_work_precheck
         def billing_summary(self, token: str) -> dict[str, Any]:
             assert token == "fresh-token"
             events.append("summary-after" if self.released else "summary-before")
-            return {"wallet": {"available_points": 30 if self.released else 0}}
+            return {"wallet": {"available_points": 50 if self.released else 0}}
 
     remote = LockedBalanceRemote()
 
@@ -849,7 +966,7 @@ def test_restarted_billed_queue_is_resumed_only_by_authenticated_owner(
     session = sessions.login_customer(
         CustomerAuthResult(customer_id="user", username="user", remote_token="fresh-token")
     )
-    remote = RecordingRemoteBilling(30)
+    remote = RecordingRemoteBilling(50)
     app = FastAPI()
     app.dependency_overrides[actor_from_authorization] = _actor
     app.include_router(

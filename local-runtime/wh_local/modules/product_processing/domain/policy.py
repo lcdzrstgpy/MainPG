@@ -9,8 +9,9 @@ service later.
 from __future__ import annotations
 
 import ipaddress
+import socket
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
 
 
@@ -46,6 +47,14 @@ class PolicyIssue:
     message: str
     operator_hint: str
     status: str = "failed"
+
+
+@dataclass(frozen=True)
+class ResolvedExternalURL:
+    url: str
+    hostname: str
+    port: int
+    addresses: tuple[str, ...]
 
 
 def product_policy_issue(
@@ -126,21 +135,68 @@ def strict_external_url_issue(*, source_url: str, image_url: str) -> PolicyIssue
     return None
 
 
-def is_safe_external_url(value: str) -> bool:
+def resolve_safe_external_url(
+    value: str,
+    *,
+    resolver: Callable[..., list[Any]] | None = None,
+) -> ResolvedExternalURL | None:
     try:
         parsed = urlsplit(value)
     except ValueError:
-        return False
+        return None
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
-        return False
+        return None
     hostname = parsed.hostname.strip().lower()
     if hostname == "localhost" or hostname.endswith(".localhost"):
-        return False
+        return None
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
-        return True
-    return not (address.is_private or address.is_loopback or address.is_link_local or address.is_reserved)
+        lookup = resolver or socket.getaddrinfo
+        try:
+            answers = lookup(hostname, port, type=socket.SOCK_STREAM)
+        except (OSError, ValueError):
+            return None
+        addresses = tuple(
+            dict.fromkeys(
+                str(answer[4][0]).strip()
+                for answer in answers
+                if len(answer) >= 5 and answer[4] and str(answer[4][0]).strip()
+            )
+        )
+        if not addresses:
+            return None
+        try:
+            parsed_addresses = tuple(ipaddress.ip_address(item) for item in addresses)
+        except ValueError:
+            return None
+        if not all(_is_global_address(item) for item in parsed_addresses):
+            return None
+        return ResolvedExternalURL(str(value), hostname, port, addresses)
+    if not _is_global_address(address):
+        return None
+    return ResolvedExternalURL(str(value), hostname, port, (str(address),))
+
+
+def is_safe_external_url(
+    value: str,
+    *,
+    resolver: Callable[..., list[Any]] | None = None,
+) -> bool:
+    return resolve_safe_external_url(value, resolver=resolver) is not None
+
+
+def _is_global_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return bool(
+        address.is_global
+        and not address.is_loopback
+        and not address.is_private
+        and not address.is_link_local
+        and not address.is_reserved
+        and not address.is_multicast
+        and not address.is_unspecified
+    )
 
 
 def _first_contains(values: Iterable[str], needles: Iterable[str]) -> str:

@@ -2,6 +2,8 @@
 """产品处理测试共用环境配置。"""
 
 import os
+import socket
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,3 +25,20 @@ def _reset_ai_rate_limiter():
     yield
     reset_limiter()
 
+
+@pytest.fixture(autouse=True)
+def _deterministic_public_dns(monkeypatch):
+    """Keep public-host tests independent of the runner's network/DNS policy."""
+    from wh_local.modules.product_processing.domain import policy
+
+    monkeypatch.setattr(
+        policy,
+        "socket",
+        SimpleNamespace(
+            SOCK_STREAM=socket.SOCK_STREAM,
+            getaddrinfo=lambda _host, port, **_kwargs: [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))
+            ],
+        ),
+    )
+    yield
