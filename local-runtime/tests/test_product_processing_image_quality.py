@@ -716,6 +716,7 @@ def test_b_grid_quality_failure_never_triggers_a_paid_repair(monkeypatch) -> Non
         "inspect_visible_text",
         lambda _content: {"chinese": [], "prominent": ["FACTORY DIRECT"]},
     )
+    monkeypatch.setattr(service_module, "ocr_gate_enabled", lambda: True)
     monkeypatch.setattr(service_module, "_media_types", lambda: (object, RuntimeError, ValueError))
 
     # 质量门为软性：B 模板禁止付费重绘，检出问题只留痕 quality_unresolved，不再 raise 阻断，
