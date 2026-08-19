@@ -369,7 +369,7 @@ def create_product_processing_router(
         try:
             normalized = _normalize_form(form)
             remote_token = _remote_token(request, customer_sessions)
-            _attach_billing_context_and_require_points(
+            available_points = _attach_billing_context_and_require_points(
                 normalized,
                 actor,
                 source_ref="product_processing:workbook",
@@ -384,6 +384,7 @@ def create_product_processing_router(
                     source_ref="product_processing:workbook",
                     remote_token=remote_token,
                     remote_customer_auth=remote_customer_auth,
+                    available_points=available_points,
                 )
 
             return _call(
@@ -824,13 +825,13 @@ def _attach_billing_context_and_require_points(
     remote_token: str,
     remote_customer_auth: CustomerAuthClient | None,
     available_points: int | None = None,
-) -> None:
+) -> int | None:
     if bool(payload.get("preflight_only")) or bool(payload.get("category_preflight_only")):
-        return
+        return None
     quantity = _billing_quantity(payload)
     estimated_points = quantity * _billing_points_per_item(payload)
     if estimated_points <= 0:
-        return
+        return None
     if remote_customer_auth is None or not remote_token:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -857,6 +858,7 @@ def _attach_billing_context_and_require_points(
         "estimated_points": estimated_points,
         "pricing_version": "product-processing-fixed-test-v1",
     }
+    return available
 
 
 def _reconcile_billing_before_precheck(

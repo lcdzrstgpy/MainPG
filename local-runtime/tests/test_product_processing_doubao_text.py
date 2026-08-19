@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import requests
@@ -94,6 +97,39 @@ def test_text_request_uses_platform_gateway_and_contains_no_image(monkeypatch) -
     assert "image_url" not in json.dumps(request["json"])
     assert request["allow_redirects"] is False
     assert request["headers"]["Authorization"] == "Bearer platform-token"
+
+
+def test_server_ai_gateway_requests_share_two_slot_gate(monkeypatch) -> None:
+    lock = threading.Lock()
+    in_flight = 0
+    peak = 0
+
+    class SlowSession:
+        def post(self, *_args, **_kwargs):
+            nonlocal in_flight, peak
+            with lock:
+                in_flight += 1
+                peak = max(peak, in_flight)
+            time.sleep(0.03)
+            with lock:
+                in_flight -= 1
+            return _success()
+
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", SlowSession())
+    clients = [doubao_ark.DoubaoArkClient() for _index in range(6)]
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(
+            pool.map(
+                lambda client: client.complete(
+                    [{"role": "user", "content": "same prompt"}]
+                ),
+                clients,
+            )
+        )
+
+    assert len(results) == 6
+    assert peak == 2
 
 
 def test_invalid_contract_retries_whole_text_stage_until_third_success(monkeypatch) -> None:

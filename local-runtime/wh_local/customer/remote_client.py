@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -13,6 +15,11 @@ from .contracts import (
     CustomerBillingPermissionError,
     CustomerBillingProtocolError,
 )
+
+
+_BILLING_MAX_ATTEMPTS = 3
+_BILLING_RETRY_DELAYS = (0.2, 0.6)
+_BILLING_REQUEST_GATE = threading.BoundedSemaphore(2)
 
 
 class CustomerAuthClient:
@@ -105,28 +112,38 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
-    @staticmethod
-    def _billing_result(function, *args, **kwargs) -> dict[str, Any]:
-        try:
-            response = function(*args, **kwargs)
-        except CustomerBillingProtocolError:
-            raise
-        except (json.JSONDecodeError, UnicodeError) as exc:
-            raise CustomerBillingProtocolError() from exc
-        except CustomerAuthUnavailable as exc:
-            raise CustomerAuthUnavailable("remote billing service is unavailable") from exc
-        except CustomerAuthRejected as exc:
-            status_code = getattr(exc, "status_code", None)
-            if type(status_code) is not int or not 400 <= status_code < 500:
+    def _billing_result(self, function, *args, **kwargs) -> dict[str, Any]:
+        for attempt in range(_BILLING_MAX_ATTEMPTS):
+            try:
+                with _BILLING_REQUEST_GATE:
+                    response = function(*args, **kwargs)
+            except CustomerBillingProtocolError:
+                raise
+            except (json.JSONDecodeError, UnicodeError) as exc:
                 raise CustomerBillingProtocolError() from exc
-            raise CustomerAuthRejected(status_code, "remote billing request was rejected") from exc
-        except CustomerBillingPermissionError:
-            raise
-        except PermissionError as exc:
-            raise CustomerBillingPermissionError() from exc
-        if not isinstance(response, dict):
-            raise CustomerBillingProtocolError()
-        return response
+            except CustomerAuthUnavailable as exc:
+                if attempt + 1 >= _BILLING_MAX_ATTEMPTS:
+                    raise CustomerAuthUnavailable(
+                        "remote billing service is unavailable"
+                    ) from exc
+                time.sleep(_BILLING_RETRY_DELAYS[attempt])
+                continue
+            except CustomerAuthRejected as exc:
+                status_code = getattr(exc, "status_code", None)
+                if type(status_code) is not int or not 400 <= status_code < 500:
+                    raise CustomerBillingProtocolError() from exc
+                raise CustomerAuthRejected(
+                    status_code,
+                    "remote billing request was rejected",
+                ) from exc
+            except CustomerBillingPermissionError:
+                raise
+            except PermissionError as exc:
+                raise CustomerBillingPermissionError() from exc
+            if not isinstance(response, dict):
+                raise CustomerBillingProtocolError()
+            return response
+        raise AssertionError("unreachable")
 
     def _post(self, path: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
         if not self.base_url:

@@ -4,7 +4,7 @@
 
 **Goal:** Keep authoritative remote billing while preventing transient TLS failures and 8-thread request bursts from failing an entire product-processing batch.
 
-**Architecture:** Put retry and concurrency control in the single remote billing adapter so all product-processing callers inherit identical behavior. Reuse the workbook entry point's first wallet snapshot for its final-count check, and separate remote service failures from API-key/quota failures in the task UI. Existing text and vision clients already provide bounded gateway retries, so this change verifies rather than duplicates them.
+**Architecture:** Put retry and concurrency control in the single remote billing adapter so all product-processing callers inherit identical behavior, and put a separate two-slot gate around the shared product AI gateway transport. Reuse the workbook entry point's first wallet snapshot for its final-count check, and separate remote service failures from API-key/quota failures in the task UI. Existing text and vision clients already provide bounded gateway retries, so this change does not duplicate them.
 
 **Tech Stack:** Python 3, urllib, threading, pytest, FastAPI TestClient, React/TypeScript, Node test runner.
 
@@ -22,11 +22,14 @@
 
 **Files:**
 - Modify: `local-runtime/wh_local/customer/remote_client.py`
+- Modify: `local-runtime/wh_local/modules/product_processing/doubao_ark.py`
 - Test: `local-runtime/tests/test_customer_billing.py`
+- Test: `local-runtime/tests/test_product_processing_doubao_text.py`
 
 **Interfaces:**
 - Consumes: existing `CustomerAuthClient._billing_result(function, *args, **kwargs)` call sites.
 - Produces: `_BILLING_REQUEST_GATE`, `_BILLING_MAX_ATTEMPTS`, `_BILLING_RETRY_DELAYS`, and an instance `_billing_result` that retries only `CustomerAuthUnavailable`.
+- Produces: `_SERVER_AI_REQUEST_GATE` around the existing gateway POST without adding another retry layer.
 
 - [ ] **Step 1: Write failing retry and concurrency tests**
 
