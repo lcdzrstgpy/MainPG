@@ -7,6 +7,7 @@ from pathlib import Path
 from wh_local.modules.profit_activity.domain.models import ProfitSettings
 from wh_local.modules.profit_activity.infrastructure.database import create_database
 from wh_local.modules.profit_activity.infrastructure.repository import ProfitActivityRepository
+from wh_local.modules.profit_activity.service import ProfitActivityService
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[1] / "wh_local/modules/profit_activity"
@@ -90,3 +91,25 @@ def test_shared_sql_migration_classifies_legacy_thresholds() -> None:
         assert rows == [("default", 0, 0, 0), ("custom", 12, 0.25, 1)]
     finally:
         connection.close()
+
+
+def test_legacy_settings_update_preserves_threshold_configuration_state(tmp_path: Path) -> None:
+    database = create_database(tmp_path / "legacy-update.sqlite3")
+    repository = ProfitActivityRepository(database.sessions)
+    service = ProfitActivityService(repository, database)
+    try:
+        snapshot = repository.get_settings()
+        repository.update_settings(
+            snapshot.revision,
+            ProfitSettings(activity_threshold_configured=True),
+        )
+
+        updated = service.update_legacy_settings({"domestic_fee": "6"})
+        stored = repository.get_settings().settings
+
+        assert updated["activity_threshold_configured"] is True
+        assert stored.activity_threshold_configured is True
+        assert isinstance(stored.activity_threshold_configured, bool)
+        assert stored.domestic_fee == Decimal("6")
+    finally:
+        service.close()

@@ -13,7 +13,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, get_type_hints
 
 from .domain.engine import activity_decision, calculate_profit, validate_settings
 from .domain.models import ProfitPreview, ProfitSettings, ProfitSiteProfile, SiteCode
@@ -715,9 +715,22 @@ def _decimal(value: Any) -> Decimal:
     return result
 
 
+_SETTINGS_FIELD_TYPES = get_type_hints(ProfitSettings)
+
+
 def _decimal_settings(values: dict[str, Any]) -> dict[str, Any]:
-    decimal_names = set(ProfitSettings.__dataclass_fields__) - {"save_root", "rule_version"}
-    return {key: (_decimal_setting(value) if key in decimal_names else int(value) if key == "rule_version" else str(value)) for key, value in values.items()}
+    return {
+        key: (
+            _decimal_setting(value)
+            if _SETTINGS_FIELD_TYPES.get(key) is Decimal
+            else int(value)
+            if _SETTINGS_FIELD_TYPES.get(key) is int
+            else value is True
+            if _SETTINGS_FIELD_TYPES.get(key) is bool
+            else str(value)
+        )
+        for key, value in values.items()
+    }
 
 
 def _decimal_setting(value: Any) -> Decimal:
