@@ -219,14 +219,12 @@ Prevent the empty platform from rendering a channel-specific note before validat
 {platform && platform !== "1688" && (
 ```
 
-Render neutral helper copy while no platform has been selected:
+Keep the existing helper copy unchanged, and treat the empty platform like the existing 1688 branch until the user makes a selection:
 
 ```tsx
-<span>{!platform
-  ? "请选择采集平台并填写采集条件。"
-  : platform === "1688"
-    ? "1688 每批最多调用 200 次 API，并在预算内尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。"
-    : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
+<span>{!platform || platform === "1688"
+  ? "1688 每批最多调用 200 次 API，并在预算内尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。"
+  : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
 ```
 
 - [ ] **Step 5: Run the focused test and verify GREEN**
