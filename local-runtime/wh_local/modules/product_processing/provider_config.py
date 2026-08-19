@@ -16,7 +16,7 @@ from typing import Any
 AI_PROVIDER = "aicoming"
 # 默认中转站：用户通过 https://station-88.aicoming.top/ 购买 key（运营转售模式）。
 # 若用户在"系统配置"里填了 base_url 或设置 WH_AI_BASE_URL，则以用户配置为准。
-AI_BASE_URL = "https://station-88.aicoming.top/v1"
+AI_BASE_URL = "server-managed"
 IMAGE_AI_BASE_URL = "https://api.wuyinkeji.com"
 # 不再内置共享密钥：产品处理 AI 为转售模式，每个用户使用自己在系统配置中填写的 key；
 # 未配置时 engine/status 明确显示 ai_configured=false，任务对 AI 环节给出可读报错，不静默透传。
@@ -86,25 +86,15 @@ def resolve_ai_provider() -> dict[str, Any]:
     """
     sys_cfg = _try_system_runtime_config()
 
-    # 文本 AI（仅 base_url/api_key 可覆盖，模型写死）
-    text_base_url = _first_truthy(
-        (sys_cfg and sys_cfg.text_ai.base_url),
-        os.environ.get("WH_AI_BASE_URL"),
-        AI_BASE_URL,
-    ).rstrip("/")
-    text_api_key = _first_truthy(
-        (sys_cfg and sys_cfg.text_ai.api_key),
-        os.environ.get("WH_AI_API_KEY"),
-        AI_API_KEY,
-    ).strip()
+    # Product processing credentials are platform-owned.  The desktop never
+    # reads or stores upstream keys; it supplies only its authenticated user
+    # session to the server gateway for an already-reserved usage record.
+    text_base_url = AI_BASE_URL
+    text_api_key = ""
     text_model = TEXT_MODEL
 
     # 图片 AI（仅 api_key 可覆盖，模型写死）
-    image_api_key = _first_truthy(
-        (sys_cfg and sys_cfg.image_ai.api_key),
-        os.environ.get("WH_AI_API_KEY"),
-        AI_API_KEY,
-    ).strip()
+    image_api_key = ""
     image_model = _first_truthy(
         os.environ.get("WH_IMAGE_AI_MODEL"),
         (sys_cfg and sys_cfg.image_ai.model),
@@ -149,21 +139,16 @@ def resolve_ai_provider() -> dict[str, Any]:
         "text_total_timeout_seconds": TEXT_AI_TOTAL_TIMEOUT_SECONDS,
         "image_timeout_seconds": IMAGE_AI_TIMEOUT_SECONDS,
         # 系统配置附加信息（供 _media_config_provider 使用）
-        "_sys_image_ai": (
-            {
-                "base_url": _first_truthy(
-                    os.environ.get("WH_IMAGE_AI_BASE_URL"),
-                    IMAGE_AI_BASE_URL,
-                ).rstrip("/"),
-                "api_key": image_api_key,
-                "model": image_model,
-                "reference_model": reference_image_model,
-                "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
-                "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
-            }
-            if sys_cfg and sys_cfg.image_ai.configured
-            else None
-        ),
+        # This marker intentionally replaces all historical local image
+        # configuration, including desktop Basic Settings secrets.
+        "_sys_image_ai": {
+            "base_url": "server-managed-wuyin",
+            "api_key": "server-managed",
+            "model": image_model,
+            "reference_model": reference_image_model,
+            "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
+            "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
+        },
         "_sys_backup_image_ai": (
             {
                 "base_url": sys_cfg.backup_image_ai.base_url.rstrip("/"),
@@ -221,8 +206,8 @@ def ai_provider_summary() -> dict[str, Any]:
     return {
         "provider": provider["provider"],
         "base_url": provider["base_url"],
-        "api_key_masked": masked_api_key(provider["api_key"]),
-        "api_key_configured": bool(provider["api_key"]),
+        "api_key_masked": "server-managed",
+        "api_key_configured": True,
         "text_model": provider["text_model"],
         "text_model_fallback_order": provider["text_model_fallback_order"],
         "image_model": provider["image_model"],
@@ -231,5 +216,5 @@ def ai_provider_summary() -> dict[str, Any]:
         "reference_image_size_1k": provider["reference_image_size_1k"],
         "image_size": provider["image_size"],
         "image_quality": provider["image_quality"],
-        "enabled": bool(provider["api_key"]),
+        "enabled": True,
     }

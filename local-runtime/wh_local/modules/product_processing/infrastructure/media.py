@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 import requests
 
 from ..domain.policy import is_safe_external_url
+from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
 from .grid_layout import (
     GridLayoutError,
     build_grid_scaffold,
@@ -38,6 +39,7 @@ from .rate_limit import global_ai_request_limiter
 
 # 模块级连接池：复用 TCP/TLS 握手与 HTTP 连接，避免每个请求新建连接（图片生成/参考图下载高频调用）。
 _SESSION = requests.Session()
+_SESSION.trust_env = False
 _HTTP_ADAPTER = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=32, max_retries=0)
 _SESSION.mount("https://", _HTTP_ADAPTER)
 _SESSION.mount("http://", _HTTP_ADAPTER)
@@ -854,7 +856,7 @@ class ProductImageProcessor:
             if not (base_url and api_key):
                 continue
             parsed = urlsplit(base_url)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            if base_url != "server-managed-wuyin" and (parsed.scheme not in {"http", "https"} or not parsed.netloc):
                 continue
             models = [
                 str(model).strip()
@@ -1037,6 +1039,11 @@ class ProductImageProcessor:
                 timeout_seconds=timeout_seconds,
                 image_size=image_size,
             )
+        if _is_server_managed_wuyin_provider(provider):
+            return self._request_server_managed_wuyin_image(
+                provider, prompt, references, timeout_seconds=timeout_seconds,
+                image_size=image_size,
+            )
         files: Any
         if len(references) == 1:
             content, filename, content_type = references[0][:3]
@@ -1168,6 +1175,50 @@ class ProductImageProcessor:
             raise MediaProcessingError("provider result is not an image")
         return content, content_type
 
+    def _request_server_managed_wuyin_image(
+        self,
+        provider: dict[str, str],
+        prompt: str,
+        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
+        *,
+        timeout_seconds: float,
+        image_size: str | None = None,
+    ) -> tuple[bytes, str]:
+        token = remote_token()
+        reservation = usage_id("image_grid")
+        if not token or not reservation:
+            raise MediaProcessingError("server-managed image usage is not reserved")
+        urls = [str(ref[3]).strip() for ref in references if len(ref) >= 4 and is_safe_external_url(str(ref[3]).strip())]
+        try:
+            response = _SESSION.post(
+                f"{gateway_base_url()}/api/customer/ai/image",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"usage_id": reservation, "prompt": prompt, "size": _wuyin_size(image_size or provider.get("image_size")), **({"urls": urls} if urls else {})},
+                timeout=max(30.0, min(float(timeout_seconds), 660.0)),
+                allow_redirects=False,
+            )
+            payload = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise MediaProcessingError("server image gateway is temporarily unavailable") from exc
+        finally:
+            if "response" in locals():
+                response.close()
+        if not isinstance(payload, dict) or not bool(payload.get("ok")):
+            raise MediaProcessingError("server image gateway rejected the request")
+        result_url = str(payload.get("result_url") or "").strip()
+        if not result_url or not is_safe_external_url(result_url):
+            raise MediaProcessingError("server image gateway returned no safe image result")
+        downloaded = _SESSION.get(result_url, timeout=360, allow_redirects=False)
+        try:
+            downloaded.raise_for_status()
+            content = bytes(downloaded.content)
+            content_type = str(downloaded.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
+        finally:
+            downloaded.close()
+        if not content or not content_type.startswith("image/"):
+            raise MediaProcessingError("server image result is not an image")
+        return content, content_type
+
     def _poll_wuyin_image_result(
         self,
         provider: dict[str, str],
@@ -1221,6 +1272,10 @@ class ProductImageProcessor:
 
 def _is_wuyin_image_provider(provider: dict[str, str]) -> bool:
     return urlsplit(str(provider.get("base_url") or "")).netloc.lower() == "api.wuyinkeji.com"
+
+
+def _is_server_managed_wuyin_provider(provider: dict[str, str]) -> bool:
+    return str(provider.get("base_url") or "") == "server-managed-wuyin"
 
 
 def _wuyin_size(value: str | None) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextvars
 import importlib.util
 import hashlib
 import json
@@ -16,9 +17,8 @@ from typing import Any
 
 from wh_local.data_collection.contracts import DailySelectionError
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
-from wh_local.billing import reserve_ai_usage, settle_ai_usage_success
 from wh_local.config import default_config
-from wh_local.session import Actor
+from wh_local.customer.remote_client import CustomerAuthClient
 
 from .doubao_vision import (
     MODEL_ID as DOUBAO_VISION_MODEL_ID,
@@ -82,6 +82,7 @@ from .preview_image_service import PreviewImageService
 from .infrastructure.media_asset_repository import MediaAssetRepository, MediaMaterializationConflict
 from .media_asset_service import MediaAssetService, canonical_source_url
 from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai_provider
+from .server_ai_proxy import server_ai_context
 
 _MEDIA_TYPES: tuple | None = None
 
@@ -110,6 +111,12 @@ _CACHE_VOLATILE_RAW_KEYS = frozenset(
 
 _STAGE_CACHE_VERSION = 3
 _TASK_HEARTBEAT_SECONDS = 10.0
+
+
+def _submit_with_context(executor: Any, function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Propagate the per-item server usage context into media worker threads."""
+    context = contextvars.copy_context()
+    return executor.submit(context.run, function, *args, **kwargs)
 
 
 def _ai_enabled() -> bool:
@@ -285,6 +292,7 @@ class ProductProcessingService:
         self._submission_lock = threading.RLock()
         self._task_worker_lock = threading.Lock()
         self._task_workers: dict[tuple[str, int], threading.Thread] = {}
+        self._task_remote_tokens: dict[int, str] = {}
         self._media_materialization_lock = threading.Lock()
         self._media_materialization_workers: dict[str, threading.Thread] = {}
         # 任务级串行闸门：限制同时执行的任务数，避免旧任务与新任务并发叠加打爆 AI 供应商。
@@ -326,7 +334,7 @@ class ProductProcessingService:
         ai_enabled = _ai_enabled()
         ocr_enabled = ocr_gate_enabled()
         ocr_status = ocr_diagnostics() if ocr_enabled else {"ready": False, "reason": "OCR 质量门已关闭"}
-        text_ready = bool(str(os.environ.get("ARK_API_KEY") or "").strip())
+        text_ready = bool(default_config().customer_auth_base_url)
         image_ready = bool(media.get("image_configured")) and dependency_status["pillow"]
         ocr_ready = bool(ocr_status.get("ready")) and dependency_status["pillow"]
         capabilities = {
@@ -336,7 +344,7 @@ class ProductProcessingService:
                 "reason": (
                     "文本 AI 已关闭（WH_PRODUCT_AI_ENABLED）"
                     if not ai_enabled
-                    else ("" if text_ready else "文本 AI 已启用，但服务端未配置 ARK_API_KEY")
+                    else ("" if text_ready else "文本 AI 服务端网关不可用")
                 ),
             },
             "image_ai": {
@@ -371,7 +379,7 @@ class ProductProcessingService:
                 unavailable_reasons.append(str(capability["reason"]))
         ready = not unavailable_reasons
         config = {
-            "ai_provider": "doubao" if text_ready else "local-deterministic",
+            "ai_provider": "server-managed" if text_ready else "local-deterministic",
             "ai_model": DOUBAO_TEXT_MODEL_ID if text_ready else "product-processing-local-v1",
             "ai_configured": text_ready,
             "backup_ai_configured": False,
@@ -1206,6 +1214,8 @@ class ProductProcessingService:
         workspace_id: str = "local",
     ) -> dict[str, Any]:
         payload = self._normalize_settings(payload)
+        billing = payload.get("_billing") if isinstance(payload.get("_billing"), dict) else {}
+        remote_token = self._text(billing.pop("remote_token", ""))
         draft_ids = list(dict.fromkeys(int(item) for item in payload.get("draft_ids") or [] if int(item) > 0))
         if not draft_ids:
             raise ValueError("draft_ids is required")
@@ -1242,6 +1252,8 @@ class ProductProcessingService:
                 idempotency_key=idempotency_key,
                 workspace_id=workspace_id,
             )
+            if remote_token:
+                self._task_remote_tokens[int(task["id"])] = remote_token
             if not preflight_only:
                 self.repository.mark_drafts_status(
                     [draft["id"] for draft in drafts], "processing", workspace_id=workspace_id
@@ -2007,19 +2019,21 @@ class ProductProcessingService:
             if self._require_task(task_id, workspace_id)["status"] == "paused":
                 return None
             draft = drafts.get(item["product_draft_id"])
-            return self._run_with_item_heartbeat(
-                task_id,
-                int(item["item_id"]),
-                workspace_id,
-                lambda: self._process_one(
-                    item,
-                    draft,
-                    settings,
-                    preflight_only,
-                    task_id=task_id,
-                    workspace_id=workspace_id,
-                ),
-            )
+            usage_ids = self._reserve_product_processing_item_usage(task_id, int(item["item_id"]), settings)
+            try:
+                with server_ai_context(self._task_remote_token(task_id), usage_ids):
+                    return self._run_with_item_heartbeat(
+                        task_id,
+                        int(item["item_id"]),
+                        workspace_id,
+                        lambda: self._process_one(
+                            item, draft, settings, preflight_only,
+                            task_id=task_id, workspace_id=workspace_id,
+                        ),
+                    )
+            except Exception as exc:
+                self._settle_product_processing_item_failure(task_id, usage_ids, exc)
+                raise
 
         def _persist_progress(processed: dict[str, Any]) -> None:
             """逐项写入处理结果并实时刷新任务计数，供前端进度轮询读取。"""
@@ -2046,6 +2060,8 @@ class ProductProcessingService:
                         settings,
                         processed.get("result") or {},
                     )
+                else:
+                    self._settle_product_processing_item_failure_for_item(task_id, int(item_id), processed)
             except LookupError:
                 # 任务已被清理时忽略进度写入，不阻塞整体流程
                 pass
@@ -2079,13 +2095,15 @@ class ProductProcessingService:
                     try:
                         processed = future.result()
                     except Exception as exc:
+                        reason = f"并行处理异常: {_ai_error_reason(exc)}"
                         processed = {
                             "item_id": item["item_id"],
                             "product_draft_id": item["product_draft_id"],
                             "status": "failed",
+                            "reason": reason,
                             "result": {
                                 "failure_class": "technical_retryable",
-                                "reason": f"并行处理异常: {_ai_error_reason(exc)}",
+                                "reason": reason,
                                 "retryable": True,
                             },
                         }
@@ -2128,7 +2146,7 @@ class ProductProcessingService:
             failures,
             include_video_manifest=bool(settings.get("product_video_template")) and not preflight_only,
         )
-        return self.repository.finish_task(
+        completed_task = self.repository.finish_task(
             task_id,
             item_results,
             output_file=str(paths.workbook),
@@ -2136,6 +2154,9 @@ class ProductProcessingService:
             video_manifest_file=str(paths.video_manifest) if paths.video_manifest else "",
             workspace_id=workspace_id,
         )
+        with self._submission_lock:
+            self._task_remote_tokens.pop(task_id, None)
+        return completed_task
 
     def _run_with_item_heartbeat(
         self,
@@ -2217,69 +2238,70 @@ class ProductProcessingService:
         settings: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
-        billing = settings.get("_billing")
-        if not isinstance(billing, dict):
+        usage_ids = self._reserved_usage_ids(task_id, item_id)
+        remote_token = self._task_remote_token(task_id)
+        if not remote_token:
             return
-        account_id = self._text(billing.get("account_id"))
-        if not account_id:
-            return
-        actor = Actor(
-            id=account_id,
-            username=self._text(billing.get("username")) or account_id,
-            role=self._text(billing.get("role")) or "user",
-            workspace_id=self._text(billing.get("workspace_id")) or "default",
-            workspace_code=self._text(billing.get("workspace_code")) or "local-demo",
-        )
-        db_path = default_config().database_path
-        source_ref = self._text(billing.get("source_ref")) or "product_processing:item_success"
-        ai_notes = [str(note) for note in (result.get("ai_notes") or [])]
+        client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
+        metadata = {"task_id": task_id, "item_id": item_id, "ai_notes": [str(note) for note in (result.get("ai_notes") or [])][-8:]}
+        for usage_id in usage_ids.values():
+            client.settle_ai_usage_success(remote_token, usage_id, {"metadata": metadata})
+        self._clear_reserved_usage_ids(task_id, item_id)
+
+    def _reserve_product_processing_item_usage(self, task_id: int, item_id: int, settings: dict[str, Any]) -> dict[str, str]:
+        billing = settings.get("_billing") if isinstance(settings.get("_billing"), dict) else {}
+        remote_token = self._task_remote_token(task_id)
+        if not remote_token or bool(settings.get("preflight_only")):
+            return {}
+        client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
         scope = set(settings.get("processing_scope") or [])
-        text_enabled = (
-            "title" in scope
-            or "details" in scope
-            or "product_dimensions" in scope
-            or bool(settings.get("title_optimize", True))
-            or bool(settings.get("description", True))
-            or bool(settings.get("size", True))
-        )
-        image_enabled = (
-            "four_grid" in scope
-            or bool(settings.get("grid_image", True))
-            or bool(settings.get("image_rewrite", True))
-            or any(note.startswith("image_set:4:ai") for note in ai_notes)
-        )
+        text_enabled = bool({"title", "details", "product_dimensions"} & scope) or any(bool(settings.get(key, True)) for key in ("title_optimize", "description", "size"))
+        image_enabled = "four_grid" in scope or bool(settings.get("grid_image", True)) or bool(settings.get("image_rewrite", True))
+        usage_ids: dict[str, str] = {}
+        for kind, feature in (("text", "product_processing.text"), ("image_grid", "product_processing.image_grid_2k")):
+            if (kind == "text" and not text_enabled) or (kind == "image_grid" and not image_enabled):
+                continue
+            response = client.reserve_ai_usage(remote_token, {"feature_key": feature, "idempotency_key": f"product_processing:{task_id}:{item_id}:{kind}", "source_ref": self._text(billing.get("source_ref"))[:200], "metadata": {"task_id": task_id, "item_id": item_id, "pricing_version": billing.get("pricing_version", "")}})
+            usage = response.get("usage") if isinstance(response, dict) else {}
+            usage_id = self._text(usage.get("usage_id")) if isinstance(usage, dict) else ""
+            if not usage_id:
+                raise RuntimeError("server billing did not return usage_id")
+            usage_ids[kind] = usage_id
+        self._store_reserved_usage_ids(task_id, item_id, usage_ids)
+        return usage_ids
 
-        def settle(feature_key: str, suffix: str, provider: str, model: str) -> None:
-            reservation = reserve_ai_usage(
-                db_path,
-                actor,
-                feature_key=feature_key,
-                idempotency_key=f"product_processing:{task_id}:{item_id}:{suffix}",
-                quantity=1,
-                source_ref=source_ref,
-                metadata={
-                    "task_id": task_id,
-                    "item_id": item_id,
-                    "pricing_version": billing.get("pricing_version")
-                    or "product-processing-fixed-test-v1",
-                },
-            )
-            settle_ai_usage_success(
-                db_path,
-                str(reservation["usage_id"]),
-                provider=provider,
-                model=model,
-                metadata={
-                    "task_id": task_id,
-                    "item_id": item_id,
-                    "ai_notes": ai_notes[-8:],
-                },
-            )
+    def _store_reserved_usage_ids(self, task_id: int, item_id: int, usage_ids: dict[str, str]) -> None:
+        with self._submission_lock:
+            if not hasattr(self, "_server_usage_ids"):
+                self._server_usage_ids = {}
+            self._server_usage_ids[(task_id, item_id)] = dict(usage_ids)
 
-        if text_enabled:
-            settle("product_processing.text", "text", "ark/station", "combined_text")
-        if image_enabled:
-            settle("product_processing.image_grid_2k", "image_grid", "wuyin", "image_gpt")
+    def _reserved_usage_ids(self, task_id: int, item_id: int) -> dict[str, str]:
+        with self._submission_lock:
+            return dict(getattr(self, "_server_usage_ids", {}).get((task_id, item_id), {}))
+
+    def _clear_reserved_usage_ids(self, task_id: int, item_id: int) -> None:
+        with self._submission_lock:
+            getattr(self, "_server_usage_ids", {}).pop((task_id, item_id), None)
+
+    def _task_remote_token(self, task_id: int) -> str:
+        with self._submission_lock:
+            return self._text(self._task_remote_tokens.get(task_id))
+
+    def _settle_product_processing_item_failure_for_item(self, task_id: int, item_id: int, processed: dict[str, Any]) -> None:
+        self._settle_product_processing_item_failure(task_id, self._reserved_usage_ids(task_id, item_id), RuntimeError(self._text(processed.get("reason")) or "item failed"))
+        self._clear_reserved_usage_ids(task_id, item_id)
+
+    def _settle_product_processing_item_failure(self, task_id: int, usage_ids: dict[str, str], error: BaseException) -> None:
+        remote_token = self._task_remote_token(task_id)
+        if not remote_token:
+            return
+        client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
+        for usage_id in usage_ids.values():
+            try:
+                client.settle_ai_usage_failure(remote_token, usage_id, {"error_message": self._text(error)[:500]})
+            except Exception:
+                pass
 
     def _process_one(
         self,
@@ -2693,7 +2715,8 @@ class ProductProcessingService:
                             },
                         }
                     )
-                grid_future = media_executor.submit(
+                grid_future = _submit_with_context(
+                    media_executor,
                     generator,
                     task_id,
                     draft["id"],
@@ -2708,7 +2731,8 @@ class ProductProcessingService:
                     **media_kwargs,
                 )
             else:
-                direct_detail_future = media_executor.submit(
+                direct_detail_future = _submit_with_context(
+                    media_executor,
                     self._generate_detail_images,
                     task_id,
                     draft["id"],
@@ -2928,7 +2952,8 @@ class ProductProcessingService:
             media_stage_started = time.perf_counter()
             if need_grid:
                 if premium_mode:
-                    grid_future = media_executor.submit(
+                    grid_future = _submit_with_context(
+                        media_executor,
                         self._generate_premium_images,
                         task_id,
                         draft["id"],
@@ -2944,7 +2969,8 @@ class ProductProcessingService:
                         workspace_id=workspace_id,
                     )
                 else:
-                    grid_future = media_executor.submit(
+                    grid_future = _submit_with_context(
+                        media_executor,
                         self._generate_grid_images,
                         task_id,
                         draft["id"],
@@ -2962,7 +2988,8 @@ class ProductProcessingService:
                         workspace_id=workspace_id,
                     )
             elif need_detail:
-                direct_detail_future = media_executor.submit(
+                direct_detail_future = _submit_with_context(
+                    media_executor,
                     self._generate_detail_images,
                     task_id,
                     draft["id"],
@@ -3670,7 +3697,16 @@ class ProductProcessingService:
                         nonlocal printed_design
                         inspection = inspect_visible_text(bytes(getattr(part, "content", b"")))
                         if inspection is None:
-                            raise ValueError("四宫格 OCR 质量门不可用，已阻止未验证生成图")
+                            # OCR is an optional content-quality signal, not a
+                            # prerequisite for splitting a geometrically valid grid.
+                            # Treating a missing local OCR runtime as a bad provider
+                            # image made valid four-panel outputs fail after the paid
+                            # image call had already completed.  The generation prompt
+                            # remains text-free and the deterministic image/grid checks
+                            # above still run; keep an auditable note for later review.
+                            if ai_notes is not None and "four_grid:ocr_unavailable" not in ai_notes:
+                                ai_notes.append("four_grid:ocr_unavailable")
+                            return []
                         issues: list[str] = list(dict.fromkeys(inspection.get("prominent", [])))
                         if inspection.get("chinese"):
                             if printed_design is None:
