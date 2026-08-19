@@ -22,7 +22,8 @@ function readTheme(): ThemeId {
 }
 
 function applyTheme(id: ThemeId) {
-  document.documentElement.setAttribute("data-theme", id);
+  const appliedTheme = document.documentElement.getAttribute("data-ui-mode") === "apple" ? "classic" : id;
+  document.documentElement.setAttribute("data-theme", appliedTheme);
   try {
     window.localStorage.setItem(STORAGE_KEY, id);
   } catch { /* ignore */ }
