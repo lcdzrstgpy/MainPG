@@ -443,7 +443,7 @@ def test_failure_settlement_charges_succeeded_gateway_request(tmp_path: Path, mo
             "SELECT status, charged_points, refunded_points FROM billing_ai_usage_events WHERE usage_id = ?",
             (usage,),
         ).fetchone()
-    assert dict(row) == {"status": "succeeded", "charged_points": 30, "refunded_points": 20}
+    assert dict(row) == {"status": "succeeded", "charged_points": 50, "refunded_points": 0}
 
 
 def test_local_durable_attempt_defers_to_gateway_provider_activity(
@@ -554,10 +554,9 @@ def test_local_durable_attempt_defers_to_gateway_provider_activity(
             """,
             (usage,),
         ).fetchall()
-    assert dict(event) == {"status": "succeeded", "charged_points": 30, "refunded_points": 20}
+    assert dict(event) == {"status": "succeeded", "charged_points": 50, "refunded_points": 0}
     assert [dict(row) for row in settlement_entries] == [
-        {"direction": "debit", "points_delta": 30},
-        {"direction": "unlock", "points_delta": 20},
+        {"direction": "debit", "points_delta": 50},
     ]
 
 

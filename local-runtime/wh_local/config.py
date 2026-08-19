@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 # Release automation updates this single value when producing a desktop build.
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 # Replace this host only when the official MainPG release origin moves. Keep the
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
@@ -36,8 +36,11 @@ class LocalRuntimeConfig:
 def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
     root = runtime_root(workspace)
     local_secrets = _local_onebound_config()
-    # 允许通过环境变量切换数据目录，方便开发、测试和打包后的桌面端各自使用不同库。
-    data_dir = Path(os.environ.get("WH_LOCAL_DATA_DIR", "") or root / "outputs" / "wh-local")
+    # Allow a dedicated data directory for development, tests, and packaged builds.
+    data_dir = Path(
+        os.environ.get("WH_LOCAL_DATA_DIR", "")
+        or root / "outputs" / "wh-local"
+    )
     database_path = Path(os.environ.get("WH_LOCAL_DATABASE_PATH", "") or data_dir / "workbench.sqlite3")
     return LocalRuntimeConfig(
         app_version=APP_VERSION,
@@ -66,11 +69,11 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
 
 
 def runtime_root(workspace: Path | None = None) -> Path:
-    """数据根目录：显式指定 > 打包（PyInstaller）用户可写目录 > 当前工作目录。
+    """Data root: explicit workspace > packaged (%APPDATA%\MainPG) > current directory.
 
-    安装包场景下用户双击 exe，cwd 可能是安装目录或系统目录（可能不可写），
-    此时把数据写入 %APPDATA%\\MainPG，保证草稿库/生成图/导出表能正常落盘。
-    """
+    For packaged builds the user double-clicks the exe, so cwd may be the install
+    directory or a system directory (possibly read-only). Data goes to
+    %APPDATA%\MainPG so drafts/generated images/exports always land on disk."""
     if workspace is not None:
         return workspace
     if getattr(sys, "frozen", False):
@@ -100,11 +103,11 @@ def _local_onebound_config() -> dict[str, str | bool]:
 
 
 def _local_onebound_config_paths() -> list[Path]:
-    """onebound.local.json 候选位置：源码目录 + 打包资源目录（PyInstaller）。
+    """onebound.local.json candidates: source dir + packaged resource dir (PyInstaller).
 
-    安装包构建时把 onebound.local.json 放进可执行文件同目录（onedir）或打包资源
-    （onefile 的 _MEIPASS），用户安装后零配置即可使用每日选品采集 API（运营方写死凭据）。
-    """
+    The installer build places onebound.local.json next to the executable (onedir)
+    or into the bundle resources (onefile _MEIPASS), so installed users can use
+    the daily-selection collection API with zero configuration."""
     candidates = [Path(__file__).with_name("onebound.local.json")]
     if getattr(sys, "frozen", False):
         candidates.append(Path(sys.executable).resolve().parent / "onebound.local.json")
@@ -112,3 +115,4 @@ def _local_onebound_config_paths() -> list[Path]:
         if meipass:
             candidates.append(Path(meipass) / "onebound.local.json")
     return candidates
+

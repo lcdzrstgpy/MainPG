@@ -32,8 +32,8 @@ def test_remote_billing_protocol_has_a_dedicated_error_contract() -> None:
 
 
 def test_product_processing_reserve_points_have_one_authoritative_accessor() -> None:
-    assert billing_module.feature_reserve_points("product_processing.text") == 50
-    assert billing_module.feature_reserve_points("product_processing.image_grid_2k") == 650
+    assert billing_module.feature_reserve_points("product_processing.text") == 5
+    assert billing_module.feature_reserve_points("product_processing.image_grid_2k") == 40
 
 
 def test_remote_billing_permission_has_a_dedicated_error_contract() -> None:

@@ -543,11 +543,11 @@ CREATE TABLE IF NOT EXISTS billing_pricing_rules (
     rule_id INTEGER PRIMARY KEY CHECK (rule_id = 1),
     rule_version INTEGER NOT NULL DEFAULT 1,
     point_unit_scale INTEGER NOT NULL DEFAULT 10,
-    points_per_cny INTEGER NOT NULL DEFAULT 10,
-    text_reserve_units INTEGER NOT NULL DEFAULT 5,
-    text_charge_units INTEGER NOT NULL DEFAULT 5,
-    image_reserve_units INTEGER NOT NULL DEFAULT 40,
-    image_charge_units INTEGER NOT NULL DEFAULT 35,
+    points_per_cny INTEGER NOT NULL DEFAULT 100,
+    text_reserve_units INTEGER NOT NULL DEFAULT 50,
+    text_charge_units INTEGER NOT NULL DEFAULT 50,
+    image_reserve_units INTEGER NOT NULL DEFAULT 400,
+    image_charge_units INTEGER NOT NULL DEFAULT 350,
     min_client_version TEXT NOT NULL DEFAULT '',
     effective_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -828,10 +828,34 @@ def _migrate_billing_points_to_tenths(conn: sqlite3.Connection) -> None:
             text_reserve_units, text_charge_units,
             image_reserve_units, image_charge_units, updated_by
         )
-        VALUES (1, 1, 10, 10, 5, 5, 40, 35, 'system')
+        VALUES (1, 1, 10, 100, 50, 50, 400, 350, 'system')
         ON CONFLICT(rule_id) DO NOTHING
         """
     )
+    # Roll out the product-link bundle policy once for databases created before
+    # it existed.  A marker prevents every startup from overwriting an
+    # administrator's later pricing revision.
+    bundle_marker = conn.execute(
+        "SELECT meta_value FROM billing_runtime_meta WHERE meta_key = 'product_link_bundle_pricing_v2'"
+    ).fetchone()
+    if bundle_marker is None:
+        conn.execute(
+            """
+            UPDATE billing_pricing_rules
+            SET rule_version = rule_version + 1,
+                points_per_cny = 100,
+                text_reserve_units = 50,
+                text_charge_units = 50,
+                image_reserve_units = 400,
+                image_charge_units = 350,
+                updated_at = datetime('now'),
+                updated_by = 'system:product_link_bundle_v2'
+            WHERE rule_id = 1
+            """
+        )
+        conn.execute(
+            "INSERT INTO billing_runtime_meta (meta_key, meta_value) VALUES ('product_link_bundle_pricing_v2', 'applied')"
+        )
 
 
 DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (

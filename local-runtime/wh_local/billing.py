@@ -32,8 +32,11 @@ FEATURE_PRICING: dict[str, FeaturePricing] = {
     "ai_service.chat": FeaturePricing(20, 10, 10, 3.0),
     "ai_service.image": FeaturePricing(800, 200, 599, 3.0),
     "ai_service.pod_group": FeaturePricing(800, 200, 599, 3.0),
-    "product_processing.text": FeaturePricing(50, 20, 30, 3.0),
-    "product_processing.image_grid_2k": FeaturePricing(650, 200, 599, 3.0),
+    # Compatibility estimates for the one-link product workflow.  The
+    # platform rule remains authoritative; a completed link charges 40 points
+    # (text 5 + image 35) and reserves 45 points while it is running.
+    "product_processing.text": FeaturePricing(5, 5, 5, 1.0),
+    "product_processing.image_grid_2k": FeaturePricing(40, 35, 35, 1.0),
 }
 
 
@@ -82,10 +85,19 @@ def update_active_pricing(
         }
         if next_rule["points_per_cny"] <= 0:
             raise HTTPException(status_code=400, detail="points_per_cny must be positive")
-        if not (35 <= next_rule["image_charge_units"] <= 45):
-            raise HTTPException(status_code=400, detail="image_charge_units must be between 3.5 and 4.5 points")
-        if not 0 <= next_rule["text_charge_units"] <= 10:
-            raise HTTPException(status_code=400, detail="text_charge_units must be between 0 and 1 point")
+        total_charge_units = (
+            next_rule["text_charge_units"] + next_rule["image_charge_units"]
+        )
+        if not 350 <= total_charge_units <= 450:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "one product link total charge (text plus image) must be "
+                    "between 35 and 45 points"
+                ),
+            )
+        if next_rule["text_charge_units"] < 0 or next_rule["image_charge_units"] < 0:
+            raise HTTPException(status_code=400, detail="charge units cannot be negative")
         if next_rule["text_reserve_units"] < next_rule["text_charge_units"] or next_rule["image_reserve_units"] < next_rule["image_charge_units"]:
             raise HTTPException(status_code=400, detail="reserve units cannot be lower than charge units")
         now = _utc_now()

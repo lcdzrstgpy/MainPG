@@ -65,8 +65,12 @@ TOPUP_PACKAGE_CENTS = {
     for package_id, product in BILLING_TOPUP_PRODUCTS.items()
 }
 PAYMENT_PROVIDERS = {"wechat", "alipay"}
-TEXT_CHAT_URL = "https://api.aicoming.top/v1/chat/completions"
-TEXT_MODEL = "gpt-5.6-terra"
+# Text generation is server managed.  A desktop client can neither select an
+# upstream model nor see the provider credential.
+TEXT_CHAT_URL = os.environ.get(
+    "WH_TEXT_API_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+).rstrip("/")
+TEXT_MODEL = os.environ.get("WH_TEXT_MODEL", "doubao-seed-2-0-mini-260428").strip()
 WUYIN_IMAGE_SUBMIT_URL = "https://api.wuyinkeji.com/api/async/image_gpt"
 WUYIN_IMAGE_DETAIL_URL = "https://api.wuyinkeji.com/api/async/detail"
 _TEXT_GATEWAY_SEMAPHORE = threading.BoundedSemaphore(value=4)
@@ -359,8 +363,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             feature_key="product_processing.text",
         )
         messages = _validated_chat_messages(payload.get("messages"))
-        if str(payload.get("model") or TEXT_MODEL).strip() != TEXT_MODEL:
-            raise HTTPException(status_code=400, detail="unsupported server-managed text model")
+        if "model" in payload and not isinstance(payload.get("model"), str):
+            raise HTTPException(status_code=400, detail="text request is invalid")
         request_hash = _gateway_request_hash(
             {"model": TEXT_MODEL, "messages": messages}
         )
@@ -853,7 +857,7 @@ def _fixed_usage_provider(feature_key: str) -> tuple[str, str]:
     return (
         ("wuyin", "image_gpt")
         if feature_key == "product_processing.image_grid_2k"
-        else ("aicoming", TEXT_MODEL)
+        else ("platform_text", "managed-text")
     )
 
 

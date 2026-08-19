@@ -64,7 +64,6 @@ class DoubaoArkClient:
                     "User-Agent": USER_AGENT,
                 },
                 json={
-                    "model": "gpt-5.6-terra",
                     "messages": messages,
                     "usage_id": self.usage_id,
                 },

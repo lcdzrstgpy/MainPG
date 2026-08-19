@@ -78,7 +78,7 @@ def test_billing_context_uses_remote_summary_and_token() -> None:
 
     assert remote.tokens == ["remote-session"]
     assert payload["_billing"]["remote_token"] == "remote-session"
-    assert payload["_billing"]["estimated_points"] == 50
+    assert payload["_billing"]["estimated_points"] == 5
 
 
 @pytest.mark.parametrize(
@@ -103,7 +103,7 @@ def test_billing_context_requires_remote_session_and_client(
 
 
 def test_billing_context_rejects_insufficient_remote_balance() -> None:
-    remote = RecordingRemoteBilling(29)
+    remote = RecordingRemoteBilling(4)
 
     with pytest.raises(HTTPException) as caught:
         product_processing_router._attach_billing_context_and_require_points(
@@ -115,18 +115,17 @@ def test_billing_context_rejects_insufficient_remote_balance() -> None:
         )
 
     assert caught.value.status_code == 402
-    assert "50" in caught.value.detail
-    assert "29" in caught.value.detail
+    assert "5" in caught.value.detail
+    assert "4" in caught.value.detail
     assert remote.tokens == ["remote-session"]
 
 
 @pytest.mark.parametrize(
     ("available", "payload"),
     [
-        (30, _text_only_payload()),
-        (49, _text_only_payload()),
+        (4, _text_only_payload()),
         (
-            599,
+            39,
             {
                 "draft_ids": [1],
                 "title_optimize": False,
@@ -137,7 +136,7 @@ def test_billing_context_rejects_insufficient_remote_balance() -> None:
             },
         ),
         (
-            649,
+            39,
             {
                 "draft_ids": [1],
                 "title_optimize": False,
@@ -148,11 +147,11 @@ def test_billing_context_rejects_insufficient_remote_balance() -> None:
             },
         ),
         (
-            629,
+            44,
             {**_text_only_payload(), "grid_image": True},
         ),
         (
-            699,
+            44,
             {**_text_only_payload(), "grid_image": True},
         ),
     ],
@@ -496,7 +495,7 @@ def test_workbook_rechecks_reserve_points_after_real_import_count(
             remote_token="remote-session",
         )
     )
-    remote = RecordingRemoteBilling(100)
+    remote = RecordingRemoteBilling(14)
     app = FastAPI()
     app.dependency_overrides[actor_from_authorization] = _actor
     app.include_router(
@@ -543,7 +542,7 @@ def test_workbook_rechecks_reserve_points_after_real_import_count(
         ]
 
         assert [response.status_code for response in responses] == [402, 402]
-        assert all("150" in response.json()["detail"] for response in responses)
+        assert all("15" in response.json()["detail"] for response in responses)
         assert counts() == before == (0, False, set())
         assert remote.tokens == ["remote-session"] * 4
     finally:
@@ -721,7 +720,7 @@ def test_retry_attention_rejects_insufficient_remote_balance_before_service(
         product_processing_router.create_product_processing_router(
             service,
             customer_sessions=sessions,
-            remote_customer_auth=RecordingRemoteBilling(29),
+            remote_customer_auth=RecordingRemoteBilling(4),
         )
     )
 

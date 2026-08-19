@@ -21,11 +21,14 @@ if (-not $PublishedAt) { $PublishedAt = (Get-Date).ToUniversalTime().ToString("y
 
 # This module is bundled by PyInstaller and is the runtime's build metadata.
 $runtimeConfig = Join-Path $PSScriptRoot "wh_local\config.py"
-$configText = Get-Content -Raw -LiteralPath $runtimeConfig
+# PowerShell 5's Get-Content/Set-Content use the system ANSI code page and write a
+# UTF-8 BOM, which corrupts non-ASCII source comments on every build. Use explicit
+# UTF-8 (no BOM) file IO instead.
+$configText = [IO.File]::ReadAllText($runtimeConfig, [Text.Encoding]::UTF8)
 $versionMatch = [regex]::Match($configText, '(?m)^APP_VERSION = "[^"]*"$')
 if (-not $versionMatch.Success) { throw "APP_VERSION metadata entry missing from $runtimeConfig" }
 $updatedConfig = [regex]::Replace($configText, '(?m)^APP_VERSION = "[^"]*"$', "APP_VERSION = `"$Version`"", 1)
-Set-Content -LiteralPath $runtimeConfig -Encoding UTF8 -Value $updatedConfig
+[IO.File]::WriteAllText($runtimeConfig, $updatedConfig, [Text.UTF8Encoding]::new($false))
 
 # Pin the interpreter that has the packaging dependencies (override with WH_PYTHON);
 # avoids interference from other Pythons in PATH.

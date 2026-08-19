@@ -399,7 +399,7 @@ class ProductProcessingService:
         ready = not unavailable_reasons
         config = {
             "ai_provider": "server-managed" if text_ready else "local-deterministic",
-            "ai_model": DOUBAO_TEXT_MODEL_ID if text_ready else "product-processing-local-v1",
+            "ai_model": "server-managed-text" if text_ready else "product-processing-local-v1",
             "ai_configured": text_ready,
             "backup_ai_configured": False,
             "image_provider": provider["provider"] if image_ready else "local-source-pass-through",
@@ -3116,9 +3116,9 @@ class ProductProcessingService:
                             if configuration_error or identity_error
                             else "failed"
                         ),
-                        "reason": str(exc),
+                        "reason": "AI 视觉服务暂时不可用，请稍后重试",
                         "result": {
-                            "error_type": "doubao_vision_unavailable",
+                            "error_type": "vision_service_unavailable",
                             "failure_class": (
                                 "configuration_blocked"
                                 if configuration_error
@@ -3176,9 +3176,9 @@ class ProductProcessingService:
                     "title": title,
                     "image_url": image_url,
                     "status": "attention_required",
-                    "reason": analysis.uncertainty_reason or "豆包无法确认可售主体",
+                    "reason": "AI 服务无法确认可售主体",
                     "result": {
-                        "error_type": "doubao_subject_low_confidence",
+                        "error_type": "vision_subject_low_confidence",
                         "failure_class": "identity_review_required",
                         "operator_hint": "1688 主图存在多个或遮挡主体；已阻止 GPT 文案和外贸图生成",
                         "retryable": True,
@@ -3191,7 +3191,7 @@ class ProductProcessingService:
             vision_subject = analysis.sellable_subject
             ai_notes.extend(
                 [
-                    "subject_identity:doubao",
+                    "subject_identity:managed-service",
                     f"subject_identity:confidence:{analysis.confidence}",
                 ]
             )
@@ -3366,8 +3366,8 @@ class ProductProcessingService:
                 structured_receipt = None
         text_failure: DoubaoTextError | None = None
         text_generation = {
-            "provider": "doubao",
-            "model": DOUBAO_TEXT_MODEL_ID,
+            "provider": "platform_text",
+            "model": "managed-text",
             "prompt_version": DOUBAO_TEXT_PROMPT_VERSION,
             "status": "not_requested",
         }
@@ -3421,7 +3421,7 @@ class ProductProcessingService:
                     )
                     provider_status_classes["doubao_text"] = exc.error_kind
                     text_generation["status"] = "failed"
-                    ai_notes.append(f"text:doubao-failed:{exc.error_kind}")
+                    ai_notes.append(f"text:managed-service-failed:{exc.error_kind}")
                 else:
                     measured_attempts = getattr(attempt_state, "doubao_text", None)
                     provider_attempts["doubao_text"] = (
@@ -3456,7 +3456,7 @@ class ProductProcessingService:
                     translations = combined["variant_translations"]
                 if needs_dimensions:
                     product_dimensions = dict(combined.get("product_dimensions") or {})
-                ai_notes.append("text:doubao-combined")
+                ai_notes.append("text:managed-service-combined")
             if (needs_title or needs_desc) and text_failure is None:
                 text_failure = DoubaoTextError(
                     "Doubao text output did not satisfy all requested fields",
@@ -3588,9 +3588,9 @@ class ProductProcessingService:
         )
         if not preflight_only:
             if combined_variant_translations:
-                ai_notes.append("variant_values:doubao")
+                ai_notes.append("variant_values:managed-service")
             elif self._unique_variant_values(raw):
-                ai_notes.append("variant_values:doubao-unavailable")
+                ai_notes.append("variant_values:managed-service-unavailable")
             dimensions_complete = all(
                 self._number(product_dimensions.get(key)) is not None
                 and float(self._number(product_dimensions.get(key)) or 0) > 0
@@ -3599,7 +3599,7 @@ class ProductProcessingService:
             if "product_dimensions" in scope and dimensions_complete:
                 ai_notes.append("product_dimensions:combined")
             elif "product_dimensions" in scope:
-                ai_notes.append("product_dimensions:doubao-unavailable")
+                ai_notes.append("product_dimensions:managed-service-unavailable")
         physical_dimensions = extract_physical_dimensions(raw).model_dump(mode="json")
 
         images_receipt_hit = images_receipt_output is not None
@@ -3752,7 +3752,7 @@ class ProductProcessingService:
                 "result": {
                     "error_type": "detail_images_incomplete",
                     "failure_class": "technical_retryable",
-                    "operator_hint": "豆包文本结果已保留；请重试图片分支或检查图片模型配置",
+                    "operator_hint": "文本结果已保留；请重试图片分支或检查图片服务配置",
                     "retryable": True,
                     "optimized_title": optimized_title,
                     "description": description,
@@ -3896,18 +3896,18 @@ class ProductProcessingService:
                 None
                 if text_failure is None
                 else (
-                    "doubao_text_configuration"
+                    "text_service_configuration"
                     if text_failure_is_config
-                    else "doubao_text_unavailable"
+                    else "text_service_unavailable"
                 )
             ),
             "operator_hint": (
                 ""
                 if text_failure is None
                 else (
-                    "服务端豆包文本配置异常；请检查 ARK_API_KEY 或方舟模型权限后重试"
+                    "服务端文本服务配置异常；请检查 AI 服务配置或余额后重试"
                     if text_failure_is_config
-                    else "豆包文本生成已耗尽内部重试；图片结果已保留，可直接重试补文本"
+                    else "文本生成已耗尽内部重试；图片结果已保留，可直接重试补文本"
                 )
             ),
             "retryable": text_failure is not None,
@@ -3919,7 +3919,10 @@ class ProductProcessingService:
             "title": optimized_title,
             "image_url": image_url,
             "status": "attention_required" if text_failure is not None else "completed",
-            "reason": str(text_failure) if text_failure is not None else "",
+            # Provider diagnostics stay in the server-side task trace.  The
+            # desktop result deliberately exposes only a neutral failure
+            # summary, so implementation/model details never leak into UI.
+            "reason": "AI 文本服务暂时不可用，请稍后重试" if text_failure is not None else "",
             "result": result,
         }
 
@@ -4089,7 +4092,7 @@ class ProductProcessingService:
         finally:
             self._attempt_state().doubao_text = client.last_attempt_count
         if ai_notes is not None:
-            ai_notes.append("text:doubao")
+            ai_notes.append("text:managed-service")
         return normalized
     def _generate_grid_images(
         self,

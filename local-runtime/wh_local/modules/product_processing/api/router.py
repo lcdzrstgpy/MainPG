@@ -968,11 +968,11 @@ def _legacy_billing_pricing() -> dict[str, Any]:
     used only when the server did not advertise a versioned rule.
     """
     return {
-        "rule_version": "legacy-fixed-v1",
+        "rule_version": "legacy-link-40-v2",
         "point_unit_scale": 10,
         "features": {
-            "product_processing.text": {"reserve_points": 50},
-            "product_processing.image_grid_2k": {"reserve_points": 650},
+            "product_processing.text": {"reserve_points": 5},
+            "product_processing.image_grid_2k": {"reserve_points": 40},
         },
     }
 
