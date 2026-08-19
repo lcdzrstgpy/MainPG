@@ -27,6 +27,7 @@ class SettingsPayload(_StrictModel):
     ec_refund_rate: Decimal = Field(ge=0, le=1)
     activity_min_net_profit: Decimal = Field(ge=0)
     activity_profit_rate_threshold: Decimal = Field(ge=0, le=1)
+    activity_threshold_configured: bool = True
     rule_version: int = Field(ge=1)
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -31,8 +31,9 @@ class ProfitSettingsRow(Base):
     ec_first_mile_fixed: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
     ec_end_fee: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
     ec_refund_rate: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
-    activity_min_net_profit: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("8"))
-    activity_profit_rate_threshold: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0.20"))
+    activity_min_net_profit: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
+    activity_profit_rate_threshold: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
+    activity_threshold_configured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     rule_version: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 

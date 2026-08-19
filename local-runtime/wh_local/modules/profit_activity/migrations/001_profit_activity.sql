@@ -20,8 +20,8 @@ CREATE TABLE IF NOT EXISTS profit_activity_settings (
     ec_first_mile_fixed NUMERIC(12, 4) NOT NULL DEFAULT 0,
     ec_end_fee NUMERIC(12, 4) NOT NULL DEFAULT 0,
     ec_refund_rate NUMERIC(10, 6) NOT NULL DEFAULT 0,
-    activity_min_net_profit NUMERIC(12, 4) NOT NULL DEFAULT 8,
-    activity_profit_rate_threshold NUMERIC(10, 6) NOT NULL DEFAULT 0.20,
+    activity_min_net_profit NUMERIC(12, 4) NOT NULL DEFAULT 0,
+    activity_profit_rate_threshold NUMERIC(10, 6) NOT NULL DEFAULT 0,
     rule_version INTEGER NOT NULL DEFAULT 2,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (workspace_id)
