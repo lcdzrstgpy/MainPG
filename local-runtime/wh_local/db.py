@@ -510,6 +510,31 @@ CREATE TABLE IF NOT EXISTS billing_ai_usage_events (
 
 CREATE INDEX IF NOT EXISTS idx_billing_ai_usage_events_account_status
     ON billing_ai_usage_events (account_id, status, created_at);
+
+-- 服务端 AI 网关请求账本：同一计费用量的同一规范化请求仅调用上游一次。
+-- 只保存已清理的业务响应，不保存平台 token、上游 key 或请求正文。
+CREATE TABLE IF NOT EXISTS billing_ai_gateway_requests (
+    usage_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    feature_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'in_progress'
+        CHECK (status IN ('in_progress', 'succeeded', 'failed')),
+    response_json TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    lease_expires_at TEXT NOT NULL DEFAULT '',
+    phase TEXT NOT NULL DEFAULT 'claimed',
+    provider_task_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (usage_id, request_hash),
+    FOREIGN KEY (usage_id) REFERENCES billing_ai_usage_events (usage_id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE,
+    CHECK (attempt_count > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_ai_gateway_requests_usage_status
+    ON billing_ai_gateway_requests (usage_id, status, created_at);
 """
 
 
@@ -627,6 +652,17 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 profit_activity_attachment_image_sql.read_text(encoding="utf-8"),
             )
         )
+    profit_activity_threshold_sql = (
+        root / "modules" / "profit_activity" / "migrations" / "005_activity_threshold_configuration.sql"
+    )
+    if profit_activity_threshold_sql.exists():
+        migrations.append(
+            (
+                "profit_activity:005_activity_threshold_configuration",
+                "profit_activity",
+                profit_activity_threshold_sql.read_text(encoding="utf-8"),
+            )
+        )
     price_verification_sql = root / "price_verification" / "migrations" / "001_price_verification.sql"
     if price_verification_sql.exists():
         migrations.append(
@@ -716,6 +752,11 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "customer_sessions", "remote_token", "TEXT NOT NULL DEFAULT ''")
     # 邮箱验证码失败次数用于限制暴力尝试；旧数据库平滑补列。
     _ensure_column(conn, "auth_email_verifications", "attempts", "INTEGER NOT NULL DEFAULT 0")
+    # Durable AI gateway recovery state. These fields contain only non-secret
+    # usage/provider task identifiers and are safe to add to legacy databases.
+    _ensure_column(conn, "billing_ai_gateway_requests", "lease_expires_at", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "billing_ai_gateway_requests", "phase", "TEXT NOT NULL DEFAULT 'claimed'")
+    _ensure_column(conn, "billing_ai_gateway_requests", "provider_task_id", "TEXT NOT NULL DEFAULT ''")
 
 
 DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (
@@ -913,8 +954,6 @@ def init_db(database_path: Path) -> None:
 def transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
     conn = connect(database_path)
     try:
-        # Ledger and idempotency records require a writer reservation before
-        # checking a balance, otherwise concurrent desktop jobs can overspend.
         conn.execute("BEGIN IMMEDIATE")
         yield conn
         conn.commit()

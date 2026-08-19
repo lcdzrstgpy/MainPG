@@ -18,6 +18,7 @@ from .orm import (
     ProcessingStageReceiptRow,
     ProcessingTaskItemRow,
     ProcessingTaskRow,
+    ProductProcessingBillingAttemptRow,
     ProductDraftRow,
     SourceImageAssetRow,
     utc_now,
@@ -57,6 +58,162 @@ class ProductProcessingRepository:
             session.add(row)
             session.flush()
             return self._draft(row)
+
+    def begin_product_billing_attempt(
+        self,
+        *,
+        task_id: int,
+        item_id: int,
+        workspace_id: str,
+        kind: str,
+        feature_key: str,
+        account_id: str,
+    ) -> dict[str, Any]:
+        """Return the unfinished attempt or create the next durable ordinal."""
+        with self.database.sessions.begin() as session:
+            task = session.get(ProcessingTaskRow, task_id)
+            item = session.get(ProcessingTaskItemRow, item_id)
+            if (
+                task is None
+                or item is None
+                or task.workspace_id != workspace_id
+                or item.task_id != task_id
+            ):
+                raise LookupError("product processing task item not found")
+            latest = session.scalar(
+                select(ProductProcessingBillingAttemptRow)
+                .where(
+                    ProductProcessingBillingAttemptRow.task_id == task_id,
+                    ProductProcessingBillingAttemptRow.item_id == item_id,
+                    ProductProcessingBillingAttemptRow.kind == kind,
+                )
+                .order_by(ProductProcessingBillingAttemptRow.attempt_ordinal.desc())
+                .limit(1)
+            )
+            if latest is not None and not latest.settlement_state.startswith("settled_"):
+                if latest.account_id != account_id or latest.feature_key != feature_key:
+                    raise PermissionError("billing attempt ownership or feature mismatch")
+                return self._billing_attempt(latest)
+            ordinal = int(latest.attempt_ordinal if latest is not None else 0) + 1
+            row = ProductProcessingBillingAttemptRow(
+                workspace_id=workspace_id,
+                task_id=task_id,
+                item_id=item_id,
+                kind=kind,
+                feature_key=feature_key,
+                account_id=account_id,
+                attempt_ordinal=ordinal,
+                idempotency_key=(
+                    f"product_processing:{task_id}:{item_id}:{kind}:attempt:{ordinal}"
+                ),
+            )
+            session.add(row)
+            session.flush()
+            return self._billing_attempt(row)
+
+    def record_product_billing_reservation(
+        self,
+        attempt_id: int,
+        *,
+        usage_id: str,
+        remote_status: str,
+    ) -> dict[str, Any]:
+        if remote_status != "reserved" or not str(usage_id).strip():
+            raise ValueError("remote billing did not return a reserved usage")
+        with self.database.sessions.begin() as session:
+            row = session.get(ProductProcessingBillingAttemptRow, attempt_id)
+            if row is None:
+                raise LookupError("product billing attempt not found")
+            if row.settlement_state.startswith("settled_"):
+                return self._billing_attempt(row)
+            if row.usage_id and row.usage_id != usage_id:
+                raise ValueError("remote billing usage changed for durable attempt")
+            row.usage_id = str(usage_id)
+            row.remote_status = "reserved"
+            row.settlement_state = "settlement_pending" if row.desired_outcome else "reserved"
+            row.last_error = ""
+            row.updated_at = utc_now()
+            session.flush()
+            return self._billing_attempt(row)
+
+    def mark_product_billing_desired_outcome(
+        self,
+        attempt_id: int,
+        *,
+        desired_outcome: str,
+        error_message: str,
+    ) -> dict[str, Any]:
+        if desired_outcome not in {"succeeded", "failed"}:
+            raise ValueError("unsupported billing desired outcome")
+        with self.database.sessions.begin() as session:
+            row = session.get(ProductProcessingBillingAttemptRow, attempt_id)
+            if row is None:
+                raise LookupError("product billing attempt not found")
+            if not row.settlement_state.startswith("settled_"):
+                row.desired_outcome = desired_outcome
+                row.last_error = str(error_message)[:500]
+                if row.usage_id:
+                    row.settlement_state = "settlement_pending"
+                row.updated_at = utc_now()
+            session.flush()
+            return self._billing_attempt(row)
+
+    def mark_product_billing_settlement_pending(
+        self, attempt_id: int, *, error_message: str
+    ) -> dict[str, Any]:
+        with self.database.sessions.begin() as session:
+            row = session.get(ProductProcessingBillingAttemptRow, attempt_id)
+            if row is None:
+                raise LookupError("product billing attempt not found")
+            if not row.settlement_state.startswith("settled_"):
+                row.settlement_state = "settlement_pending" if row.usage_id else "reserving"
+                row.last_error = str(error_message)[:500]
+                row.updated_at = utc_now()
+            session.flush()
+            return self._billing_attempt(row)
+
+    def mark_product_billing_settled(
+        self, attempt_id: int, *, remote_status: str
+    ) -> dict[str, Any]:
+        if remote_status not in {"succeeded", "failed"}:
+            raise ValueError("remote billing returned a non-terminal settlement")
+        with self.database.sessions.begin() as session:
+            row = session.get(ProductProcessingBillingAttemptRow, attempt_id)
+            if row is None:
+                raise LookupError("product billing attempt not found")
+            row.remote_status = remote_status
+            row.settlement_state = f"settled_{remote_status}"
+            row.last_error = ""
+            row.updated_at = utc_now()
+            session.flush()
+            return self._billing_attempt(row)
+
+    def product_billing_attempts(
+        self,
+        *,
+        task_id: int | None = None,
+        item_id: int | None = None,
+        pending_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        with self.database.sessions() as session:
+            statement = select(ProductProcessingBillingAttemptRow)
+            if task_id is not None:
+                statement = statement.where(ProductProcessingBillingAttemptRow.task_id == task_id)
+            if item_id is not None:
+                statement = statement.where(ProductProcessingBillingAttemptRow.item_id == item_id)
+            if pending_only:
+                statement = statement.where(
+                    ~ProductProcessingBillingAttemptRow.settlement_state.like("settled_%")
+                )
+            rows = session.scalars(
+                statement.order_by(
+                    ProductProcessingBillingAttemptRow.task_id,
+                    ProductProcessingBillingAttemptRow.item_id,
+                    ProductProcessingBillingAttemptRow.kind,
+                    ProductProcessingBillingAttemptRow.attempt_ordinal,
+                )
+            ).all()
+            return [self._billing_attempt(row) for row in rows]
 
     def create_draft_with_media(
         self,
@@ -1297,6 +1454,27 @@ class ProductProcessingRepository:
             "status": row.status,
             "reason": row.reason,
             "result": loads(row.result_json, {}),
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    def _billing_attempt(row: ProductProcessingBillingAttemptRow) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "workspace_id": row.workspace_id,
+            "task_id": row.task_id,
+            "item_id": row.item_id,
+            "kind": row.kind,
+            "feature_key": row.feature_key,
+            "account_id": row.account_id,
+            "attempt_ordinal": row.attempt_ordinal,
+            "idempotency_key": row.idempotency_key,
+            "usage_id": row.usage_id,
+            "remote_status": row.remote_status,
+            "desired_outcome": row.desired_outcome,
+            "settlement_state": row.settlement_state,
+            "last_error": row.last_error,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }

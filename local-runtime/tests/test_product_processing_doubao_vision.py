@@ -6,6 +6,7 @@ import pytest
 import requests
 
 from wh_local.modules.product_processing import doubao_ark, doubao_vision
+from wh_local.modules.product_processing.server_ai_proxy import server_ai_context
 
 
 VALID_ANALYSIS = {
@@ -61,6 +62,12 @@ def _success_response(analysis: dict = VALID_ANALYSIS) -> _Response:
     return _Response({"choices": [{"message": {"content": json.dumps(analysis)}}]})
 
 
+@pytest.fixture(autouse=True)
+def _reserved_server_text_usage():
+    with server_ai_context("platform-token", {"text": "usage-text"}):
+        yield
+
+
 def test_recognize_subject_sends_fixed_model_image_and_prompt(monkeypatch) -> None:
     response = _success_response()
     session = _Session([response])
@@ -75,8 +82,9 @@ def test_recognize_subject_sends_fixed_model_image_and_prompt(monkeypatch) -> No
     assert result.as_dict() == VALID_ANALYSIS
     assert len(session.requests) == 1
     request = session.requests[0]
-    assert request["url"] == doubao_ark.API_URL
-    assert request["json"]["model"] == doubao_ark.MODEL_ID
+    assert request["url"].endswith("/api/customer/ai/chat")
+    assert request["json"]["model"] == "gpt-5.6-terra"
+    assert request["json"]["usage_id"] == "usage-text"
     assert request["json"]["messages"][0]["content"][0] == {
         "type": "image_url",
         "image_url": {"url": "data:image/jpeg;base64,dGVzdA=="},
@@ -87,7 +95,7 @@ def test_recognize_subject_sends_fixed_model_image_and_prompt(monkeypatch) -> No
     assert "UNTRUSTED ORIGINAL 1688 TITLE" in prompt
     assert SOURCE_TITLE in prompt
     assert "If the image and title materially conflict" in prompt
-    assert request["headers"]["Authorization"] == "Bearer ark-secret-key"
+    assert request["headers"]["Authorization"] == "Bearer platform-token"
     assert request["allow_redirects"] is False
     assert response.closed is True
 
@@ -182,11 +190,10 @@ def test_network_failure_retries_once_then_returns_retryable_error(monkeypatch) 
     assert len(session.requests) == 2
 
 
-def test_missing_api_key_is_configuration_error(monkeypatch) -> None:
-    monkeypatch.delenv("ARK_API_KEY", raising=False)
-
-    with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
-        doubao_vision.DoubaoVisionClient()
+def test_missing_reserved_usage_is_configuration_error() -> None:
+    with server_ai_context("", {}):
+        with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
+            doubao_vision.DoubaoVisionClient()
 
     assert captured.value.error_kind == "configuration"
     assert captured.value.retryable is False

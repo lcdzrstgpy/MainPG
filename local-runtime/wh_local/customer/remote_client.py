@@ -5,7 +5,14 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
+from .contracts import (
+    CustomerAuthActionResult,
+    CustomerAuthRejected,
+    CustomerAuthResult,
+    CustomerAuthUnavailable,
+    CustomerBillingPermissionError,
+    CustomerBillingProtocolError,
+)
 
 
 class CustomerAuthClient:
@@ -63,15 +70,16 @@ class CustomerAuthClient:
 
     def billing_summary(self, remote_token: str) -> dict[str, Any]:
         if not remote_token:
-            raise PermissionError("remote customer session is missing")
-        return self._get(
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._get,
             "/api/customer/billing/summary",
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
     def create_topup_order(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not remote_token:
-            raise PermissionError("remote customer session is missing")
+            raise CustomerBillingPermissionError()
         return self._post(
             "/api/customer/billing/topup-orders",
             payload,
@@ -89,8 +97,36 @@ class CustomerAuthClient:
 
     def _billing_post(self, path: str, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not remote_token:
-            raise PermissionError("remote customer session is missing")
-        return self._post(path, payload, headers={"Authorization": f"Bearer {remote_token}"})
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._post,
+            path,
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    @staticmethod
+    def _billing_result(function, *args, **kwargs) -> dict[str, Any]:
+        try:
+            response = function(*args, **kwargs)
+        except CustomerBillingProtocolError:
+            raise
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            raise CustomerBillingProtocolError() from exc
+        except CustomerAuthUnavailable as exc:
+            raise CustomerAuthUnavailable("remote billing service is unavailable") from exc
+        except CustomerAuthRejected as exc:
+            status_code = getattr(exc, "status_code", None)
+            if type(status_code) is not int or not 400 <= status_code < 500:
+                raise CustomerBillingProtocolError() from exc
+            raise CustomerAuthRejected(status_code, "remote billing request was rejected") from exc
+        except CustomerBillingPermissionError:
+            raise
+        except PermissionError as exc:
+            raise CustomerBillingPermissionError() from exc
+        if not isinstance(response, dict):
+            raise CustomerBillingProtocolError()
+        return response
 
     def _post(self, path: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
         if not self.base_url:
@@ -113,7 +149,10 @@ class CustomerAuthClient:
             if exc.code in (401, 403):
                 raise PermissionError(detail or f"customer auth service returned HTTP {exc.code}") from exc
             if 400 <= exc.code < 500:
-                raise ValueError(detail or f"customer auth service rejected the request (HTTP {exc.code})") from exc
+                raise CustomerAuthRejected(
+                    exc.code,
+                    detail or f"customer auth service rejected the request (HTTP {exc.code})",
+                ) from exc
             raise CustomerAuthUnavailable(f"customer auth service returned HTTP {exc.code}: {detail}") from exc
         except (URLError, TimeoutError) as exc:
             raise CustomerAuthUnavailable(str(getattr(exc, "reason", exc))) from exc
@@ -137,7 +176,10 @@ class CustomerAuthClient:
             if exc.code in (401, 403):
                 raise PermissionError(detail or f"customer auth service returned HTTP {exc.code}") from exc
             if 400 <= exc.code < 500:
-                raise ValueError(detail or f"customer auth service rejected the request (HTTP {exc.code})") from exc
+                raise CustomerAuthRejected(
+                    exc.code,
+                    detail or f"customer auth service rejected the request (HTTP {exc.code})",
+                ) from exc
             raise CustomerAuthUnavailable(f"customer auth service returned HTTP {exc.code}: {detail}") from exc
         except (URLError, TimeoutError) as exc:
             raise CustomerAuthUnavailable(str(getattr(exc, "reason", exc))) from exc

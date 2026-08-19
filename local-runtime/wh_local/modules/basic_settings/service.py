@@ -205,6 +205,44 @@ class SystemConfigService:
             updates=dict(config["updates"]),
         )
 
+    def get_product_processing_runtime_config(self) -> RuntimeSystemConfig:
+        """Return product-processing settings without reading any AI provider secret.
+
+        Product processing calls paid AI exclusively through the platform gateway.
+        It still needs public model/limit/update settings and COS credentials for
+        publishing generated media, so only the two COS secret rows are queried
+        and decrypted here.
+        """
+        config = self._load_public_config()
+        cos_secrets = self._load_cos_secret_values()
+        return RuntimeSystemConfig(
+            text_ai=RuntimeAiConfig(
+                base_url=config["ai"].get("base_url", ""),
+                model=config["ai"].get("model", ""),
+                api_key="",
+            ),
+            image_ai=RuntimeAiConfig(
+                base_url=config["image"].get("base_url", ""),
+                model=config["image"].get("model", ""),
+                reference_model=config["image"].get("reference_model", ""),
+                api_key="",
+            ),
+            backup_image_ai=RuntimeAiConfig(
+                base_url="",
+                model="",
+                reference_model="",
+                api_key="",
+            ),
+            cos=RuntimeCosConfig(
+                bucket=config["cos"].get("bucket", ""),
+                region=config["cos"].get("region", ""),
+                secret_id=cos_secrets.get("secret_id", ""),
+                secret_key=cos_secrets.get("secret_key", ""),
+            ),
+            limits=dict(config["limits"]),
+            updates=dict(config["updates"]),
+        )
+
     def _load_raw_config(self) -> dict[str, Any]:
         # 数据库没有保存过配置时，直接返回默认配置，保证页面首次打开也能渲染。
         with transaction(self.database_path) as conn:
@@ -247,6 +285,18 @@ class SystemConfigService:
         for row in rows:
             values[(row["scope"], row["name"])] = decrypt_secret(row["ciphertext"])
         return values
+
+    def _load_cos_secret_values(self) -> dict[str, str]:
+        with transaction(self.database_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT name, ciphertext
+                FROM secret_values
+                WHERE scope = 'cos' AND name IN ('secret_id', 'secret_key')
+                ORDER BY name
+                """
+            ).fetchall()
+        return {str(row["name"]): decrypt_secret(row["ciphertext"]) for row in rows}
 
     def _merge_public_fields(self, current: dict[str, Any], payload: SystemConfigUpdate) -> dict[str, Any]:
         return {

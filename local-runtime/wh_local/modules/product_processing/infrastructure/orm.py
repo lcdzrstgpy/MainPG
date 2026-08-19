@@ -93,6 +93,43 @@ class ProcessingTaskItemRow(Base):
     task: Mapped[ProcessingTaskRow] = relationship(back_populates="items")
 
 
+class ProductProcessingBillingAttemptRow(Base):
+    """Credential-free local coordinator for one remote billing attempt."""
+
+    __tablename__ = "product_processing_billing_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "item_id",
+            "kind",
+            "attempt_ordinal",
+            name="uq_product_processing_billing_attempt",
+        ),
+        UniqueConstraint("idempotency_key", name="uq_product_processing_billing_idempotency"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(String(255), default="local", index=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("product_processing_tasks.id", ondelete="CASCADE"), index=True
+    )
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("product_processing_task_items.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    feature_key: Mapped[str] = mapped_column(String(128))
+    account_id: Mapped[str] = mapped_column(String(255), index=True)
+    attempt_ordinal: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    usage_id: Mapped[str] = mapped_column(String(255), default="", index=True)
+    remote_status: Mapped[str] = mapped_column(String(32), default="")
+    desired_outcome: Mapped[str] = mapped_column(String(32), default="")
+    settlement_state: Mapped[str] = mapped_column(String(32), default="reserving", index=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)
+
+
 class ProcessingStageReceiptRow(Base):
     """Durable evidence for one completed processing stage of one task item."""
 

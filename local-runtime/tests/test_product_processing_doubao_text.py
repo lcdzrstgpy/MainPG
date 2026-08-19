@@ -6,6 +6,7 @@ import pytest
 import requests
 
 from wh_local.modules.product_processing import doubao_ark, doubao_text
+from wh_local.modules.product_processing.server_ai_proxy import server_ai_context
 
 
 VALID_TEXT = {
@@ -68,9 +69,14 @@ def _success(payload: dict = VALID_TEXT) -> _Response:
     return _Response({"choices": [{"message": {"content": json.dumps(payload)}}]})
 
 
-def test_text_request_uses_fixed_ark_model_and_contains_no_image(monkeypatch) -> None:
+@pytest.fixture(autouse=True)
+def _reserved_server_text_usage():
+    with server_ai_context("platform-token", {"text": "usage-text"}):
+        yield
+
+
+def test_text_request_uses_platform_gateway_and_contains_no_image(monkeypatch) -> None:
     session = _Session([_success()])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
 
     result = doubao_text.DoubaoTextClient().generate_listing_text(
@@ -79,14 +85,15 @@ def test_text_request_uses_fixed_ark_model_and_contains_no_image(monkeypatch) ->
 
     assert result.as_dict() == VALID_TEXT
     request = session.requests[0]
-    assert request["url"] == doubao_ark.API_URL
-    assert request["json"]["model"] == doubao_ark.MODEL_ID
+    assert request["url"].endswith("/api/customer/ai/chat")
+    assert request["json"]["model"] == "gpt-5.6-terra"
+    assert request["json"]["usage_id"] == "usage-text"
     assert request["json"]["messages"] == [
         {"role": "user", "content": "STRICT LISTING PROMPT"}
     ]
     assert "image_url" not in json.dumps(request["json"])
     assert request["allow_redirects"] is False
-    assert request["headers"]["Authorization"] == "Bearer ark-secret"
+    assert request["headers"]["Authorization"] == "Bearer platform-token"
 
 
 def test_invalid_contract_retries_whole_text_stage_until_third_success(monkeypatch) -> None:
@@ -176,11 +183,10 @@ def test_configuration_error_does_not_retry_or_expose_provider_body(monkeypatch)
     assert len(session.requests) == 1
 
 
-def test_missing_key_is_configuration_error_without_provider_attempt(monkeypatch) -> None:
-    monkeypatch.delenv("ARK_API_KEY", raising=False)
-
-    with pytest.raises(doubao_text.DoubaoTextError) as captured:
-        doubao_text.DoubaoTextClient()
+def test_missing_reserved_usage_is_configuration_error_without_provider_attempt() -> None:
+    with server_ai_context("", {}):
+        with pytest.raises(doubao_text.DoubaoTextError) as captured:
+            doubao_text.DoubaoTextClient()
 
     assert captured.value.error_kind == "configuration"
     assert captured.value.attempt_count == 0

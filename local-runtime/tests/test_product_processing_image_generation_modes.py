@@ -241,8 +241,8 @@ def test_four_grid_source_with_chinese_allows_printed_design_panels(monkeypatch)
     )
     monkeypatch.setattr(
         media_module,
-        "_download_reference_image",
-        lambda _url: (b"source-with-chinese", "image/jpeg"),
+        "_download_pinned_public_image",
+        lambda _url, **_kwargs: (b"source-with-chinese", "image/jpeg"),
     )
     monkeypatch.setattr(service_module, "detect_chinese_text", lambda _content: ["中"])
 

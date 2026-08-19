@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 
 import { clearAuthSession, getAuthAccount } from "../../../transport/http/client";
+import { BasicSettingsPage } from "../../basic_settings/pages/BasicSettingsPage";
 import { changeAccountPassword, createTopupOrder, loadBillingSummary, type BillingPackage, type BillingSummary, type TopupOrderResponse } from "../api/personalCenterApi";
 import "../styles/personalCenter.css";
 
@@ -345,6 +346,8 @@ export function PersonalCenterPage() {
           </div>
         </article>
       </div>
+
+      <BasicSettingsPage />
     </section>
   );
 }

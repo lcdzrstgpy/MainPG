@@ -12,7 +12,6 @@ import { Sidebar } from "./Sidebar";
 import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
 import { WorkspaceHomePage } from "../../modules/dashboard/pages/WorkspaceHomePage";
 import { DailySelectionPage } from "../../modules/daily_selection/pages/DailySelectionPage";
-import { BasicSettingsPage } from "../../modules/basic_settings/pages/BasicSettingsPage";
 import { ProfitActivityProductsPage } from "../../modules/profit_activity/pages/ProfitActivityProductsPage";
 import { ProfitActivityTestPage } from "../../modules/profit_activity/pages/ProfitActivityTestPage";
 import { PriceVerificationPage } from "../../modules/price_verification/pages/PriceVerificationPage";
@@ -26,7 +25,6 @@ import {
   listDimensionNotifications,
   markDimensionNotificationRead,
 } from "../../modules/product_processing/api/dimensionCanvasApi";
-import { AiServicePage } from "../../modules/ai_service/pages/AiServicePage";
 import { PersonalCenterPage } from "../../modules/personal_center/pages/PersonalCenterPage";
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
@@ -396,12 +394,8 @@ export function WorkspaceShell({ onSignOut, playEntryAnimation = false, onEntryA
         );
       case "dimension_canvas":
         return <DimensionCanvasPage initialBatchId={tab.dimensionBatchId} initialItemId={tab.dimensionItemId} onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
-      case "ai_service":
-        return <AiServicePage />;
       case "personal_center":
         return <PersonalCenterPage />;
-      case "basic_settings":
-        return <BasicSettingsPage />;
       default:
         return <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;
     }

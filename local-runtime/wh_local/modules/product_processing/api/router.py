@@ -2,17 +2,22 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
-from ....config import default_config
-from ....db import transaction
-from ....session import Actor, actor_from_authorization
+from ....billing import feature_reserve_points
+from ....customer.contracts import (
+    CustomerAuthRejected,
+    CustomerAuthUnavailable,
+    CustomerBillingPermissionError,
+    CustomerBillingProtocolError,
+)
 from ....customer.local_session import LocalSessionService
 from ....customer.remote_client import CustomerAuthClient
+from ....session import Actor, actor_from_authorization
 from ..dimension_canvas_service import DimensionCanvasService
 from ..infrastructure.assets import ProductProcessingAssets
 from ..infrastructure.database import create_database
@@ -363,13 +368,24 @@ def create_product_processing_router(
         form, file = await _upload_form(request, "file")
         try:
             normalized = _normalize_form(form)
+            remote_token = _remote_token(request, customer_sessions)
             _attach_billing_context_and_require_points(
                 normalized,
                 actor,
                 source_ref="product_processing:workbook",
-                remote_token=_remote_token(request, customer_sessions),
+                remote_token=remote_token,
                 remote_customer_auth=remote_customer_auth,
             )
+
+            def final_billing_check(parsed_payload: dict[str, Any]) -> None:
+                _attach_billing_context_and_require_points(
+                    parsed_payload,
+                    actor,
+                    source_ref="product_processing:workbook",
+                    remote_token=remote_token,
+                    remote_customer_auth=remote_customer_auth,
+                )
+
             return _call(
                 service.process_workbook,
                 _filename(file, "products.xlsx"),
@@ -377,6 +393,7 @@ def create_product_processing_router(
                 normalized,
                 idempotency_key=request.headers.get("Idempotency-Key"),
                 workspace_id=_workspace(workspace_id),
+                final_billing_check=final_billing_check,
             )
         finally:
             await file.close()
@@ -611,30 +628,113 @@ def create_product_processing_router(
 
     @router.post("/tasks/{task_id}/resume")
     def resume_task(
+        request: Request,
         task_id: int,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
-        return _call(service.resume_task, task_id, _workspace(workspace_id))
+        normalized_workspace = _workspace(workspace_id)
+        snapshot = _task_billing_snapshot(service, task_id, normalized_workspace, actor)
+        token = _remote_token(request, customer_sessions)
+        task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
+        metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
+        settings = metadata.get("settings") if isinstance(metadata, dict) else {}
+        available_points = _reconcile_billing_before_precheck(
+            service,
+            task_id,
+            settings if isinstance(settings, dict) else {},
+            token,
+            remote_customer_auth,
+        )
+        pending_ids = [
+            int(item["product_draft_id"])
+            for item in snapshot.get("items", [])
+            if isinstance(item, dict)
+            and item.get("status") in {"pending", "running"}
+            and item.get("product_draft_id")
+        ]
+        billing_payload = {
+            **(settings if isinstance(settings, dict) else {}),
+            "draft_ids": pending_ids,
+            "preflight_only": bool(metadata.get("preflight_only")) if isinstance(metadata, dict) else False,
+        }
+        if pending_ids:
+            _attach_billing_context_and_require_points(
+                billing_payload,
+                actor,
+                source_ref=f"product_processing:tasks/{task_id}/resume",
+                remote_token=token,
+                remote_customer_auth=remote_customer_auth,
+                available_points=available_points,
+            )
+        return _call(
+            service.resume_task,
+            task_id,
+            normalized_workspace,
+            remote_token=token,
+        )
 
     @router.post("/tasks/{task_id}/retry-attention")
     def retry_attention(
+        request: Request,
         task_id: int,
         body: RetryTaskRequest | None = None,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
+        normalized_workspace = _workspace(workspace_id)
+        snapshot = _task_billing_snapshot(service, task_id, normalized_workspace, actor)
+        items = snapshot.get("items") if isinstance(snapshot, dict) else []
+        requested_ids = set(body.draft_ids or []) if body else set()
+        retry_draft_ids = [
+            int(item["product_draft_id"])
+            for item in items or []
+            if isinstance(item, dict)
+            and item.get("status") in {"failed", "attention_required"}
+            and (not requested_ids or int(item.get("product_draft_id") or 0) in requested_ids)
+        ]
+        token = _remote_token(request, customer_sessions)
+        task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
+        metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
+        settings = metadata.get("settings") if isinstance(metadata, dict) else {}
+        available_points = _reconcile_billing_before_precheck(
+            service,
+            task_id,
+            settings if isinstance(settings, dict) else {},
+            token,
+            remote_customer_auth,
+        )
+        if retry_draft_ids:
+            billing_payload = {
+                **(settings if isinstance(settings, dict) else {}),
+                "draft_ids": retry_draft_ids,
+                "preflight_only": bool(metadata.get("preflight_only")) if isinstance(metadata, dict) else False,
+            }
+            _attach_billing_context_and_require_points(
+                billing_payload,
+                actor,
+                source_ref=f"product_processing:tasks/{task_id}/retry-attention",
+                remote_token=token,
+                remote_customer_auth=remote_customer_auth,
+                available_points=available_points,
+            )
         return _call(
             service.retry_attention,
             task_id,
-            _workspace(workspace_id),
+            normalized_workspace,
             draft_ids=body.draft_ids if body else None,
+            remote_token=token,
         )
 
     @router.post("/tasks/{task_id}/clear")
     def clear_task(
         task_id: int,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
-        return _call(service.clear_task, task_id, _workspace(workspace_id))
+        normalized_workspace = _workspace(workspace_id)
+        _task_billing_snapshot(service, task_id, normalized_workspace, actor)
+        return _call(service.clear_task, task_id, normalized_workspace)
 
     @router.get("/tasks/{task_id}/download")
     def download(
@@ -672,8 +772,48 @@ def _call(function, *args, **kwargs):
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except ProductProcessingValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except CustomerBillingProtocolError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "remote billing service returned an invalid response",
+        ) from exc
+    except CustomerAuthUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "remote billing service is unavailable",
+        ) from exc
+    except CustomerAuthRejected as exc:
+        remote_status = getattr(exc, "status_code", None)
+        if type(remote_status) is int and 400 <= remote_status < 500:
+            raise HTTPException(remote_status, "remote billing request was rejected") from exc
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "remote billing service returned an invalid error status",
+        ) from exc
+    except CustomerBillingPermissionError as exc:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "remote billing session was rejected",
+        ) from exc
     except (ValueError, ValidationError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+def _task_billing_snapshot(
+    service: ProductProcessingService,
+    task_id: int,
+    workspace_id: str,
+    actor: Actor,
+) -> dict[str, Any]:
+    snapshot = _call(service.task_outputs, task_id, workspace_id=workspace_id)
+    task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
+    metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
+    settings = metadata.get("settings") if isinstance(metadata, dict) else {}
+    billing = settings.get("_billing") if isinstance(settings, dict) else {}
+    account_id = str(billing.get("account_id") or "").strip() if isinstance(billing, dict) else ""
+    if account_id and account_id != actor.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "product processing task not found")
+    return snapshot
 
 
 def _attach_billing_context_and_require_points(
@@ -683,6 +823,7 @@ def _attach_billing_context_and_require_points(
     source_ref: str,
     remote_token: str,
     remote_customer_auth: CustomerAuthClient | None,
+    available_points: int | None = None,
 ) -> None:
     if bool(payload.get("preflight_only")) or bool(payload.get("category_preflight_only")):
         return
@@ -691,10 +832,15 @@ def _attach_billing_context_and_require_points(
     if estimated_points <= 0:
         return
     if remote_customer_auth is None or not remote_token:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "server billing session is unavailable")
-    summary = remote_customer_auth.billing_summary(remote_token)
-    wallet = summary.get("wallet") if isinstance(summary.get("wallet"), dict) else {}
-    available = int(wallet.get("available_points") or 0)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "server billing session is unavailable",
+        )
+    available = (
+        available_points
+        if available_points is not None
+        else _remote_available_points(remote_customer_auth, remote_token)
+    )
     if available < estimated_points:
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
@@ -707,13 +853,90 @@ def _attach_billing_context_and_require_points(
         "workspace_id": actor.workspace_id,
         "workspace_code": actor.workspace_code,
         "source_ref": source_ref,
+        "remote_token": remote_token,
         "estimated_points": estimated_points,
         "pricing_version": "product-processing-fixed-test-v1",
-        # Platform token is a short-lived, local session credential rather than
-        # an upstream provider secret.  It lets background processing settle
-        # the correct server-owned usage records after this request returns.
-        "remote_token": remote_token,
     }
+
+
+def _reconcile_billing_before_precheck(
+    service: ProductProcessingService,
+    task_id: int,
+    settings: dict[str, Any],
+    remote_token: str,
+    remote_customer_auth: CustomerAuthClient | None,
+) -> int | None:
+    billing = settings.get("_billing") if isinstance(settings.get("_billing"), dict) else {}
+    if not str(billing.get("account_id") or "").strip():
+        return None
+    if remote_customer_auth is None or not remote_token:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "server billing session is unavailable",
+        )
+    available = _remote_available_points(remote_customer_auth, remote_token)
+    if service.repository.product_billing_attempts(task_id=task_id, pending_only=True):
+        _call(service.reconcile_product_billing, task_id, remote_token)
+        available = _remote_available_points(remote_customer_auth, remote_token)
+    return available
+
+
+def _remote_available_points(
+    remote_customer_auth: CustomerAuthClient,
+    remote_token: str,
+) -> int:
+    try:
+        summary = remote_customer_auth.billing_summary(remote_token)
+    except CustomerBillingProtocolError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "remote billing service returned an invalid response",
+        ) from exc
+    except CustomerAuthUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "remote billing service is unavailable",
+        ) from exc
+    except CustomerAuthRejected as exc:
+        remote_status = getattr(exc, "status_code", None)
+        if type(remote_status) is int and 400 <= remote_status < 500:
+            raise HTTPException(remote_status, "remote billing request was rejected") from exc
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "remote billing service returned an invalid error status",
+        ) from exc
+    except CustomerBillingPermissionError as exc:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "remote billing session was rejected",
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "remote billing service returned an invalid response",
+        ) from exc
+
+    if not isinstance(summary, dict):
+        _raise_invalid_remote_wallet_summary()
+    wallet = summary.get("wallet")
+    if not isinstance(wallet, dict) or "available_points" not in wallet:
+        _raise_invalid_remote_wallet_summary()
+    raw_available = wallet.get("available_points")
+    if type(raw_available) is int:
+        return raw_available
+    if isinstance(raw_available, str):
+        normalized = raw_available.strip()
+        digits = normalized[1:] if normalized.startswith("-") else normalized
+        if digits.isdigit():
+            return int(normalized)
+    _raise_invalid_remote_wallet_summary()
+
+
+def _raise_invalid_remote_wallet_summary() -> NoReturn:
+    raise HTTPException(
+        status.HTTP_502_BAD_GATEWAY,
+        "remote billing service returned an invalid wallet summary",
+    )
 
 
 def _remote_token(request: Request, sessions: LocalSessionService | None) -> str:
@@ -740,7 +963,11 @@ def _billing_points_per_item(payload: dict[str, Any]) -> int:
         or bool(payload.get("grid_image", True))
         or bool(payload.get("image_rewrite", True))
     )
-    return (30 if text_enabled else 0) + (599 if image_enabled else 0)
+    return (
+        feature_reserve_points("product_processing.text") if text_enabled else 0
+    ) + (
+        feature_reserve_points("product_processing.image_grid_2k") if image_enabled else 0
+    )
 
 
 def _billing_quantity(payload: dict[str, Any]) -> int:

@@ -12,6 +12,32 @@ class CustomerAuthUnavailable(CustomerAuthError):
     """Raised when the remote customer-auth service is missing or unreachable."""
 
 
+class CustomerAuthRejected(CustomerAuthError):
+    """A validated client-side representation of a remote 4xx rejection."""
+
+    def __init__(self, status_code: int, message: str):
+        validated_status = int(status_code)
+        if not 400 <= validated_status < 500:
+            raise ValueError("customer auth rejection status must be a 4xx code")
+        self.status_code = validated_status
+        self.message = str(message)
+        super().__init__(self.message)
+
+
+class CustomerBillingProtocolError(CustomerAuthError):
+    """Raised when a remote billing response violates its public contract."""
+
+    def __init__(self) -> None:
+        super().__init__("remote billing service returned an invalid response")
+
+
+class CustomerBillingPermissionError(PermissionError):
+    """Raised when the remote billing service rejects the current session."""
+
+    def __init__(self) -> None:
+        super().__init__("remote billing session was rejected")
+
+
 @dataclass(frozen=True)
 class CustomerAuthResult:
     """Normalized successful login response from the platform auth service."""

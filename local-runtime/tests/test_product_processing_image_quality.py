@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import threading
 import time
@@ -64,92 +65,24 @@ def _media(content: bytes) -> GeneratedMedia:
     )
 
 
-def test_wuyin_result_download_retries_transient_ssl_failure(monkeypatch) -> None:
+def test_wuyin_result_download_uses_pinned_transport(monkeypatch) -> None:
     class _SubmitResponse:
         ok = True
 
-        def json(self) -> dict:
-            return {"code": 200, "data": {"id": "task-1"}}
-
-        def close(self) -> None:
-            return
-
-    class _ImageResponse:
-        content = b"generated-image"
-        headers = {"Content-Type": "image/png"}
-
-        def raise_for_status(self) -> None:
-            return
-
-        def close(self) -> None:
-            return
-
-    download_attempts = 0
-
-    def _get(url: str, **kwargs):  # noqa: ANN003
-        nonlocal download_attempts
-        assert url == "https://scapi.net/result.png"
-        download_attempts += 1
-        if download_attempts == 1:
-            raise requests.exceptions.SSLError("unexpected eof")
-        return _ImageResponse()
-
-    monkeypatch.setattr(media_module._SESSION, "post", lambda *args, **kwargs: _SubmitResponse())
-    monkeypatch.setattr(media_module._SESSION, "get", _get)
-    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
-    processor = ProductImageProcessor(lambda: {})
-    monkeypatch.setattr(
-        processor,
-        "_poll_wuyin_image_result",
-        lambda *_args, **_kwargs: "https://scapi.net/result.png",
-    )
-
-    content, content_type = processor._request_wuyin_image(
-        {
-            "base_url": "https://api.wuyinkeji.com",
-            "api_key": "secret",
-            "image_size": "2K",
-        },
-        "prompt",
-        [(b"reference", "source.png", "image/png", "https://example.test/source.png")],
-        timeout_seconds=600,
-    )
-
-    assert content == b"generated-image"
-    assert content_type == "image/png"
-    assert download_attempts == 2
-
-
-def test_wuyin_result_download_falls_back_to_http_after_https_ssl_failures(monkeypatch) -> None:
-    class _SubmitResponse:
-        ok = True
-
-        def json(self) -> dict:
-            return {"code": 200, "data": {"id": "task-1"}}
-
-        def close(self) -> None:
-            return
-
-    class _ImageResponse:
-        content = b"generated-image"
-        headers = {"Content-Type": "image/png"}
-
-        def raise_for_status(self) -> None:
-            return
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield b'{"code":200,"data":{"id":"task-1"}}'
 
         def close(self) -> None:
             return
 
     download_urls: list[str] = []
 
-    def _get(url: str, **kwargs):  # noqa: ANN003
+    def download(url: str, **_kwargs):
         download_urls.append(url)
-        if url.startswith("https://"):
-            raise requests.exceptions.SSLError("unexpected eof")
-        return _ImageResponse()
+        return b"generated-image", "image/png"
 
     monkeypatch.setattr(media_module._SESSION, "post", lambda *args, **kwargs: _SubmitResponse())
-    monkeypatch.setattr(media_module._SESSION, "get", _get)
+    monkeypatch.setattr(media_module, "_download_pinned_public_image", download)
     monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
     processor = ProductImageProcessor(lambda: {})
     monkeypatch.setattr(
@@ -171,12 +104,48 @@ def test_wuyin_result_download_falls_back_to_http_after_https_ssl_failures(monke
 
     assert content == b"generated-image"
     assert content_type == "image/png"
-    assert download_urls == [
-        "https://scapi.net/result.png",
-        "https://scapi.net/result.png",
-        "https://scapi.net/result.png",
-        "http://scapi.net/result.png",
-    ]
+    assert download_urls == ["https://scapi.net/result.png"]
+
+
+def test_wuyin_result_download_never_downgrades_https_to_http(monkeypatch) -> None:
+    class _SubmitResponse:
+        ok = True
+
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield b'{"code":200,"data":{"id":"task-1"}}'
+
+        def close(self) -> None:
+            return
+
+    download_urls: list[str] = []
+
+    def download(url: str, **_kwargs):
+        download_urls.append(url)
+        raise media_module.MediaProcessingError("TLS verification failed")
+
+    monkeypatch.setattr(media_module._SESSION, "post", lambda *args, **kwargs: _SubmitResponse())
+    monkeypatch.setattr(media_module, "_download_pinned_public_image", download)
+    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+    processor = ProductImageProcessor(lambda: {})
+    monkeypatch.setattr(
+        processor,
+        "_poll_wuyin_image_result",
+        lambda *_args, **_kwargs: "https://scapi.net/result.png",
+    )
+
+    with pytest.raises(media_module.MediaProcessingError, match="TLS verification failed"):
+        processor._request_wuyin_image(
+            {
+                "base_url": "https://api.wuyinkeji.com",
+                "api_key": "secret",
+                "image_size": "2K",
+            },
+            "prompt",
+            [(b"reference", "source.png", "image/png", "https://example.test/source.png")],
+            timeout_seconds=600,
+        )
+
+    assert download_urls == ["https://scapi.net/result.png"]
 
 
 def test_four_grid_prompt_forbids_all_typography_and_requires_validated_dividers() -> None:
@@ -592,6 +561,52 @@ def test_reference_download_cache_single_flights_concurrent_reads(monkeypatch) -
     assert [result[0][0] for result in results] == [b"same-image"] * 4
 
 
+def test_reference_loading_uses_shared_pinned_public_transport(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def pinned(url: str, **_kwargs) -> tuple[bytes, str]:
+        calls.append(url)
+        return b"safe-reference", "image/jpeg"
+
+    monkeypatch.setattr(media_module, "_download_pinned_public_image", pinned)
+    monkeypatch.setattr(
+        media_module._SESSION,
+        "get",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("reference download must not resolve the hostname through requests")
+        ),
+    )
+    processor = ProductImageProcessor(lambda: {})
+    url = "https://reference.example.test/source.jpg"
+
+    loaded = processor._load_references([url], limit=1)
+
+    assert loaded[0][:3] == (b"safe-reference", "source.jpg", "image/jpeg")
+    assert calls == [url]
+
+
+def test_reference_download_never_downgrades_https_or_uses_domain_session(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def pinned(url: str, **_kwargs):
+        calls.append(url)
+        raise media_module.MediaProcessingError("TLS certificate verification failed")
+
+    monkeypatch.setattr(media_module, "_download_pinned_public_image", pinned)
+    monkeypatch.setattr(
+        media_module._SESSION,
+        "get",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("requests hostname transport is forbidden")
+        ),
+    )
+
+    with pytest.raises(media_module.MediaProcessingError, match="TLS certificate"):
+        media_module._download_reference_image("https://reference.example.test/source.jpg")
+
+    assert calls == ["https://reference.example.test/source.jpg"]
+
+
 def test_prime_references_uses_existing_safe_single_flight_cache(monkeypatch) -> None:
     calls = 0
 
@@ -675,7 +690,7 @@ def test_provider_config_uses_image_gpt_with_explicit_1k_reference_profile(monke
     assert provider["premium_image_size"] == "4096x4096"
 
 
-def test_provider_config_routes_saved_image_key_to_wuyin(monkeypatch) -> None:
+def test_provider_config_ignores_saved_image_key_for_server_managed_wuyin(monkeypatch) -> None:
     runtime_config = SimpleNamespace(
         text_ai=SimpleNamespace(base_url="https://text.example/v1", api_key="text-key"),
         image_ai=SimpleNamespace(
@@ -694,7 +709,9 @@ def test_provider_config_routes_saved_image_key_to_wuyin(monkeypatch) -> None:
 
     provider = provider_config_module.resolve_ai_provider()
 
-    assert provider["_sys_image_ai"]["base_url"] == "https://api.wuyinkeji.com"
+    assert provider["_sys_image_ai"]["base_url"] == "server-managed-wuyin"
+    assert provider["_sys_image_ai"]["api_key"] == "server-managed"
+    assert "image-key" not in json.dumps(provider)
 
 
 def test_b_grid_quality_failure_never_triggers_a_paid_repair(monkeypatch) -> None:

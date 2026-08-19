@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import binascii
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import threading
 import time
@@ -14,6 +16,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import requests
+from dataclasses import dataclass
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
@@ -21,12 +24,13 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, Header, HTTPException, Request
 
+from ..billing import reserve_ai_usage, settle_ai_usage_failure, settle_ai_usage_success
 from ..config import default_config
 from ..db import init_db, transaction
-from ..billing import reserve_ai_usage, settle_ai_usage_failure, settle_ai_usage_success
+from ..modules.product_processing.domain.policy import is_safe_external_url
 from ..session import Actor
 from .auth_service import SQLiteCustomerAuthService
-from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
+from .credential_vault import CredentialVaultError, active_secret
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
 
@@ -43,108 +47,64 @@ TEXT_CHAT_URL = "https://api.aicoming.top/v1/chat/completions"
 TEXT_MODEL = "gpt-5.6-terra"
 WUYIN_IMAGE_SUBMIT_URL = "https://api.wuyinkeji.com/api/async/image_gpt"
 WUYIN_IMAGE_DETAIL_URL = "https://api.wuyinkeji.com/api/async/detail"
-TEXT_GATEWAY_CONCURRENCY = 200
-_TEXT_GATEWAY_SEMAPHORE = threading.BoundedSemaphore(TEXT_GATEWAY_CONCURRENCY)
+_TEXT_GATEWAY_SEMAPHORE = threading.BoundedSemaphore(value=4)
+MAX_CHAT_REQUEST_BYTES = 12 * 1024 * 1024
+MAX_CHAT_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_CHAT_CONTENT_PARTS = 16
+MAX_GATEWAY_RESPONSE_BYTES = 8 * 1024 * 1024
+# One product item bundles one vision request and one listing-text request.
+# Legacy image modes can issue four primary slot calls, four slot recoveries,
+# one detail call, and up to four configured detail repair rounds.
+GATEWAY_DISTINCT_REQUEST_LIMITS = {
+    "product_processing.text": 2,
+    "product_processing.image_grid_2k": 13,
+}
+# Text adapters retry an identical upstream request at most three times; the
+# image generation adapter has a five-attempt outer budget.  Keep the server
+# ledger at those same bounds so a reserved usage cannot be replayed forever.
+GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS = {
+    "product_processing.text": 3,
+    "product_processing.image_grid_2k": 5,
+}
+GATEWAY_LEASE_SECONDS = {
+    "product_processing.text": 600,
+    "product_processing.image_grid_2k": 900,
+}
 
 
-class _TextCredentialPool:
-    """Server-owned, least-loaded pool for text provider credentials.
+@dataclass(frozen=True)
+class _GatewayRequestClaim:
+    cached_response: dict[str, Any] | None = None
+    provider_task_id: str = ""
+    submit_uncertain: bool = False
 
-    The pool is intentionally in the auth service: desktop clients never receive
-    an upstream key or decide which one to use.  A 429 cools only the affected
-    credential; other enabled keys continue serving requests.
+
+class _ImageProviderTerminalFailure(RuntimeError):
+    """The provider confirmed that an image task cannot succeed."""
+
+
+class _ImageSubmitUncertain(RuntimeError):
+    """The upstream may have accepted an image submit without a durable task id."""
+
+
+def _server_provider_secret(kind: str, environment_name: str) -> str:
+    """Prefer the encrypted credential vault while retaining the legacy env fallback.
+
+    The billed gateway must never expose provider credentials to desktop clients.
+    Existing deployments may still be configured only through environment variables,
+    so a missing vault is not itself a reason to interrupt an otherwise valid job.
     """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._states: dict[str, dict[str, float | int]] = {}
-
-    def acquire(self) -> tuple[dict[str, Any] | None, int]:
-        try:
-            credentials = enabled_secrets("text")
-        except CredentialVaultError:
-            raise
-        if not credentials:
-            legacy = str(os.environ.get("WH_TEXT_API_KEY") or "").strip()
-            credentials = (
-                [{"credential_id": "legacy_environment", "secret": legacy, "max_concurrency": 40, "active": True}]
-                if legacy
-                else []
-            )
-        now = time.monotonic()
-        with self._lock:
-            current_ids = {str(item["credential_id"]) for item in credentials}
-            self._states = {
-                key: value for key, value in self._states.items() if key in current_ids
-            }
-            candidates: list[tuple[float, float, dict[str, Any]]] = []
-            retry_after: list[float] = []
-            for credential in credentials:
-                credential_id = str(credential["credential_id"])
-                state = self._states.setdefault(
-                    credential_id,
-                    {"in_flight": 0, "cooldown_until": 0.0, "last_selected": 0.0, "rate_failures": 0},
-                )
-                cooldown_until = float(state["cooldown_until"])
-                if cooldown_until > now:
-                    retry_after.append(cooldown_until - now)
-                    continue
-                limit = max(1, int(credential.get("max_concurrency") or 40))
-                in_flight = int(state["in_flight"])
-                if in_flight >= limit:
-                    retry_after.append(1.0)
-                    continue
-                candidates.append((in_flight / limit, float(state["last_selected"]), credential))
-            if not candidates:
-                return None, max(1, int(min(retry_after) if retry_after else 1))
-            _, _, selected = min(candidates, key=lambda value: (value[0], value[1]))
-            selected_state = self._states[str(selected["credential_id"])]
-            selected_state["in_flight"] = int(selected_state["in_flight"]) + 1
-            selected_state["last_selected"] = now
-            return selected, 0
-
-    def release(self, credential_id: str, *, outcome: str) -> None:
-        now = time.monotonic()
-        with self._lock:
-            state = self._states.get(credential_id)
-            if state is None:
-                return
-            state["in_flight"] = max(0, int(state["in_flight"]) - 1)
-            if outcome == "rate_limited":
-                failures = min(4, int(state["rate_failures"]) + 1)
-                state["rate_failures"] = failures
-                state["cooldown_until"] = now + min(300.0, 60.0 * (2 ** (failures - 1)))
-            elif outcome == "transient":
-                state["cooldown_until"] = max(float(state["cooldown_until"]), now + 15.0)
-            elif outcome == "success":
-                state["rate_failures"] = 0
-
-    def status(self) -> dict[str, int]:
-        try:
-            credentials = enabled_secrets("text")
-        except CredentialVaultError:
-            return {"configured_keys": 0, "available_keys": 0, "available_slots": 0, "retry_after_seconds": 0}
-        now = time.monotonic()
-        with self._lock:
-            available_keys = 0
-            available_slots = 0
-            retry_after: list[float] = []
-            for credential in credentials:
-                state = self._states.get(str(credential["credential_id"]), {})
-                cooldown_until = float(state.get("cooldown_until", 0.0))
-                if cooldown_until > now:
-                    retry_after.append(cooldown_until - now)
-                    continue
-                slots = max(0, int(credential.get("max_concurrency") or 40) - int(state.get("in_flight", 0)))
-                if slots:
-                    available_keys += 1
-                    available_slots += slots
-            return {
-                "configured_keys": len(credentials),
-                "available_keys": available_keys,
-                "available_slots": available_slots,
-                "retry_after_seconds": max(0, int(min(retry_after) if retry_after else 0)),
-            }
+    legacy = str(os.environ.get(environment_name) or "").strip()
+    try:
+        vaulted = str(active_secret(kind) or "").strip()
+    except CredentialVaultError as exc:
+        if legacy:
+            return legacy
+        raise HTTPException(
+            status_code=503,
+            detail=f"server {kind} credential vault is unavailable",
+        ) from exc
+    return vaulted or legacy
 
 
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
@@ -164,7 +124,6 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         email_sender=TencentCloudSESEmailSender.from_env(),
         email_code_secret=os.environ.get("WH_EMAIL_CODE_SECRET", ""),
     )
-    text_credential_pool = _TextCredentialPool()
 
     app = FastAPI(title="W-H Platform Customer Auth Service", version="0.1.0")
 
@@ -253,14 +212,20 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         feature_key = _usage_feature(db_path, usage_id)
         provider, model = _fixed_usage_provider(feature_key)
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-        return {"ok": True, "usage": settle_ai_usage_success(
-            db_path, usage_id, provider=provider, model=model,
-            provider_task_id=str(payload.get("provider_task_id") or "")[:240],
-            input_tokens=_safe_int(payload.get("input_tokens")),
-            output_tokens=_safe_int(payload.get("output_tokens")),
-            total_tokens=_safe_int(payload.get("total_tokens")),
-            metadata=_safe_billing_metadata(metadata),
-        )}
+        return {
+            "ok": True,
+            "usage": settle_ai_usage_success(
+                db_path,
+                usage_id,
+                provider=provider,
+                model=model,
+                provider_task_id=str(payload.get("provider_task_id") or "")[:240],
+                input_tokens=_safe_int(payload.get("input_tokens")),
+                output_tokens=_safe_int(payload.get("output_tokens")),
+                total_tokens=_safe_int(payload.get("total_tokens")),
+                metadata=_safe_billing_metadata(metadata),
+            ),
+        }
 
     @app.post("/api/customer/billing/usage/{usage_id}/fail")
     def settle_billing_usage_failure(
@@ -269,96 +234,141 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
-        _ensure_usage_owner(db_path, usage_id, str(account["account_id"]))
-        settle_ai_usage_failure(db_path, usage_id, error_message=str(payload.get("error_message") or "AI operation failed")[:500])
-        return {"ok": True, "usage_id": usage_id, "status": "failed"}
+        usage = settle_ai_usage_failure(
+            db_path,
+            usage_id,
+            error_message=str(payload.get("error_message") or "AI operation failed")[:500],
+            expected_account_id=str(account["account_id"]),
+            reject_gateway_activity=True,
+        )
+        return {
+            "ok": True,
+            "usage_id": usage_id,
+            "status": str(usage.get("status") or "failed"),
+            "usage": usage,
+        }
 
     @app.post("/api/customer/ai/chat")
     def server_managed_ai_chat(
-        payload: dict[str, Any], authorization: str | None = Header(default=None)
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
-        _require_reserved_usage(db_path, str(payload.get("usage_id") or ""), str(account["account_id"]), "product_processing.text")
+        usage_id = str(payload.get("usage_id") or "")
+        _require_reserved_usage(
+            db_path,
+            usage_id=usage_id,
+            account_id=str(account["account_id"]),
+            feature_key="product_processing.text",
+        )
         messages = _validated_chat_messages(payload.get("messages"))
         if str(payload.get("model") or TEXT_MODEL).strip() != TEXT_MODEL:
             raise HTTPException(status_code=400, detail="unsupported server-managed text model")
-        try:
-            credential, retry_after = text_credential_pool.acquire()
-        except CredentialVaultError as exc:
-            raise HTTPException(status_code=503, detail="server text credential vault is unavailable") from exc
-        if credential is None:
-            raise HTTPException(
-                status_code=429,
-                detail="server text credential capacity is temporarily exhausted",
-                headers={"Retry-After": str(max(1, retry_after))},
-            )
-        credential_id = str(credential["credential_id"])
-        # Persist the opaque scheduler choice before the provider call.  This is
-        # how the platform can later reconcile one user usage event with one
-        # server credential without ever storing or returning its plaintext.
-        _record_text_credential_usage(
-            db_path,
-            str(payload.get("usage_id") or ""),
-            credential_id,
+        request_hash = _gateway_request_hash(
+            {"model": TEXT_MODEL, "messages": messages}
         )
+        api_key = _server_provider_secret("text", "WH_TEXT_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=503, detail="server text credential is not configured")
+        claim = _claim_gateway_request(
+            db_path,
+            usage_id=usage_id,
+            account_id=str(account["account_id"]),
+            feature_key="product_processing.text",
+            request_hash=request_hash,
+        )
+        if claim.cached_response is not None:
+            return claim.cached_response
         try:
-            body = _server_text_chat(str(credential["secret"]), messages)
-        except HTTPException as exc:
-            outcome = "rate_limited" if exc.status_code == 429 else "transient" if exc.status_code >= 500 else "rejected"
-            text_credential_pool.release(credential_id, outcome=outcome)
-            if exc.status_code == 429:
-                raise HTTPException(
-                    status_code=429,
-                    detail="server text provider rate limited this credential",
-                    headers={"Retry-After": "60"},
-                ) from exc
+            response_payload = _sanitized_gateway_response(
+                _server_text_chat(api_key, messages),
+                secrets=(api_key,),
+            )
+            _complete_gateway_request(db_path, usage_id, request_hash, response_payload)
+            return response_payload
+        except Exception:
+            _fail_gateway_request(db_path, usage_id, request_hash)
             raise
-        else:
-            text_credential_pool.release(credential_id, outcome="success")
-            return body
-
-    @app.get("/api/customer/ai/text-capacity")
-    def server_text_capacity(
-        authorization: str | None = Header(default=None),
-    ) -> dict[str, Any]:
-        _required_account(db_path, authorization)
-        return {"ok": True, "text": text_credential_pool.status()}
 
     @app.post("/api/customer/ai/image")
     def server_managed_ai_image(
-        payload: dict[str, Any], authorization: str | None = Header(default=None)
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
-        _require_reserved_usage(db_path, str(payload.get("usage_id") or ""), str(account["account_id"]), "product_processing.image_grid_2k")
+        usage_id = str(payload.get("usage_id") or "")
+        _require_reserved_usage(
+            db_path,
+            usage_id=usage_id,
+            account_id=str(account["account_id"]),
+            feature_key="product_processing.image_grid_2k",
+        )
         prompt = str(payload.get("prompt") or "").strip()
         urls = payload.get("urls") or []
         size = str(payload.get("size") or "1:1").strip().lower()
         if not 1 <= len(prompt) <= 24_000 or not isinstance(urls, list) or len(urls) > 4:
             raise HTTPException(status_code=400, detail="image request is invalid")
         urls = [str(value).strip() for value in urls]
-        if any(not _safe_provider_image_url(value) for value in urls):
+        if any(not _trusted_provider_reference_url(value) for value in urls):
             raise HTTPException(status_code=400, detail="image reference URL is invalid")
-        if size not in {"auto", "1:1", "3:2", "2:3", "16:9", "9:16", "4:3", "3:4", "21:9", "9:21", "1:3", "3:1", "2:1", "1:2"}:
+        if size not in {
+            "auto", "1:1", "3:2", "2:3", "16:9", "9:16", "4:3", "3:4",
+            "21:9", "9:21", "1:3", "3:1", "2:1", "1:2",
+        }:
             raise HTTPException(status_code=400, detail="image size is invalid")
-        try:
-            api_key = str(active_secret("image") or os.environ.get("WH_WUYIN_IMAGE_API_KEY") or "").strip()
-        except CredentialVaultError as exc:
-            raise HTTPException(status_code=503, detail="server image credential vault is unavailable") from exc
+        request_hash = _gateway_request_hash(
+            {"prompt": prompt, "size": size, "urls": urls}
+        )
+        api_key = _server_provider_secret("image", "WH_WUYIN_IMAGE_API_KEY")
         if not api_key:
             raise HTTPException(status_code=503, detail="server image credential is not configured")
+        claim = _claim_gateway_request(
+            db_path,
+            usage_id=usage_id,
+            account_id=str(account["account_id"]),
+            feature_key="product_processing.image_grid_2k",
+            request_hash=request_hash,
+        )
+        if claim.cached_response is not None:
+            return claim.cached_response
+        if claim.submit_uncertain:
+            raise HTTPException(status_code=503, detail="server image submit outcome is uncertain")
         try:
-            response = requests.post(WUYIN_IMAGE_SUBMIT_URL, params={"key": api_key}, headers={"Authorization": api_key, "Content-Type": "application/json"}, json={"prompt": prompt, "size": size, **({"urls": urls} if urls else {})}, timeout=35, allow_redirects=False)
-            submitted = response.json()
-        except (requests.RequestException, ValueError) as exc:
-            raise HTTPException(status_code=503, detail="server image request failed") from exc
-        finally:
-            if "response" in locals():
-                response.close()
-        data = submitted.get("data") if isinstance(submitted, dict) else None
-        task_id = str(data.get("id") or "").strip() if isinstance(data, dict) else ""
-        if response.status_code >= 400 or int(submitted.get("code") or 0) != 200 or not task_id:
-            raise HTTPException(status_code=502, detail="server image provider rejected the request")
-        return {"ok": True, "task_id": task_id, "result_url": _poll_server_wuyin(api_key, task_id)}
+            task_id = claim.provider_task_id
+            if not task_id:
+                _mark_gateway_submitting(db_path, usage_id, request_hash)
+                task_id = _submit_server_wuyin(api_key, prompt, urls, size)
+                try:
+                    _record_gateway_provider_task(db_path, usage_id, request_hash, task_id)
+                except Exception as exc:
+                    # The provider may already have accepted the request.  Never
+                    # turn a local persistence failure into an automatic resubmit.
+                    raise _ImageSubmitUncertain() from exc
+            result_url = _poll_server_wuyin(api_key, task_id)
+            response_payload = {"ok": True, "task_id": task_id, "result_url": result_url}
+            _complete_gateway_request(db_path, usage_id, request_hash, response_payload)
+            return response_payload
+        except _ImageProviderTerminalFailure as exc:
+            _fail_gateway_request(
+                db_path,
+                usage_id,
+                request_hash,
+                phase="terminal_failed",
+                clear_provider_task=True,
+            )
+            raise HTTPException(status_code=502, detail="server image provider task failed") from exc
+        except _ImageSubmitUncertain as exc:
+            _mark_gateway_submit_uncertain(db_path, usage_id, request_hash)
+            raise HTTPException(
+                status_code=503,
+                detail="server image submit outcome is uncertain",
+            ) from exc
+        except Exception:
+            if _gateway_provider_task_id(db_path, usage_id, request_hash):
+                _pause_gateway_request(db_path, usage_id, request_hash)
+            else:
+                _fail_gateway_request(db_path, usage_id, request_hash)
+            raise
 
     @app.post("/api/customer/billing/payment-callback/{provider}")
     def billing_payment_callback(provider: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -716,102 +726,601 @@ def _billing_actor(account: dict[str, Any]) -> Actor:
 
 def _ensure_usage_owner(database_path: Path, usage_id: str, account_id: str) -> None:
     with transaction(database_path) as conn:
-        row = conn.execute("SELECT account_id FROM billing_ai_usage_events WHERE usage_id = ?", (usage_id,)).fetchone()
+        row = conn.execute(
+            "SELECT account_id FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
     if row is None or str(row["account_id"]) != account_id:
         raise HTTPException(status_code=404, detail="usage event not found")
 
 
 def _usage_feature(database_path: Path, usage_id: str) -> str:
     with transaction(database_path) as conn:
-        row = conn.execute("SELECT feature_key FROM billing_ai_usage_events WHERE usage_id = ?", (usage_id,)).fetchone()
+        row = conn.execute(
+            "SELECT feature_key FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="usage event not found")
     return str(row["feature_key"])
 
 
 def _fixed_usage_provider(feature_key: str) -> tuple[str, str]:
-    return ("wuyin", "image_gpt") if feature_key == "product_processing.image_grid_2k" else ("aicoming", TEXT_MODEL)
+    return (
+        ("wuyin", "image_gpt")
+        if feature_key == "product_processing.image_grid_2k"
+        else ("aicoming", TEXT_MODEL)
+    )
 
 
-def _require_reserved_usage(database_path: Path, usage_id: str, account_id: str, expected_feature: str) -> None:
+def _gateway_request_hash(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _require_reserved_usage(
+    database_path: Path,
+    *,
+    usage_id: str,
+    account_id: str,
+    feature_key: str,
+) -> None:
+    """Perform the cheap authorization check before parsing attacker payloads.
+
+    The atomic claim repeats every check below while holding BEGIN IMMEDIATE;
+    this first pass is only an ordering/security gate and is not trusted for
+    concurrency correctness.
+    """
     if not usage_id:
         raise HTTPException(status_code=400, detail="usage_id is required")
     with transaction(database_path) as conn:
-        row = conn.execute("SELECT account_id, feature_key, status FROM billing_ai_usage_events WHERE usage_id = ?", (usage_id,)).fetchone()
-    if row is None or str(row["account_id"]) != account_id:
+        usage = conn.execute(
+            "SELECT account_id, feature_key, status FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
+    if usage is None or str(usage["account_id"]) != account_id:
         raise HTTPException(status_code=404, detail="usage event not found")
-    if str(row["feature_key"]) != expected_feature:
+    if str(usage["feature_key"]) != feature_key:
         raise HTTPException(status_code=400, detail="usage feature does not match operation")
-    if str(row["status"]) != "reserved":
+    if str(usage["status"]) != "reserved":
         raise HTTPException(status_code=409, detail="usage event is not reserved")
 
 
-def _record_text_credential_usage(
+def _claim_gateway_request(
     database_path: Path,
+    *,
     usage_id: str,
-    credential_id: str,
-) -> None:
-    """Attach only an opaque server credential id to an existing usage event."""
+    account_id: str,
+    feature_key: str,
+    request_hash: str,
+) -> _GatewayRequestClaim:
+    if not usage_id:
+        raise HTTPException(status_code=400, detail="usage_id is required")
     with transaction(database_path) as conn:
-        row = conn.execute(
-            "SELECT metadata_json FROM billing_ai_usage_events WHERE usage_id = ?",
+        usage = conn.execute(
+            "SELECT account_id, feature_key, status FROM billing_ai_usage_events WHERE usage_id = ?",
             (usage_id,),
         ).fetchone()
-        if row is None:
-            return
-        try:
-            metadata = json.loads(str(row["metadata_json"] or "{}"))
-        except json.JSONDecodeError:
-            metadata = {}
-        if not isinstance(metadata, dict):
-            metadata = {}
-        metadata["server_text_credential_id"] = credential_id
+        if usage is None or str(usage["account_id"]) != account_id:
+            raise HTTPException(status_code=404, detail="usage event not found")
+        if str(usage["feature_key"]) != feature_key:
+            raise HTTPException(status_code=400, detail="usage feature does not match operation")
+        if str(usage["status"]) != "reserved":
+            raise HTTPException(status_code=409, detail="usage event is not reserved")
+
+        if feature_key == "product_processing.image_grid_2k":
+            # A submit without a durable provider task is uncertain for the
+            # whole reserved usage, not merely for one request hash.  Check it
+            # before exact-hash lookup and distinct-slot accounting so changing
+            # prompt/size can never cause duplicate provider egress.
+            uncertain = conn.execute(
+                """
+                SELECT request_hash
+                FROM billing_ai_gateway_requests
+                WHERE usage_id = ? AND feature_key = ?
+                  AND phase = 'submit_uncertain' AND provider_task_id = ''
+                LIMIT 1
+                """,
+                (usage_id, feature_key),
+            ).fetchone()
+            if uncertain is not None:
+                return _GatewayRequestClaim(submit_uncertain=True)
+            submitting = conn.execute(
+                """
+                SELECT request_hash, status, response_json, attempt_count,
+                       lease_expires_at, phase, provider_task_id, updated_at
+                FROM billing_ai_gateway_requests
+                WHERE usage_id = ? AND feature_key = ? AND status = 'in_progress'
+                  AND phase = 'submitting' AND provider_task_id = ''
+                LIMIT 1
+                """,
+                (usage_id, feature_key),
+            ).fetchone()
+            if submitting is not None:
+                if _gateway_claim_is_fresh(submitting, feature_key):
+                    detail = (
+                        "identical gateway request is already in progress"
+                        if str(submitting["request_hash"]) == request_hash
+                        else "image submit is already in progress"
+                    )
+                    raise HTTPException(status_code=409, detail=detail)
+                conn.execute(
+                    """
+                    UPDATE billing_ai_gateway_requests
+                    SET status = 'failed', phase = 'submit_uncertain',
+                        lease_expires_at = '', response_json = '', updated_at = ?
+                    WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+                      AND phase = 'submitting' AND provider_task_id = ''
+                    """,
+                    (_utc_now(), usage_id, str(submitting["request_hash"])),
+                )
+                return _GatewayRequestClaim(submit_uncertain=True)
+
+        existing = conn.execute(
+            """
+            SELECT status, response_json, attempt_count, lease_expires_at,
+                   phase, provider_task_id, updated_at
+            FROM billing_ai_gateway_requests
+            WHERE usage_id = ? AND request_hash = ?
+            """,
+            (usage_id, request_hash),
+        ).fetchone()
+        if existing is not None:
+            status = str(existing["status"])
+            if status == "succeeded":
+                try:
+                    cached = json.loads(str(existing["response_json"] or ""))
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise HTTPException(status_code=503, detail="cached gateway response is unavailable") from exc
+                if not isinstance(cached, dict):
+                    raise HTTPException(status_code=503, detail="cached gateway response is unavailable")
+                return _GatewayRequestClaim(cached_response=cached)
+            if status == "in_progress":
+                if _gateway_claim_is_fresh(existing, feature_key):
+                    raise HTTPException(status_code=409, detail="identical gateway request is already in progress")
+                provider_task_id = str(existing["provider_task_id"] or "").strip()
+                lease_expires_at = _new_gateway_lease(feature_key)
+                if provider_task_id:
+                    conn.execute(
+                        """
+                        UPDATE billing_ai_gateway_requests
+                        SET lease_expires_at = ?, phase = 'polling', updated_at = ?
+                        WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+                        """,
+                        (lease_expires_at, _utc_now(), usage_id, request_hash),
+                    )
+                    return _GatewayRequestClaim(provider_task_id=provider_task_id)
+                attempt_limit = GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS[feature_key]
+                if int(existing["attempt_count"] or 0) >= attempt_limit:
+                    raise HTTPException(status_code=409, detail="gateway retry limit reached for reserved usage")
+                conn.execute(
+                    """
+                    UPDATE billing_ai_gateway_requests
+                    SET lease_expires_at = ?, phase = 'claimed', response_json = '',
+                        attempt_count = attempt_count + 1, updated_at = ?
+                    WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+                    """,
+                    (lease_expires_at, _utc_now(), usage_id, request_hash),
+                )
+                return _GatewayRequestClaim()
+            attempt_limit = GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS[feature_key]
+            if int(existing["attempt_count"] or 0) >= attempt_limit:
+                raise HTTPException(status_code=409, detail="gateway retry limit reached for reserved usage")
+            conn.execute(
+                """
+                UPDATE billing_ai_gateway_requests
+                SET status = 'in_progress', response_json = '',
+                    attempt_count = attempt_count + 1, lease_expires_at = ?,
+                    phase = 'claimed', provider_task_id = '', updated_at = ?
+                WHERE usage_id = ? AND request_hash = ? AND status = 'failed'
+                """,
+                (_new_gateway_lease(feature_key), _utc_now(), usage_id, request_hash),
+            )
+            return _GatewayRequestClaim()
+
+        row = conn.execute(
+            "SELECT COUNT(*) AS count FROM billing_ai_gateway_requests WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
+        limit = GATEWAY_DISTINCT_REQUEST_LIMITS[feature_key]
+        if int(row["count"] if row else 0) >= limit:
+            raise HTTPException(status_code=409, detail="gateway request limit reached for reserved usage")
         conn.execute(
-            "UPDATE billing_ai_usage_events SET metadata_json = ? WHERE usage_id = ?",
-            (json.dumps(metadata, ensure_ascii=False, sort_keys=True), usage_id),
+            """
+            INSERT INTO billing_ai_gateway_requests (
+                usage_id, request_hash, account_id, feature_key, status,
+                lease_expires_at, phase
+            ) VALUES (?, ?, ?, ?, 'in_progress', ?, 'claimed')
+            """,
+            (
+                usage_id,
+                request_hash,
+                account_id,
+                feature_key,
+                _new_gateway_lease(feature_key),
+            ),
         )
+    return _GatewayRequestClaim()
+
+
+def _new_gateway_lease(feature_key: str) -> str:
+    seconds = GATEWAY_LEASE_SECONDS[feature_key]
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def _gateway_claim_is_fresh(row: Any, feature_key: str) -> bool:
+    raw_expiry = str(row["lease_expires_at"] or "").strip()
+    if raw_expiry:
+        try:
+            expiry = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            return expiry > datetime.now(timezone.utc)
+        except ValueError:
+            return False
+    try:
+        updated = datetime.fromisoformat(str(row["updated_at"] or "").replace("Z", "+00:00"))
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return updated + timedelta(seconds=GATEWAY_LEASE_SECONDS[feature_key]) > datetime.now(timezone.utc)
+
+
+def _complete_gateway_request(
+    database_path: Path,
+    usage_id: str,
+    request_hash: str,
+    response_payload: dict[str, Any],
+) -> None:
+    encoded = json.dumps(
+        response_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(encoded.encode("utf-8")) > MAX_GATEWAY_RESPONSE_BYTES:
+        raise HTTPException(status_code=502, detail="server provider response is too large")
+    with transaction(database_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET status = 'succeeded', response_json = ?, phase = 'completed',
+                lease_expires_at = '', updated_at = ?
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+            """,
+            (encoded, _utc_now(), usage_id, request_hash),
+        )
+        if cursor.rowcount != 1:
+            raise HTTPException(status_code=409, detail="gateway request claim is no longer active")
+
+
+def _record_gateway_provider_task(
+    database_path: Path,
+    usage_id: str,
+    request_hash: str,
+    provider_task_id: str,
+) -> None:
+    task_id = str(provider_task_id or "").strip()
+    if not task_id:
+        raise HTTPException(status_code=502, detail="server image provider returned an invalid task")
+    with transaction(database_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET provider_task_id = ?, phase = 'polling', lease_expires_at = ?, updated_at = ?
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+            """,
+            (
+                task_id[:240],
+                _new_gateway_lease("product_processing.image_grid_2k"),
+                _utc_now(),
+                usage_id,
+                request_hash,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise HTTPException(status_code=409, detail="gateway request claim is no longer active")
+
+
+def _mark_gateway_submitting(
+    database_path: Path,
+    usage_id: str,
+    request_hash: str,
+) -> None:
+    with transaction(database_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET phase = 'submitting', lease_expires_at = ?, updated_at = ?
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+              AND provider_task_id = ''
+            """,
+            (
+                _new_gateway_lease("product_processing.image_grid_2k"),
+                _utc_now(),
+                usage_id,
+                request_hash,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise HTTPException(status_code=409, detail="gateway request claim is no longer active")
+
+
+def _mark_gateway_submit_uncertain(
+    database_path: Path,
+    usage_id: str,
+    request_hash: str,
+) -> None:
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET status = 'failed', phase = 'submit_uncertain', response_json = '',
+                lease_expires_at = '', updated_at = ?
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+              AND provider_task_id = ''
+            """,
+            (_utc_now(), usage_id, request_hash),
+        )
+
+
+def _gateway_provider_task_id(database_path: Path, usage_id: str, request_hash: str) -> str:
+    with transaction(database_path) as conn:
+        row = conn.execute(
+            """
+            SELECT provider_task_id FROM billing_ai_gateway_requests
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+            """,
+            (usage_id, request_hash),
+        ).fetchone()
+    return str(row["provider_task_id"] or "").strip() if row is not None else ""
+
+
+def _pause_gateway_request(database_path: Path, usage_id: str, request_hash: str) -> None:
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET lease_expires_at = ?, phase = 'polling', updated_at = ?
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+            """,
+            (_utc_now(), _utc_now(), usage_id, request_hash),
+        )
+
+
+def _fail_gateway_request(
+    database_path: Path,
+    usage_id: str,
+    request_hash: str,
+    *,
+    phase: str = "failed",
+    clear_provider_task: bool = False,
+) -> None:
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            UPDATE billing_ai_gateway_requests
+            SET status = 'failed', response_json = '', phase = ?,
+                lease_expires_at = '',
+                provider_task_id = CASE WHEN ? THEN '' ELSE provider_task_id END,
+                updated_at = ?
+            WHERE usage_id = ? AND request_hash = ? AND status = 'in_progress'
+            """,
+            (phase[:64], int(clear_provider_task), _utc_now(), usage_id, request_hash),
+        )
+
+
+def _sanitized_gateway_response(
+    value: Any,
+    *,
+    secrets: tuple[str, ...] = (),
+    depth: int = 0,
+) -> Any:
+    if depth > 12:
+        raise HTTPException(status_code=502, detail="server provider response is too deeply nested")
+    blocked_keys = {"authorization", "api_key", "access_token", "refresh_token", "password", "secret", "key"}
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitized_gateway_response(item, secrets=secrets, depth=depth + 1)
+            for key, item in value.items()
+            if str(key).strip().lower() not in blocked_keys
+        }
+    if isinstance(value, list):
+        return [
+            _sanitized_gateway_response(item, secrets=secrets, depth=depth + 1)
+            for item in value[:10_000]
+        ]
+    if isinstance(value, str):
+        sanitized = value
+        for secret in secrets:
+            if secret:
+                sanitized = sanitized.replace(secret, "[redacted]")
+        return sanitized
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    raise HTTPException(status_code=502, detail="server provider response contains unsupported data")
 
 
 def _validated_chat_messages(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not 1 <= len(value) <= 8:
         raise HTTPException(status_code=400, detail="chat messages are invalid")
-    if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > 8 * 1024 * 1024:
+    if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > MAX_CHAT_REQUEST_BYTES:
         raise HTTPException(status_code=413, detail="chat request is too large")
     messages: list[dict[str, Any]] = []
     for message in value:
-        if not isinstance(message, dict) or str(message.get("role") or "") not in {"system", "user", "assistant"}:
+        if (
+            not isinstance(message, dict)
+            or str(message.get("role") or "") not in {"system", "user", "assistant"}
+        ):
             raise HTTPException(status_code=400, detail="chat message is invalid")
         content = message.get("content")
-        if not isinstance(content, (str, list)):
+        if isinstance(content, str):
+            validated_content: str | list[dict[str, Any]] = content
+        elif isinstance(content, list):
+            validated_content = _validated_chat_content_parts(content)
+        else:
             raise HTTPException(status_code=400, detail="chat message content is invalid")
-        messages.append({"role": str(message["role"]), "content": content})
+        messages.append({"role": str(message["role"]), "content": validated_content})
     return messages
 
 
+def _validated_chat_content_parts(value: list[Any]) -> list[dict[str, Any]]:
+    if not 1 <= len(value) <= MAX_CHAT_CONTENT_PARTS:
+        raise HTTPException(status_code=400, detail="chat content parts are invalid")
+    parts: list[dict[str, Any]] = []
+    for part in value:
+        if not isinstance(part, dict):
+            raise HTTPException(status_code=400, detail="chat content part is invalid")
+        part_type = str(part.get("type") or "")
+        if part_type == "text":
+            if set(part) != {"type", "text"} or not isinstance(part.get("text"), str):
+                raise HTTPException(status_code=400, detail="chat text part is invalid")
+            parts.append({"type": "text", "text": str(part["text"])})
+            continue
+        if part_type != "image_url" or set(part) != {"type", "image_url"}:
+            raise HTTPException(status_code=400, detail="chat content part type is unsupported")
+        image = part.get("image_url")
+        if not isinstance(image, dict) or not set(image).issubset({"url", "detail"}) or "url" not in image:
+            raise HTTPException(status_code=400, detail="chat image part is invalid")
+        url = str(image.get("url") or "").strip()
+        detail = str(image.get("detail") or "").strip().lower()
+        if detail and detail not in {"auto", "low", "high"}:
+            raise HTTPException(status_code=400, detail="chat image detail is invalid")
+        if url.startswith("data:"):
+            _validate_chat_data_image(url)
+        elif not _safe_provider_image_url(url):
+            raise HTTPException(status_code=400, detail="chat image URL is invalid")
+        normalized_image = {"url": url}
+        if detail:
+            normalized_image["detail"] = detail
+        parts.append({"type": "image_url", "image_url": normalized_image})
+    return parts
+
+
+def _validate_chat_data_image(value: str) -> None:
+    try:
+        header, encoded = value.split(",", 1)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="chat data image is invalid") from exc
+    if header.lower() not in {
+        "data:image/jpeg;base64",
+        "data:image/jpg;base64",
+        "data:image/png;base64",
+        "data:image/webp;base64",
+    }:
+        raise HTTPException(status_code=400, detail="chat data image type is unsupported")
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(status_code=400, detail="chat data image is invalid") from exc
+    if not decoded or len(decoded) > MAX_CHAT_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="chat data image is too large")
+
+
 def _safe_provider_image_url(value: str) -> bool:
-    parsed = urlsplit(str(value or "").strip())
-    return parsed.scheme == "https" and bool(parsed.netloc) and len(str(value)) <= 2048
+    normalized = str(value or "").strip()
+    try:
+        parsed = urlsplit(normalized)
+    except ValueError:
+        return False
+    return (
+        len(normalized) <= 2048
+        and parsed.scheme == "https"
+        and not parsed.username
+        and not parsed.password
+        and is_safe_external_url(normalized)
+    )
+
+
+def _trusted_provider_reference_url(value: str) -> bool:
+    """Forward references only for explicitly trusted platform/COS hostnames."""
+
+    normalized = str(value or "").strip()
+    try:
+        hostname = str(urlsplit(normalized).hostname or "").strip().lower().rstrip(".")
+    except ValueError:
+        return False
+    entries = [
+        item.strip().lower().rstrip(".")
+        for item in str(os.environ.get("WH_AI_REFERENCE_HOST_ALLOWLIST") or "").split(",")
+        if item.strip()
+    ]
+    if not hostname or not entries:
+        return False
+    allowed = any(
+        (
+            hostname.endswith(f".{entry[2:]}")
+            and hostname != entry[2:]
+        )
+        if entry.startswith("*.") and len(entry) > 2
+        else hostname == entry
+        for entry in entries
+    )
+    return allowed and _safe_provider_image_url(normalized)
+
+
+def _bounded_provider_json(response: requests.Response, *, provider: str) -> Any:
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            raw = bytes(chunk)
+            total += len(raw)
+            if total > MAX_GATEWAY_RESPONSE_BYTES:
+                raise HTTPException(status_code=502, detail="server provider response is too large")
+            chunks.append(raw)
+        return json.loads(b"".join(chunks).decode("utf-8"))
+    except HTTPException:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"server {provider} provider returned invalid JSON",
+        ) from exc
 
 
 def _server_text_chat(api_key: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
     if not _TEXT_GATEWAY_SEMAPHORE.acquire(timeout=300):
         raise HTTPException(status_code=503, detail="server text request queue timed out")
     try:
+        response: requests.Response | None = None
         try:
-            response = requests.post(TEXT_CHAT_URL, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json={"model": TEXT_MODEL, "messages": messages, "temperature": 0.7}, timeout=240, allow_redirects=False)
+            response = requests.post(
+                TEXT_CHAT_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": TEXT_MODEL, "messages": messages, "temperature": 0.7},
+                timeout=240,
+                allow_redirects=False,
+                stream=True,
+            )
             status_code = int(response.status_code)
-            decoded = response.json() if status_code < 400 else None
+            decoded = (
+                _bounded_provider_json(response, provider="text")
+                if 200 <= status_code < 300
+                else None
+            )
         except requests.RequestException as exc:
             raise HTTPException(status_code=503, detail="server text request failed") from exc
         except ValueError as exc:
             raise HTTPException(status_code=502, detail="server text provider returned invalid JSON") from exc
         finally:
-            if "response" in locals():
+            if response is not None:
                 response.close()
-        if status_code >= 400:
-            if status_code == 429:
-                raise HTTPException(status_code=429, detail="server text provider rate limited the credential")
-            if status_code >= 500:
+        if not 200 <= status_code < 300:
+            if 300 <= status_code < 400:
+                raise HTTPException(status_code=502, detail="server text provider redirected the request")
+            if status_code == 429 or status_code >= 500:
                 raise HTTPException(status_code=503, detail="server text provider is temporarily unavailable")
             raise HTTPException(status_code=status_code, detail="server text provider rejected the request")
         if not isinstance(decoded, dict):
@@ -821,17 +1330,87 @@ def _server_text_chat(api_key: str, messages: list[dict[str, Any]]) -> dict[str,
         _TEXT_GATEWAY_SEMAPHORE.release()
 
 
-def _first_provider_image_url(value: Any) -> str:
+def _server_image_request(
+    api_key: str,
+    prompt: str,
+    urls: list[str],
+    size: str,
+) -> dict[str, Any]:
+    task_id = _submit_server_wuyin(api_key, prompt, urls, size)
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "result_url": _poll_server_wuyin(api_key, task_id),
+    }
+
+
+def _submit_server_wuyin(
+    api_key: str,
+    prompt: str,
+    urls: list[str],
+    size: str,
+) -> str:
+    response: requests.Response | None = None
+    try:
+        response = requests.post(
+            WUYIN_IMAGE_SUBMIT_URL,
+            params={"key": api_key},
+            headers={"Authorization": api_key, "Content-Type": "application/json"},
+            json={"prompt": prompt, "size": size, **({"urls": urls} if urls else {})},
+            timeout=35,
+            allow_redirects=False,
+            stream=True,
+        )
+        status_code = int(response.status_code)
+        if status_code == 429 or status_code >= 500:
+            raise HTTPException(status_code=503, detail="server image provider is temporarily unavailable")
+        if not 200 <= status_code < 300:
+            raise HTTPException(status_code=502, detail="server image provider rejected the request")
+        try:
+            submitted = _bounded_provider_json(response, provider="image")
+        except HTTPException as exc:
+            raise _ImageSubmitUncertain() from exc
+    except requests.RequestException as exc:
+        raise _ImageSubmitUncertain() from exc
+    finally:
+        if response is not None:
+            response.close()
+    if not isinstance(submitted, dict):
+        raise _ImageSubmitUncertain()
+    try:
+        provider_code = _provider_code(submitted.get("code"))
+    except HTTPException as exc:
+        raise _ImageSubmitUncertain() from exc
+    if provider_code != 200:
+        raise HTTPException(status_code=502, detail="server image provider rejected the request")
+    data = submitted.get("data")
+    task_id = str(data.get("id") or "").strip() if isinstance(data, dict) else ""
+    if not task_id:
+        raise _ImageSubmitUncertain()
+    return task_id
+
+
+def _first_provider_image_url(value: Any, *, depth: int = 0) -> str:
+    if depth > 12:
+        raise HTTPException(status_code=502, detail="server image provider response is too deeply nested")
     if isinstance(value, str):
-        return value.strip() if _safe_provider_image_url(value) else ""
+        candidate = value.strip()
+        if candidate.lower().startswith(("http://", "https://")):
+            if not _safe_provider_image_url(candidate):
+                raise HTTPException(status_code=502, detail="server image provider returned an unsafe URL")
+            return candidate
+        return ""
     if isinstance(value, dict):
-        for key in ("url", "image_url", "image", "src", "href", "result", "results", "images", "urls", "output", "outputs"):
-            found = _first_provider_image_url(value.get(key))
+        for key in (
+            "url", "image_url", "image", "src", "href", "result", "results",
+            "images", "urls", "output", "outputs",
+        ):
+            found = _first_provider_image_url(value.get(key), depth=depth + 1)
             if found:
                 return found
     if isinstance(value, (list, tuple)):
-        for item in value:
-            found = _first_provider_image_url(item)
+        for item in value[:10_000]:
+            found = _first_provider_image_url(item, depth=depth + 1)
             if found:
                 return found
     return ""
@@ -840,28 +1419,56 @@ def _first_provider_image_url(value: Any) -> str:
 def _poll_server_wuyin(api_key: str, task_id: str) -> str:
     deadline = time.monotonic() + 620
     while time.monotonic() < deadline:
-        time.sleep(3)
+        response: requests.Response | None = None
         try:
-            response = requests.get(WUYIN_IMAGE_DETAIL_URL, params={"key": api_key, "id": task_id}, headers={"Authorization": api_key}, timeout=35, allow_redirects=False)
-            payload = response.json()
-        except (requests.RequestException, ValueError):
-            continue
+            response = requests.get(
+                WUYIN_IMAGE_DETAIL_URL,
+                params={"key": api_key, "id": task_id},
+                headers={"Authorization": api_key},
+                timeout=35,
+                allow_redirects=False,
+                stream=True,
+            )
+            status_code = int(response.status_code)
+            if status_code == 429 or status_code >= 500:
+                raise HTTPException(status_code=503, detail="server image provider is temporarily unavailable")
+            if not 200 <= status_code < 300:
+                raise HTTPException(status_code=502, detail="server image provider rejected the poll request")
+            payload = _bounded_provider_json(response, provider="image")
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=503, detail="server image poll request failed") from exc
         finally:
-            if "response" in locals():
+            if response is not None:
                 response.close()
         if not isinstance(payload, dict):
-            continue
-        code = int(payload.get("code") or 0)
-        if code and code != 200:
-            raise HTTPException(status_code=502, detail="server image provider task failed")
+            raise HTTPException(status_code=502, detail="server image provider returned an invalid response")
+        if _provider_code(payload.get("code")) != 200:
+            raise _ImageProviderTerminalFailure()
         data = payload.get("data") or {}
         result_url = _first_provider_image_url(data) or _first_provider_image_url(payload)
         if result_url:
             return result_url
-        status = str(data.get("status") or payload.get("status") or "").lower() if isinstance(data, dict) else ""
+        status = (
+            str(data.get("status") or payload.get("status") or "").lower()
+            if isinstance(data, dict)
+            else ""
+        )
         if status in {"3", "4", "5", "fail", "failed", "error", "cancelled", "canceled"}:
-            raise HTTPException(status_code=502, detail="server image provider task failed")
+            raise _ImageProviderTerminalFailure()
+        time.sleep(3)
     raise HTTPException(status_code=504, detail="server image provider timed out")
+
+
+def _provider_code(value: Any) -> int:
+    if isinstance(value, bool):
+        raise HTTPException(status_code=502, detail="server image provider returned an invalid code")
+    try:
+        normalized = str(value).strip()
+        if not normalized or any(character not in "0123456789" for character in normalized):
+            raise ValueError
+        return int(normalized)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="server image provider returned an invalid code") from exc
 
 
 def _safe_int(value: Any) -> int:
@@ -872,8 +1479,49 @@ def _safe_int(value: Any) -> int:
 
 
 def _safe_billing_metadata(value: dict[str, Any]) -> dict[str, Any]:
-    blocked = {"api_key", "authorization", "token", "password", "secret"}
-    return {str(key)[:64]: (str(item)[:500] if isinstance(item, str) else item) for key, item in value.items() if str(key).lower() not in blocked and isinstance(item, (str, int, float, bool, type(None)))}
+    remaining = [256]
+    dropped = object()
+
+    def sensitive_key(key: Any) -> bool:
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        return (
+            not normalized
+            or "authorization" in normalized
+            or "credential" in normalized
+            or "cookie" in normalized
+            or "session" in normalized
+            or normalized == "apikey"
+            or normalized.endswith(("token", "secret", "password", "apikey"))
+        )
+
+    def sanitize(item: Any, *, depth: int) -> Any:
+        if remaining[0] <= 0 or depth > 6:
+            return dropped
+        remaining[0] -= 1
+        if item is None or isinstance(item, (bool, int, float)):
+            return item
+        if isinstance(item, str):
+            return item[:500]
+        if isinstance(item, dict):
+            result: dict[str, Any] = {}
+            for key, nested in list(item.items())[:64]:
+                if sensitive_key(key):
+                    continue
+                safe = sanitize(nested, depth=depth + 1)
+                if safe is not dropped:
+                    result[str(key)[:64]] = safe
+            return result
+        if isinstance(item, (list, tuple)):
+            result_list: list[Any] = []
+            for nested in list(item)[:64]:
+                safe = sanitize(nested, depth=depth + 1)
+                if safe is not dropped:
+                    result_list.append(safe)
+            return result_list
+        return dropped
+
+    sanitized = sanitize(value, depth=0)
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, Any]:
@@ -883,8 +1531,7 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         _ensure_wallet(conn, account_id, workspace_id)
         wallet = conn.execute(
             """
-            SELECT points_balance, locked_points, manual_frozen_points,
-                   version, ledger_head_hash, updated_at
+            SELECT points_balance, locked_points, version, ledger_head_hash, updated_at
             FROM billing_wallets
             WHERE account_id = ?
             """,
@@ -922,16 +1569,7 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         "wallet": {
             "points_balance": int(wallet["points_balance"] if wallet else 0),
             "locked_points": int(wallet["locked_points"] if wallet else 0),
-            "manual_frozen_points": int(wallet["manual_frozen_points"] if wallet else 0),
-            "frozen_points": int(
-                (wallet["locked_points"] if wallet else 0)
-                + (wallet["manual_frozen_points"] if wallet else 0)
-            ),
-            "available_points": int(
-                (wallet["points_balance"] if wallet else 0)
-                - (wallet["locked_points"] if wallet else 0)
-                - (wallet["manual_frozen_points"] if wallet else 0)
-            ),
+            "available_points": int((wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0)),
             "version": int(wallet["version"] if wallet else 0),
             "ledger_head_hash": wallet["ledger_head_hash"] if wallet else "",
             "updated_at": wallet["updated_at"] if wallet else "",

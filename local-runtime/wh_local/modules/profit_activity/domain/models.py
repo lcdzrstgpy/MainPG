@@ -56,8 +56,9 @@ class ProfitSettings:
     ec_first_mile_fixed: Decimal = Decimal("0")
     ec_end_fee: Decimal = Decimal("0")
     ec_refund_rate: Decimal = Decimal("0")
-    activity_min_net_profit: Decimal = Decimal("8")
-    activity_profit_rate_threshold: Decimal = Decimal("0.20")
+    activity_min_net_profit: Decimal = Decimal("0")
+    activity_profit_rate_threshold: Decimal = Decimal("0")
+    activity_threshold_configured: bool = False
     rule_version: int = 2
 
     @property

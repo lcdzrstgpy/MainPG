@@ -63,6 +63,7 @@ def _migrate_legacy_tables(engine: Engine) -> None:
         "profit_activity_settings": {
             "workspace_id": "TEXT NOT NULL DEFAULT 'default'",
             "save_root": "TEXT NOT NULL DEFAULT ''",
+            "activity_threshold_configured": "BOOLEAN NOT NULL DEFAULT 0",
         },
         "profit_activity_records": {
             "workspace_id": "TEXT NOT NULL DEFAULT 'default'",
@@ -86,9 +87,33 @@ def _migrate_legacy_tables(engine: Engine) -> None:
     }
     if engine.dialect.name != "sqlite":
         return
+    threshold_state_added = False
     with engine.begin() as connection:
         for table, columns in additions.items():
             existing = {row[1] for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")}
             for name, definition in columns.items():
                 if name not in existing:
                     connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+                    if table == "profit_activity_settings" and name == "activity_threshold_configured":
+                        threshold_state_added = True
+        if threshold_state_added:
+            connection.exec_driver_sql(
+                """
+                UPDATE profit_activity_settings
+                SET activity_threshold_configured = CASE
+                        WHEN CAST(activity_min_net_profit AS REAL) = 8.0
+                         AND CAST(activity_profit_rate_threshold AS REAL) = 0.2 THEN 0
+                        ELSE 1
+                    END,
+                    activity_min_net_profit = CASE
+                        WHEN CAST(activity_min_net_profit AS REAL) = 8.0
+                         AND CAST(activity_profit_rate_threshold AS REAL) = 0.2 THEN 0
+                        ELSE activity_min_net_profit
+                    END,
+                    activity_profit_rate_threshold = CASE
+                        WHEN CAST(activity_min_net_profit AS REAL) = 8.0
+                         AND CAST(activity_profit_rate_threshold AS REAL) = 0.2 THEN 0
+                        ELSE activity_profit_rate_threshold
+                    END
+                """
+            )

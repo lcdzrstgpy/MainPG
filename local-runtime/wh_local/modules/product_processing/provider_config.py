@@ -1,10 +1,8 @@
-"""产品处理 AI 提供方中转配置。
+"""产品处理 AI 的服务端托管路由配置。
 
-对照原型程序（ecommerce-automation-workbench）的 native_product_engine 配置，
-AI 调用统一走 OpenAI 兼容中转。
-
-优先级：系统配置（BasicSettings DB） > 环境变量 > 硬编码默认值。
-系统配置通过"系统配置"板块的 Web UI 进行管理，密钥加密存储在 secret_values 表中。
+桌面端只携带当前客户会话和已预留的 usage id；文本与图片上游凭据均由
+平台服务持有。BasicSettings 仍可提供非 AI 密钥配置（例如 COS 发布），但
+不得把已保存的上游 AI key 接回产品处理调用链。
 """
 
 from __future__ import annotations
@@ -71,30 +69,22 @@ def _try_system_runtime_config() -> Any | None:
     except Exception:
         return None
     try:
-        return SystemConfigService(Path(db_path)).get_runtime_config()
+        return SystemConfigService(Path(db_path)).get_product_processing_runtime_config()
     except Exception:
         return None
 
 
 def resolve_ai_provider() -> dict[str, Any]:
-    """返回 AI 中转提供方配置。
-
-    模型名一律写死（控制成本，防止被系统配置/环境变量切到贵模型）：
-    text_model / image_model / reference_image_model / 降级链 / 图片模型池
-    均取本模块常量。仅 base_url / api_key 允许被系统配置 > 环境变量覆盖
-    （换中转站或换 key 需要）。image_size / image_quality 保留环境变量覆盖。
-    """
+    """返回不含上游凭据的服务端托管 AI 配置与固定计费模型。"""
     sys_cfg = _try_system_runtime_config()
 
-    # Product processing credentials are platform-owned.  The desktop never
-    # reads or stores upstream keys; it supplies only its authenticated user
-    # session to the server gateway for an already-reserved usage record.
+    # Product-processing upstream credentials belong to the platform server.
+    # The desktop carries only its authenticated platform session.
     text_base_url = AI_BASE_URL
     text_api_key = ""
     text_model = TEXT_MODEL
 
     # 图片 AI（仅 api_key 可覆盖，模型写死）
-    image_api_key = ""
     image_model = _first_truthy(
         os.environ.get("WH_IMAGE_AI_MODEL"),
         (sys_cfg and sys_cfg.image_ai.model),
@@ -109,12 +99,12 @@ def resolve_ai_provider() -> dict[str, Any]:
     # 解密后的 COS 配置仅作为后端内部运行时数据传给图片发布器；安全摘要不会回显它。
     sys_cos: dict[str, str] = (
         {
-            "bucket": str(sys_cfg.cos.bucket).strip(),
-            "region": str(sys_cfg.cos.region).strip(),
-            "secret_id": str(sys_cfg.cos.secret_id).strip(),
-            "secret_key": str(sys_cfg.cos.secret_key).strip(),
+            "bucket": str(getattr(sys_cfg.cos, "bucket", "")).strip(),
+            "region": str(getattr(sys_cfg.cos, "region", "")).strip(),
+            "secret_id": str(getattr(sys_cfg.cos, "secret_id", "")).strip(),
+            "secret_key": str(getattr(sys_cfg.cos, "secret_key", "")).strip(),
         }
-        if sys_cfg and sys_cfg.cos.configured
+        if sys_cfg
         else _try_system_cos_public()
     )
 
@@ -139,8 +129,6 @@ def resolve_ai_provider() -> dict[str, Any]:
         "text_total_timeout_seconds": TEXT_AI_TOTAL_TIMEOUT_SECONDS,
         "image_timeout_seconds": IMAGE_AI_TIMEOUT_SECONDS,
         # 系统配置附加信息（供 _media_config_provider 使用）
-        # This marker intentionally replaces all historical local image
-        # configuration, including desktop Basic Settings secrets.
         "_sys_image_ai": {
             "base_url": "server-managed-wuyin",
             "api_key": "server-managed",
@@ -149,18 +137,9 @@ def resolve_ai_provider() -> dict[str, Any]:
             "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
             "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
         },
-        "_sys_backup_image_ai": (
-            {
-                "base_url": sys_cfg.backup_image_ai.base_url.rstrip("/"),
-                "api_key": sys_cfg.backup_image_ai.api_key,
-                "model": sys_cfg.backup_image_ai.model,
-                "reference_model": sys_cfg.backup_image_ai.reference_model,
-                "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
-                "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
-            }
-            if sys_cfg and sys_cfg.backup_image_ai.configured
-            else None
-        ),
+        # Product processing may only use the billed server-managed route.
+        # Never expose decrypted desktop backup-provider credentials here.
+        "_sys_backup_image_ai": None,
         "_sys_limits": dict(sys_cfg.limits) if sys_cfg and sys_cfg.limits else {},
         "_sys_updates": dict(sys_cfg.updates) if sys_cfg and sys_cfg.updates else {},
         "_sys_cos": sys_cos,

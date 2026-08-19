@@ -39,12 +39,7 @@ class DoubaoArkError(RuntimeError):
 
 
 class DoubaoArkClient:
-    """Server-managed OpenAI-compatible chat client.
-
-    The legacy class name is retained for task compatibility.  Credentials are
-    never present in this desktop process; the platform gateway validates the
-    current user and reserved text usage before it calls the provider.
-    """
+    """One-attempt chat client routed through the platform gateway."""
 
     def __init__(self) -> None:
         self.platform_token = remote_token()
@@ -55,8 +50,7 @@ class DoubaoArkClient:
                 error_kind="configuration",
                 retryable=False,
             )
-        # Compatibility only: existing text and vision wrappers expose this
-        # attribute in diagnostics.  It is never an upstream credential.
+        # Compatibility for existing diagnostics; never an upstream credential.
         self.api_key = "server-managed"
 
     def complete(self, messages: list[dict[str, Any]]) -> str:
@@ -69,7 +63,11 @@ class DoubaoArkClient:
                     "Content-Type": "application/json",
                     "User-Agent": USER_AGENT,
                 },
-                json={"model": "gpt-5.6-terra", "messages": messages, "usage_id": self.usage_id},
+                json={
+                    "model": "gpt-5.6-terra",
+                    "messages": messages,
+                    "usage_id": self.usage_id,
+                },
                 timeout=REQUEST_TIMEOUT_SECONDS,
                 allow_redirects=False,
             )

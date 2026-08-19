@@ -8,6 +8,7 @@ remote customer auth -> local session -> workspace-scoped business modules.
 from .contracts import (
     CustomerAuthActionResult,
     CustomerAuthError,
+    CustomerAuthRejected,
     CustomerAuthResult,
     CustomerAuthUnavailable,
     LocalSession,
@@ -19,6 +20,7 @@ __all__ = [
     "CustomerAuthActionResult",
     "CustomerAuthClient",
     "CustomerAuthError",
+    "CustomerAuthRejected",
     "CustomerAuthResult",
     "CustomerAuthUnavailable",
     "LocalSession",

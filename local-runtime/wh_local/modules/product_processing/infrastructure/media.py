@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import json
 import mimetypes
 import re
+import socket
+import ssl
 import threading
 import time
 import uuid
@@ -26,7 +29,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from ..domain.policy import is_safe_external_url
+from ..domain.policy import is_safe_external_url, resolve_safe_external_url
 from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
 from .grid_layout import (
     GridLayoutError,
@@ -77,6 +80,8 @@ PROVIDER_TRANSIENT_COOLDOWN_SECONDS = 45.0
 WUYIN_IMAGE_SUBMIT_PATH = "/api/async/image_gpt"
 WUYIN_IMAGE_DETAIL_PATH = "/api/async/detail"
 WUYIN_IMAGE_POLL_INTERVAL_SECONDS = 3.0
+MAX_PROVIDER_RESULT_BYTES = 32 * 1024 * 1024
+MAX_PROVIDER_JSON_BYTES = 8 * 1024 * 1024
 
 # 图片 provider 轮巡游标（对齐原项目 native_product_engine._PROVIDER_CURSORS）：
 # 进程内全局共享、线程锁保护，按"每次图片请求"取模轮转起始 provider，实现负载均衡。
@@ -103,6 +108,145 @@ class MediaProcessingError(RuntimeError):
         self.status_code = status_code
         self.attempt_count = attempt_count
         self.status_class = status_class
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Connect to one validated IP while authenticating the original hostname."""
+
+    def __init__(self, hostname: str, pinned_address: str, port: int, timeout: float):
+        super().__init__(
+            hostname,
+            port=port,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        )
+        self._pinned_address = pinned_address
+
+    def connect(self) -> None:
+        sock = socket.create_connection(
+            (self._pinned_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        try:
+            self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        except BaseException:
+            sock.close()
+            raise
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Plain HTTP variant that still avoids a second DNS lookup."""
+
+    def __init__(self, hostname: str, pinned_address: str, port: int, timeout: float):
+        super().__init__(hostname, port=port, timeout=timeout)
+        self._pinned_address = pinned_address
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection(
+            (self._pinned_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+
+
+def _download_pinned_public_image(
+    url: str,
+    *,
+    timeout_seconds: float = 20.0,
+) -> tuple[bytes, str]:
+    """Resolve once, pin the connection, reject redirects, and bound the body."""
+
+    try:
+        resolved = resolve_safe_external_url(url)
+    except ValueError as exc:
+        raise MediaProcessingError("provider result URL is not a safe public URL") from exc
+    if resolved is None:
+        raise MediaProcessingError("provider result URL is not a safe public URL")
+    parsed = urlsplit(resolved.url)
+    connection_type = _PinnedHTTPSConnection if parsed.scheme == "https" else _PinnedHTTPConnection
+    connection = connection_type(
+        resolved.hostname,
+        resolved.addresses[0],
+        resolved.port,
+        max(1.0, float(timeout_seconds)),
+    )
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    try:
+        connection.request(
+            "GET",
+            path,
+            headers={"Host": resolved.hostname, "Accept": "image/*"},
+        )
+        response = connection.getresponse()
+        if 300 <= int(response.status) < 400:
+            raise MediaProcessingError("provider result redirected the request")
+        if not 200 <= int(response.status) < 300:
+            raise MediaProcessingError(
+                "provider result download failed",
+                status_code=int(response.status),
+            )
+        content = bytes(response.read(MAX_PROVIDER_RESULT_BYTES + 1))
+        if len(content) > MAX_PROVIDER_RESULT_BYTES:
+            raise MediaProcessingError("provider result exceeded the download limit")
+        content_type = str(response.getheader("Content-Type", "image/jpeg") or "image/jpeg").split(";", 1)[0]
+        if not content or not content_type.startswith("image/"):
+            raise MediaProcessingError("provider result is not an image")
+        return content, content_type
+    except MediaProcessingError:
+        raise
+    except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+        raise MediaProcessingError("provider result download is temporarily unavailable") from exc
+    finally:
+        connection.close()
+
+
+def _bounded_response_json(response: requests.Response) -> Any:
+    """Decode one streamed JSON response without buffering an unbounded body."""
+
+    chunks: list[bytes] = []
+    total = 0
+    iterator = getattr(response, "iter_content", None)
+    if not callable(iterator):
+        raise MediaProcessingError("provider returned an invalid response")
+    try:
+        for chunk in iterator(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            raw = bytes(chunk)
+            total += len(raw)
+            if total > MAX_PROVIDER_JSON_BYTES:
+                raise MediaProcessingError("provider response exceeded the JSON limit")
+            chunks.append(raw)
+        return json.loads(b"".join(chunks).decode("utf-8"))
+    except MediaProcessingError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise MediaProcessingError("provider returned invalid JSON") from exc
+
+
+def _gateway_image_status_error(status_code: int) -> MediaProcessingError:
+    mapping = {
+        402: ("server image gateway requires sufficient points", "billing_payment_required"),
+        403: ("server image gateway permission denied", "billing_forbidden"),
+        409: ("server image gateway request is still in progress", "gateway_in_progress"),
+        502: ("server image gateway returned an invalid response", "gateway_bad_response"),
+        503: ("server image gateway is temporarily unavailable", "gateway_unavailable"),
+    }
+    message, status_class = mapping.get(
+        status_code,
+        (
+            "server image gateway rejected the request",
+            "server_error" if status_code >= 500 else "non_retryable_4xx",
+        ),
+    )
+    return MediaProcessingError(
+        message,
+        status_code=status_code,
+        status_class=status_class,
+    )
 
 
 @dataclass(frozen=True)
@@ -849,14 +993,23 @@ class ProductImageProcessor:
         未配置模型池时退化为单模型条目。primary/backup 两段可各自携带模型池。
         """
         providers: list[dict[str, str]] = []
+        sections = [dict(config.get(name) or {}) for name in ("image", "backup_image")]
+        server_managed = any(
+            str(section.get("base_url") or "").strip().rstrip("/") == "server-managed-wuyin"
+            for section in sections
+        )
         for name, section_name in (("primary", "image"), ("backup", "backup_image")):
             section = dict(config.get(section_name) or {})
             base_url = str(section.get("base_url") or "").strip().rstrip("/")
             api_key = str(section.get("api_key") or "").strip()
             if not (base_url and api_key):
                 continue
+            if server_managed and base_url != "server-managed-wuyin":
+                continue
             parsed = urlsplit(base_url)
-            if base_url != "server-managed-wuyin" and (parsed.scheme not in {"http", "https"} or not parsed.netloc):
+            if base_url != "server-managed-wuyin" and (
+                parsed.scheme not in {"http", "https"} or not parsed.netloc
+            ):
                 continue
             models = [
                 str(model).strip()
@@ -967,7 +1120,7 @@ class ProductImageProcessor:
                     continue
                 try:
                     content, content_type = self._download_reference_image_cached(value)
-                except requests.RequestException as exc:
+                except (requests.RequestException, MediaProcessingError) as exc:
                     detail = f"download failed: {_safe_error(exc)}"
                     if not references:
                         raise MediaProcessingError(
@@ -1031,17 +1184,20 @@ class ProductImageProcessor:
         image_size: str | None = None,
         reference_model: str | None = None,
     ) -> tuple[bytes, str]:
-        if _is_wuyin_image_provider(provider):
-            return self._request_wuyin_image(
+        if _is_server_managed_wuyin_provider(provider):
+            return self._request_server_managed_wuyin_image(
                 provider,
                 prompt,
                 references,
                 timeout_seconds=timeout_seconds,
                 image_size=image_size,
             )
-        if _is_server_managed_wuyin_provider(provider):
-            return self._request_server_managed_wuyin_image(
-                provider, prompt, references, timeout_seconds=timeout_seconds,
+        if _is_wuyin_image_provider(provider):
+            return self._request_wuyin_image(
+                provider,
+                prompt,
+                references,
+                timeout_seconds=timeout_seconds,
                 image_size=image_size,
             )
         files: Any
@@ -1066,6 +1222,7 @@ class ProductImageProcessor:
             },
             files=files,
             timeout=max(1.0, min(float(timeout_seconds), IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS)),
+            stream=True,
         )
         try:
             if not response.ok:
@@ -1073,7 +1230,7 @@ class ProductImageProcessor:
                     f"provider returned HTTP {response.status_code}",
                     status_code=response.status_code,
                 )
-            payload = response.json()
+            payload = _bounded_response_json(response)
         finally:
             response.close()
         item = ((payload.get("data") or [{}])[0] if isinstance(payload, dict) else {})
@@ -1087,16 +1244,61 @@ class ProductImageProcessor:
         url = str(item.get("url") or "").strip()
         if not url or not is_safe_external_url(url):
             raise MediaProcessingError("provider response does not contain a safe image result")
-        downloaded = _SESSION.get(url, timeout=360, allow_redirects=False)
+        return _download_pinned_public_image(url, timeout_seconds=360)
+
+    def _request_server_managed_wuyin_image(
+        self,
+        provider: dict[str, str],
+        prompt: str,
+        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
+        *,
+        timeout_seconds: float,
+        image_size: str | None = None,
+    ) -> tuple[bytes, str]:
+        token = remote_token()
+        reservation = usage_id("image_grid")
+        if not token or not reservation:
+            raise MediaProcessingError("server-managed image usage is not reserved")
+        urls = [
+            str(ref[3]).strip()
+            for ref in references
+            if len(ref) >= 4 and is_safe_external_url(str(ref[3]).strip())
+        ]
+        response: requests.Response | None = None
         try:
-            downloaded.raise_for_status()
-            content = bytes(downloaded.content)
-            content_type = str(downloaded.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
+            response = _SESSION.post(
+                f"{gateway_base_url()}/api/customer/ai/image",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "usage_id": reservation,
+                    "prompt": prompt,
+                    "size": _wuyin_size(image_size or provider.get("image_size")),
+                    **({"urls": urls} if urls else {}),
+                },
+                timeout=max(30.0, min(float(timeout_seconds), 660.0)),
+                allow_redirects=False,
+                stream=True,
+            )
+            status_code = int(response.status_code)
+            if not 200 <= status_code < 300:
+                raise _gateway_image_status_error(status_code)
+            payload = _bounded_response_json(response)
+        except MediaProcessingError:
+            raise
+        except requests.RequestException as exc:
+            raise MediaProcessingError("server image gateway is temporarily unavailable") from exc
         finally:
-            downloaded.close()
-        if not content or not content_type.startswith("image/"):
-            raise MediaProcessingError("provider result is not an image")
-        return content, content_type
+            if response is not None:
+                response.close()
+        if not isinstance(payload, dict) or not bool(payload.get("ok")):
+            raise MediaProcessingError("server image gateway rejected the request")
+        result_url = str(payload.get("result_url") or "").strip()
+        if not result_url or not is_safe_external_url(result_url):
+            raise MediaProcessingError("server image gateway returned no safe image result")
+        return _download_pinned_public_image(result_url, timeout_seconds=360)
 
     def _request_wuyin_image(
         self,
@@ -1126,6 +1328,7 @@ class ProductImageProcessor:
                 **({"urls": urls} if urls else {}),
             },
             timeout=max(1.0, min(30.0, float(timeout_seconds))),
+            stream=True,
         )
         try:
             if not response.ok:
@@ -1133,7 +1336,7 @@ class ProductImageProcessor:
                     f"provider returned HTTP {response.status_code}",
                     status_code=response.status_code,
                 )
-            payload = response.json()
+            payload = _bounded_response_json(response)
         finally:
             response.close()
         if not isinstance(payload, dict) or int(payload.get("code") or 0) != 200:
@@ -1143,81 +1346,7 @@ class ProductImageProcessor:
         if not task_id:
             raise MediaProcessingError("provider response does not contain image task id")
         result_url = self._poll_wuyin_image_result(provider, task_id, timeout_seconds=timeout_seconds)
-        download_error: requests.RequestException | None = None
-        for download_attempt in range(1, 4):
-            try:
-                downloaded = _SESSION.get(result_url, timeout=360, allow_redirects=False)
-                try:
-                    downloaded.raise_for_status()
-                    content = bytes(downloaded.content)
-                    content_type = str(downloaded.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
-                finally:
-                    downloaded.close()
-                download_error = None
-                break
-            except requests.RequestException as exc:
-                download_error = exc
-                if download_attempt < 3:
-                    time.sleep(0.5 * download_attempt)
-        if download_error is not None:
-            parsed_result = urlsplit(result_url)
-            if not isinstance(download_error, requests.exceptions.SSLError) or parsed_result.scheme != "https":
-                raise download_error
-            http_result_url = parsed_result._replace(scheme="http").geturl()
-            downloaded = _SESSION.get(http_result_url, timeout=360, allow_redirects=False)
-            try:
-                downloaded.raise_for_status()
-                content = bytes(downloaded.content)
-                content_type = str(downloaded.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
-            finally:
-                downloaded.close()
-        if not content or not content_type.startswith("image/"):
-            raise MediaProcessingError("provider result is not an image")
-        return content, content_type
-
-    def _request_server_managed_wuyin_image(
-        self,
-        provider: dict[str, str],
-        prompt: str,
-        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
-        *,
-        timeout_seconds: float,
-        image_size: str | None = None,
-    ) -> tuple[bytes, str]:
-        token = remote_token()
-        reservation = usage_id("image_grid")
-        if not token or not reservation:
-            raise MediaProcessingError("server-managed image usage is not reserved")
-        urls = [str(ref[3]).strip() for ref in references if len(ref) >= 4 and is_safe_external_url(str(ref[3]).strip())]
-        try:
-            response = _SESSION.post(
-                f"{gateway_base_url()}/api/customer/ai/image",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={"usage_id": reservation, "prompt": prompt, "size": _wuyin_size(image_size or provider.get("image_size")), **({"urls": urls} if urls else {})},
-                timeout=max(30.0, min(float(timeout_seconds), 660.0)),
-                allow_redirects=False,
-            )
-            payload = response.json()
-        except (requests.RequestException, ValueError) as exc:
-            raise MediaProcessingError("server image gateway is temporarily unavailable") from exc
-        finally:
-            if "response" in locals():
-                response.close()
-        if not isinstance(payload, dict) or not bool(payload.get("ok")):
-            raise MediaProcessingError("server image gateway rejected the request")
-        result_url = str(payload.get("result_url") or "").strip()
-        if not result_url or not is_safe_external_url(result_url):
-            raise MediaProcessingError("server image gateway returned no safe image result")
-        downloaded = _SESSION.get(result_url, timeout=360, allow_redirects=False)
-        try:
-            downloaded.raise_for_status()
-            content = bytes(downloaded.content)
-            content_type = str(downloaded.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
-        finally:
-            downloaded.close()
-        if not content or not content_type.startswith("image/"):
-            raise MediaProcessingError("server image result is not an image")
-        return content, content_type
+        return _download_pinned_public_image(result_url, timeout_seconds=360)
 
     def _poll_wuyin_image_result(
         self,
@@ -1235,12 +1364,13 @@ class ProductImageProcessor:
                 params={"key": provider["api_key"], "id": task_id},
                 headers={"Authorization": provider["api_key"]},
                 timeout=30,
+                stream=True,
             )
             try:
                 if not response.ok:
                     last_message = f"detail HTTP {response.status_code}"
                     continue
-                payload = response.json()
+                payload = _bounded_response_json(response)
             finally:
                 response.close()
             if not isinstance(payload, dict):
@@ -1356,8 +1486,15 @@ def _safe_error(error: BaseException) -> str:
 
 def _retry_class(error: BaseException) -> str:
     status = getattr(error, "status_code", None)
-    if status in {400, 401, 403, 404}:
+    explicit_class = str(getattr(error, "status_class", "") or "")
+    if explicit_class in {"billing_payment_required", "billing_forbidden", "non_retryable_4xx"}:
         return "non_retryable_4xx"
+    if explicit_class in {"gateway_in_progress", "gateway_bad_response", "gateway_unavailable", "server_error"}:
+        return "server_error"
+    if status in {400, 401, 402, 403, 404}:
+        return "non_retryable_4xx"
+    if status == 409:
+        return "server_error"
     if status == 429:
         return "rate_limited"
     if status is not None and 500 <= status < 600:
@@ -1462,34 +1599,6 @@ def _filename_for_url(value: str) -> str:
 
 
 def _download_reference_image(url: str) -> tuple[bytes, str]:
-    """下载来源参考图，带 UA 头并做防盗链容错。
+    """Download one reference through the shared DNS-pinned bounded transport."""
 
-    1688 来源图（cbu01.alicdn.com 等）偶发 420 防盗链：裸 requests.get 无 UA 易被拦。
-    策略：1) 带浏览器 UA 直下；2) 失败追加 ``?__r__=<毫秒时间戳>`` 缓存爆破参数重试；
-    3) 仍失败换 ``http`` 再试一次。全部失败抛 requests.RequestException 由调用方转错误。
-    """
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
-    variants = [url]
-    parsed = urlsplit(url)
-    if "__r__" not in parsed.query:
-        ts = str(int(time.time() * 1000))
-        separator = "&" if parsed.query else "?"
-        variants.append(f"{url}{separator}__r__={ts}")
-    if parsed.scheme == "https":
-        variants.append(f"http://{parsed.netloc}{parsed.path}" + (f"?{parsed.query}" if parsed.query else ""))
-    last_error: requests.RequestException | None = None
-    for variant in variants:
-        response = None
-        try:
-            response = _SESSION.get(variant, timeout=30, allow_redirects=False, headers=headers)
-            response.raise_for_status()
-            content = bytes(response.content)
-            content_type = str(response.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
-            if content and content_type.startswith("image/"):
-                return content, content_type
-        except requests.RequestException as exc:
-            last_error = exc
-        finally:
-            if response is not None:
-                response.close()
-    raise last_error or requests.RequestException("reference image download failed")
+    return _download_pinned_public_image(url, timeout_seconds=30)

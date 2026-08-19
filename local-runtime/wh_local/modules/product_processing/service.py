@@ -18,6 +18,12 @@ from typing import Any
 from wh_local.data_collection.contracts import DailySelectionError
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 from wh_local.config import default_config
+from wh_local.customer.contracts import (
+    CustomerAuthRejected,
+    CustomerAuthUnavailable,
+    CustomerBillingPermissionError,
+    CustomerBillingProtocolError,
+)
 from wh_local.customer.remote_client import CustomerAuthClient
 
 from .doubao_vision import (
@@ -113,8 +119,13 @@ _STAGE_CACHE_VERSION = 3
 _TASK_HEARTBEAT_SECONDS = 10.0
 
 
-def _submit_with_context(executor: Any, function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Propagate the per-item server usage context into media worker threads."""
+def _submit_with_context(
+    executor: Any,
+    function: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Propagate the current billed AI context into a media worker only."""
     context = contextvars.copy_context()
     return executor.submit(context.run, function, *args, **kwargs)
 
@@ -293,6 +304,8 @@ class ProductProcessingService:
         self._task_worker_lock = threading.Lock()
         self._task_workers: dict[tuple[str, int], threading.Thread] = {}
         self._task_remote_tokens: dict[int, str] = {}
+        self._server_usage_ids: dict[tuple[int, int], dict[str, str]] = {}
+        self._settling_usage_keys: set[tuple[int, int, str]] = set()
         self._media_materialization_lock = threading.Lock()
         self._media_materialization_workers: dict[str, threading.Thread] = {}
         # 任务级串行闸门：限制同时执行的任务数，避免旧任务与新任务并发叠加打爆 AI 供应商。
@@ -325,7 +338,8 @@ class ProductProcessingService:
             "opencv": importlib.util.find_spec("cv2") is not None,
             "rapidocr": importlib.util.find_spec("rapidocr_onnxruntime") is not None,
         }
-        # 文本固定走方舟 ARK_API_KEY；图片继续使用独立图片供应商配置。
+        # Product processing uses the authenticated, billed server gateway.  The
+        # desktop must not depend on or advertise platform-owned upstream keys.
         provider = resolve_ai_provider()
         media: dict[str, Any] = {}
         media_types = _media_types()
@@ -334,8 +348,13 @@ class ProductProcessingService:
         ai_enabled = _ai_enabled()
         ocr_enabled = ocr_gate_enabled()
         ocr_status = ocr_diagnostics() if ocr_enabled else {"ready": False, "reason": "OCR 质量门已关闭"}
-        text_ready = bool(default_config().customer_auth_base_url)
-        image_ready = bool(media.get("image_configured")) and dependency_status["pillow"]
+        server_ai_ready = bool(str(default_config().customer_auth_base_url or "").strip())
+        text_ready = server_ai_ready
+        image_ready = (
+            server_ai_ready
+            and bool(media.get("image_configured"))
+            and dependency_status["pillow"]
+        )
         ocr_ready = bool(ocr_status.get("ready")) and dependency_status["pillow"]
         capabilities = {
             "text_ai": {
@@ -344,7 +363,7 @@ class ProductProcessingService:
                 "reason": (
                     "文本 AI 已关闭（WH_PRODUCT_AI_ENABLED）"
                     if not ai_enabled
-                    else ("" if text_ready else "文本 AI 服务端网关不可用")
+                    else ("" if text_ready else "文本 AI 已启用，但未配置客户认证服务地址")
                 ),
             },
             "image_ai": {
@@ -356,7 +375,7 @@ class ProductProcessingService:
                     else (
                         ""
                         if image_ready
-                        else "图片 AI 已启用，但未配置可用的图片服务地址/API Key，或 Pillow 图片依赖不可用"
+                        else "图片 AI 已启用，但客户认证服务地址、服务端图片网关或 Pillow 图片依赖不可用"
                     )
                 ),
             },
@@ -383,7 +402,7 @@ class ProductProcessingService:
             "ai_model": DOUBAO_TEXT_MODEL_ID if text_ready else "product-processing-local-v1",
             "ai_configured": text_ready,
             "backup_ai_configured": False,
-            "image_provider": provider["provider"] if (provider.get("api_key") and media.get("image_configured")) else "local-source-pass-through",
+            "image_provider": provider["provider"] if image_ready else "local-source-pass-through",
             "image_model": provider.get("reference_image_model") or provider.get("image_model") or "source-image-preservation-v1",
             "image_configured": media.get("image_configured", False),
             "backup_image_configured": media.get("backup_image_configured", False),
@@ -688,14 +707,19 @@ class ProductProcessingService:
         source_type: str,
         max_products: int = 0,
         workspace_id: str = "local",
+        *,
+        prepared_rows: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        if not content:
-            raise ValueError("uploaded product file is empty")
-        rows = read_product_workbook(filename, content)
-        selected = rows[: max_products or None]
+        preview = (
+            {"rows": [dict(row) for row in prepared_rows]}
+            if prepared_rows is not None
+            else self.preview_workbook_import(filename, content, max_products=max_products)
+        )
+        selected = preview["rows"]
         drafts: list[dict[str, Any]] = []
         skipped = 0
-        for row in selected:
+        for source_row in selected:
+            row = dict(source_row)
             row.update({"source_type": source_type, "source_filename": filename})
             draft, created = self.create_draft(row, workspace_id=workspace_id)
             if created:
@@ -708,6 +732,25 @@ class ProductProcessingService:
             "ids": [draft["id"] for draft in drafts],
             "drafts": drafts,
             "filename": filename,
+        }
+
+    def preview_workbook_import(
+        self,
+        filename: str,
+        content: bytes,
+        *,
+        max_products: int = 0,
+    ) -> dict[str, Any]:
+        """Parse/count a workbook without creating drafts, files, or tasks."""
+
+        if not content:
+            raise ValueError("uploaded product file is empty")
+        rows = read_product_workbook(filename, content)
+        selected = [dict(row) for row in rows[: max_products or None]]
+        return {
+            "filename": filename,
+            "processable_count": len(selected),
+            "rows": selected,
         }
 
     def intake_daily_selection(self, run: DailySelectionRun) -> dict[str, Any]:
@@ -1214,8 +1257,16 @@ class ProductProcessingService:
         workspace_id: str = "local",
     ) -> dict[str, Any]:
         payload = self._normalize_settings(payload)
-        billing = payload.get("_billing") if isinstance(payload.get("_billing"), dict) else {}
+        billing = dict(payload.get("_billing")) if isinstance(payload.get("_billing"), dict) else {}
         remote_token = self._text(billing.pop("remote_token", ""))
+        top_level_remote_token = self._text(payload.pop("remote_token", ""))
+        if not remote_token:
+            remote_token = top_level_remote_token
+        if billing:
+            payload["_billing"] = billing
+        else:
+            payload.pop("_billing", None)
+        request_billing_account = self._text(billing.get("account_id"))
         draft_ids = list(dict.fromkeys(int(item) for item in payload.get("draft_ids") or [] if int(item) > 0))
         if not draft_ids:
             raise ValueError("draft_ids is required")
@@ -1223,7 +1274,13 @@ class ProductProcessingService:
         if max_products:
             draft_ids = draft_ids[:max_products]
         with self._submission_lock:
-            existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
+            existing = self._existing_task_for_submission(
+                payload,
+                idempotency_key=idempotency_key,
+                workspace_id=workspace_id,
+                request_billing_account=request_billing_account,
+                remote_token=remote_token,
+            )
             if existing is not None:
                 return self._task_response(existing, "重复提交已返回原任务")
             drafts = self.repository.get_drafts(draft_ids, workspace_id=workspace_id)
@@ -1252,7 +1309,7 @@ class ProductProcessingService:
                 idempotency_key=idempotency_key,
                 workspace_id=workspace_id,
             )
-            if remote_token:
+            if request_billing_account and remote_token and not preflight_only:
                 self._task_remote_tokens[int(task["id"])] = remote_token
             if not preflight_only:
                 self.repository.mark_drafts_status(
@@ -1263,6 +1320,52 @@ class ProductProcessingService:
             return {**self._task_response(task, "任务已提交，正在后台处理"), "async_mode": True}
         completed = self._execute_task(task["id"], workspace_id)
         return self._task_response(completed, "草稿池预检已完成" if preflight_only else "产品处理任务已完成")
+
+    def _existing_task_for_submission(
+        self,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None,
+        workspace_id: str,
+        request_billing_account: str | None = None,
+        remote_token: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return an idempotent task only after the shared billing-owner gate."""
+
+        existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
+        if existing is None:
+            return None
+        billing = payload.get("_billing") if isinstance(payload.get("_billing"), dict) else {}
+        request_account = self._text(
+            request_billing_account if request_billing_account is not None else billing.get("account_id")
+        )
+        existing_settings = (
+            existing.get("settings") if isinstance(existing.get("settings"), dict) else {}
+        )
+        existing_billing = (
+            existing_settings.get("_billing")
+            if isinstance(existing_settings.get("_billing"), dict)
+            else {}
+        )
+        existing_account = self._text(existing_billing.get("account_id"))
+        if (existing_account or request_account) and (
+            not existing_account
+            or not request_account
+            or existing_account != request_account
+        ):
+            raise ProductProcessingNotFound("product processing task not found")
+        token = self._text(
+            remote_token
+            if remote_token is not None
+            else billing.get("remote_token") or payload.get("remote_token")
+        )
+        if (
+            existing_account
+            and token
+            and existing["status"] not in {"completed", "failed", "partial_failure"}
+        ):
+            self._task_remote_tokens[int(existing["id"])] = token
+        return existing
 
     def _launch_background_execute(self, task_id: int, workspace_id: str) -> bool:
         """后台线程执行任务，立即返回让前端轮询实时进度。"""
@@ -1280,7 +1383,12 @@ class ProductProcessingService:
                 self._execute_task(task_id, workspace_id)
             except Exception as exc:
                 try:
-                    self.repository.fail_task_execution(task_id, _ai_error_reason(exc), workspace_id)
+                    self.repository.fail_task_execution(
+                        task_id,
+                        self._task_safe_error_reason(task_id, exc),
+                        workspace_id,
+                    )
+                    self._cleanup_terminal_billing_state(task_id)
                 except Exception:
                     pass
             finally:
@@ -1325,9 +1433,26 @@ class ProductProcessingService:
         """Recover safe queued work and make process-lost calls explicitly retryable."""
         interrupted = self.repository.recover_interrupted_tasks()
         queued = self.repository.queued_tasks()
+        billing_auth_required = [
+            task
+            for task in queued
+            if not bool(task.get("preflight_only"))
+            and bool(
+                (task.get("settings", {}).get("_billing") or {}).get("account_id")
+                if isinstance(task.get("settings", {}).get("_billing"), dict)
+                else ""
+            )
+            and not bool(self._task_remote_token(int(task["id"])))
+        ]
+        blocked_ids = {int(task["id"]) for task in billing_auth_required}
+        for task in billing_auth_required:
+            self.repository.set_task_status(
+                int(task["id"]), "paused", str(task["workspace_id"])
+            )
+        launchable = [task for task in queued if int(task["id"]) not in blocked_ids]
         launched = sum(
             self._launch_background_execute(int(task["id"]), str(task["workspace_id"]))
-            for task in queued
+            for task in launchable
         )
         finalize = self.preview_images.recover_background_work()
         media = self.media_assets.materialize_until_idle(batch_size=50)
@@ -1335,6 +1460,7 @@ class ProductProcessingService:
             "interrupted": len(interrupted),
             "queued": len(queued),
             "launched": launched,
+            "billing_auth_required": len(billing_auth_required),
             "finalize_queued": int(finalize.get("queued") or 0),
             "finalize_launched": int(finalize.get("launched") or 0),
             "media_claimed": int(media.get("claimed") or 0),
@@ -1408,12 +1534,31 @@ class ProductProcessingService:
         task = self.repository.set_task_status(task_id, "paused", workspace_id) or task
         return {**self._task_response(task), "message": "产品处理任务已暂停"}
 
-    def resume_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
+    def resume_task(
+        self,
+        task_id: int,
+        workspace_id: str = "local",
+        *,
+        remote_token: str = "",
+    ) -> dict[str, Any]:
         task = self._require_task(task_id, workspace_id)
+        billing = task["settings"].get("_billing")
+        billed = isinstance(billing, dict) and bool(self._text(billing.get("account_id")))
+        pending_billing = bool(
+            self.repository.product_billing_attempts(task_id=task_id, pending_only=True)
+        )
+        if billed and pending_billing:
+            self.reconcile_product_billing(task_id, remote_token)
         if task["status"] in {"completed", "failed", "partial_failure"}:
             return {**self._task_response(task), "message": "任务已结束，返回现有结果"}
         if task["status"] != "paused":
             return {**self._task_response(task), "message": "任务已在执行，未重复启动"}
+        if billed:
+            token = self._text(remote_token)
+            if not token:
+                raise CustomerBillingPermissionError()
+            with self._submission_lock:
+                self._task_remote_tokens[task_id] = token
         self.repository.set_task_status(task_id, "queued", workspace_id)
         task = self._require_task(task_id, workspace_id)
         if bool(task["settings"].get("async_mode", True)):
@@ -1427,14 +1572,27 @@ class ProductProcessingService:
         workspace_id: str = "local",
         *,
         draft_ids: list[int] | None = None,
+        remote_token: str = "",
     ) -> dict[str, Any]:
         task = self._require_task(task_id, workspace_id)
         if task["status"] in {"queued", "running", "paused"}:
             raise ProductProcessingConflict("任务尚未结束，不能启动失败项重试")
+        billing = task["settings"].get("_billing")
+        billed = isinstance(billing, dict) and bool(self._text(billing.get("account_id")))
+        if billed and self.repository.product_billing_attempts(
+            task_id=task_id, pending_only=True
+        ):
+            self.reconcile_product_billing(task_id, remote_token)
         if not any(item["status"] in {"failed", "attention_required"} for item in task["items"]):
             return {**self._task_response(task), "message": "当前任务没有可重试的失败商品"}
+        token = self._text(remote_token)
+        if billed and not token:
+            raise CustomerBillingPermissionError()
         self.repository.reset_failed_items(task_id, workspace_id, draft_ids=draft_ids)
         task = self._require_task(task_id, workspace_id)
+        if token:
+            with self._submission_lock:
+                self._task_remote_tokens[task_id] = token
         if bool(task["settings"].get("async_mode", True)):
             self._launch_background_execute(task_id, workspace_id)
             return {**self._task_response(task, "失败商品已重新处理，正在后台执行"), "async_mode": True}
@@ -1444,6 +1602,8 @@ class ProductProcessingService:
         current = self._require_task(task_id, workspace_id)
         if current["status"] in {"queued", "running", "paused"}:
             raise ProductProcessingConflict("任务正在执行或暂停，请先等待结束后再清理")
+        if self.repository.product_billing_attempts(task_id=task_id, pending_only=True):
+            raise ProductProcessingConflict("任务仍有待处理的计费结算，暂不能清理")
         task = self.repository.clear_task(task_id, workspace_id)
         if task is None:
             raise ProductProcessingNotFound("product processing task not found")
@@ -1906,17 +2066,37 @@ class ProductProcessingService:
         *,
         idempotency_key: str | None = None,
         workspace_id: str = "local",
+        final_billing_check: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         with self._submission_lock:
-            existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
+            existing = self._existing_task_for_submission(
+                form,
+                idempotency_key=idempotency_key,
+                workspace_id=workspace_id,
+            )
             if existing is not None:
                 return self._task_response(existing, "重复提交已返回原任务")
+            preview = self.preview_workbook_import(
+                filename,
+                content,
+                max_products=int(form.get("max_products") or 0),
+            )
+            if not preview["processable_count"]:
+                raise ValueError("workbook did not contain any processable drafts")
+            if final_billing_check is not None:
+                final_billing_check(
+                    {
+                        **form,
+                        "draft_ids": list(range(1, int(preview["processable_count"]) + 1)),
+                    }
+                )
             imported = self.import_workbook(
                 filename,
                 content,
                 self._text(form.get("source_type")) or "excel",
                 int(form.get("max_products") or 0),
                 workspace_id,
+                prepared_rows=preview["rows"],
             )
             if not imported["ids"]:
                 raise ValueError("workbook did not create any processable drafts")
@@ -1938,7 +2118,11 @@ class ProductProcessingService:
         workspace_id: str = "local",
     ) -> dict[str, Any]:
         with self._submission_lock:
-            existing = self.repository.task_by_idempotency_key(idempotency_key, workspace_id)
+            existing = self._existing_task_for_submission(
+                form,
+                idempotency_key=idempotency_key,
+                workspace_id=workspace_id,
+            )
             if existing is not None:
                 return self._task_response(existing, "重复提交已返回原任务")
             draft, _ = self.create_draft(
@@ -2019,20 +2203,37 @@ class ProductProcessingService:
             if self._require_task(task_id, workspace_id)["status"] == "paused":
                 return None
             draft = drafts.get(item["product_draft_id"])
-            usage_ids = self._reserve_product_processing_item_usage(task_id, int(item["item_id"]), settings)
+            item_id = int(item["item_id"])
             try:
+                usage_ids = self._reserve_product_processing_item_usage(
+                    task_id,
+                    item_id,
+                    settings,
+                    workspace_id=workspace_id,
+                )
                 with server_ai_context(self._task_remote_token(task_id), usage_ids):
                     return self._run_with_item_heartbeat(
                         task_id,
-                        int(item["item_id"]),
+                        item_id,
                         workspace_id,
                         lambda: self._process_one(
-                            item, draft, settings, preflight_only,
-                            task_id=task_id, workspace_id=workspace_id,
+                            item,
+                            draft,
+                            settings,
+                            preflight_only,
+                            task_id=task_id,
+                            workspace_id=workspace_id,
                         ),
                     )
             except Exception as exc:
-                self._settle_product_processing_item_failure(task_id, usage_ids, exc)
+                self._settle_product_processing_item_failure_for_item(
+                    task_id,
+                    item_id,
+                    {"status": "failed", "reason": self._task_safe_error_reason(task_id, exc)},
+                )
+                safe_reason = self._task_safe_error_reason(task_id, exc)
+                if safe_reason != _ai_error_reason(exc):
+                    raise RuntimeError(safe_reason) from None
                 raise
 
         def _persist_progress(processed: dict[str, Any]) -> None:
@@ -2061,7 +2262,11 @@ class ProductProcessingService:
                         processed.get("result") or {},
                     )
                 else:
-                    self._settle_product_processing_item_failure_for_item(task_id, int(item_id), processed)
+                    self._settle_product_processing_item_failure_for_item(
+                        task_id,
+                        int(item_id),
+                        processed,
+                    )
             except LookupError:
                 # 任务已被清理时忽略进度写入，不阻塞整体流程
                 pass
@@ -2095,7 +2300,7 @@ class ProductProcessingService:
                     try:
                         processed = future.result()
                     except Exception as exc:
-                        reason = f"并行处理异常: {_ai_error_reason(exc)}"
+                        reason = f"并行处理异常: {self._task_safe_error_reason(task_id, exc)}"
                         processed = {
                             "item_id": item["item_id"],
                             "product_draft_id": item["product_draft_id"],
@@ -2154,8 +2359,7 @@ class ProductProcessingService:
             video_manifest_file=str(paths.video_manifest) if paths.video_manifest else "",
             workspace_id=workspace_id,
         )
-        with self._submission_lock:
-            self._task_remote_tokens.pop(task_id, None)
+        self._cleanup_terminal_billing_state(task_id)
         return completed_task
 
     def _run_with_item_heartbeat(
@@ -2238,70 +2442,434 @@ class ProductProcessingService:
         settings: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
-        usage_ids = self._reserved_usage_ids(task_id, item_id)
         remote_token = self._task_remote_token(task_id)
         if not remote_token:
             return
         client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
-        metadata = {"task_id": task_id, "item_id": item_id, "ai_notes": [str(note) for note in (result.get("ai_notes") or [])][-8:]}
-        for usage_id in usage_ids.values():
-            client.settle_ai_usage_success(remote_token, usage_id, {"metadata": metadata})
-        self._clear_reserved_usage_ids(task_id, item_id)
+        metadata = {
+            "task_id": task_id,
+            "item_id": item_id,
+            "ai_notes": [str(note) for note in (result.get("ai_notes") or [])][-8:],
+        }
+        first_error: Exception | None = None
+        for kind, usage in self._reserved_usage_ids(task_id, item_id).items():
+            if not self._claim_usage_settlement(task_id, item_id, kind, usage):
+                continue
+            attempt = self._product_billing_attempt_for_usage(task_id, item_id, kind, usage)
+            if attempt is not None:
+                self.repository.mark_product_billing_desired_outcome(
+                    int(attempt["id"]),
+                    desired_outcome="succeeded",
+                    error_message="",
+                )
+            try:
+                response = client.settle_ai_usage_success(
+                    remote_token,
+                    usage,
+                    {"metadata": metadata},
+                )
+                remote_status = self._remote_settlement_status(response, usage)
+                if remote_status != "succeeded":
+                    raise CustomerBillingProtocolError()
+            except Exception as exc:
+                error = self._stable_remote_billing_error(exc)
+                if attempt is not None:
+                    self.repository.mark_product_billing_settlement_pending(
+                        int(attempt["id"]),
+                        error_message=self._task_safe_error_reason(task_id, error),
+                    )
+                if first_error is None:
+                    first_error = error
+            else:
+                if attempt is not None:
+                    self.repository.mark_product_billing_settled(
+                        int(attempt["id"]), remote_status=remote_status
+                    )
+                self._remove_reserved_usage_id(task_id, item_id, kind, usage)
+            finally:
+                self._release_usage_settlement_claim(task_id, item_id, kind)
+        if first_error is not None:
+            safe_reason = self._task_safe_error_reason(task_id, first_error)
+            if safe_reason != _ai_error_reason(first_error):
+                raise RuntimeError(safe_reason) from None
+            raise first_error
 
-    def _reserve_product_processing_item_usage(self, task_id: int, item_id: int, settings: dict[str, Any]) -> dict[str, str]:
+    def _billable_product_processing_features(
+        self, settings: dict[str, Any]
+    ) -> list[tuple[str, str]]:
+        scope = set(settings.get("processing_scope") or [])
+        text_enabled = (
+            bool({"title", "details", "product_dimensions"} & scope)
+            or bool(settings.get("title_optimize", True))
+            or bool(settings.get("description", True))
+            or bool(settings.get("size", True))
+        )
+        image_enabled = (
+            "four_grid" in scope
+            or bool(settings.get("grid_image", True))
+            or bool(settings.get("image_rewrite", True))
+        )
+        features: list[tuple[str, str]] = []
+        if text_enabled:
+            features.append(("text", "product_processing.text"))
+        if image_enabled:
+            features.append(("image_grid", "product_processing.image_grid_2k"))
+        return features
+
+    def _reserve_product_processing_item_usage(
+        self,
+        task_id: int,
+        item_id: int,
+        settings: dict[str, Any],
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, str]:
+        existing = self._reserved_usage_ids(task_id, item_id)
+        if existing:
+            return existing
         billing = settings.get("_billing") if isinstance(settings.get("_billing"), dict) else {}
         remote_token = self._task_remote_token(task_id)
         if not remote_token or bool(settings.get("preflight_only")):
             return {}
         client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
-        scope = set(settings.get("processing_scope") or [])
-        text_enabled = bool({"title", "details", "product_dimensions"} & scope) or any(bool(settings.get(key, True)) for key in ("title_optimize", "description", "size"))
-        image_enabled = "four_grid" in scope or bool(settings.get("grid_image", True)) or bool(settings.get("image_rewrite", True))
         usage_ids: dict[str, str] = {}
-        for kind, feature in (("text", "product_processing.text"), ("image_grid", "product_processing.image_grid_2k")):
-            if (kind == "text" and not text_enabled) or (kind == "image_grid" and not image_enabled):
-                continue
-            response = client.reserve_ai_usage(remote_token, {"feature_key": feature, "idempotency_key": f"product_processing:{task_id}:{item_id}:{kind}", "source_ref": self._text(billing.get("source_ref"))[:200], "metadata": {"task_id": task_id, "item_id": item_id, "pricing_version": billing.get("pricing_version", "")}})
-            usage = response.get("usage") if isinstance(response, dict) else {}
-            usage_id = self._text(usage.get("usage_id")) if isinstance(usage, dict) else ""
-            if not usage_id:
-                raise RuntimeError("server billing did not return usage_id")
-            usage_ids[kind] = usage_id
+        account_id = self._text(billing.get("account_id"))
+        attempt = None
+        try:
+            for kind, feature_key in self._billable_product_processing_features(settings):
+                attempt = None
+                if account_id:
+                    attempt = self.repository.begin_product_billing_attempt(
+                        task_id=task_id,
+                        item_id=item_id,
+                        workspace_id=workspace_id,
+                        kind=kind,
+                        feature_key=feature_key,
+                        account_id=account_id,
+                    )
+                    if attempt.get("desired_outcome"):
+                        raise ProductProcessingConflict("计费结算尚未完成，请先重试结算")
+                    if attempt.get("usage_id") and attempt.get("remote_status") == "reserved":
+                        usage_ids[kind] = self._text(attempt.get("usage_id"))
+                        continue
+                    idempotency_key = self._text(attempt.get("idempotency_key"))
+                else:
+                    idempotency_key = f"product_processing:{task_id}:{item_id}:{kind}"
+                response = client.reserve_ai_usage(
+                    remote_token,
+                    {
+                        "feature_key": feature_key,
+                        "idempotency_key": idempotency_key,
+                        "source_ref": self._text(billing.get("source_ref"))[:200],
+                        "metadata": {
+                            "task_id": task_id,
+                            "item_id": item_id,
+                            "pricing_version": billing.get("pricing_version", ""),
+                        },
+                    },
+                )
+                usage = response.get("usage") if isinstance(response, dict) else {}
+                value = self._text(usage.get("usage_id")) if isinstance(usage, dict) else ""
+                status_value = self._text(usage.get("status")) if isinstance(usage, dict) else ""
+                response_feature = self._text(usage.get("feature_key")) if isinstance(usage, dict) else ""
+                if not value or status_value != "reserved" or response_feature != feature_key:
+                    raise CustomerBillingProtocolError()
+                if attempt is not None:
+                    self.repository.record_product_billing_reservation(
+                        int(attempt["id"]),
+                        usage_id=value,
+                        remote_status=status_value,
+                    )
+                usage_ids[kind] = value
+        except Exception as exc:
+            error = self._stable_remote_billing_error(exc)
+            if attempt is not None:
+                self.repository.mark_product_billing_settlement_pending(
+                    int(attempt["id"]),
+                    error_message=self._task_safe_error_reason(task_id, error),
+                )
+            if usage_ids:
+                self._store_reserved_usage_ids(task_id, item_id, usage_ids)
+                try:
+                    self._settle_product_processing_item_failure_for_item(
+                        task_id,
+                        item_id,
+                        {"status": "failed", "reason": self._task_safe_error_reason(task_id, error)},
+                    )
+                except Exception:
+                    pass
+            if isinstance(
+                error,
+                (
+                    CustomerBillingProtocolError,
+                    CustomerAuthUnavailable,
+                    CustomerAuthRejected,
+                    CustomerBillingPermissionError,
+                ),
+            ):
+                raise error
+            safe_reason = self._task_safe_error_reason(task_id, error)
+            if safe_reason != _ai_error_reason(error):
+                raise RuntimeError(safe_reason) from None
+            raise
         self._store_reserved_usage_ids(task_id, item_id, usage_ids)
         return usage_ids
 
-    def _store_reserved_usage_ids(self, task_id: int, item_id: int, usage_ids: dict[str, str]) -> None:
+    def _store_reserved_usage_ids(
+        self, task_id: int, item_id: int, usage_ids: dict[str, str]
+    ) -> None:
         with self._submission_lock:
-            if not hasattr(self, "_server_usage_ids"):
-                self._server_usage_ids = {}
             self._server_usage_ids[(task_id, item_id)] = dict(usage_ids)
 
     def _reserved_usage_ids(self, task_id: int, item_id: int) -> dict[str, str]:
         with self._submission_lock:
-            return dict(getattr(self, "_server_usage_ids", {}).get((task_id, item_id), {}))
+            return dict(self._server_usage_ids.get((task_id, item_id), {}))
 
-    def _clear_reserved_usage_ids(self, task_id: int, item_id: int) -> None:
+    def _remove_reserved_usage_id(
+        self, task_id: int, item_id: int, kind: str, expected_usage_id: str
+    ) -> None:
         with self._submission_lock:
-            getattr(self, "_server_usage_ids", {}).pop((task_id, item_id), None)
+            key = (task_id, item_id)
+            usage_ids = self._server_usage_ids.get(key)
+            if usage_ids is None or usage_ids.get(kind) != expected_usage_id:
+                return
+            usage_ids.pop(kind, None)
+            if not usage_ids:
+                self._server_usage_ids.pop(key, None)
+
+    def _claim_usage_settlement(
+        self, task_id: int, item_id: int, kind: str, expected_usage_id: str
+    ) -> bool:
+        with self._submission_lock:
+            if self._server_usage_ids.get((task_id, item_id), {}).get(kind) != expected_usage_id:
+                return False
+            claim = (task_id, item_id, kind)
+            if claim in self._settling_usage_keys:
+                return False
+            self._settling_usage_keys.add(claim)
+            return True
+
+    def _release_usage_settlement_claim(self, task_id: int, item_id: int, kind: str) -> None:
+        with self._submission_lock:
+            self._settling_usage_keys.discard((task_id, item_id, kind))
 
     def _task_remote_token(self, task_id: int) -> str:
         with self._submission_lock:
             return self._text(self._task_remote_tokens.get(task_id))
 
-    def _settle_product_processing_item_failure_for_item(self, task_id: int, item_id: int, processed: dict[str, Any]) -> None:
-        self._settle_product_processing_item_failure(task_id, self._reserved_usage_ids(task_id, item_id), RuntimeError(self._text(processed.get("reason")) or "item failed"))
-        self._clear_reserved_usage_ids(task_id, item_id)
+    def _task_safe_error_reason(self, task_id: int, error: BaseException) -> str:
+        stable = self._stable_remote_billing_error(error)
+        reason = str(stable).strip() or type(stable).__name__
+        token = self._task_remote_token(task_id)
+        if token:
+            reason = reason.replace(token, "[redacted]")
+        return reason[:200]
 
-    def _settle_product_processing_item_failure(self, task_id: int, usage_ids: dict[str, str], error: BaseException) -> None:
+    @staticmethod
+    def _stable_remote_billing_error(error: BaseException) -> BaseException:
+        if isinstance(error, CustomerBillingProtocolError):
+            return CustomerBillingProtocolError()
+        if isinstance(error, CustomerAuthUnavailable):
+            return CustomerAuthUnavailable("remote billing service is unavailable")
+        if isinstance(error, CustomerAuthRejected):
+            status_code = getattr(error, "status_code", None)
+            if type(status_code) is int and 400 <= status_code < 500:
+                return CustomerAuthRejected(status_code, "remote billing request was rejected")
+            return CustomerBillingProtocolError()
+        if isinstance(error, CustomerBillingPermissionError):
+            return CustomerBillingPermissionError()
+        return error
+
+    def _product_billing_attempt_for_usage(
+        self,
+        task_id: int,
+        item_id: int,
+        kind: str,
+        usage_id: str,
+    ) -> dict[str, Any] | None:
+        return next(
+            (
+                attempt
+                for attempt in self.repository.product_billing_attempts(
+                    task_id=task_id,
+                    item_id=item_id,
+                )
+                if attempt["kind"] == kind and attempt["usage_id"] == usage_id
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _remote_settlement_status(response: Any, expected_usage_id: str) -> str:
+        if not isinstance(response, dict):
+            raise CustomerBillingProtocolError()
+        usage_value = response.get("usage")
+        if "usage" in response and not isinstance(usage_value, dict):
+            raise CustomerBillingProtocolError()
+        usage = usage_value if isinstance(usage_value, dict) else {}
+        returned_ids: list[str] = []
+        if "usage" in response:
+            nested_usage_id = str(usage.get("usage_id") or "").strip()
+            if not nested_usage_id:
+                raise CustomerBillingProtocolError()
+            returned_ids.append(nested_usage_id)
+        if "usage_id" in response:
+            top_level_usage_id = str(response.get("usage_id") or "").strip()
+            if not top_level_usage_id:
+                raise CustomerBillingProtocolError()
+            returned_ids.append(top_level_usage_id)
+        expected = str(expected_usage_id or "").strip()
+        if not expected or not returned_ids or any(value != expected for value in returned_ids):
+            raise CustomerBillingProtocolError()
+        return str(usage.get("status") or response.get("status") or "").strip()
+
+    def _settle_product_processing_item_failure_for_item(
+        self,
+        task_id: int,
+        item_id: int,
+        processed: dict[str, Any],
+    ) -> None:
         remote_token = self._task_remote_token(task_id)
         if not remote_token:
             return
+        reason = self._text(processed.get("reason")) or "item failed"
         client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
-        for usage_id in usage_ids.values():
+        first_error: Exception | None = None
+        for kind, usage in self._reserved_usage_ids(task_id, item_id).items():
+            if not self._claim_usage_settlement(task_id, item_id, kind, usage):
+                continue
+            attempt = self._product_billing_attempt_for_usage(task_id, item_id, kind, usage)
+            if attempt is not None:
+                self.repository.mark_product_billing_desired_outcome(
+                    int(attempt["id"]),
+                    desired_outcome="failed",
+                    error_message=self._task_safe_error_reason(task_id, RuntimeError(reason)),
+                )
             try:
-                client.settle_ai_usage_failure(remote_token, usage_id, {"error_message": self._text(error)[:500]})
-            except Exception:
-                pass
+                response = client.settle_ai_usage_failure(
+                    remote_token,
+                    usage,
+                    {"error_message": self._task_safe_error_reason(task_id, RuntimeError(reason))[:500]},
+                )
+                remote_status = self._remote_settlement_status(response, usage)
+                if remote_status not in {"succeeded", "failed"}:
+                    raise CustomerBillingProtocolError()
+            except Exception as exc:
+                error = self._stable_remote_billing_error(exc)
+                if attempt is not None:
+                    self.repository.mark_product_billing_settlement_pending(
+                        int(attempt["id"]),
+                        error_message=self._task_safe_error_reason(task_id, error),
+                    )
+                if first_error is None:
+                    first_error = error
+            else:
+                if attempt is not None:
+                    self.repository.mark_product_billing_settled(
+                        int(attempt["id"]), remote_status=remote_status
+                    )
+                self._remove_reserved_usage_id(task_id, item_id, kind, usage)
+            finally:
+                self._release_usage_settlement_claim(task_id, item_id, kind)
+        if first_error is not None:
+            safe_reason = self._task_safe_error_reason(task_id, first_error)
+            if safe_reason != _ai_error_reason(first_error):
+                raise RuntimeError(safe_reason) from None
+            raise first_error
+
+    def reconcile_product_billing(self, task_id: int, remote_token: str) -> dict[str, int]:
+        """Recover durable reservations/settlements using a freshly authenticated token."""
+        token = self._text(remote_token)
+        if not token:
+            raise CustomerBillingPermissionError()
+        client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
+        reconciled = 0
+        pending = self.repository.product_billing_attempts(task_id=task_id, pending_only=True)
+        for attempt in pending:
+            current = attempt
+            try:
+                if not self._text(current.get("usage_id")):
+                    response = client.reserve_ai_usage(
+                        token,
+                        {
+                            "feature_key": current["feature_key"],
+                            "idempotency_key": current["idempotency_key"],
+                            "source_ref": "product_processing:billing_recovery",
+                            "metadata": {
+                                "task_id": current["task_id"],
+                                "item_id": current["item_id"],
+                                "attempt_ordinal": current["attempt_ordinal"],
+                            },
+                        },
+                    )
+                    usage = response.get("usage") if isinstance(response, dict) else {}
+                    usage_id = self._text(usage.get("usage_id")) if isinstance(usage, dict) else ""
+                    status_value = self._text(usage.get("status")) if isinstance(usage, dict) else ""
+                    response_feature = (
+                        self._text(usage.get("feature_key")) if isinstance(usage, dict) else ""
+                    )
+                    if (
+                        not usage_id
+                        or status_value != "reserved"
+                        or response_feature != current["feature_key"]
+                    ):
+                        raise CustomerBillingProtocolError()
+                    current = self.repository.record_product_billing_reservation(
+                        int(current["id"]), usage_id=usage_id, remote_status=status_value
+                    )
+                desired = self._text(current.get("desired_outcome")) or "failed"
+                current = self.repository.mark_product_billing_desired_outcome(
+                    int(current["id"]),
+                    desired_outcome=desired,
+                    error_message=self._text(current.get("last_error")) or "interrupted billing attempt",
+                )
+                usage_id = self._text(current.get("usage_id"))
+                if desired == "succeeded":
+                    response = client.settle_ai_usage_success(token, usage_id, {"metadata": {"recovered": True}})
+                else:
+                    response = client.settle_ai_usage_failure(
+                        token,
+                        usage_id,
+                        {"error_message": self._text(current.get("last_error")) or "interrupted billing attempt"},
+                    )
+                remote_status = self._remote_settlement_status(response, usage_id)
+                valid_statuses = {"succeeded"} if desired == "succeeded" else {"succeeded", "failed"}
+                if remote_status not in valid_statuses:
+                    raise CustomerBillingProtocolError()
+                self.repository.mark_product_billing_settled(
+                    int(current["id"]), remote_status=remote_status
+                )
+                self._remove_reserved_usage_id(
+                    task_id,
+                    int(current["item_id"]),
+                    self._text(current["kind"]),
+                    usage_id,
+                )
+                reconciled += 1
+            except Exception as exc:
+                error = self._stable_remote_billing_error(exc)
+                self.repository.mark_product_billing_settlement_pending(
+                    int(current["id"]),
+                    error_message=self._task_safe_error_reason(task_id, error),
+                )
+                raise error
+        self._cleanup_terminal_billing_state(task_id)
+        return {"reconciled": reconciled, "pending": len(pending) - reconciled}
+
+    def _cleanup_terminal_billing_state(self, task_id: int) -> None:
+        with self._submission_lock:
+            empty_keys = [
+                key
+                for key, usage in self._server_usage_ids.items()
+                if key[0] == task_id and not usage
+            ]
+            for key in empty_keys:
+                self._server_usage_ids.pop(key, None)
+            has_unsettled = any(key[0] == task_id for key in self._server_usage_ids) or bool(
+                self.repository.product_billing_attempts(task_id=task_id, pending_only=True)
+            )
+            if not has_unsettled:
+                self._task_remote_tokens.pop(task_id, None)
 
     def _process_one(
         self,
@@ -3697,16 +4265,7 @@ class ProductProcessingService:
                         nonlocal printed_design
                         inspection = inspect_visible_text(bytes(getattr(part, "content", b"")))
                         if inspection is None:
-                            # OCR is an optional content-quality signal, not a
-                            # prerequisite for splitting a geometrically valid grid.
-                            # Treating a missing local OCR runtime as a bad provider
-                            # image made valid four-panel outputs fail after the paid
-                            # image call had already completed.  The generation prompt
-                            # remains text-free and the deterministic image/grid checks
-                            # above still run; keep an auditable note for later review.
-                            if ai_notes is not None and "four_grid:ocr_unavailable" not in ai_notes:
-                                ai_notes.append("four_grid:ocr_unavailable")
-                            return []
+                            raise ValueError("四宫格 OCR 质量门不可用，已阻止未验证生成图")
                         issues: list[str] = list(dict.fromkeys(inspection.get("prominent", [])))
                         if inspection.get("chinese"):
                             if printed_design is None:
@@ -3770,7 +4329,12 @@ class ProductProcessingService:
                         retry_failures: list[tuple[int, str]] = []
                         with ThreadPoolExecutor(max_workers=min(4, len(failed_slots))) as executor:
                             futures = {
-                                executor.submit(regenerate_grid_slot, slot, role): (slot, role)
+                                _submit_with_context(
+                                    executor,
+                                    regenerate_grid_slot,
+                                    slot,
+                                    role,
+                                ): (slot, role)
                                 for slot, role in failed_slots
                             }
                             for future in as_completed(futures):
@@ -3815,7 +4379,13 @@ class ProductProcessingService:
 
                     with ThreadPoolExecutor(max_workers=2) as executor:
                         futures = {
-                            executor.submit(generate_pair, start, left, right): (start, left, right)
+                            _submit_with_context(
+                                executor,
+                                generate_pair,
+                                start,
+                                left,
+                                right,
+                            ): (start, left, right)
                             for start, left, right in primary_jobs
                         }
                         for future in as_completed(futures):
@@ -3835,7 +4405,12 @@ class ProductProcessingService:
 
                     with ThreadPoolExecutor(max_workers=4) as executor:
                         futures = {
-                            executor.submit(generate_standalone, slot, role): (slot, role)
+                            _submit_with_context(
+                                executor,
+                                generate_standalone,
+                                slot,
+                                role,
+                            ): (slot, role)
                             for slot, role in enumerate(panel_roles, start=1)
                         }
                         for future in as_completed(futures):
@@ -3861,7 +4436,12 @@ class ProductProcessingService:
                     retry_failures: list[tuple[int, str]] = []
                     with ThreadPoolExecutor(max_workers=min(4, len(failed_slots))) as executor:
                         futures = {
-                            executor.submit(regenerate_slot, slot, role): (slot, role)
+                            _submit_with_context(
+                                executor,
+                                regenerate_slot,
+                                slot,
+                                role,
+                            ): (slot, role)
                             for slot, role in failed_slots
                         }
                         for future in as_completed(futures):
@@ -4110,7 +4690,7 @@ class ProductProcessingService:
                             thread_name_prefix="pp-premium-repair",
                         ) as pool:
                             futures = {
-                                pool.submit(repair_premium_slot, slot): slot
+                                _submit_with_context(pool, repair_premium_slot, slot): slot
                                 for slot in failed_slots
                             }
                             for future in as_completed(futures):

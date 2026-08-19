@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+from fastapi import HTTPException
 
 from wh_local.billing import reserve_ai_usage, settle_ai_usage_success
 from wh_local.db import init_db, transaction
@@ -43,3 +47,38 @@ def test_ai_usage_reservation_and_settlement_work_on_fresh_database(tmp_path: Pa
             (actor.id,),
         ).fetchone()
     assert dict(wallet) == {"points_balance": 970, "locked_points": 0}
+
+
+def test_concurrent_reservations_cannot_overspend_wallet(tmp_path: Path) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    init_db(database_path)
+    actor = Actor(id="concurrent-user", username="concurrent-user", role="operator")
+    with transaction(database_path) as conn:
+        conn.execute("INSERT INTO auth_accounts (account_id, username) VALUES (?, ?)", (actor.id, actor.username))
+        conn.execute(
+            "INSERT INTO billing_wallets (account_id, workspace_id, points_balance) VALUES (?, ?, 650)",
+            (actor.id, actor.workspace_id),
+        )
+
+    barrier = threading.Barrier(2)
+
+    def reserve(index: int):
+        barrier.wait()
+        return reserve_ai_usage(
+            database_path,
+            actor,
+            feature_key="product_processing.image_grid_2k",
+            idempotency_key=f"concurrent-reservation-{index:04d}",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(reserve, index) for index in range(2)]
+        outcomes = []
+        for future in futures:
+            try:
+                outcomes.append(future.result())
+            except HTTPException as exc:
+                outcomes.append(exc)
+
+    assert sum(isinstance(value, dict) for value in outcomes) == 1
+    assert sum(isinstance(value, HTTPException) and value.status_code == 402 for value in outcomes) == 1

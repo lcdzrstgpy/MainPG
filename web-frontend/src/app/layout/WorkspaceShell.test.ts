@@ -5,6 +5,7 @@ import test from "node:test";
 const source = readFileSync(new URL("./WorkspaceShell.tsx", import.meta.url), "utf8");
 const taskPageSource = readFileSync(new URL("../../modules/product_processing/pages/ProductProcessingTaskPage.tsx", import.meta.url), "utf8");
 const verifyPageSource = readFileSync(new URL("../../modules/product_processing/pages/ProductProcessingVerifyPage.tsx", import.meta.url), "utf8");
+const personalCenterSource = readFileSync(new URL("../../modules/personal_center/pages/PersonalCenterPage.tsx", import.meta.url), "utf8");
 
 test("workspace opens AI history and restores a processing task by its own tab field", () => {
   assert.match(source, /ProductProcessingHistoryPage/);
@@ -28,4 +29,16 @@ test("workspace keeps every open tab mounted and restores scroll by tab key", ()
   assert.match(source, /scrollPositions\.current\.remove\(key\)/);
   assert.match(source, /\{tabs\.map\(\(tab\) =>/);
   assert.match(source, /hidden=\{activeTabKey !== tab\.key\}/);
+});
+
+test("workspace does not import or render the AI service page", () => {
+  assert.doesNotMatch(source, /AiServicePage/);
+  assert.doesNotMatch(source, /case "ai_service":/);
+});
+
+test("personal center owns the system configuration section", () => {
+  assert.doesNotMatch(source, /BasicSettingsPage/);
+  assert.doesNotMatch(source, /case "basic_settings":/);
+  assert.match(personalCenterSource, /BasicSettingsPage/);
+  assert.match(personalCenterSource, /<BasicSettingsPage \/>/);
 });

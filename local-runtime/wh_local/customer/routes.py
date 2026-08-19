@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from .contracts import CustomerAuthUnavailable
+from .contracts import CustomerAuthRejected, CustomerAuthUnavailable
 from .local_session import LocalSessionService
 from .remote_client import CustomerAuthClient
 
@@ -22,6 +22,8 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
     def handle_auth_error(exc: Exception):
         if isinstance(exc, CustomerAuthUnavailable):
             raise HTTPException(status_code=503, detail=str(exc))
+        if isinstance(exc, CustomerAuthRejected):
+            raise HTTPException(status_code=exc.status_code, detail=exc.message)
         if isinstance(exc, PermissionError):
             raise HTTPException(status_code=403, detail=str(exc))
         if isinstance(exc, ValueError):
@@ -107,22 +109,11 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
             raise CustomerAuthUnavailable("remote customer session is missing")
         return session.remote_token
 
-    def local_account_from_session(authorization: str | None) -> dict[str, Any]:
-        token = bearer_token(authorization)
-        session = sessions.store.get_session(token)
-        if session is None:
-            raise PermissionError("invalid bearer token")
-        return {
-            "account_id": session.user_id,
-            "username": session.username,
-            "workspace_id": session.workspace_id or "default",
-            "workspace_code": session.workspace_code,
-            "account_status": "active",
-        }
-
     @router.get("/billing/summary")
     def billing_summary(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         try:
+            if not hasattr(remote_auth, "billing_summary"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
             return remote_auth.billing_summary(remote_token_from_local_session(authorization))
         except Exception as exc:
             handle_auth_error(exc)

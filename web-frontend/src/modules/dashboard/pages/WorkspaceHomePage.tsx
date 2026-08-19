@@ -35,7 +35,6 @@ const launchpadItems: Array<{ id: WorkspaceModuleId; label: string; tone: string
   { id: "price_verification", label: "核价匹配", tone: "orange" },
   { id: "profit_activity", label: "利润活动", tone: "green" },
   { id: "profit_activity_products", label: "产品库", tone: "pink" },
-  { id: "ai_service", label: "AI 服务", tone: "indigo" },
 ];
 
 function formatChineseDate() {
