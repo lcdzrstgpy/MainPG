@@ -2555,19 +2555,20 @@ class ProductProcessingService:
                     idempotency_key = self._text(attempt.get("idempotency_key"))
                 else:
                     idempotency_key = f"product_processing:{task_id}:{item_id}:{kind}"
-                response = client.reserve_ai_usage(
-                    remote_token,
-                    {
-                        "feature_key": feature_key,
-                        "idempotency_key": idempotency_key,
-                        "source_ref": self._text(billing.get("source_ref"))[:200],
-                        "metadata": {
-                            "task_id": task_id,
-                            "item_id": item_id,
-                            "pricing_version": billing.get("pricing_version", ""),
-                        },
+                reservation_payload = {
+                    "feature_key": feature_key,
+                    "idempotency_key": idempotency_key,
+                    "source_ref": self._text(billing.get("source_ref"))[:200],
+                    "metadata": {
+                        "task_id": task_id,
+                        "item_id": item_id,
+                        "pricing_version": billing.get("pricing_version", ""),
                     },
-                )
+                }
+                pricing_rule_version = billing.get("pricing_version")
+                if type(pricing_rule_version) is int and pricing_rule_version > 0:
+                    reservation_payload["pricing_rule_version"] = pricing_rule_version
+                response = client.reserve_ai_usage(remote_token, reservation_payload)
                 usage = response.get("usage") if isinstance(response, dict) else {}
                 value = self._text(usage.get("usage_id")) if isinstance(usage, dict) else ""
                 status_value = self._text(usage.get("status")) if isinstance(usage, dict) else ""
@@ -2783,25 +2784,33 @@ class ProductProcessingService:
         if not token:
             raise CustomerBillingPermissionError()
         client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
+        pricing_rule_version: int | None = None
+        billing_rules = getattr(client, "billing_rules", None)
+        if callable(billing_rules):
+            pricing_response = billing_rules(token)
+            pricing = pricing_response.get("pricing") if isinstance(pricing_response, dict) else {}
+            if not isinstance(pricing, dict) or type(pricing.get("rule_version")) is not int:
+                raise CustomerBillingProtocolError()
+            pricing_rule_version = int(pricing["rule_version"])
         reconciled = 0
         pending = self.repository.product_billing_attempts(task_id=task_id, pending_only=True)
         for attempt in pending:
             current = attempt
             try:
                 if not self._text(current.get("usage_id")):
-                    response = client.reserve_ai_usage(
-                        token,
-                        {
-                            "feature_key": current["feature_key"],
-                            "idempotency_key": current["idempotency_key"],
-                            "source_ref": "product_processing:billing_recovery",
-                            "metadata": {
-                                "task_id": current["task_id"],
-                                "item_id": current["item_id"],
-                                "attempt_ordinal": current["attempt_ordinal"],
-                            },
+                    reservation_payload = {
+                        "feature_key": current["feature_key"],
+                        "idempotency_key": current["idempotency_key"],
+                        "source_ref": "product_processing:billing_recovery",
+                        "metadata": {
+                            "task_id": current["task_id"],
+                            "item_id": current["item_id"],
+                            "attempt_ordinal": current["attempt_ordinal"],
                         },
-                    )
+                    }
+                    if pricing_rule_version is not None:
+                        reservation_payload["pricing_rule_version"] = pricing_rule_version
+                    response = client.reserve_ai_usage(token, reservation_payload)
                     usage = response.get("usage") if isinstance(response, dict) else {}
                     usage_id = self._text(usage.get("usage_id")) if isinstance(usage, dict) else ""
                     status_value = self._text(usage.get("status")) if isinstance(usage, dict) else ""

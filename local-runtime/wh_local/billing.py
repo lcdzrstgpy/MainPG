@@ -597,6 +597,7 @@ def _settle_consumed_usage_after_business_failure(
 def grant_test_points(database_path: Path, account_id: str | None = None) -> int:
     """Grant test points to existing accounts without trusting local clients."""
     now = _utc_now()
+    target_units = TEST_GRANT_POINTS * 10
     targets: list[tuple[str, str, str, str]] = []
     with transaction(database_path) as conn:
         if account_id:
@@ -636,16 +637,16 @@ def grant_test_points(database_path: Path, account_id: str | None = None) -> int
                 "SELECT points_balance FROM billing_wallets WHERE account_id = ?",
                 (target_id,),
             ).fetchone()
-            if int(wallet["points_balance"]) >= TEST_GRANT_POINTS:
+            if int(wallet["points_balance"]) >= target_units:
                 continue
-            delta = TEST_GRANT_POINTS - int(wallet["points_balance"])
+            delta = target_units - int(wallet["points_balance"])
             conn.execute(
                 """
                 UPDATE billing_wallets
                 SET points_balance = ?, version = version + 1, updated_at = ?
                 WHERE account_id = ?
                 """,
-                (TEST_GRANT_POINTS, now, target_id),
+                (target_units, now, target_id),
             )
             _append_ledger(
                 conn,
@@ -655,7 +656,7 @@ def grant_test_points(database_path: Path, account_id: str | None = None) -> int
                 points_delta=delta,
                 source_type="test_grant",
                 source_id="initial_test_points",
-                idempotency_key=f"test-grant:{target_id}:{TEST_GRANT_POINTS}",
+                idempotency_key=f"test-grant:{target_id}:{target_units}",
                 metadata={"reason": "initial test points"},
             )
     return len(targets)

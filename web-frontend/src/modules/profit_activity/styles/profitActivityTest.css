@@ -573,3 +573,59 @@
   gap: 10px;
   margin-top: 18px;
 }
+
+/* 申报价计算器：横排在单品利润与活动过滤下方 */
+.profit-price-calculator {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #d8e7f2;
+  border-radius: 18px;
+  background: #fbfdff;
+  box-shadow: 0 12px 30px #265d8a0d;
+}
+
+.profit-price-calculator .profit-card-title {
+  margin-bottom: 0;
+}
+
+.profit-card-title .profit-calculator-hint {
+  color: #1c1c1c;
+  font-size: .78rem;
+  font-weight: 400;
+}
+
+.profit-calculator-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.2fr) minmax(150px, 1fr) minmax(110px, .6fr) minmax(150px, 1fr) minmax(150px, .8fr);
+  gap: 12px;
+  align-items: end;
+}
+
+.profit-calculator-result {
+  display: grid;
+  gap: 7px;
+  padding: 11px 14px;
+  border: 1px solid #bfe0ff;
+  border-radius: 12px;
+  background: #eefaff;
+}
+
+.profit-calculator-result span {
+  color: #526a82;
+  font-size: .82rem;
+  font-weight: 800;
+}
+
+.profit-calculator-result strong {
+  color: #0a6fbe;
+  font-size: 1.35rem;
+  letter-spacing: -.02em;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .profit-calculator-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}

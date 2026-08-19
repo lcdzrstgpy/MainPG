@@ -49,6 +49,12 @@ BILLING_TOPUP_PRODUCTS = {
     "points_30": {"amount_cents": 3000, "points": 3000, "label": "30 元积分包"},
     "points_100": {"amount_cents": 10000, "points": 10000, "label": "100 元积分包"},
 }
+# Amounts are immutable product amounts.  Their point value is calculated
+# from the active server rule, never from this legacy display mapping.
+TOPUP_PACKAGE_CENTS = {
+    package_id: {"amount_cents": int(item["amount_cents"]), "label": str(item["label"])}
+    for package_id, item in BILLING_TOPUP_PRODUCTS.items()
+}
 # Monetary amount and label are stable package metadata. Point quantity is
 # calculated from the active server-side pricing rule at order creation time.
 TOPUP_PACKAGE_CENTS = {
@@ -1630,7 +1636,7 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         _ensure_wallet(conn, account_id, workspace_id)
         wallet = conn.execute(
             """
-            SELECT points_balance, locked_points, version, ledger_head_hash, updated_at
+            SELECT points_balance, locked_points, manual_frozen_points, version, ledger_head_hash, updated_at
             FROM billing_wallets
             WHERE account_id = ?
             """,
@@ -1668,7 +1674,9 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         "wallet": {
             "points_balance": _display_billing_points(int(wallet["points_balance"] if wallet else 0), pricing),
             "locked_points": _display_billing_points(int(wallet["locked_points"] if wallet else 0), pricing),
-            "available_points": _display_billing_points(int((wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0)), pricing),
+            "manual_frozen_points": _display_billing_points(int(wallet["manual_frozen_points"] if wallet else 0), pricing),
+            "frozen_points": _display_billing_points(int((wallet["locked_points"] if wallet else 0) + (wallet["manual_frozen_points"] if wallet else 0)), pricing),
+            "available_points": _display_billing_points(int((wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0) - (wallet["manual_frozen_points"] if wallet else 0)), pricing),
             "version": int(wallet["version"] if wallet else 0),
             "ledger_head_hash": wallet["ledger_head_hash"] if wallet else "",
             "updated_at": wallet["updated_at"] if wallet else "",

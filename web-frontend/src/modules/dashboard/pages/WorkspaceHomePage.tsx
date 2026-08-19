@@ -24,7 +24,6 @@ const shortcuts: ShortcutItem[] = [
   { type: "module", id: "daily_selection", label: "每日选品", text: "开始采集并查看候选商品" },
   { type: "module", id: "product_processing", label: "产品处理", text: "进入草稿池和处理任务" },
   { type: "module", id: "profit_activity", label: "利润活动", text: "查看利润核算和活动筛选" },
-  { type: "external", label: "中转查看", text: "打开 AI 中转服务页面", url: "https://station-88.aicoming.top/" },
 ];
 
 const launchpadItems: Array<{ id: WorkspaceModuleId; label: string; tone: string }> = [

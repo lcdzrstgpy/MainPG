@@ -51,9 +51,18 @@ export type BillingSummary = {
   };
   pricing: {
     currency: "CNY";
-    point_ratio: number;
+    rule_version: number;
+    point_unit_scale: number;
+    points_per_cny: number;
     ratio_label: string;
-    status: string;
+    product_link: {
+      actual_charge_min_points: number;
+      actual_charge_max_points: number;
+      reserve_max_points: number;
+    };
+    features: Record<string, { reserve_points: number; charge_points: number }>;
+    min_client_version: string;
+    effective_at: string;
   };
   topup_products: BillingPackage[];
   recent_ledger: BillingLedgerEntry[];
@@ -64,6 +73,33 @@ export type BillingSummary = {
     ledger_hash_chain: boolean;
     settlement_requires_signed_provider_callback: boolean;
   };
+};
+
+export type BillingUsageEntry = {
+  usage_id: string;
+  feature_key: string;
+  source_ref: string;
+  reserved_points: number;
+  charged_points: number;
+  refunded_points: number;
+  status: "reserved" | "succeeded" | "failed";
+  provider: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  error_message: string;
+  created_at: string;
+  settled_at: string;
+  rule_version: number | "legacy";
+  task: string | number;
+};
+
+export type BillingUsageHistory = {
+  ok: boolean;
+  items: BillingUsageEntry[];
+  next_cursor: string;
+  has_more: boolean;
 };
 
 export type TopupOrderResponse = {
@@ -81,6 +117,12 @@ export type TopupOrderResponse = {
 
 export function loadBillingSummary() {
   return httpJson<BillingSummary>("/api/customer/billing/summary");
+}
+
+export function loadBillingUsageHistory(cursor = "") {
+  const query = new URLSearchParams({ limit: "30" });
+  if (cursor) query.set("cursor", cursor);
+  return httpJson<BillingUsageHistory>(`/api/customer/billing/usage?${query.toString()}`);
 }
 
 export function createTopupOrder(input: {

@@ -2,7 +2,16 @@ import { type FormEvent, useEffect, useMemo, useState } from "react";
 
 import { clearAuthSession, getAuthAccount } from "../../../transport/http/client";
 import { BasicSettingsPage } from "../../basic_settings/pages/BasicSettingsPage";
-import { changeAccountPassword, createTopupOrder, loadBillingSummary, type BillingPackage, type BillingSummary, type TopupOrderResponse } from "../api/personalCenterApi";
+import {
+  changeAccountPassword,
+  createTopupOrder,
+  loadBillingSummary,
+  loadBillingUsageHistory,
+  type BillingPackage,
+  type BillingSummary,
+  type BillingUsageEntry,
+  type TopupOrderResponse,
+} from "../api/personalCenterApi";
 import "../styles/personalCenter.css";
 
 type AccountSnapshot = {
@@ -36,6 +45,10 @@ function statusLabel(status: string) {
 
 export function PersonalCenterPage() {
   const [summary, setSummary] = useState<BillingSummary | null>(null);
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage">("wallet");
+  const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>([]);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageError, setUsageError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedPackage, setSelectedPackage] = useState("");
@@ -71,6 +84,16 @@ export function PersonalCenterPage() {
   useEffect(() => {
     refresh();
   }, []);
+
+  useEffect(() => {
+    if (activePanel !== "usage") return;
+    setUsageLoading(true);
+    setUsageError("");
+    loadBillingUsageHistory()
+      .then((payload) => setUsageEntries(payload.items))
+      .catch((exc) => setUsageError(exc instanceof Error ? exc.message : "读取消费流水失败"))
+      .finally(() => setUsageLoading(false));
+  }, [activePanel]);
 
   useEffect(() => {
     if (!passwordOpen) return;
@@ -248,7 +271,19 @@ export function PersonalCenterPage() {
       {error && <div className="personal-alert is-error">{error}</div>}
       {loading && <div className="personal-alert">正在读取服务器账户与积分数据...</div>}
 
-      <div className="personal-grid">
+      <div className="personal-content-layout">
+        <aside className="personal-subnav" aria-label="个人中心二级导航">
+          <button type="button" className={activePanel === "wallet" ? "is-active" : ""} onClick={() => setActivePanel("wallet")}>
+            <span className="iconfont icon-wallet-fill" aria-hidden="true" /> 积分钱包
+          </button>
+          <button type="button" className={activePanel === "usage" ? "is-active" : ""} onClick={() => setActivePanel("usage")}>
+            <span className="iconfont icon-accountbook-fill" aria-hidden="true" /> 消费流水
+          </button>
+          <p>余额、费率与消费记录均由服务器账本实时校验。</p>
+        </aside>
+
+        <div className="personal-panel-content">
+        {activePanel === "wallet" ? <div className="personal-grid">
         <article className="personal-card wallet-card">
           <div className="personal-card-title">
             <span className="iconfont icon-wallet-fill" aria-hidden="true" />
@@ -345,6 +380,34 @@ export function PersonalCenterPage() {
             )) : <p className="empty-orders">暂无充值订单</p>}
           </div>
         </article>
+        </div> : (
+          <article className="personal-card usage-card">
+            <div className="personal-card-title">
+              <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
+              <div><h2>消费流水</h2><small>每条记录包含冻结、实际扣费、释放、模型与结算状态。</small></div>
+              <button type="button" onClick={() => setActivePanel("usage")}>刷新</button>
+            </div>
+            {usageLoading && <p className="usage-state">正在读取服务器消费账本…</p>}
+            {usageError && <p className="usage-state is-error">{usageError}</p>}
+            {!usageLoading && !usageError && (
+              <div className="usage-table-wrap">
+                <table className="usage-table">
+                  <thead><tr><th>时间</th><th>服务</th><th>状态</th><th>冻结</th><th>实际扣费</th><th>释放</th><th>规则</th><th>调用信息</th></tr></thead>
+                  <tbody>{usageEntries.length ? usageEntries.map((entry) => (
+                    <tr key={entry.usage_id}>
+                      <td><b>{entry.created_at.replace("T", " ").slice(0, 19)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
+                      <td>{entry.feature_key === "product_processing.image_grid_2k" ? "四宫格生图" : "商品文本"}<small>{entry.model || entry.provider || "等待上游"}</small></td>
+                      <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
+                      <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
+                      <td>v{entry.rule_version}</td><td><small>{entry.usage_id.slice(0, 14)}…</small></td>
+                    </tr>
+                  )) : <tr><td colSpan={8} className="usage-empty">暂无消费流水</td></tr>}</tbody>
+                </table>
+              </div>
+            )}
+          </article>
+        )}
+        </div>
       </div>
 
       <BasicSettingsPage />

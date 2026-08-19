@@ -39,14 +39,16 @@ def test_ai_usage_reservation_and_settlement_work_on_fresh_database(tmp_path: Pa
     repeated = settle_ai_usage_success(database_path, reserved["usage_id"])
 
     assert settled["status"] == "succeeded"
-    assert settled["charged_points"] == 30
+    # Internal storage uses tenths of a point; the default text rule charges
+    # five units (0.5 displayed points) and is snapshotted on reservation.
+    assert settled["charged_points"] == 5
     assert repeated["usage_id"] == settled["usage_id"]
     with transaction(database_path) as conn:
         wallet = conn.execute(
             "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
             (actor.id,),
         ).fetchone()
-    assert dict(wallet) == {"points_balance": 970, "locked_points": 0}
+    assert dict(wallet) == {"points_balance": 995, "locked_points": 0}
 
 
 def test_concurrent_reservations_cannot_overspend_wallet(tmp_path: Path) -> None:
@@ -56,7 +58,9 @@ def test_concurrent_reservations_cannot_overspend_wallet(tmp_path: Path) -> None
     with transaction(database_path) as conn:
         conn.execute("INSERT INTO auth_accounts (account_id, username) VALUES (?, ?)", (actor.id, actor.username))
         conn.execute(
-            "INSERT INTO billing_wallets (account_id, workspace_id, points_balance) VALUES (?, ?, 650)",
+            # One default image reservation is 40 internal units; two callers
+            # must not both reserve against this exact balance.
+            "INSERT INTO billing_wallets (account_id, workspace_id, points_balance) VALUES (?, ?, 40)",
             (actor.id, actor.workspace_id),
         )
 

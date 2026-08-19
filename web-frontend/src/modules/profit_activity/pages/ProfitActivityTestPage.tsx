@@ -259,6 +259,12 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   const filterPollRef = useRef<number | undefined>(undefined);
   // 没有任何可申报产品时的提示弹窗
   const [noEligibleOpen, setNoEligibleOpen] = useState(false);
+  // 申报价计算器：基于活动过滤结果的可申报商品（商品ID + 申报价格）
+  const [calcProducts, setCalcProducts] = useState<Array<{ product_id: string; identifiers: string[]; price: number }>>([]);
+  const [calcProductId, setCalcProductId] = useState("");
+  const [calcPrice, setCalcPrice] = useState("");
+  const [calcOp, setCalcOp] = useState<"+" | "-" | "*" | "/">("*");
+  const [calcValue, setCalcValue] = useState("");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [recentSaved, setRecentSaved] = useState<string[]>(() => {
@@ -717,6 +723,40 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     }
   };
 
+  // 申报价计算器：过滤完成后加载可申报商品列表（商品ID + 申报价格）
+  useEffect(() => {
+    const taskId = filterTaskId(filterTask);
+    if (!taskId || filterTask?.status !== "completed") {
+      setCalcProducts([]);
+      return;
+    }
+    let alive = true;
+    request<{ products: Array<{ product_id: string; identifiers: string[]; price: number }> }>(`/api/profit-activity/activity-filter/${taskId}/eligible`)
+      .then((data) => { if (alive) setCalcProducts(data.products ?? []); })
+      .catch(() => { if (alive) setCalcProducts([]); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterTask]);
+
+  // 申报价计算器的实时结果
+  const calcResult = useMemo(() => {
+    const price = Number(calcPrice);
+    const value = Number(calcValue);
+    if (!Number.isFinite(price) || !Number.isFinite(value)) return null;
+    if (calcOp === "/" && value === 0) return null;
+    if (calcOp === "+") return price + value;
+    if (calcOp === "-") return price - value;
+    if (calcOp === "*") return price * value;
+    return price / value;
+  }, [calcPrice, calcOp, calcValue]);
+
+  // 选择商品ID时自动带出该商品的最低申报价格（按 SKC/SKU/SPU 任一标识匹配）
+  const onCalcProductIdChange = (value: string) => {
+    setCalcProductId(value);
+    const matched = calcProducts.find((item) => item.identifiers.includes(value));
+    if (matched) setCalcPrice(String(matched.price));
+  };
+
   // 过滤完成后保存并下载可申报产品
   const finishFilteredDownload = async (task: FilterTask, kept: number, removed: number) => {
     const taskId = filterTaskId(task);
@@ -1082,6 +1122,49 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
             </div>
           )}
         </article>
+      </section>
+
+      <section className="profit-price-calculator" aria-label="申报价计算器">
+        <div className="profit-card-title">
+          <span className="profit-title-icon iconfont icon-calculator-fill" aria-hidden="true" />
+          <h2>申报价计算器</h2>
+          <span className="profit-calculator-hint">基于活动过滤的可申报商品：选/输商品ID自动带出申报价格，再对申报价格做加减乘除。</span>
+        </div>
+        <div className="profit-calculator-row">
+          <label>
+            <span>商品ID</span>
+            <input
+              list="profit-calc-product-options"
+              value={calcProductId}
+              onChange={(event) => onCalcProductIdChange(event.target.value)}
+              placeholder="选择或输入商品ID"
+            />
+            <datalist id="profit-calc-product-options">
+              {[...new Set(calcProducts.flatMap((item) => item.identifiers))].map((id) => <option key={id} value={id} />)}
+            </datalist>
+          </label>
+          <label>
+            <span>申报价格</span>
+            <input type="number" value={calcPrice} onChange={(event) => setCalcPrice(event.target.value)} placeholder="自动带出，可手改" />
+          </label>
+          <label className="profit-calculator-op">
+            <span>运算</span>
+            <select value={calcOp} onChange={(event) => setCalcOp(event.target.value as "+" | "-" | "*" | "/")}>
+              <option value="*">× 乘</option>
+              <option value="/">÷ 除</option>
+              <option value="+">＋ 加</option>
+              <option value="-">－ 减</option>
+            </select>
+          </label>
+          <label>
+            <span>数字</span>
+            <input type="number" value={calcValue} onChange={(event) => setCalcValue(event.target.value)} placeholder="如 1.1" />
+          </label>
+          <div className="profit-calculator-result" aria-live="polite">
+            <span>结果</span>
+            <strong>{calcResult === null ? "-" : Number(calcResult.toFixed(4))}</strong>
+          </div>
+        </div>
       </section>
 
       {noEligibleOpen && (
