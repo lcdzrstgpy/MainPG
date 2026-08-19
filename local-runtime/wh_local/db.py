@@ -905,7 +905,9 @@ def init_db(database_path: Path) -> None:
 def transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
     conn = connect(database_path)
     try:
-        conn.execute("BEGIN")
+        # Ledger and idempotency records require a writer reservation before
+        # checking a balance, otherwise concurrent desktop jobs can overspend.
+        conn.execute("BEGIN IMMEDIATE")
         yield conn
         conn.commit()
     except Exception:

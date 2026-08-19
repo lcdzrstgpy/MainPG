@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from ..config import default_config
-from .auth_server import _billing_summary
 from .contracts import CustomerAuthUnavailable
 from .local_session import LocalSessionService
 from .remote_client import CustomerAuthClient
@@ -125,10 +123,7 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
     @router.get("/billing/summary")
     def billing_summary(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         try:
-            return _billing_summary(
-                default_config().database_path,
-                local_account_from_session(authorization),
-            )
+            return remote_auth.billing_summary(remote_token_from_local_session(authorization))
         except Exception as exc:
             handle_auth_error(exc)
 
