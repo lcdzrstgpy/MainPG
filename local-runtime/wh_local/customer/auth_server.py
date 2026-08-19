@@ -26,7 +26,7 @@ from ..db import init_db, transaction
 from ..billing import reserve_ai_usage, settle_ai_usage_failure, settle_ai_usage_success
 from ..session import Actor
 from .auth_service import SQLiteCustomerAuthService
-from .credential_vault import CredentialVaultError, active_secret
+from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
 
@@ -43,8 +43,108 @@ TEXT_CHAT_URL = "https://api.aicoming.top/v1/chat/completions"
 TEXT_MODEL = "gpt-5.6-terra"
 WUYIN_IMAGE_SUBMIT_URL = "https://api.wuyinkeji.com/api/async/image_gpt"
 WUYIN_IMAGE_DETAIL_URL = "https://api.wuyinkeji.com/api/async/detail"
-TEXT_GATEWAY_CONCURRENCY = 4
+TEXT_GATEWAY_CONCURRENCY = 200
 _TEXT_GATEWAY_SEMAPHORE = threading.BoundedSemaphore(TEXT_GATEWAY_CONCURRENCY)
+
+
+class _TextCredentialPool:
+    """Server-owned, least-loaded pool for text provider credentials.
+
+    The pool is intentionally in the auth service: desktop clients never receive
+    an upstream key or decide which one to use.  A 429 cools only the affected
+    credential; other enabled keys continue serving requests.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._states: dict[str, dict[str, float | int]] = {}
+
+    def acquire(self) -> tuple[dict[str, Any] | None, int]:
+        try:
+            credentials = enabled_secrets("text")
+        except CredentialVaultError:
+            raise
+        if not credentials:
+            legacy = str(os.environ.get("WH_TEXT_API_KEY") or "").strip()
+            credentials = (
+                [{"credential_id": "legacy_environment", "secret": legacy, "max_concurrency": 40, "active": True}]
+                if legacy
+                else []
+            )
+        now = time.monotonic()
+        with self._lock:
+            current_ids = {str(item["credential_id"]) for item in credentials}
+            self._states = {
+                key: value for key, value in self._states.items() if key in current_ids
+            }
+            candidates: list[tuple[float, float, dict[str, Any]]] = []
+            retry_after: list[float] = []
+            for credential in credentials:
+                credential_id = str(credential["credential_id"])
+                state = self._states.setdefault(
+                    credential_id,
+                    {"in_flight": 0, "cooldown_until": 0.0, "last_selected": 0.0, "rate_failures": 0},
+                )
+                cooldown_until = float(state["cooldown_until"])
+                if cooldown_until > now:
+                    retry_after.append(cooldown_until - now)
+                    continue
+                limit = max(1, int(credential.get("max_concurrency") or 40))
+                in_flight = int(state["in_flight"])
+                if in_flight >= limit:
+                    retry_after.append(1.0)
+                    continue
+                candidates.append((in_flight / limit, float(state["last_selected"]), credential))
+            if not candidates:
+                return None, max(1, int(min(retry_after) if retry_after else 1))
+            _, _, selected = min(candidates, key=lambda value: (value[0], value[1]))
+            selected_state = self._states[str(selected["credential_id"])]
+            selected_state["in_flight"] = int(selected_state["in_flight"]) + 1
+            selected_state["last_selected"] = now
+            return selected, 0
+
+    def release(self, credential_id: str, *, outcome: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            state = self._states.get(credential_id)
+            if state is None:
+                return
+            state["in_flight"] = max(0, int(state["in_flight"]) - 1)
+            if outcome == "rate_limited":
+                failures = min(4, int(state["rate_failures"]) + 1)
+                state["rate_failures"] = failures
+                state["cooldown_until"] = now + min(300.0, 60.0 * (2 ** (failures - 1)))
+            elif outcome == "transient":
+                state["cooldown_until"] = max(float(state["cooldown_until"]), now + 15.0)
+            elif outcome == "success":
+                state["rate_failures"] = 0
+
+    def status(self) -> dict[str, int]:
+        try:
+            credentials = enabled_secrets("text")
+        except CredentialVaultError:
+            return {"configured_keys": 0, "available_keys": 0, "available_slots": 0, "retry_after_seconds": 0}
+        now = time.monotonic()
+        with self._lock:
+            available_keys = 0
+            available_slots = 0
+            retry_after: list[float] = []
+            for credential in credentials:
+                state = self._states.get(str(credential["credential_id"]), {})
+                cooldown_until = float(state.get("cooldown_until", 0.0))
+                if cooldown_until > now:
+                    retry_after.append(cooldown_until - now)
+                    continue
+                slots = max(0, int(credential.get("max_concurrency") or 40) - int(state.get("in_flight", 0)))
+                if slots:
+                    available_keys += 1
+                    available_slots += slots
+            return {
+                "configured_keys": len(credentials),
+                "available_keys": available_keys,
+                "available_slots": available_slots,
+                "retry_after_seconds": max(0, int(min(retry_after) if retry_after else 0)),
+            }
 
 
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
@@ -64,6 +164,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         email_sender=TencentCloudSESEmailSender.from_env(),
         email_code_secret=os.environ.get("WH_EMAIL_CODE_SECRET", ""),
     )
+    text_credential_pool = _TextCredentialPool()
 
     app = FastAPI(title="W-H Platform Customer Auth Service", version="0.1.0")
 
@@ -182,12 +283,46 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         if str(payload.get("model") or TEXT_MODEL).strip() != TEXT_MODEL:
             raise HTTPException(status_code=400, detail="unsupported server-managed text model")
         try:
-            api_key = str(active_secret("text") or os.environ.get("WH_TEXT_API_KEY") or "").strip()
+            credential, retry_after = text_credential_pool.acquire()
         except CredentialVaultError as exc:
             raise HTTPException(status_code=503, detail="server text credential vault is unavailable") from exc
-        if not api_key:
-            raise HTTPException(status_code=503, detail="server text credential is not configured")
-        return _server_text_chat(api_key, messages)
+        if credential is None:
+            raise HTTPException(
+                status_code=429,
+                detail="server text credential capacity is temporarily exhausted",
+                headers={"Retry-After": str(max(1, retry_after))},
+            )
+        credential_id = str(credential["credential_id"])
+        # Persist the opaque scheduler choice before the provider call.  This is
+        # how the platform can later reconcile one user usage event with one
+        # server credential without ever storing or returning its plaintext.
+        _record_text_credential_usage(
+            db_path,
+            str(payload.get("usage_id") or ""),
+            credential_id,
+        )
+        try:
+            body = _server_text_chat(str(credential["secret"]), messages)
+        except HTTPException as exc:
+            outcome = "rate_limited" if exc.status_code == 429 else "transient" if exc.status_code >= 500 else "rejected"
+            text_credential_pool.release(credential_id, outcome=outcome)
+            if exc.status_code == 429:
+                raise HTTPException(
+                    status_code=429,
+                    detail="server text provider rate limited this credential",
+                    headers={"Retry-After": "60"},
+                ) from exc
+            raise
+        else:
+            text_credential_pool.release(credential_id, outcome="success")
+            return body
+
+    @app.get("/api/customer/ai/text-capacity")
+    def server_text_capacity(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _required_account(db_path, authorization)
+        return {"ok": True, "text": text_credential_pool.status()}
 
     @app.post("/api/customer/ai/image")
     def server_managed_ai_image(
@@ -611,6 +746,32 @@ def _require_reserved_usage(database_path: Path, usage_id: str, account_id: str,
         raise HTTPException(status_code=409, detail="usage event is not reserved")
 
 
+def _record_text_credential_usage(
+    database_path: Path,
+    usage_id: str,
+    credential_id: str,
+) -> None:
+    """Attach only an opaque server credential id to an existing usage event."""
+    with transaction(database_path) as conn:
+        row = conn.execute(
+            "SELECT metadata_json FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
+        if row is None:
+            return
+        try:
+            metadata = json.loads(str(row["metadata_json"] or "{}"))
+        except json.JSONDecodeError:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["server_text_credential_id"] = credential_id
+        conn.execute(
+            "UPDATE billing_ai_usage_events SET metadata_json = ? WHERE usage_id = ?",
+            (json.dumps(metadata, ensure_ascii=False, sort_keys=True), usage_id),
+        )
+
+
 def _validated_chat_messages(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not 1 <= len(value) <= 8:
         raise HTTPException(status_code=400, detail="chat messages are invalid")
@@ -648,7 +809,9 @@ def _server_text_chat(api_key: str, messages: list[dict[str, Any]]) -> dict[str,
             if "response" in locals():
                 response.close()
         if status_code >= 400:
-            if status_code == 429 or status_code >= 500:
+            if status_code == 429:
+                raise HTTPException(status_code=429, detail="server text provider rate limited the credential")
+            if status_code >= 500:
                 raise HTTPException(status_code=503, detail="server text provider is temporarily unavailable")
             raise HTTPException(status_code=status_code, detail="server text provider rejected the request")
         if not isinstance(decoded, dict):
