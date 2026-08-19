@@ -5,7 +5,6 @@ import contextvars
 import json
 import socket
 import sqlite3
-from contextlib import contextmanager
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -13,7 +12,6 @@ from pathlib import Path
 import pytest
 import requests
 from fastapi.testclient import TestClient
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from wh_local.customer import auth_server
 from wh_local.customer.auth_server import create_auth_app
@@ -217,46 +215,6 @@ def test_chat_gateway_uses_server_secret_without_returning_it(tmp_path: Path, mo
     assert chat.status_code == 200
     assert provider_requests[0]["headers"]["Authorization"] == "Bearer server-secret"
     assert "server-secret" not in json.dumps(chat.json())
-
-
-def test_image_credential_endpoint_encrypts_key_for_reserved_usage(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    client, headers = _client(tmp_path, monkeypatch)
-    usage = _reserved_usage(
-        client,
-        headers,
-        "product_processing.image_grid_2k",
-        "image-credential",
-    )
-    session_key = b"k" * 32
-    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "server-image-secret")
-    monkeypatch.setattr(
-        auth_server,
-        "_rsa_decrypt_session_key",
-        lambda _value: session_key,
-    )
-
-    response = client.post(
-        "/api/customer/ai/image-credentials",
-        headers=headers,
-        json={"usage_id": usage, "encrypted_session_key": "opaque-session-key"},
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    plaintext = AESGCM(session_key).decrypt(
-        base64.b64decode(body["nonce"]),
-        base64.b64decode(body["payload"]) + base64.b64decode(body["tag"]),
-        None,
-    )
-    credentials = json.loads(plaintext.decode("utf-8"))
-    assert credentials == {
-        "api_key": "server-image-secret",
-        "base_url": "https://api.wuyinkeji.com",
-    }
-    assert "server-image-secret" not in response.text
 
 
 def test_chat_gateway_replays_identical_success_without_second_provider_call(tmp_path: Path, monkeypatch) -> None:
@@ -1623,35 +1581,21 @@ def test_provider_resolution_uses_public_and_cos_only_runtime_accessor(tmp_path:
     assert decrypted == ["cos-id-ciphertext", "cos-key-ciphertext"]
 
 
-def test_image_adapter_leases_key_then_calls_wuyin_locally(monkeypatch) -> None:
-    leased_provider_objects: list[dict[str, str]] = []
-    seen_api_keys: list[str] = []
-    leased_container: dict[str, str] = {}
+def test_image_adapter_calls_platform_gateway_and_downloads_safe_result(monkeypatch) -> None:
+    requests_seen: list[tuple[str, dict]] = []
 
-    @contextmanager
-    def lease(**kwargs):
-        assert kwargs == {
-            "base_url": "https://platform.example",
-            "remote_token": "platform-token",
-            "usage_id": "usage-image",
-        }
-        leased_container.update(
-            api_key="temporary-image-key",
-            base_url="https://api.wuyinkeji.com",
-        )
-        try:
-            yield leased_container
-        finally:
-            leased_container.clear()
+    class _MediaSession:
+        def post(self, url, **kwargs):
+            requests_seen.append((url, kwargs))
+            return _Response({"ok": True, "result_url": "https://images.example.test/result.png"})
 
-    def direct_request(self, provider, *_args, **_kwargs):
-        leased_provider_objects.append(provider)
-        seen_api_keys.append(provider["api_key"])
-        return b"direct-image", "image/png"
-
-    monkeypatch.setattr(media_module, "lease_image_credentials", lease, raising=False)
-    monkeypatch.setattr(media_module, "gateway_base_url", lambda: "https://platform.example")
-    monkeypatch.setattr(ProductImageProcessor, "_request_wuyin_image", direct_request)
+    monkeypatch.setattr(media_module, "_SESSION", _MediaSession())
+    monkeypatch.setattr(media_module, "is_safe_external_url", lambda _url: True)
+    monkeypatch.setattr(
+        media_module,
+        "_download_pinned_public_image",
+        lambda *_args, **_kwargs: (b"image-bytes", "image/png"),
+    )
     processor = ProductImageProcessor(lambda: {})
     provider = {
         "base_url": "server-managed-wuyin",
@@ -1662,29 +1606,71 @@ def test_image_adapter_leases_key_then_calls_wuyin_locally(monkeypatch) -> None:
     }
 
     with server_ai_context("platform-token", {"image_grid": "usage-image"}):
-        result = processor._request_server_managed_wuyin_image(
+        content, content_type = processor._request_edit(
             provider,
             "product prompt",
-            [],
-            timeout_seconds=60,
+            [(b"source", "source.jpg", "image/jpeg", "https://images.example.test/source.jpg")],
         )
 
-    assert result == (b"direct-image", "image/png")
-    assert leased_provider_objects[0]["base_url"] == "https://api.wuyinkeji.com"
-    assert seen_api_keys == ["temporary-image-key"]
-    assert leased_provider_objects[0]["api_key"] == ""
-    assert leased_container == {}
+    assert (content, content_type) == (b"image-bytes", "image/png")
+    gateway_url, gateway_request = requests_seen[0]
+    assert gateway_url.endswith("/api/customer/ai/image")
+    assert gateway_request["headers"]["Authorization"] == "Bearer platform-token"
+    assert gateway_request["json"]["usage_id"] == "usage-image"
+    assert gateway_request["json"]["urls"] == ["https://images.example.test/source.jpg"]
 
 
-def test_image_adapter_marks_credential_service_failure_retryable_without_leak(
-    monkeypatch,
+@pytest.mark.parametrize(
+    ("status_code", "expected_class", "retryable"),
+    [
+        (402, "billing_payment_required", False),
+        (403, "billing_forbidden", False),
+        (409, "gateway_in_progress", True),
+        (502, "gateway_bad_response", True),
+        (503, "gateway_unavailable", True),
+    ],
+)
+def test_image_adapter_preserves_stable_gateway_status_without_body_leak(
+    monkeypatch, status_code: int, expected_class: str, retryable: bool
 ) -> None:
-    @contextmanager
-    def unavailable(**_kwargs):
-        raise media_module.ImageCredentialsError("remote-body-secret platform-token")
-        yield {}
+    secret = "remote-body-secret platform-token"
 
-    monkeypatch.setattr(media_module, "lease_image_credentials", unavailable)
+    class _MediaSession:
+        def post(self, *_args, **_kwargs):
+            return _Response({"detail": secret}, status_code=status_code)
+
+    monkeypatch.setattr(media_module, "_SESSION", _MediaSession())
+    processor = ProductImageProcessor(lambda: {})
+    provider = {
+        "base_url": "server-managed-wuyin",
+        "api_key": "server-managed",
+        "model": "image_gpt",
+        "reference_model": "image_gpt",
+        "image_size": "2048x2048",
+    }
+
+    with server_ai_context("platform-token", {"image_grid": "usage-image"}):
+        with pytest.raises(media_module.MediaProcessingError) as caught:
+            processor._request_server_managed_wuyin_image(
+                provider,
+                "product prompt",
+                [],
+                timeout_seconds=60,
+            )
+
+    assert caught.value.status_code == status_code
+    assert caught.value.status_class == expected_class
+    assert secret not in str(caught.value)
+    assert "platform-token" not in str(caught.value)
+    assert (media_module._retry_class(caught.value) not in {"non_retryable_4xx", "non_retryable_local"}) is retryable
+
+
+def test_image_adapter_marks_gateway_transport_failure_retryable(monkeypatch) -> None:
+    class _MediaSession:
+        def post(self, *_args, **_kwargs):
+            raise requests.ConnectionError("transient gateway disconnect")
+
+    monkeypatch.setattr(media_module, "_SESSION", _MediaSession())
     processor = ProductImageProcessor(lambda: {})
     provider = {
         "base_url": "server-managed-wuyin",
@@ -1705,8 +1691,6 @@ def test_image_adapter_marks_credential_service_failure_retryable_without_leak(
 
     assert caught.value.status_class == "gateway_unavailable"
     assert media_module._retry_class(caught.value) == "server_error"
-    assert "remote-body-secret" not in str(caught.value)
-    assert "platform-token" not in str(caught.value)
 
 
 def test_provider_result_download_pins_validated_ip_and_keeps_original_tls_host(

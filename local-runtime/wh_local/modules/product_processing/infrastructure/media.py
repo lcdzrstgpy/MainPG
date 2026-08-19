@@ -30,7 +30,6 @@ from urllib.parse import urlsplit
 import requests
 
 from ....data_collection.public_image_fetch import resolve_public_image_addresses
-from ....customer.image_credentials import ImageCredentialsError, lease_image_credentials
 from ..domain.policy import is_safe_external_url, resolve_safe_external_url
 from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
 from .grid_layout import (
@@ -1259,29 +1258,49 @@ class ProductImageProcessor:
         reservation = usage_id("image_grid")
         if not token or not reservation:
             raise MediaProcessingError("server-managed image usage is not reserved")
-        leased_provider = dict(provider)
+        urls = [
+            str(ref[3]).strip()
+            for ref in references
+            if len(ref) >= 4 and is_safe_external_url(str(ref[3]).strip())
+        ]
+        response: requests.Response | None = None
         try:
-            with lease_image_credentials(
-                base_url=gateway_base_url(),
-                remote_token=token,
-                usage_id=reservation,
-            ) as credentials:
-                leased_provider["base_url"] = str(credentials["base_url"])
-                leased_provider["api_key"] = str(credentials["api_key"])
-                return self._request_wuyin_image(
-                    leased_provider,
-                    prompt,
-                    references,
-                    timeout_seconds=timeout_seconds,
-                    image_size=image_size,
-                )
-        except ImageCredentialsError as exc:
+            response = _SESSION.post(
+                f"{gateway_base_url()}/api/customer/ai/image",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "usage_id": reservation,
+                    "prompt": prompt,
+                    "size": _wuyin_size(image_size or provider.get("image_size")),
+                    **({"urls": urls} if urls else {}),
+                },
+                timeout=max(30.0, min(float(timeout_seconds), 660.0)),
+                allow_redirects=False,
+                stream=True,
+            )
+            status_code = int(response.status_code)
+            if not 200 <= status_code < 300:
+                raise _gateway_image_status_error(status_code)
+            payload = _bounded_response_json(response)
+        except MediaProcessingError:
+            raise
+        except requests.RequestException as exc:
             raise MediaProcessingError(
-                "server image credential service is temporarily unavailable",
+                "server image gateway is temporarily unavailable",
                 status_class="gateway_unavailable",
             ) from exc
         finally:
-            leased_provider["api_key"] = ""
+            if response is not None:
+                response.close()
+        if not isinstance(payload, dict) or not bool(payload.get("ok")):
+            raise MediaProcessingError("server image gateway rejected the request")
+        result_url = str(payload.get("result_url") or "").strip()
+        if not result_url or not is_safe_external_url(result_url):
+            raise MediaProcessingError("server image gateway returned no safe image result")
+        return _download_pinned_public_image(result_url, timeout_seconds=360)
 
     def _request_wuyin_image(
         self,

@@ -1,8 +1,8 @@
-"""产品处理 AI 的服务端计费与临时凭据路由配置。
+"""产品处理 AI 的服务端托管路由配置。
 
-桌面端只携带当前客户会话和已预留的 usage id。文本由平台服务代调；图片
-每次从平台加密申请一次临时凭据，再由本地直调速创，使用后清除且不落盘。
-BasicSettings 仍可提供非 AI 密钥配置（例如 COS 发布）。
+桌面端只携带当前客户会话和已预留的 usage id；文本与图片上游凭据均由
+平台服务持有。BasicSettings 仍可提供非 AI 密钥配置（例如 COS 发布），但
+不得把已保存的上游 AI key 接回产品处理调用链。
 """
 
 from __future__ import annotations
@@ -137,8 +137,8 @@ def resolve_ai_provider() -> dict[str, Any]:
             "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
             "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
         },
-        # This sentinel selects the billed one-shot server credential lease.
-        # Never read a persisted desktop image-provider credential here.
+        # Product processing may only use the billed server-managed route.
+        # Never expose decrypted desktop backup-provider credentials here.
         "_sys_backup_image_ai": None,
         "_sys_limits": dict(sys_cfg.limits) if sys_cfg and sys_cfg.limits else {},
         "_sys_updates": dict(sys_cfg.updates) if sys_cfg and sys_cfg.updates else {},
