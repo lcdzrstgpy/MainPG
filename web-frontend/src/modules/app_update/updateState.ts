@@ -21,6 +21,35 @@ export type AppUpdateStatus = {
   error: string | null;
 };
 
+export type PatchFile = {
+  path: string;
+  action: "add" | "replace" | "delete";
+  sha256: string;
+  size: number;
+};
+
+export type PatchRelease = {
+  from_version: string;
+  to_version: string;
+  published_at: string;
+  file_base_url: string;
+  files: PatchFile[];
+};
+
+export type PatchProgress = {
+  downloaded_files: number;
+  total_files: number;
+  percentage: number;
+};
+
+export type PatchStatus = {
+  current_version: string;
+  state: AppUpdatePhase;
+  patch: PatchRelease | null;
+  progress: PatchProgress | null;
+  error: string | null;
+};
+
 export type UpdateDialogPhase = "ready" | "checking" | "downloading" | "verifying" | "installing" | "failed";
 
 export type UpdateDialogState = {
@@ -74,6 +103,28 @@ export function toUpdateDialogState(status: Partial<AppUpdateStatus>): UpdateDia
   };
 }
 
+/** Convert an incremental-patch status into the shared dialog state (preferred over full install). */
+export function toPatchDialogState(status: PatchStatus | null): UpdateDialogState | null {
+  if (!status || !status.patch) return null;
+  const phase = dialogPhase(status.state);
+  const rawProgress = status.progress?.percentage;
+  const progress = typeof rawProgress === "number" && Number.isFinite(rawProgress)
+    ? Math.min(100, Math.max(0, rawProgress))
+    : null;
+
+  return {
+    visible: status.patch !== null && ACTIVE_PHASES.has(status.state),
+    mandatory: false,
+    currentVersion: status.current_version ?? "当前版本",
+    targetVersion: status.patch.to_version,
+    notes: [`增量更新：仅下载 ${status.patch.files.length} 个变更文件（${status.patch.from_version} → ${status.patch.to_version}），速度更快。`],
+    phase,
+    progress,
+    message: messageForPhase(phase),
+    error: status.error ?? "",
+  };
+}
+
 export function preserveVerifiedRelease(
   previous: AppUpdateStatus | null,
   next: AppUpdateStatus,
@@ -88,7 +139,7 @@ export function preserveVerifiedRelease(
   return next;
 }
 
-export function shouldPollUpdateStatus(status: AppUpdateStatus | null): boolean {
+export function shouldPollUpdateStatus(status: { state: AppUpdatePhase } | null): boolean {
   return status?.state === "checking" || status?.state === "downloading" || status?.state === "verifying" || status?.state === "installing";
 }
 

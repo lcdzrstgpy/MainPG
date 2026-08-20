@@ -13,6 +13,9 @@ APP_VERSION = "1.1.1"
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
 UPDATE_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/manifest.json"
+# Incremental patch manifest: describes from_version -> to_version file diff.
+# Signed with the same Ed25519 key; verified by PatchManager before download.
+UPDATE_PATCH_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/patch-manifest.json"
 UPDATE_MANIFEST_ALLOWED_HOSTS = frozenset({UPDATE_RELEASE_HOST})
 # Public verification key only. The matching private key belongs in the release
 # signing system and must never be distributed with the application.
@@ -23,6 +26,7 @@ UPDATE_ED25519_PUBLIC_KEY_B64 = "ld1p0SpDI2e//hmBihZ4Y7Ih/8VU299R6md/soa4r5Q="
 class LocalRuntimeConfig:
     app_version: str
     runtime_root: Path
+    install_root: Path
     data_dir: Path
     database_path: Path
     dev_admin_token: str
@@ -35,6 +39,7 @@ class LocalRuntimeConfig:
 
 def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
     root = runtime_root(workspace)
+    install_dir = install_root()
     local_secrets = _local_onebound_config()
     # Allow a dedicated data directory for development, tests, and packaged builds.
     data_dir = Path(
@@ -43,8 +48,9 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
     )
     database_path = Path(os.environ.get("WH_LOCAL_DATABASE_PATH", "") or data_dir / "workbench.sqlite3")
     return LocalRuntimeConfig(
-        app_version=APP_VERSION,
+        app_version=_resolved_app_version(install_dir),
         runtime_root=root,
+        install_root=install_dir,
         data_dir=data_dir,
         database_path=database_path,
         dev_admin_token=os.environ.get("WH_LOCAL_DEV_ADMIN_TOKEN", "dev-admin-token"),
@@ -80,6 +86,32 @@ def runtime_root(workspace: Path | None = None) -> Path:
         appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
         return appdata / "MainPG"
     return Path.cwd()
+
+
+def install_root() -> Path:
+    """Installation directory that holds the executable (patch targets live here).
+
+    Packaged builds put MainPG.exe / MainPG-Updater.exe / version.json next to
+    the executable. Source runs use the current directory so updates can be
+    exercised in development without a real install."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd().resolve()
+
+
+def _resolved_app_version(install_dir: Path) -> str:
+    """Read the on-disk version.json (written by MainPG-Updater after a patch).
+
+    Falls back to the compiled-in APP_VERSION when the file is absent (fresh
+    checkout / source run / not yet patched)."""
+    try:
+        data = json.loads((install_dir / "version.json").read_text(encoding="utf-8"))
+        value = str(data.get("version") or "").strip()
+        if value:
+            return value
+    except (OSError, ValueError):
+        pass
+    return APP_VERSION
 
 
 def _local_onebound_config() -> dict[str, str | bool]:

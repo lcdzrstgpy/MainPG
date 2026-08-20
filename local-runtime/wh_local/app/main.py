@@ -16,12 +16,20 @@ from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger("wh_local.app")
 
-from ..app_update import UpdateManager, UpdateSettings, create_router as create_update_router
+from ..app_update import (
+    PatchManager,
+    PatchSettings,
+    UpdateManager,
+    UpdateSettings,
+    create_patch_router,
+    create_router as create_update_router,
+)
 from ..config import (
     APP_VERSION,
     UPDATE_ED25519_PUBLIC_KEY_B64,
     UPDATE_MANIFEST_ALLOWED_HOSTS,
     UPDATE_MANIFEST_URL,
+    UPDATE_PATCH_MANIFEST_URL,
     default_config,
 )
 from ..customer.auth_service import SQLiteCustomerAuthService
@@ -136,12 +144,23 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             runtime_root=config.runtime_root,
         )
     )
+    patch_manager = PatchManager(
+        PatchSettings(
+            current_version=config.app_version,
+            patch_manifest_url=UPDATE_PATCH_MANIFEST_URL,
+            allowed_hosts=UPDATE_MANIFEST_ALLOWED_HOSTS,
+            public_key_b64=UPDATE_ED25519_PUBLIC_KEY_B64,
+            runtime_root=config.runtime_root,
+            install_root=config.install_root,
+        )
+    )
 
     @asynccontextmanager
     async def app_lifespan(_: FastAPI):
-        # This method only starts a daemon worker, so an offline release server
+        # This method only starts daemon workers, so an offline release server
         # cannot delay or make the desktop runtime unhealthy.
         update_manager.start_check()
+        patch_manager.start_check()
         yield
 
     app = FastAPI(
@@ -158,7 +177,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
     _register_frontend_shell(app)
     app.state.update_manager = update_manager
+    app.state.patch_manager = patch_manager
     app.include_router(create_update_router(update_manager))
+    app.include_router(create_patch_router(patch_manager))
 
     @app.get("/health")
     def health() -> dict[str, Any]:

@@ -5,8 +5,10 @@ import {
   preserveVerifiedRelease,
   shouldPollUpdateStatus,
   shouldShowDeferAction,
+  toPatchDialogState,
   toUpdateDialogState,
   type AppUpdateStatus,
+  type PatchStatus,
 } from "../updateState";
 import { getFocusTrapTargetIndex, shouldRecoverDialogFocus } from "./focusRecovery";
 import "../styles/app-update.css";
@@ -20,6 +22,7 @@ function errorMessage(error: unknown) {
 
 export function AppUpdateDialog() {
   const [status, setStatus] = useState<AppUpdateStatus | null>(null);
+  const [patch, setPatch] = useState<PatchStatus | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [pollGeneration, setPollGeneration] = useState(0);
   const [postPending, setPostPending] = useState(false);
@@ -33,11 +36,12 @@ export function AppUpdateDialog() {
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const refresh = async () => {
+      let poll = false;
       try {
         const next = await appUpdateApi.status();
         if (cancelled) return;
         setStatus((previous) => preserveVerifiedRelease(previous, next));
-        if (shouldPollUpdateStatus(next)) timer = setTimeout(() => void refresh(), POLL_INTERVAL_MS);
+        if (shouldPollUpdateStatus(next)) poll = true;
       } catch (error) {
         if (cancelled) return;
         setStatus((previous) => {
@@ -45,6 +49,16 @@ export function AppUpdateDialog() {
           return { ...previous, state: "failed", error: errorMessage(error) };
         });
       }
+      try {
+        const next = await appUpdateApi.patchStatus();
+        if (cancelled) return;
+        setPatch(next);
+        if (shouldPollUpdateStatus(next)) poll = true;
+      } catch (error) {
+        if (cancelled) return;
+        setPatch((previous) => previous && previous.state === "installing" ? previous : { state: "failed", current_version: "", patch: null, progress: null, error: errorMessage(error) });
+      }
+      if (poll) timer = setTimeout(() => void refresh(), POLL_INTERVAL_MS);
     };
 
     void refresh();
@@ -54,7 +68,8 @@ export function AppUpdateDialog() {
     };
   }, [pollGeneration]);
 
-  const view = toUpdateDialogState(status ?? {});
+  const patchActive = patch?.patch != null;
+  const view = toPatchDialogState(patch) ?? toUpdateDialogState(status ?? {});
   const isVisible = view.visible && !(dismissed && !view.mandatory);
 
   useEffect(() => {
@@ -128,9 +143,9 @@ export function AppUpdateDialog() {
   const install = async () => {
     if (!beginPost()) return;
     try {
-      const next = await appUpdateApi.install();
+      const next = patchActive ? await appUpdateApi.patchInstall() : await appUpdateApi.install();
       setDismissed(false);
-      setStatus((previous) => preserveVerifiedRelease(previous, next));
+      setStatus((previous) => preserveVerifiedRelease(previous, next as AppUpdateStatus));
       setPollGeneration((generation) => generation + 1);
     } catch (error) {
       setStatus((previous) => previous ? { ...previous, state: "failed", error: errorMessage(error) } : previous);
@@ -142,8 +157,8 @@ export function AppUpdateDialog() {
   const retry = async () => {
     if (!beginPost()) return;
     try {
-      const next = await appUpdateApi.check();
-      setStatus((previous) => preserveVerifiedRelease(previous, next));
+      const next = patchActive ? await appUpdateApi.patchCheck() : await appUpdateApi.check();
+      setStatus((previous) => preserveVerifiedRelease(previous, next as AppUpdateStatus));
       setPollGeneration((generation) => generation + 1);
     } catch (error) {
       setStatus((previous) => previous ? { ...previous, state: "failed", error: errorMessage(error) } : previous);

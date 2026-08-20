@@ -11,7 +11,12 @@ param(
     [string]$InstallerUrl = "",
     [switch]$Mandatory,
     [string]$ReleaseNotes = "",
-    [string]$PublishedAt = ""
+    [string]$PublishedAt = "",
+    # Incremental patch: previous dist\MainPG directory + upload base URL.
+    # When PatchFromDir is set, build_installer.ps1 also produces the signed
+    # patch-manifest.json plus the changed files under dist\patch-<Version>.
+    [string]$PatchFromDir = "",
+    [string]$PatchBaseUrl = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -71,6 +76,22 @@ if (-not (Test-Path $dist)) { throw "bundle output missing: $dist" }
 # delete them. Fresh installations must be configured from System Settings or environment vars.
 Copy-Item "app-icon.ico" $dist -ErrorAction Stop
 
+# 4b. Compile the offline patch updater into the bundle root (next to MainPG.exe).
+# It applies replace/add/delete after the main process exits, then relaunches.
+Write-Host "[build] compiling MainPG-Updater.exe ..."
+$csc = @(
+    "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
+    "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $csc) { throw "csc.exe (.NET Framework) not found - cannot build MainPG-Updater.exe" }
+& $csc /nologo /target:winexe "/out:$dist\MainPG-Updater.exe" "updater\MainPGUpdater.cs"
+if ($LASTEXITCODE -ne 0) { throw "MainPG-Updater.exe compile failed" }
+
+# 4c. Write version.json (UTF-8 without BOM - Python json.loads rejects BOM).
+$versionJson = Join-Path $dist "version.json"
+[IO.File]::WriteAllText($versionJson, "{`"version`":`"$Version`"}" + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+Write-Host "[build] wrote $versionJson"
+
 $forbiddenNames = @(
     "cos.local.json",
     "onebound.local.json",
@@ -115,6 +136,43 @@ try {
 
 $installer = Join-Path $PSScriptRoot "dist\MainPG-Setup-$Version.exe"
 if (-not (Test-Path -LiteralPath $installer)) { throw "versioned installer output missing: $installer" }
+
+# 7. Build the signed incremental patch (optional). Compares PatchFromDir (the
+# previous dist\MainPG) against the new bundle and emits only changed files.
+if ($PatchFromDir) {
+    $signingKeyPath = $env:MAINPG_RELEASE_SIGNING_KEY_PATH
+    if (-not $signingKeyPath) {
+        throw "MAINPG_RELEASE_SIGNING_KEY_PATH is required when -PatchFromDir requests patch generation"
+    }
+    if (-not (Test-Path -LiteralPath $signingKeyPath -PathType Leaf)) {
+        throw "MAINPG_RELEASE_SIGNING_KEY_PATH does not point to a readable private key file"
+    }
+    if (-not (Test-Path -LiteralPath $PatchFromDir)) {
+        throw "PatchFromDir does not exist: $PatchFromDir"
+    }
+    if (-not $PatchBaseUrl) {
+        throw "PatchBaseUrl is required with -PatchFromDir (e.g. https://workbench.haocoming.top/mainpg/windows/patch/$Version)"
+    }
+    $patchOut = Join-Path $PSScriptRoot "dist\patch-$Version"
+    $oldVersion = "0.0.0"
+    $oldVersionJson = Join-Path $PatchFromDir "version.json"
+    if (Test-Path -LiteralPath $oldVersionJson) {
+        try {
+            $oldVersion = (Get-Content -Raw -LiteralPath $oldVersionJson | ConvertFrom-Json).version
+        } catch { }
+    }
+    & $python -m wh_local.runtime.patch_manifest_builder `
+        --from-dir $PatchFromDir `
+        --to-dir $dist `
+        --from-version $oldVersion `
+        --to-version $Version `
+        --file-base-url $PatchBaseUrl `
+        --private-key-path $signingKeyPath `
+        --output-dir $patchOut
+    if ($LASTEXITCODE -ne 0) { throw "patch manifest generation failed" }
+    if (-not (Test-Path -LiteralPath (Join-Path $patchOut "patch-manifest.json"))) { throw "patch manifest output missing" }
+    Write-Host "[build] signed incremental patch: $patchOut"
+}
 
 if ($InstallerUrl) {
     $signingKeyPath = $env:MAINPG_RELEASE_SIGNING_KEY_PATH
