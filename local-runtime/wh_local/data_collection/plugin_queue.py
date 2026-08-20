@@ -22,8 +22,14 @@ from .normalizer import sanitize_raw_payload
 TEMU_LINK_CAPTURE = "temu_link_capture"
 TEMU_PRICE_QUOTE_DISCOVERY = "temu_price_quote_discovery"
 SOURCE_BROWSER_IMAGE_SEARCH = "source_browser_image_search"
+TEMU_FLUX_ACCEL = "temu_flux_accel"
 ALLOWED_PLUGIN_COMMAND_TYPES = frozenset(
-    {TEMU_LINK_CAPTURE, TEMU_PRICE_QUOTE_DISCOVERY, SOURCE_BROWSER_IMAGE_SEARCH}
+    {
+        TEMU_LINK_CAPTURE,
+        TEMU_PRICE_QUOTE_DISCOVERY,
+        SOURCE_BROWSER_IMAGE_SEARCH,
+        TEMU_FLUX_ACCEL,
+    }
 )
 _TERMINAL = frozenset({"succeeded", "failed"})
 _ACTIVE_WINDOW = timedelta(minutes=10)
