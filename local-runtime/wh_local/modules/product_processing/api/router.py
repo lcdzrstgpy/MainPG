@@ -368,7 +368,7 @@ def create_product_processing_router(
         try:
             normalized = _normalize_form(form)
             remote_token = _remote_token(request, customer_sessions)
-            _attach_billing_context_and_require_points(
+            available_points = _attach_billing_context_and_require_points(
                 normalized,
                 actor,
                 source_ref="product_processing:workbook",
@@ -383,6 +383,7 @@ def create_product_processing_router(
                     source_ref="product_processing:workbook",
                     remote_token=remote_token,
                     remote_customer_auth=remote_customer_auth,
+                    available_points=available_points,
                 )
 
             return _call(
@@ -945,6 +946,7 @@ def _attach_billing_context_and_require_points(
         "pricing_version": pricing["rule_version"],
         "pricing_rule": pricing,
     }
+    return available
 
 
 def _reconcile_billing_before_precheck(
@@ -988,6 +990,7 @@ def _remote_billing_summary(
             "remote billing service returned an invalid response",
         ) from exc
     except CustomerAuthUnavailable as exc:
+        print(f"[billing-diag] CustomerAuthUnavailable: {exc}", flush=True)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "remote billing service is unavailable",
@@ -1017,8 +1020,15 @@ def _remote_billing_summary(
     pricing = summary.get("pricing")
     if not isinstance(wallet, dict) or "available_points" not in wallet:
         _raise_invalid_remote_wallet_summary()
-    versioned_pricing = isinstance(pricing, dict)
+    versioned_pricing = (
+        isinstance(pricing, dict)
+        and isinstance(pricing.get("features"), dict)
+        and str(pricing.get("rule_version") or "").strip() != ""
+        and str(pricing.get("point_unit_scale") or "").strip().isdigit()
+        and int(pricing["point_unit_scale"]) == 10
+    )
     if not versioned_pricing:
+        # 兼容旧版计费服务：pricing 缺失或仍为 draft/point_ratio 旧结构时，降级为固定费率。
         pricing = _legacy_billing_pricing()
     raw_available = wallet.get("available_points")
     if type(raw_available) is int:

@@ -20,7 +20,12 @@ export type ProfitActivityProduct = {
   net_profit?: number;
   profit_rate?: number;
   source_url?: string;
-  source_groups?: Array<{ source_url?: string; image_paths?: string[]; cost?: number | null }>;
+  source_groups?: Array<{
+    source_url?: string;
+    image_paths?: string[];
+    main_image_url?: string;
+    cost?: number | null;
+  }>;
   note?: string;
   image_path?: string;
   attachment_image_path?: string;

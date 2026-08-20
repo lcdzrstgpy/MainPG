@@ -37,10 +37,18 @@ const FAILURE_CLASS_LABELS: Record<string, string> = {
   logistics_review_required: '尺寸待复核',
 };
 
-// AI 配置/额度类失败（401 key 无效、403 权限、402/429 额度或限流、key 未配置、连接不可达等），
+// AI 配置/额度类失败（401 key 无效、403 权限、402/429 额度或限流、key 未配置等），
 // 用户需要去「系统配置」检查 AI key 或账户余额，而不是修改商品数据。
 const AI_CONFIG_ERROR_RE =
-  /HTTP\s+40[1239]|api\s+key\s+is\s+not\s+configured|insufficient.*(?:quota|balance)|quota|balance|unauthorized|forbidden|unreachable|invalid.*(?:api\s*key|credentials)/i;
+  /HTTP\s+40[1239]|api\s+key\s+is\s+not\s+configured|insufficient.*(?:quota|balance)|quota|balance|unauthorized|forbidden|invalid.*(?:api\s*key|credentials)/i;
+
+const REMOTE_SERVICE_ERROR_RE =
+  /remote billing service is unavailable|provider is temporarily unreachable/i;
+
+function isRemoteServiceError(reason?: string): boolean {
+  if (!reason) return false;
+  return REMOTE_SERVICE_ERROR_RE.test(reason);
+}
 
 function isAiConfigError(reason?: string): boolean {
   if (!reason) return false;
@@ -49,6 +57,9 @@ function isAiConfigError(reason?: string): boolean {
 
 const AI_CONFIG_HINT =
   '似乎 api key 配置有问题哦，可以先去系统配置保存一下或者检查一下余额亲~（当前失败为 AI 服务鉴权/额度问题，与商品数据无关）';
+
+const REMOTE_SERVICE_HINT =
+  '服务器计费或 AI 服务暂时不可用，请稍后重试；这不是商品数据或本地 API Key 配置问题。';
 
 type Props = {
   /** 从历史记录重新打开时传入，任务会从服务端恢复并在处理中继续轮询。 */
@@ -135,7 +146,13 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
 
   // 是否存在 AI 配置/额度类失败（此时应提示用户去系统配置检查 key/余额）
   const hasAiConfigIssue = useMemo(
-    () => failureItems.some((item) => isAiConfigError(item.reason)),
+    () => failureItems.some(
+      (item) => !isRemoteServiceError(item.reason) && isAiConfigError(item.reason)
+    ),
+    [failureItems]
+  );
+  const hasRemoteServiceIssue = useMemo(
+    () => failureItems.some((item) => isRemoteServiceError(item.reason)),
     [failureItems]
   );
 
@@ -540,9 +557,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   )}
                 </span>
               </div>
-              {hasAiConfigIssue && (
-                <p className="verify-ai-config-hint"><i className="iconfont icon-infomation" aria-hidden="true" />{AI_CONFIG_HINT}</p>
-              )}
+                  {hasAiConfigIssue && (
+                    <p className="verify-ai-config-hint"><i className="iconfont icon-infomation" aria-hidden="true" />{AI_CONFIG_HINT}</p>
+                  )}
+                  {hasRemoteServiceIssue && (
+                    <p className="verify-ai-config-hint"><i className="iconfont icon-infomation" aria-hidden="true" />{REMOTE_SERVICE_HINT}</p>
+                  )}
               <table className="verify-table">
                 <thead><tr><th>SKC</th><th>标题</th><th>状态</th><th>失败类型</th><th>原因</th><th>操作提示</th><th>可重试</th><th>操作</th></tr></thead>
                 <tbody>

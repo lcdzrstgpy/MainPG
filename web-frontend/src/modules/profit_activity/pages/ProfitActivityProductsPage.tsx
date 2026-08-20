@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ClipboardEvent as ReactClipboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import {
   deleteProfitActivityProducts,
-  downloadProfitActivityCatalog,
   listProfitActivitySites,
   listProfitActivityProducts,
   loadProductImage,
@@ -25,6 +26,61 @@ const productCreatedTime = (item: ProfitActivityProduct) => {
 const sortProductsByCreatedDesc = (items: ProfitActivityProduct[]) => [...items].sort((left, right) => (
   productCreatedTime(right) - productCreatedTime(left) || (right.id ?? 0) - (left.id ?? 0)
 ));
+type ProductTableColumnKey =
+  | "select" | "site" | "productId" | "createdAt" | "productImage"
+  | "sellingPrice" | "costPrice" | "weightKg" | "netProfit" | "profitRate"
+  | "note" | "source" | "attachmentImage";
+type ProductTableColumn = { key: ProductTableColumnKey; label: string; width: number; minWidth: number };
+type InlineEditField = "site" | "product_id" | "selling_price" | "cost_price" | "weight_kg" | "note" | "product_image" | "attachment_image";
+type InlineEditState =
+  | { key: string; field: "site"; value: ProfitActivitySite }
+  | { key: string; field: "product_id" | "selling_price" | "cost_price" | "weight_kg" | "note"; value: string }
+  | { key: string; field: "product_image" | "attachment_image"; file: File | null; clear: boolean };
+const productTableColumns: ProductTableColumn[] = [
+  { key: "select", label: "选择", width: 56, minWidth: 48 },
+  { key: "site", label: "站点", width: 128, minWidth: 96 },
+  { key: "productId", label: "商品ID", width: 220, minWidth: 150 },
+  { key: "createdAt", label: "入库日期", width: 128, minWidth: 108 },
+  { key: "productImage", label: "商品图", width: 100, minWidth: 82 },
+  { key: "sellingPrice", label: "售价", width: 120, minWidth: 96 },
+  { key: "costPrice", label: "成本", width: 120, minWidth: 96 },
+  { key: "weightKg", label: "重量", width: 112, minWidth: 90 },
+  { key: "netProfit", label: "利润", width: 120, minWidth: 96 },
+  { key: "profitRate", label: "利润率", width: 126, minWidth: 102 },
+  { key: "note", label: "备注", width: 260, minWidth: 150 },
+  { key: "source", label: "货源", width: 130, minWidth: 104 },
+  { key: "attachmentImage", label: "图片", width: 100, minWidth: 82 },
+];
+const defaultColumnWidths = productTableColumns.reduce<Record<ProductTableColumnKey, number>>((acc, column) => {
+  acc[column.key] = column.width;
+  return acc;
+}, {} as Record<ProductTableColumnKey, number>);
+
+function adaptiveTextWidth(value: unknown, min: number, max: number, extra = 0) {
+  const text = String(value ?? "");
+  const weightedLength = Array.from(text).reduce((total, char) => total + (char.charCodeAt(0) > 255 ? 2 : 1), 0);
+  return Math.min(max, Math.max(min, weightedLength * 7 + extra));
+}
+
+function buildAdaptiveColumnWidths(items: ProfitActivityProduct[], siteLabel: (value: ProfitActivitySite) => string) {
+  const widths = { ...defaultColumnWidths };
+  const sample = items.slice(0, 100);
+  for (const item of sample) {
+    const site = (item.site || item.site_code || "US") as ProfitActivitySite;
+    const sourceCount = (item.source_groups ?? []).filter((group) => group?.source_url).length;
+    widths.site = Math.max(widths.site, adaptiveTextWidth(siteLabel(site), 110, 170, 48));
+    widths.productId = Math.max(widths.productId, adaptiveTextWidth(productIdText(item), 180, 280, 18));
+    widths.createdAt = Math.max(widths.createdAt, adaptiveTextWidth(libraryDate(item.library_created_at || item.created_at), 118, 150, 16));
+    widths.sellingPrice = Math.max(widths.sellingPrice, adaptiveTextWidth(money(item.selling_price), 110, 150, 48));
+    widths.costPrice = Math.max(widths.costPrice, adaptiveTextWidth(money(item.cost_price), 110, 150, 48));
+    widths.weightKg = Math.max(widths.weightKg, adaptiveTextWidth(money(item.weight_kg), 104, 140, 48));
+    widths.netProfit = Math.max(widths.netProfit, adaptiveTextWidth(money(item.net_profit), 110, 150, 16));
+    widths.profitRate = Math.max(widths.profitRate, adaptiveTextWidth(percent(item.profit_rate), 118, 160, 16));
+    widths.note = Math.max(widths.note, adaptiveTextWidth(item.note || "-", 180, 340, 52));
+    widths.source = Math.max(widths.source, adaptiveTextWidth(`打开（${sourceCount}）`, 120, 160, 10));
+  }
+  return widths;
+}
 
 // 产品库跨挂载缓存：切换页面再返回时立即展示上次数据，避免每次空表 + 重新等待查询
 type LibraryPageSize = (typeof pageSizeOptions)[number];
@@ -52,24 +108,44 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("输入商品ID（支持 SKU、SKC、SPU）查询；留空展示数据库中当前权限可见产品。");
   const [activeProduct, setActiveProduct] = useState<ProfitActivityProduct | null>(null);
-  const [editingProduct, setEditingProduct] = useState<ProfitActivityProduct | null>(null);
+  const [inlineEdit, setInlineEdit] = useState<InlineEditState | null>(null);
   const [previewImage, setPreviewImage] = useState<{ url: string; label: string } | null>(null);
   const tableWrapRef = useRef<HTMLDivElement>(null);
   const tableScrollbarRef = useRef<HTMLDivElement>(null);
   const theadRef = useRef<HTMLTableSectionElement>(null);
   const fixedHeaderRef = useRef<HTMLDivElement>(null);
   const fixedHeaderScrollRef = useRef<HTMLDivElement>(null);
+  const columnWidthTouchedRef = useRef(false);
   const [headerStuck, setHeaderStuck] = useState(false);
   // 鼠标拖拽横向平移表格：记录按下时的起点与初始横向偏移
   const tableDragRef = useRef<{ startX: number; startScrollLeft: number } | null>(null);
   const [tableDragging, setTableDragging] = useState(false);
   // 跟随视口的横向滚动条：track 宽度等于表格实际宽度
   const [tableScrollWidth, setTableScrollWidth] = useState(0);
+  const [columnWidths, setColumnWidths] = useState<Record<ProductTableColumnKey, number>>(defaultColumnWidths);
+  const tableMinWidth = productTableColumns.reduce((total, column) => total + columnWidths[column.key], 0);
+  const startColumnResize = (column: ProductTableColumn, event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    columnWidthTouchedRef.current = true;
+    const startX = event.clientX;
+    const startWidth = columnWidths[column.key];
+    const onMove = (moveEvent: MouseEvent) => {
+      const nextWidth = Math.max(column.minWidth, startWidth + moveEvent.clientX - startX);
+      setColumnWidths((current) => ({ ...current, [column.key]: nextWidth }));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
 
   useEffect(() => {
     if (isActive) return;
     setActiveProduct(null);
-    setEditingProduct(null);
+    setInlineEdit(null);
     setPreviewImage(null);
   }, [isActive]);
 
@@ -88,8 +164,18 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     () => products.slice((safePage - 1) * pageSize, safePage * pageSize),
     [products, safePage, pageSize],
   );
+  const adaptiveColumnWidths = useMemo(
+    () => buildAdaptiveColumnWidths(pageProducts, siteLabel),
+    [pageProducts, siteOptions],
+  );
   const selectedCount = selected.size;
   const pageSelected = pageProducts.length > 0 && pageProducts.every((item) => selected.has(productKey(item)));
+
+  useEffect(() => {
+    if (columnWidthTouchedRef.current) return;
+    setColumnWidths(adaptiveColumnWidths);
+  }, [adaptiveColumnWidths]);
+
   // 页码输入框与当前页保持同步（翻页按钮/查询刷新后同步显示），但不打断输入过程
   useEffect(() => {
     setPageInput(String(safePage));
@@ -290,7 +376,11 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     const resizeObserver = new ResizeObserver(syncWidths);
     resizeObserver.observe(thead);
     return () => resizeObserver.disconnect();
-  }, [pageProducts, headerStuck]);
+  }, [pageProducts, headerStuck, columnWidths]);
+
+  useEffect(() => {
+    if (tableWrapRef.current) setTableScrollWidth(tableWrapRef.current.scrollWidth);
+  }, [columnWidths, pageProducts.length]);
 
   useEffect(() => {
     const wrap = tableWrapRef.current;
@@ -400,11 +490,95 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     setMessage(`已复制 ${ids.length} 个商品ID。`);
   });
 
-  const downloadCatalog = () => withBusy("下载产品档案", async () => {
-    if (!sites.size) throw new Error("请至少勾选一个站点。");
-    await downloadProfitActivityCatalog({ sites: [...sites], scope });
-    setMessage("产品档案已开始下载。");
-  });
+  const beginInlineEdit = (item: ProfitActivityProduct, field: InlineEditField) => {
+    const key = productKey(item);
+    if (field === "site") {
+      setInlineEdit({ key, field, value: (item.site || item.site_code || "US") as ProfitActivitySite });
+      return;
+    }
+    if (field === "product_image" || field === "attachment_image") {
+      setInlineEdit({ key, field, file: null, clear: false });
+      return;
+    }
+    const values = {
+      product_id: productIdText(item),
+      selling_price: item.selling_price == null ? "" : String(item.selling_price),
+      cost_price: item.cost_price == null ? "" : String(item.cost_price),
+      weight_kg: item.weight_kg == null ? "" : String(item.weight_kg),
+      note: item.note ?? "",
+    };
+    setInlineEdit({ key, field, value: values[field] });
+  };
+
+  const saveInlineEdit = async (item: ProfitActivityProduct) => {
+    if (!inlineEdit || inlineEdit.key !== productKey(item)) return;
+    const currentSite = (item.site || item.site_code || "US") as ProfitActivitySite;
+    const next = {
+      site: currentSite,
+      productId: productIdText(item),
+      sellingPrice: item.selling_price == null ? "" : String(item.selling_price),
+      costPrice: item.cost_price == null ? "" : String(item.cost_price),
+      weightKg: item.weight_kg == null ? "" : String(item.weight_kg),
+      note: item.note ?? "",
+      productImage: null as File | null,
+      attachmentImage: null as File | null,
+    };
+    if (inlineEdit.field === "site") next.site = inlineEdit.value;
+    if (inlineEdit.field === "product_id") next.productId = inlineEdit.value;
+    if (inlineEdit.field === "selling_price") next.sellingPrice = inlineEdit.value;
+    if (inlineEdit.field === "cost_price") next.costPrice = inlineEdit.value;
+    if (inlineEdit.field === "weight_kg") next.weightKg = inlineEdit.value;
+    if (inlineEdit.field === "note") next.note = inlineEdit.value;
+    if (inlineEdit.field === "product_image") next.productImage = inlineEdit.file;
+    if (inlineEdit.field === "attachment_image") next.attachmentImage = inlineEdit.file;
+    if ((inlineEdit.field === "product_image" || inlineEdit.field === "attachment_image") && !inlineEdit.file && !inlineEdit.clear) {
+      setMessage("请先选择或 Ctrl+V 粘贴一张图片。");
+      return;
+    }
+    const numbers = [next.sellingPrice, next.costPrice, next.weightKg].map(Number);
+    if (numbers.some((value) => !Number.isFinite(value) || value < 0)) {
+      setMessage("售价、成本和重量必须为大于或等于 0 的数字。");
+      return;
+    }
+    setBusy("保存产品");
+    try {
+      const result = await saveProfitActivityProductEdit({
+        site: next.site,
+        currentSite,
+        skc: item.skc,
+        productId: next.productId,
+        sellingPrice: next.sellingPrice,
+        costPrice: next.costPrice,
+        weightKg: next.weightKg,
+        note: next.note,
+        productImage: next.productImage,
+        attachmentImage: next.attachmentImage,
+        clearProductImage: inlineEdit.field === "product_image" && inlineEdit.clear,
+        clearAttachmentImage: inlineEdit.field === "attachment_image" && inlineEdit.clear,
+      });
+      const oldKey = productKey(item);
+      setProducts((current) => sortProductsByCreatedDesc(current.map((product) => productKey(product) === oldKey ? result.product : product)));
+      setActiveProduct((current) => current && productKey(current) === oldKey ? result.product : current);
+      setInlineEdit(null);
+      setMessage(`已保存 ${result.product.skc} 的修改。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const setInlineValue = (value: string) => {
+    setInlineEdit((current) => current && "value" in current ? { ...current, value } : current);
+  };
+
+  const setInlineFile = (file: File) => {
+    setInlineEdit((current) => current && "file" in current ? { ...current, file, clear: false } : current);
+  };
+
+  const clearInlineImage = () => {
+    setInlineEdit((current) => current && "file" in current ? { ...current, file: null, clear: true } : current);
+  };
 
   return (
     <div className="profit-products-page">
@@ -454,10 +628,10 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
           aria-hidden="true"
         >
           <div className="profit-table-head-scroll" ref={fixedHeaderScrollRef}>
-            <table className="profit-table">
-              <ProductTableColumns />
+            <table className="profit-table" style={{ minWidth: tableMinWidth, width: tableMinWidth }}>
+              <ProductTableColumns widths={columnWidths} />
               <thead>
-                <tr><th>选择</th><th>站点</th><th>商品ID</th><th>入库日期</th><th>商品图</th><th>售价</th><th>成本</th><th>重量</th><th>利润</th><th>利润率</th><th>备注</th><th>货源</th><th>图片</th><th>操作</th></tr>
+                <ProductTableHeader />
               </thead>
             </table>
           </div>
@@ -471,10 +645,10 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
           onPointerCancel={endTableDrag}
           onPointerLeave={endTableDrag}
         >
-          <table className="profit-table">
-            <ProductTableColumns />
+          <table className="profit-table" style={{ minWidth: tableMinWidth, width: tableMinWidth }}>
+            <ProductTableColumns widths={columnWidths} />
             <thead ref={theadRef}>
-              <tr><th>选择</th><th>站点</th><th>商品ID</th><th>入库日期</th><th>商品图</th><th>售价</th><th>成本</th><th>重量</th><th>利润</th><th>利润率</th><th>备注</th><th>货源</th><th>图片</th><th>操作</th></tr>
+              <ProductTableHeader onResizeStart={startColumnResize} />
             </thead>
             <tbody>
               {pageProducts.length ? pageProducts.map((item) => {
@@ -482,23 +656,30 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
                 return (
                   <tr key={key}>
                     <td><input type="checkbox" checked={selected.has(key)} onChange={(event) => setSelected(toggleSet(selected, key, event.target.checked))} /></td>
-                    <td>{siteLabel((item.site || item.site_code || "US") as ProfitActivitySite)}</td>
-                    <td>{productIdText(item)}{item.source_type === "price_verification" && <em className="profit-source-badge" title="来自核价及货源板块自动入库">核价</em>}</td>
+                    <td><EditableCell field="site" item={item} siteOptions={siteOptions} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>
+                      {siteLabel((item.site || item.site_code || "US") as ProfitActivitySite)}
+                    </EditableCell></td>
+                    <td><EditableCell field="product_id" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>
+                      {productIdText(item)}{item.source_type === "price_verification" && <em className="profit-source-badge" title="来自核价及货源板块自动入库">核价</em>}
+                    </EditableCell></td>
                     <td>{libraryDate(item.library_created_at || item.created_at)}</td>
-                    <td><ProductImageCell item={item} onPreview={(url) => setPreviewImage({ url, label: `${item.skc} 商品对应图` })} /></td>
-                    <td>{money(item.selling_price)}</td>
-                    <td>{money(item.cost_price)}</td>
-                    <td>{money(item.weight_kg)}</td>
+                    <td><EditableCell field="product_image" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onFileChange={setInlineFile} onClearImage={clearInlineImage} disabled={item.can_edit === false}>
+                      <ProductImageCell item={item} />
+                    </EditableCell></td>
+                    <td><EditableCell field="selling_price" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.selling_price)}</EditableCell></td>
+                    <td><EditableCell field="cost_price" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.cost_price)}</EditableCell></td>
+                    <td><EditableCell field="weight_kg" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.weight_kg)}</EditableCell></td>
                     <td className={(item.net_profit ?? 0) >= 0 ? "profit-good" : "profit-bad"}>{money(item.net_profit)}</td>
                     <td>{percent(item.profit_rate)}</td>
-                    <td className="profit-note-cell" title={item.note || ""}>{shortNote(item.note) || "-"}</td>
+                    <td className="profit-note-cell" title={item.note || ""}><EditableCell field="note" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{shortNote(item.note) || "-"}</EditableCell></td>
                     <td className="profit-source-cell"><button className="profit-source-open" onClick={() => setActiveProduct(item)} title="查看/编辑该 SKC 的货源链接">打开（{(item.source_groups ?? []).filter((group) => group?.source_url).length}）</button></td>
-                    <td><AttachmentImageCell item={item} onPreview={(url) => setPreviewImage({ url, label: `${item.skc} 备注图片` })} /></td>
-                    <td className="profit-product-action-cell"><button className="profit-product-edit-button" type="button" disabled={item.can_edit === false} onClick={() => setEditingProduct(item)}>编辑</button></td>
+                    <td><EditableCell field="attachment_image" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onFileChange={setInlineFile} onClearImage={clearInlineImage} disabled={item.can_edit === false}>
+                      <AttachmentImageCell item={item} />
+                    </EditableCell></td>
                   </tr>
                 );
               }) : (
-                <tr><td colSpan={14}>暂无产品。输入商品ID（SKU、SKC 或 SPU）后查询，或留空查询当前权限可见产品。</td></tr>
+                <tr><td colSpan={productTableColumns.length}>暂无产品。输入商品ID（SKU、SKC 或 SPU）后查询，或留空查询当前权限可见产品。</td></tr>
               )}
             </tbody>
           </table>
@@ -510,7 +691,6 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
             <button onClick={togglePageSelected} disabled={!pageProducts.length}>{pageSelected ? "取消本页" : "全选本页"}</button>
             <button onClick={copySelectedProductIds} disabled={!selectedCount || !!busy}>复制已选商品ID</button>
             <button className="danger-button" onClick={deleteSelected} disabled={!selectedCount || !!busy}>删除已选 {selectedCount}</button>
-            <button onClick={downloadCatalog} disabled={!!busy}>下载产品档案</button>
             <label className="profit-products-page-size">每页
               <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value) as typeof pageSize); setPage(1); }}>
                 {pageSizeOptions.map((value) => <option key={value} value={value}>{value} 条</option>)}
@@ -543,15 +723,6 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
         onClose={() => setActiveProduct(null)}
         onChanged={refreshProducts}
       />
-      <ProductEditDialog
-        product={editingProduct}
-        onClose={() => setEditingProduct(null)}
-        onSaved={(updated) => {
-          setProducts((current) => current.map((product) => productKey(product) === productKey(updated) ? updated : product));
-          setEditingProduct(null);
-          setMessage(`已保存 ${updated.skc} 的产品信息。`);
-        }}
-      />
       {previewImage ? (
         <ImagePreviewModal
           url={previewImage.url}
@@ -563,18 +734,115 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   );
 }
 
-function ProductTableColumns() {
+function ProductTableColumns({ widths }: { widths: Record<ProductTableColumnKey, number> }) {
   return (
     <colgroup>
-      <col style={{ width: 42 }} /><col style={{ width: 40 }} /><col style={{ width: 110 }} /><col style={{ width: 72 }} />
-      <col style={{ width: 50 }} /><col style={{ width: 48 }} /><col style={{ width: 48 }} /><col style={{ width: 42 }} />
-      <col style={{ width: 64 }} /><col style={{ width: 54 }} /><col style={{ width: 48 }} /><col style={{ width: 50 }} />
-      <col style={{ width: 36 }} /><col style={{ width: 48 }} />
+      {productTableColumns.map((column) => (
+        <col key={column.key} style={{ width: widths[column.key] }} />
+      ))}
     </colgroup>
   );
 }
 
-/** 大图预览弹窗：点击遮罩或关闭按钮关闭。 */
+function ProductTableHeader({ onResizeStart }: { onResizeStart?: (column: ProductTableColumn, event: ReactMouseEvent<HTMLButtonElement>) => void }) {
+  return (
+    <tr>
+      {productTableColumns.map((column) => (
+        <th key={column.key} title={column.label}>
+          <span className="profit-table-th-label">{column.label}</span>
+          {onResizeStart ? (
+            <button
+              type="button"
+              className="profit-table-resize-handle"
+              aria-label={`调整${column.label}列宽`}
+              onMouseDown={(event) => onResizeStart(column, event)}
+            />
+          ) : null}
+        </th>
+      ))}
+    </tr>
+  );
+}
+
+function EditableCell({
+  children,
+  disabled,
+  field,
+  item,
+  siteOptions,
+  inlineEdit,
+  onEdit,
+  onSave,
+  onCancel,
+  onValueChange,
+  onFileChange,
+  onClearImage,
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  field: InlineEditField;
+  item: ProfitActivityProduct;
+  siteOptions?: Array<{ site_code: ProfitActivitySite; display_name?: string }>;
+  inlineEdit: InlineEditState | null;
+  onEdit: (item: ProfitActivityProduct, field: InlineEditField) => void;
+  onSave: (item: ProfitActivityProduct) => Promise<void>;
+  onCancel: () => void;
+  onValueChange?: (value: string) => void;
+  onFileChange?: (file: File) => void;
+  onClearImage?: () => void;
+}) {
+  const isEditing = inlineEdit?.key === productKey(item) && inlineEdit.field === field;
+  const isImageField = field === "product_image" || field === "attachment_image";
+  const pasteImage = (event: ReactClipboardEvent<HTMLDivElement>) => {
+    const file = [...event.clipboardData.files].find((itemFile) => itemFile.type.startsWith("image/"));
+    if (!file || !onFileChange) return;
+    event.preventDefault();
+    onFileChange(file);
+  };
+  if (isEditing) {
+    return (
+      <span className={`profit-inline-editor ${isImageField ? "is-image" : ""}`}>
+        {field === "site" && "value" in inlineEdit ? (
+          <select value={inlineEdit.value} onChange={(event) => onValueChange?.(event.target.value)}>
+            {(siteOptions?.length ? siteOptions : allSites.map((site) => ({ site_code: site, display_name: siteLabels[site] }))).map((site) => (
+              <option key={site.site_code} value={site.site_code}>{site.display_name || siteLabels[site.site_code] || site.site_code}</option>
+            ))}
+          </select>
+        ) : null}
+        {field === "product_id" && "value" in inlineEdit ? (
+          <input type="text" value={inlineEdit.value} onChange={(event) => onValueChange?.(event.target.value)} autoFocus />
+        ) : null}
+        {(field === "selling_price" || field === "cost_price" || field === "weight_kg") && "value" in inlineEdit ? (
+          <input type="number" min="0" step="any" value={inlineEdit.value} onChange={(event) => onValueChange?.(event.target.value)} autoFocus />
+        ) : null}
+        {field === "note" && "value" in inlineEdit ? (
+          <textarea maxLength={500} value={inlineEdit.value} onChange={(event) => onValueChange?.(event.target.value)} autoFocus />
+        ) : null}
+        {isImageField && "file" in inlineEdit ? (
+          <div className="profit-inline-image-drop" tabIndex={0} onPaste={pasteImage} title="点击后可 Ctrl+V 粘贴图片">
+            <span>{inlineEdit.clear ? "已标记删除" : inlineEdit.file?.name || "Ctrl+V 粘贴图片"}</span>
+            <input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; if (file) onFileChange?.(file); }} />
+          </div>
+        ) : null}
+        {isImageField && "file" in inlineEdit && !inlineEdit.clear ? <button className="profit-inline-remove-image" type="button" onClick={onClearImage} title="删除当前图片">×</button> : null}
+        <button className="profit-inline-save" type="button" onClick={() => void onSave(item)}>保存</button>
+        <button className="profit-inline-cancel" type="button" onClick={onCancel}>撤销</button>
+      </span>
+    );
+  }
+  return (
+    <span className={`profit-editable-cell ${disabled ? "is-readonly" : ""}`} role={disabled ? undefined : "button"} tabIndex={disabled ? -1 : 0} onClick={() => !disabled && onEdit(item, field)} onKeyDown={(event) => {
+      if (!disabled && (event.key === "Enter" || event.key === " ")) {
+        event.preventDefault();
+        onEdit(item, field);
+      }
+    }}>
+      <span className="profit-editable-value">{children}</span>
+    </span>
+  );
+}
+
+/** 大图预览浮层：始终位于当前可视区域中央，点击遮罩或关闭按钮关闭。 */
 function ImagePreviewModal({ url, label, onClose }: { url: string; label: string; onClose: () => void }) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -584,13 +852,20 @@ function ImagePreviewModal({ url, label, onClose }: { url: string; label: string
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  return (
+  // 使用实际可视区域限制预览尺寸，让整张图始终能在当前屏幕内看全。
+  const viewportWidth = document.documentElement.clientWidth;
+  const viewportHeight = document.documentElement.clientHeight;
+  const previewWidth = Math.min(460, Math.max(240, viewportWidth - 32));
+  const previewHeight = Math.min(460, Math.max(240, viewportHeight - 32));
+
+  return createPortal(
     <div className="profit-image-preview-mask" onClick={onClose}>
-      <div className="profit-image-preview-modal" onClick={(event) => event.stopPropagation()}>
+      <div className="profit-image-preview-modal" style={{ left: "50%", top: "50%", width: previewWidth, height: previewHeight, transform: "translate(-50%, -50%)" }} onClick={(event) => event.stopPropagation()}>
         <button type="button" className="profit-image-preview-close" onClick={onClose} title="关闭">×</button>
         <img className="profit-image-preview-img" src={url} alt={label} />
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -601,16 +876,58 @@ function toggleSet(source: Set<string>, value: string, checked: boolean) {
   return next;
 }
 
-/** SKC 对应图单元格：表格只负责展示，图片替换统一在编辑弹窗处理。 */
-function ProductImageCell({ item, onPreview }: { item: ProfitActivityProduct; onPreview: (url: string) => void }) {
+function firstSourceImage(item: ProfitActivityProduct) {
+  const groups = item.source_groups ?? [];
+  for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+    const group = groups[groupIndex];
+    const paths = group?.image_paths ?? [];
+    if (paths[0]) return { groupIndex, path: paths[0] };
+  }
+  return null;
+}
+
+function firstSourceExternalImage(item: ProfitActivityProduct) {
+  const groupImage = (item.source_groups ?? [])
+    .map((group) => String(group?.main_image_url || "").trim())
+    .find(Boolean);
+  return groupImage || item.source_main_image_url || "";
+}
+
+/** 商品图单元格：优先展示货源（打开）里的图片，核价入库与手动产品都走同一优先级。 */
+function ProductImageCell({ item, onPreview }: { item: ProfitActivityProduct; onPreview?: (url: string) => void }) {
   const site = (item.site || item.site_code || "US") as ProfitActivitySite;
-  const [imageUrl, setImageUrl] = useState("");
+  const sourceImage = firstSourceImage(item);
+  const externalSourceImage = firstSourceExternalImage(item);
+  const sourceImageVersion = sourceImage?.path || item.source_image_path || "";
+  const [localSourceUrl, setLocalSourceUrl] = useState("");
+  const [productUrl, setProductUrl] = useState("");
   const [sourceImageFailed, setSourceImageFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    let objectUrl = "";
+    const objectUrls: string[] = [];
     setSourceImageFailed(false);
+    setLocalSourceUrl("");
+    setProductUrl("");
+    if (sourceImageVersion) {
+      loadProductImage({
+        skc: item.skc,
+        site,
+        kind: "source",
+        group: sourceImage?.groupIndex ?? 0,
+        index: 0,
+        version: sourceImageVersion,
+      })
+        .then((url) => {
+          if (cancelled) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          objectUrls.push(url);
+          setLocalSourceUrl(url);
+        })
+        .catch(() => {});
+    }
     if (item.image_path) {
       loadProductImage({ skc: item.skc, site, kind: "product", version: item.image_path })
         .then((url) => {
@@ -618,42 +935,41 @@ function ProductImageCell({ item, onPreview }: { item: ProfitActivityProduct; on
             URL.revokeObjectURL(url);
             return;
           }
-          objectUrl = url;
-          setImageUrl(url);
+          objectUrls.push(url);
+          setProductUrl(url);
         })
         .catch(() => {});
-    } else {
-      setImageUrl("");
     }
     return () => {
       cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      objectUrls.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [item.skc, site, item.image_path, item.source_main_image_url]);
+  }, [item.skc, site, item.image_path, item.source_image_path, sourceImage?.path, sourceImage?.groupIndex, externalSourceImage]);
 
-  const displayImage = imageUrl || (sourceImageFailed ? "" : item.source_main_image_url || "");
+  const displayImage = localSourceUrl || (sourceImageFailed ? "" : externalSourceImage) || productUrl;
 
+  const content = displayImage ? (
+    <img
+      className="profit-product-image"
+      src={displayImage}
+      alt={`${item.skc} 主图`}
+      referrerPolicy={displayImage === externalSourceImage ? "no-referrer" : undefined}
+      onError={() => {
+        if (displayImage === externalSourceImage) setSourceImageFailed(true);
+      }}
+    />
+  ) : <span className="profit-product-image-empty">无图</span>;
+
+  if (!onPreview) return <span className="profit-product-image-cell">{content}</span>;
   return (
     <button type="button" className="profit-product-image-cell" onClick={() => displayImage && onPreview(displayImage)} title={displayImage ? "点击查看商品对应图" : "暂无商品对应图"}>
-      {displayImage ? (
-        <img
-          className="profit-product-image"
-          src={displayImage}
-          alt={`${item.skc} 主图`}
-          referrerPolicy={imageUrl ? undefined : "no-referrer"}
-          onError={() => {
-            if (!imageUrl) setSourceImageFailed(true);
-          }}
-        />
-      ) : (
-        <span className="profit-product-image-empty">无图</span>
-      )}
+      {content}
     </button>
   );
 }
 
 /** 运营备注图片：独立于货源组，最多一张，可为空。 */
-function AttachmentImageCell({ item, onPreview }: { item: ProfitActivityProduct; onPreview: (url: string) => void }) {
+function AttachmentImageCell({ item, onPreview }: { item: ProfitActivityProduct; onPreview?: (url: string) => void }) {
   const site = (item.site || item.site_code || "US") as ProfitActivitySite;
   const [url, setUrl] = useState("");
 
@@ -681,95 +997,12 @@ function AttachmentImageCell({ item, onPreview }: { item: ProfitActivityProduct;
   }, [item.skc, site, item.attachment_image_path]);
 
   if (!url) return <span className="profit-product-image-empty">无图</span>;
+  const content = <img className="profit-source-thumb" src={url} alt={`${item.skc} 备注图片`} loading="lazy" />;
+  if (!onPreview) return <span className="profit-source-thumb-btn">{content}</span>;
   return (
     <button type="button" className="profit-source-thumb-btn" title="点击查看备注图片" onClick={() => onPreview(url)}>
-      <img className="profit-source-thumb" src={url} alt={`${item.skc} 备注图片`} loading="lazy" />
+      {content}
     </button>
-  );
-}
-
-function ProductEditDialog({ product, onClose, onSaved }: {
-  product: ProfitActivityProduct | null;
-  onClose: () => void;
-  onSaved: (product: ProfitActivityProduct) => void;
-}) {
-  const [sellingPrice, setSellingPrice] = useState("");
-  const [costPrice, setCostPrice] = useState("");
-  const [weightKg, setWeightKg] = useState("");
-  const [note, setNote] = useState("");
-  const [productImage, setProductImage] = useState<File | null>(null);
-  const [attachmentImage, setAttachmentImage] = useState<File | null>(null);
-  const [clearAttachmentImage, setClearAttachmentImage] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!product) return;
-    setSellingPrice(product.selling_price == null ? "" : String(product.selling_price));
-    setCostPrice(product.cost_price == null ? "" : String(product.cost_price));
-    setWeightKg(product.weight_kg == null ? "" : String(product.weight_kg));
-    setNote(product.note ?? "");
-    setProductImage(null);
-    setAttachmentImage(null);
-    setClearAttachmentImage(false);
-    setError("");
-  }, [product]);
-
-  useEffect(() => {
-    if (!product) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !saving) onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [product, saving, onClose]);
-
-  if (!product) return null;
-  const site = (product.site || product.site_code || "US") as ProfitActivitySite;
-  const save = async () => {
-    const numbers = [sellingPrice, costPrice, weightKg].map(Number);
-    if (numbers.some((value) => !Number.isFinite(value) || value < 0)) {
-      setError("售价、成本和重量必须为大于或等于 0 的数字。");
-      return;
-    }
-    setSaving(true);
-    setError("");
-    try {
-      const result = await saveProfitActivityProductEdit({
-        site,
-        skc: product.skc,
-        sellingPrice,
-        costPrice,
-        weightKg,
-        note,
-        productImage,
-        attachmentImage,
-        clearAttachmentImage,
-      });
-      onSaved(result.product);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="profit-product-edit-mask" onClick={() => !saving && onClose()}>
-      <section className="profit-product-edit-dialog" role="dialog" aria-modal="true" aria-label="编辑产品" onClick={(event) => event.stopPropagation()}>
-        <header><div><p className="eyebrow">PRODUCT EDIT</p><h2>编辑产品</h2></div><button type="button" className="profit-product-edit-close" onClick={onClose} disabled={saving}>×</button></header>
-        <div className="profit-product-edit-meta"><span>商品 ID：{productIdText(product)}</span><span>站点：{site}</span><span>入库日期：{libraryDate(product.library_created_at || product.created_at)}</span></div>
-        <div className="profit-product-edit-grid">
-          <label>售价<input type="number" min="0" step="any" value={sellingPrice} onChange={(event) => setSellingPrice(event.target.value)} /></label>
-          <label>成本<input type="number" min="0" step="any" value={costPrice} onChange={(event) => setCostPrice(event.target.value)} /></label>
-          <label>重量<input type="number" min="0" step="any" value={weightKg} onChange={(event) => setWeightKg(event.target.value)} /></label>
-          <label className="profit-product-edit-note">备注<textarea maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} /></label>
-          <label>商品对应图<input type="file" accept="image/*" onChange={(event) => setProductImage(event.target.files?.[0] ?? null)} /><small>{productImage?.name || (product.image_path ? "已保存，选择文件可替换" : "未上传")}</small></label>
-          <label>备注图片<input type="file" accept="image/*" onChange={(event) => { setAttachmentImage(event.target.files?.[0] ?? null); setClearAttachmentImage(false); }} /><small>{attachmentImage?.name || (clearAttachmentImage ? "保存后清空" : product.attachment_image_path ? "已保存，选择文件可替换" : "未上传")}</small></label>
-        </div>
-        <div className="profit-product-edit-actions"><button type="button" className="danger-button" disabled={saving || (!product.attachment_image_path && !attachmentImage)} onClick={() => { setAttachmentImage(null); setClearAttachmentImage(true); }}>清空备注图片</button><span />{error ? <p>{error}</p> : null}<button type="button" onClick={onClose} disabled={saving}>取消</button><button type="button" className="primary-button" onClick={() => void save()} disabled={saving}>{saving ? "保存中…" : "保存修改"}</button></div>
-      </section>
-    </div>
   );
 }
 

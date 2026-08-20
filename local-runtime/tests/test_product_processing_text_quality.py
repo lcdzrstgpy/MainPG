@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import socket
 import threading
 
 import pytest
 
 import wh_local.modules.product_processing.service as service_module
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, PublicImageFetchError
+from wh_local.modules.product_processing.domain import policy as policy_module
 from wh_local.modules.product_processing.doubao_vision import (
     DoubaoVisionError,
     SubjectAnalysis,
@@ -53,6 +55,60 @@ def test_doubao_source_image_download_retries_transient_failure(monkeypatch) -> 
     assert calls == 3
     assert service._image_to_data_url("https://example.com/source.jpg") == value
     assert calls == 3
+
+
+def test_doubao_source_image_download_uses_hardened_fetcher_behind_proxy_fake_ip(
+    monkeypatch,
+) -> None:
+    service = object.__new__(ProductProcessingService)
+    service._source_data_url_cache = {}
+    service._source_data_url_lock = threading.Lock()
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        policy_module.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.30", 443))
+        ],
+    )
+
+    def fetcher(url: str, **_kwargs) -> FetchedPublicImage:
+        calls.append(url)
+        return FetchedPublicImage(b"\xff\xd8\xffimage", "image/jpeg", url)
+
+    service._public_image_fetcher = fetcher
+
+    value = service._image_to_data_url("https://cbu01.alicdn.com/source.jpg")
+
+    assert value.startswith("data:image/jpeg;base64,")
+    assert calls == ["https://cbu01.alicdn.com/source.jpg"]
+
+
+def test_local_source_download_uses_hardened_fetcher_behind_proxy_fake_ip(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        policy_module.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.30", 443))
+        ],
+    )
+    calls: list[str] = []
+
+    def fetcher(url: str, **_kwargs) -> FetchedPublicImage:
+        calls.append(url)
+        return FetchedPublicImage(b"\xff\xd8\xffimage", "image/jpeg", url)
+
+    monkeypatch.setattr(service_module, "fetch_public_image", fetcher)
+
+    content = ProductProcessingService._local_source_bytes(
+        "https://cbu01.alicdn.com/source.jpg"
+    )
+
+    assert content == b"\xff\xd8\xffimage"
+    assert calls == ["https://cbu01.alicdn.com/source.jpg"]
 
 
 def _raw() -> dict:
@@ -1122,7 +1178,7 @@ def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> 
         lambda *args, **kwargs: GridImageOutput(
             carousel_urls=(),
             attempt_count=1,
-            provider_status_class="failed",
+            provider_status_class="gateway_unavailable",
         ),
     )
 
@@ -1131,6 +1187,10 @@ def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> 
     )
 
     assert result["status"] == "failed"
+    assert result["reason"] == "服务端生图暂时不可用"
+    assert result["result"]["error_type"] == "image_generation_unavailable"
+    assert "本地质量门" not in result["result"]["operator_hint"]
+    assert "本地 API Key" in result["result"]["operator_hint"]
     assert "doubao_text" in service.repository.receipts
     assert service.repository.receipts["doubao_text"]["output"]["title"].startswith(
         "Insulated Stainless Steel Travel Mug"

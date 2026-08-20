@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any
 
 import requests
@@ -17,6 +18,7 @@ USER_AGENT = "MainPG-Doubao/1.0"
 
 _HTTP_SESSION = requests.Session()
 _HTTP_SESSION.trust_env = False
+_SERVER_AI_REQUEST_GATE = threading.BoundedSemaphore(2)
 
 
 class DoubaoArkError(RuntimeError):
@@ -69,23 +71,24 @@ class DoubaoArkClient:
     def _complete_gateway(self, messages: list[dict[str, Any]]) -> str:
         response: requests.Response | None = None
         try:
-            response = _HTTP_SESSION.post(
-                f"{gateway_base_url()}/api/customer/ai/chat",
-                headers={
-                    "Authorization": f"Bearer {self.platform_token}",
-                    "Content-Type": "application/json",
-                    "User-Agent": USER_AGENT,
-                },
-                json={
-                    # 旧网关契约：服务端用该 model 路由文本模型（灰度回退路径保持原样）。
-                    "model": "gpt-5.6-terra",
-                    "messages": messages,
-                    "usage_id": self.usage_id,
-                },
-                timeout=REQUEST_TIMEOUT_SECONDS,
-                allow_redirects=False,
-            )
-            body = bytes(response.content)
+            with _SERVER_AI_REQUEST_GATE:
+                response = _HTTP_SESSION.post(
+                    f"{gateway_base_url()}/api/customer/ai/chat",
+                    headers={
+                        "Authorization": f"Bearer {self.platform_token}",
+                        "Content-Type": "application/json",
+                        "User-Agent": USER_AGENT,
+                    },
+                    json={
+                        # 旧网关契约：服务端用该 model 路由文本模型（灰度回退路径保持原样）。
+                        "model": "gpt-5.6-terra",
+                        "messages": messages,
+                        "usage_id": self.usage_id,
+                    },
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                    allow_redirects=False,
+                )
+                body = bytes(response.content)
         except (requests.RequestException, TimeoutError, OSError) as exc:
             raise DoubaoArkError(
                 "server text-and-vision gateway is temporarily unreachable",

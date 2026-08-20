@@ -934,6 +934,36 @@
   font-size: .72rem;
 }
 
+.profit-table th {
+  position: relative;
+}
+
+.profit-table-th-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profit-table-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  z-index: 2;
+  width: 8px;
+  height: 100%;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  cursor: col-resize;
+}
+
+.profit-table-resize-handle:hover {
+  background: rgba(10, 140, 242, 0.12) !important;
+}
+
 .profit-table tbody tr {
   height: 34px;
 }
@@ -965,6 +995,159 @@
   object-fit: cover;
   border: 1px solid #e2eef6;
   display: block;
+}
+
+.profit-editable-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  cursor: text;
+}
+
+.profit-editable-cell:not(.is-readonly):hover .profit-editable-value {
+  color: #087ed1;
+}
+
+.profit-editable-cell.is-readonly {
+  cursor: default;
+}
+
+.profit-editable-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profit-inline-editor {
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  min-width: 310px;
+  max-width: min(520px, calc(100vw - 48px));
+  min-height: 44px;
+  padding: 5px 7px;
+  transform: translateY(-50%);
+  border: 1px solid #9ad8fb;
+  border-radius: 11px;
+  background: #fff;
+  box-shadow: 0 10px 26px rgba(26, 78, 114, .18);
+  white-space: normal;
+}
+
+.profit-inline-editor input,
+.profit-inline-editor select,
+.profit-inline-editor textarea {
+  box-sizing: border-box;
+  min-width: 96px;
+  max-width: 190px;
+  border: 1px solid #b9daf0;
+  border-radius: 9px;
+  padding: 6px 8px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+  font: inherit;
+}
+
+.profit-inline-editor textarea {
+  width: 170px;
+  min-height: 38px;
+  resize: vertical;
+}
+
+/* 编辑态使用覆盖式工具条，列再窄也能完整显示输入与保存操作。 */
+.profit-table td:has(.profit-inline-editor) {
+  position: relative;
+  z-index: 20;
+  overflow: visible;
+}
+
+/* 最后一列没有右侧空间，工具条自动向左展开。 */
+.profit-table td:last-child .profit-inline-editor {
+  right: 4px;
+  left: auto;
+}
+
+.profit-inline-editor.is-image {
+  min-width: 390px;
+  min-height: 48px;
+  padding: 7px 8px;
+}
+
+.profit-inline-image-drop {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 250px;
+  min-width: 250px;
+  max-width: 250px;
+  min-height: 34px;
+  border: 1px dashed #8cccf7;
+  border-radius: 10px;
+  padding: 5px 8px;
+  color: #53708a;
+  background: #f6fbff;
+  outline-color: #13a9f2;
+}
+
+.profit-inline-image-drop span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profit-inline-image-drop input {
+  width: 82px;
+  min-width: 82px;
+  max-width: 82px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: .72rem;
+}
+
+.profit-inline-save,
+.profit-inline-cancel {
+  width: 38px;
+  min-width: 38px;
+  padding: 4px 5px !important;
+  border-radius: 8px !important;
+  font-size: .74rem !important;
+  line-height: 1.25;
+}
+
+.profit-inline-remove-image {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 !important;
+  border: 1px solid #ffd0d0 !important;
+  border-radius: 8px !important;
+  color: #df4f58 !important;
+  background: #fff7f7 !important;
+  font-size: 1.1rem !important;
+  line-height: 1 !important;
+}
+
+.profit-inline-save {
+  color: #fff !important;
+  background: #0a8cf2 !important;
+  border-color: #0a8cf2 !important;
+}
+
+.profit-inline-cancel {
+  color: #577089 !important;
+  background: #f4f8fb !important;
 }
 
 .profit-product-image-empty {
@@ -1008,29 +1191,24 @@
   position: fixed;
   inset: 0;
   z-index: 1500;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(10, 22, 36, 0.62);
+  background: rgba(10, 22, 36, 0.18);
   backdrop-filter: blur(2px);
-  padding: 24px;
 }
 
 .profit-image-preview-modal {
-  position: relative;
-  max-width: min(92vw, 960px);
-  max-height: 88vh;
+  position: fixed;
   display: flex;
-  border-radius: 16px;
+  border: 1px solid rgba(188, 216, 235, .9);
+  border-radius: 14px;
   background: #fff;
-  box-shadow: 0 24px 64px rgba(5, 16, 28, 0.4);
+  box-shadow: 0 20px 48px rgba(5, 16, 28, 0.26);
   overflow: hidden;
 }
 
 .profit-image-preview-img {
   display: block;
-  max-width: min(92vw, 960px);
-  max-height: 88vh;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
 }
 
@@ -1061,8 +1239,8 @@
 }
 
 .profit-product-edit-button {
-  width: 42px;
-  min-width: 42px;
+  width: 38px;
+  min-width: 38px;
   padding: 3px 4px !important;
   border-radius: 8px !important;
   color: #0a8cf2 !important;
@@ -1071,133 +1249,7 @@
   line-height: 1.25;
 }
 
-.profit-product-edit-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 1500;
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  background: rgba(10, 22, 36, .55);
-  backdrop-filter: blur(2px);
-}
-
-.profit-product-edit-dialog {
-  width: min(620px, 100%);
-  max-height: min(760px, calc(100vh - 40px));
-  overflow: auto;
-  border: 1px solid #d8e7f2;
-  border-radius: 16px;
-  background: #fbfdff;
-  box-shadow: 0 24px 64px rgba(5, 16, 28, .34);
-}
-
-.profit-product-edit-dialog header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 18px 20px 12px;
-  border-bottom: 1px solid #e2edf5;
-}
-
-.profit-product-edit-dialog h2 {
-  margin: 3px 0 0;
-  color: #172b44;
-  font-size: 1.2rem;
-}
-
-.profit-product-edit-close {
-  width: 32px;
-  height: 32px;
-  padding: 0 !important;
-  border-radius: 50% !important;
-  font-size: 20px !important;
-  line-height: 1 !important;
-}
-
-.profit-product-edit-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  padding: 12px 20px;
-  color: #6d8399;
-  font-size: .78rem;
-  font-weight: 750;
-}
-
-.profit-product-edit-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  padding: 4px 20px 18px;
-}
-
-.profit-product-edit-grid label {
-  display: grid;
-  gap: 6px;
-}
-
-.profit-product-edit-grid input,
-.profit-product-edit-grid textarea {
-  box-sizing: border-box;
-  width: 100%;
-  border: 1px solid #cfe0eb;
-  border-radius: 9px;
-  padding: 8px 10px;
-  color: #18334d;
-  background: #fff;
-  outline-color: #13a9f2;
-}
-
-.profit-product-edit-grid textarea {
-  min-height: 78px;
-  resize: vertical;
-}
-
-.profit-product-edit-grid small {
-  color: #7a93ab;
-  font-size: .74rem;
-  font-weight: 650;
-}
-
-.profit-product-edit-note {
-  grid-column: span 3;
-}
-
-.profit-product-edit-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 20px 18px;
-  border-top: 1px solid #e2edf5;
-}
-
-.profit-product-edit-actions > span {
-  flex: 1;
-}
-
-.profit-product-edit-actions p {
-  flex-basis: 100%;
-  margin: 0;
-  color: #b42318;
-  font-size: .8rem;
-  font-weight: 750;
-}
-
-@media (max-width: 560px) {
-  .profit-product-edit-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .profit-product-edit-note {
-    grid-column: auto;
-  }
-}
-
 .profit-table .profit-note-cell {
-  max-width: 48px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

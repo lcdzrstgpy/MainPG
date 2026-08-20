@@ -41,3 +41,13 @@ test("system admin page is owned by the workspace system_admin module", () => {
   assert.match(source, /SystemAdminPage/);
   assert.match(source, /case "system_admin":/);
 });
+
+test("product processing distinguishes remote service outages from API key failures", () => {
+  assert.match(taskPageSource, /function isRemoteServiceError/);
+  assert.match(taskPageSource, /服务器计费或 AI 服务暂时不可用/);
+  assert.match(taskPageSource, /hasRemoteServiceIssue/);
+  assert.doesNotMatch(
+    taskPageSource,
+    /const AI_CONFIG_ERROR_RE\s*=\s*\/[^/\n]*unreachable[^/\n]*\/i/,
+  );
+});

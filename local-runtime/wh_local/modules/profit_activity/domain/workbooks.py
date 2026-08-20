@@ -428,7 +428,7 @@ def filter_activity_workbook(
                 else:
                     decision = evaluate(candidate_ids, price)
                     matched_id = str(decision.get("matched_id") or primary_id)
-                decision = {**decision, "skc": matched_id, "product_id": matched_id, "candidate_ids": list(candidate_ids), "activity_name": activity_name, "price": float(price) if price is not None else None}
+                decision = {**decision, "skc": matched_id, "product_id": matched_id, "candidate_ids": list(candidate_ids), "activity_name": activity_name, "price": float(price) if price is not None else None, "spu": spu_by_row.get(row_number, "")}
                 decisions.append(decision)
                 reason = str(decision.get("reason_code") or "unknown")
                 qualification_counts[reason] += 1
