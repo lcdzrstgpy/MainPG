@@ -565,6 +565,106 @@ CREATE TABLE IF NOT EXISTS billing_runtime_meta (
     meta_value TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 子项定价：一条产品链接按处理子项拆分为 title/description/product_dimensions/
+-- four_grid/detail_images，每个子项独立单价。规则由服务端定价引擎维护，
+-- 每次改价写入新 rule_version（与 billing_pricing_rules.rule_version 联动）。
+CREATE TABLE IF NOT EXISTS billing_pricing_items (
+    rule_version INTEGER NOT NULL,
+    feature_key TEXT NOT NULL,
+    charge_points INTEGER NOT NULL DEFAULT 0,
+    intercept_refund_ratio REAL NOT NULL DEFAULT 0.5,
+    no_return_refund_ratio REAL NOT NULL DEFAULT 1.0,
+    effective_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (rule_version, feature_key),
+    CHECK (charge_points >= 0),
+    CHECK (intercept_refund_ratio >= 0 AND intercept_refund_ratio <= 1),
+    CHECK (no_return_refund_ratio >= 0 AND no_return_refund_ratio <= 1)
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_pricing_items_version
+    ON billing_pricing_items (rule_version);
+
+-- 定价变更审计：只追加，不改不删；保存变更前后完整定价 JSON 快照。
+CREATE TABLE IF NOT EXISTS billing_pricing_changelog (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_version INTEGER NOT NULL,
+    changed_by TEXT NOT NULL,
+    change_reason TEXT NOT NULL DEFAULT '',
+    before_json TEXT NOT NULL,
+    after_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_pricing_changelog_version
+    ON billing_pricing_changelog (rule_version, created_at);
+
+-- 密钥发放审计：客户端批量冻结时下发短期密钥，记录归属与过期时间（不含明文）。
+CREATE TABLE IF NOT EXISTS billing_key_grants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    grant_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    freeze_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    key_label TEXT NOT NULL DEFAULT '',
+    granted_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT NOT NULL DEFAULT '',
+    UNIQUE (grant_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_key_grants_account_time
+    ON billing_key_grants (account_id, granted_at);
+
+CREATE INDEX IF NOT EXISTS idx_billing_key_grants_freeze
+    ON billing_key_grants (freeze_id);
+
+-- 批次冻结：客户端提交一批链接时按 N×45 预扣积分，处理完成后按子项明细结算。
+-- status=frozen 且超过 TTL 未结算时由服务端定时任务释放全部冻结。
+CREATE TABLE IF NOT EXISTS billing_batch_freezes (
+    freeze_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    link_count INTEGER NOT NULL,
+    scope_json TEXT NOT NULL DEFAULT '[]',
+    frozen_points INTEGER NOT NULL,
+    charged_points INTEGER NOT NULL DEFAULT 0,
+    refunded_points INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'frozen'
+        CHECK (status IN ('frozen', 'settled', 'released')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    settled_at TEXT NOT NULL DEFAULT '',
+    expires_at TEXT NOT NULL DEFAULT (datetime('now', '+7 days')),
+    FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE,
+    CHECK (link_count > 0),
+    CHECK (frozen_points >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_batch_freezes_account_status
+    ON billing_batch_freezes (account_id, status, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_billing_batch_freezes_expiry
+    ON billing_batch_freezes (status, expires_at);
+
+-- 批次结算明细：每条链接的每个子项处理结果（成功/拦截/无返回），
+-- 服务端据此按当前定价规则计算扣费与退款，客户端上报后落库供对账。
+CREATE TABLE IF NOT EXISTS billing_batch_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    freeze_id TEXT NOT NULL,
+    link_idx INTEGER NOT NULL,
+    feature_key TEXT NOT NULL,
+    status TEXT NOT NULL
+        CHECK (status IN ('success', 'intercept', 'no_return')),
+    charge_points INTEGER NOT NULL DEFAULT 0,
+    refund_points INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (freeze_id, link_idx, feature_key),
+    FOREIGN KEY (freeze_id) REFERENCES billing_batch_freezes (freeze_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_batch_items_freeze
+    ON billing_batch_items (freeze_id);
 """
 
 
@@ -855,6 +955,46 @@ def _migrate_billing_points_to_tenths(conn: sqlite3.Connection) -> None:
         )
         conn.execute(
             "INSERT INTO billing_runtime_meta (meta_key, meta_value) VALUES ('product_link_bundle_pricing_v2', 'applied')"
+        )
+    # Seed the per-subitem pricing for the current rule version.  A marker
+    # prevents every startup from overwriting an administrator's later revision;
+    # when pricing already has items for the active version the marker stays
+    # untouched and nothing is re-inserted.
+    item_marker = conn.execute(
+        "SELECT meta_value FROM billing_runtime_meta WHERE meta_key = 'billing_pricing_items_seeded'"
+    ).fetchone()
+    if item_marker is None:
+        rule = conn.execute(
+            "SELECT rule_version FROM billing_pricing_rules WHERE rule_id = 1"
+        ).fetchone()
+        rule_version = int(rule["rule_version"]) if rule is not None else 1
+        existing_items = conn.execute(
+            "SELECT 1 FROM billing_pricing_items WHERE rule_version = ? LIMIT 1",
+            (rule_version,),
+        ).fetchone()
+        if existing_items is None:
+            # 单位（tenths of a point）：8/8/7/12/10 积分 = 80/80/70/120/100 单位，合计 450 单位。
+            default_items = (
+                ("title", 80, 0.5, 1.0),
+                ("description", 80, 0.5, 1.0),
+                ("product_dimensions", 70, 0.5, 1.0),
+                ("four_grid", 120, 0.5, 1.0),
+                ("detail_images", 100, 0.5, 1.0),
+            )
+            for feature_key, charge, intercept_ratio, no_return_ratio in default_items:
+                conn.execute(
+                    """
+                    INSERT INTO billing_pricing_items (
+                        rule_version, feature_key, charge_points,
+                        intercept_refund_ratio, no_return_refund_ratio
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (rule_version, feature_key, charge, intercept_ratio, no_return_ratio),
+                )
+        conn.execute(
+            "INSERT OR REPLACE INTO billing_runtime_meta (meta_key, meta_value) "
+            "VALUES ('billing_pricing_items_seeded', 'applied')"
         )
 
 

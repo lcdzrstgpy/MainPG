@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from threading import Lock
+import threading
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -41,6 +42,7 @@ class _TaskRecord:
     run_id: str | None
     error: str | None
     updated_at: datetime
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
 class DailySelectionProgressTracker:
@@ -83,7 +85,7 @@ class DailySelectionProgressTracker:
     ) -> None:
         with self._lock:
             record = self._records.get(task_id)
-            if record is None or record.status in {"completed", "failed"}:
+            if record is None or record.status in {"completed", "failed", "cancelled"}:
                 return
             record.status = "running"
             record.stage = stage
@@ -118,6 +120,38 @@ class DailySelectionProgressTracker:
             record.error = error.strip() or "采集任务失败"
             record.updated_at = datetime.now(UTC)
 
+    def cancel(self, task_id: str, *, workspace_id: str) -> DailySelectionTaskStatus:
+        """Request a running task to stop; collected candidates are kept."""
+        with self._lock:
+            record = self._records.get(task_id)
+            if record is None or record.workspace_id != workspace_id:
+                raise DailySelectionTaskNotFound(task_id)
+            if record.status not in {"completed", "failed", "cancelled"}:
+                record.cancel_event.set()
+                record.message = "中断请求已发送，正在停止…"
+                record.updated_at = datetime.now(UTC)
+            return self._public(task_id, record)
+
+    def cancel_event_for(self, task_id: str, *, workspace_id: str) -> threading.Event:
+        with self._lock:
+            record = self._records.get(task_id)
+            if record is None or record.workspace_id != workspace_id:
+                raise DailySelectionTaskNotFound(task_id)
+            return record.cancel_event
+
+    def mark_cancelled(self, task_id: str, *, run_id: str) -> None:
+        """Finalize a task that was interrupted but still produced a run."""
+        with self._lock:
+            record = self._records.get(task_id)
+            if record is None:
+                return
+            record.status = "cancelled"
+            record.stage = "cancelled"
+            record.message = "采集已中断，以下为已采集的候选"
+            record.run_id = run_id
+            record.error = None
+            record.updated_at = datetime.now(UTC)
+
     def get(self, task_id: str, *, workspace_id: str) -> DailySelectionTaskStatus:
         with self._lock:
             record = self._records.get(task_id)
@@ -126,11 +160,12 @@ class DailySelectionProgressTracker:
             return self._public(task_id, record)
 
     def _prune(self, now: datetime) -> None:
+        finished_statuses = {"completed", "failed", "cancelled"}
         cutoff = now - self._completed_ttl
         expired = [
             task_id
             for task_id, record in self._records.items()
-            if record.status in {"completed", "failed"} and record.updated_at < cutoff
+            if record.status in finished_statuses and record.updated_at < cutoff
         ]
         for task_id in expired:
             self._records.pop(task_id, None)
@@ -139,7 +174,7 @@ class DailySelectionProgressTracker:
         finished = sorted(
             (record.updated_at, task_id)
             for task_id, record in self._records.items()
-            if record.status in {"completed", "failed"}
+            if record.status in finished_statuses
         )
         for _updated_at, task_id in finished[: max(1, len(self._records) - self._max_records + 1)]:
             self._records.pop(task_id, None)

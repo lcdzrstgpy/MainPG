@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import {
+  excludePreviewItem,
   finalizeProductPreview,
   getPreviewFinalizeRun,
+  restorePreviewItem,
   retryMediaAsset,
   retryPreviewFinalizeRun,
   saveProductPreview,
@@ -37,6 +40,8 @@ const API_BASE = '/api/product-processing';
 const MAX_UPLOAD_FILES = 20;
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const ALLOWED_UPLOAD_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const PRECHECK_PAGE_SIZES = [10, 30, 50, 100] as const;
+const PRECHECK_DEFAULT_PAGE_SIZE = 30;
 
 type Props = {
   taskId: number;
@@ -200,6 +205,11 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [activeImage, setActiveImage] = useState<string | null>(null);
   const [undoSnackbar, setUndoSnackbar] = useState<UndoSnackbar | null>(null);
   const refreshRef = useRef<PrecheckFinalizeRefresh | null>(null);
+  const [pageSize, setPageSize] = useState<number>(PRECHECK_DEFAULT_PAGE_SIZE);
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState('');
+  const [imageZoomed, setImageZoomed] = useState(false);
+  const [expandedDraftIds, setExpandedDraftIds] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (!isActive) setActiveImage(null);
@@ -302,6 +312,48 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     return () => window.clearTimeout(timer);
   }, [undoSnackbar]);
 
+  // 图片预览：锁定背景滚动、ESC 关闭、打开时重置缩放。
+  useEffect(() => {
+    if (!activeImage) return undefined;
+    setImageZoomed(false);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActiveImage(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [activeImage]);
+
+  // 分页 + 序列号搜索（仅影响展示；保存/导出/计数仍作用于全部商品）。
+  // 必须放在 `if (!preview)` 提前返回之前，保证各渲染轮次 Hook 数量一致。
+  const allItems = (preview?.items ?? []).filter((item) => !item.excluded);
+  const excludedItems = (preview?.items ?? []).filter((item) => item.excluded);
+  const filteredItems = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    if (!keyword) return allItems;
+    return allItems.filter((item) => {
+      const candidates = [
+        item.skc,
+        item.core_fields?.sku,
+        String(item.item_id),
+        item.product_draft_id != null ? String(item.product_draft_id) : '',
+      ];
+      return candidates.some((value) => value && value.toLowerCase().includes(keyword));
+    });
+  }, [allItems, search]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pagedItems = filteredItems.slice((safePage - 1) * pageSize, safePage * pageSize);
+
   if (!preview) {
     return (
       <div className="verify-page">
@@ -383,7 +435,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   };
 
   const setField = (draftId: number, key: keyof PreviewCoreFields, value: string) => {
-    const item = preview.items.find((candidate) => (candidate.product_draft_id ?? candidate.item_id) === draftId);
+    const item = allItems.find((candidate) => (candidate.product_draft_id ?? candidate.item_id) === draftId);
     if (!item) return;
     const current = editFor(item);
     const base = item.core_fields[key];
@@ -418,7 +470,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setPendingUploads((count) => count + 1);
     try {
       const data = await uploadPreviewAssets(ctx, taskId, draftId, files);
-      const item = preview.items.find((candidate) => candidate.product_draft_id === draftId);
+      const item = allItems.find((candidate) => candidate.product_draft_id === draftId);
       if (!item) throw new Error(`未找到商品草稿 #${draftId}`);
       setEdits((previous) => {
         const current = previous[draftId] ?? {};
@@ -467,7 +519,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setError('');
     setMessage('');
     try {
-      const items = preview.items
+      const items = allItems
         .filter((item) => item.product_draft_id != null)
         .map(collectDesiredState);
       const data = await saveProductPreview(ctx, taskId, items);
@@ -489,12 +541,14 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setError('');
     setMessage('');
     try {
-      const exportableItems = preview.items.filter((item) => item.exportable);
+      const exportableItems = allItems.filter((item) => item.exportable);
       if (exportableItems.length === 0) throw new Error('任务没有可完成并导出的商品');
       const missingDraft = exportableItems.find((item) => item.product_draft_id == null);
       if (missingDraft) throw new Error(`可导出商品 #${missingDraft.item_id} 缺少草稿 ID，已阻止不完整提交`);
-      const missingMain = exportableItems.find((item) => !effectiveManifest(item).main_asset_id);
-      if (missingMain) throw new Error(`${missingMain.skc || `商品 #${missingMain.item_id}`} 尚未选择主图`);
+      const missingMainItems = exportableItems.filter((item) => !effectiveManifest(item).main_asset_id);
+      if (missingMainItems.length > 0) {
+        setMessage(`${missingMainItems.length} 个商品未选择主图，导出时将自动回退使用来源主图`);
+      }
 
       const desiredItems = exportableItems.map(collectDesiredState);
       const request = await resolveFinalizeRequest(
@@ -549,7 +603,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       return;
     }
     const { draftId, undo } = undoSnackbar;
-    const item = preview.items.find((candidate) => (candidate.product_draft_id ?? candidate.item_id) === draftId);
+    const item = allItems.find((candidate) => (candidate.product_draft_id ?? candidate.item_id) === draftId);
     if (!item) return;
     setEdits((previous) => {
       const current = previous[draftId] ?? {};
@@ -560,12 +614,76 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     notify('已撤销图片删除');
   };
 
+  const replacePreview = (data: PreviewResponse) => {
+    setPreview(data);
+    setEdits({});
+    // 预检清单已变化，旧 finalize run 的快照（含已删除/新恢复的链接）已失效；
+    // 必须清除 run 状态，否则「仅重试失败图片」会复用旧快照继续被删除项阻挡。
+    setFinalizeRun(null);
+    removeSession(runStorageKey);
+    removeSession(idempotencyStorageKey);
+  };
+
+  const excludeItem = async (draftId: number) => {
+    const item = allItems.find((candidate) => candidate.product_draft_id === draftId);
+    const label = item?.skc || `商品 #${draftId}`;
+    if (!window.confirm(`确定从预检中删除「${label}」吗？删除后该商品不再参与最终导出，可在页面底部「已排除」列表中恢复。`)) return;
+    setError('');
+    setMessage('');
+    try {
+      const data = await excludePreviewItem(ctx, taskId, draftId);
+      replacePreview(data);
+      notify(`已从预检删除「${label}」`);
+    } catch (err) {
+      fail(err);
+    }
+  };
+
+  const restoreItem = async (draftId: number) => {
+    setError('');
+    setMessage('');
+    try {
+      const data = await restorePreviewItem(ctx, taskId, draftId);
+      replacePreview(data);
+      notify(`已恢复商品 #${draftId} 到预检列表`);
+    } catch (err) {
+      fail(err);
+    }
+  };
+
+  const restoreAllExcluded = async () => {
+    if (excludedItems.length === 0) return;
+    if (!window.confirm(`确定恢复全部 ${excludedItems.length} 个已删除商品吗？`)) return;
+    for (const item of excludedItems) {
+      const draftId = item.product_draft_id;
+      if (draftId == null) continue;
+      await restoreItem(draftId);
+    }
+  };
+
   const finalizing = finalizeRun?.status === 'queued' || finalizeRun?.status === 'publishing';
   const finalizeNeedsResolution = finalizeRun?.status === 'publish_failed' || finalizeRun?.status === 'stale';
   const mutationsLocked = Boolean(finalizing || startingFinalize || retrying);
-  const dirtyCount = preview.items.filter(itemIsDirty).length;
-  const exportableCount = preview.items.filter((item) => item.exportable).length;
-  const allAssets = mergeAssets(...preview.items.map(effectiveAssets));
+  const dirtyCount = allItems.filter(itemIsDirty).length;
+  const exportableCount = allItems.filter((item) => item.exportable).length;
+  const allAssets = mergeAssets(...allItems.map(effectiveAssets));
+
+  const toggleExpanded = (draftId: number) => {
+    setExpandedDraftIds((current) => {
+      const next = new Set(current);
+      if (next.has(draftId)) next.delete(draftId);
+      else next.add(draftId);
+      return next;
+    });
+  };
+
+  const expandAllItems = () => {
+    setExpandedDraftIds(new Set(allItems.map((item) => item.product_draft_id ?? item.item_id)));
+  };
+
+  const collapseAllItems = () => {
+    setExpandedDraftIds(new Set());
+  };
 
   return (
     <div className="verify-page">
@@ -597,7 +715,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
             type="button"
             className="primary"
             onClick={() => void saveAll()}
-            disabled={saving || loading || mutationsLocked || pendingUploads > 0 || preview.items.length === 0}
+            disabled={saving || loading || mutationsLocked || pendingUploads > 0 || allItems.length === 0}
           >
             {saving ? '保存中…' : `保存预检修改${dirtyCount > 0 ? `（${dirtyCount} 条有修改）` : ''}`}
           </button>
@@ -609,6 +727,32 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
             {startingFinalize ? '正在建立完成任务…' : pendingUploads > 0 ? `正在导入图片（${pendingUploads}）` : '完成预审并导出'}
           </button>
           <button type="button" onClick={() => void load()} disabled={loading || mutationsLocked}>重新加载</button>
+        </div>
+        <div className="precheck-toolbar">
+          <input
+            type="search"
+            className="precheck-search"
+            placeholder="按序列号 / SKU / 商品编号搜索"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          <label className="precheck-page-size">
+            每页
+            <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
+              {PRECHECK_PAGE_SIZES.map((size) => (
+                <option key={size} value={size}>{size} 条</option>
+              ))}
+            </select>
+          </label>
+          <span className="precheck-count">
+            {filteredItems.length > 0
+              ? `显示 ${(safePage - 1) * pageSize + 1}-${Math.min(safePage * pageSize, filteredItems.length)} / 共 ${filteredItems.length} 个商品`
+              : '共 0 个商品'}
+          </span>
+          <span className="precheck-expand-actions">
+            <button type="button" onClick={expandAllItems} disabled={allItems.length === 0}>全部展开</button>
+            <button type="button" onClick={collapseAllItems} disabled={expandedDraftIds.size === 0}>全部折叠</button>
+          </span>
         </div>
       </section>
 
@@ -624,24 +768,51 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         />
       )}
 
-      {preview.items.length === 0 && <p className="verify-empty">任务没有可预检的成功商品。</p>}
+      {allItems.length === 0 && <p className="verify-empty">任务没有可预检的成功商品。</p>}
 
-      {preview.items.map((item) => {
+      {filteredItems.length === 0 && allItems.length > 0 && (
+        <p className="verify-empty">没有匹配「{search}」的商品，请检查序列号 / SKU / 商品编号。</p>
+      )}
+
+      {pagedItems.map((item) => {
         const draftId = item.product_draft_id ?? item.item_id;
         const edit = editFor(item);
         const coreFields = effectiveCoreFields(item);
         const manifest = effectiveManifest(item);
         const assets = effectiveAssets(item);
         const hasOverrides = itemIsDirty(item);
+        const isExpanded = expandedDraftIds.has(draftId);
         return (
           <section key={item.item_id} className={`verify-section precheck-card${hasOverrides ? ' is-edited' : ''}`}>
-            <div className="verify-section-head">
-              <h2>{item.skc || `商品 #${draftId}`}</h2>
-              <span className="verify-sub">
-                {item.exportable ? '可导出' : '不可导出'} · {hasOverrides ? '已修改' : '未修改'} · 版本 {item.preview_revision} · 状态 {item.status}
-              </span>
+            <div className="precheck-card-head">
+              <button
+                type="button"
+                className="precheck-card-toggle"
+                onClick={() => toggleExpanded(draftId)}
+                aria-expanded={isExpanded}
+              >
+                <span className="precheck-chevron">{isExpanded ? '▾' : '▸'}</span>
+                <span className="precheck-card-toggle-title">{item.skc || `商品 #${draftId}`}</span>
+                {!isExpanded && item.title && <span className="precheck-card-toggle-summary">{item.title}</span>}
+                <span className="verify-sub">
+                  {item.exportable ? '可导出' : '不可导出'} · {hasOverrides ? '已修改' : '未修改'} · 版本 {item.preview_revision} · 状态 {item.status}
+                  {item.exportable && !manifest.main_asset_id && <em className="precheck-no-main-hint"> · 未选主图（导出回退来源图）</em>}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="btn-mini danger precheck-exclude-btn"
+                disabled={mutationsLocked || item.product_draft_id == null}
+                onClick={() => {
+                  if (item.product_draft_id != null) void excludeItem(item.product_draft_id);
+                }}
+                title={item.product_draft_id == null ? '缺少草稿 ID，无法删除' : '从预检中删除此商品，可随时恢复'}
+              >
+                删除
+              </button>
             </div>
 
+            {isExpanded && (
             <div className="precheck-grid">
               <div className="precheck-fields">
                 <label className="precheck-label">
@@ -727,9 +898,50 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                 />
               </div>
             </div>
+            )}
           </section>
         );
       })}
+
+      {totalPages > 1 && (
+        <div className="precheck-pagination">
+          <button type="button" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}>上一页</button>
+          <span>第 {safePage} / {totalPages} 页</span>
+          <button type="button" disabled={safePage >= totalPages} onClick={() => setPage(safePage + 1)}>下一页</button>
+        </div>
+      )}
+
+      {excludedItems.length > 0 && (
+        <section className="verify-section precheck-excluded-section">
+          <div className="precheck-excluded-head">
+            <h2>已排除的商品（{excludedItems.length}）</h2>
+            <span className="verify-sub">已从预检列表删除，不再参与最终导出；如需重新纳入，点击恢复。</span>
+            <button type="button" className="btn-mini" onClick={() => void restoreAllExcluded()} disabled={mutationsLocked}>全部恢复</button>
+          </div>
+          <ul className="precheck-excluded-list">
+            {excludedItems.map((item) => {
+              const draftId = item.product_draft_id;
+              return (
+                <li key={item.item_id}>
+                  <span className="precheck-excluded-name">{item.skc || `商品 #${draftId ?? item.item_id}`}</span>
+                  {item.title && <small className="precheck-excluded-title">{item.title}</small>}
+                  <span className="verify-sub">{item.exportable ? '可导出' : '不可导出'} · {item.status}</span>
+                  <button
+                    type="button"
+                    className="btn-mini"
+                    disabled={mutationsLocked || draftId == null}
+                    onClick={() => {
+                      if (draftId != null) void restoreItem(draftId);
+                    }}
+                  >
+                    恢复
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
 
       {undoSnackbar && (
         <div className="precheck-undo-snackbar" role="status" aria-live="polite">
@@ -739,11 +951,25 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         </div>
       )}
 
-      {activeImage && (
-        <div className="precheck-lightbox" role="dialog" aria-modal="true" aria-label="图片预览" onClick={() => setActiveImage(null)}>
-          <img src={activeImage} alt="预览大图" onClick={(event) => event.stopPropagation()} />
+      {activeImage && createPortal(
+        <div className={`precheck-lightbox${imageZoomed ? ' is-zoomed' : ''}`} role="dialog" aria-modal="true" aria-label="图片预览" onClick={() => {
+          if (imageZoomed) setImageZoomed(false);
+          else setActiveImage(null);
+        }}>
+          <div className="precheck-lightbox-stage">
+            <img
+              src={activeImage}
+              alt="预览大图"
+              onClick={(event) => {
+                event.stopPropagation();
+                setImageZoomed((zoomed) => !zoomed);
+              }}
+            />
+            <div className="precheck-lightbox-hint">{imageZoomed ? '滚动查看图片细节 · 点击图片恢复适应屏幕' : '点击图片放大查看细节'}</div>
+          </div>
           <button type="button" className="precheck-lightbox-close" aria-label="关闭" onClick={() => setActiveImage(null)}>×</button>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

@@ -5,11 +5,13 @@ import binascii
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import threading
 import time
 from typing import Any
@@ -26,10 +28,18 @@ from fastapi import FastAPI, Header, HTTPException, Request
 
 from ..billing import (
     active_pricing,
+    batch_freeze_status,
+    compute_batch_charge,
+    freeze_batch_points,
+    pricing_changelog,
+    pricing_items,
+    release_expired_batch_freezes,
     reserve_ai_usage,
     settle_ai_usage_failure,
     settle_ai_usage_success,
+    settle_batch_points,
     update_active_pricing,
+    update_pricing_items,
     usage_history,
 )
 from ..config import default_config
@@ -37,7 +47,7 @@ from ..db import init_db, transaction
 from ..modules.product_processing.domain.policy import is_safe_external_url
 from ..session import Actor
 from .auth_service import SQLiteCustomerAuthService
-from .credential_vault import CredentialVaultError, active_secret
+from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
 
@@ -113,6 +123,107 @@ class _ImageSubmitUncertain(RuntimeError):
     """The upstream may have accepted an image submit without a durable task id."""
 
 
+class _TextCredentialPool:
+    """Server-owned, least-loaded pool for text provider credentials.
+
+    The pool is intentionally in the auth service: desktop clients never receive
+    an upstream key or decide which one to use.  A 429 cools only the affected
+    credential; other enabled keys continue serving requests.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._states: dict[str, dict[str, float | int]] = {}
+
+    def acquire(self) -> tuple[dict[str, Any] | None, int]:
+        try:
+            credentials = enabled_secrets("text")
+        except CredentialVaultError:
+            raise
+        if not credentials:
+            legacy = str(os.environ.get("WH_TEXT_API_KEY") or "").strip()
+            credentials = (
+                [{"credential_id": "legacy_environment", "secret": legacy, "max_concurrency": 40, "active": True}]
+                if legacy
+                else []
+            )
+        now = time.monotonic()
+        with self._lock:
+            current_ids = {str(item["credential_id"]) for item in credentials}
+            self._states = {
+                key: value for key, value in self._states.items() if key in current_ids
+            }
+            candidates: list[tuple[float, float, dict[str, Any]]] = []
+            retry_after: list[float] = []
+            for credential in credentials:
+                credential_id = str(credential["credential_id"])
+                state = self._states.setdefault(
+                    credential_id,
+                    {"in_flight": 0, "cooldown_until": 0.0, "last_selected": 0.0, "rate_failures": 0},
+                )
+                cooldown_until = float(state["cooldown_until"])
+                if cooldown_until > now:
+                    retry_after.append(cooldown_until - now)
+                    continue
+                limit = max(1, int(credential.get("max_concurrency") or 40))
+                in_flight = int(state["in_flight"])
+                if in_flight >= limit:
+                    retry_after.append(1.0)
+                    continue
+                candidates.append((in_flight / limit, float(state["last_selected"]), credential))
+            if not candidates:
+                return None, max(1, int(min(retry_after) if retry_after else 1))
+            _, _, selected = min(candidates, key=lambda value: (value[0], value[1]))
+            selected_state = self._states[str(selected["credential_id"])]
+            selected_state["in_flight"] = int(selected_state["in_flight"]) + 1
+            selected_state["last_selected"] = now
+            return selected, 0
+
+    def release(self, credential_id: str, *, outcome: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            state = self._states.get(credential_id)
+            if state is None:
+                return
+            state["in_flight"] = max(0, int(state["in_flight"]) - 1)
+            if outcome == "rate_limited":
+                failures = min(4, int(state["rate_failures"]) + 1)
+                state["rate_failures"] = failures
+                state["cooldown_until"] = now + min(300.0, 60.0 * (2 ** (failures - 1)))
+            elif outcome == "success":
+                state["rate_failures"] = 0
+            # outcome == "transient"（上游 5xx/超时）：只释放 in_flight，不冷却。
+            # 网关对同 hash 请求允许立即重试，冷却会误伤客户端重试路径；
+            # 多 key 故障隔离由 rate_limited（上游真实 429）的指数冷却承担。
+
+    def status(self) -> dict[str, int]:
+        try:
+            credentials = enabled_secrets("text")
+        except CredentialVaultError:
+            return {"configured_keys": 0, "available_keys": 0, "available_slots": 0, "retry_after_seconds": 0}
+        now = time.monotonic()
+        with self._lock:
+            available_keys = 0
+            available_slots = 0
+            retry_after: list[float] = []
+            for credential in credentials:
+                state = self._states.get(str(credential["credential_id"]), {})
+                cooldown_until = float(state.get("cooldown_until", 0.0))
+                if cooldown_until > now:
+                    retry_after.append(cooldown_until - now)
+                    continue
+                slots = max(0, int(credential.get("max_concurrency") or 40) - int(state.get("in_flight", 0)))
+                if slots:
+                    available_keys += 1
+                    available_slots += slots
+            return {
+                "configured_keys": len(credentials),
+                "available_keys": available_keys,
+                "available_slots": available_slots,
+                "retry_after_seconds": max(0, int(min(retry_after) if retry_after else 0)),
+            }
+
+
 def _server_provider_secret(kind: str, environment_name: str) -> str:
     """Prefer the encrypted credential vault while retaining the legacy env fallback.
 
@@ -131,6 +242,69 @@ def _server_provider_secret(kind: str, environment_name: str) -> str:
             detail=f"server {kind} credential vault is unavailable",
         ) from exc
     return vaulted or legacy
+
+
+BATCH_KEY_TTL_HOURS = 6
+BATCH_KEY_PROVIDERS = (
+    # (provider kind, provider display name, fallback env name)
+    ("image", "wuyin", "WH_WUYIN_IMAGE_API_KEY"),
+    ("text", "ark", "WH_TEXT_API_KEY"),
+)
+
+
+def _issue_batch_keys(
+    database_path: Path,
+    account: dict[str, Any],
+    freeze_id: str,
+) -> list[dict[str, str]]:
+    """Issue short-lived provider keys to the client for this freeze batch.
+
+    The granted secret is returned only in the response; the audit row stores
+    the masked label so a leaked database never reveals upstream credentials.
+    """
+    account_id = str(account["account_id"])
+    workspace_id = str(account.get("workspace_id") or "default")
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(hours=BATCH_KEY_TTL_HOURS)
+    ).isoformat(timespec="seconds")
+    granted: list[dict[str, str]] = []
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for kind, provider_name, environment_name in BATCH_KEY_PROVIDERS:
+        secret = _server_provider_secret(kind, environment_name)
+        if not secret:
+            continue
+        grant_id = f"grant_{secrets.token_urlsafe(18)}"
+        label = f"{provider_name}:{kind}::{secret[-4:]}"
+        with transaction(database_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO billing_key_grants (
+                    grant_id, account_id, workspace_id, freeze_id, provider,
+                    key_label, granted_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    grant_id,
+                    account_id,
+                    workspace_id,
+                    freeze_id,
+                    provider_name,
+                    label,
+                    now,
+                    expires_at,
+                ),
+            )
+        granted.append(
+            {
+                "provider": provider_name,
+                "kind": kind,
+                "api_key": secret,
+                "expires_at": expires_at,
+                "grant_id": grant_id,
+            }
+        )
+    return granted
 
 
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
@@ -152,6 +326,30 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     )
 
     app = FastAPI(title="W-H Platform Customer Auth Service", version="0.1.0")
+
+    # 服务端文本密钥池：多 key 负载均衡 + 429 冷却（桌面端永不接触上游密钥）。
+    text_credential_pool = _TextCredentialPool()
+
+    # TTL 兜底：每小时释放超过 7 天未结算的批次冻结积分，防止崩溃/断网
+    # 导致用户积分被永久锁定。线程为守护线程，服务退出自动终止。
+    def _batch_ttl_sweep_loop() -> None:
+        while True:
+            try:
+                time.sleep(60 * 60)
+                release_expired_batch_freezes(db_path)
+            except Exception:
+                time.sleep(60 * 60)
+
+    ttl_thread = threading.Thread(
+        target=_batch_ttl_sweep_loop,
+        name="batch-freeze-ttl-sweep",
+        daemon=True,
+    )
+    ttl_thread.start()
+
+    @app.on_event("shutdown")
+    def _stop_batch_ttl_sweep() -> None:
+        pass
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -196,7 +394,74 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     @app.get("/api/customer/billing/rules")
     def billing_rules(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         _required_account(db_path, authorization)
-        return {"ok": True, "pricing": active_pricing(db_path)}
+        pricing = active_pricing(db_path)
+        try:
+            pricing["subitems"] = pricing_items(db_path)
+        except HTTPException:
+            pricing["subitems"] = None
+        return {"ok": True, "pricing": pricing}
+
+    @app.post("/api/customer/billing/batch/freeze")
+    def customer_billing_batch_freeze(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        link_count = payload.get("link_count")
+        try:
+            link_count = max(1, int(link_count))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="link_count is required") from exc
+        scope = payload.get("scope")
+        if scope is not None and not isinstance(scope, list):
+            raise HTTPException(status_code=400, detail="scope must be a list")
+        idempotency_key = str(payload.get("idempotency_key") or "").strip()
+        if idempotency_key and not 16 <= len(idempotency_key) <= 200:
+            raise HTTPException(status_code=400, detail="idempotency_key length must be 16..200")
+        freeze = freeze_batch_points(
+            db_path,
+            _billing_actor(account),
+            link_count=link_count,
+            scope=[str(item) for item in (scope or [])] if scope is not None else None,
+            idempotency_key=idempotency_key,
+        )
+        keys = _issue_batch_keys(db_path, account, freeze["freeze_id"])
+        return {"ok": True, "freeze": {**freeze, "keys": keys}}
+
+    @app.post("/api/customer/billing/batch/settle")
+    def customer_billing_batch_settle(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        freeze_id = str(payload.get("freeze_id") or "").strip()
+        items = payload.get("items")
+        if not freeze_id:
+            raise HTTPException(status_code=400, detail="freeze_id is required")
+        if not isinstance(items, list):
+            raise HTTPException(status_code=400, detail="items must be a list")
+        result = settle_batch_points(
+            db_path,
+            freeze_id,
+            item_results=items,
+            expected_account_id=str(account["account_id"]),
+        )
+        return {"ok": True, "settle": result}
+
+    @app.get("/api/customer/billing/batch/{freeze_id}")
+    def customer_billing_batch_status(
+        freeze_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        return {
+            "ok": True,
+            "freeze": batch_freeze_status(
+                db_path,
+                freeze_id,
+                expected_account_id=str(account["account_id"]),
+            ),
+        }
 
     @app.get("/api/customer/billing/usage")
     def billing_usage_history(
@@ -279,6 +544,83 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 payload=payload,
                 updated_by=str(admin["account_id"]),
             ),
+        }
+
+    @app.get("/api/admin/billing/pricing/items")
+    def admin_billing_pricing_items(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        _require_billing_admin(db_path, authorization)
+        return {"ok": True, "pricing": pricing_items(db_path)}
+
+    @app.put("/api/admin/billing/pricing/items")
+    def update_admin_billing_pricing_items(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        admin = _require_billing_admin(db_path, authorization)
+        items = payload.get("items")
+        if not isinstance(items, dict):
+            raise HTTPException(status_code=400, detail="items must be an object")
+        reason = str(payload.get("change_reason") or "").strip()
+        if not reason:
+            raise HTTPException(status_code=400, detail="change_reason is required")
+        return {
+            "ok": True,
+            "pricing": update_pricing_items(
+                db_path,
+                items=items,
+                updated_by=str(admin["account_id"]),
+                change_reason=reason,
+            ),
+        }
+
+    @app.get("/api/admin/billing/pricing/versions")
+    def admin_billing_pricing_versions(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        _require_billing_admin(db_path, authorization)
+        return {"ok": True, "items": pricing_changelog(db_path, limit=200)}
+
+    @app.get("/api/admin/billing/pricing/changelog")
+    def admin_billing_pricing_changelog(
+        limit: int = 50,
+        cursor_id: int | None = None,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _require_billing_admin(db_path, authorization)
+        return {"ok": True, "items": pricing_changelog(db_path, limit=limit, cursor_id=cursor_id)}
+
+    @app.get("/api/admin/billing/keys/grants")
+    def admin_billing_key_grants(
+        limit: int = 100,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _require_billing_admin(db_path, authorization)
+        page_size = max(1, min(int(limit), 500))
+        with transaction(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT grant_id, account_id, workspace_id, freeze_id, provider,
+                       key_label, granted_at, expires_at, revoked_at
+                FROM billing_key_grants
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (page_size,),
+            ).fetchall()
+        return {
+            "ok": True,
+            "items": [
+                {
+                    "grant_id": str(row["grant_id"]),
+                    "account_id": str(row["account_id"]),
+                    "workspace_id": str(row["workspace_id"]),
+                    "freeze_id": str(row["freeze_id"]),
+                    "provider": str(row["provider"]),
+                    "key_label": str(row["key_label"]),
+                    "granted_at": str(row["granted_at"]),
+                    "expires_at": str(row["expires_at"]),
+                    "revoked_at": str(row["revoked_at"] or ""),
+                }
+                for row in rows
+            ],
         }
 
     @app.get("/api/admin/billing/usage")
@@ -368,9 +710,6 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         request_hash = _gateway_request_hash(
             {"model": TEXT_MODEL, "messages": messages}
         )
-        api_key = _server_provider_secret("text", "WH_TEXT_API_KEY")
-        if not api_key:
-            raise HTTPException(status_code=503, detail="server text credential is not configured")
         claim = _claim_gateway_request(
             db_path,
             usage_id=usage_id,
@@ -381,15 +720,56 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         if claim.cached_response is not None:
             return claim.cached_response
         try:
-            response_payload = _sanitized_gateway_response(
-                _server_text_chat(api_key, messages),
-                secrets=(api_key,),
+            credential, retry_after = text_credential_pool.acquire()
+        except CredentialVaultError as exc:
+            raise HTTPException(status_code=503, detail="server text credential vault is unavailable") from exc
+        if credential is None:
+            # 未配置任何文本凭据 → 配置错误（503）；已配置但满载/冷却 → 429
+            try:
+                has_credentials = bool(enabled_secrets("text") or os.environ.get("WH_TEXT_API_KEY"))
+            except CredentialVaultError:
+                has_credentials = False
+            if not has_credentials:
+                raise HTTPException(status_code=503, detail="server text credential is not configured")
+            raise HTTPException(
+                status_code=429,
+                detail="server text credential capacity is temporarily exhausted",
+                headers={"Retry-After": str(max(1, retry_after))},
             )
+        credential_id = str(credential["credential_id"])
+        # 只记录不透明的服务器凭据 id，供后续对账；永不落明文密钥。
+        _record_text_credential_usage(db_path, usage_id, credential_id)
+        try:
+            response_payload = _sanitized_gateway_response(
+                _server_text_chat(str(credential["secret"]), messages),
+                secrets=(str(credential["secret"]),),
+            )
+            text_credential_pool.release(credential_id, outcome="success")
             _complete_gateway_request(db_path, usage_id, request_hash, response_payload)
             return response_payload
-        except Exception:
+        except HTTPException as exc:
+            outcome = (
+                "rate_limited"
+                if exc.status_code == 429
+                else "transient"
+                if exc.status_code >= 500
+                else "rejected"
+            )
+            text_credential_pool.release(credential_id, outcome=outcome)
             _fail_gateway_request(db_path, usage_id, request_hash)
             raise
+        except Exception:
+            text_credential_pool.release(credential_id, outcome="transient")
+            _fail_gateway_request(db_path, usage_id, request_hash)
+            raise
+
+    @app.get("/api/customer/ai/text-capacity")
+    def server_text_capacity(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Expose pool capacity (counts only, never credentials) for diagnostics."""
+        _required_account(db_path, authorization)
+        return {"ok": True, "capacity": text_credential_pool.status()}
 
     @app.post("/api/customer/ai/image")
     def server_managed_ai_image(
@@ -1395,6 +1775,32 @@ def _bounded_provider_json(response: requests.Response, *, provider: str) -> Any
         ) from exc
 
 
+def _record_text_credential_usage(
+    database_path: Path,
+    usage_id: str,
+    credential_id: str,
+) -> None:
+    """Attach only an opaque server credential id to an existing usage event."""
+    with transaction(database_path) as conn:
+        row = conn.execute(
+            "SELECT metadata_json FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage_id,),
+        ).fetchone()
+        if row is None:
+            return
+        try:
+            metadata = json.loads(str(row["metadata_json"] or "{}"))
+        except json.JSONDecodeError:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["server_text_credential_id"] = credential_id
+        conn.execute(
+            "UPDATE billing_ai_usage_events SET metadata_json = ? WHERE usage_id = ?",
+            (json.dumps(metadata, ensure_ascii=False, sort_keys=True), usage_id),
+        )
+
+
 def _server_text_chat(api_key: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
     if not _TEXT_GATEWAY_SEMAPHORE.acquire(timeout=300):
         raise HTTPException(status_code=503, detail="server text request queue timed out")
@@ -1428,7 +1834,11 @@ def _server_text_chat(api_key: str, messages: list[dict[str, Any]]) -> dict[str,
         if not 200 <= status_code < 300:
             if 300 <= status_code < 400:
                 raise HTTPException(status_code=502, detail="server text provider redirected the request")
-            if status_code == 429 or status_code >= 500:
+            if status_code == 429:
+                # 保留上游 429：文本密钥池按 rate_limited 指数冷却该 key，
+                # 其余 key 继续服务（多 key 故障隔离）。
+                raise HTTPException(status_code=429, detail="server text provider rate limited this credential")
+            if status_code >= 500:
                 raise HTTPException(status_code=503, detail="server text provider is temporarily unavailable")
             raise HTTPException(status_code=status_code, detail="server text provider rejected the request")
         if not isinstance(decoded, dict):

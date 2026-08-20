@@ -314,6 +314,7 @@ export type PreviewItem = {
   preview_revision: number;
   result_version: string;
   exportable: boolean;
+  excluded: boolean;
   skc: string;
   status: string;
   reason: string;
@@ -342,6 +343,7 @@ export type PreviewResponse = {
   };
   item_count: number;
   items: PreviewItem[];
+  excluded_draft_ids: number[];
 };
 
 export type PreviewExportResponse = {

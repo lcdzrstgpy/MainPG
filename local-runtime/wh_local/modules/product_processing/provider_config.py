@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .server_ai_proxy import granted_keys_snapshot
+
 AI_PROVIDER = "aicoming"
 # 默认中转站：用户通过 https://station-88.aicoming.top/ 购买 key（运营转售模式）。
 # 若用户在"系统配置"里填了 base_url 或设置 WH_AI_BASE_URL，则以用户配置为准。
@@ -96,6 +98,13 @@ def resolve_ai_provider() -> dict[str, Any]:
 
     fallback = list(TEXT_MODEL_FALLBACK_ORDER)
 
+    # 直连模式：批次冻结时服务端下发短期密钥。有 wuyin key 时图片直接打无印
+    # 上游（media._request_wuyin_image 已存在），有 ark key 时文本/识图由
+    # doubao_ark 直连火山方舟。无下发密钥时保持服务端托管（灰度双轨）。
+    granted = granted_keys_snapshot()
+    direct_wuyin_key = str(granted.get("wuyin") or "").strip()
+    direct_mode = bool(direct_wuyin_key or granted.get("ark"))
+
     # 解密后的 COS 配置仅作为后端内部运行时数据传给图片发布器；安全摘要不会回显它。
     sys_cos: dict[str, str] = (
         {
@@ -112,6 +121,7 @@ def resolve_ai_provider() -> dict[str, Any]:
         "provider": AI_PROVIDER,
         "base_url": text_base_url,
         "api_key": text_api_key,
+        "direct_mode": direct_mode,
         "text_model": text_model,
         "text_model_fallback_order": fallback,
         "image_model": image_model,
@@ -130,8 +140,8 @@ def resolve_ai_provider() -> dict[str, Any]:
         "image_timeout_seconds": IMAGE_AI_TIMEOUT_SECONDS,
         # 系统配置附加信息（供 _media_config_provider 使用）
         "_sys_image_ai": {
-            "base_url": "server-managed-wuyin",
-            "api_key": "server-managed",
+            "base_url": IMAGE_AI_BASE_URL if direct_wuyin_key else "server-managed-wuyin",
+            "api_key": direct_wuyin_key if direct_wuyin_key else "server-managed",
             "model": image_model,
             "reference_model": reference_image_model,
             "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,

@@ -16,6 +16,7 @@ export function App() {
   const [enteredWorkspace, setEnteredWorkspace] = useState(false);
   const [playEntryAnimation, setPlayEntryAnimation] = useState(false);
   const [ready, setReady] = useState(false);
+  const [accountRole, setAccountRole] = useState("operator");
 
   useEffect(() => {
     const token = getAuthToken();
@@ -24,7 +25,10 @@ export function App() {
       return;
     }
     httpJson<MeResponse>("/api/customer/me")
-      .then(() => setEnteredWorkspace(true))
+      .then((me) => {
+        setEnteredWorkspace(true);
+        setAccountRole(me.role ?? "operator");
+      })
       .catch(() => {
         clearAuthSession();
         setEnteredWorkspace(false);
@@ -54,6 +58,7 @@ export function App() {
   return <>
     {enteredWorkspace ? (
       <WorkspaceShell
+        currentRole={accountRole}
         onSignOut={signOut}
         playEntryAnimation={playEntryAnimation}
         onEntryAnimationComplete={() => setPlayEntryAnimation(false)}

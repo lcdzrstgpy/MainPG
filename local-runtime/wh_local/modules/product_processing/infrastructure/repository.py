@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import Select, and_, delete, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from .database import ProductProcessingDatabase
@@ -69,47 +70,69 @@ class ProductProcessingRepository:
         feature_key: str,
         account_id: str,
     ) -> dict[str, Any]:
-        """Return the unfinished attempt or create the next durable ordinal."""
-        with self.database.sessions.begin() as session:
-            task = session.get(ProcessingTaskRow, task_id)
-            item = session.get(ProcessingTaskItemRow, item_id)
-            if (
-                task is None
-                or item is None
-                or task.workspace_id != workspace_id
-                or item.task_id != task_id
-            ):
-                raise LookupError("product processing task item not found")
-            latest = session.scalar(
-                select(ProductProcessingBillingAttemptRow)
-                .where(
-                    ProductProcessingBillingAttemptRow.task_id == task_id,
-                    ProductProcessingBillingAttemptRow.item_id == item_id,
-                    ProductProcessingBillingAttemptRow.kind == kind,
+        """Return the unfinished attempt or create the next durable ordinal.
+
+        并发安全：同一 item/kind 的 ordinal 与 idempotency_key 唯一；若多个
+        调用方在事务提交前同时看到同一 latest，后提交者会撞 UNIQUE 约束，
+        这里捕获后重读胜者记录返回（幂等），而不是向上抛冲突。
+        """
+        try:
+            with self.database.sessions.begin() as session:
+                task = session.get(ProcessingTaskRow, task_id)
+                item = session.get(ProcessingTaskItemRow, item_id)
+                if (
+                    task is None
+                    or item is None
+                    or task.workspace_id != workspace_id
+                    or item.task_id != task_id
+                ):
+                    raise LookupError("product processing task item not found")
+                latest = session.scalar(
+                    select(ProductProcessingBillingAttemptRow)
+                    .where(
+                        ProductProcessingBillingAttemptRow.task_id == task_id,
+                        ProductProcessingBillingAttemptRow.item_id == item_id,
+                        ProductProcessingBillingAttemptRow.kind == kind,
+                    )
+                    .order_by(ProductProcessingBillingAttemptRow.attempt_ordinal.desc())
+                    .limit(1)
                 )
-                .order_by(ProductProcessingBillingAttemptRow.attempt_ordinal.desc())
-                .limit(1)
-            )
-            if latest is not None and not latest.settlement_state.startswith("settled_"):
-                if latest.account_id != account_id or latest.feature_key != feature_key:
-                    raise PermissionError("billing attempt ownership or feature mismatch")
-                return self._billing_attempt(latest)
-            ordinal = int(latest.attempt_ordinal if latest is not None else 0) + 1
-            row = ProductProcessingBillingAttemptRow(
-                workspace_id=workspace_id,
-                task_id=task_id,
-                item_id=item_id,
-                kind=kind,
-                feature_key=feature_key,
-                account_id=account_id,
-                attempt_ordinal=ordinal,
-                idempotency_key=(
-                    f"product_processing:{task_id}:{item_id}:{kind}:attempt:{ordinal}"
-                ),
-            )
-            session.add(row)
-            session.flush()
-            return self._billing_attempt(row)
+                if latest is not None and not latest.settlement_state.startswith("settled_"):
+                    if latest.account_id != account_id or latest.feature_key != feature_key:
+                        raise PermissionError("billing attempt ownership or feature mismatch")
+                    return self._billing_attempt(latest)
+                ordinal = int(latest.attempt_ordinal if latest is not None else 0) + 1
+                row = ProductProcessingBillingAttemptRow(
+                    workspace_id=workspace_id,
+                    task_id=task_id,
+                    item_id=item_id,
+                    kind=kind,
+                    feature_key=feature_key,
+                    account_id=account_id,
+                    attempt_ordinal=ordinal,
+                    idempotency_key=(
+                        f"product_processing:{task_id}:{item_id}:{kind}:attempt:{ordinal}"
+                    ),
+                )
+                session.add(row)
+                session.flush()
+                return self._billing_attempt(row)
+        except IntegrityError:
+            # 并发撞车：另一调用方已提交相同 ordinal，重读其最新记录并返回。
+            with self.database.sessions.begin() as session:
+                latest = session.scalar(
+                    select(ProductProcessingBillingAttemptRow)
+                    .where(
+                        ProductProcessingBillingAttemptRow.task_id == task_id,
+                        ProductProcessingBillingAttemptRow.item_id == item_id,
+                        ProductProcessingBillingAttemptRow.kind == kind,
+                    )
+                    .order_by(ProductProcessingBillingAttemptRow.attempt_ordinal.desc())
+                    .limit(1)
+                )
+                if latest is not None and not latest.settlement_state.startswith("settled_"):
+                    return self._billing_attempt(latest)
+                raise
 
     def record_product_billing_reservation(
         self,
@@ -733,6 +756,24 @@ class ProductProcessingRepository:
             row.status = status
             row.updated_at = utc_now()
         return self.get_task(task_id, workspace_id)
+
+    def merge_task_settings(
+        self,
+        task_id: int,
+        workspace_id: str = "local",
+        **updates: Any,
+    ) -> dict[str, Any] | None:
+        """Merge field updates into the task settings JSON atomically."""
+        with self.database.sessions.begin() as session:
+            row = session.get(ProcessingTaskRow, task_id)
+            if row is None or row.workspace_id != workspace_id:
+                return None
+            settings = dict(loads(row.settings_json, {}) or {})
+            settings.update(updates)
+            row.settings_json = dumps(settings)
+            row.updated_at = utc_now()
+            session.flush()
+            return self._task(self._load_task(session, row.id))
 
     def finish_task(
         self,

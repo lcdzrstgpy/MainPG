@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from datetime import datetime
 import re
+import threading
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .budget import BudgetState, TaskApiBudget, credential_fingerprint, is_credential_fingerprint
@@ -79,12 +80,14 @@ class DailySelectionCollector:
         provider_credential_fingerprint: str | None = None,
         clock: Callable[[], datetime] | None = None,
         progress_callback: CollectionProgressCallback | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         self._workspace_id = workspace_id
         self._provider = provider
         self._budget = budget
         self._clock = clock or datetime.now
         self._progress_callback = progress_callback
+        self._cancel_event = cancel_event
         inherited = getattr(provider, "credential_fingerprint", None)
         fingerprint = provider_credential_fingerprint or inherited
         if fingerprint is None and provider_credentials is not None:
@@ -100,8 +103,15 @@ class DailySelectionCollector:
         candidates: list[CollectedCandidate] = []
         detail_errors: dict[str, DailySelectionError] = {}
         search_calls = image_search_calls = detail_calls = api_calls = 0
+        cancelled = False
         collection_time = self._clock()
         self._budget.start()
+
+        def _cancel_requested() -> bool:
+            if self._cancel_event is not None and self._cancel_event.is_set():
+                return True
+            return False
+
         latest_budget = self._budget.state(
             workspace_id=self._workspace_id,
             provider_fingerprint=self._provider_fingerprint,
@@ -110,24 +120,27 @@ class DailySelectionCollector:
         )
 
         if criteria.collection_mode == "image":
-            self._progress("searching", 0, 1)
-            latest_budget = self._reserve(criteria, _IMAGE_OPERATION_BUDGET_COST, collection_time)
-            if not latest_budget.reservation_granted:
-                errors.append(_budget_error())
+            if _cancel_requested():
+                cancelled = True
             else:
-                response = self._provider.search_by_image(criteria)
-                actual_calls = len(response.audits)
-                latest_budget = self._settle(criteria, _IMAGE_OPERATION_BUDGET_COST, actual_calls, collection_time)
-                image_search_calls = int(any(audit.operation == "item_search_img" for audit in response.audits))
-                api_calls += actual_calls
-                attempts.append(QueryAttempt(None, False, None, response.audits))
-                if not _valid_image_audits(response):
-                    errors.append(_provider_sequence_error())
+                self._progress("searching", 0, 1)
+                latest_budget = self._reserve(criteria, _IMAGE_OPERATION_BUDGET_COST, collection_time)
+                if not latest_budget.reservation_granted:
+                    errors.append(_budget_error())
                 else:
-                    candidates.extend(_collected_candidates(response, criteria.reference_image_url))
-                if response.error is not None:
-                    errors.append(response.error)
-                self._progress("searching", 1, 1)
+                    response = self._provider.search_by_image(criteria)
+                    actual_calls = len(response.audits)
+                    latest_budget = self._settle(criteria, _IMAGE_OPERATION_BUDGET_COST, actual_calls, collection_time)
+                    image_search_calls = int(any(audit.operation == "item_search_img" for audit in response.audits))
+                    api_calls += actual_calls
+                    attempts.append(QueryAttempt(None, False, None, response.audits))
+                    if not _valid_image_audits(response):
+                        errors.append(_provider_sequence_error())
+                    else:
+                        candidates.extend(_collected_candidates(response, criteria.reference_image_url))
+                    if response.error is not None:
+                        errors.append(response.error)
+                    self._progress("searching", 1, 1)
         else:
             queries = _queries(criteria)
             search_completed = 0
@@ -135,6 +148,9 @@ class DailySelectionCollector:
             if max_parallel <= 1:
                 # 串行模式：保持原有行为
                 for query, expanded in queries:
+                    if _cancel_requested():
+                        cancelled = True
+                        break
                     latest_budget = self._reserve(criteria, 1, collection_time)
                     if not latest_budget.reservation_granted:
                         errors.append(_budget_error())
@@ -164,13 +180,16 @@ class DailySelectionCollector:
                 response_by_keyword: dict[str, ProviderCallResult] = {}
                 ordered_queries: list[tuple[str, bool]] = list(queries)
                 _reserve_all = True
-                for _ in ordered_queries:
-                    latest_budget = self._reserve(criteria, 1, collection_time)
-                    if not latest_budget.reservation_granted:
-                        errors.append(_budget_error())
-                        _reserve_all = False
-                        break
-                if _reserve_all:
+                if _cancel_requested():
+                    cancelled = True
+                else:
+                    for _ in ordered_queries:
+                        latest_budget = self._reserve(criteria, 1, collection_time)
+                        if not latest_budget.reservation_granted:
+                            errors.append(_budget_error())
+                            _reserve_all = False
+                            break
+                if _reserve_all and not cancelled:
                     from concurrent.futures import ThreadPoolExecutor, as_completed
 
                     def _search(kw: str) -> tuple[str, ProviderCallResult]:
@@ -227,9 +246,14 @@ class DailySelectionCollector:
         detail_targets = list(enumerate(unique))
         if not has_sku_filter:
             detail_targets = detail_targets[: max(criteria.detail_count, len(unique))]
+        if _cancel_requested():
+            cancelled = True
         if max_parallel <= 1:
             self._progress("details", 0, len(detail_targets))
             for index, collected in detail_targets:
+                if _cancel_requested():
+                    cancelled = True
+                    break
                 latest_budget = self._reserve(criteria, 1, collection_time)
                 if not latest_budget.reservation_granted:
                     errors.append(_budget_error())
@@ -258,6 +282,9 @@ class DailySelectionCollector:
             # 并行拉取详情：按候选顺序逐个预占预算，预算不足时只处理已预占的候选
             budgeted_items: list[tuple[int, CollectedCandidate]] = []
             for idx, collected in detail_targets:
+                if _cancel_requested():
+                    cancelled = True
+                    break
                 latest_budget = self._reserve(criteria, 1, collection_time)
                 if not latest_budget.reservation_granted:
                     errors.append(_budget_error())
@@ -309,6 +336,10 @@ class DailySelectionCollector:
                                     collected.reference_image_url,
                                 )
                             self._progress("details", detail_calls, len(budgeted_items))
+                            # 取消后不再补充新任务，等待已提交的请求跑完即结束
+                            if _cancel_requested():
+                                cancelled = True
+                                continue
                             # 补充一个新任务，保持并发窗口稳定
                             try:
                                 nidx, nitem = next(it)
@@ -322,7 +353,7 @@ class DailySelectionCollector:
                 self._progress("details", 0, 0)
 
         derived_terms = _titles(unique) if criteria.collection_mode == "image" and criteria.selection_scope == "divergent" else ()
-        status = _status(unique, errors)
+        status = "cancelled" if cancelled else _status(unique, errors)
         return CollectionResult(
             status=status,
             query_attempts=tuple(attempts),

@@ -82,7 +82,7 @@ export type BillingUsageEntry = {
   reserved_points: number;
   charged_points: number;
   refunded_points: number;
-  status: "reserved" | "succeeded" | "failed";
+  status: "reserved" | "succeeded" | "failed" | "frozen";
   provider: string;
   model: string;
   input_tokens: number;
@@ -91,7 +91,7 @@ export type BillingUsageEntry = {
   error_message: string;
   created_at: string;
   settled_at: string;
-  rule_version: number | "legacy";
+  rule_version: number | string | "legacy";
   task: string | number;
 };
 

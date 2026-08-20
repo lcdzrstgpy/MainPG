@@ -39,6 +39,7 @@ from ..customer.email_sender import TencentCloudSESEmailSender
 from ..customer.local_session import LocalSessionService
 from ..customer.remote_client import CustomerAuthClient
 from ..customer.routes import create_customer_router
+from ..customer.admin_proxy import create_admin_proxy_router
 from ..data_collection import (
     DailySelectionActor,
     DailySelectionRouteDependencies,
@@ -207,6 +208,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
     customer_sessions = LocalSessionService(SQLiteCustomerSessionStore(db_path))
     app.include_router(create_customer_router(customer_auth, customer_sessions))
+    if remote_customer_auth.configured():
+        app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
 
     app.include_router(create_basic_settings_router(db_path))
     ai_service_assets = config.data_dir / "ai-service" / "assets"

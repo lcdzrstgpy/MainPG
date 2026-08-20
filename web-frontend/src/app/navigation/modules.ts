@@ -9,7 +9,8 @@ export type WorkspaceModuleId =
   | "profit_activity"
   | "profit_activity_products"
   | "price_verification"
-  | "personal_center";
+  | "personal_center"
+  | "system_admin";
 
 export type WorkspaceNavigationGroupId = "product_workflow" | "sourcing_workflow";
 
@@ -20,6 +21,8 @@ export type WorkspaceModule = {
   iconClass?: string;
   description: string;
   hiddenFromSidebar?: boolean;
+  /** 仅 admin/owner 角色可见并可使用（前端隐藏 + 服务端鉴权双向控制）。 */
+  adminOnly?: boolean;
 };
 
 export type WorkspaceNavigationGroup = {
@@ -110,6 +113,15 @@ const personalCenter: WorkspaceModule = {
   description: "账户资料、积分钱包、充值订单与服务器账本安全状态",
 };
 
+const systemAdmin: WorkspaceModule = {
+  id: "system_admin",
+  label: "系统管理",
+  icon: "",
+  iconClass: "iconfont icon-key",
+  description: "定价规则引擎、密钥发放记录与变更审计日志",
+  adminOnly: true,
+};
+
 const collectionPanel: WorkspaceModule = {
   id: "daily_selection_collection",
   label: "采集面板",
@@ -149,6 +161,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     children: [priceVerification, profitActivity, productLibrary],
   },
   personalCenter,
+  systemAdmin,
 ];
 
 export const workspacePageModules: WorkspaceModule[] = [
@@ -163,4 +176,5 @@ export const workspacePageModules: WorkspaceModule[] = [
   profitActivity,
   productLibrary,
   personalCenter,
+  systemAdmin,
 ];

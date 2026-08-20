@@ -4,9 +4,11 @@ import {
   isWorkspaceNavigationGroup,
   workspaceModules,
   workspacePageModules,
+  type WorkspaceModule,
   type WorkspaceModuleId,
   type WorkspaceNavigationGroup,
   type WorkspaceNavigationGroupId,
+  type WorkspaceNavigationItem,
 } from "../navigation/modules";
 import { Sidebar } from "./Sidebar";
 import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
@@ -26,6 +28,7 @@ import {
   markDimensionNotificationRead,
 } from "../../modules/product_processing/api/dimensionCanvasApi";
 import { PersonalCenterPage } from "../../modules/personal_center/pages/PersonalCenterPage";
+import { SystemAdminPage } from "../../modules/basic_settings/pages/SystemAdminPage";
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
@@ -34,6 +37,7 @@ import { BrandEntryAnimation } from "../../shared/components/BrandEntryAnimation
 import { WorkspaceTabScrollStore } from "./workspaceTabState";
 
 type WorkspaceShellProps = {
+  currentRole?: string;
   onSignOut: () => void;
   playEntryAnimation?: boolean;
   onEntryAnimationComplete?: () => void;
@@ -43,25 +47,42 @@ const MAX_COLLECTION_PANELS = 6;
 const MAX_PROCESSING_PANELS = 3;
 const NARROW_DESKTOP_QUERY = "(min-width: 801px) and (max-width: 1100px)";
 
-const flatModules = workspacePageModules;
-const navigationGroups = workspaceModules.filter(isWorkspaceNavigationGroup);
-
-function navigationGroupForModule(id: WorkspaceModuleId) {
-  return navigationGroups.find((group) => group.children.some((child) => child.id === id));
+function isAdminRole(role: string | undefined): boolean {
+  const normalized = (role ?? "operator").toLowerCase();
+  return normalized === "admin" || normalized === "owner";
 }
 
-function moduleTab(id: WorkspaceModuleId): WorkspaceTab {
+/** 按角色过滤 adminOnly 模块；非 admin 只保留普通模块与包含可见子项的分组。 */
+function filterModulesForRole(items: WorkspaceNavigationItem[], isAdmin: boolean): WorkspaceNavigationItem[] {
+  if (isAdmin) return items;
+  const visible: WorkspaceNavigationItem[] = [];
+  for (const item of items) {
+    if (isWorkspaceNavigationGroup(item)) {
+      const children = item.children.filter((child) => !child.adminOnly);
+      if (children.length) visible.push({ ...item, children });
+    } else if (!item.adminOnly) {
+      visible.push(item);
+    }
+  }
+  return visible;
+}
+
+function navigationGroupForModule(id: WorkspaceModuleId, groups: WorkspaceNavigationGroup[]) {
+  return groups.find((group) => group.children.some((child) => child.id === id));
+}
+
+function moduleTab(id: WorkspaceModuleId, flatModules: WorkspaceModule[]): WorkspaceTab {
   const module = flatModules.find((item) => item.id === id)!;
   return { key: id, moduleId: id, label: module.label, icon: module.icon, iconClass: module.iconClass };
 }
 
-export function WorkspaceShell({ onSignOut, playEntryAnimation = false, onEntryAnimationComplete = () => undefined }: WorkspaceShellProps) {
+export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryAnimation = false, onEntryAnimationComplete = () => undefined }: WorkspaceShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [isNarrowDesktop, setIsNarrowDesktop] = useState(() => window.matchMedia(NARROW_DESKTOP_QUERY).matches);
   const [expandedGroupId, setExpandedGroupId] = useState<WorkspaceNavigationGroupId | null>(null);
   const [activeTabKey, setActiveTabKey] = useState("dashboard");
-  const [tabs, setTabs] = useState<WorkspaceTab[]>([moduleTab("dashboard")]);
+  const [tabs, setTabs] = useState<WorkspaceTab[]>([moduleTab("dashboard", workspacePageModules)]);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
   const [dimensionNotifications, setDimensionNotifications] = useState<DimensionNotification[]>([]);
   const [showScrollTop, setShowScrollTop] = useState(false);
@@ -71,7 +92,11 @@ export function WorkspaceShell({ onSignOut, playEntryAnimation = false, onEntryA
   const dimensionOpenRequests = useRef(new Map<string, Promise<DimensionCanvasItem>>());
   const contentRef = useRef<HTMLDivElement>(null);
   const scrollPositions = useRef(new WorkspaceTabScrollStore());
-  const modulesById = useMemo(() => new Map(flatModules.map((module) => [module.id, module])), []);
+  const isAdmin = isAdminRole(currentRole);
+  const visibleModules = useMemo(() => filterModulesForRole(workspaceModules, isAdmin), [isAdmin]);
+  const flatModules = useMemo(() => filterModulesForRole(workspacePageModules, isAdmin) as WorkspaceModule[], [isAdmin]);
+  const navigationGroups = useMemo(() => visibleModules.filter(isWorkspaceNavigationGroup), [visibleModules]);
+  const modulesById = useMemo(() => new Map(flatModules.map((module) => [module.id, module])), [flatModules]);
   const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0];
   const activeModuleId = activeTab?.moduleId ?? "dashboard";
 
@@ -208,8 +233,8 @@ export function WorkspaceShell({ onSignOut, playEntryAnimation = false, onEntryA
 
   const openModule = (id: WorkspaceModuleId) => {
     if (id === "daily_selection_collection") return;
-    setExpandedGroupId(navigationGroupForModule(id)?.id ?? null);
-    setTabs((current) => current.some((tab) => tab.key === id) ? current : [...current, moduleTab(id)]);
+    setExpandedGroupId(navigationGroupForModule(id, navigationGroups)?.id ?? null);
+    setTabs((current) => current.some((tab) => tab.key === id) ? current : [...current, moduleTab(id, flatModules)]);
     activateTab(id);
     setWorkspaceNotice("");
   };
@@ -225,7 +250,7 @@ export function WorkspaceShell({ onSignOut, playEntryAnimation = false, onEntryA
 
   const selectTab = (key: string) => {
     const tab = tabs.find((item) => item.key === key);
-    if (tab) setExpandedGroupId(navigationGroupForModule(tab.moduleId)?.id ?? null);
+    if (tab) setExpandedGroupId(navigationGroupForModule(tab.moduleId, navigationGroups)?.id ?? null);
     activateTab(key);
   };
 
@@ -235,8 +260,8 @@ export function WorkspaceShell({ onSignOut, playEntryAnimation = false, onEntryA
     setTabs((current) => {
       const next = current.filter((tab) => tab.key !== key);
       if (activeTabKey === key) {
-        const nextActive = next[next.length - 1] ?? moduleTab("dashboard");
-        setExpandedGroupId(navigationGroupForModule(nextActive.moduleId)?.id ?? null);
+        const nextActive = next[next.length - 1] ?? moduleTab("dashboard", flatModules);
+        setExpandedGroupId(navigationGroupForModule(nextActive.moduleId, navigationGroups)?.id ?? null);
         setActiveTabKey(nextActive.key);
       }
       return next;
@@ -396,6 +421,8 @@ export function WorkspaceShell({ onSignOut, playEntryAnimation = false, onEntryA
         return <DimensionCanvasPage initialBatchId={tab.dimensionBatchId} initialItemId={tab.dimensionItemId} onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
       case "personal_center":
         return <PersonalCenterPage />;
+      case "system_admin":
+        return <SystemAdminPage />;
       default:
         return <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;
     }
@@ -410,7 +437,7 @@ export function WorkspaceShell({ onSignOut, playEntryAnimation = false, onEntryA
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}
         activeId={activeModuleId}
         expandedGroupId={expandedGroupId}
-        modules={workspaceModules}
+        modules={visibleModules}
         onOpenModule={openModule}
         onToggleGroup={openNavigationGroup}
         onHoverChange={setSidebarHovered}

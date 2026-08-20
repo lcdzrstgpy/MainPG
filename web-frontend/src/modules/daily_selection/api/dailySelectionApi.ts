@@ -26,6 +26,12 @@ export function getCollectionTask(taskId: string): Promise<DailySelectionTaskSta
   return apiRequest(`/desktop/daily-selection/preview-tasks/${encodeURIComponent(taskId)}`);
 }
 
+export function cancelCollectionTask(taskId: string): Promise<DailySelectionTaskStatus> {
+  return apiRequest(`/desktop/daily-selection/preview-tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: "POST",
+  });
+}
+
 export function listSelectionRuns(): Promise<DailySelectionRunSummary[]> {
   return apiRequest("/desktop/daily-selection/runs");
 }

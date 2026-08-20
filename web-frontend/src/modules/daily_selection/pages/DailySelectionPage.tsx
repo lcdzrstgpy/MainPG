@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import {
+  cancelCollectionTask,
   cancelSkuRepull,
   confirmCandidates,
   getCollectionTask,
@@ -125,6 +126,7 @@ const STATUS_LABELS: Record<string, string> = {
   succeeded: "采集完成",
   completed: "采集完成",
   partial: "部分完成",
+  cancelled: "已中断",
   failed: "采集失败",
   candidate: "候选",
   filtered: "已过滤",
@@ -273,6 +275,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [collectionProgressCompleted, setCollectionProgressCompleted] = useState(0);
   const [collectionProgressTotal, setCollectionProgressTotal] = useState(0);
   const [collectionTaskId, setCollectionTaskId] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(true);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [skuRepull, setSkuRepull] = useState<SkuRepullState | null>(null);
@@ -390,6 +393,21 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           setError(task.error || "采集请求失败");
           setCollecting(false);
           setCollectionTaskId(null);
+          return;
+        }
+        if (task.status === "cancelled") {
+          setCollecting(false);
+          setCollectionTaskId(null);
+          if (!task.run_id) {
+            setNotice("采集已中断");
+            return;
+          }
+          const run = await getSelectionRun(task.run_id);
+          if (stopped) return;
+          setActiveRun(run);
+          setSelectedCandidates([]);
+          setNotice(`采集已中断，已采集 ${run.candidate_count} 个候选`);
+          void listSelectionRuns().then(setRuns).catch(() => undefined);
           return;
         }
         schedule(2000);
@@ -757,6 +775,20 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     }
   }
 
+  async function cancelCollection() {
+    if (!collectionTaskId) return;
+    setError("");
+    setCancelling(true);
+    try {
+      const task = await cancelCollectionTask(collectionTaskId);
+      setCollectionProgressMessage(task.message || "正在中断采集");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "中断请求发送失败");
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   async function openRun(runId: string) {
     setError("");
     setBusy(true);
@@ -1112,6 +1144,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
             <div className="collection-submit-area">
               <button className="collect-button" type="submit" disabled={busy || collecting}>{collecting ? `采集中 ${collectionProgress}%` : "开始采集"}</button>
+              {collecting && (
+                <button className="collect-cancel-button" type="button" disabled={cancelling} onClick={cancelCollection}>
+                  {cancelling ? "正在中断…" : "中断采集"}
+                </button>
+              )}
             </div>
           </div>
         </form>

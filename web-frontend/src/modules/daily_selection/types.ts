@@ -88,7 +88,7 @@ export type DailySelectionRun = DailySelectionRunSummary & {
 
 export type DailySelectionTaskStatus = {
   task_id: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   stage: string;
   progress: number;
   completed: number;

@@ -123,6 +123,56 @@ class CustomerAuthClient:
     def settle_ai_usage_failure(self, remote_token: str, usage_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._billing_post(f"/api/customer/billing/usage/{usage_id}/fail", remote_token, payload)
 
+    def freeze_batch_points(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Freeze points for a batch of product links and receive scoped AI keys."""
+        return self._billing_post("/api/customer/billing/batch/freeze", remote_token, payload)
+
+    def settle_batch_points(self, remote_token: str, freeze_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Settle a frozen batch from per-link subitem statuses reported by the client."""
+        return self._billing_post(
+            "/api/customer/billing/batch/settle",
+            remote_token,
+            {**payload, "freeze_id": freeze_id},
+        )
+
+    def batch_freeze_status(self, remote_token: str, freeze_id: str) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._get,
+            f"/api/customer/billing/batch/{freeze_id}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def admin_request(
+        self,
+        remote_token: str,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Forward an authenticated admin API request to the platform auth service.
+
+        Only ``/api/admin/*`` paths are allowed; the caller (workbench admin
+        proxy) is responsible for authorizing the local session first.
+        """
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        if not path.startswith("/api/admin/"):
+            raise CustomerBillingProtocolError()
+        headers = {"Authorization": f"Bearer {remote_token}"}
+        if method == "GET":
+            return self._billing_result(self._get, path, headers=headers)
+        if method in ("POST", "PUT", "PATCH", "DELETE"):
+            return self._billing_result(
+                self._request,
+                method,
+                path,
+                payload if payload is not None else {},
+                headers,
+            )
+        raise CustomerBillingProtocolError()
+
     def _billing_post(self, path: str, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not remote_token:
             raise CustomerBillingPermissionError()
@@ -157,17 +207,28 @@ class CustomerAuthClient:
         return response
 
     def _post(self, path: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
+        return self._request("POST", path, payload, headers)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         if not self.base_url:
             raise CustomerAuthUnavailable("customer auth service is not configured")
-        body = json.dumps(payload).encode("utf-8")
-        request_headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        request_headers = {"Accept": "application/json"}
+        if payload is not None:
+            request_headers["Content-Type"] = "application/json"
         if headers:
             request_headers.update(headers)
         request = Request(
             f"{self.base_url}{path}",
             data=body,
             headers=request_headers,
-            method="POST",
+            method=method,
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:

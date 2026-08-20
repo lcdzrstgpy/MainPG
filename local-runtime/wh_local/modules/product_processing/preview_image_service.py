@@ -1184,6 +1184,9 @@ class PreviewImageService:
             result = dict((by_draft.get(draft_id) or {}).get("result") or {})
             manifest = PreviewImageManifest.from_value(entry.get("manifest"))
             main = asset_urls.get(manifest.main_asset_id, "")
+            if not main:
+                # 未生成/未选择主图时回退来源主图（同强制入库回退来源图），保证可直接导出。
+                main = self._source_main_fallback(draft_id, result, workspace_id)
             carousel = [asset_urls.get(asset_id, "") for asset_id in manifest.carousel_asset_ids]
             details = [asset_urls.get(asset_id, "") for asset_id in manifest.detail_asset_ids]
             require_final_public_image_urls([main, *carousel, *details])
@@ -1199,6 +1202,41 @@ class PreviewImageService:
             result["preview_overrides"] = overrides
             rows.append(result)
         return rows
+
+    def _source_main_fallback(
+        self,
+        draft_id: int,
+        result: Mapping[str, Any],
+        workspace_id: str,
+    ) -> str:
+        """Return the first public source image as a final main-image fallback.
+
+        商品图片生成失败或未在预检中选择主图时，导出主图回退到来源主图，
+        保证预审可以一键导出（与「强制入库回退来源图」语义一致）。
+        """
+        candidates: list[str] = [
+            str(value or "").strip()
+            for value in (result.get("source_image_urls") or [])
+            if str(value or "").strip()
+        ]
+        if not candidates:
+            try:
+                draft = self.product_repository.get_draft(draft_id, workspace_id)
+            except Exception:
+                draft = None
+            if isinstance(draft, Mapping):
+                candidates.append(str(draft.get("image_url") or "").strip())
+                raw = draft.get("raw_payload")
+                if isinstance(raw, Mapping):
+                    candidates.extend(
+                        str(value or "").strip()
+                        for value in raw.get("source_image_urls") or []
+                        if str(value or "").strip()
+                    )
+        for candidate in candidates:
+            if self._safe_public_value(candidate):
+                return candidate
+        return ""
 
     def _snapshot_current(
         self,

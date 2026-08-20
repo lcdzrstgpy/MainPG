@@ -434,3 +434,132 @@
     justify-self: start;
   }
 }
+
+/* ── 系统管理：分区页签 ── */
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.settings-tabs button {
+  border: 1px solid #dce9f2;
+  border-radius: 999px;
+  padding: 8px 18px;
+  background: #fbfdff;
+  color: #57748d;
+  font-size: .88rem;
+  font-weight: 750;
+  cursor: pointer;
+  transition: border-color .18s ease, color .18s ease, background .18s ease;
+}
+
+.settings-tabs button:hover {
+  border-color: #a9daf4;
+  color: #0877d3;
+}
+
+.settings-tabs button.is-active {
+  border-color: #1397df;
+  color: #ffffff;
+  background: #1397df;
+}
+
+/* ── 系统管理：数据表 ── */
+.settings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .88rem;
+  color: #263238;
+}
+
+.settings-table th,
+.settings-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid #edf2f6;
+}
+
+.settings-table th {
+  color: #7c91a6;
+  font-size: .78rem;
+  font-weight: 750;
+  letter-spacing: .02em;
+  background: #f6f9fc;
+}
+
+.settings-table tr:hover td {
+  background: #fafdff;
+}
+
+.settings-table-reason {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-table-total td {
+  font-weight: 800;
+  color: #138a77;
+  background: #f4fbf8;
+}
+
+.settings-empty {
+  color: #7c91a6;
+  font-size: .86rem;
+  padding: 18px 4px;
+  text-align: center;
+}
+
+/* ── 系统管理：编辑弹窗 ── */
+.settings-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(13, 33, 51, .45);
+}
+
+.settings-edit-dialog {
+  width: min(560px, calc(100vw - 40px));
+  max-height: calc(100vh - 60px);
+  overflow: auto;
+  border: 1px solid #dce9f2;
+  border-radius: 18px;
+  padding: 24px;
+  background: #ffffff;
+  box-shadow: 0 24px 60px rgba(20, 66, 104, .22);
+}
+
+.settings-edit-dialog h2 {
+  margin: 0 0 6px;
+  color: #213c57;
+  letter-spacing: -.02em;
+}
+
+.settings-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.settings-edit-total {
+  margin: 12px 0 0;
+  font-weight: 780;
+  color: #138a77;
+}
+
+.settings-edit-total.is-invalid {
+  color: #d15d69;
+}
+
+@media (max-width: 560px) {
+  .settings-edit-grid {
+    grid-template-columns: 1fr;
+  }
+}

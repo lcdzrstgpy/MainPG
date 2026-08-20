@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-from .server_ai_proxy import gateway_base_url, remote_token, usage_id
+from .server_ai_proxy import gateway_base_url, granted_key, remote_token, usage_id
 
 
 API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
@@ -39,21 +39,34 @@ class DoubaoArkError(RuntimeError):
 
 
 class DoubaoArkClient:
-    """One-attempt chat client routed through the platform gateway."""
+    """One-attempt chat client.
+
+    In direct mode the client uses the short-lived Ark key granted at batch
+    freeze time and calls the upstream directly.  Otherwise it falls back to
+    the legacy server-managed gateway so older clients keep working (gray
+    rollout keeps both paths live).
+    """
 
     def __init__(self) -> None:
+        self.granted_key = granted_key("ark")
+        self.direct = bool(self.granted_key)
         self.platform_token = remote_token()
         self.usage_id = usage_id("text")
-        if not self.platform_token or not self.usage_id:
+        if not self.direct and (not self.platform_token or not self.usage_id):
             raise DoubaoArkError(
                 "server-managed text usage is not reserved",
                 error_kind="configuration",
                 retryable=False,
             )
-        # Compatibility for existing diagnostics; never an upstream credential.
-        self.api_key = "server-managed"
+        # Compatibility for existing diagnostics; never logs the real key.
+        self.api_key = self.granted_key if self.direct else "server-managed"
 
     def complete(self, messages: list[dict[str, Any]]) -> str:
+        if self.direct:
+            return self._complete_direct(messages)
+        return self._complete_gateway(messages)
+
+    def _complete_gateway(self, messages: list[dict[str, Any]]) -> str:
         response: requests.Response | None = None
         try:
             response = _HTTP_SESSION.post(
@@ -64,6 +77,8 @@ class DoubaoArkClient:
                     "User-Agent": USER_AGENT,
                 },
                 json={
+                    # 旧网关契约：服务端用该 model 路由文本模型（灰度回退路径保持原样）。
+                    "model": "gpt-5.6-terra",
                     "messages": messages,
                     "usage_id": self.usage_id,
                 },
@@ -108,6 +123,66 @@ class DoubaoArkClient:
         if not isinstance(content, str) or not content.strip():
             raise DoubaoArkError(
                 "server text-and-vision gateway returned empty content",
+                error_kind="invalid_response",
+                retryable=False,
+            )
+        return content.strip()
+
+    def _complete_direct(self, messages: list[dict[str, Any]]) -> str:
+        response: requests.Response | None = None
+        try:
+            response = _HTTP_SESSION.post(
+                API_URL,
+                headers={
+                    "Authorization": f"Bearer {self.granted_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": USER_AGENT,
+                },
+                json={
+                    "model": MODEL_ID,
+                    "messages": messages,
+                },
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                allow_redirects=False,
+            )
+            body = bytes(response.content)
+        except (requests.RequestException, TimeoutError, OSError) as exc:
+            raise DoubaoArkError(
+                "ark upstream is temporarily unreachable",
+                error_kind="transient",
+                retryable=True,
+            ) from exc
+        finally:
+            if response is not None:
+                response.close()
+
+        status_code = int(response.status_code)
+        if status_code >= 400 or 300 <= status_code < 400:
+            if status_code in {401, 403}:
+                error_kind, retryable = "configuration", False
+            elif status_code == 429 or status_code >= 500:
+                error_kind, retryable = "transient", True
+            else:
+                error_kind, retryable = "provider_http", False
+            raise DoubaoArkError(
+                f"ark upstream returned HTTP {status_code}",
+                error_kind=error_kind,
+                retryable=retryable,
+                status_code=status_code,
+            )
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
+            content = payload["choices"][0]["message"]["content"]
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+            raise DoubaoArkError(
+                "ark upstream returned an invalid response",
+                error_kind="invalid_response",
+                retryable=False,
+            ) from exc
+        if not isinstance(content, str) or not content.strip():
+            raise DoubaoArkError(
+                "ark upstream returned empty content",
                 error_kind="invalid_response",
                 retryable=False,
             )

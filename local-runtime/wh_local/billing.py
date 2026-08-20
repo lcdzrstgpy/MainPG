@@ -161,6 +161,18 @@ def usage_history(
             """,
             (*params, page_size + 1),
         ).fetchall()
+        # 直连模式走批量冻结/结算（按链接计费），结算记录在 batch 表而不写 usage_events，
+        # 这里把批量结算合并进客户端「消费流水」，与调用级流水统一按时间倒序展示。
+        batch_rows = conn.execute(
+            """
+            SELECT freeze_id, link_count, frozen_points, charged_points,
+                   refunded_points, status, created_at, settled_at
+            FROM billing_batch_freezes
+            WHERE account_id = ?
+            ORDER BY created_at DESC, freeze_id DESC
+            """,
+            (account_id,),
+        ).fetchall()
     scale = int(rule["point_unit_scale"])
     has_more = len(rows) > page_size
     result: list[dict[str, Any]] = []
@@ -188,10 +200,43 @@ def usage_history(
                 "task": metadata.get("task_id", ""),
             }
         )
+    for row in batch_rows:
+        raw_status = str(row["status"] or "")
+        if raw_status == "settled":
+            status = "succeeded"
+        elif raw_status == "released":
+            status = "failed"
+        else:
+            status = "frozen"
+        result.append(
+            {
+                "usage_id": f"batch:{row['freeze_id']}",
+                "feature_key": "product_processing.batch",
+                "source_ref": "",
+                "reserved_points": _display_points(int(row["frozen_points"]), scale),
+                "charged_points": _display_points(int(row["charged_points"]), scale),
+                "refunded_points": _display_points(int(row["refunded_points"]), scale),
+                "status": status,
+                "provider": "批量链接结算",
+                "model": f"{int(row['link_count'])} 条链接",
+                "channel": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "error_message": "",
+                "created_at": str(row["created_at"]),
+                "settled_at": str(row["settled_at"] or ""),
+                "rule_version": "",
+                "task": "",
+            }
+        )
+    # 合并后按时间倒序统一排序；批量记录数量有限，分页游标不再精确推进。
+    result.sort(key=lambda item: (str(item["created_at"]), str(item["usage_id"])), reverse=True)
+    result = result[:page_size]
     return {
         "ok": True,
         "items": result,
-        "next_cursor": str(result[-1]["usage_id"]) if has_more and result else "",
+        "next_cursor": "",
         "has_more": has_more,
         "point_unit_scale": scale,
     }
@@ -916,3 +961,596 @@ def _merge_metadata(raw: str, update: dict[str, Any], provider_task_id: str) -> 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# ---------------------------------------------------------------------------
+# 批次定价引擎：一条产品链接按子项（title/description/product_dimensions/
+# four_grid/detail_images）拆分定价，冻结按最大范围预扣，结算按子项明细扣费
+# 与退款。定价规则只存服务端并可被管理员干预，每次修改写入审计日志。
+# ---------------------------------------------------------------------------
+
+# 定价单位：与 billing_pricing_rules.point_unit_scale 保持一致（10 单位 = 1 积分）。
+PIC_UNIT_SCALE = 10
+# 子项白名单（顺序即产品处理 scope 的展示顺序）。
+SUBITEM_FEATURE_KEYS = (
+    "title",
+    "description",
+    "product_dimensions",
+    "four_grid",
+    "detail_images",
+)
+# 冻结按最大范围预扣：默认每子项 charge 之和封顶 45 积分。
+DEFAULT_BATCH_FREEZE_PER_LINK = 400  # 固定 40 积分/链接（400 单位）；与子项定价总和联动见 pricing_items
+BATCH_FREEZE_TTL_DAYS = 7
+
+
+def pricing_items(database_path: Path, *, rule_version: int | None = None) -> dict[str, Any]:
+    """Return the active per-subitem pricing for a given rule version.
+
+    rule_version defaults to the current billing_pricing_rules.rule_version.
+    Read-only: uses a plain connection so it can be called inside a settle
+    transaction without taking a nested write lock.
+    """
+    from .db import connect
+
+    conn = connect(database_path)
+    try:
+        rule = _active_pricing(conn)
+        version = int(rule["rule_version"]) if rule_version is None else max(1, int(rule_version))
+        rows = conn.execute(
+            """
+            SELECT feature_key, charge_points, intercept_refund_ratio, no_return_refund_ratio
+            FROM billing_pricing_items
+            WHERE rule_version = ?
+            ORDER BY CASE feature_key
+                WHEN 'title' THEN 1 WHEN 'description' THEN 2
+                WHEN 'product_dimensions' THEN 3 WHEN 'four_grid' THEN 4
+                WHEN 'detail_images' THEN 5 ELSE 6 END
+            """,
+            (version,),
+        ).fetchall()
+        items: dict[str, Any] = {}
+        total_units = 0
+        for row in rows:
+            charge = int(row["charge_points"])
+            total_units += charge
+            items[str(row["feature_key"])] = {
+                "charge_points": _display_points(charge),
+                "charge_units": charge,
+                "intercept_refund_ratio": float(row["intercept_refund_ratio"]),
+                "no_return_refund_ratio": float(row["no_return_refund_ratio"]),
+            }
+    finally:
+        conn.close()
+    return {
+        "rule_version": version,
+        "point_unit_scale": PIC_UNIT_SCALE,
+        "max_charge_per_link": _display_points(total_units),
+        "max_charge_units_per_link": total_units,
+        "freeze_per_link": _display_points(total_units),
+        "freeze_units_per_link": total_units,
+        "ttl_days": BATCH_FREEZE_TTL_DAYS,
+        "items": items,
+        "effective_at": str(rule["effective_at"] or "") if rule_version is None else "",
+    }
+
+
+def update_pricing_items(
+    database_path: Path,
+    *,
+    items: dict[str, Any],
+    updated_by: str,
+    change_reason: str = "",
+) -> dict[str, Any]:
+    """Create the next per-subitem pricing revision with a full audit trail.
+
+    ``items`` maps feature_key -> charge_points (points) and optional
+    intercept_refund_ratio / no_return_refund_ratio.  All subitems must be
+    present; total charge must stay within 35..45 points (350..450 units).
+    """
+    normalized: dict[str, tuple[int, float, float]] = {}
+    for key in SUBITEM_FEATURE_KEYS:
+        value = items.get(key)
+        if not isinstance(value, dict):
+            raise HTTPException(status_code=400, detail=f"missing pricing for subitem {key}")
+        try:
+            charge = float(value.get("charge_points", 0))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"charge_points for {key} must be numeric") from exc
+        charge_units = int(round(charge * PIC_UNIT_SCALE))
+        intercept = float(value.get("intercept_refund_ratio", 0.5))
+        no_return = float(value.get("no_return_refund_ratio", 1.0))
+        if charge_units < 0 or not 0 <= intercept <= 1 or not 0 <= no_return <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid pricing for subitem {key}",
+            )
+        normalized[key] = (charge_units, intercept, no_return)
+    total_units = sum(charge_units for charge_units, _, _ in normalized.values())
+    if not 350 <= total_units <= 450:
+        raise HTTPException(
+            status_code=400,
+            detail="one product link total charge must be between 35 and 45 points",
+        )
+    with transaction(database_path) as conn:
+        rule = _active_pricing(conn)
+        current_version = int(rule["rule_version"])
+        next_version = current_version + 1
+        before = pricing_items(database_path, rule_version=current_version)
+        now = _utc_now()
+        conn.execute(
+            """
+            UPDATE billing_pricing_rules
+            SET rule_version = rule_version + 1, effective_at = ?, updated_at = ?, updated_by = ?
+            WHERE rule_id = 1
+            """,
+            (now, now, str(updated_by or "system")[:160]),
+        )
+        for key, (charge_units, intercept, no_return) in normalized.items():
+            conn.execute(
+                """
+                INSERT INTO billing_pricing_items (
+                    rule_version, feature_key, charge_points,
+                    intercept_refund_ratio, no_return_refund_ratio, effective_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (next_version, key, charge_units, intercept, no_return, now),
+            )
+        after = {
+            "rule_version": next_version,
+            "point_unit_scale": PIC_UNIT_SCALE,
+            "max_charge_units_per_link": total_units,
+            "items": {
+                key: {
+                    "charge_points": _display_points(charge_units),
+                    "charge_units": charge_units,
+                    "intercept_refund_ratio": intercept,
+                    "no_return_refund_ratio": no_return,
+                }
+                for key, (charge_units, intercept, no_return) in normalized.items()
+            },
+            "effective_at": now,
+        }
+        conn.execute(
+            """
+            INSERT INTO billing_pricing_changelog (
+                rule_version, changed_by, change_reason, before_json, after_json
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                next_version,
+                str(updated_by or "system")[:160],
+                str(change_reason or "").strip()[:500],
+                json.dumps(before, ensure_ascii=False, sort_keys=True),
+                json.dumps(after, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+    return after
+
+
+def pricing_changelog(
+    database_path: Path,
+    *,
+    limit: int = 50,
+    cursor_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Read the append-only pricing audit trail (newest first)."""
+    page_size = max(1, min(int(limit), 200))
+    where = ""
+    params: list[Any] = []
+    if cursor_id is not None:
+        where = "WHERE id < ?"
+        params = [int(cursor_id)]
+    with transaction(database_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, rule_version, changed_by, change_reason, before_json, after_json, created_at
+            FROM billing_pricing_changelog
+            {where}
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (*params, page_size),
+        ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "rule_version": int(row["rule_version"]),
+                "changed_by": str(row["changed_by"]),
+                "change_reason": str(row["change_reason"]),
+                "before": _loads_json(row["before_json"]),
+                "after": _loads_json(row["after_json"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+
+def _loads_json(raw: Any) -> Any:
+    try:
+        return json.loads(str(raw or "{}"))
+    except (TypeError, ValueError):
+        return {}
+
+
+def compute_batch_charge(
+    database_path: Path,
+    *,
+    rule_version: int | None,
+    item_results: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Compute per-subitem charge/refund for one link from client-reported status.
+
+    status: success -> full charge; intercept -> refund ratio; no_return -> full refund.
+    The server rule is authoritative; client numbers are never trusted directly.
+    """
+    pricing = pricing_items(database_path, rule_version=rule_version)
+    items = pricing["items"]
+    charge_units = 0
+    refund_units = 0
+    details: list[dict[str, Any]] = []
+    for result in item_results:
+        key = str(result.get("feature") or "").strip()
+        status = str(result.get("status") or "").strip()
+        if key not in items or status not in {"success", "intercept", "no_return"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid subitem result: feature={key!r} status={status!r}",
+            )
+        item = items[key]
+        units = int(item["charge_units"])
+        if status == "success":
+            charge_units += units
+            item_refund = 0
+        elif status == "intercept":
+            charge = int(round(units * (1 - float(item["intercept_refund_ratio"]))))
+            charge_units += charge
+            item_refund = units - charge
+        else:  # no_return
+            item_refund = units
+        refund_units += item_refund
+        details.append(
+            {
+                "feature": key,
+                "status": status,
+                "charge_points": _display_points(units),
+                "charge_units": units,
+                "refund_points": _display_points(item_refund),
+                "refund_units": item_refund,
+            }
+        )
+    return {
+        "rule_version": int(pricing["rule_version"]),
+        "charge_units": charge_units,
+        "refund_units": refund_units,
+        "charge_points": _display_points(charge_units),
+        "refund_points": _display_points(refund_units),
+        "details": details,
+    }
+
+
+def freeze_batch_points(
+    database_path: Path,
+    actor: Actor,
+    *,
+    link_count: int,
+    scope: list[str] | None = None,
+    idempotency_key: str = "",
+) -> dict[str, Any]:
+    """Reserve batch points (N x freeze_per_link) before the client starts work.
+
+    Returns the freeze record; keys are issued separately by the auth server so
+    the billing layer stays free of any credential handling.
+    """
+    link_count = max(1, int(link_count))
+    pricing = pricing_items(database_path)
+    freeze_units_per_link = int(pricing["freeze_units_per_link"])
+    # 钱包与账本统一以「单位」（tenths of a point）存储，与现有 reserve/settle 一致。
+    frozen_units = freeze_units_per_link * link_count
+    frozen_points = frozen_units // PIC_UNIT_SCALE
+    idem = str(idempotency_key or "").strip()
+    with transaction(database_path) as conn:
+        _ensure_billing_account(conn, actor)
+        _ensure_wallet(conn, actor.id, actor.workspace_id)
+        if idem:
+            existing = conn.execute(
+                """
+                SELECT * FROM billing_batch_freezes
+                WHERE account_id = ? AND freeze_id = ?
+                """,
+                (actor.id, idem),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
+        wallet = conn.execute(
+            """
+            SELECT points_balance, locked_points, manual_frozen_points
+            FROM billing_wallets
+            WHERE account_id = ?
+            """,
+            (actor.id,),
+        ).fetchone()
+        available = (
+            int(wallet["points_balance"])
+            - int(wallet["locked_points"])
+            - int(wallet["manual_frozen_points"])
+        )
+        if available < frozen_units:
+            raise HTTPException(
+                status_code=402,
+                detail=f"积分不足：需要冻结 {frozen_points}，当前可用 {_display_points(available)}",
+            )
+        freeze_id = idem or f"frz_{secrets.token_urlsafe(18)}"
+        now = _utc_now()
+        scope_json = json.dumps([str(item) for item in (scope or []) if str(item).strip()], ensure_ascii=False)
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(days=BATCH_FREEZE_TTL_DAYS)
+        ).isoformat(timespec="seconds")
+        conn.execute(
+            """
+            UPDATE billing_wallets
+            SET locked_points = locked_points + ?, version = version + 1, updated_at = ?
+            WHERE account_id = ?
+            """,
+            (frozen_units, now, actor.id),
+        )
+        conn.execute(
+            """
+            INSERT INTO billing_batch_freezes (
+                freeze_id, account_id, workspace_id, link_count, scope_json,
+                frozen_points, status, created_at, expires_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'frozen', ?, ?)
+            """,
+            (
+                freeze_id,
+                actor.id,
+                actor.workspace_id or "default",
+                link_count,
+                scope_json,
+                frozen_units,
+                now,
+                expires_at,
+            ),
+        )
+        _append_ledger(
+            conn,
+            account_id=actor.id,
+            workspace_id=actor.workspace_id or "default",
+            direction="lock",
+            points_delta=frozen_units,
+            source_type="batch_freeze",
+            source_id=freeze_id,
+            idempotency_key=f"batch_freeze:{freeze_id}:lock",
+            metadata={"link_count": link_count, "freeze_units_per_link": freeze_units_per_link},
+        )
+    return {
+        "freeze_id": freeze_id,
+        "account_id": actor.id,
+        "workspace_id": actor.workspace_id or "default",
+        "link_count": link_count,
+        "frozen_points": _display_points(frozen_units),
+        "freeze_per_link": pricing["freeze_per_link"],
+        "rule_version": int(pricing["rule_version"]),
+        "status": "frozen",
+        "expires_at": expires_at,
+    }
+
+
+def settle_batch_points(
+    database_path: Path,
+    freeze_id: str,
+    *,
+    item_results: list[dict[str, Any]],
+    expected_account_id: str,
+) -> dict[str, Any]:
+    """Settle a frozen batch from per-link subitem status reported by the client.
+
+    Computes total charge (success + intercept partial) and refund (no_return
+    + intercept partial), debits the wallet and releases the remaining lock.
+    Idempotent: a freeze already settled returns its stored result.
+    """
+    with transaction(database_path) as conn:
+        freeze = conn.execute(
+            "SELECT * FROM billing_batch_freezes WHERE freeze_id = ?",
+            (freeze_id,),
+        ).fetchone()
+        if freeze is None:
+            raise HTTPException(status_code=404, detail="batch freeze not found")
+        if str(freeze["account_id"]) != str(expected_account_id):
+            raise HTTPException(status_code=404, detail="batch freeze not found")
+        if freeze["status"] == "settled":
+            return {
+                "freeze_id": freeze_id,
+                "status": "settled",
+                "charged_points": _display_points(int(freeze["charged_points"])),
+                "refunded_points": _display_points(int(freeze["refunded_points"])),
+                "already_settled": True,
+            }
+        pricing = pricing_items(database_path, rule_version=None)
+        freeze_rule_version = int(pricing["rule_version"])
+        if not isinstance(item_results, list):
+            raise HTTPException(status_code=400, detail="item_results must be a list")
+        frozen_link_count = int(freeze["link_count"] or 1)
+        if len(item_results) != frozen_link_count:
+            # 风险#20 对策：结算明细条数必须与冻结批次 link_count 一致，
+            # 防止客户端多报/漏报子项逃费（漏报部分随锁释放隐式退还）。
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"item_results count {len(item_results)} does not match "
+                    f"frozen link_count {frozen_link_count}"
+                ),
+            )
+        total_charge_units = 0
+        total_refund_units = 0
+        stored_items: list[dict[str, Any]] = []
+        for index, entry in enumerate(item_results, start=1):
+            if not isinstance(entry, dict):
+                raise HTTPException(status_code=400, detail="item_results entry must be an object")
+            link_results = entry.get("subitems")
+            if not isinstance(link_results, list):
+                raise HTTPException(status_code=400, detail="subitems must be a list")
+            computed = compute_batch_charge(
+                database_path,
+                rule_version=freeze_rule_version,
+                item_results=[dict(result) for result in link_results if isinstance(result, dict)],
+            )
+            total_charge_units += int(computed["charge_units"])
+            total_refund_units += int(computed["refund_units"])
+            for detail in computed["details"]:
+                stored_items.append((freeze_id, index, detail["feature"], detail["status"]))
+        frozen_units = int(freeze["frozen_points"])
+        if total_charge_units + total_refund_units > frozen_units:
+            raise HTTPException(
+                status_code=400,
+                detail="settle totals exceed the frozen points",
+            )
+        # release the unused lock (refund) and debit the charge; wallet stores units.
+        conn.execute(
+            """
+            UPDATE billing_wallets
+            SET points_balance = points_balance - ?,
+                locked_points = locked_points - ?,
+                version = version + 1,
+                updated_at = ?
+            WHERE account_id = ?
+            """,
+            (total_charge_units, frozen_units, _utc_now(), expected_account_id),
+        )
+        now = _utc_now()
+        conn.execute(
+            """
+            UPDATE billing_batch_freezes
+            SET charged_points = ?, refunded_points = ?, status = 'settled', settled_at = ?
+            WHERE freeze_id = ?
+            """,
+            (total_charge_units, total_refund_units, now, freeze_id),
+        )
+        for freeze_key, link_idx, feature_key, status_value in stored_items:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO billing_batch_items (
+                    freeze_id, link_idx, feature_key, status, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (freeze_key, link_idx, feature_key, status_value, now),
+            )
+        _append_ledger(
+            conn,
+            account_id=expected_account_id,
+            workspace_id=str(freeze["workspace_id"] or "default"),
+            direction="debit",
+            points_delta=total_charge_units,
+            source_type="batch_settle",
+            source_id=freeze_id,
+            idempotency_key=f"batch_settle:{freeze_id}:debit",
+            metadata={"rule_version": freeze_rule_version, "link_count": int(freeze["link_count"])},
+        )
+        if total_refund_units:
+            _append_ledger(
+                conn,
+                account_id=expected_account_id,
+                workspace_id=str(freeze["workspace_id"] or "default"),
+                direction="unlock",
+                points_delta=total_refund_units,
+                source_type="batch_settle",
+                source_id=freeze_id,
+                idempotency_key=f"batch_settle:{freeze_id}:unlock",
+                metadata={"rule_version": freeze_rule_version},
+            )
+    return {
+        "freeze_id": freeze_id,
+        "status": "settled",
+        "charged_points": _display_points(total_charge_units),
+        "refunded_points": _display_points(total_refund_units),
+        "already_settled": False,
+    }
+
+
+def batch_freeze_status(database_path: Path, freeze_id: str, *, expected_account_id: str) -> dict[str, Any]:
+    """Return the freeze + settled detail for client startup reconciliation."""
+    with transaction(database_path) as conn:
+        freeze = conn.execute(
+            "SELECT * FROM billing_batch_freezes WHERE freeze_id = ?",
+            (freeze_id,),
+        ).fetchone()
+        if freeze is None or str(freeze["account_id"]) != str(expected_account_id):
+            raise HTTPException(status_code=404, detail="batch freeze not found")
+        rows = conn.execute(
+            """
+            SELECT link_idx, feature_key, status FROM billing_batch_items
+            WHERE freeze_id = ? ORDER BY link_idx, id
+            """,
+            (freeze_id,),
+        ).fetchall()
+        return {
+            "freeze_id": freeze_id,
+            "status": str(freeze["status"]),
+            "link_count": int(freeze["link_count"]),
+            "frozen_points": _display_points(int(freeze["frozen_points"])),
+            "charged_points": _display_points(int(freeze["charged_points"])),
+            "refunded_points": _display_points(int(freeze["refunded_points"])),
+            "settled_at": str(freeze["settled_at"] or ""),
+            "expires_at": str(freeze["expires_at"] or ""),
+            "items": [
+                {
+                    "link_idx": int(row["link_idx"]),
+                    "feature": str(row["feature_key"]),
+                    "status": str(row["status"]),
+                }
+                for row in rows
+            ],
+        }
+
+
+def release_expired_batch_freezes(database_path: Path, *, now_iso: str = "") -> int:
+    """TTL sweep: release frozen points for batches past their expiry.
+
+    Called periodically by the auth server; returns the number of releases.
+    """
+    now_iso = now_iso or _utc_now()
+    released = 0
+    with transaction(database_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM billing_batch_freezes
+            WHERE status = 'frozen' AND expires_at <= ?
+            """,
+            (now_iso,),
+        ).fetchall()
+        for freeze in rows:
+            conn.execute(
+                """
+                UPDATE billing_batch_freezes
+                SET status = 'released', settled_at = ?
+                WHERE freeze_id = ?
+                """,
+                (_utc_now(), freeze["freeze_id"]),
+            )
+            _append_ledger(
+                conn,
+                account_id=str(freeze["account_id"]),
+                workspace_id=str(freeze["workspace_id"] or "default"),
+                direction="unlock",
+                points_delta=int(freeze["frozen_points"]),
+                source_type="batch_expiry_release",
+                source_id=str(freeze["freeze_id"]),
+                idempotency_key=f"batch_expiry:{freeze['freeze_id']}:unlock",
+                metadata={"link_count": int(freeze["link_count"])},
+            )
+            conn.execute(
+                """
+                UPDATE billing_wallets
+                SET locked_points = locked_points - ?,
+                    version = version + 1,
+                    updated_at = ?
+                WHERE account_id = ?
+                """,
+                (int(freeze["frozen_points"]), _utc_now(), str(freeze["account_id"])),
+            )
+            released += 1
+    return released

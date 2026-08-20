@@ -26,6 +26,15 @@ from wh_local.customer.contracts import (
 )
 from wh_local.customer.remote_client import CustomerAuthClient
 
+from .batch_billing import (
+    billing_client as _batch_billing_client,
+    derive_item_results as _derive_batch_item_results,
+    direct_ai_enabled as _direct_ai_enabled,
+    forget_freeze as _forget_batch_freeze,
+    open_freeze_record as _open_batch_freeze_record,
+    open_freezes_for_account as _open_freezes_for_account,
+    remember_freeze as _remember_batch_freeze,
+)
 from .doubao_vision import (
     MODEL_ID as DOUBAO_VISION_MODEL_ID,
     PROMPT_VERSION as DOUBAO_VISION_PROMPT_VERSION,
@@ -168,6 +177,46 @@ def _ai_error_reason(exc: Exception) -> str:
     """将 AI 失败异常转成可展示的原因（超时/HTTP 状态/语言违规等）。"""
     message = str(exc).strip()
     return message[:200] if message else type(exc).__name__
+
+
+def _billing_call_with_retry(
+    function: Callable[..., Any],
+    *args: Any,
+    attempts: int = 3,
+    base_delay_seconds: float = 1.0,
+    **kwargs: Any,
+) -> Any:
+    """Billing 网络瞬时抖动（连接失败/超时）指数退避重试。
+
+    reserve/settle 均带服务端幂等键（idempotency_key / usage_id），
+    客户端重试安全；仅重试 CustomerAuthUnavailable（网络不可达），
+    业务性拒绝（4xx）与协议错误不重试，避免掩盖真实配置问题。
+    """
+    for attempt in range(max(1, attempts)):
+        try:
+            return function(*args, **kwargs)
+        except CustomerAuthUnavailable:
+            if attempt + 1 >= max(1, attempts):
+                raise
+            time.sleep(base_delay_seconds * (2 ** attempt))
+    raise CustomerAuthUnavailable("remote billing service is unavailable")
+
+
+def _freeze_scope_items(task_items: list[dict[str, Any]], record: dict[str, Any]) -> list[dict[str, Any]]:
+    """按冻结记录还原本次结算应上报的商品条目。
+
+    优先用冻结时刻记录的 item_ids 过滤（保证条数与 link_count 严格一致，
+    重试/混合状态任务不会多报）；记录缺失且任务无条目时回退「全失败 × link_count」。
+    """
+    item_ids = [int(item_id) for item_id in (record.get("item_ids") or [])]
+    if item_ids:
+        by_id = {int(item["item_id"]): item for item in task_items}
+        scoped = [by_id[item_id] for item_id in item_ids if item_id in by_id]
+        if len(scoped) == len(item_ids):
+            return scoped
+    if not task_items:
+        return [{"status": "failed"} for _ in range(max(1, int(record.get("link_count") or 1)))]
+    return task_items
 
 
 def _media_types() -> tuple:
@@ -397,10 +446,15 @@ class ProductProcessingService:
             if capability["enabled"] and not capability["ready"]:
                 unavailable_reasons.append(str(capability["reason"]))
         ready = not unavailable_reasons
+        direct_enabled = _direct_ai_enabled()
         config = {
             "ai_provider": "server-managed" if text_ready else "local-deterministic",
             "ai_model": "server-managed-text" if text_ready else "product-processing-local-v1",
             "ai_configured": text_ready,
+            "direct_ai_enabled": direct_enabled,
+            "direct_mode": direct_enabled and bool(
+                (resolve_ai_provider().get("_sys_image_ai") or {}).get("base_url") != "server-managed-wuyin"
+            ),
             "backup_ai_configured": False,
             "image_provider": provider["provider"] if image_ready else "local-source-pass-through",
             "image_model": provider.get("reference_image_model") or provider.get("image_model") or "source-image-preservation-v1",
@@ -1273,6 +1327,12 @@ class ProductProcessingService:
         max_products = max(0, int(payload.get("max_products") or 0))
         if max_products:
             draft_ids = draft_ids[:max_products]
+        if _direct_ai_enabled() and remote_token and request_billing_account:
+            # 直连模式对账：把本账号仍 open 的冻结批次补结算，避免历史批次积分滞留。
+            try:
+                self.reconcile_open_batches(remote_token, account_id=request_billing_account)
+            except Exception:
+                pass
         with self._submission_lock:
             existing = self._existing_task_for_submission(
                 payload,
@@ -1588,7 +1648,31 @@ class ProductProcessingService:
         token = self._text(remote_token)
         if billed and not token:
             raise CustomerBillingPermissionError()
+        retry_item_ids = [
+            int(item.get("id") or item.get("item_id") or 0)
+            for item in task["items"]
+            if item["status"] in {"failed", "attention_required"}
+            and (not draft_ids or int(item.get("product_draft_id") or 0) in set(draft_ids))
+        ]
         self.repository.reset_failed_items(task_id, workspace_id, draft_ids=draft_ids)
+        # 显式重试时清除视觉识别缓存，强制重新识别可售主体，
+        # 避免此前「多主体/遮挡」低置信度结论被缓存后重试永远命中同一结果。
+        if retry_item_ids:
+            supports_stage_receipts = all(
+                callable(getattr(self.repository, method, None))
+                for method in ("delete_downstream_stage_receipts",)
+            )
+            if supports_stage_receipts:
+                for item_id in retry_item_ids:
+                    try:
+                        self.repository.delete_downstream_stage_receipts(
+                            task_id,
+                            item_id,
+                            ["vision_identity"],
+                            workspace_id=workspace_id,
+                        )
+                    except Exception:
+                        pass
         task = self._require_task(task_id, workspace_id)
         if token:
             with self._submission_lock:
@@ -1597,6 +1681,66 @@ class ProductProcessingService:
             self._launch_background_execute(task_id, workspace_id)
             return {**self._task_response(task, "失败商品已重新处理，正在后台执行"), "async_mode": True}
         return self._task_response(self._execute_task(task_id, workspace_id), "失败商品已重新处理")
+
+    def confirm_identity_sellable(
+        self,
+        task_id: int,
+        workspace_id: str = "local",
+        *,
+        draft_ids: list[int] | None = None,
+        remote_token: str = "",
+    ) -> dict[str, Any]:
+        """用户确认主图可售主体可接受：跳过主体识别门，继续文案/生图直至入库。
+
+        仅作用于 error_type == vision_subject_low_confidence 的待复核项。确认结果
+        写入任务设置 ``identity_override_draft_ids``，重跑时由主体识别门放行，
+        不再反复卡在「身份待复核」。
+        """
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] in {"queued", "running", "paused"}:
+            raise ProductProcessingConflict("任务尚未结束，不能操作失败项")
+        billing = task["settings"].get("_billing")
+        billed = isinstance(billing, dict) and bool(self._text(billing.get("account_id")))
+        if billed and self.repository.product_billing_attempts(
+            task_id=task_id, pending_only=True
+        ):
+            self.reconcile_product_billing(task_id, remote_token)
+        requested = set(int(value) for value in (draft_ids or []))
+        target_items = [
+            item
+            for item in task["items"]
+            if item["status"] in {"failed", "attention_required"}
+            and (not requested or int(item.get("product_draft_id") or 0) in requested)
+            and isinstance(item.get("result"), dict)
+            and item["result"].get("error_type") == "vision_subject_low_confidence"
+        ]
+        if not target_items:
+            return {**self._task_response(task), "message": "当前没有可确认主体可售的待复核商品"}
+        token = self._text(remote_token)
+        if billed and not token:
+            raise CustomerBillingPermissionError()
+        target_draft_ids = [
+            int(item.get("product_draft_id") or 0) for item in target_items
+        ]
+        overrides = [
+            int(value)
+            for value in task["settings"].get("identity_override_draft_ids", [])
+            if str(value).isdigit()
+        ]
+        self.repository.merge_task_settings(
+            task_id,
+            workspace_id,
+            identity_override_draft_ids=sorted(set(overrides) | set(target_draft_ids)),
+        )
+        self.repository.reset_failed_items(task_id, workspace_id, draft_ids=target_draft_ids)
+        task = self._require_task(task_id, workspace_id)
+        if token:
+            with self._submission_lock:
+                self._task_remote_tokens[task_id] = token
+        if bool(task["settings"].get("async_mode", True)):
+            self._launch_background_execute(task_id, workspace_id)
+            return {**self._task_response(task, "已确认主体可售，正在后台继续文案与生图"), "async_mode": True}
+        return self._task_response(self._execute_task(task_id, workspace_id), "已确认主体可售，商品继续处理")
 
     def clear_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
         current = self._require_task(task_id, workspace_id)
@@ -1644,6 +1788,11 @@ class ProductProcessingService:
         task = self._require_task(task_id, workspace_id)
         if task["status"] not in {"completed", "failed", "partial_failure"}:
             raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
+        excluded_ids = {
+            int(value)
+            for value in task["settings"].get("excluded_preview_draft_ids", [])
+            if str(value).isdigit()
+        }
         items = []
         for item in task["items"]:
             result = item.get("result") or {}
@@ -1668,6 +1817,7 @@ class ProductProcessingService:
                     preview_revision=int((draft or {}).get("preview_revision") or 0),
                 ),
                 "media_contract_version": int((draft or {}).get("media_contract_version") or 1),
+                "excluded": bool(draft_id) and int(draft_id) in excluded_ids,
                 **projected,
             })
         return {
@@ -1683,7 +1833,51 @@ class ProductProcessingService:
             },
             "item_count": len(items),
             "items": items,
+            "excluded_draft_ids": sorted(excluded_ids),
         }
+
+    def set_preview_item_excluded(
+        self,
+        task_id: int,
+        draft_id: int,
+        *,
+        excluded: bool = True,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """从预检中排除/恢复单条商品链接。
+
+        被排除的草稿不再出现在预检列表，也不会参与最终导出
+        （finalize 校验按任务设置 ``excluded_preview_draft_ids`` 放行）。
+        写入任务设置持久化，后续可恢复。
+        """
+        draft_id = int(draft_id)
+        if draft_id <= 0:
+            raise ProductProcessingValidationError("draft id must be positive")
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] in {"queued", "running", "paused"}:
+            raise ProductProcessingConflict("任务尚未结束，不能排除商品")
+        owned_draft_ids = {
+            int(item.get("product_draft_id") or 0)
+            for item in task["items"]
+            if item.get("product_draft_id")
+        }
+        if draft_id not in owned_draft_ids:
+            raise ProductProcessingNotFound("该商品不属于此任务")
+        excluded_ids = {
+            int(value)
+            for value in task["settings"].get("excluded_preview_draft_ids", [])
+            if str(value).isdigit()
+        }
+        if excluded:
+            next_ids = excluded_ids | {draft_id}
+        else:
+            next_ids = excluded_ids - {draft_id}
+        self.repository.merge_task_settings(
+            task_id,
+            workspace_id,
+            excluded_preview_draft_ids=sorted(next_ids),
+        )
+        return self.task_preview(task_id, workspace_id=workspace_id)
 
     def save_task_preview(
         self,
@@ -2152,9 +2346,130 @@ class ProductProcessingService:
             )
 
     def _execute_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
-        """任务执行统一入口：先过任务级串行闸门，避免多任务并发叠加打爆 AI 供应商。"""
-        with self._task_execution_gate:
-            return self._execute_task_impl(task_id, workspace_id)
+        """任务执行统一入口：先过任务级串行闸门，避免多任务并发叠加打爆 AI 供应商。
+
+        直连模式（WH_PRODUCT_AI_DIRECT=1）下先冻结批次领短期密钥，再在
+        密钥上下文中执行任务，结束后按子项状态结算；无会话 token 或预检
+        任务退回旧路径。
+        """
+        if not _direct_ai_enabled():
+            with self._task_execution_gate:
+                return self._execute_task_impl(task_id, workspace_id)
+        token = self._task_remote_token(task_id)
+        if not token:
+            with self._task_execution_gate:
+                return self._execute_task_impl(task_id, workspace_id)
+        return self._execute_task_direct(task_id, workspace_id, token)
+
+    def _execute_task_direct(self, task_id: int, workspace_id: str, token: str) -> dict[str, Any]:
+        """直连模式任务执行：冻结 → 密钥上下文 → 处理 → 结算。"""
+        task = self._require_task(task_id, workspace_id)
+        if task.get("preflight_only"):
+            with self._task_execution_gate:
+                return self._execute_task_impl(task_id, workspace_id)
+        settings = task["settings"]
+        billing = settings.get("_billing") if isinstance(settings.get("_billing"), dict) else {}
+        account_id = self._text(billing.get("account_id"))
+        pending = [item for item in task["items"] if item["status"] in {"pending", "running"}]
+        link_count = max(1, len(pending))
+        client = _batch_billing_client()
+        freeze = _billing_call_with_retry(
+            client.freeze_batch_points,
+            token,
+            {
+                "link_count": link_count,
+                "scope": [str(feature) for feature in (settings.get("processing_scope") or [])],
+            },
+        )
+        freeze_payload = (
+            freeze.get("freeze")
+            if isinstance(freeze, dict) and isinstance(freeze.get("freeze"), dict)
+            else (freeze if isinstance(freeze, dict) else {})
+        )
+        freeze_id = str(freeze_payload.get("freeze_id") or "")
+        if not freeze_id:
+            raise ProductProcessingValidationError("batch freeze failed: no freeze_id returned")
+        keys = freeze_payload.get("keys") if isinstance(freeze_payload, dict) else []
+        granted = {
+            str(key.get("provider") or ""): str(key.get("api_key") or "")
+            for key in keys
+            if isinstance(key, dict) and key.get("api_key")
+        }
+        _remember_batch_freeze(
+            freeze_id,
+            account_id=account_id,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            link_count=link_count,
+            scope=settings.get("processing_scope") or [],
+            item_ids=[int(item["item_id"]) for item in pending],
+        )
+        try:
+            with server_ai_context(token, {}, granted_keys=granted, freeze_id=freeze_id):
+                with self._task_execution_gate:
+                    result = self._execute_task_impl(task_id, workspace_id)
+        finally:
+            self._settle_open_batch(task_id, workspace_id, token, freeze_id)
+        return result
+
+    def _settle_open_batch(
+        self,
+        task_id: int,
+        workspace_id: str,
+        token: str,
+        freeze_id: str,
+    ) -> None:
+        """结算一个已冻结批次；结算失败静默保留，由启动对账或服务端 TTL 兜底。"""
+        try:
+            task = self._require_task(task_id, workspace_id)
+            record = _open_batch_freeze_record(freeze_id) or {}
+            client = _batch_billing_client()
+            _billing_call_with_retry(
+                client.settle_batch_points,
+                token,
+                freeze_id,
+                {"items": _derive_batch_item_results(
+                    _freeze_scope_items(task["items"], record),
+                    task["settings"],
+                )},
+            )
+            _forget_batch_freeze(freeze_id)
+        except Exception:
+            # 保留 open 记录：下次有 token 的对账会补结算；服务端 7 天 TTL 兜底。
+            pass
+
+    def reconcile_open_batches(self, token: str, *, account_id: str) -> int:
+        """启动/提交任务时对账：把本账号仍 open 的冻结批次补结算（全退兜底）。
+
+        返回补结算的批次数量。旧批次可能没有下发密钥但已冻结，服务端幂等
+        保证重复结算安全；失败静默，等待服务端 TTL。
+        """
+        settled_count = 0
+        client = _batch_billing_client()
+        for record in _open_freezes_for_account(account_id):
+            freeze_id = str(record.get("freeze_id") or "")
+            task_id = int(record.get("task_id") or 0)
+            if not freeze_id:
+                continue
+            try:
+                if task_id:
+                    task = self.repository.get_task(task_id, workspace_id=str(record.get("workspace_id") or "local"))
+                else:
+                    task = None
+                task_items = (task or {}).get("items") or []
+                settings = (task or {}).get("settings") or {}
+                task_items = _freeze_scope_items(task_items, record)
+                _billing_call_with_retry(
+                    client.settle_batch_points,
+                    token,
+                    freeze_id,
+                    {"items": _derive_batch_item_results(task_items, settings)},
+                )
+                _forget_batch_freeze(freeze_id)
+                settled_count += 1
+            except Exception:
+                continue
+        return settled_count
 
     def _execute_task_impl(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
         task = self._require_task(task_id, workspace_id)
@@ -2205,6 +2520,22 @@ class ProductProcessingService:
             draft = drafts.get(item["product_draft_id"])
             item_id = int(item["item_id"])
             try:
+                if _direct_ai_enabled():
+                    # 直连模式：批次已冻结并下发密钥，外层 server_ai_context 已生效，
+                    # 不再逐项预留/结算 usage（避免双重扣费）。
+                    return self._run_with_item_heartbeat(
+                        task_id,
+                        item_id,
+                        workspace_id,
+                        lambda: self._process_one(
+                            item,
+                            draft,
+                            settings,
+                            preflight_only,
+                            task_id=task_id,
+                            workspace_id=workspace_id,
+                        ),
+                    )
                 usage_ids = self._reserve_product_processing_item_usage(
                     task_id,
                     item_id,
@@ -2255,18 +2586,20 @@ class ProductProcessingService:
                     workspace_id=workspace_id,
                 )
                 if str(processed.get("status") or "") == "completed":
-                    self._settle_product_processing_item_success(
-                        task_id,
-                        int(item_id),
-                        settings,
-                        processed.get("result") or {},
-                    )
+                    if not _direct_ai_enabled():
+                        self._settle_product_processing_item_success(
+                            task_id,
+                            int(item_id),
+                            settings,
+                            processed.get("result") or {},
+                        )
                 else:
-                    self._settle_product_processing_item_failure_for_item(
-                        task_id,
-                        int(item_id),
-                        processed,
-                    )
+                    if not _direct_ai_enabled():
+                        self._settle_product_processing_item_failure_for_item(
+                            task_id,
+                            int(item_id),
+                            processed,
+                        )
             except LookupError:
                 # 任务已被清理时忽略进度写入，不阻塞整体流程
                 pass
@@ -2292,7 +2625,7 @@ class ProductProcessingService:
         else:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures_map = {
-                    executor.submit(_process, item): item
+                    _submit_with_context(executor, _process, item): item
                     for item in items_to_process
                 }
                 for future in as_completed(futures_map):
@@ -2463,7 +2796,8 @@ class ProductProcessingService:
                     error_message="",
                 )
             try:
-                response = client.settle_ai_usage_success(
+                response = _billing_call_with_retry(
+                    client.settle_ai_usage_success,
                     remote_token,
                     usage,
                     {"metadata": metadata},
@@ -2568,7 +2902,9 @@ class ProductProcessingService:
                 pricing_rule_version = billing.get("pricing_version")
                 if type(pricing_rule_version) is int and pricing_rule_version > 0:
                     reservation_payload["pricing_rule_version"] = pricing_rule_version
-                response = client.reserve_ai_usage(remote_token, reservation_payload)
+                response = _billing_call_with_retry(
+                    client.reserve_ai_usage, remote_token, reservation_payload
+                )
                 usage = response.get("usage") if isinstance(response, dict) else {}
                 value = self._text(usage.get("usage_id")) if isinstance(usage, dict) else ""
                 status_value = self._text(usage.get("status")) if isinstance(usage, dict) else ""
@@ -2747,7 +3083,8 @@ class ProductProcessingService:
                     error_message=self._task_safe_error_reason(task_id, RuntimeError(reason)),
                 )
             try:
-                response = client.settle_ai_usage_failure(
+                response = _billing_call_with_retry(
+                    client.settle_ai_usage_failure,
                     remote_token,
                     usage,
                     {"error_message": self._task_safe_error_reason(task_id, RuntimeError(reason))[:500]},
@@ -2810,7 +3147,7 @@ class ProductProcessingService:
                     }
                     if pricing_rule_version is not None:
                         reservation_payload["pricing_rule_version"] = pricing_rule_version
-                    response = client.reserve_ai_usage(token, reservation_payload)
+                    response = _billing_call_with_retry(client.reserve_ai_usage, token, reservation_payload)
                     usage = response.get("usage") if isinstance(response, dict) else {}
                     usage_id = self._text(usage.get("usage_id")) if isinstance(usage, dict) else ""
                     status_value = self._text(usage.get("status")) if isinstance(usage, dict) else ""
@@ -2834,9 +3171,15 @@ class ProductProcessingService:
                 )
                 usage_id = self._text(current.get("usage_id"))
                 if desired == "succeeded":
-                    response = client.settle_ai_usage_success(token, usage_id, {"metadata": {"recovered": True}})
+                    response = _billing_call_with_retry(
+                        client.settle_ai_usage_success,
+                        token,
+                        usage_id,
+                        {"metadata": {"recovered": True}},
+                    )
                 else:
-                    response = client.settle_ai_usage_failure(
+                    response = _billing_call_with_retry(
+                        client.settle_ai_usage_failure,
                         token,
                         usage_id,
                         {"error_message": self._text(current.get("last_error")) or "interrupted billing attempt"},
@@ -3171,30 +3514,56 @@ class ProductProcessingService:
                     workspace_id=workspace_id,
                 )
             if analysis.confidence == "low":
-                return {
-                    **item,
-                    "title": title,
-                    "image_url": image_url,
-                    "status": "attention_required",
-                    "reason": "AI 服务无法确认可售主体",
-                    "result": {
-                        "error_type": "vision_subject_low_confidence",
-                        "failure_class": "identity_review_required",
-                        "operator_hint": "1688 主图存在多个或遮挡主体；已阻止 GPT 文案和外贸图生成",
-                        "retryable": True,
-                        "vision_identity": vision_identity,
-                        "provider_attempts": provider_attempts,
-                        "provider_status_classes": provider_status_classes,
-                        "stage_timings_ms": timing_snapshot(),
-                    },
+                identity_override = int(draft["id"]) in {
+                    int(value)
+                    for value in settings.get("identity_override_draft_ids", [])
+                    if str(value).isdigit()
                 }
-            vision_subject = analysis.sellable_subject
-            ai_notes.extend(
-                [
-                    "subject_identity:managed-service",
-                    f"subject_identity:confidence:{analysis.confidence}",
-                ]
-            )
+                if not identity_override:
+                    return {
+                        **item,
+                        "title": title,
+                        "image_url": image_url,
+                        "status": "attention_required",
+                        "reason": "AI 服务无法确认可售主体",
+                        "result": {
+                            "error_type": "vision_subject_low_confidence",
+                            "failure_class": "identity_review_required",
+                            "operator_hint": "1688 主图存在多个或遮挡主体；重试可能仍无法确认，确认主体可售后可继续文案与生图",
+                            "retryable": True,
+                            "vision_identity": vision_identity,
+                            "provider_attempts": provider_attempts,
+                            "provider_status_classes": provider_status_classes,
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
+                # 用户已确认主图可售主体可接受：放行主体识别门，沿用 AI 最佳猜测
+                # 主体继续文案与生图；保留原始低置信度证据供预审/导出参考。
+                vision_identity = {**vision_identity, "status": "user_override"}
+                if vision_receipt_input and provider_attempts["doubao_vision"] > 0:
+                    self.repository.upsert_stage_receipt(
+                        task_id,
+                        task_item_id,
+                        "vision_identity",
+                        input_hash=vision_receipt_input,
+                        output_data=vision_identity,
+                        workspace_id=workspace_id,
+                    )
+                vision_subject = str(analysis.sellable_subject or "").strip() or source_title
+                ai_notes.extend(
+                    [
+                        "subject_identity:user-override",
+                        f"subject_identity:confidence:{analysis.confidence}",
+                    ]
+                )
+            else:
+                vision_subject = analysis.sellable_subject
+                ai_notes.extend(
+                    [
+                        "subject_identity:managed-service",
+                        f"subject_identity:confidence:{analysis.confidence}",
+                    ]
+                )
         images_receipt_input = (
             self._processing_stage_input_hash(
                 "images",

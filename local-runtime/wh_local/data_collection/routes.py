@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+import threading
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -190,6 +191,7 @@ def register_daily_selection_routes(
         task_id: str,
         actor: DailySelectionActor,
         request: dict[str, Any],
+        cancel_event: threading.Event | None = None,
     ) -> None:
         def report(
             stage: str,
@@ -208,7 +210,16 @@ def register_daily_selection_routes(
             )
 
         try:
-            run = service.preview(actor=actor, request=request, progress_callback=report)
+            run = service.preview(
+                actor=actor,
+                request=request,
+                progress_callback=report,
+                cancel_event=cancel_event,
+            )
+            if run.status == "cancelled":
+                # 中断后仍保留已采集的候选，保存为一次可查看的批次。
+                progress_tracker.mark_cancelled(task_id, run_id=run.run_id)
+                return
             progress_tracker.complete(task_id, run_id=run.run_id)
             # 与同步接口保持一致：结果返回后才启动 SKU 缺失项的低频后台补齐。
             service.auto_start_sku_repull(actor=actor, run_id=run.run_id)
@@ -235,7 +246,12 @@ def register_daily_selection_routes(
         actor: DailySelectionActor = Depends(actor_dependency),
     ) -> DailySelectionTaskStatus:
         task = progress_tracker.create(workspace_id=actor.workspace_id)
-        background_tasks.add_task(run_preview_task, task.task_id, actor, request)
+        cancel_event = progress_tracker.cancel_event_for(
+            task.task_id, workspace_id=actor.workspace_id
+        )
+        background_tasks.add_task(
+            run_preview_task, task.task_id, actor, request, cancel_event
+        )
         return task
 
     @router.get(
@@ -248,6 +264,19 @@ def register_daily_selection_routes(
     ) -> DailySelectionTaskStatus:
         try:
             return progress_tracker.get(task_id, workspace_id=actor.workspace_id)
+        except DailySelectionTaskNotFound as error:
+            raise HTTPException(status_code=404, detail="daily-selection task not found") from error
+
+    @router.post(
+        "/desktop/daily-selection/preview-tasks/{task_id}/cancel",
+        response_model=DailySelectionTaskStatus,
+    )
+    def cancel_preview_task(
+        task_id: str,
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> DailySelectionTaskStatus:
+        try:
+            return progress_tracker.cancel(task_id, workspace_id=actor.workspace_id)
         except DailySelectionTaskNotFound as error:
             raise HTTPException(status_code=404, detail="daily-selection task not found") from error
 

@@ -487,6 +487,34 @@ def create_product_processing_router(
             workspace_id=_workspace(workspace_id),
         )
 
+    @router.post("/tasks/{task_id}/preview/items/{draft_id}/exclude")
+    def exclude_preview_item(
+        task_id: int,
+        draft_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.set_preview_item_excluded,
+            task_id,
+            int(draft_id),
+            excluded=True,
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.post("/tasks/{task_id}/preview/items/{draft_id}/restore")
+    def restore_preview_item(
+        task_id: int,
+        draft_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.set_preview_item_excluded,
+            task_id,
+            int(draft_id),
+            excluded=False,
+            workspace_id=_workspace(workspace_id),
+        )
+
     @router.get("/preview/assets/{asset_id}/content", response_model=None)
     def preview_asset_content(
         asset_id: str,
@@ -721,6 +749,61 @@ def create_product_processing_router(
             )
         return _call(
             service.retry_attention,
+            task_id,
+            normalized_workspace,
+            draft_ids=body.draft_ids if body else None,
+            remote_token=token,
+        )
+
+    @router.post("/tasks/{task_id}/identity-confirm")
+    def confirm_identity_sellable(
+        request: Request,
+        task_id: int,
+        body: RetryTaskRequest | None = None,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        normalized_workspace = _workspace(workspace_id)
+        snapshot = _task_billing_snapshot(service, task_id, normalized_workspace, actor)
+        items = snapshot.get("items") if isinstance(snapshot, dict) else []
+        requested_ids = set(body.draft_ids or []) if body else set()
+        confirm_draft_ids = [
+            int(item["product_draft_id"])
+            for item in items or []
+            if isinstance(item, dict)
+            and item.get("status") in {"failed", "attention_required"}
+            and isinstance(item.get("result"), dict)
+            and item["result"].get("error_type") == "vision_subject_low_confidence"
+            and (not requested_ids or int(item.get("product_draft_id") or 0) in requested_ids)
+        ]
+        token = _remote_token(request, customer_sessions)
+        task_projection = snapshot.get("task") if isinstance(snapshot, dict) else {}
+        metadata = task_projection.get("metadata") if isinstance(task_projection, dict) else {}
+        settings = metadata.get("settings") if isinstance(metadata, dict) else {}
+        billing_summary = _reconcile_billing_before_precheck(
+            service,
+            task_id,
+            settings if isinstance(settings, dict) else {},
+            token,
+            remote_customer_auth,
+        )
+        if confirm_draft_ids:
+            billing_payload = {
+                **(settings if isinstance(settings, dict) else {}),
+                "draft_ids": confirm_draft_ids,
+                "preflight_only": bool(metadata.get("preflight_only")) if isinstance(metadata, dict) else False,
+            }
+            _attach_billing_context_and_require_points(
+                billing_payload,
+                actor,
+                source_ref=f"product_processing:tasks/{task_id}/identity-confirm",
+                remote_token=token,
+                remote_customer_auth=remote_customer_auth,
+                available_points=billing_summary["available_points"],
+                pricing=billing_summary["pricing"],
+            )
+        return _call(
+            service.confirm_identity_sellable,
             task_id,
             normalized_workspace,
             draft_ids=body.draft_ids if body else None,

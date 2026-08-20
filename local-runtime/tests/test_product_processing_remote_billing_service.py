@@ -1069,7 +1069,9 @@ def test_same_process_reconcile_forgets_exact_old_usage_before_retry(
         ) -> dict[str, Any]:
             self.failure_calls += 1
             self.failed.append((token, usage, str(payload.get("error_message") or "")))
-            if self.failure_calls == 1:
+            # 首次结算需连续失败超过客户端重试预算（3 次），
+            # 才能让「网络持续不可达」留下 pending 记录供 reconcile 恢复。
+            if self.failure_calls <= 3:
                 raise CustomerAuthUnavailable("secret upstream failure")
             return {"ok": True, "usage_id": usage, "status": "failed"}
 

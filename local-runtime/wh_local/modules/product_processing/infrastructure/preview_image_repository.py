@@ -939,10 +939,18 @@ class PreviewImageRepository:
             raise LookupError("preview image target does not belong to this task")
 
         if require_complete_finalize:
+            excluded_ids = {
+                int(value)
+                for value in dict(_loads(task.settings_json, {}) or {}).get(
+                    "excluded_preview_draft_ids", []
+                )
+                if str(value).isdigit()
+            }
             exportable_ids = {
                 int(row.product_draft_id)
                 for row in task_items
                 if row.product_draft_id is not None
+                and int(row.product_draft_id) not in excluded_ids
                 and bool(
                     str(
                         (_loads(row.result_json, {}) or {}).get("optimized_title")
@@ -1022,9 +1030,9 @@ class PreviewImageRepository:
                 if row is not None and row.source_kind and asset_id not in library_ids:
                     raise PreviewSourceNotInLibrary("请先将处理前图片加入素材库")
             if require_complete_finalize:
-                if not manifest.main_asset_id:
-                    raise ValueError("preview finalization requires a main image")
-                if manifest.main_asset_id not in manifest.carousel_asset_ids:
+                # 主图允许为空：导出时 _export_rows 会回退来源主图，保证可一键导出。
+                # 仅保留数据一致性校验：若已选主图，则必须保留在轮播中。
+                if manifest.main_asset_id and manifest.main_asset_id not in manifest.carousel_asset_ids:
                     raise ValueError(
                         "preview finalization main image must be retained in carousel"
                     )
@@ -1271,6 +1279,44 @@ class PreviewImageRepository:
         workspace_id: str,
     ) -> dict[str, Any]:
         with self.database.sessions.begin() as session:
+            row = session.scalar(
+                select(PreviewFinalizeRunRow).where(
+                    PreviewFinalizeRunRow.id == str(run_id),
+                    PreviewFinalizeRunRow.workspace_id == str(workspace_id),
+                )
+            )
+            if row is None:
+                raise LookupError("preview finalization run not found")
+            # 重试前按当前任务设置剔除已被用户排除的草稿，避免旧快照继续
+            # 被删除的链接阻挡（删除的链接不再参与预审导出）。
+            if row.status == "publish_failed":
+                task = session.scalar(
+                    select(ProcessingTaskRow).where(
+                        ProcessingTaskRow.id == int(row.task_id),
+                        ProcessingTaskRow.workspace_id == str(workspace_id),
+                    )
+                )
+                excluded_ids = {
+                    int(value)
+                    for value in dict(_loads(getattr(task, "settings_json", None), {}) or {}).get(
+                        "excluded_preview_draft_ids", []
+                    )
+                    if str(value).isdigit()
+                }
+                if excluded_ids:
+                    snapshot = list(_loads(row.snapshot_json, []) or [])
+                    filtered = [
+                        entry
+                        for entry in snapshot
+                        if int(entry.get("product_draft_id") or 0) not in excluded_ids
+                    ]
+                    if not filtered:
+                        raise PreviewPublicationConflict(
+                            "preview finalization retry has no exportable drafts (all excluded)"
+                        )
+                    if len(filtered) != len(snapshot):
+                        row.snapshot_json = _dumps(filtered)
+                        row.snapshot_hash = calculate_snapshot_hash(filtered)
             changed = session.execute(
                 update(PreviewFinalizeRunRow)
                 .where(
@@ -1281,14 +1327,6 @@ class PreviewImageRepository:
                 )
                 .values(status="queued", updated_at=utc_now())
             )
-            row = session.scalar(
-                select(PreviewFinalizeRunRow).where(
-                    PreviewFinalizeRunRow.id == str(run_id),
-                    PreviewFinalizeRunRow.workspace_id == str(workspace_id),
-                )
-            )
-            if row is None:
-                raise LookupError("preview finalization run not found")
             if changed.rowcount != 1 and row.status not in {"queued", "completed", "stale"}:
                 raise PreviewPublicationConflict(
                     "preview finalization cannot be retried in its current state"

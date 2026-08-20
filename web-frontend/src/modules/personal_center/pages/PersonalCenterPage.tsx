@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { clearAuthSession, getAuthAccount } from "../../../transport/http/client";
 import {
@@ -59,9 +59,25 @@ export function PersonalCenterPage() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordBusy, setPasswordBusy] = useState(false);
-  const [passwordError, setPasswordError] = useState("");
   const [passwordSuccess, setPasswordSuccess] = useState("");
+  const [passwordError, setPasswordError] = useState("");
   const account = getAuthAccount<AccountSnapshot>();
+  // 消费流水刷新保护时间：切换「消费流水」页签时，距上次请求小于该时长则直接复用已加载数据，不重复请求。
+  const USAGE_REFRESH_COOLDOWN_MS = 30_000;
+  const lastUsageFetchAt = useRef(0);
+
+  const loadUsage = useCallback((force = false) => {
+    if (!force && Date.now() - lastUsageFetchAt.current < USAGE_REFRESH_COOLDOWN_MS) {
+      return;
+    }
+    lastUsageFetchAt.current = Date.now();
+    setUsageLoading(true);
+    setUsageError("");
+    loadBillingUsageHistory()
+      .then((payload) => setUsageEntries(payload.items))
+      .catch((exc) => setUsageError(exc instanceof Error ? exc.message : "读取消费流水失败"))
+      .finally(() => setUsageLoading(false));
+  }, []);
 
   const activePackage = useMemo(
     () => summary?.topup_products.find((item) => item.package_id === selectedPackage) ?? summary?.topup_products[0],
@@ -86,13 +102,8 @@ export function PersonalCenterPage() {
 
   useEffect(() => {
     if (activePanel !== "usage") return;
-    setUsageLoading(true);
-    setUsageError("");
-    loadBillingUsageHistory()
-      .then((payload) => setUsageEntries(payload.items))
-      .catch((exc) => setUsageError(exc instanceof Error ? exc.message : "读取消费流水失败"))
-      .finally(() => setUsageLoading(false));
-  }, [activePanel]);
+    loadUsage(false);
+  }, [activePanel, loadUsage]);
 
   useEffect(() => {
     if (!passwordOpen) return;
@@ -384,7 +395,7 @@ export function PersonalCenterPage() {
             <div className="personal-card-title">
               <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
               <div><h2>消费流水</h2><small>每条记录包含冻结、实际扣费、释放、模型与结算状态。</small></div>
-              <button type="button" onClick={() => setActivePanel("usage")}>刷新</button>
+              <button type="button" onClick={() => loadUsage(true)}>刷新</button>
             </div>
             {usageLoading && <p className="usage-state">正在读取服务器消费账本…</p>}
             {usageError && <p className="usage-state is-error">{usageError}</p>}
@@ -395,10 +406,10 @@ export function PersonalCenterPage() {
                   <tbody>{usageEntries.length ? usageEntries.map((entry) => (
                     <tr key={entry.usage_id}>
                       <td><b>{entry.created_at.replace("T", " ").slice(0, 19)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
-                      <td>{entry.feature_key === "product_processing.image_grid_2k" ? "四宫格生图" : "商品文本"}<small>{entry.model || entry.provider || "等待上游"}</small></td>
-                      <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
+                      <td>{entry.feature_key === "product_processing.image_grid_2k" ? "四宫格生图" : entry.feature_key === "product_processing.batch" ? "批量链接处理" : "商品文本"}<small>{entry.model || entry.provider || "等待上游"}</small></td>
+                      <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" || entry.status === "frozen" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
                       <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
-                      <td>v{entry.rule_version}</td><td><small>{entry.usage_id.slice(0, 14)}…</small></td>
+                      <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.usage_id.slice(0, 14)}…</small></td>
                     </tr>
                   )) : <tr><td colSpan={8} className="usage-empty">暂无消费流水</td></tr>}</tbody>
                 </table>

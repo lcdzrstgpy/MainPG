@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import threading
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -160,6 +161,7 @@ class DailySelectionService:
         actor: DailySelectionActor,
         request: Mapping[str, Any],
         progress_callback: CollectionProgressCallback | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> DailySelectionRun:
         _report_progress(progress_callback, "preparing", 1, 0, 1, "正在准备采集")
         criteria = DailySelectionCriteria.model_validate(dict(request))
@@ -176,6 +178,7 @@ class DailySelectionService:
             progress_callback=lambda stage, completed, total: _report_collection_progress(
                 progress_callback, stage, completed, total
             ),
+            cancel_event=cancel_event,
         ).collect(criteria)
         _report_progress(progress_callback, "filtering", 92, 0, 1, "正在筛选候选商品")
         filtered = filter_and_score_candidates(

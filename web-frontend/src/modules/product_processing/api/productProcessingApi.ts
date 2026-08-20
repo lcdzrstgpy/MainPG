@@ -7,6 +7,7 @@ import type {
   PreviewFinalizeRun,
   PreviewImageAsset,
   PreviewImageManifest,
+  PreviewResponse,
 } from "../types";
 
 export type DraftSourceType = "web_manual_capture" | "onebound_api";
@@ -79,6 +80,30 @@ export function saveProductPreview(
     method: "PATCH",
     body: { items },
   });
+}
+
+export function excludePreviewItem(
+  ctx: ApiContext,
+  taskId: number,
+  draftId: number,
+): Promise<PreviewResponse> {
+  return ppRequest(
+    ctx,
+    `/api/product-processing/tasks/${taskId}/preview/items/${draftId}/exclude`,
+    { method: "POST", body: {} },
+  );
+}
+
+export function restorePreviewItem(
+  ctx: ApiContext,
+  taskId: number,
+  draftId: number,
+): Promise<PreviewResponse> {
+  return ppRequest(
+    ctx,
+    `/api/product-processing/tasks/${taskId}/preview/items/${draftId}/restore`,
+    { method: "POST", body: {} },
+  );
 }
 
 export function finalizeProductPreview(
