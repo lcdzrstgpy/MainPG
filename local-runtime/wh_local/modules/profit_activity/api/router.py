@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -18,9 +19,17 @@ from ....session import Actor, actor_from_bearer_token, actor_has_permission, re
 from ....config import default_config
 from ....db import connect
 from ....price_verification.repository import PriceVerificationRepository
+from ....data_collection.plugin_queue import DataCollectionPluginQueue, TEMU_FLUX_ACCEL
 
 
-def create_profit_activity_router(service: ProfitActivityService, database_path: Path | None = None) -> APIRouter:
+logger = logging.getLogger("wh_local.profit_activity")
+
+
+def create_profit_activity_router(
+    service: ProfitActivityService,
+    database_path: Path | None = None,
+    plugin_queue: DataCollectionPluginQueue | None = None,
+) -> APIRouter:
     """Router contract for the complete Profit Activity screen."""
     router = APIRouter(prefix="/profit-activity", tags=["profit_activity"])
 
@@ -147,7 +156,15 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         require_permission(actor, "profit_activity.read", database_path)
         requested = [item.strip() for item in re.split(r"[\s,，]+", product_ids or skcs) if item.strip()]
         include_company = _include_company(scope, actor, database_path)
-        return {"products": service.list_products(site=site or site_code, skcs=requested, source_type=source_type.strip() or None, actor=actor, include_workspace_shared=include_company), "scope": scope, "owner_user_id": owner_user_id}
+        products = service.list_products(
+            site=site or site_code,
+            skcs=requested,
+            source_type=source_type.strip() or None,
+            actor=actor,
+            include_workspace_shared=include_company,
+        )
+        _enrich_product_source_images(products, database_path, actor.workspace_id)
+        return {"products": products, "scope": scope, "owner_user_id": owner_user_id}
 
     @router.get("/products/{skc}/sources")
     def product_sources(skc: str, site: str = "US", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
@@ -241,7 +258,8 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         require_permission(actor, "profit_activity.write", database_path)
         try:
             payload, image, attachment_image, source_image, source_group_images = await _product_form(request)
-            payload["skc"] = skc
+            # 路径参数始终指向修改前的商品 ID；请求体可提交新的 product_id。
+            payload["current_skc"] = skc
             return {"product": service.upsert_product(payload, actor=actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path), require_complete_profile=False, image=image, attachment_image=attachment_image, source_image=source_image, source_group_images=source_group_images)}
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
@@ -369,6 +387,56 @@ def create_profit_activity_router(service: ProfitActivityService, database_path:
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
+    @router.post("/activity-filter/{task_id}/dispatch-flux-accel")
+    def dispatch_flux_accel(task_id: int, request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+        """把活动过滤结果里的可申报商品下发到流量加速插件。
+
+        商品标识 + 最低申报价来自 ``eligible_activity_products``，插件领取后
+        在 TEMU 流量分析页采集「日常申报价 + 三档加权价」并生成活动价表格。
+        """
+        require_permission(actor, "profit_activity.filter", database_path)
+        if plugin_queue is None:
+            logger.error("dispatch_flux_accel: plugin queue unavailable (task %s)", task_id)
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "plugin queue is unavailable")
+        payload = await request.json()
+        session_id = _session_id(payload.get("session_id"))
+        logger.info(
+            "dispatch_flux_accel: actor=%s workspace=%s task=%s session=%s",
+            actor.id, actor.workspace_id, task_id, session_id,
+        )
+        try:
+            products = service.eligible_activity_products(task_id, actor)
+        except ProfitActivityNotFound as exc:
+            logger.warning("dispatch_flux_accel: task %s not found", task_id)
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        if not products:
+            logger.warning("dispatch_flux_accel: task %s has no eligible products", task_id)
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "no eligible products to dispatch")
+        logger.info("dispatch_flux_accel: task %s dispatching %d products", task_id, len(products))
+        try:
+            command = plugin_queue.queue_command(
+                actor_id=actor.id,
+                workspace_id=actor.workspace_id,
+                session_id=session_id,
+                command_type=TEMU_FLUX_ACCEL,
+                payload={"task_id": task_id, "products": products},
+                idempotency_key=f"flux-accel:{actor.workspace_id}:{task_id}",
+            )
+        except PermissionError as exc:
+            logger.warning("dispatch_flux_accel: session %s not found for actor %s", session_id, actor.id)
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        except ValueError as exc:
+            logger.warning("dispatch_flux_accel: queue rejected command: %s", exc)
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        logger.info("dispatch_flux_accel: queued command %s (type=%s status=%s)", command.command_id, command.command_type, command.status)
+        return {
+            "task_id": task_id,
+            "command_id": command.command_id,
+            "command_type": command.command_type,
+            "status": command.status,
+            "product_count": len(products),
+        }
+
     @router.get("/activity-filter/tasks")
     def list_filter_tasks(limit: int = Query(20, ge=1, le=100), actor: Actor = Depends(profit_activity_actor)) -> list[dict[str, Any]]:
         require_permission(actor, "profit_activity.read", database_path)
@@ -424,6 +492,16 @@ def _include_company(scope: str, actor: Actor, database_path: Path | None) -> bo
         return False
     require_permission(actor, "profit_activity.company_read", database_path)
     return True
+
+
+def _session_id(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "session_id is required") from exc
+    if parsed < 1:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "session_id must be positive")
+    return parsed
 
 
 async def _product_form(request: Request) -> tuple[dict[str, Any], tuple[str, bytes] | None, tuple[str, bytes] | None, tuple[str, bytes] | None, dict[int, list[tuple[str, bytes]]]]:
@@ -485,6 +563,59 @@ def _attach_source_group_images(links: list[dict[str, Any]], product: dict[str, 
             link["group"] = group_index
             link["image_paths"] = images
     return links
+
+
+def _enrich_product_source_images(products: list[dict[str, Any]], database_path: Path | None, workspace_id: str) -> None:
+    """让产品库图片列与“打开”货源抽屉使用同一张货源主图。
+
+    核价关联的 1688 主图保存在 price_verification_skc_source_links 中，
+    旧产品库记录未必把该地址写进 source_groups。列表返回前补齐即可，
+    不改动既有产品数据，也不会覆盖人工上传的本地货源截图。
+    """
+    if not products or database_path is None:
+        return
+    product_ids = [str(item.get("skc") or "").strip() for item in products]
+    product_ids = [item for item in product_ids if item]
+    if not product_ids:
+        return
+    try:
+        links = PriceVerificationRepository(database_path).list_active_skc_source_links_for_skcs(
+            workspace_id=workspace_id,
+            skc_ids=product_ids,
+        )
+    except Exception:
+        # 产品库可以独立运行；核价表尚未初始化时保持原有返回，不影响查询。
+        return
+
+    links_by_skc: dict[str, list[Any]] = {}
+    for link in links:
+        if str(link.main_image_url or "").strip():
+            links_by_skc.setdefault(str(link.skc_id), []).append(link)
+
+    for product in products:
+        product_links = links_by_skc.get(str(product.get("skc") or ""), [])
+        if not product_links:
+            continue
+        groups = product.get("source_groups")
+        if not isinstance(groups, list):
+            groups = []
+            product["source_groups"] = groups
+        groups_by_url = {
+            str(group.get("source_url") or "").strip(): group
+            for group in groups
+            if isinstance(group, dict) and str(group.get("source_url") or "").strip()
+        }
+        for link in product_links:
+            source_url = str(link.source_url or "").strip()
+            group = groups_by_url.get(source_url)
+            if group is None:
+                group = {"source_url": source_url, "image_paths": [], "cost": None}
+                groups.append(group)
+                if source_url:
+                    groups_by_url[source_url] = group
+            group.setdefault("image_paths", [])
+            group["main_image_url"] = str(link.main_image_url or "").strip()
+        product["source_main_image_url"] = str(product_links[0].main_image_url or "").strip()
 
 
 def _product_source_group_links(product: dict[str, Any]) -> list[dict[str, Any]]:

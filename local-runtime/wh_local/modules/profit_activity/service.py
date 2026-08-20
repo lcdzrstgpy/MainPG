@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import sys
@@ -28,6 +29,9 @@ from .domain.workbooks import (
     parse_product_workbook,
     workbook_bytes,
 )
+
+
+logger = logging.getLogger("wh_local.profit_activity")
 
 
 class ProfitActivityConflict(ValueError):
@@ -193,9 +197,15 @@ class ProfitActivityService:
         if not skc:
             raise ValueError("product_id is required")
         settings = self.get_settings(actor)
-        current = self._repository.find_product(skc, site, context.workspace_id)
+        current_site = _site(payload.get("current_site") or payload.get("from_site") or payload.get("old_site") or site)
+        current_skc = str(payload.get("current_skc") or skc).strip() or skc
+        current = self._repository.find_product(current_skc, current_site, context.workspace_id, include_price_verification=True)
         if current is not None and current.created_by != context.actor_id and not (allow_company_write or context.is_admin):
             raise ProfitActivityConflict("profit_activity_company_write_required")
+        if current is not None and current_skc != skc:
+            existing = self._repository.find_product(skc, site, context.workspace_id, include_price_verification=True)
+            if existing is not None:
+                raise ValueError("product_id_already_exists")
         # 数值字段缺失时回退当前记录，保证“仅上传/替换图片”这类局部更新也能保存。
         preview = calculate_profit(
             site_code=site,
@@ -206,7 +216,7 @@ class ProfitActivityService:
             custom_site=custom_site,
         )
         root = self._asset_root(settings.settings)
-        image_path = current.image_path if current else ""
+        image_path = "" if str(payload.get("clear_product_image") or "").lower() in {"1", "true", "yes"} else (current.image_path if current else "")
         attachment_image_path = "" if str(payload.get("clear_attachment_image") or "").lower() in {"1", "true", "yes"} else (current.attachment_image_path if current else "")
         source_type = str(payload.get("source_type") or (current.source_type if current else "manual"))
         source_main_image_url = (
@@ -255,6 +265,8 @@ class ProfitActivityService:
             image_path=image_path, attachment_image_path=attachment_image_path, source_main_image_url=source_main_image_url,
             source_image_path=source_image_path, source_groups=source_groups,
         )
+        if current is not None and (current_site != site or current_skc != skc):
+            self._repository.delete_product(current_skc, current_site, context.workspace_id, include_price_verification=True)
         return _product_payload(record, context)
 
     def update_product_values(self, skc: str, payload: dict[str, Any], actor: Any | None = None, *, allow_company_write: bool = False) -> dict[str, Any]:
@@ -555,6 +567,7 @@ class ProfitActivityService:
         context = _actor_context(actor)
         task = self._repository.get_filter_task(task_id, context.workspace_id)
         if task is None:
+            logger.warning("eligible_activity_products: filter task %s not found in workspace %s", task_id, context.workspace_id)
             raise ProfitActivityNotFound("filter_task_not_found")
         decisions = (json.loads(task.result_json) or {}).get("activity_decisions") or []
         grouped: dict[str, dict[str, Any]] = {}
@@ -571,7 +584,7 @@ class ProfitActivityService:
                 price_value = float(price)
             except (TypeError, ValueError):
                 continue
-            entry = grouped.setdefault(product_id, {"identifiers": {product_id}, "price": price_value})
+            entry = grouped.setdefault(product_id, {"identifiers": {product_id}, "price": price_value, "spu": str(item.get("spu") or "").strip()})
             candidate_ids = item.get("candidate_ids")
             if isinstance(candidate_ids, list):
                 for candidate in candidate_ids:
@@ -579,14 +592,27 @@ class ProfitActivityService:
                     if candidate_id:
                         entry["identifiers"].add(candidate_id)
             entry["price"] = min(entry["price"], price_value)
-        return [
+            spu = str(item.get("spu") or "").strip()
+            if spu and not entry["spu"]:
+                entry["spu"] = spu
+        result = [
             {
                 "product_id": product_id,
                 "identifiers": sorted(entry["identifiers"]),
+                "spu": entry["spu"],
                 "price": entry["price"],
             }
             for product_id, entry in grouped.items()
         ]
+        missing_spu = [item["product_id"] for item in result if not item["spu"]]
+        logger.info(
+            "eligible_activity_products: task %s -> %d eligible products, %d without SPU%s",
+            task_id,
+            len(result),
+            len(missing_spu),
+            f" (missing: {missing_spu[:10]})" if missing_spu else "",
+        )
+        return result
 
     def output_path(self, task_id: int, kind: str, actor: Any | None = None) -> Path:
         result = self.get_filter_task_legacy(task_id, actor)

@@ -92,6 +92,14 @@ type ProductForm = {
   source_urls: string[];
 };
 
+type RecentSavedProduct = {
+  skc: string;
+  site: Site;
+  form: ProductForm;
+  productImage?: File | null;
+  sourceImages?: (File | null)[];
+};
+
 type SiteSettingField = {
   key: string;
   label: string;
@@ -259,18 +267,25 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   const filterPollRef = useRef<number | undefined>(undefined);
   // 没有任何可申报产品时的提示弹窗
   const [noEligibleOpen, setNoEligibleOpen] = useState(false);
-  // 申报价计算器：基于活动过滤结果的可申报商品（商品ID + 申报价格）
-  const [calcProducts, setCalcProducts] = useState<Array<{ product_id: string; identifiers: string[]; price: number }>>([]);
-  const [calcProductId, setCalcProductId] = useState("");
-  const [calcPrice, setCalcPrice] = useState("");
-  const [calcOp, setCalcOp] = useState<"+" | "-" | "*" | "/">("*");
-  const [calcValue, setCalcValue] = useState("");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
-  const [recentSaved, setRecentSaved] = useState<string[]>(() => {
+  const [recentSaved, setRecentSaved] = useState<RecentSavedProduct[]>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("profitActivityRecentSaved") || "[]");
-      return Array.isArray(saved) ? saved.slice(0, 3) : [];
+      if (!Array.isArray(saved)) return [];
+      return saved.slice(0, 3).map((item): RecentSavedProduct | null => {
+        if (typeof item === "string") {
+          return { skc: item, site: "US", form: { ...emptyProduct, skc: item } };
+        }
+        if (item && typeof item === "object" && typeof item.skc === "string" && item.form) {
+          return {
+            skc: item.skc,
+            site: typeof item.site === "string" ? item.site : "US",
+            form: { ...emptyProduct, ...(item.form as ProductForm), skc: item.skc },
+          };
+        }
+        return null;
+      }).filter((item): item is RecentSavedProduct => Boolean(item));
     } catch {
       return [];
     }
@@ -290,12 +305,10 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   const displaySiteLabel = (value: Site) => siteProfiles.find((profile) => profile.id === value)?.label || siteLabel(value);
   const activityThresholds = parseActivityThresholds(siteSettings);
   const formReadyForPreview = productForm.skc.trim() && positive(productForm.selling_price) && positive(productForm.cost_price) && positive(productForm.weight_kg);
-  // 每个货源链接都必须有对应的货源图（第一张图对应货源链接 1，追加链接依次对应）
+  // 货源图为可选补充资料；货源链接仍用于在产品库中关联货源。
   const sourceLinks = [productForm.source_url, ...productForm.source_urls];
-  const sourceImagesReady = sourceLinks.length > 0
-    && sourceLinks.every((url, index) => !url.trim() || Boolean(sourceImages[index]))
-    && sourceLinks.some((url) => url.trim());
-  const formReadyForArchive = Boolean(formReadyForPreview && productImage && sourceImagesReady);
+  const sourceLinksReady = sourceLinks.some((url) => url.trim());
+  const formReadyForArchive = Boolean(formReadyForPreview && productImage && sourceLinksReady);
 
   useEffect(() => {
     void loadSettings();
@@ -610,7 +623,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
 
   const saveProduct = () => withBusy("入产品库", async () => {
     if (!formReadyForArchive) {
-      throw new Error("入档前必须填写商品ID/售价/成本/重量，并提供商品主图和每个货源链接对应的货源图。");
+      throw new Error("入档前必须填写商品ID、售价、成本、重量、商品主图和至少一条货源链接。");
     }
     if (!productImage) {
       throw new Error("请选择商品主图。");
@@ -634,16 +647,38 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     });
     const data = await request<{ product: ProductRow }>("/api/profit-activity/products", { method: "POST", body: form });
     const savedSkc = data.product.skc;
-    const nextRecent = [savedSkc, ...recentSaved].slice(0, 3);
+    const snapshot: RecentSavedProduct = {
+      skc: savedSkc,
+      site,
+      form: { ...productForm, skc: savedSkc },
+      productImage,
+      sourceImages: [...sourceImages],
+    };
+    const nextRecent = [snapshot, ...recentSaved.filter((item) => item.skc !== savedSkc)].slice(0, 3);
     setRecentSaved(nextRecent);
-    localStorage.setItem("profitActivityRecentSaved", JSON.stringify(nextRecent));
+    localStorage.setItem("profitActivityRecentSaved", JSON.stringify(nextRecent.map((item) => ({ skc: item.skc, site: item.site, form: item.form }))));
     setQuerySkcs(savedSkc);
     await queryProducts(savedSkc);
+    clearProductForm();
+  }, `${productForm.skc} 入库成功`);
+
+  const clearProductForm = () => {
     setProductForm(emptyProduct);
     setProductImage(null);
     setSourceImages([null]);
     setCalculation(null);
-  }, `${productForm.skc} 入库成功`);
+  };
+
+  const restoreRecentProduct = (item: RecentSavedProduct) => {
+    setSite(item.site);
+    setProductForm({ ...emptyProduct, ...item.form, skc: item.skc });
+    setProductImage(item.productImage ?? null);
+    setSourceImages(item.sourceImages?.length ? [...item.sourceImages] : [null]);
+    setCalculation(null);
+    setMessage(item.productImage || item.sourceImages?.some(Boolean)
+      ? `已恢复 ${item.skc} 的填写信息。`
+      : `已恢复 ${item.skc} 的文字信息，图片需要重新选择。`);
+  };
 
   const addSourceUrl = () => {
     setProductForm({ ...productForm, source_urls: [...productForm.source_urls, ""] });
@@ -721,40 +756,6 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     } catch {
       // 历史接口不可用时静默忽略，不影响主流程
     }
-  };
-
-  // 申报价计算器：过滤完成后加载可申报商品列表（商品ID + 申报价格）
-  useEffect(() => {
-    const taskId = filterTaskId(filterTask);
-    if (!taskId || filterTask?.status !== "completed") {
-      setCalcProducts([]);
-      return;
-    }
-    let alive = true;
-    request<{ products: Array<{ product_id: string; identifiers: string[]; price: number }> }>(`/api/profit-activity/activity-filter/${taskId}/eligible`)
-      .then((data) => { if (alive) setCalcProducts(data.products ?? []); })
-      .catch(() => { if (alive) setCalcProducts([]); });
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterTask]);
-
-  // 申报价计算器的实时结果
-  const calcResult = useMemo(() => {
-    const price = Number(calcPrice);
-    const value = Number(calcValue);
-    if (!Number.isFinite(price) || !Number.isFinite(value)) return null;
-    if (calcOp === "/" && value === 0) return null;
-    if (calcOp === "+") return price + value;
-    if (calcOp === "-") return price - value;
-    if (calcOp === "*") return price * value;
-    return price / value;
-  }, [calcPrice, calcOp, calcValue]);
-
-  // 选择商品ID时自动带出该商品的最低申报价格（按 SKC/SKU/SPU 任一标识匹配）
-  const onCalcProductIdChange = (value: string) => {
-    setCalcProductId(value);
-    const matched = calcProducts.find((item) => item.identifiers.includes(value));
-    if (matched) setCalcPrice(String(matched.price));
   };
 
   // 过滤完成后保存并下载可申报产品
@@ -1033,7 +1034,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
           <div className="profit-source-head"><h3>货源</h3><button type="button" onClick={addSourceUrl}>新增货源</button></div>
           <div className="profit-source-link-block">
             <label className="profit-span-2">货源链接 1<input value={productForm.source_url} onChange={(event) => setProductForm({ ...productForm, source_url: event.target.value })} placeholder="必填" /></label>
-            <ImageDrop title="货源1 图片 Ctrl+V" hint="必填：粘贴、拖入或选择该链接截图" file={sourceImages[0] ?? null} onFile={(file) => setSourceImageAt(0, file)} />
+            <ImageDrop title="货源1 图片 Ctrl+V" hint="可选：粘贴、拖入或选择该链接截图" file={sourceImages[0] ?? null} onFile={(file) => setSourceImageAt(0, file)} />
           </div>
           {productForm.source_urls.map((url, index) => (
             <div className="profit-source-link-block" key={index}>
@@ -1041,7 +1042,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
                 <label className="profit-span-2">货源链接 {index + 2}<input value={url} onChange={(event) => changeSourceUrl(index, event.target.value)} placeholder="可选" /></label>
                 <button type="button" className="profit-source-url-remove" onClick={() => removeSourceUrl(index)}>删除</button>
               </div>
-              <ImageDrop title={`货源${index + 2} 图片 Ctrl+V`} hint="必填：该链接截图" file={sourceImages[index + 1] ?? null} onFile={(file) => setSourceImageAt(index + 1, file)} />
+              <ImageDrop title={`货源${index + 2} 图片 Ctrl+V`} hint="可选：该链接截图" file={sourceImages[index + 1] ?? null} onFile={(file) => setSourceImageAt(index + 1, file)} />
             </div>
           ))}
           <label className="profit-span-2">备注<input value={productForm.note} onChange={(event) => setProductForm({ ...productForm, note: event.target.value })} placeholder="可选填" /></label>
@@ -1050,10 +1051,15 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
           <div className="profit-actions">
             <button onClick={() => calculateProfit(true)} disabled={!!busy || !formReadyForPreview}>手动刷新预览</button>
             <button className="primary-button" onClick={saveProduct} disabled={!!busy || !formReadyForArchive}>入产品库</button>
+            <button type="button" onClick={clearProductForm} disabled={!!busy}>一键清空</button>
           </div>
-          {!formReadyForArchive && <p className="muted">入档必填：商品ID、售价、成本、重量、商品主图、每个货源链接对应的货源图。</p>}
+          {!formReadyForArchive && <p className="muted">入档必填：商品ID、售价、成本、重量、商品主图和至少一条货源链接；货源图片可选。</p>}
           {recentSaved.length > 0 && (
-            <p className="profit-recent-saved">最近入库：{recentSaved.map((skc) => <span key={skc}>{skc}</span>)}</p>
+            <p className="profit-recent-saved">最近入库：{recentSaved.map((item) => (
+              <button key={`${item.site}-${item.skc}`} type="button" onClick={() => restoreRecentProduct(item)} title={`恢复 ${item.skc} 的填写信息`}>
+                {item.skc}
+              </button>
+            ))}</p>
           )}
         </article>
 
@@ -1122,49 +1128,6 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
             </div>
           )}
         </article>
-      </section>
-
-      <section className="profit-price-calculator" aria-label="申报价计算器">
-        <div className="profit-card-title">
-          <span className="profit-title-icon iconfont icon-calculator-fill" aria-hidden="true" />
-          <h2>申报价计算器</h2>
-          <span className="profit-calculator-hint">基于活动过滤的可申报商品：选/输商品ID自动带出申报价格，再对申报价格做加减乘除。</span>
-        </div>
-        <div className="profit-calculator-row">
-          <label>
-            <span>商品ID</span>
-            <input
-              list="profit-calc-product-options"
-              value={calcProductId}
-              onChange={(event) => onCalcProductIdChange(event.target.value)}
-              placeholder="选择或输入商品ID"
-            />
-            <datalist id="profit-calc-product-options">
-              {[...new Set(calcProducts.flatMap((item) => item.identifiers))].map((id) => <option key={id} value={id} />)}
-            </datalist>
-          </label>
-          <label>
-            <span>申报价格</span>
-            <input type="number" value={calcPrice} onChange={(event) => setCalcPrice(event.target.value)} placeholder="自动带出，可手改" />
-          </label>
-          <label className="profit-calculator-op">
-            <span>运算</span>
-            <select value={calcOp} onChange={(event) => setCalcOp(event.target.value as "+" | "-" | "*" | "/")}>
-              <option value="*">× 乘</option>
-              <option value="/">÷ 除</option>
-              <option value="+">＋ 加</option>
-              <option value="-">－ 减</option>
-            </select>
-          </label>
-          <label>
-            <span>数字</span>
-            <input type="number" value={calcValue} onChange={(event) => setCalcValue(event.target.value)} placeholder="如 1.1" />
-          </label>
-          <div className="profit-calculator-result" aria-live="polite">
-            <span>结果</span>
-            <strong>{calcResult === null ? "-" : Number(calcResult.toFixed(4))}</strong>
-          </div>
-        </div>
       </section>
 
       {noEligibleOpen && (

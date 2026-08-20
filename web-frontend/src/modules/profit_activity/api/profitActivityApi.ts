@@ -186,36 +186,45 @@ export async function updateProfitActivityProduct({
 /** 产品库统一编辑弹窗保存：数值、备注和两类图片使用同一个 multipart 请求提交。 */
 export async function saveProfitActivityProductEdit({
   site,
+  currentSite,
   skc,
+  productId,
   sellingPrice,
   costPrice,
   weightKg,
   note,
   productImage,
   attachmentImage,
+  clearProductImage,
   clearAttachmentImage,
 }: {
   site: ProfitActivitySite;
+  currentSite?: ProfitActivitySite;
   skc: string;
+  productId?: string;
   sellingPrice: string;
   costPrice: string;
   weightKg: string;
   note: string;
   productImage?: File | null;
   attachmentImage?: File | null;
+  clearProductImage?: boolean;
   clearAttachmentImage?: boolean;
 }) {
   const { apiBase } = resolveEndpoint();
   const token = candidateTokens()[0];
   const form = new FormData();
   form.set("site", site);
-  form.set("skc", skc);
+  if (currentSite) form.set("current_site", currentSite);
+  form.set("current_skc", skc);
+  form.set("product_id", productId || skc);
   form.set("selling_price", sellingPrice);
   form.set("cost_price", costPrice);
   form.set("weight_kg", weightKg);
   form.set("note", note);
   if (productImage) form.set("image", productImage);
   if (attachmentImage) form.set("attachment_image", attachmentImage);
+  if (clearProductImage) form.set("clear_product_image", "true");
   if (clearAttachmentImage) form.set("clear_attachment_image", "true");
   const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
     method: "POST",
