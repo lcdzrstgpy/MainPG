@@ -15,7 +15,7 @@ from wh_local.config import default_config
 
 
 def test_runtime_version_is_release_owned() -> None:
-    assert default_config().app_version == "1.1.1"  # APP_VERSION in wh_local/config.py
+    assert default_config().app_version == "1.2.0"  # APP_VERSION in wh_local/config.py
 
 
 def test_default_update_manifest_uses_the_official_https_release_host() -> None:
@@ -455,7 +455,7 @@ def test_runtime_registers_update_status_and_action_routes(tmp_path: Path) -> No
         install = client.post("/api/app-update/install")
 
     assert status.status_code == 200
-    assert status.json()["current_version"] == "1.1.1"
+    assert status.json()["current_version"] == "1.2.0"
     assert check.status_code == 200
     assert install.status_code == 200
 
