@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from wh_local.customer.auth_server import create_auth_app
 from wh_local.customer.auth_service import _email_code_digest
 from wh_local.db import transaction
 from wh_local import pod_billing as pod_billing_module
+from wh_local.session import Actor
 
 
 _EMAIL_CODE_SECRET = "pod-billing-test-secret-that-is-at-least-32-chars"
@@ -271,11 +275,15 @@ def test_pod_freeze_grants_only_an_encrypted_envelope_and_is_idempotent(
     freeze = first.json()["freeze"]
     assert freeze["rule_version"] == version
     assert freeze["frozen_points"] == 7.9
-    assert set(freeze["grant_envelope"]) == {"payload", "nonce", "tag"}
+    assert set(freeze["grant_envelope"]) == {"payload", "nonce", "tag", "expires_at"}
     response_text = first.text
     assert _ARK_SENTINEL not in response_text
     assert _WUYIN_SENTINEL not in response_text
-    grants = _decrypt_envelope(freeze["grant_envelope"], session_key)["keys"]
+    decrypted = _decrypt_envelope(freeze["grant_envelope"], session_key)
+    assert freeze["grant_envelope"]["expires_at"] == decrypted["expires_at"]
+    assert {item["expires_at"] for item in decrypted["keys"]} == {decrypted["expires_at"]}
+    assert decrypted["expires_at"] <= freeze["expires_at"]
+    grants = decrypted["keys"]
     assert {item["provider"]: item["api_key"] for item in grants} == {
         "ark": _ARK_SENTINEL,
         "wuyin": _WUYIN_SENTINEL,
@@ -300,6 +308,128 @@ def test_pod_freeze_grants_only_an_encrypted_envelope_and_is_idempotent(
     assert _ARK_SENTINEL not in dump
     assert _WUYIN_SENTINEL not in dump
     assert dict(wallet) == {"points_balance": 1000, "locked_points": 79}
+
+
+def test_pod_freeze_replay_rejects_expired_freeze_before_sweep_or_grant(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, database_path, private_key = _client(tmp_path, monkeypatch)
+    token, account_id = _register_and_login(client, database_path)
+    _grant_points(database_path, account_id)
+    headers = {"Authorization": f"Bearer {token}"}
+    _configure_pod_pricing(client, headers)
+    encrypted_session_key, _ = _encrypted_session(private_key)
+    payload = _freeze_payload(encrypted_session_key)
+    first = client.post("/api/customer/billing/pod/freeze", headers=headers, json=payload)
+    assert first.status_code == 200
+    freeze = first.json()["freeze"]
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            UPDATE billing_batch_freezes
+            SET expires_at = '2020-01-01T00:00:00+00:00'
+            WHERE freeze_id = ?
+            """,
+            (freeze["freeze_id"],),
+        )
+        grants_before = conn.execute(
+            "SELECT COUNT(*) AS total FROM billing_key_grants WHERE freeze_id = ?",
+            (freeze["freeze_id"],),
+        ).fetchone()["total"]
+    replay_session_key, _ = _encrypted_session(private_key)
+    replay_payload = _freeze_payload(replay_session_key)
+
+    replay = client.post("/api/customer/billing/pod/freeze", headers=headers, json=replay_payload)
+
+    assert replay.status_code == 409
+    assert replay.json()["detail"] == "POD freeze is no longer active"
+    assert "grant_envelope" not in replay.text
+    with transaction(database_path) as conn:
+        stored = conn.execute(
+            "SELECT status FROM billing_batch_freezes WHERE freeze_id = ?",
+            (freeze["freeze_id"],),
+        ).fetchone()
+        grants_after = conn.execute(
+            "SELECT COUNT(*) AS total FROM billing_key_grants WHERE freeze_id = ?",
+            (freeze["freeze_id"],),
+        ).fetchone()["total"]
+    assert stored["status"] == "frozen"
+    assert grants_after == grants_before
+
+
+def test_concurrent_different_pod_plans_with_same_idempotency_key_allow_one_winner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, database_path, _ = _client(tmp_path, monkeypatch)
+    token, account_id = _register_and_login(client, database_path)
+    _grant_points(database_path, account_id)
+    headers = {"Authorization": f"Bearer {token}"}
+    _configure_pod_pricing(client, headers)
+    with transaction(database_path) as conn:
+        workspace_id = str(conn.execute(
+            "SELECT workspace_id FROM auth_accounts WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()["workspace_id"])
+    actor = Actor(
+        id=account_id,
+        username="pod_billing_user",
+        role="admin",
+        workspace_id=workspace_id,
+    )
+    barrier = threading.Barrier(2)
+    original_pricing = pod_billing_module.pod_pricing_items
+
+    def synchronized_pricing(*args, **kwargs):
+        value = original_pricing(*args, **kwargs)
+        barrier.wait(timeout=5)
+        return value
+
+    monkeypatch.setattr(pod_billing_module, "pod_pricing_items", synchronized_pricing)
+    shared_idempotency_key = "pod-concurrent-plan-attack-0001"
+    plans = [
+        [{"call_id": "title-plan-alpha", "feature": "pod.title"}],
+        [{"call_id": "title-plan-bravo", "feature": "pod.title"}],
+    ]
+
+    def attack(calls: list[dict[str, str]]):
+        try:
+            return pod_billing_module.freeze_pod_points(
+                database_path,
+                actor,
+                calls=calls,
+                title_call_count=1,
+                image_call_count=0,
+                idempotency_key=shared_idempotency_key,
+            )
+        except HTTPException as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(attack, plans))
+
+    successes = [value for value in outcomes if isinstance(value, dict)]
+    conflicts = [value for value in outcomes if isinstance(value, HTTPException)]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert conflicts[0].status_code == 409
+    winner_calls = successes[0]["calls"]
+    stored = pod_billing_module.pod_freeze_status(
+        database_path,
+        successes[0]["freeze_id"],
+        expected_account_id=account_id,
+    )
+    assert [
+        {"call_id": item["call_id"], "feature": item["feature"]}
+        for item in stored["calls"]
+    ] == winner_calls
+    with transaction(database_path) as conn:
+        wallet = conn.execute(
+            "SELECT locked_points FROM billing_wallets WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+    assert wallet["locked_points"] == 15
 
 
 def test_pod_idempotency_namespace_does_not_collide_with_product_batch(

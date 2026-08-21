@@ -1378,6 +1378,7 @@ def freeze_planned_points(
     idempotency_key: str,
     source_type: str,
     persist_plan: Any | None = None,
+    validate_existing: Any | None = None,
 ) -> dict[str, Any]:
     """Lock an exact server-computed amount for a versioned call plan.
 
@@ -1401,6 +1402,8 @@ def freeze_planned_points(
             (actor.id, idem),
         ).fetchone()
         if existing is not None:
+            if validate_existing is not None:
+                validate_existing(conn, existing)
             return {
                 "freeze_id": str(existing["freeze_id"]),
                 "account_id": str(existing["account_id"]),

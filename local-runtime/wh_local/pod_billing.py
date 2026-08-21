@@ -225,14 +225,6 @@ def freeze_pod_points(
         raise HTTPException(status_code=400, detail="idempotency_key length must be 16..200")
     freeze_id = _pod_freeze_id(actor.id, idem)
     plan_hash = _plan_hash(normalized_calls, title_count, image_count)
-    existing = _pod_freeze_row(database_path, freeze_id, actor.id)
-    if existing is not None:
-        if str(existing["plan_hash"]) != plan_hash:
-            raise HTTPException(status_code=409, detail="idempotency key was already used for another POD plan")
-        result = pod_freeze_status(database_path, freeze_id, expected_account_id=actor.id)
-        result["already_frozen"] = True
-        return result
-
     pricing = pod_pricing_items(database_path)
     price_by_feature = {
         key: int(value["charge_units"])
@@ -257,7 +249,20 @@ def freeze_pod_points(
             calls=normalized_calls,
             price_by_feature=price_by_feature,
         ),
+        validate_existing=lambda conn, existing: _validate_existing_pod_plan(
+            conn,
+            existing,
+            plan_hash=plan_hash,
+        ),
     )
+    if freeze["already_frozen"]:
+        result = pod_freeze_status(
+            database_path,
+            freeze_id,
+            expected_account_id=actor.id,
+        )
+        result["already_frozen"] = True
+        return result
     return {
         **freeze,
         "rule_version": int(pricing["rule_version"]),
@@ -265,6 +270,28 @@ def freeze_pod_points(
         "image_call_count": image_count,
         "calls": normalized_calls,
     }
+
+
+def _validate_existing_pod_plan(
+    conn: Any,
+    existing: Any,
+    *,
+    plan_hash: str,
+) -> None:
+    stored = conn.execute(
+        "SELECT plan_hash FROM billing_pod_freezes WHERE freeze_id = ?",
+        (str(existing["freeze_id"]),),
+    ).fetchone()
+    if stored is None or str(stored["plan_hash"]) != plan_hash:
+        raise HTTPException(
+            status_code=409,
+            detail="idempotency key was already used for another POD plan",
+        )
+    if (
+        str(existing["status"]) != "frozen"
+        or str(existing["expires_at"] or "") <= _utc_now()
+    ):
+        raise HTTPException(status_code=409, detail="POD freeze is no longer active")
 
 
 def _persist_pod_plan(
@@ -438,19 +465,33 @@ def pod_freeze_status(
     }
 
 
-def _pod_freeze_row(database_path: Path, freeze_id: str, account_id: str) -> Any:
-    conn = connect(database_path)
-    try:
-        return conn.execute(
+def pod_grantable_freeze_status(
+    database_path: Path,
+    freeze_id: str,
+    *,
+    expected_account_id: str,
+) -> dict[str, Any]:
+    """Check ownership, state and expiry under the same write lock."""
+    with transaction(database_path) as conn:
+        row = conn.execute(
             """
-            SELECT p.* FROM billing_pod_freezes p
-            JOIN billing_batch_freezes b ON b.freeze_id = p.freeze_id
-            WHERE p.freeze_id = ? AND b.account_id = ?
+            SELECT status, expires_at FROM billing_batch_freezes
+            WHERE freeze_id = ? AND account_id = ?
             """,
-            (freeze_id, account_id),
+            (str(freeze_id), str(expected_account_id)),
         ).fetchone()
-    finally:
-        conn.close()
+        if row is None:
+            raise HTTPException(status_code=404, detail="POD freeze not found")
+        if (
+            str(row["status"]) != "frozen"
+            or str(row["expires_at"] or "") <= _utc_now()
+        ):
+            raise HTTPException(status_code=409, detail="POD freeze is no longer active")
+    return pod_freeze_status(
+        database_path,
+        freeze_id,
+        expected_account_id=expected_account_id,
+    )
 
 
 def _normalize_plan(

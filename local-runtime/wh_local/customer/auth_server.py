@@ -49,6 +49,7 @@ from ..pod_billing import (
     freeze_pod_points,
     init_pod_billing_schema,
     pod_freeze_status,
+    pod_grantable_freeze_status,
     pod_pricing_items,
     settle_pod_points,
     update_pod_pricing_items,
@@ -267,6 +268,7 @@ def _issue_batch_keys(
     *,
     include_secret_suffix_in_label: bool = True,
     resolved_secrets: dict[str, str] | None = None,
+    expires_at_override: str = "",
 ) -> list[dict[str, str]]:
     """Issue short-lived provider keys to the client for this freeze batch.
 
@@ -275,7 +277,7 @@ def _issue_batch_keys(
     """
     account_id = str(account["account_id"])
     workspace_id = str(account.get("workspace_id") or "default")
-    expires_at = (
+    expires_at = str(expires_at_override or "").strip() or (
         datetime.now(timezone.utc) + timedelta(hours=BATCH_KEY_TTL_HOURS)
     ).isoformat(timespec="seconds")
     granted: list[dict[str, str]] = []
@@ -332,19 +334,22 @@ def _issue_pod_grant_envelope(
     freeze_id: str,
     session_key: bytes,
     provider_secrets: dict[str, str],
+    freeze_expires_at: str,
 ) -> dict[str, str]:
     """Issue POD grants only inside the designated hybrid-encrypted envelope."""
+    expires_at = _pod_grant_expires_at(freeze_expires_at)
     keys = _issue_batch_keys(
         database_path,
         account,
         freeze_id,
         include_secret_suffix_in_label=False,
         resolved_secrets=provider_secrets,
+        expires_at_override=expires_at,
     )
     if {str(item.get("provider") or "") for item in keys} != {"ark", "wuyin"}:
         raise HTTPException(status_code=503, detail="POD provider credentials are unavailable")
     plaintext = json.dumps(
-        {"freeze_id": freeze_id, "keys": keys},
+        {"freeze_id": freeze_id, "expires_at": expires_at, "keys": keys},
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
@@ -355,7 +360,25 @@ def _issue_pod_grant_envelope(
         "payload": base64.b64encode(ciphertext).decode("ascii"),
         "nonce": base64.b64encode(nonce).decode("ascii"),
         "tag": base64.b64encode(encryptor.tag).decode("ascii"),
+        "expires_at": expires_at,
     }
+
+
+def _pod_grant_expires_at(freeze_expires_at: str) -> str:
+    try:
+        freeze_deadline = datetime.fromisoformat(str(freeze_expires_at or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="POD freeze is no longer active") from exc
+    now = datetime.now(timezone.utc)
+    if freeze_deadline.tzinfo is None:
+        freeze_deadline = freeze_deadline.replace(tzinfo=timezone.utc)
+    if freeze_deadline <= now:
+        raise HTTPException(status_code=409, detail="POD freeze is no longer active")
+    grant_deadline = min(
+        freeze_deadline,
+        now + timedelta(hours=BATCH_KEY_TTL_HOURS),
+    )
+    return grant_deadline.isoformat(timespec="seconds")
 
 
 def _pod_grant_prerequisites(encrypted_session_key: str) -> tuple[bytes, dict[str, str]]:
@@ -499,6 +522,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             str(freeze["freeze_id"]),
             session_key,
             provider_secrets,
+            str(freeze["expires_at"]),
         )
         return {"ok": True, "freeze": {**freeze, "grant_envelope": envelope}}
 
@@ -543,18 +567,12 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
-        freeze = pod_freeze_status(
+        freeze = pod_grantable_freeze_status(
             db_path,
             freeze_id,
             expected_account_id=str(account["account_id"]),
         )
         if freeze["status"] != "frozen":
-            raise HTTPException(status_code=409, detail="POD freeze is no longer active")
-        try:
-            expires_at = datetime.fromisoformat(str(freeze["expires_at"]))
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail="POD freeze is no longer active") from exc
-        if expires_at <= datetime.now(timezone.utc):
             raise HTTPException(status_code=409, detail="POD freeze is no longer active")
         session_key, provider_secrets = _pod_grant_prerequisites(
             str(payload.get("encrypted_session_key") or "")
@@ -568,6 +586,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 freeze_id,
                 session_key,
                 provider_secrets,
+                str(freeze["expires_at"]),
             ),
         }
 
