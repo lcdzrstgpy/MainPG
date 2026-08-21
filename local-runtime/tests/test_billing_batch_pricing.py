@@ -16,6 +16,7 @@ from wh_local.billing import (
     release_expired_batch_freezes,
     settle_batch_points,
     update_pricing_items,
+    usage_history,
 )
 from wh_local.db import init_db, transaction
 from wh_local.session import Actor
@@ -293,6 +294,46 @@ def test_pod_random_profile_persists_prices_and_settles_whole_styles(
             (actor.id,),
         ).fetchone()
     assert dict(wallet) == {"points_balance": 1600, "locked_points": 0}
+
+
+def test_usage_history_identifies_pod_batch_charge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    monkeypatch.setattr(billing_module.secrets, "randbelow", lambda upper: 2)
+    freeze = freeze_batch_points(
+        database_path,
+        actor,
+        link_count=1,
+        scope=["title", "four_grid"],
+        idempotency_key="pod:batch:usage-history-0001",
+        billing_profile="pod_random_v1",
+    )
+    settle_batch_points(
+        database_path,
+        freeze["freeze_id"],
+        item_results=[
+            {
+                "link_idx": 1,
+                "subitems": [
+                    {"feature": "title", "status": "success"},
+                    {"feature": "four_grid", "status": "success"},
+                ],
+            }
+        ],
+        expected_account_id=actor.id,
+    )
+
+    item = usage_history(database_path, account_id=actor.id)["items"][0]
+
+    assert item["feature_key"] == "pod_customization.batch"
+    assert item["billing_profile"] == "pod_random_v1"
+    assert item["provider"] == "POD 定制结算"
+    assert item["model"] == "1 款创作"
+    assert item["rule_version"] == freeze["rule_version"]
+    assert item["charged_points"] == 42
 
 
 def test_pod_random_profile_rejects_duplicate_scope_before_freezing(tmp_path: Path) -> None:

@@ -42,6 +42,20 @@ function statusLabel(status: string) {
   return labels[status] ?? status;
 }
 
+function formatUsageDateTime(value: string) {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function usageServiceLabel(featureKey: string) {
+  if (featureKey === "pod_customization.batch") return "POD 定制";
+  if (featureKey === "product_processing.image_grid_2k") return "四宫格生图";
+  if (featureKey === "product_processing.batch") return "批量链接处理";
+  return "商品文本";
+}
+
 export function PersonalCenterPage() {
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [activePanel, setActivePanel] = useState<"wallet" | "usage">("wallet");
@@ -409,8 +423,8 @@ export function PersonalCenterPage() {
                   <thead><tr><th>时间</th><th>服务</th><th>状态</th><th>冻结</th><th>实际扣费</th><th>释放</th><th>规则</th><th>调用信息</th></tr></thead>
                   <tbody>{usageEntries.length ? usageEntries.map((entry) => (
                     <tr key={entry.usage_id}>
-                      <td><b>{entry.created_at.replace("T", " ").slice(0, 19)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
-                      <td>{entry.feature_key === "product_processing.image_grid_2k" ? "四宫格生图" : entry.feature_key === "product_processing.batch" ? "批量链接处理" : "商品文本"}<small>{entry.model || entry.provider || "等待上游"}</small></td>
+                      <td><b>{formatUsageDateTime(entry.created_at)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
+                      <td>{usageServiceLabel(entry.feature_key)}<small>{entry.model || entry.provider || "等待上游"}</small></td>
                       <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" || entry.status === "frozen" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
                       <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
                       <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.usage_id.slice(0, 14)}…</small></td>

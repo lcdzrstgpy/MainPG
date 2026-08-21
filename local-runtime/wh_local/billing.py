@@ -170,7 +170,8 @@ def usage_history(
         batch_rows = conn.execute(
             """
             SELECT freeze_id, link_count, frozen_points, charged_points,
-                   refunded_points, status, created_at, settled_at
+                   refunded_points, status, billing_profile, rule_version,
+                   created_at, settled_at
             FROM billing_batch_freezes
             WHERE account_id = ?
             ORDER BY created_at DESC, freeze_id DESC
@@ -186,6 +187,7 @@ def usage_history(
             {
                 "usage_id": str(row["usage_id"]),
                 "feature_key": str(row["feature_key"]),
+                "billing_profile": "ai_usage",
                 "source_ref": str(row["source_ref"]),
                 "reserved_points": _display_points(int(row["reserved_points"]), scale),
                 "charged_points": _display_points(int(row["charged_points"]), scale),
@@ -206,6 +208,8 @@ def usage_history(
         )
     for row in batch_rows:
         raw_status = str(row["status"] or "")
+        billing_profile = str(row["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
+        is_pod = billing_profile == BATCH_BILLING_PROFILE_POD
         if raw_status == "settled":
             status = "succeeded"
         elif raw_status == "released":
@@ -215,14 +219,19 @@ def usage_history(
         result.append(
             {
                 "usage_id": f"batch:{row['freeze_id']}",
-                "feature_key": "product_processing.batch",
+                "feature_key": "pod_customization.batch" if is_pod else "product_processing.batch",
+                "billing_profile": billing_profile,
                 "source_ref": "",
                 "reserved_points": _display_points(int(row["frozen_points"]), scale),
                 "charged_points": _display_points(int(row["charged_points"]), scale),
                 "refunded_points": _display_points(int(row["refunded_points"]), scale),
                 "status": status,
-                "provider": "批量链接结算",
-                "model": f"{int(row['link_count'])} 条链接",
+                "provider": "POD 定制结算" if is_pod else "批量链接结算",
+                "model": (
+                    f"{int(row['link_count'])} 款创作"
+                    if is_pod
+                    else f"{int(row['link_count'])} 条链接"
+                ),
                 "channel": "",
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -230,7 +239,7 @@ def usage_history(
                 "error_message": "",
                 "created_at": str(row["created_at"]),
                 "settled_at": str(row["settled_at"] or ""),
-                "rule_version": "",
+                "rule_version": int(row["rule_version"] or 0),
                 "task": "",
             }
         )
