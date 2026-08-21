@@ -54,6 +54,43 @@ def test_settlement_payload_has_one_outcome_for_every_frozen_call() -> None:
     }
 
 
+def test_pod_batch_reuses_product_processing_freeze_contract_per_style() -> None:
+    plan = PodCallPlan.for_batch("batch-1", style_count=2)
+
+    assert plan.product_batch_freeze_payload() == {
+        "idempotency_key": "pod:batch:batch-1:initial",
+        "link_count": 2,
+        "scope": ["title", "four_grid"],
+    }
+
+
+def test_pod_attempts_fold_into_product_processing_subitem_results() -> None:
+    plan = PodCallPlan.for_batch("batch-1", style_count=2)
+    outcomes = [
+        PodCallOutcome(call.call_id, call.feature, "success" if index in {1, 3} else "no_return")
+        for index, call in enumerate(plan.calls)
+    ]
+
+    assert plan.product_batch_settlement_payload(outcomes) == {
+        "items": [
+            {
+                "link_idx": 1,
+                "subitems": [
+                    {"feature": "title", "status": "success"},
+                    {"feature": "four_grid", "status": "success"},
+                ],
+            },
+            {
+                "link_idx": 2,
+                "subitems": [
+                    {"feature": "title", "status": "no_return"},
+                    {"feature": "four_grid", "status": "no_return"},
+                ],
+            },
+        ]
+    }
+
+
 def test_batch_plan_accepts_200_styles_as_exactly_1000_calls_and_rejects_more() -> None:
     plan = PodCallPlan.for_batch("batch-max-200", style_count=200)
 

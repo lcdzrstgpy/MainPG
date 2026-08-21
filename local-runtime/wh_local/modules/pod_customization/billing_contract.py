@@ -11,6 +11,11 @@ from ...session import Actor
 PodFeature = Literal["pod.title", "pod.image"]
 PodCallStatus = Literal["success", "no_return"]
 
+_PRODUCT_BATCH_FEATURES: tuple[tuple[PodFeature, str], ...] = (
+    ("pod.title", "title"),
+    ("pod.image", "four_grid"),
+)
+
 
 class PodBillingAuthorizationRequired(RuntimeError):
     """The durable billing action must pause until a fresh grant is issued."""
@@ -110,6 +115,46 @@ class PodCallPlan:
             "encrypted_session_key": str(encrypted_session_key),
         }
 
+    def product_batch_freeze_payload(self) -> dict[str, object]:
+        """Project POD work onto the existing product-processing batch ledger.
+
+        One POD style is one billed product link. Provider retries remain local
+        attempts and do not create additional billable subitems.
+        """
+        groups = self._product_batch_groups()
+        present = {call.feature for group in groups for call in group}
+        return {
+            "idempotency_key": self.idempotency_key,
+            "link_count": len(groups),
+            "scope": [remote for pod, remote in _PRODUCT_BATCH_FEATURES if pod in present],
+        }
+
+    def product_batch_settlement_payload(
+        self,
+        outcomes: Sequence[PodCallOutcome],
+    ) -> dict[str, object]:
+        """Fold provider attempts into product-processing subitem outcomes."""
+        outcome_by_call = self._validated_outcomes(outcomes)
+        items: list[dict[str, object]] = []
+        for link_idx, group in enumerate(self._product_batch_groups(), start=1):
+            subitems: list[dict[str, str]] = []
+            for pod_feature, product_feature in _PRODUCT_BATCH_FEATURES:
+                matching = [call for call in group if call.feature == pod_feature]
+                if not matching:
+                    continue
+                succeeded = any(
+                    outcome_by_call[(call.call_id, call.feature)] == "success"
+                    for call in matching
+                )
+                subitems.append(
+                    {
+                        "feature": product_feature,
+                        "status": "success" if succeeded else "no_return",
+                    }
+                )
+            items.append({"link_idx": link_idx, "subitems": subitems})
+        return {"items": items}
+
     def settlement_payload(
         self,
         freeze_id: str,
@@ -122,6 +167,32 @@ class PodCallPlan:
         return {
             "freeze_id": str(freeze_id),
             "items": [outcome.payload() for outcome in outcomes],
+        }
+
+    def _product_batch_groups(self) -> tuple[tuple[PodPlannedCall, ...], ...]:
+        groups: dict[int, list[PodPlannedCall]] = {}
+        for call in self.calls:
+            group_id = 1
+            marker = ":style:"
+            if marker in call.call_id:
+                style_suffix = call.call_id.rsplit(marker, 1)[1]
+                raw_style_id = style_suffix.split(":", 1)[0]
+                if raw_style_id.isdigit():
+                    group_id = int(raw_style_id)
+            groups.setdefault(group_id, []).append(call)
+        return tuple(tuple(groups[group_id]) for group_id in sorted(groups))
+
+    def _validated_outcomes(
+        self,
+        outcomes: Sequence[PodCallOutcome],
+    ) -> dict[tuple[str, PodFeature], PodCallStatus]:
+        expected = {(call.call_id, call.feature) for call in self.calls}
+        actual = [(outcome.call_id, outcome.feature) for outcome in outcomes]
+        if len(actual) != len(expected) or len(set(actual)) != len(actual) or set(actual) != expected:
+            raise ValueError("settlement outcomes must match the frozen POD call plan exactly")
+        return {
+            (outcome.call_id, outcome.feature): outcome.status
+            for outcome in outcomes
         }
 
 
