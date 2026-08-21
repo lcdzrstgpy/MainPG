@@ -21,6 +21,7 @@ from wh_local.modules.pod_customization.contracts import (
 )
 from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
 from wh_local.modules.pod_customization.images import PatternQualityGate
+from wh_local.modules.pod_customization.repository import PodRepositoryError
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia
 from wh_local.session import Actor
@@ -887,39 +888,34 @@ def test_single_item_scene_optimization_is_optional_and_preserves_pattern_asset(
     runtime.close()
 
 
-def test_whole_style_regeneration_replaces_exactly_its_four_results_with_one_request(tmp_path: Path) -> None:
+def test_completed_whole_style_retry_is_rejected_without_freezing_or_mutating(tmp_path: Path) -> None:
     patterns = [_pattern(index) for index in range(80)]
     replacement_grid = _grid([_pattern(index) for index in range(100, 104)])
     runtime = FakePodRuntime(
         [*[_grid(patterns[index:index + 4]) for index in range(0, 80, 4)], replacement_grid]
     )
-    service = _service(tmp_path, runtime)
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing)
     actor = _actor()
     template = _ready_template(service, actor)
     batch = _create_batch(service, actor, template["id"])
     service.worker.process_batch(batch["id"])
     before_items = service.get_batch(actor, batch["id"])["items"]
     target_style = 2
-    target_items = before_items[4:8]
+    freezes_before = len(billing.freezes)
 
-    claimed = service.regenerate_style(
-        actor,
-        batch["id"],
-        target_style,
-        creative_prompt="smaller botanical elements",
-        enqueue=False,
-    )
-    service.worker.regenerate_style(batch["id"], target_style, "smaller botanical elements")
+    with pytest.raises(PodRepositoryError, match="only a failed POD style") as captured:
+        service.regenerate_style(
+            actor,
+            batch["id"],
+            target_style,
+            creative_prompt="smaller botanical elements",
+            enqueue=False,
+        )
     after_items = service.get_batch(actor, batch["id"])["items"]
 
-    assert all(item["status"] == "generating_pattern" for item in claimed["results"])
-    assert all(item["status"] == "completed" for item in after_items[4:8])
-    assert [item["pattern_preview_url"] for item in after_items[4:8]] != [item["pattern_preview_url"] for item in target_items]
-    assert [item["composite_preview_url"] for item in after_items[4:8]] != [item["composite_preview_url"] for item in target_items]
-    assert [item["pattern_preview_url"] for index, item in enumerate(after_items) if not 4 <= index < 8] == [
-        item["pattern_preview_url"] for index, item in enumerate(before_items) if not 4 <= index < 8
-    ]
-    assert "-style-2-" in runtime.requests[-1].trial_id
-    assert runtime.requests[-1].attempt == 1
+    assert captured.value.status_code == 409
+    assert len(billing.freezes) == freezes_before
+    assert after_items == before_items
     service.close()
     runtime.close()

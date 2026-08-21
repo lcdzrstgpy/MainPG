@@ -25,6 +25,7 @@ from wh_local.modules.pod_customization.contracts import (
 )
 from wh_local.modules.pod_customization.billing_contract import PodCallOutcome, PodExecutionGrant
 from wh_local.modules.pod_customization.images import PatternQualityGate, split_grid_2x2
+from wh_local.modules.pod_customization.repository import PodRepositoryError
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.pod_customization.router import create_router
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia
@@ -198,8 +199,10 @@ def _actor() -> Actor:
 class BillingCoordinator:
     def __init__(self) -> None:
         self.settlements = []
+        self.freezes = []
 
     def freeze(self, actor, plan):
+        self.freezes.append(plan)
         return PodExecutionGrant(
             "freeze-1", 1, "2099-01-01T00:00:00Z", {"wuyin": "test-wuyin", "ark": "test-ark"}
         )
@@ -211,13 +214,18 @@ class BillingCoordinator:
         return self.freeze(actor, None)
 
 
-def _service(tmp_path: Path, images: ImageRuntime, titles: TitleRuntime | None) -> PodCustomizationService:
+def _service(
+    tmp_path: Path,
+    images: ImageRuntime,
+    titles: TitleRuntime | None,
+    billing: BillingCoordinator | None = None,
+) -> PodCustomizationService:
     return PodCustomizationService(
         tmp_path / "workbench.sqlite3",
         tmp_path / "pod-assets",
         images,
         title_runtime=titles,
-        billing_coordinator=BillingCoordinator(),
+        billing_coordinator=billing or BillingCoordinator(),
         quality_gate=PatternQualityGate(text_inspector=lambda _content: []),
         start_workers=True,
     )
@@ -468,7 +476,7 @@ def test_title_only_regeneration_preserves_task_id_and_does_not_call_image_runti
 
 def test_title_resume_skips_persisted_success_and_uses_only_remaining_calls(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(21)])
-    titles = TitleRuntime()
+    titles = TitleRuntime(failures=1)
     service = _service(tmp_path, images, titles)
     actor = _actor()
     template = _ready_template(service, actor)
@@ -501,27 +509,26 @@ def test_title_resume_skips_persisted_success_and_uses_only_remaining_calls(tmp_
     images.close()
 
 
-def test_title_regeneration_invalidates_old_listing_copy_before_a_failed_attempt(tmp_path: Path) -> None:
+def test_completed_title_retry_is_rejected_without_freezing_or_deleting_copy(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(22)])
     titles = TitleRuntime()
-    service = _service(tmp_path, images, titles)
+    billing = BillingCoordinator()
+    service = _service(tmp_path, images, titles, billing)
     actor = _actor()
     template = _ready_template(service, actor)
     batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
     service.worker.process_batch(batch["id"])
-    assert service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id)
+    copies_before = service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id)
+    freezes_before = len(billing.freezes)
 
-    titles.failures = 1
-    service.regenerate_title(actor, batch["id"], 1, enqueue=False)
-    assert service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id) == {}
-    service.worker.regenerate_title(batch["id"], 1)
+    with pytest.raises(PodRepositoryError, match="only a failed POD title") as captured:
+        service.regenerate_title(actor, batch["id"], 1, enqueue=False)
     stored = service.get_batch(actor, batch["id"])
 
-    assert stored["style_titles"][0]["status"] == "failed"
-    assert stored["style_titles"][0]["listing_ready"] is False
-    assert stored["listing_ready_count"] == 0
-    assert stored["status"] == "failed"
-    assert service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id) == {}
+    assert captured.value.status_code == 409
+    assert len(billing.freezes) == freezes_before
+    assert stored["style_titles"][0]["status"] == "completed"
+    assert service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id) == copies_before
     service.close()
     titles.close()
     images.close()
@@ -552,10 +559,11 @@ def test_completed_historical_title_without_full_copy_is_not_listing_ready(tmp_p
     images.close()
 
 
-def test_title_only_regeneration_claim_is_batch_cas_and_active_title_cannot_settle(tmp_path: Path) -> None:
+def test_concurrent_completed_title_retries_are_both_rejected_without_freezing(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(21), _grid(31)])
     titles = TitleRuntime()
-    service = _service(tmp_path, images, titles)
+    billing = BillingCoordinator()
+    service = _service(tmp_path, images, titles, billing)
     actor = _actor()
     template = _ready_template(service, actor)
     batch = service.create_batch(actor, _batch_request(template["id"], count=2), enqueue=False)
@@ -572,34 +580,35 @@ def test_title_only_regeneration_claim_is_batch_cas_and_active_title_cannot_sett
     with ThreadPoolExecutor(max_workers=2) as executor:
         claimed = list(executor.map(claim, (1, 2)))
 
-    assert len([result for result in claimed if result is not None]) == 1
-    service.repository.settle_batch_by_listing_readiness(batch["id"])
+    assert claimed == [None, None]
+    assert len(billing.freezes) == 1
     active = service.get_batch(actor, batch["id"])
-    assert active["status"] == "generating_titles"
-    assert any(title["status"] == "generating" for title in active["style_titles"])
+    assert active["status"] == "completed"
+    assert all(title["status"] == "completed" for title in active["style_titles"])
     service.close()
     titles.close()
     images.close()
 
 
-def test_whole_style_regeneration_replaces_task_id_and_title(tmp_path: Path) -> None:
+def test_completed_style_retry_preserves_title_and_does_not_freeze(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(30), _grid(40)])
     titles = TitleRuntime()
-    service = _service(tmp_path, images, titles)
+    billing = BillingCoordinator()
+    service = _service(tmp_path, images, titles, billing)
     actor = _actor()
     template = _ready_template(service, actor)
     batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
     service.worker.process_batch(batch["id"])
     before = service.get_batch(actor, batch["id"])["style_titles"][0]
 
-    claimed = service.regenerate_style(actor, batch["id"], 1, enqueue=False)
-    service.worker.regenerate_style(batch["id"], 1, "new design")
+    freezes_before = len(billing.freezes)
+    with pytest.raises(PodRepositoryError, match="only a failed POD style") as captured:
+        service.regenerate_style(actor, batch["id"], 1, enqueue=False)
     after = service.get_batch(actor, batch["id"])["style_titles"][0]
 
-    assert claimed["title"]["style_task_id"] == ""
-    assert claimed["title"]["title"] is None
-    assert after["style_task_id"] != before["style_task_id"]
-    assert titles.requests[-1].style_task_id == after["style_task_id"]
+    assert captured.value.status_code == 409
+    assert len(billing.freezes) == freezes_before
+    assert after == before
     service.close()
     titles.close()
     images.close()
