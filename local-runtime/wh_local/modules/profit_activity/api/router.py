@@ -309,7 +309,13 @@ def create_profit_activity_router(
         try:
             content = await file.read()
             await file.close()
-            return service.preview_import(content, filename, str(form.get("site") or "US"), actor)
+            return service.preview_import(
+                content,
+                filename,
+                str(form.get("site") or "US"),
+                actor,
+                store_name=str(form.get("store_name") or ""),
+            )
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 

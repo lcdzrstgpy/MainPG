@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { PrescreenSettings } from "../types";
 import { SectionHelp } from "./SectionHelp";
 import { WorkflowActionBar } from "./WorkflowActionBar";
@@ -9,21 +9,28 @@ type Props = {
   totalSkc: number;
   passedItems: number;
   prescreen: PrescreenSettings | null;
+  storeName: string;
   onPrescreenChange: (minAdjustedPriceCny: string) => Promise<boolean>;
+  onStoreNameChange: (storeName: string) => Promise<boolean>;
   onRefresh: () => void;
   onContinue: () => void;
 };
 
-export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, prescreen, onPrescreenChange, onRefresh, onContinue }: Props) {
+export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, prescreen, storeName: savedStoreName, onPrescreenChange, onStoreNameChange, onRefresh, onContinue }: Props) {
   const [threshold, setThreshold] = useState(prescreen?.min_adjusted_price_cny != null && prescreen.min_adjusted_price_cny !== "" ? String(prescreen.min_adjusted_price_cny) : "");
+  const [storeName, setStoreName] = useState(savedStoreName);
   const [saving, setSaving] = useState(false);
   const thresholdActive = prescreen?.min_adjusted_price_cny != null && prescreen.min_adjusted_price_cny !== "";
   const filteredCount = Math.max(0, totalSkc - passedItems);
 
+  useEffect(() => setStoreName(savedStoreName), [savedStoreName]);
+
   const save = async () => {
     setSaving(true);
     try {
-      return await onPrescreenChange(threshold.trim());
+      const thresholdSaved = await onPrescreenChange(threshold.trim());
+      if (!thresholdSaved) return false;
+      return onStoreNameChange(storeName.trim());
     } finally {
       setSaving(false);
     }
@@ -41,19 +48,18 @@ export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, 
         <strong>{totalSkc} 个 SKC</strong>
         <small>{totalItems} 条 SKU 报价（每个 SKC 可含多个 SKU 规格）· 新采集覆盖旧数据，只保留最新一批</small>
       </div>
-      <label className="price-verification-batch-switch">
-        <span>初筛条件</span>
-        <input
-          type="number"
-          min={0}
-          step="0.01"
-          value={threshold}
-          placeholder="不填 = 不限制"
-          disabled={isChecking || saving}
-          onChange={(event) => setThreshold(event.target.value)}
-        />
-        <small>调整后申报价（CNY）需 &gt; 该值</small>
-      </label>
+      <div className="price-verification-prescreen-fields">
+        <label className="price-verification-batch-switch">
+          <span>初筛条件</span>
+          <input type="number" min={0} step="0.01" value={threshold} placeholder="不填 = 不限制" disabled={isChecking || saving} onChange={(event) => setThreshold(event.target.value)} />
+          <small>调整后申报价（CNY）需 &gt; 该值</small>
+        </label>
+        <label className="price-verification-batch-switch price-verification-store-switch">
+          <span>店铺（可选）</span>
+          <input type="text" maxLength={120} value={storeName} placeholder="例如：美区一店" disabled={isChecking || saving} onChange={(event) => setStoreName(event.target.value)} />
+          <small>本批次入库产品归属店铺</small>
+        </label>
+      </div>
       <div className="price-verification-prescreen-result">
         <span>初筛结果</span>
         <strong>{passedItems} 个 SKC</strong>

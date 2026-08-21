@@ -27,18 +27,19 @@ const sortProductsByCreatedDesc = (items: ProfitActivityProduct[]) => [...items]
   productCreatedTime(right) - productCreatedTime(left) || (right.id ?? 0) - (left.id ?? 0)
 ));
 type ProductTableColumnKey =
-  | "select" | "site" | "productId" | "createdAt" | "productImage"
+  | "select" | "site" | "storeName" | "productId" | "createdAt" | "productImage"
   | "sellingPrice" | "costPrice" | "weightKg" | "netProfit" | "profitRate"
   | "note" | "source" | "attachmentImage";
 type ProductTableColumn = { key: ProductTableColumnKey; label: string; width: number; minWidth: number };
-type InlineEditField = "site" | "product_id" | "selling_price" | "cost_price" | "weight_kg" | "note" | "product_image" | "attachment_image";
+type InlineEditField = "site" | "store_name" | "product_id" | "selling_price" | "cost_price" | "weight_kg" | "note" | "product_image" | "attachment_image";
 type InlineEditState =
   | { key: string; field: "site"; value: ProfitActivitySite }
-  | { key: string; field: "product_id" | "selling_price" | "cost_price" | "weight_kg" | "note"; value: string }
+  | { key: string; field: "store_name" | "product_id" | "selling_price" | "cost_price" | "weight_kg" | "note"; value: string }
   | { key: string; field: "product_image" | "attachment_image"; file: File | null; clear: boolean };
 const productTableColumns: ProductTableColumn[] = [
   { key: "select", label: "选择", width: 56, minWidth: 48 },
   { key: "site", label: "站点", width: 128, minWidth: 96 },
+  { key: "storeName", label: "店铺", width: 160, minWidth: 110 },
   { key: "productId", label: "商品ID", width: 220, minWidth: 150 },
   { key: "createdAt", label: "入库日期", width: 128, minWidth: 108 },
   { key: "productImage", label: "商品图", width: 100, minWidth: 82 },
@@ -69,6 +70,7 @@ function buildAdaptiveColumnWidths(items: ProfitActivityProduct[], siteLabel: (v
     const site = (item.site || item.site_code || "US") as ProfitActivitySite;
     const sourceCount = (item.source_groups ?? []).filter((group) => group?.source_url).length;
     widths.site = Math.max(widths.site, adaptiveTextWidth(siteLabel(site), 110, 170, 48));
+    widths.storeName = Math.max(widths.storeName, adaptiveTextWidth(item.store_name || "-", 120, 240, 30));
     widths.productId = Math.max(widths.productId, adaptiveTextWidth(productIdText(item), 180, 280, 18));
     widths.createdAt = Math.max(widths.createdAt, adaptiveTextWidth(libraryDate(item.library_created_at || item.created_at), 118, 150, 16));
     widths.sellingPrice = Math.max(widths.sellingPrice, adaptiveTextWidth(money(item.selling_price), 110, 150, 48));
@@ -88,6 +90,8 @@ const productLibraryCache: {
   sites?: ProfitActivitySite[];
   scope?: ProfitActivityScope;
   querySkcs?: string;
+  storeFilter?: string;
+  shopOptions?: string[];
   products?: ProfitActivityProduct[];
   page?: number;
   pageSize?: LibraryPageSize;
@@ -99,6 +103,8 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   const [scope] = useState<ProfitActivityScope>(productLibraryCache.scope ?? "default");
   const [sourceFilter, setSourceFilter] = useState<ProductSourceFilter>("all");
   const [querySkcs, setQuerySkcs] = useState(productLibraryCache.querySkcs ?? "");
+  const [storeFilter, setStoreFilter] = useState(productLibraryCache.storeFilter ?? "");
+  const [shopOptions, setShopOptions] = useState<string[]>(productLibraryCache.shopOptions ?? []);
   const [products, setProducts] = useState<ProfitActivityProduct[]>(productLibraryCache.products ?? []);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(productLibraryCache.page ?? 1);
@@ -109,13 +115,16 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   const [message, setMessage] = useState("输入商品ID（支持 SKU、SKC、SPU）查询；留空展示数据库中当前权限可见产品。");
   const [activeProduct, setActiveProduct] = useState<ProfitActivityProduct | null>(null);
   const [inlineEdit, setInlineEdit] = useState<InlineEditState | null>(null);
-  const [previewImage, setPreviewImage] = useState<{ url: string; label: string } | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ images: PreviewImage[]; index: number } | null>(null);
   const tableWrapRef = useRef<HTMLDivElement>(null);
   const tableScrollbarRef = useRef<HTMLDivElement>(null);
   const theadRef = useRef<HTMLTableSectionElement>(null);
   const fixedHeaderRef = useRef<HTMLDivElement>(null);
   const fixedHeaderScrollRef = useRef<HTMLDivElement>(null);
   const columnWidthTouchedRef = useRef(false);
+  // 其他模块成功入库时发出浏览器事件；产品库未激活则等用户切回后再刷新。
+  const pendingLibraryRefreshRef = useRef(false);
+  const refreshProductsRef = useRef<() => Promise<void>>(async () => undefined);
   const [headerStuck, setHeaderStuck] = useState(false);
   // 鼠标拖拽横向平移表格：记录按下时的起点与初始横向偏移
   const tableDragRef = useRef<{ startX: number; startScrollLeft: number } | null>(null);
@@ -215,11 +224,18 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       }
     });
     if (failures.length) setMessage(`部分站点查询失败：${failures.join("；")}`);
-    const filtered = sourceFilter === "all"
+    const sourceFiltered = sourceFilter === "all"
       ? results
       : results.filter((item) => sourceFilter === "price_verification"
         ? item.source_type === "price_verification"
         : item.source_type !== "price_verification");
+    setShopOptions([...new Set(sourceFiltered.map((item) => (item.store_name || "").trim()).filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right, "zh-CN")));
+    const filtered = storeFilter === "__empty__"
+      ? sourceFiltered.filter((item) => !(item.store_name || "").trim())
+      : storeFilter
+      ? sourceFiltered.filter((item) => (item.store_name || "").trim() === storeFilter)
+      : sourceFiltered;
     return sortProductsByCreatedDesc(filtered);
   };
 
@@ -262,10 +278,12 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     productLibraryCache.sites = [...sites];
     productLibraryCache.scope = scope;
     productLibraryCache.querySkcs = querySkcs;
+    productLibraryCache.storeFilter = storeFilter;
+    productLibraryCache.shopOptions = shopOptions;
     productLibraryCache.products = products;
     productLibraryCache.page = page;
     productLibraryCache.pageSize = pageSize;
-  }, [sites, scope, querySkcs, products, page, pageSize]);
+  }, [sites, scope, querySkcs, storeFilter, shopOptions, products, page, pageSize]);
 
   // 刷新产品列表但保留页码/选择/未保存修改：用于图片上传等局部更新，避免把用户“弹回”首页。
   const refreshProducts = async () => {
@@ -273,6 +291,30 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     const nextProducts = await fetchProducts();
     setProducts(nextProducts);
   };
+
+  refreshProductsRef.current = refreshProducts;
+
+  useEffect(() => {
+    const refreshFromLibraryChange = () => {
+      if (!isActive) {
+        pendingLibraryRefreshRef.current = true;
+        return;
+      }
+      void refreshProductsRef.current()
+        .then(() => setMessage("产品库已自动刷新为最新入库数据。"))
+        .catch(() => setMessage("产品已入库，但自动刷新失败；可重新打开产品库后重试。"));
+    };
+    window.addEventListener("profit-activity-products-changed", refreshFromLibraryChange);
+    return () => window.removeEventListener("profit-activity-products-changed", refreshFromLibraryChange);
+  }, [isActive]);
+
+  useEffect(() => {
+    if (!isActive || !pendingLibraryRefreshRef.current) return;
+    pendingLibraryRefreshRef.current = false;
+    void refreshProductsRef.current()
+      .then(() => setMessage("产品库已自动刷新为最新入库数据。"))
+      .catch(() => setMessage("产品已入库，但自动刷新失败；可重新打开产品库后重试。"));
+  }, [isActive]);
 
   // 跟随视口的横向滚动条：与表格容器的 scrollLeft 双向同步，track 宽度 = 表格实际宽度。
   // 这样滚动条始终贴在视口顶部可见，不用滑到页面最底部去拖动。
@@ -302,8 +344,8 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   // 独立固定表头：原表头滚出可视区时，显示一份固定在顶部的克隆表头，
   // 保证滚动到第 20 行等位置时仍能看到"选择/站点/SKC..."标题行。
   useEffect(() => {
-    const contentCard = document.querySelector(".content-card") as HTMLElement | null;
     const wrap = tableWrapRef.current;
+    const contentCard = wrap?.closest(".profit-products-workspace") as HTMLElement | null;
     const clone = fixedHeaderRef.current;
     const thead = theadRef.current;
     if (!contentCard || !wrap || !clone || !thead) return;
@@ -316,12 +358,13 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       clone.style.left = `${Math.round(contentRect.left)}px`;
       clone.style.width = `${Math.round(contentRect.width)}px`;
       clone.style.paddingLeft = `${Math.round(wrapRect.left - contentRect.left)}px`;
-      // 顶部位置：顶栏被固定时贴在顶栏下方；否则贴在悬浮横向滚动条下方
+      // 顶部位置始终以当前可见的工作台顶栏下沿为准。
+      // 顶栏不一定带 is-pinned 类，不能依赖该状态判断，否则克隆表头会被顶栏遮住。
       let top = 8;
       const topbar = document.querySelector(".topbar-card") as HTMLElement | null;
-      if (topbar?.classList.contains("is-pinned")) {
-        const topbarBottom = Math.round(topbar.getBoundingClientRect().bottom);
-        if (topbarBottom > 0) top = topbarBottom + 6;
+      const topbarRect = topbar?.getBoundingClientRect();
+      if (topbarRect && topbarRect.bottom > 0 && topbarRect.top < window.innerHeight) {
+        top = Math.round(topbarRect.bottom) + 6;
       } else {
         const scrollbar = document.querySelector(".profit-table-scrollbar") as HTMLElement | null;
         if (scrollbar) {
@@ -330,8 +373,9 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
         }
       }
       clone.style.top = `${top}px`;
-      // 原表头滚出顶部可视区后显示克隆表头
-      setHeaderStuck(theadRect.bottom < top);
+      // 表头一进入顶部工作区就由克隆表头接管，不等整行标题完全滚出后才显示。
+      // 同时在表格底部前隐藏，避免翻页区域出现孤立的标题行。
+      setHeaderStuck(theadRect.top < top && wrapRect.bottom > top + theadRect.height);
     };
 
     update();
@@ -501,6 +545,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       return;
     }
     const values = {
+      store_name: item.store_name ?? "",
       product_id: productIdText(item),
       selling_price: item.selling_price == null ? "" : String(item.selling_price),
       cost_price: item.cost_price == null ? "" : String(item.cost_price),
@@ -515,6 +560,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     const currentSite = (item.site || item.site_code || "US") as ProfitActivitySite;
     const next = {
       site: currentSite,
+      storeName: item.store_name ?? "",
       productId: productIdText(item),
       sellingPrice: item.selling_price == null ? "" : String(item.selling_price),
       costPrice: item.cost_price == null ? "" : String(item.cost_price),
@@ -524,6 +570,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       attachmentImage: null as File | null,
     };
     if (inlineEdit.field === "site") next.site = inlineEdit.value;
+    if (inlineEdit.field === "store_name") next.storeName = inlineEdit.value;
     if (inlineEdit.field === "product_id") next.productId = inlineEdit.value;
     if (inlineEdit.field === "selling_price") next.sellingPrice = inlineEdit.value;
     if (inlineEdit.field === "cost_price") next.costPrice = inlineEdit.value;
@@ -551,6 +598,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
         costPrice: next.costPrice,
         weightKg: next.weightKg,
         note: next.note,
+        storeName: next.storeName,
         productImage: next.productImage,
         attachmentImage: next.attachmentImage,
         clearProductImage: inlineEdit.field === "product_image" && inlineEdit.clear,
@@ -593,8 +641,16 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       <section className="profit-products-workspace">
         <div className="profit-products-search-bar">
           <label className="profit-products-search-field">
-            <span>SKC 查询</span>
+            <span>商品ID查询</span>
             <textarea value={querySkcs} onChange={(event) => setQuerySkcs(event.target.value)} placeholder="输入 SKU、SKC、SPU；多条可用空格、逗号或换行分隔" />
+          </label>
+          <label className="profit-products-select-field">
+            <span>店铺</span>
+            <select value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)}>
+              <option value="">全部店铺</option>
+              <option value="__empty__">未填写店铺</option>
+              {shopOptions.map((store) => <option key={store} value={store}>{store}</option>)}
+            </select>
           </label>
           <label className="profit-products-select-field">
             <span>地区</span>
@@ -621,21 +677,23 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
         <div className="profit-table-scrollbar" ref={tableScrollbarRef} aria-label="横向滚动产品表格">
           <div className="profit-table-scrollbar-track" style={{ width: tableScrollWidth || "100%" }} />
         </div>
-        <div
-          className={`profit-table-head-sticky ${headerStuck ? "is-visible" : ""}`}
-          ref={fixedHeaderRef}
-          style={{ position: "fixed" }}
-          aria-hidden="true"
-        >
-          <div className="profit-table-head-scroll" ref={fixedHeaderScrollRef}>
-            <table className="profit-table" style={{ minWidth: tableMinWidth, width: tableMinWidth }}>
-              <ProductTableColumns widths={columnWidths} />
-              <thead>
-                <ProductTableHeader />
-              </thead>
-            </table>
-          </div>
-        </div>
+        {createPortal(
+          <div
+            className={`profit-table-head-sticky ${headerStuck ? "is-visible" : ""}`}
+            ref={fixedHeaderRef}
+            aria-hidden="true"
+          >
+            <div className="profit-table-head-scroll" ref={fixedHeaderScrollRef}>
+              <table className="profit-table" style={{ minWidth: tableMinWidth, width: tableMinWidth }}>
+                <ProductTableColumns widths={columnWidths} />
+                <thead>
+                  <ProductTableHeader />
+                </thead>
+              </table>
+            </div>
+          </div>,
+          document.body,
+        )}
         <div
           className={`profit-table-wrap ${tableDragging ? "is-dragging" : ""}`}
           ref={tableWrapRef}
@@ -659,12 +717,19 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
                     <td><EditableCell field="site" item={item} siteOptions={siteOptions} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>
                       {siteLabel((item.site || item.site_code || "US") as ProfitActivitySite)}
                     </EditableCell></td>
+                    <td><EditableCell field="store_name" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>
+                      {item.store_name || "-"}
+                    </EditableCell></td>
                     <td><EditableCell field="product_id" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>
                       {productIdText(item)}{item.source_type === "price_verification" && <em className="profit-source-badge" title="来自核价及货源板块自动入库">核价</em>}
                     </EditableCell></td>
                     <td>{libraryDate(item.library_created_at || item.created_at)}</td>
                     <td><EditableCell field="product_image" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onFileChange={setInlineFile} onClearImage={clearInlineImage} disabled={item.can_edit === false}>
-                      <ProductImageCell item={item} />
+                      <ProductImageCell
+                        item={item}
+                        onPreview={(image) => setPreviewImage({ images: [image], index: 0 })}
+                        onEdit={() => beginInlineEdit(item, "product_image")}
+                      />
                     </EditableCell></td>
                     <td><EditableCell field="selling_price" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.selling_price)}</EditableCell></td>
                     <td><EditableCell field="cost_price" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.cost_price)}</EditableCell></td>
@@ -673,9 +738,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
                     <td>{percent(item.profit_rate)}</td>
                     <td className="profit-note-cell" title={item.note || ""}><EditableCell field="note" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{shortNote(item.note) || "-"}</EditableCell></td>
                     <td className="profit-source-cell"><button className="profit-source-open" onClick={() => setActiveProduct(item)} title="查看/编辑该 SKC 的货源链接">打开（{(item.source_groups ?? []).filter((group) => group?.source_url).length}）</button></td>
-                    <td><EditableCell field="attachment_image" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onFileChange={setInlineFile} onClearImage={clearInlineImage} disabled={item.can_edit === false}>
-                      <AttachmentImageCell item={item} />
-                    </EditableCell></td>
+                    <td><SourceImagesCell item={item} onPreview={(images, index) => setPreviewImage({ images, index })} /></td>
                   </tr>
                 );
               }) : (
@@ -725,8 +788,9 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       />
       {previewImage ? (
         <ImagePreviewModal
-          url={previewImage.url}
-          label={previewImage.label}
+          images={previewImage.images}
+          index={previewImage.index}
+          onIndexChange={(index) => setPreviewImage((current) => current ? { ...current, index } : current)}
           onClose={() => setPreviewImage(null)}
         />
       ) : null}
@@ -809,7 +873,7 @@ function EditableCell({
             ))}
           </select>
         ) : null}
-        {field === "product_id" && "value" in inlineEdit ? (
+        {(field === "product_id" || field === "store_name") && "value" in inlineEdit ? (
           <input type="text" value={inlineEdit.value} onChange={(event) => onValueChange?.(event.target.value)} autoFocus />
         ) : null}
         {(field === "selling_price" || field === "cost_price" || field === "weight_kg") && "value" in inlineEdit ? (
@@ -831,7 +895,10 @@ function EditableCell({
     );
   }
   return (
-    <span className={`profit-editable-cell ${disabled ? "is-readonly" : ""}`} role={disabled ? undefined : "button"} tabIndex={disabled ? -1 : 0} onClick={() => !disabled && onEdit(item, field)} onKeyDown={(event) => {
+    <span className={`profit-editable-cell ${disabled ? "is-readonly" : ""}`} role={disabled ? undefined : "button"} tabIndex={disabled ? -1 : 0} onClick={(event) => {
+      if (disabled || (event.target as HTMLElement).closest("button, input, select, textarea, a")) return;
+      onEdit(item, field);
+    }} onKeyDown={(event) => {
       if (!disabled && (event.key === "Enter" || event.key === " ")) {
         event.preventDefault();
         onEdit(item, field);
@@ -842,8 +909,10 @@ function EditableCell({
   );
 }
 
-/** 大图预览浮层：始终位于当前可视区域中央，点击遮罩或关闭按钮关闭。 */
-function ImagePreviewModal({ url, label, onClose }: { url: string; label: string; onClose: () => void }) {
+type PreviewImage = { url: string; label: string };
+
+/** 大图预览浮层：始终位于当前可视区域中央，可在货源图片之间切换。 */
+function ImagePreviewModal({ images, index, onIndexChange, onClose }: { images: PreviewImage[]; index: number; onIndexChange: (index: number) => void; onClose: () => void }) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -851,6 +920,9 @@ function ImagePreviewModal({ url, label, onClose }: { url: string; label: string
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
+
+  const current = images[index] ?? images[0];
+  if (!current) return null;
 
   // 使用实际可视区域限制预览尺寸，让整张图始终能在当前屏幕内看全。
   const viewportWidth = document.documentElement.clientWidth;
@@ -862,7 +934,14 @@ function ImagePreviewModal({ url, label, onClose }: { url: string; label: string
     <div className="profit-image-preview-mask" onClick={onClose}>
       <div className="profit-image-preview-modal" style={{ left: "50%", top: "50%", width: previewWidth, height: previewHeight, transform: "translate(-50%, -50%)" }} onClick={(event) => event.stopPropagation()}>
         <button type="button" className="profit-image-preview-close" onClick={onClose} title="关闭">×</button>
-        <img className="profit-image-preview-img" src={url} alt={label} />
+        <img className="profit-image-preview-img" src={current.url} alt={current.label} />
+        {images.length > 1 ? (
+          <div className="profit-image-preview-pager">
+            <button type="button" onClick={() => onIndexChange((index - 1 + images.length) % images.length)}>上一张</button>
+            <span>{index + 1} / {images.length}</span>
+            <button type="button" onClick={() => onIndexChange((index + 1) % images.length)}>下一张</button>
+          </div>
+        ) : null}
       </div>
     </div>,
     document.body,
@@ -876,132 +955,107 @@ function toggleSet(source: Set<string>, value: string, checked: boolean) {
   return next;
 }
 
-function firstSourceImage(item: ProfitActivityProduct) {
-  const groups = item.source_groups ?? [];
-  for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
-    const group = groups[groupIndex];
-    const paths = group?.image_paths ?? [];
-    if (paths[0]) return { groupIndex, path: paths[0] };
-  }
-  return null;
-}
-
-function firstSourceExternalImage(item: ProfitActivityProduct) {
-  const groupImage = (item.source_groups ?? [])
-    .map((group) => String(group?.main_image_url || "").trim())
-    .find(Boolean);
-  return groupImage || item.source_main_image_url || "";
-}
-
-/** 商品图单元格：优先展示货源（打开）里的图片，核价入库与手动产品都走同一优先级。 */
-function ProductImageCell({ item, onPreview }: { item: ProfitActivityProduct; onPreview?: (url: string) => void }) {
+/** 商品图单元格：只展示唯一的商品主图，不再混入货源图片。 */
+function ProductImageCell({ item, onPreview, onEdit }: { item: ProfitActivityProduct; onPreview?: (image: PreviewImage) => void; onEdit?: () => void }) {
   const site = (item.site || item.site_code || "US") as ProfitActivitySite;
-  const sourceImage = firstSourceImage(item);
-  const externalSourceImage = firstSourceExternalImage(item);
-  const sourceImageVersion = sourceImage?.path || item.source_image_path || "";
-  const [localSourceUrl, setLocalSourceUrl] = useState("");
-  const [productUrl, setProductUrl] = useState("");
-  const [sourceImageFailed, setSourceImageFailed] = useState(false);
+  const [url, setUrl] = useState("");
+  // 核价入库没有本地商品图时，复用执行图搜前的 Temu 主图作为产品库商品图。
+  const sourcingImageUrl = item.source_type === "price_verification"
+    ? String(item.source_main_image_url || "").trim()
+    : "";
 
   useEffect(() => {
     let cancelled = false;
-    const objectUrls: string[] = [];
-    setSourceImageFailed(false);
-    setLocalSourceUrl("");
-    setProductUrl("");
-    if (sourceImageVersion) {
-      loadProductImage({
-        skc: item.skc,
-        site,
-        kind: "source",
-        group: sourceImage?.groupIndex ?? 0,
-        index: 0,
-        version: sourceImageVersion,
-      })
-        .then((url) => {
+    let objectUrl = "";
+    setUrl(sourcingImageUrl);
+    if (!item.image_path) return undefined;
+    loadProductImage({ skc: item.skc, site, kind: "product", version: item.image_path })
+      .then((loaded) => {
           if (cancelled) {
-            URL.revokeObjectURL(url);
+            URL.revokeObjectURL(loaded);
             return;
           }
-          objectUrls.push(url);
-          setLocalSourceUrl(url);
+          objectUrl = loaded;
+          setUrl(loaded);
         })
-        .catch(() => {});
-    }
-    if (item.image_path) {
-      loadProductImage({ skc: item.skc, site, kind: "product", version: item.image_path })
-        .then((url) => {
-          if (cancelled) {
-            URL.revokeObjectURL(url);
-            return;
-          }
-          objectUrls.push(url);
-          setProductUrl(url);
-        })
-        .catch(() => {});
-    }
+      .catch(() => setUrl(sourcingImageUrl));
     return () => {
       cancelled = true;
-      objectUrls.forEach((url) => URL.revokeObjectURL(url));
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [item.skc, site, item.image_path, item.source_image_path, sourceImage?.path, sourceImage?.groupIndex, externalSourceImage]);
+  }, [item.skc, site, item.image_path, sourcingImageUrl]);
 
-  const displayImage = localSourceUrl || (sourceImageFailed ? "" : externalSourceImage) || productUrl;
-
-  const content = displayImage ? (
-    <img
-      className="profit-product-image"
-      src={displayImage}
-      alt={`${item.skc} 主图`}
-      referrerPolicy={displayImage === externalSourceImage ? "no-referrer" : undefined}
-      onError={() => {
-        if (displayImage === externalSourceImage) setSourceImageFailed(true);
-      }}
-    />
+  const content = url ? (
+    <img className="profit-product-image" src={url} alt={`${item.skc} 商品图`} />
   ) : <span className="profit-product-image-empty">无图</span>;
 
-  if (!onPreview) return <span className="profit-product-image-cell">{content}</span>;
+  if (!url || !onPreview) return <span className="profit-product-image-cell">{content}</span>;
   return (
-    <button type="button" className="profit-product-image-cell" onClick={() => displayImage && onPreview(displayImage)} title={displayImage ? "点击查看商品对应图" : "暂无商品对应图"}>
+    <button type="button" className="profit-product-image-cell" onClick={(event) => { event.stopPropagation(); onPreview({ url, label: `${productIdText(item)} 商品图` }); }} onDoubleClick={(event) => { event.stopPropagation(); onEdit?.(); }} title="点击查看商品图，双击更换">
       {content}
     </button>
   );
 }
 
-/** 运营备注图片：独立于货源组，最多一张，可为空。 */
-function AttachmentImageCell({ item, onPreview }: { item: ProfitActivityProduct; onPreview?: (url: string) => void }) {
+type SourceImageReference = { group: number; index: number; path?: string; externalUrl?: string; label: string };
+
+function sourceImageReferences(item: ProfitActivityProduct): SourceImageReference[] {
+  const references: SourceImageReference[] = [];
+  (item.source_groups ?? []).forEach((group, groupIndex) => {
+    (group?.image_paths ?? []).forEach((path, index) => {
+      if (path) references.push({ group: groupIndex, index, path, label: `货源 ${groupIndex + 1} 图片 ${index + 1}` });
+    });
+    const externalUrl = String(group?.main_image_url || "").trim();
+    if (externalUrl) references.push({ group: groupIndex, index: 0, externalUrl, label: `货源 ${groupIndex + 1} 主图` });
+  });
+  if (!references.length && item.source_image_path) {
+    references.push({ group: 0, index: 0, path: item.source_image_path, label: "货源图片" });
+  }
+  if (!references.length && item.source_main_image_url) {
+    references.push({ group: 0, index: 0, externalUrl: item.source_main_image_url, label: "货源主图" });
+  }
+  return references;
+}
+
+/** 图片列：展示货源组的所有图片，与货源抽屉使用同一份来源数据。 */
+function SourceImagesCell({ item, onPreview }: { item: ProfitActivityProduct; onPreview: (images: PreviewImage[], index: number) => void }) {
   const site = (item.site || item.site_code || "US") as ProfitActivitySite;
-  const [url, setUrl] = useState("");
+  const references = sourceImageReferences(item);
+  const referenceKey = references.map((reference) => `${reference.group}:${reference.index}:${reference.path || reference.externalUrl || ""}`).join("|");
+  const [images, setImages] = useState<PreviewImage[]>([]);
 
   useEffect(() => {
     let cancelled = false;
-    let objectUrl = "";
-    if (!item.attachment_image_path) {
-      setUrl("");
-      return;
-    }
-    loadProductImage({ skc: item.skc, site, kind: "attachment", version: item.attachment_image_path })
-      .then((loaded) => {
+    const objectUrls: string[] = [];
+    setImages([]);
+    void Promise.all(references.map(async (reference): Promise<PreviewImage | null> => {
+      if (reference.externalUrl) return { url: reference.externalUrl, label: reference.label };
+      if (!reference.path) return null;
+      try {
+        const url = await loadProductImage({ skc: item.skc, site, kind: "source", group: reference.group, index: reference.index, version: reference.path });
         if (cancelled) {
-          URL.revokeObjectURL(loaded);
-          return;
+          URL.revokeObjectURL(url);
+          return null;
         }
-        objectUrl = loaded;
-        setUrl(loaded);
-      })
-      .catch(() => setUrl(""));
+        objectUrls.push(url);
+        return { url, label: reference.label };
+      } catch {
+        return null;
+      }
+    })).then((loaded) => {
+      if (!cancelled) setImages(loaded.filter((image): image is PreviewImage => image !== null));
+    });
     return () => {
       cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      objectUrls.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [item.skc, site, item.attachment_image_path]);
+  }, [item.skc, site, referenceKey]);
 
-  if (!url) return <span className="profit-product-image-empty">无图</span>;
-  const content = <img className="profit-source-thumb" src={url} alt={`${item.skc} 备注图片`} loading="lazy" />;
-  if (!onPreview) return <span className="profit-source-thumb-btn">{content}</span>;
+  if (!images.length) return <span className="profit-product-image-empty">无图</span>;
   return (
-    <button type="button" className="profit-source-thumb-btn" title="点击查看备注图片" onClick={() => onPreview(url)}>
-      {content}
+    <button type="button" className="profit-source-thumb-btn profit-source-images-cell" title={`点击查看全部 ${images.length} 张货源图片`} onClick={() => onPreview(images, 0)}>
+      <img className="profit-source-thumb" src={images[0].url} alt={`${item.skc} 货源图`} loading="lazy" />
+      {images.length > 1 ? <span className="profit-source-image-count">+{images.length - 1}</span> : null}
     </button>
   );
 }

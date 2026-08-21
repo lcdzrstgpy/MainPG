@@ -67,6 +67,15 @@
   min-width: 0;
 }
 
+.price-verification-prescreen-fields {
+  display: grid;
+  gap: 14px;
+}
+
+.price-verification-store-switch input {
+  width: min(100%, 220px);
+}
+
 .price-verification-current-batch,
 .price-verification-prescreen-result {
   display: grid;

@@ -93,6 +93,22 @@ export function PriceVerificationPage({ isActive = true }: { isActive?: boolean 
     } catch (error) { setNotice(`保存初筛条件失败：${errorMessage(error)}`); return false; }
   };
 
+  const saveCaptureBatchStoreName = async (storeName: string) => {
+    if (!currentBatchId) {
+      setNotice("请先完成插件采集，再保存本批次店铺。");
+      return false;
+    }
+    try {
+      const batch = await priceVerificationApi.setCaptureBatchStoreName(currentBatchId, storeName);
+      setCaptureBatches((items) => items.map((item) => item.batch_id === batch.batch_id ? batch : item));
+      setNotice(batch.store_name ? `本批次店铺已保存：${batch.store_name}` : "本批次店铺已留空。");
+      return true;
+    } catch (error) {
+      setNotice(`保存店铺失败：${errorMessage(error)}`);
+      return false;
+    }
+  };
+
   const stageBatchAndStartSourcing = async (batchId: string, skcIds: string[], _maxCandidates: number) => {
     setBusyKey("prepare-source");
     try {
@@ -208,6 +224,7 @@ export function PriceVerificationPage({ isActive = true }: { isActive?: boolean 
     try {
       const state = await priceVerificationApi.completeBatchSourcing(currentBatchId);
       setSourcingState(state);
+      window.dispatchEvent(new Event("profit-activity-products-changed"));
       setNotice("已将本轮明确关联的候选入库；STEP 03 图搜临时数据已清空。");
     } catch (error) { setNotice(`完成关联失败：${errorMessage(error)}`); } finally { setBusyKey(""); }
   };
@@ -236,7 +253,7 @@ export function PriceVerificationPage({ isActive = true }: { isActive?: boolean 
     {showNotice ? <p className="price-verification-notice price-verification-notice-compact" role="status" aria-live="polite">{notice}</p> : null}
     <div className="price-verification-content-grid"><div className="price-verification-main-column">
       {activeStage !== "prescreen" && <div className="price-verification-stage-tools"><button type="button" className="price-verification-back-button" onClick={() => openStage(activeStage === "batchReview" ? "prescreen" : "batchReview")}>← 返回上一步</button>{batchSummary ? <span>{batchSummary}</span> : null}</div>}
-      {activeStage === "prescreen" && <PrescreenPanel isChecking={loading} totalItems={captureBatches.find((batch) => batch.is_current)?.quote_count ?? 0} totalSkc={captureBatches.find((batch) => batch.is_current)?.skc_count ?? 0} passedItems={batchItems.length} prescreen={prescreen} onPrescreenChange={savePrescreen} onRefresh={() => void refresh()} onContinue={() => openStage("batchReview")} />}
+      {activeStage === "prescreen" && <PrescreenPanel isChecking={loading} totalItems={captureBatches.find((batch) => batch.is_current)?.quote_count ?? 0} totalSkc={captureBatches.find((batch) => batch.is_current)?.skc_count ?? 0} passedItems={batchItems.length} prescreen={prescreen} storeName={captureBatches.find((batch) => batch.is_current)?.store_name ?? ""} onPrescreenChange={savePrescreen} onStoreNameChange={saveCaptureBatchStoreName} onRefresh={() => void refresh()} onContinue={() => openStage("batchReview")} />}
       {activeStage === "batchReview" && <BatchReviewPanel batchId={currentBatchId} items={batchItems} busy={Boolean(busyKey) || loading} onConfirm={(batchId, skcIds, maxCandidates) => stageBatchAndStartSourcing(batchId, skcIds, maxCandidates)} onDelete={(batchId, skcId) => deleteBatchItem(batchId, skcId)} onDeleteSelected={(batchId, skcIds) => deleteBatchItems(batchId, skcIds)} />}
       {activeStage === "sourcing" && <><SourcingPanel isActive={isActive} preview={sourcingState.preview} batchId={currentBatchId} busy={Boolean(busyKey) || loading} sourceCount={sourceCount} links={sourceLinks} selectedCandidates={sourcingState.selected_candidates} onLink={(skcId, _offerId, candidate, priceOverride, weightOverride) => selectSourceCandidate(skcId, candidate, priceOverride, weightOverride)} onManualLookup={addManualSourceCandidate} onUnlink={(linkId) => removeSourceLink(linkId)} onUnselectCandidate={(skcId, offerId) => unselectSourceCandidate(skcId, offerId)} onComplete={() => void completeSourcing()} onStart={() => void startBatchSourcing()} onError={setNotice} matchingCompleted={sourceCount === 0 && sourcingState.preview === null} /><LinkedSourcePanel products={sourcedProducts} /></>}
     </div></div>

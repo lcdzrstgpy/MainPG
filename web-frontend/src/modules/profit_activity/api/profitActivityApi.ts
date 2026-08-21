@@ -163,6 +163,7 @@ export async function updateProfitActivityProduct({
   cost_price,
   weight_kg,
   note,
+  store_name,
 }: {
   site: ProfitActivitySite;
   skc: string;
@@ -170,12 +171,14 @@ export async function updateProfitActivityProduct({
   cost_price?: string;
   weight_kg?: string;
   note?: string;
+  store_name?: string;
 }) {
   const body: Record<string, unknown> = { site };
   if (selling_price !== undefined && selling_price !== "") body.selling_price = selling_price;
   if (cost_price !== undefined && cost_price !== "") body.cost_price = cost_price;
   if (weight_kg !== undefined && weight_kg !== "") body.weight_kg = weight_kg;
   if (note !== undefined) body.note = note;
+  if (store_name !== undefined) body.store_name = store_name;
   return request<{ product: ProfitActivityProduct }>(`/api/profit-activity/products/${encodeURIComponent(skc)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -193,6 +196,7 @@ export async function saveProfitActivityProductEdit({
   costPrice,
   weightKg,
   note,
+  storeName,
   productImage,
   attachmentImage,
   clearProductImage,
@@ -206,6 +210,7 @@ export async function saveProfitActivityProductEdit({
   costPrice: string;
   weightKg: string;
   note: string;
+  storeName?: string;
   productImage?: File | null;
   attachmentImage?: File | null;
   clearProductImage?: boolean;
@@ -222,6 +227,7 @@ export async function saveProfitActivityProductEdit({
   form.set("cost_price", costPrice);
   form.set("weight_kg", weightKg);
   form.set("note", note);
+  form.set("store_name", storeName ?? "");
   if (productImage) form.set("image", productImage);
   if (attachmentImage) form.set("attachment_image", attachmentImage);
   if (clearProductImage) form.set("clear_product_image", "true");
