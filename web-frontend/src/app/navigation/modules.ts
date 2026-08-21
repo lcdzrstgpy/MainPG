@@ -148,8 +148,9 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     iconClass: "iconfont icon-build",
     description: "采集、处理与尺寸图制作",
     defaultChildId: "daily_selection",
-    children: [collection, productProcessing, productProcessingHistory, dimensionCanvas, podCustomization],
+    children: [collection, productProcessing, productProcessingHistory, dimensionCanvas],
   },
+  podCustomization,
   {
     id: "sourcing_workflow",
     label: "核价及货源",
