@@ -465,15 +465,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
 
       {(notice || error) && <div className={`pod-page-message ${error ? "is-error" : ""}`} role={error ? "alert" : "status"}><span>{error ? "!" : "✓"}</span><p>{error || notice}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
 
-      {pendingBillingRuns.length > 0 && <section className="pod-page-message is-error" aria-label="待恢复的 POD 任务">
-        <span>!</span>
-        <div><b>有 {pendingBillingRuns.length} 个任务需要重新授权</b><p>重新登录后可继续原冻结单，不会重复创建任务。</p></div>
-        {pendingBillingRuns.map((run) => {
-          const resumable = run.status === "auth_required" || run.status === "settlement_pending";
-          return <button key={run.id} type="button" disabled={!resumable || busyAction === `resume-billing:${run.id}`} onClick={() => void resumeBillingRun(run)}>{busyAction === `resume-billing:${run.id}` || !resumable ? "处理中…" : "继续任务"}</button>;
-        })}
-      </section>}
-
       <div className="pod-workbench-grid">
         <aside className="pod-setup-column pod-brief-sidebar">
           <section className="pod-setup-card pod-business-editor">
