@@ -71,6 +71,7 @@ def _make_runner(
     *,
     rounds: int | None = 2,
     block_event: threading.Event | None = None,
+    on_recovered: object | None = None,
 ) -> module.EmptyCollectionRetryRunner:
     calls: list[str] = []
 
@@ -101,6 +102,7 @@ def _make_runner(
         budget=object(),
         provider_config_resolver=lambda actor: {"api_key": "x"},
         provider_factory=lambda config: object(),
+        on_recovered=on_recovered,
     )
     runner._calls = calls  # type: ignore[attr-defined]
     return runner
@@ -140,6 +142,26 @@ def test_retry_recovers_when_later_round_has_candidates(monkeypatch: pytest.Monk
     assert repository.replaced and repository.replaced[0]["count"] == 2
     assert repository.replaced[0]["metadata"]["collection_retry"]["status"] == "completed"
     assert runner._calls == ["collect", "collect"]  # type: ignore[attr-defined]
+
+
+def test_retry_success_restarts_sku_repull_for_recovered_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _make_run()
+    repository = FakeRepository(run)
+    recovered: list[tuple[str, str]] = []
+    runner = _make_runner(
+        repository,
+        [_collect_result(("c1",))],
+        monkeypatch,
+        on_recovered=lambda actor, run_id: recovered.append((actor.workspace_id, run_id)),
+    )
+    actor = SimpleNamespace(workspace_id="ws-1", actor_id="actor-1")
+
+    runner.maybe_start(actor=actor, run=run)
+
+    _wait_until(lambda: runner.state(actor=actor, run=run)["status"] == "completed")
+    assert recovered == [("ws-1", "run-1")]
 
 
 def test_retry_marks_failed_when_all_rounds_empty(monkeypatch: pytest.MonkeyPatch) -> None:

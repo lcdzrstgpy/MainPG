@@ -143,6 +143,9 @@ class DailySelectionService:
             budget=budget,
             provider_config_resolver=provider_config_resolver,
             provider_factory=provider_factory,
+            on_recovered=lambda actor, run_id: self.auto_start_sku_repull(
+                actor=actor, run_id=run_id
+            ),
         )
 
     @classmethod

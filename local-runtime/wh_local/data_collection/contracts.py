@@ -220,6 +220,28 @@ class SourceVariantRecord(_ContractModel):
         return value
 
 
+class SourceTierPrice(_ContractModel):
+    """A source-provided price at a minimum purchase quantity."""
+
+    min_order_quantity: int
+    price_cny: Decimal
+
+    @field_validator("min_order_quantity", mode="before")
+    @classmethod
+    def _positive_moq(cls, value: object) -> object:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise DailySelectionContractError("min_order_quantity must be a positive integer")
+        return value
+
+    @field_validator("price_cny", mode="before")
+    @classmethod
+    def _decimal_price(cls, value: object) -> Decimal:
+        result = _decimal(value, "price_cny")
+        if result is None:
+            raise DailySelectionContractError("price_cny is required")
+        return result
+
+
 class ApiEvidence(_ContractModel):
     """Traceable API evidence with credential material removed."""
 
@@ -285,6 +307,12 @@ class DailySelectionCandidate(_ContractModel):
     weight_text: str | None = None
     package_info_text: str | None = None
     freight_cny: Decimal | None = None
+    original_price_cny: Decimal | None = None
+    stock_quantity: int | None = None
+    unit: str | None = None
+    brand: str | None = None
+    video_url: str | None = None
+    tiered_prices: tuple[SourceTierPrice, ...] = ()
     captured_fields: tuple[str, ...] = ()
     missing_capture_fields: tuple[str, ...] = ()
     score_components: Mapping[str, Any] = Field(default_factory=dict)
@@ -297,7 +325,14 @@ class DailySelectionCandidate(_ContractModel):
             raise DailySelectionContractError(f"{info.field_name} is required")
         return value.strip()
 
-    @field_validator("query_keyword", "selection_result_label", "listed_at", mode="before")
+    @field_validator(
+        "query_keyword",
+        "selection_result_label",
+        "listed_at",
+        "unit",
+        "brand",
+        mode="before",
+    )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         if value is None:
@@ -312,10 +347,10 @@ class DailySelectionCandidate(_ContractModel):
     def _valid_source_url(cls, value: object) -> str:
         return _url(value, "source_url")
 
-    @field_validator("main_image_url", mode="before")
+    @field_validator("main_image_url", "video_url", mode="before")
     @classmethod
-    def _valid_main_image(cls, value: object) -> str | None:
-        return None if value is None else _url(value, "main_image_url")
+    def _valid_optional_url(cls, value: object, info: Any) -> str | None:
+        return None if value is None else _url(value, info.field_name)
 
     @field_validator("source_image_urls", "source_detail_image_urls", mode="before")
     @classmethod
@@ -324,7 +359,7 @@ class DailySelectionCandidate(_ContractModel):
             raise DailySelectionContractError(f"{info.field_name} must be a sequence")
         return tuple(_url(item, info.field_name) for item in value)
 
-    @field_validator("price_cny", "selection_score", "freight_cny", mode="before")
+    @field_validator("price_cny", "selection_score", "freight_cny", "original_price_cny", mode="before")
     @classmethod
     def _decimal_fields(cls, value: object, info: Any) -> Decimal | None:
         return _decimal(value, info.field_name)
@@ -336,9 +371,61 @@ class DailySelectionCandidate(_ContractModel):
             raise DailySelectionContractError("min_order_quantity must be a positive integer")
         return value
 
+    @field_validator("stock_quantity", mode="before")
+    @classmethod
+    def _non_negative_stock(cls, value: object) -> object:
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            raise DailySelectionContractError("stock_quantity must be a non-negative integer")
+        return value
+
     @field_validator("source_attributes", "score_components", "raw_payload", mode="before")
     @classmethod
     def _safe_mapping(cls, value: object, info: Any) -> Any:
         if not isinstance(value, Mapping):
             raise DailySelectionContractError(f"{info.field_name} must be a mapping")
         return _safe_value(value)
+
+
+class ShopPage(_ContractModel):
+    """One sanitized page of offer identifiers returned by a 1688 shop search."""
+
+    offer_ids: tuple[str, ...]
+    missing_offer_count: int = 0
+    has_next: bool
+    total_pages: int | None = None
+    evidence: ApiEvidence
+
+    @field_validator("offer_ids", mode="before")
+    @classmethod
+    def _offer_ids(cls, value: object) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            raise DailySelectionContractError("offer_ids must be a sequence")
+        result: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise DailySelectionContractError("offer_ids must contain non-empty strings")
+            result.append(item.strip())
+        return tuple(result)
+
+    @field_validator("missing_offer_count", mode="before")
+    @classmethod
+    def _missing_count(cls, value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise DailySelectionContractError("missing_offer_count must be a non-negative integer")
+        return value
+
+    @field_validator("has_next", mode="before")
+    @classmethod
+    def _has_next(cls, value: object) -> bool:
+        if not isinstance(value, bool):
+            raise DailySelectionContractError("has_next must be a boolean")
+        return value
+
+    @field_validator("total_pages", mode="before")
+    @classmethod
+    def _total_pages(cls, value: object) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
+            raise DailySelectionContractError("total_pages must be between 0 and 100")
+        return value

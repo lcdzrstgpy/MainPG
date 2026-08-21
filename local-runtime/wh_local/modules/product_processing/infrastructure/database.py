@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 
 from sqlalchemy import Engine, create_engine, event, inspect, text
 from sqlalchemy.engine import make_url
@@ -20,6 +21,7 @@ from . import media_asset_orm as _media_asset_orm  # noqa: F401
 class ProductProcessingDatabase:
     engine: Engine
     sessions: sessionmaker[Session]
+    shop_intake_lock: RLock = field(default_factory=RLock, repr=False, compare=False)
 
     def dispose(self) -> None:
         self.engine.dispose()
@@ -52,6 +54,7 @@ def create_database(database_url: str | None = None) -> ProductProcessingDatabas
     Base.metadata.create_all(engine)
     _ensure_columns(engine)
     _remove_legacy_candidate_unique_constraint(engine)
+    _ensure_shop_candidate_unique_index(engine)
     return ProductProcessingDatabase(engine, sessionmaker(engine, expire_on_commit=False))
 
 
@@ -264,6 +267,20 @@ def _remove_legacy_candidate_unique_constraint(engine: Engine) -> None:
         finally:
             connection.exec_driver_sql("PRAGMA foreign_keys=ON")
             connection.commit()
+def _ensure_shop_candidate_unique_index(engine: Engine) -> None:
+    """Enforce one direct shop draft per workspace/candidate."""
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_product_processing_shop_candidate "
+                "ON product_processing_drafts (workspace_id, candidate_id) "
+                "WHERE source_type = 'onebound_api' "
+                "AND handoff_id IS NULL AND candidate_id IS NOT NULL"
+            )
+        )
+
+
 def _configure_sqlite(engine: Engine) -> None:
     @event.listens_for(engine, "connect")
     def on_connect(connection, _record) -> None:

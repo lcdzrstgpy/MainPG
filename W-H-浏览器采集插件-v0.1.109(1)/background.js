@@ -60,6 +60,7 @@ const PLUGIN_COMMAND_TIMEOUT_MS = {
   old_product_health_check: 30 * 60 * 1000,
   temu_orders_by_sku: 20 * 60 * 1000,
   temu_flux_by_spu: 20 * 60 * 1000,
+  temu_flux_accel: 20 * 60 * 1000,
   temu_sales_manage_snapshot: 10 * 60 * 1000,
   temu_price_quote_discovery: 180000,
   dxm_accessory_lookup: 30000,
@@ -656,9 +657,11 @@ function currentPluginCapabilities(baseUrl) {
     product_capture_to_draft: true,
     product_batch_capture_to_draft: true,
     product_batch_capture_command: true,
+    temu_link_capture: true,
     temu_price_quote_discovery: true,
     temu_price_quote_dom_image_fix: true,
     temu_flux_by_spu: true,
+    temu_flux_accel: true,
     temu_sales_manage_snapshot: true,
     dxm_accessory_lookup: true,
     dxm_product_video_backfill: true,
@@ -787,11 +790,14 @@ async function performPluginPoll(connection) {
     }
     const payload = await response.json();
     if (!connectionMatchesActive(connection)) return false;
-    tenantContext.assertServerTenantContext(connection, payload.tenant_context);
-    if (payload.runtime_config && typeof payload.runtime_config === "object") {
+    if (!Array.isArray(payload) && payload.tenant_context !== undefined) {
+      tenantContext.assertServerTenantContext(connection, payload.tenant_context);
+    }
+    if (!Array.isArray(payload) && payload.runtime_config && typeof payload.runtime_config === "object") {
       await chrome.storage.local.set({ workbenchRuntimeConfig: payload.runtime_config });
     }
-    for (const command of payload.commands || []) {
+    const commands = Array.isArray(payload) ? payload : (payload.commands || []);
+    for (const command of commands) {
       if (!connectionMatchesActive(connection)) return false;
       await executeCommand(connection.http_base, connection.session_token, command);
     }
@@ -947,6 +953,9 @@ async function runCommand(baseUrl, sessionToken, command) {
       requiredTexts: ["商品流量", "商品ID查询", "查询"],
       inputHelp: "请确认当前页面在“经营分析 > 流量分析 > 商品流量”，右上角站点为美国，商品 ID 查询条件为 SPU。插件会先把每页条数切到 100，再切换近7日/近30日并点击查询。"
     });
+  }
+  if (command.command_type === "temu_flux_accel") {
+    return runFluxApiBySpuCommand(baseUrl, sessionToken, command);
   }
   if (command.command_type === "temu_sales_manage_snapshot") {
     return runTemuSalesManageSnapshotCommand(baseUrl, sessionToken, command);

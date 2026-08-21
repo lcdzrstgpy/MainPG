@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .collector import DailySelectionCollector
 from .criteria import DailySelectionCriteria
@@ -77,11 +77,13 @@ class EmptyCollectionRetryRunner:
         budget: Any,
         provider_config_resolver: Any,
         provider_factory: Any,
+        on_recovered: Callable[[Any, str], Any] | None = None,
     ) -> None:
         self._repository = repository
         self._budget = budget
         self._provider_config_resolver = provider_config_resolver
         self._provider_factory = provider_factory
+        self._on_recovered = on_recovered
         self._jobs: dict[tuple[str, str], EmptyCollectionRetryJob] = {}
         self._lock = threading.Lock()
 
@@ -185,6 +187,14 @@ class EmptyCollectionRetryRunner:
                     candidates=candidates,
                     metadata=metadata,
                 )
+                if self._on_recovered is not None:
+                    try:
+                        self._on_recovered(actor, run.run_id)
+                    except Exception:
+                        # Collection recovery is durable already.  A transient
+                        # re-pull scheduling error must not revert that success;
+                        # the normal SKU re-pull control remains available.
+                        pass
                 with job.progress_lock:
                     job.status = "completed"
                     job.message = metadata["collection_retry"]["message"]

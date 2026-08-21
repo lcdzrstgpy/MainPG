@@ -13,9 +13,10 @@ import http.client
 import ipaddress
 import json
 import socket
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 from urllib.error import HTTPError
 from urllib.parse import unquote, urlencode, urlparse, urlunparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -27,6 +28,7 @@ from .contracts import (
     redact_sensitive_text,
 )
 from .criteria import DailySelectionCriteria
+from .shop_parsing import validate_shop_sid
 from .public_image_fetch import (
     FetchedPublicImage,
     PublicImageFetchError,
@@ -45,6 +47,7 @@ _SEARCH_RETRIES = 1
 _SEARCH_RETRY_BACKOFF_SECONDS = 1.5
 # 搜索类操作触发自动重试的 outcome：上游超时、空结果、上游失败。
 _SEARCH_RETRY_OUTCOMES = frozenset({"timeout", "no_results", "upstream_failed"})
+_ITEM_GET_SEMAPHORE = threading.BoundedSemaphore(3)
 
 
 def _elapsed_ms(started_at: float) -> int:
@@ -277,6 +280,13 @@ class OneBound1688Provider:
             max_bytes=self._image_max_bytes,
             timeout_seconds=self._timeout_seconds,
         )
+        self._api_call_guard: Callable[[str], None] | None = None
+
+    def install_api_call_guard(self, guard: Callable[[str], None]) -> None:
+        """Install a per-attempt guard for a dedicated provider instance."""
+        if not callable(guard):
+            raise TypeError("api call guard must be callable")
+        self._api_call_guard = guard
 
     def safe_summary(self) -> Mapping[str, Any]:
         """Return diagnostic configuration without credentials or credential hints."""
@@ -387,10 +397,26 @@ class OneBound1688Provider:
     def get_item_detail(self, offer_id: str) -> ProviderCallResult:
         if not isinstance(offer_id, str) or not offer_id.strip():
             return self._local_error("item_get", "invalid_request", "offer_id is required")
+        with _ITEM_GET_SEMAPHORE:
+            return self._api_call(
+                "item_get",
+                {"num_iid": offer_id.strip()},
+                request_metadata={"offer_id_present": True},
+            )
+
+    def search_shop(self, seller_nick: str, page: int) -> ProviderCallResult:
+        """Fetch one bounded page of a seller's offers using OneBound's shop endpoint."""
+        try:
+            shop_sid = validate_shop_sid(seller_nick)
+        except ValueError:
+            return self._local_error("item_search_shop", "invalid_request", "seller_nick is required")
+        if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= 100:
+            return self._local_error("item_search_shop", "invalid_request", "page must be between 1 and 100")
         return self._api_call(
-            "item_get",
-            {"num_iid": offer_id.strip()},
-            request_metadata={"offer_id_present": True},
+            "item_search_shop",
+            {"seller_nick": shop_sid, "page": page},
+            request_metadata={"seller_nick_present": True, "page": page},
+            retry_outcomes=_SEARCH_RETRY_OUTCOMES,
         )
 
     def _download_reference_image(
@@ -447,7 +473,10 @@ class OneBound1688Provider:
         request_summary = {"http_method": http_method, "operation": operation, **request_metadata}
         max_attempts = 1 + max(_RATE_LIMIT_RETRIES, _SEARCH_RETRIES)
         last_error: ProviderCallResult | None = None
+        attempt_audits: list[ApiEvidence] = []
         for attempt in range(max_attempts):
+            if self._api_call_guard is not None:
+                self._api_call_guard(operation)
             started_at = time.monotonic()
             try:
                 upstream = self._transport.request(
@@ -465,7 +494,8 @@ class OneBound1688Provider:
                     request_summary=request_summary,
                     response_summary={"elapsed_ms": _elapsed_ms(started_at)},
                 )
-                result = ProviderCallResult({}, prior_audits + (audit,), self._error("timeout", "OneBound request timed out"))
+                attempt_audits.append(audit)
+                result = ProviderCallResult({}, prior_audits + tuple(attempt_audits), self._error("timeout", "OneBound request timed out"))
                 outcome = "timeout"
                 http_status = None
                 request_id = None
@@ -476,7 +506,8 @@ class OneBound1688Provider:
                     request_summary=request_summary,
                     response_summary={"elapsed_ms": _elapsed_ms(started_at)},
                 )
-                result = ProviderCallResult({}, prior_audits + (audit,), self._error("upstream_failed", "OneBound request failed"))
+                attempt_audits.append(audit)
+                result = ProviderCallResult({}, prior_audits + tuple(attempt_audits), self._error("upstream_failed", "OneBound request failed"))
                 outcome = "upstream_failed"
                 http_status = None
                 request_id = None
@@ -507,10 +538,11 @@ class OneBound1688Provider:
                     response_summary=response_summary,
                     request_id=request_id if isinstance(request_id, str) else None,
                 )
+                attempt_audits.append(audit)
                 sanitized = self._sanitize(payload)
                 result = ProviderCallResult(
                     sanitized,
-                    prior_audits + (audit,),
+                    prior_audits + tuple(attempt_audits),
                     self._error(outcome, "OneBound returned an unsuccessful response", http_status, request_id)
                     if outcome not in {"success", "no_results"}
                     else None,
