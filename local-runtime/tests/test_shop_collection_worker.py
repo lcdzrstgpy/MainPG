@@ -42,7 +42,9 @@ class FakeProvider:
         with self.lock:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
-        time.sleep(0.015)
+        # 延长详情耗时窗口，确保同一批并发的 3 个线程能同时观察到活跃计数，
+        # 避免本机线程调度太快导致并发峰值测不到（时序敏感断言稳定化）。
+        time.sleep(0.08)
         with self.lock:
             self.active -= 1
         if offer_id in self.fail_ids:
