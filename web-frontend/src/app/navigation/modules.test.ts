@@ -12,8 +12,15 @@ test("sidebar navigation groups the product workflow around its AI history entry
     "product_processing",
     "product_processing_history",
     "dimension_canvas",
+    "pod_customization",
   ]);
-  assert.deepEqual(productWorkflow?.children?.map((child) => child.label), ["采集", "AI处理", "历史记录", "尺寸画布"]);
+  assert.deepEqual(productWorkflow?.children?.map((child) => child.label), [
+    "采集",
+    "AI处理",
+    "历史记录",
+    "尺寸画布",
+    "POD定制",
+  ]);
   assert.equal(productWorkflow?.children?.find((child) => child.id === "product_processing_history")?.iconClass, "iconfont icon-time-circle");
 });
 
