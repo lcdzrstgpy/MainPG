@@ -707,6 +707,18 @@ def _module_migrations() -> list[tuple[str, str, str]]:
             "data_collection:007_sku_repull_outbox",
             root / "data_collection" / "migrations" / "007_sku_repull_outbox.sql",
         ),
+        (
+            "data_collection:008_plugin_onebound_capture_batches",
+            root / "data_collection" / "migrations" / "008_plugin_onebound_capture_batches.sql",
+        ),
+        (
+            "data_collection:009_plugin_onebound_capture_item_attempts",
+            root / "data_collection" / "migrations" / "009_plugin_onebound_capture_item_attempts.sql",
+        ),
+        (
+            "data_collection:010_plugin_onebound_capture_persistent_columns",
+            root / "data_collection" / "migrations" / "010_plugin_onebound_capture_persistent_columns.sql",
+        ),
     ]
     for migration_id, sql_path in data_collection_migrations:
         if sql_path.exists():
@@ -1282,6 +1294,50 @@ def init_db(database_path: Path) -> None:
                 (migration_id,),
             ).fetchone()
             if exists:
+                continue
+            if migration_id == "data_collection:009_plugin_onebound_capture_item_attempts":
+                item_columns = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(plugin_onebound_capture_items)")
+                }
+                if "attempts" in item_columns:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",
+                        (migration_id, module),
+                    )
+                    continue
+            if migration_id == "data_collection:010_plugin_onebound_capture_persistent_columns":
+                batch_columns = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(plugin_onebound_capture_batches)")
+                }
+                item_columns = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(plugin_onebound_capture_items)")
+                }
+                batch_additions = {
+                    "page_url": "TEXT NOT NULL DEFAULT ''",
+                    "total_count": "INTEGER NOT NULL DEFAULT 0",
+                    "error_message": "TEXT NOT NULL DEFAULT ''",
+                }
+                item_additions = {
+                    "source_title": "TEXT NOT NULL DEFAULT ''",
+                    "error_message": "TEXT NOT NULL DEFAULT ''",
+                }
+                for column_name, definition in batch_additions.items():
+                    if column_name not in batch_columns:
+                        conn.execute(
+                            f"ALTER TABLE plugin_onebound_capture_batches ADD COLUMN {column_name} {definition}"
+                        )
+                for column_name, definition in item_additions.items():
+                    if column_name not in item_columns:
+                        conn.execute(
+                            f"ALTER TABLE plugin_onebound_capture_items ADD COLUMN {column_name} {definition}"
+                        )
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",
+                    (migration_id, module),
+                )
                 continue
             conn.executescript(sql)
             conn.execute(

@@ -394,7 +394,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         return <WorkspaceHomePage onOpenModule={openModule} />;
       case "daily_selection":
       case "daily_selection_collection":
-        return <DailySelectionPage view="collection" initialDirectionId={tab.directionId} topbarStatusVisible={isActive} isActive={isActive} />;
+        return <DailySelectionPage view="collection" initialDirectionId={tab.directionId} onOpenProductProcessingDraft={() => openModule("product_processing")} topbarStatusVisible={isActive} isActive={isActive} />;
       case "profit_activity":
         return <ProfitActivityTestPage isActive={isActive} />;
       case "profit_activity_products":

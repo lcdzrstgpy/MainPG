@@ -1,4 +1,4 @@
-importScripts("tenant_context.js", "plugin_command_contract.js");
+importScripts("tenant_context.js", "onebound_page_capture.js");
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8010";
 const tenantContext = self.WorkbenchTenantContext;
@@ -31,7 +31,6 @@ const PRODUCT_BATCH_LIST_SCAN_LIMIT = 200;
 const PRODUCT_BATCH_LIST_SCROLL_MAX_PASSES = 12;
 const PRODUCT_BATCH_LIST_SCROLL_WAIT_MS = 650;
 const SOURCE_IMAGE_SEARCH_TASK_LIMIT = 50;
-const PRICE_QUOTE_DOM_ROW_LIMIT = 500;
 const SOURCE_IMAGE_SEARCH_CANDIDATE_LIMIT = 20;
 const SOURCE_IMAGE_SEARCH_WAIT_MS = 4200;
 const SOURCE_IMAGE_SEARCH_UPLOAD_WAIT_MS = 5200;
@@ -60,7 +59,6 @@ const PLUGIN_COMMAND_TIMEOUT_MS = {
   old_product_health_check: 30 * 60 * 1000,
   temu_orders_by_sku: 20 * 60 * 1000,
   temu_flux_by_spu: 20 * 60 * 1000,
-  temu_flux_accel: 20 * 60 * 1000,
   temu_sales_manage_snapshot: 10 * 60 * 1000,
   temu_price_quote_discovery: 180000,
   dxm_accessory_lookup: 30000,
@@ -88,6 +86,15 @@ const TEMAISHUJU_BACKGROUND_WINDOW_HEIGHT = 900;
 const DEFAULT_MAIN_WORLD_SCRIPT_TIMEOUT_MS = 60000;
 const PRODUCT_BATCH_RISK_CONTROL_RE = /访问被拒绝|親，访问被拒绝|亲，访问被拒绝/i;
 const PRODUCT_BATCH_RISK_AUXILIARY_RE = /验证码|安全验证|滑块|访问受限|请求过于频繁|操作频繁|稍后再试|扫码验证/i;
+const ONEBOUND_PAGE_CAPTURE_ENDPOINTS = Object.freeze({
+  prepare: "/plugin/product-capture/onebound-batches/prepare",
+  start: "/plugin/product-capture/onebound-batches/start",
+  item: "/plugin/product-capture/onebound-batches/item",
+  finish: "/plugin/product-capture/onebound-batches/finish"
+});
+const ONEBOUND_PAGE_CAPTURE_MAX_ITEMS = 80;
+const ONEBOUND_PAGE_CAPTURE_SCROLL_MAX_PASSES = 12;
+const ONEBOUND_PAGE_CAPTURE_SCROLL_WAIT_MS = 650;
 let socket = null;
 let pollTimer = null;
 let pollInFlight = null;
@@ -96,6 +103,11 @@ let pollFailureCount = 0;
 let activeConnectionContext = null;
 const productBatchCaptureJobs = new Map();
 let productBatchCaptureJobSequence = 0;
+const oneboundPageCaptureJobs = new Map();
+let oneboundPageCaptureJobSequence = 0;
+const oneboundPageCaptureSessionStore = self.OneboundPageCapture.createSessionJobStore(chrome.storage.session);
+const oneboundPageCaptureStartGate = self.OneboundPageCapture.createStartGate();
+const pageControlRepairSingleflight = self.OneboundPageCapture.createSingleflight();
 const sourceBrowserPartialItems = new Map();
 const sourceBrowserActiveResults = new Map();
 const sourceBrowserCancelledCommands = new Set();
@@ -478,24 +490,451 @@ function isProductBatchCaptureCancelled(job) {
   return Boolean(job?.cancelled);
 }
 
-async function cancelProductBatchCapture(sourceTab) {
+async function cancelProductBatchCapture(sourceTab, message = {}) {
   const sourceTabId = sourceTab?.id || null;
-  const jobs = Array.from(productBatchCaptureJobs.values())
-    .filter((job) => !job.finished && !job.cancelled)
-    .filter((job) => sourceTabId == null || job.source_tab_id === sourceTabId);
-  const candidates = jobs.length ? jobs : Array.from(productBatchCaptureJobs.values()).filter((job) => !job.finished && !job.cancelled);
-  if (!candidates.length) {
-    return { ok: false, error: "no_active_batch_capture", statusText: "当前没有正在运行的批量采集" };
-  }
+  const candidates = self.OneboundPageCapture.jobsForCancellation(Array.from(productBatchCaptureJobs.values()), sourceTabId);
   for (const job of candidates) {
     job.cancelled = true;
     job.cancelled_at = new Date().toISOString();
   }
+  let oneboundCandidates = self.OneboundPageCapture.jobsForCancellation(Array.from(oneboundPageCaptureJobs.values()), sourceTabId);
+  const requestedBatchToken = String(message?.batch_token || "").trim();
+  if (requestedBatchToken) {
+    oneboundCandidates = oneboundCandidates.filter((job) => job.batch_token === requestedBatchToken);
+    if (!oneboundCandidates.length && sourceTabId != null) {
+      const connection = await readConnectionContext();
+      const restored = await self.OneboundPageCapture.restoreCancellableJob({
+        store: oneboundPageCaptureSessionStore,
+        batchToken: requestedBatchToken,
+        sourceTabId,
+        connection
+      });
+      if (restored.job) {
+        const job = {
+          id: ++oneboundPageCaptureJobSequence,
+          ...restored.job,
+          connection,
+          cancelled: false,
+          finished: false,
+          state: "prepared"
+        };
+        oneboundPageCaptureJobs.set(job.id, job);
+        oneboundCandidates = [job];
+      }
+    }
+  }
+  const finishFailures = [];
+  let oneboundCancelledCount = 0;
+  for (const job of oneboundCandidates) {
+    if (job.state === "prepared") {
+      try {
+        const finish = await postOneboundPageCaptureStage(job.connection_identity.http_base, "finish", {
+          session_token: job.connection_identity.session_token,
+          batch_token: job.batch_token,
+          cancelled: true
+        });
+        if (finish?.ok === false) {
+          finishFailures.push(String(finish.error || finish.statusText || "onebound_page_capture_finish_failed"));
+          continue;
+        }
+        job.cancelled = true;
+        job.cancelled_at = new Date().toISOString();
+        job.finished = true;
+        oneboundPageCaptureJobs.delete(job.id);
+        await oneboundPageCaptureSessionStore.remove(job.batch_token);
+        oneboundCancelledCount += 1;
+      } catch (error) {
+        finishFailures.push(String(error?.message || error || "onebound_page_capture_finish_failed"));
+      }
+      continue;
+    }
+    job.cancelled = true;
+    job.cancelled_at = new Date().toISOString();
+    oneboundCancelledCount += 1;
+  }
+  const cancelledCount = candidates.length + oneboundCancelledCount;
+  if (!cancelledCount) {
+    return {
+      ok: false,
+      error: finishFailures.length ? "onebound_page_capture_finish_failed" : "no_active_batch_capture",
+      statusText: finishFailures.length ? "OneBound 批次收口失败，已保留待重试状态" : "当前没有正在运行的批量采集",
+      ...(finishFailures.length ? { finish_errors: finishFailures } : {})
+    };
+  }
   return {
-    ok: true,
-    cancelled_count: candidates.length,
-    statusText: candidates.length > 1 ? `已请求中断 ${candidates.length} 个批量采集` : "已请求中断批量采集"
+    ok: !finishFailures.length,
+    cancelled_count: cancelledCount,
+    statusText: finishFailures.length
+      ? "部分批量采集已中断，但 OneBound 批次收口失败并保留待重试状态"
+      : (cancelledCount > 1 ? `已请求中断 ${cancelledCount} 个批量采集` : "已请求中断批量采集"),
+    ...(finishFailures.length ? { finish_errors: finishFailures } : {})
   };
+}
+
+function is1688Tab(tab) {
+  try {
+    return /(^|\.)1688\.com$/i.test(new URL(String(tab?.url || "")).hostname);
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function postOneboundPageCaptureStage(baseUrl, stage, body) {
+  const endpoint = ONEBOUND_PAGE_CAPTURE_ENDPOINTS[stage];
+  if (!endpoint) throw new Error(`unsupported_onebound_page_capture_stage:${stage}`);
+  const timeoutMs = stage === "item" ? 60000 : 30000;
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  let timeout = null;
+  try {
+    if (controller) timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await fetch(workbenchHttpUrl(baseUrl, endpoint), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller?.signal
+    });
+    if (!response.ok) {
+      const error = await readWorkbenchError(response);
+      return {
+        ok: false,
+        status: response.status,
+        error: error || `onebound_page_capture_${stage}_failed`,
+        statusText: stage === "prepare"
+          ? `批次登记失败：${String(error || `HTTP ${response.status}`).replace(/\s+/g, " ").trim().slice(0, 42)}`
+          : captureFailureStatusText(error, response.status),
+        help: error || ""
+      };
+    }
+    const payload = await response.json();
+    if (payload?.tenant_context !== undefined) {
+      tenantContext.assertServerTenantContext(trustedConnectionForBase(baseUrl), payload.tenant_context);
+    }
+    return payload && typeof payload === "object" ? payload : { ok: false, error: "invalid_onebound_page_capture_response" };
+  } catch (error) {
+    if (controller?.signal?.aborted) {
+      throw new Error(`onebound_page_capture_${stage}_timeout_${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function sendOneboundPageCaptureProgress(tabId, progress) {
+  if (tabId == null) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: "ONEBOUND_PAGE_CAPTURE_PROGRESS",
+      ...progress
+    });
+  } catch (_error) {
+    // A page-level UI is optional; capture continues when the tab has no listener.
+  }
+}
+
+function oneboundPrepareResponse(plan, job) {
+  return {
+    ok: plan?.ok !== false,
+    batch_token: plan?.batch_token || "",
+    total_count: Number(plan?.total_count ?? job?.source_urls?.length ?? 0),
+    existing_count: Number(plan?.existing_count || 0),
+    pending_count: Number(plan?.pending_count ?? plan?.pending_urls?.length ?? 0),
+    pending_urls: Array.isArray(plan?.pending_urls) ? plan.pending_urls : [],
+    existing_offer_ids: Array.isArray(plan?.existing_offer_ids) ? plan.existing_offer_ids : [],
+    expires_at: plan?.expires_at || null,
+    statusText: plan?.statusText || "OneBound 页面采集已准备",
+    ...(plan?.error ? { error: plan.error } : {}),
+    ...(plan?.help ? { help: plan.help } : {})
+  };
+}
+
+function findOneboundPageCaptureJob(sourceTab, batchToken) {
+  const sourceTabId = sourceTab?.id || null;
+  const candidates = Array.from(oneboundPageCaptureJobs.values())
+    .filter((job) => !job.finished)
+    .filter((job) => sourceTabId == null || job.source_tab_id === sourceTabId);
+  if (batchToken) return candidates.find((job) => job.batch_token === batchToken) || null;
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+async function clearPreparedOneboundPageCaptureJobsForTab(sourceTab, connection) {
+  const sourceTabId = sourceTab?.id || null;
+  if (sourceTabId == null) return { ok: false, error: "missing_source_tab", statusText: "缺少 1688 页面上下文" };
+  const inMemory = self.OneboundPageCapture.preparedJobsForReplacement(Array.from(oneboundPageCaptureJobs.values()), sourceTabId);
+  const remembered = typeof oneboundPageCaptureSessionStore.list === "function"
+    ? await oneboundPageCaptureSessionStore.list()
+    : [];
+  const knownTokens = new Set(inMemory.map((job) => job.batch_token));
+  const restored = self.OneboundPageCapture.preparedJobsForReplacement(remembered, sourceTabId)
+    .filter((job) => !knownTokens.has(job.batch_token))
+    .map((saved) => {
+      const job = {
+        id: ++oneboundPageCaptureJobSequence,
+        ...saved,
+        connection,
+        cancelled: false,
+        finished: false,
+        state: "prepared"
+      };
+      oneboundPageCaptureJobs.set(job.id, job);
+      return job;
+    });
+  const candidates = [...inMemory, ...restored];
+  for (const job of candidates) {
+    if (!self.OneboundPageCapture.connectionIdentityMatches(job.connection_identity, connection)) {
+      return {
+        ok: false,
+        error: "onebound_page_capture_previous_connection_changed",
+        statusText: "上一批 OneBound 页面采集连接已变化，无法安全收口；请先处理旧批次",
+        help: "旧批次已保留，未创建新批次。"
+      };
+    }
+    let finish;
+    try {
+      finish = await postOneboundPageCaptureStage(connection.http_base, "finish", {
+        session_token: connection.session_token,
+        batch_token: job.batch_token,
+        cancelled: true
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: "onebound_page_capture_previous_finish_failed",
+        statusText: "上一批 OneBound 页面采集收口失败，已保留待重试状态",
+        help: String(error?.message || error || "")
+      };
+    }
+    if (finish?.ok === false) {
+      return {
+        ok: false,
+        error: "onebound_page_capture_previous_finish_failed",
+        statusText: "上一批 OneBound 页面采集收口失败，已保留待重试状态",
+        help: String(finish.error || finish.statusText || "")
+      };
+    }
+    job.finished = true;
+    job.cancelled = true;
+    oneboundPageCaptureJobs.delete(job.id);
+    await oneboundPageCaptureSessionStore.remove(job.batch_token);
+  }
+  return { ok: true };
+}
+
+async function prepare1688OneboundPageCapture(sourceTab, message = {}) {
+  if (!is1688Tab(sourceTab)) {
+    return { ok: false, error: "unsupported_1688_page", statusText: "当前页不是 1688 页面，无法准备 OneBound 页面采集" };
+  }
+  const connection = await readConnectionContext();
+  if (!connection) return { ok: false, error: "missing_plugin_session", statusText: "插件未连接工作台" };
+  const baseUrl = connection.http_base;
+  if (!isAllowedWorkbenchUrl(baseUrl)) {
+    return { ok: false, error: "unsupported_workbench_url", statusText: "工作台地址不受支持" };
+  }
+  const previous = await clearPreparedOneboundPageCaptureJobsForTab(sourceTab, connection);
+  if (!previous.ok) return previous;
+  let sourceUrls = self.OneboundPageCapture.canonicalizeOfferUrls(message.source_urls, ONEBOUND_PAGE_CAPTURE_MAX_ITEMS);
+  let scan = null;
+  if (!sourceUrls.length) {
+    try {
+      const [result] = await chrome.scripting.executeScript({
+        target: { tabId: sourceTab.id },
+        world: "MAIN",
+        func: self.OneboundPageCapture.scanPage,
+        args: [{
+          maxItems: ONEBOUND_PAGE_CAPTURE_MAX_ITEMS,
+          maxScrollPasses: ONEBOUND_PAGE_CAPTURE_SCROLL_MAX_PASSES,
+          scrollWaitMs: ONEBOUND_PAGE_CAPTURE_SCROLL_WAIT_MS
+        }]
+      });
+      scan = result?.result || null;
+      sourceUrls = self.OneboundPageCapture.canonicalizeOfferUrls(scan?.source_urls, ONEBOUND_PAGE_CAPTURE_MAX_ITEMS);
+    } catch (error) {
+      return { ok: false, error: "onebound_page_scan_failed", statusText: "1688 列表页扫描失败", help: String(error?.message || error || "") };
+    }
+  }
+  if (!sourceUrls.length) {
+    return {
+      ok: false,
+      error: "no_1688_offer_urls",
+      statusText: "当前 1688 列表页没有识别到可采集的数字 offerId 商品链接",
+      help: "请确认商品卡片已加载后重试。"
+    };
+  }
+  let plan;
+  try {
+    plan = await postOneboundPageCaptureStage(baseUrl, "prepare", {
+      session_token: connection.session_token,
+      page_url: sourceTab.url || "",
+      source_urls: sourceUrls
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      error: "onebound_page_capture_prepare_failed",
+      statusText: "OneBound 页面采集准备失败",
+      help: String(error?.message || error || "")
+    };
+  }
+  if (plan?.ok === false || !plan?.batch_token) return oneboundPrepareResponse(plan, { source_urls: sourceUrls });
+  // The workbench owns starting and completing this persistent batch. Do not
+  // retain a page-owned job that navigation could later cancel.
+  return oneboundPrepareResponse(plan, { source_urls: sourceUrls });
+}
+
+async function start1688OneboundPageCapture(sourceTab, message = {}) {
+  const batchToken = String(message.batch_token || "").trim();
+  if (!batchToken) return { ok: false, status: 400, error: "missing_onebound_page_capture_batch_token", statusText: "缺少 OneBound 批次令牌" };
+  let job = findOneboundPageCaptureJob(sourceTab, batchToken);
+  if (job && job.state !== "prepared") {
+    return { ok: false, status: 409, error: "onebound_page_capture_already_started", statusText: "OneBound 页面采集已经启动，请勿重复确认" };
+  }
+  if (!oneboundPageCaptureStartGate.begin(batchToken)) {
+    return { ok: false, status: 409, error: "onebound_page_capture_already_started", statusText: "OneBound 页面采集已经启动，请勿重复确认" };
+  }
+  if (job) job.state = "starting";
+  let preservePreparedJob = false;
+  try {
+    if (!job) {
+      const saved = await oneboundPageCaptureSessionStore.load(batchToken);
+      if (!saved || (sourceTab?.id != null && saved.source_tab_id !== sourceTab.id)) {
+        return { ok: false, error: "onebound_page_capture_not_prepared", statusText: "请先重新准备 1688 OneBound 页面采集" };
+      }
+      job = {
+        id: ++oneboundPageCaptureJobSequence,
+        ...saved,
+        connection: null,
+        cancelled: false,
+        finished: false,
+        state: "starting"
+      };
+      oneboundPageCaptureJobs.set(job.id, job);
+    }
+    const connection = await readConnectionContext();
+    if (!connection || !self.OneboundPageCapture.connectionIdentityMatches(job.connection_identity, connection)) {
+      job.finished = true;
+      oneboundPageCaptureJobs.delete(job.id);
+      await oneboundPageCaptureSessionStore.remove(batchToken);
+      return {
+        ok: false,
+        error: "onebound_page_capture_connection_changed",
+        statusText: "工作台连接已变化，请重新准备 OneBound 页面采集",
+        help: "准备采集后的工作台地址或会话令牌发生变化。"
+      };
+    }
+    if (job.cancelled) {
+      try {
+        const finish = await postOneboundPageCaptureStage(connection.http_base, "finish", {
+          session_token: connection.session_token,
+          batch_token: job.batch_token,
+          cancelled: true
+        });
+        if (finish?.ok === false) {
+          job.state = "prepared";
+          job.cancelled = false;
+          preservePreparedJob = true;
+          await oneboundPageCaptureSessionStore.save(job);
+          return {
+            ok: false,
+            cancelled: true,
+            captured_count: Number(finish?.captured_count || 0),
+            created_count: Number(finish?.created_count || 0),
+            refreshed_count: Number(finish?.refreshed_count || 0),
+            skipped_count: Number(finish?.skipped_count || 0),
+            failed_count: Number(finish?.failed_count || 0),
+            unprocessed_count: Number(finish?.unprocessed_count ?? job.plan?.pending_count ?? 0),
+            failed_urls: Array.isArray(finish?.failed_urls) ? finish.failed_urls : [],
+            error: finish.error || "onebound_page_capture_finish_failed",
+            statusText: "OneBound 页面采集已中断，但批次收口失败并保留待重试状态",
+            help: finish.help || finish.statusText || ""
+          };
+        }
+        return {
+          ok: finish?.ok !== false,
+          cancelled: true,
+          captured_count: Number(finish?.captured_count || 0),
+          created_count: Number(finish?.created_count || 0),
+          refreshed_count: Number(finish?.refreshed_count || 0),
+          skipped_count: Number(finish?.skipped_count || 0),
+          failed_count: Number(finish?.failed_count || 0),
+          unprocessed_count: Number(finish?.unprocessed_count ?? job.plan?.pending_count ?? 0),
+          failed_urls: Array.isArray(finish?.failed_urls) ? finish.failed_urls : [],
+          statusText: finish?.statusText || "OneBound 页面采集已中断"
+        };
+      } catch (error) {
+        job.state = "prepared";
+        job.cancelled = false;
+        preservePreparedJob = true;
+        await oneboundPageCaptureSessionStore.save(job);
+        return {
+          ok: false,
+          cancelled: true,
+          captured_count: 0,
+          refreshed_count: 0,
+          skipped_count: 0,
+          failed_count: 0,
+          unprocessed_count: Number(job.plan?.pending_count ?? 0),
+          failed_urls: [],
+          error: "onebound_page_capture_finish_failed",
+          statusText: "OneBound 页面采集已中断，但批次收口失败",
+          help: String(error?.message || error || "")
+        };
+      }
+    }
+    job.connection = connection;
+    job.state = "running";
+    await oneboundPageCaptureSessionStore.remove(batchToken);
+    const result = await self.OneboundPageCapture.runCapture({
+      pageUrl: job.page_url,
+      sourceUrls: job.source_urls,
+      prepared: job.plan,
+      sessionToken: job.connection.session_token,
+      control: job,
+      request: (stage, body) => postOneboundPageCaptureStage(job.connection.http_base, stage, body),
+      onProgress: (progress) => sendOneboundPageCaptureProgress(job.source_tab_id, progress)
+    });
+    if (result.finish_error) {
+      job.state = "prepared";
+      job.cancelled = false;
+      await oneboundPageCaptureSessionStore.save(job);
+      preservePreparedJob = true;
+    }
+    return {
+      ok: result.ok !== false,
+      cancelled: Boolean(result.cancelled),
+      captured_count: Number(result.captured_count || 0),
+      created_count: Number(result.created_count || 0),
+      refreshed_count: Number(result.refreshed_count || 0),
+      skipped_count: Number(result.skipped_count || 0),
+      failed_count: Number(result.failed_count || 0),
+      unprocessed_count: Number(result.unprocessed_count || 0),
+      failed_urls: Array.isArray(result.failed_urls) ? result.failed_urls : [],
+      finish_error: result.finish_error || "",
+      statusText: result.statusText || (result.cancelled ? "OneBound 页面采集已中断" : "OneBound 页面采集完成"),
+      ...(result.error ? { error: result.error } : {}),
+      ...(result.help ? { help: result.help } : {})
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      cancelled: Boolean(job?.cancelled),
+      captured_count: 0,
+      refreshed_count: 0,
+      skipped_count: 0,
+      failed_count: 0,
+      unprocessed_count: Array.isArray(job?.source_urls) ? job.source_urls.length : 0,
+      failed_urls: [],
+      error: "onebound_page_capture_start_failed",
+      statusText: "OneBound 页面采集启动失败",
+      help: String(error?.message || error || "")
+    };
+  } finally {
+    if (job && !preservePreparedJob) {
+      job.finished = true;
+      oneboundPageCaptureJobs.delete(job.id);
+    }
+    if (!preservePreparedJob) await oneboundPageCaptureSessionStore.remove(batchToken);
+    oneboundPageCaptureStartGate.release(batchToken);
+  }
 }
 
 async function createProductBatchCaptureWindow(workerCount) {
@@ -533,7 +972,72 @@ async function focusProductBatchCaptureTab(tabId) {
   }
 }
 
+const WORKBENCH_PAGE_CONTROL_IDS = Object.freeze([
+  "temu-workbench-connector-badge",
+  "temu-workbench-product-capture",
+  "temu-workbench-product-list-capture",
+  "temu-workbench-product-list-cancel",
+  "temu-workbench-page-capture-status"
+]);
+
+function is1688PageControlTab(tab) {
+  if (!Number.isInteger(tab?.id) || tab.discarded) return false;
+  try {
+    const parsed = new URL(String(tab.url || ""));
+    return parsed.protocol === "https:" && /(^|\.)1688\.com$/i.test(parsed.hostname);
+  } catch (_error) {
+    return false;
+  }
+}
+
+function resetStaleWorkbenchPageControls(controlIds) {
+  delete window.__temuWorkbenchConnector;
+  for (const controlId of Array.isArray(controlIds) ? controlIds : []) {
+    document.getElementById(String(controlId || ""))?.remove();
+  }
+}
+
+async function ensure1688PageCaptureControls(tab) {
+  if (!is1688PageControlTab(tab)) return { ok: false, skipped: true };
+  return pageControlRepairSingleflight.run(tab.id, async () => {
+    try {
+      const liveContext = await chrome.tabs.sendMessage(tab.id, { type: "READ_PAGE_CONTEXT" });
+      if (liveContext?.url) return { ok: true, already_live: true };
+    } catch (_error) {
+      // Pages opened before an extension install/update do not have a live
+      // receiver. Reset stale isolated-world markers before reinjecting.
+    }
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: resetStaleWorkbenchPageControls,
+        args: [WORKBENCH_PAGE_CONTROL_IDS]
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["tenant_context.js", "content.js"]
+      });
+      return { ok: true, injected: true };
+    } catch (_error) {
+      // A tab may navigate, close, become discarded, or enter a restricted URL
+      // between query and injection. Page repair is best-effort and retryable.
+      return { ok: false, skipped: true };
+    }
+  });
+}
+
+async function ensureOpen1688PageCaptureControls() {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ url: ["https://*.1688.com/*"] });
+  } catch (_error) {
+    return [];
+  }
+  return Promise.all(tabs.map((tab) => ensure1688PageCaptureControls(tab)));
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
+  await ensureOpen1688PageCaptureControls();
   const settings = await chrome.storage.local.get(["baseUrl", "baseUrlMode", "connectionContext"]);
   if (settings.connectionContext) {
     try {
@@ -559,7 +1063,8 @@ chrome.runtime.onInstalled.addListener(async () => {
 
 chrome.runtime.onStartup.addListener(() => {
   schedulePollAlarm();
-  restoreConnection();
+  void restoreConnection();
+  void ensureOpen1688PageCaptureControls();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -597,8 +1102,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     captureCurrentTemuPriceQuotePage(sender.tab).then(sendResponse);
     return true;
   }
+  if (message?.type === "PREPARE_1688_ONEBOUND_PAGE_CAPTURE") {
+    prepare1688OneboundPageCapture(sender.tab, message).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "START_1688_ONEBOUND_PAGE_CAPTURE") {
+    start1688OneboundPageCapture(sender.tab, message).then(sendResponse);
+    return true;
+  }
   if (message?.type === "CANCEL_PRODUCT_BATCH_CAPTURE") {
-    cancelProductBatchCapture(sender.tab).then(sendResponse);
+    cancelProductBatchCapture(sender.tab, message).then(sendResponse);
     return true;
   }
   if (message?.type === "START_WORKBENCH_SOCKET") {
@@ -609,6 +1122,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 restoreConnection();
+void ensureOpen1688PageCaptureControls();
 
 async function startConnection() {
   const connection = await readConnectionContext();
@@ -622,6 +1136,7 @@ async function startConnection() {
   schedulePollAlarm();
   connectWebSocket(connection);
   startPollFallback(connection);
+  await ensureOpen1688PageCaptureControls();
   await pollOnce(connection);
   return { ok: true };
 }
@@ -657,11 +1172,9 @@ function currentPluginCapabilities(baseUrl) {
     product_capture_to_draft: true,
     product_batch_capture_to_draft: true,
     product_batch_capture_command: true,
-    temu_link_capture: true,
     temu_price_quote_discovery: true,
     temu_price_quote_dom_image_fix: true,
     temu_flux_by_spu: true,
-    temu_flux_accel: true,
     temu_sales_manage_snapshot: true,
     dxm_accessory_lookup: true,
     dxm_product_video_backfill: true,
@@ -710,13 +1223,13 @@ function connectWebSocket(connectionContext) {
           return;
         }
         if (message.type === "commands") {
-          await WorkbenchPluginCommandContract.dispatchPolledCommands(message, async (command) => {
+          for (const command of message.commands || []) {
             try {
               await executeCommand(connection.http_base, connection.session_token, command);
             } catch (commandError) {
               warnWorkbench("workbench websocket command failed", command?.id || command?.command_id, commandError);
             }
-          });
+          }
         }
       } catch (messageError) {
         warnWorkbench("workbench websocket message ignored", messageError);
@@ -790,16 +1303,14 @@ async function performPluginPoll(connection) {
     }
     const payload = await response.json();
     if (!connectionMatchesActive(connection)) return false;
-    if (!Array.isArray(payload) && payload.tenant_context !== undefined) {
-      tenantContext.assertServerTenantContext(connection, payload.tenant_context);
-    }
-    if (!Array.isArray(payload) && payload.runtime_config && typeof payload.runtime_config === "object") {
+    tenantContext.assertServerTenantContext(connection, payload.tenant_context);
+    if (payload.runtime_config && typeof payload.runtime_config === "object") {
       await chrome.storage.local.set({ workbenchRuntimeConfig: payload.runtime_config });
     }
-    await WorkbenchPluginCommandContract.dispatchPolledCommands(payload, async (command) => {
+    for (const command of payload.commands || []) {
       if (!connectionMatchesActive(connection)) return false;
       await executeCommand(connection.http_base, connection.session_token, command);
-    });
+    }
     return true;
   } catch (error) {
     if (error instanceof tenantContext.TenantContextError && connectionMatchesActive(connection)) {
@@ -847,6 +1358,9 @@ async function executeCommand(baseUrl, sessionToken, command) {
     if (command?.command_type === "source_browser_image_search") {
       sourceBrowserCancelledCommands.delete(command.id);
     }
+    if (command?.command_type === "source_browser_image_search") {
+      await postResult(baseUrl, sessionToken, command.id, "sent", sourceBrowserClaimedResult(command));
+    }
     const timeoutMs = resolvePluginCommandTimeoutMs(command);
     const result = await withTimeout(
       runCommand(baseUrl, sessionToken, command),
@@ -883,6 +1397,30 @@ async function executeCommand(baseUrl, sessionToken, command) {
       sourceBrowserCancelledCommands.delete(command.id);
     }
   }
+}
+
+function sourceBrowserClaimedResult(command) {
+  const payload = command?.payload || {};
+  const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
+  const detailSkuValidation = payload.capture_strategy === "source_detail_sku_validation";
+  const temaishujuBackground = !detailSkuValidation && (payload.capture_strategy === "temaishuju_background_image_search" || payload.provider === "temaishuju");
+  const sourceTaskWorkerCount = resolveSourceTaskWorkerCount(payload, tasks.length, temaishujuBackground || detailSkuValidation);
+  const capturedAt = new Date().toISOString();
+  return {
+    command_type: "source_browser_image_search",
+    status: "sent",
+    statusText: `插件已领取货源任务，准备执行：0/${tasks.length}`,
+    items: [],
+    counts: sourceBrowserCounts([], tasks.length),
+    source_task_worker_count: sourceTaskWorkerCount,
+    safety: {
+      read_only: true,
+      no_product_draft_write: true,
+      no_supplier_write_actions: true,
+      no_api_token: true
+    },
+    capturedAt
+  };
 }
 
 function resolveSourceBrowserCommandTimeoutMs(command) {
@@ -952,9 +1490,6 @@ async function runCommand(baseUrl, sessionToken, command) {
       requiredTexts: ["商品流量", "商品ID查询", "查询"],
       inputHelp: "请确认当前页面在“经营分析 > 流量分析 > 商品流量”，右上角站点为美国，商品 ID 查询条件为 SPU。插件会先把每页条数切到 100，再切换近7日/近30日并点击查询。"
     });
-  }
-  if (command.command_type === "temu_flux_accel") {
-    return runFluxApiBySpuCommand(baseUrl, sessionToken, command);
   }
   if (command.command_type === "temu_sales_manage_snapshot") {
     return runTemuSalesManageSnapshotCommand(baseUrl, sessionToken, command);
@@ -4131,15 +4666,11 @@ async function runTemuPriceQuoteDiscoveryCommand(command) {
     && batchPopupAction?.ok === false
     && records.length === 0;
   const requirePriceDialog = command.payload?.auto_open_batch_popup !== false && !allowLifecycleDomFallback;
-  const dom = await extractPriceQuoteDomSnapshot(tab.id, { requirePriceDialog, rowLimit: PRICE_QUOTE_DOM_ROW_LIMIT });
-  if (dom.row_truncated) {
-    return {
-      ok: false,
-      error: "price_quote_dom_row_limit_exceeded",
-      statusText: dom.truncation_error,
-      dom,
-    };
-  }
+  const dom = await extractPriceQuoteDomSnapshot(tab.id, {
+    requirePriceDialog,
+    maxRows: 500,
+    maxScrollPasses: 80
+  });
   const matchedCount = records.length + (dom.rows?.length || 0);
   return {
     ok: true,
@@ -4211,15 +4742,12 @@ async function captureCurrentTemuPriceQuotePage(sourceTab) {
   const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const rawRecords = await getProbeCaptures(tab.id, "temu_price_quote_discovery", since, 50);
   const records = rawRecords.filter(isPriceQuoteDiscoveryNetworkRecord).slice(0, 50);
-  const dom = await extractPriceQuoteDomSnapshot(tab.id, { requirePriceDialog: false, rowLimit: PRICE_QUOTE_DOM_ROW_LIMIT });
-  if (dom.row_truncated) {
-    return {
-      ok: false,
-      error: "price_quote_dom_row_limit_exceeded",
-      statusText: dom.truncation_error,
-      help: "请缩小当前页展示数量后重新采集，插件不会静默丢弃超限 SKU。",
-    };
-  }
+  const extractedDom = await extractPriceQuoteDomSnapshot(tab.id, {
+    requirePriceDialog: false,
+    maxRows: 500,
+    maxScrollPasses: 80
+  });
+  const dom = { ...extractedDom, rows: Array.isArray(extractedDom?.rows) ? extractedDom.rows.slice(0, 500) : [] };
   const capture = {
     captures: { network: { matched_count: records.length, records } },
     dom,
@@ -8891,7 +9419,8 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
   return executeMainWorld(tabId, [options], async (opts = {}) => {
     const now = new Date().toISOString();
     const requirePriceDialog = Boolean(opts?.requirePriceDialog);
-    const rowLimit = Math.max(1, Math.min(Number(opts?.rowLimit || 500), 1000));
+    const maxRows = Math.max(1, Math.min(Number(opts?.maxRows || 500), 1000));
+    const maxScrollPasses = Math.max(1, Math.min(Number(opts?.maxScrollPasses || 80), 160));
     const dialogSelector = "[role='dialog'], .ant-modal, .ant-drawer, .semi-modal, .modal, .drawer, [class*='modal'], [class*='dialog'], [class*='drawer']";
     const priceDialogTextRe = /批量查看并确认申报价格|查看并确认申报价格|调整后申报价格|新申报价格|原申报价格|申请调整更新申报价格/;
     const visible = (element) => {
@@ -9010,10 +9539,11 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
     const maxScrollableHeight = Math.max(0, ...scrollTargets.map((element) => element.scrollHeight - element.clientHeight));
     const scrollStep = Math.max(240, ...scrollTargets.map((element) => Math.floor(element.clientHeight * 0.75)));
     const scrollOffsets = scrollTargets.length
-      ? Array.from({ length: Math.min(20, Math.ceil(maxScrollableHeight / scrollStep) + 1) }, (_value, index) => Math.min(maxScrollableHeight, index * scrollStep))
+      ? Array.from({ length: Math.min(maxScrollPasses, Math.ceil(maxScrollableHeight / scrollStep) + 1) }, (_value, index) => Math.min(maxScrollableHeight, index * scrollStep))
       : [0];
     const nextPaint = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     let tableCount = 0;
+    const skcContextByTable = new WeakMap();
     for (const scrollOffset of scrollOffsets) {
       for (const target of scrollTargets) target.scrollTop = scrollOffset;
       if (scrollTargets.length) await nextPaint();
@@ -9021,30 +9551,75 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
       for (const table of Array.from(scope.querySelectorAll("table")).filter(visible)) {
         tableCount += 1;
         const headers = Array.from(table.querySelectorAll("thead th")).map(text);
+        const headerColumns = Array.from(table.querySelectorAll("thead th")).map((header, index) => {
+          const rect = header.getBoundingClientRect();
+          return { text: headers[index] || "", index, left: rect.left, right: rect.right, center: rect.left + rect.width / 2 };
+        });
+        const headerForCell = (cell, fallbackIndex) => {
+          const rect = cell.getBoundingClientRect();
+          const center = rect.left + rect.width / 2;
+          const overlapping = headerColumns
+            .map((column) => ({ column, overlap: Math.max(0, Math.min(rect.right, column.right) - Math.max(rect.left, column.left)) }))
+            .filter((item) => item.overlap > 0)
+            .sort((left, right) => right.overlap - left.overlap)[0]?.column;
+          const nearest = headerColumns
+            .slice()
+            .sort((left, right) => Math.abs(left.center - center) - Math.abs(right.center - center))[0];
+          return (overlapping || nearest)?.text || headers[fallbackIndex] || "";
+        };
+        const skcIdFromText = (value) => String(value || "").match(/\bSKC(?:\s*(?:ID|\u4fe1\u606f))?\s*[:\uFF1A]?\s*([A-Za-z0-9_-]{4,})/i)?.[1] || "";
         for (const tr of Array.from(table.querySelectorAll("tbody tr")).filter(visible)) {
-          const cells = Array.from(tr.querySelectorAll("td, th")).map((cell, index) => ({
-            header: headers[index] || "",
+          const directCells = Array.from(tr.querySelectorAll("td, th"));
+          const cells = directCells.map((cell, index) => ({
+            header: headerForCell(cell, index),
             text: text(cell),
             images: cellImages(cell),
             url: cellLink(cell)
           }));
           if (cells.some((cell) => cell.text || cell.images.length)) {
-            const key = rowKey(cells.map((cell) => cell.text).filter(Boolean).join(" | "));
+            const directRowText = cells.map((cell) => cell.text).filter(Boolean).join(" | ");
+            const key = rowKey(directRowText);
             if (seenRows.has(key)) continue;
             seenRows.add(key);
+            const explicitSkcCell = cells.find((cell) => /\bSKC\b/i.test(String(cell.header || "")) && Boolean(cell.text || cell.images.length));
+            const hasSkuEvidence = cells.some((cell) => /\bSKU\b/i.test(`${cell.header || ""} ${cell.text || ""}`));
+            const existingContext = skcContextByTable.get(table);
+            let inheritedSkcContext = false;
+            if (explicitSkcCell) {
+              const contextImages = Array.from(new Set([
+                ...(explicitSkcCell.images || []),
+                ...rowImages(tr, scope)
+              ])).slice(0, 8);
+              skcContextByTable.set(table, {
+                cell: { ...explicitSkcCell, images: contextImages },
+                skc_id: skcIdFromText(explicitSkcCell.text),
+                images: contextImages,
+                link: explicitSkcCell.url || cells.map((cell) => cell.url).find(Boolean) || ""
+              });
+            } else if (existingContext && hasSkuEvidence) {
+              cells.unshift({ ...existingContext.cell, images: [...existingContext.cell.images], inherited: true });
+              inheritedSkcContext = true;
+            }
+            const rowImagesValue = Array.from(new Set([
+              ...rowImages(tr, scope),
+              ...(inheritedSkcContext ? (existingContext?.images || []) : [])
+            ])).slice(0, 8);
             rows.push({
               source: "dom_table",
               cells,
-              images: rowImages(tr, scope),
+              images: rowImagesValue,
               text: cells.map((cell) => cell.text).filter(Boolean).join(" | "),
-              link: cells.map((cell) => cell.url).find(Boolean) || "",
+              link: cells.map((cell) => cell.url).find(Boolean) || (inheritedSkcContext ? (existingContext?.link || "") : ""),
+              inherited_skc_context: inheritedSkcContext,
+              parent_skc_id: inheritedSkcContext ? (existingContext?.skc_id || "") : "",
               capturedAt: now
             });
           }
         }
       }
       const gridRows = Array.from(scope.querySelectorAll("[role='row'], .ant-table-row, .semi-table-row, .table-row"))
-        .filter(visible);
+        .filter(visible)
+        .slice(0, 80);
       for (const row of gridRows) {
         if (row.closest("table")) continue;
         const cells = Array.from(row.querySelectorAll("[role='cell'], .ant-table-cell, .semi-table-cell, td, th"))
@@ -9076,7 +9651,8 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
           if (!/(申报价格|价格申报|待卖家确认|待供应商确认)/.test(value)) return false;
           if (!/(skc|sku|货号|spu|\d{8,})/i.test(value)) return false;
           return Boolean(element.querySelector("img")) || /¥|￥|元|\d+(?:\.\d+)?/.test(value);
-        });
+        })
+        .slice(0, 80);
       for (const row of genericRows) {
         const directChildren = Array.from(row.children).filter(visible);
         const cellNodes = directChildren.length >= 2 ? directChildren : [row];
@@ -9102,17 +9678,53 @@ async function extractPriceQuoteDomSnapshot(tabId, options = {}) {
       }
       }
     }
+    const firstCellText = (cells, matcher) => {
+      const cell = cells.find((item) => matcher.test(String(item?.header || "")));
+      return String(cell?.text || "").replace(/\s+/g, " ").trim();
+    };
+    const idFromText = (value, kind) => {
+      const source = String(value || "");
+      const pattern = kind === "skc"
+        ? /\bSKC(?:\s*(?:ID|信息))?\s*[:：]?\s*([A-Za-z0-9_-]{4,})/i
+        : /\bSKU(?:\s*(?:ID|货号|编号))?\s*[:：]?\s*([A-Za-z0-9_-]{2,})/i;
+      return source.match(pattern)?.[1] || "";
+    };
+    const moneyFromText = (value) => {
+      const matched = String(value || "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+      return matched ? matched[0] : "";
+    };
+    const quoteItems = rows.map((row) => {
+      const cells = Array.isArray(row.cells) ? row.cells : [];
+      const rowText = String(row.text || "");
+      const skcText = firstCellText(cells, /SKC|商品信息/i) || rowText;
+      const skuText = firstCellText(cells, /SKU|货号|属性/i) || rowText;
+      const adjustedText = firstCellText(cells, /调整后申报价|新申报价|建议申报价/i);
+      return {
+        skc_id: idFromText(skcText, "skc") || idFromText(rowText, "skc"),
+        sku_id: idFromText(skuText, "sku") || idFromText(rowText, "sku"),
+        adjusted_declared_price_cny: moneyFromText(adjustedText),
+        source: row.source || "dom",
+        capturedAt: row.capturedAt || now
+      };
+    }).filter((item) => item.skc_id || item.sku_id || item.adjusted_declared_price_cny);
+    const skcGroups = Array.from(quoteItems.reduce((groups, item) => {
+      const key = item.skc_id || `unresolved:${item.sku_id || groups.size}`;
+      const group = groups.get(key) || { skc_id: item.skc_id, sku_prices: [] };
+      const duplicate = group.sku_prices.some((sku) => sku.sku_id === item.sku_id && sku.adjusted_declared_price_cny === item.adjusted_declared_price_cny);
+      if (!duplicate) group.sku_prices.push({
+        sku_id: item.sku_id,
+        adjusted_declared_price_cny: item.adjusted_declared_price_cny,
+        source: item.source
+      });
+      groups.set(key, group);
+      return groups;
+    }, new Map()).values());
     for (const { element, top } of originalScrollTops) element.scrollTop = top;
     const imageCount = new Set(rows.flatMap((row) => row.images || [])).size;
-    const rowTruncated = rows.length > rowLimit;
     return {
-      rows: rows.slice(0, rowLimit),
-      total_row_count: rows.length,
-      row_limit: rowLimit,
-      row_truncated: rowTruncated,
-      truncation_error: rowTruncated
-        ? `当前页识别到 ${rows.length} 行核价 SKU，超过安全上限 ${rowLimit} 行；本次未入库，请缩小当前页数量后重试。`
-        : "",
+      rows: rows.slice(0, maxRows),
+      quote_items: quoteItems.slice(0, maxRows),
+      skc_groups: skcGroups.slice(0, maxRows),
       table_count: tableCount,
       image_count: imageCount,
       dialog_present: dialogScopes.length > 0,
@@ -9602,6 +10214,14 @@ async function runProductBatchCaptureCommand(baseUrl, sessionToken, command) {
 
 async function captureVisibleProductsToWorkbench(sourceTab) {
   const tab = sourceTab?.id ? sourceTab : await getActiveBusinessTab({ allowAny: true });
+  if (is1688Tab(tab) && !/\/offer\/\d+(?:\.html?)?\/?(?:[?#]|$)/i.test(String(tab?.url || ""))) {
+    return {
+      ok: false,
+      error: "onebound_page_capture_requires_page_confirmation",
+      statusText: "请回到 1688 列表页点击“整页采集”，确认识别数量后再开始",
+      help: "OneBound 批量详情请求只会在页面状态卡中确认后启动。"
+    };
+  }
   const job = createProductBatchCaptureJob(tab);
   if (!job) {
     return {

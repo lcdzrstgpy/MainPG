@@ -43,7 +43,9 @@ from ..customer.admin_proxy import create_admin_proxy_router
 from ..data_collection import (
     DailySelectionActor,
     DailySelectionRouteDependencies,
+    PluginOneBoundCaptureDependencies,
     register_daily_selection_routes,
+    register_plugin_onebound_capture_routes,
 )
 from ..data_collection.provider import OneBound1688Provider
 from ..data_collection.budget import SQLiteDailyApiBudget
@@ -360,6 +362,18 @@ def _register_data_collection(
         image_cache=PublicDailySelectionImageCache(),
     )
     register_daily_selection_routes(app.router, dependencies)
+    app.state.plugin_onebound_capture_service = register_plugin_onebound_capture_routes(
+        app.router,
+        PluginOneBoundCaptureDependencies(
+            plugin_queue=plugin_queue,
+            provider_config_resolver=_provider_config,
+            provider_factory=_provider_factory,
+            budget=shared_api_budget,
+            draft_writer=product_processing,
+            database_path=str(db_path),
+            resolve_actor=daily_selection_actor_from_authorization,
+        ),
+    )
     shop_repository = ShopCollectionRepository(db_path)
     shop_worker = ShopCollectionWorker(
         repository=shop_repository,

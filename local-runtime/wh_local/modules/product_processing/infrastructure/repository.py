@@ -521,16 +521,23 @@ class ProductProcessingRepository:
                 session.rollback()
                 raise
 
-    def draft_by_candidate(self, candidate_id: str, workspace_id: str = "local") -> dict[str, Any] | None:
+    def draft_by_candidate(
+        self,
+        candidate_id: str,
+        workspace_id: str = "local",
+        *,
+        source_type: str | None = None,
+    ) -> dict[str, Any] | None:
         if not candidate_id:
             return None
         with self.database.sessions() as session:
-            row = session.scalar(
-                select(ProductDraftRow).where(
-                    ProductDraftRow.workspace_id == workspace_id,
-                    ProductDraftRow.candidate_id == candidate_id,
-                ).order_by(ProductDraftRow.id.desc()).limit(1)
+            statement = select(ProductDraftRow).where(
+                ProductDraftRow.workspace_id == workspace_id,
+                ProductDraftRow.candidate_id == candidate_id,
             )
+            if source_type is not None:
+                statement = statement.where(ProductDraftRow.source_type == source_type)
+            row = session.scalar(statement.order_by(ProductDraftRow.id.desc()).limit(1))
             return self._draft(row) if row else None
 
     def get_draft(

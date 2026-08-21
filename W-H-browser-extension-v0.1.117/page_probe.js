@@ -1,5 +1,5 @@
 (function installWorkbenchNetworkProbe() {
-  const PROBE_VERSION = "0.1.115";
+  const PROBE_VERSION = "0.1.117";
   if (window.__temuWorkbenchNetworkProbe?.installed && window.__temuWorkbenchNetworkProbe.version === PROBE_VERSION) return;
 
   const MAX_CAPTURED = 500;
@@ -293,3 +293,4 @@
     }
   };
 })();
+

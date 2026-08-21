@@ -27,3 +27,10 @@
   background: #2563eb;
   color: #fff;
 }
+.plugin-capture-stats { grid-template-columns: repeat(6, 1fr); }
+.plugin-capture-item-links { display: flex; flex: none; align-items: center; gap: 10px; }
+.plugin-capture-item-links button { padding: 0; border: 0; color: #0787b1; background: transparent; font-size: .69rem; font-weight: 800; cursor: pointer; }
+@media (max-width: 760px) {
+  .plugin-capture-stats { grid-template-columns: repeat(3, 1fr); }
+  .plugin-capture-item-links { align-items: flex-end; flex-direction: column; gap: 4px; }
+}

@@ -5,6 +5,8 @@
   const PRODUCT_CAPTURE_HOST_RE = /(^|\.)(temu|1688|alibaba|pinduoduo|yangkeduo|amazon)\.com$/i;
   let productListCaptureBusy = false;
   let priceQuoteCaptureBusy = false;
+  let oneboundPageCapture = null;
+  let oneboundPageCaptureGeneration = 0;
   let extensionContextInvalidated = false;
 
   renderConnectorBadge();
@@ -15,6 +17,9 @@
   safeInterval(syncProductCaptureButton, 1500);
   safeInterval(syncProductListCaptureButton, 1800);
   safeInterval(syncPriceQuoteCaptureButton, 1800);
+  window.addEventListener("popstate", syncProductListCaptureButton);
+  window.addEventListener("hashchange", syncProductListCaptureButton);
+  window.addEventListener("pagehide", closeOneboundPageCaptureForPageExit);
 
   try {
     if (chrome.storage?.onChanged) {
@@ -37,6 +42,10 @@
       if (message?.type === "READ_PAGE_CONTEXT") {
         sendResponse(readPageContext());
         return true;
+      }
+      if (message?.type === "ONEBOUND_PAGE_CAPTURE_PROGRESS") {
+        applyOneboundPageCaptureProgress(message);
+        return false;
       }
       return false;
     });
@@ -91,7 +100,8 @@
       "temu-workbench-connector-badge",
       "temu-workbench-product-capture",
       "temu-workbench-product-list-capture",
-      "temu-workbench-product-list-cancel"
+      "temu-workbench-product-list-cancel",
+      "temu-workbench-page-capture-status"
     ]) {
       document.getElementById(id)?.remove();
     }
@@ -492,6 +502,43 @@
     return (urlLooksLikeList && listLikeProductSignalCount >= 1) || (textLooksLikeList && listLikeProductSignalCount >= 2);
   }
 
+  function is1688ProductListPage() {
+    if (!isSupportedProductListPage()) return false;
+    try {
+      return /(^|\.)1688\.com$/i.test(new URL(location.href).hostname);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function isCurrentOneboundPageCapture(state, batchToken = null) {
+    return is1688ProductListPage()
+      && canUseOneboundPageCaptureState(state, location.href, oneboundPageCaptureGeneration, batchToken);
+  }
+
+  function clearOneboundPageCaptureState() {
+    oneboundPageCapture = null;
+    productListCaptureBusy = false;
+    document.getElementById("temu-workbench-page-capture-status")?.remove();
+    setProductListCancelButtonState(false);
+  }
+
+  function invalidateOneboundPageCaptureForNavigation() {
+    if (!oneboundPageCapture || isCurrentOneboundPageCapture(oneboundPageCapture)) return;
+    const stale = oneboundPageCapture;
+    oneboundPageCaptureGeneration += 1;
+    clearOneboundPageCaptureState();
+    if (stale.batchToken && !["finished", "registered"].includes(stale.phase)) {
+      void safeSendRuntimeMessage(oneboundPreparedCancelRequest(stale.batchToken)).catch(() => {});
+    }
+  }
+
+  function closeOneboundPageCaptureForPageExit() {
+    const state = oneboundPageCapture;
+    if (!state?.batchToken || ["finished", "registered"].includes(state.phase)) return;
+    void safeSendRuntimeMessage(oneboundPreparedCancelRequest(state.batchToken)).catch(() => {});
+  }
+
   function isSupportedPriceQuotePage() {
     let parsed;
     try {
@@ -596,11 +643,13 @@
   }
 
   function syncProductListCaptureButton() {
+    invalidateOneboundPageCaptureForNavigation();
     const button = document.getElementById("temu-workbench-product-list-capture");
     const cancelButton = document.getElementById("temu-workbench-product-list-cancel");
     if (!isSupportedProductListPage()) {
       if (button) button.remove();
       if (cancelButton) cancelButton.remove();
+      document.getElementById("temu-workbench-page-capture-status")?.remove();
       return;
     }
     renderProductListCaptureButton();
@@ -616,7 +665,7 @@
     const button = document.createElement("button");
     button.id = "temu-workbench-product-list-capture";
     button.type = "button";
-    button.textContent = "批量采集本页";
+    button.textContent = is1688ProductListPage() ? "整页采集（万邦）" : "批量采集本页";
     button.style.cssText = [
       "position:fixed",
       "left:14px",
@@ -634,7 +683,13 @@
       "font:700 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif",
       "cursor:pointer"
     ].join(";");
-    button.addEventListener("click", captureProductListToWorkbench);
+    button.addEventListener("click", () => {
+      if (is1688ProductListPage()) {
+        prepare1688OneboundPageCapture();
+        return;
+      }
+      captureProductListToWorkbench();
+    });
     document.documentElement.appendChild(button);
     renderProductListCancelButton();
   }
@@ -680,11 +735,13 @@
         connected = false;
       }
       button.disabled = !connected;
-      button.textContent = connected ? "批量采集本页" : "先连接工作台";
+      button.textContent = connected ? (is1688ProductListPage() ? "整页采集（万邦）" : "批量采集本页") : "先连接工作台";
       button.style.opacity = connected ? "1" : "0.72";
-      button.title = connected
-        ? "采集当前列表页商品链接，逐个打开详情页复用单品采集，自动跳过广告、推广和店铺卡片"
-        : "请先打开扩展弹窗连接本地工作台";
+      button.title = !connected
+        ? "请先打开扩展弹窗连接本地工作台"
+        : is1688ProductListPage()
+          ? "先扫描并识别当前 1688 列表页；确认后再采集待处理商品"
+          : "采集当前列表页商品链接，逐个打开详情页复用单品采集，自动跳过广告、推广和店铺卡片";
     });
   }
 
@@ -711,14 +768,306 @@
     setProductListCancelButtonState(true, "中断中...", true);
     try {
       const response = await safeSendRuntimeMessage({ type: "CANCEL_PRODUCT_BATCH_CAPTURE" });
-      setProductListButtonState(response?.statusText || "正在中断批量采集", true);
+      if (oneboundPageCapture?.phase === "running") {
+        oneboundPageCapture.statusText = response?.statusText || "正在中断整页采集";
+        renderOneboundPageCaptureStatus();
+      } else {
+        setProductListButtonState(response?.statusText || "正在中断批量采集", true);
+      }
     } catch (_error) {
       setProductListCancelButtonState(true, "中断失败", false);
     }
   }
 
+  // ONEBOUND_STATE_HELPERS_START
+  function pageCaptureCount(value) {
+    const count = Number(value);
+    return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+  }
+
+  function pageCaptureFailedUrls(value) {
+    return [...new Set((Array.isArray(value) ? value : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean))];
+  }
+
+  function pageCaptureSuccessCount(value) {
+    const captured = Number(value?.captured_count);
+    if (Number.isFinite(captured)) return pageCaptureCount(captured);
+    return pageCaptureCount(value?.created_count) + pageCaptureCount(value?.refreshed_count);
+  }
+
+  function createOneboundPageCaptureState(sourceUrl, generation) {
+    return {
+      phase: "preparing", sourceUrl: String(sourceUrl || ""), generation: Number(generation), batchToken: null,
+      scanTotal: 0, workTotal: 0, pendingTotal: 0, existingCount: 0, completedCount: 0,
+      createdCount: 0, refreshedCount: 0, capturedCount: 0, skippedCount: 0, failedCount: 0,
+      unprocessedCount: 0, failedUrls: [], statusText: "正在扫描并识别当前列表页商品", cancelled: false
+    };
+  }
+
+  function canUseOneboundPageCaptureState(state, sourceUrl, generation, batchToken = null) {
+    return Boolean(
+      state
+      && state.sourceUrl === String(sourceUrl || "")
+      && state.generation === Number(generation)
+      && (batchToken === null || state.batchToken === String(batchToken || ""))
+    );
+  }
+
+  function applyOneboundPageCapturePrepareState(state, response) {
+    state.scanTotal = pageCaptureCount(response?.total_count);
+    state.existingCount = pageCaptureCount(response?.existing_count);
+    state.pendingTotal = pageCaptureCount(response?.pending_count);
+    state.workTotal = state.pendingTotal;
+    if (response?.statusText) state.statusText = String(response.statusText);
+    return state;
+  }
+
+  function applyOneboundPageCaptureProgressState(state, message) {
+    state.workTotal = pageCaptureCount(message?.total) || state.workTotal;
+    state.completedCount = pageCaptureCount(message?.completed);
+    state.createdCount = pageCaptureCount(message?.created_count);
+    state.refreshedCount = pageCaptureCount(message?.refreshed_count);
+    state.capturedCount = pageCaptureSuccessCount(message);
+    state.skippedCount = pageCaptureCount(message?.skipped_count);
+    state.failedCount = pageCaptureCount(message?.failed_count);
+    state.unprocessedCount = pageCaptureCount(message?.unprocessed_count);
+    state.statusText = String(message?.statusText || "");
+    return state;
+  }
+
+  function applyOneboundPageCaptureFinalState(state, response) {
+    state.cancelled = Boolean(response?.cancelled);
+    state.createdCount = pageCaptureCount(response?.created_count);
+    state.refreshedCount = pageCaptureCount(response?.refreshed_count);
+    state.capturedCount = pageCaptureSuccessCount(response);
+    state.skippedCount = pageCaptureCount(response?.skipped_count);
+    state.failedCount = pageCaptureCount(response?.failed_count);
+    state.unprocessedCount = pageCaptureCount(response?.unprocessed_count);
+    state.failedUrls = pageCaptureFailedUrls(response?.failed_urls);
+    state.statusText = response?.statusText || "整页采集完成";
+    return state;
+  }
+
+  function oneboundFinalHasUsableSummary(response) {
+    if (response?.ok !== false || response?.cancelled) return true;
+    return ["onebound_page_capture_finish_failed", "onebound_page_capture_fatal_item_failed"]
+      .includes(String(response?.error || ""));
+  }
+
+  function oneboundPreparedCancelRequest(batchToken) {
+    return { type: "CANCEL_PRODUCT_BATCH_CAPTURE", batch_token: String(batchToken || "") };
+  }
+
+  function oneboundRetryPrepareRequest(failedUrls) {
+    return {
+      type: "PREPARE_1688_ONEBOUND_PAGE_CAPTURE",
+      source_urls: pageCaptureFailedUrls(failedUrls)
+    };
+  }
+  // ONEBOUND_STATE_HELPERS_END
+
+  function setOneboundPageCaptureButtonState(text, busy = false, help = "") {
+    setProductListButtonState(text, busy, help);
+    setProductListCancelButtonState(busy && oneboundPageCapture?.phase === "running", "中断采集", false);
+  }
+
+  function renderOneboundPageCaptureStatus() {
+    const existing = document.getElementById("temu-workbench-page-capture-status");
+    if (!oneboundPageCapture) {
+      existing?.remove();
+      return;
+    }
+    existing?.remove();
+
+    const card = document.createElement("section");
+    card.id = "temu-workbench-page-capture-status";
+    card.setAttribute("role", "status");
+    card.setAttribute("aria-live", "polite");
+    card.style.cssText = [
+      "position:fixed", "right:14px", "bottom:14px", "z-index:2147483647",
+      "width:min(320px,calc(100vw - 28px))", "box-sizing:border-box", "padding:11px 12px",
+      "border:1px solid rgba(37,99,235,0.34)", "border-radius:9px", "background:rgba(255,255,255,0.98)",
+      "box-shadow:0 10px 28px rgba(16,26,43,0.2)", "color:#102033",
+      "font:12px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif"
+    ].join(";");
+
+    const heading = document.createElement("div");
+    heading.style.cssText = "font-weight:800;margin-bottom:4px";
+    heading.textContent = oneboundPageCapture.phase === "registered"
+      ? "商品链接登记完成"
+      : oneboundPageCapture.phase === "ready"
+        ? "整页采集已就绪"
+        : oneboundPageCapture.phase === "running"
+        ? "整页采集进行中"
+        : oneboundPageCapture.phase === "finished"
+          ? "整页采集完成"
+          : oneboundPageCapture.phase === "error"
+            ? "整页采集失败"
+            : "正在扫描整页";
+    card.appendChild(heading);
+
+    const summary = document.createElement("div");
+    summary.textContent = `扫描/识别总数 ${oneboundPageCapture.scanTotal} · 已存在 ${oneboundPageCapture.existingCount} · 待采集 ${oneboundPageCapture.pendingTotal}`;
+    card.appendChild(summary);
+
+    const details = document.createElement("div");
+    details.style.cssText = "margin-top:3px;color:#475569";
+    if (oneboundPageCapture.phase === "running") {
+      details.textContent = `进度 ${oneboundPageCapture.completedCount}/${oneboundPageCapture.workTotal} · 新建 ${oneboundPageCapture.createdCount} · 刷新 ${oneboundPageCapture.refreshedCount} · 跳过 ${oneboundPageCapture.skippedCount} · 失败 ${oneboundPageCapture.failedCount} · 未处理 ${oneboundPageCapture.unprocessedCount}`;
+    } else if (oneboundPageCapture.phase === "finished") {
+      details.textContent = `${oneboundPageCapture.cancelled ? "已中断" : "成功"} ${oneboundPageCapture.capturedCount} · 新建 ${oneboundPageCapture.createdCount} · 刷新 ${oneboundPageCapture.refreshedCount} · 跳过 ${oneboundPageCapture.skippedCount} · 失败 ${oneboundPageCapture.failedCount} · 未处理 ${oneboundPageCapture.unprocessedCount}`;
+    } else {
+      details.textContent = oneboundPageCapture.statusText || "正在识别当前列表页商品";
+    }
+    card.appendChild(details);
+
+    if (oneboundPageCapture.phase === "finished" && oneboundPageCapture.failedUrls.length) {
+      const actions = document.createElement("div");
+      actions.style.cssText = "display:flex;gap:7px;margin-top:9px";
+      const primary = document.createElement("button");
+      primary.type = "button";
+      primary.style.cssText = "border:0;border-radius:6px;padding:6px 9px;background:#2563eb;color:#fff;font:700 12px/1 inherit;cursor:pointer";
+      primary.textContent = "仅重试失败项";
+      primary.addEventListener("click", () => prepare1688OneboundPageCapture(oneboundPageCapture.failedUrls));
+      actions.appendChild(primary);
+      card.appendChild(actions);
+    }
+    document.documentElement.appendChild(card);
+  }
+
+  async function prepare1688OneboundPageCapture(sourceUrls = null) {
+    if (!is1688ProductListPage() || oneboundPageCapture?.phase === "preparing" || oneboundPageCapture?.phase === "running") return;
+    const state = createOneboundPageCaptureState(location.href, ++oneboundPageCaptureGeneration);
+    oneboundPageCapture = state;
+    setOneboundPageCaptureButtonState("正在扫描...", true);
+    renderOneboundPageCaptureStatus();
+    const request = Array.isArray(sourceUrls) && sourceUrls.length
+      ? oneboundRetryPrepareRequest(sourceUrls)
+      : { type: "PREPARE_1688_ONEBOUND_PAGE_CAPTURE" };
+    try {
+      const response = await safeSendRuntimeMessage(request);
+      if (!isCurrentOneboundPageCapture(state) || oneboundPageCapture !== state) {
+        invalidateOneboundPageCaptureForNavigation();
+        return;
+      }
+      applyOneboundPageCapturePrepareState(state, response);
+      if (!response?.ok || !response?.batch_token) {
+        state.phase = "error";
+        state.statusText = response?.statusText || response?.help || response?.error || "整页扫描失败";
+        setOneboundPageCaptureButtonState("整页采集失败", false, state.statusText);
+        renderOneboundPageCaptureStatus();
+        return;
+      }
+      state.phase = "registered";
+      state.batchToken = String(response.batch_token);
+      if (!isCurrentOneboundPageCapture(state, state.batchToken) || oneboundPageCapture !== state) {
+        invalidateOneboundPageCaptureForNavigation();
+        return;
+      }
+      state.statusText = "链接已登记，请到工作台点击“启动万邦采集”";
+      setOneboundPageCaptureButtonState("链接已登记", true, state.statusText);
+      renderOneboundPageCaptureStatus();
+    } catch (error) {
+      if (!isCurrentOneboundPageCapture(state) || oneboundPageCapture !== state) {
+        invalidateOneboundPageCaptureForNavigation();
+        return;
+      }
+      state.phase = "error";
+      state.statusText = String(error?.message || error || "整页扫描失败");
+      setOneboundPageCaptureButtonState("整页采集失败", false, state.statusText);
+      renderOneboundPageCaptureStatus();
+    }
+  }
+
+  async function cancelPrepared1688OneboundPageCapture() {
+    const state = oneboundPageCapture;
+    if (state?.phase !== "ready" || !isCurrentOneboundPageCapture(state, state.batchToken)) return;
+    state.phase = "cancelling";
+    state.statusText = "正在取消本次整页采集";
+    renderOneboundPageCaptureStatus();
+    try {
+      const response = await safeSendRuntimeMessage(oneboundPreparedCancelRequest(state.batchToken));
+      if (!isCurrentOneboundPageCapture(state, state.batchToken) || oneboundPageCapture !== state) {
+        invalidateOneboundPageCaptureForNavigation();
+        return;
+      }
+      if (!response?.ok) {
+        throw new Error(response?.statusText || response?.help || response?.error || "后端未接受取消请求");
+      }
+      clearOneboundPageCaptureState();
+      refreshProductListCaptureButton();
+    } catch (error) {
+      if (!isCurrentOneboundPageCapture(state, state.batchToken) || oneboundPageCapture !== state) {
+        invalidateOneboundPageCaptureForNavigation();
+        return;
+      }
+      state.phase = "ready";
+      state.statusText = `取消失败：${String(error?.message || error || "请重试")}`;
+      renderOneboundPageCaptureStatus();
+    }
+  }
+
+  function applyOneboundPageCaptureProgress(message) {
+    const state = oneboundPageCapture;
+    if (!isCurrentOneboundPageCapture(state, message?.batch_token) || oneboundPageCapture !== state) return;
+    state.phase = "running";
+    applyOneboundPageCaptureProgressState(state, message);
+    setOneboundPageCaptureButtonState(`采集中 ${state.completedCount}/${state.workTotal}`, true, state.statusText);
+    renderOneboundPageCaptureStatus();
+  }
+
+  async function start1688OneboundPageCapture() {
+    if (oneboundPageCapture?.phase !== "ready" || !oneboundPageCapture.batchToken) return;
+    const state = oneboundPageCapture;
+    if (!isCurrentOneboundPageCapture(state, state.batchToken)) return;
+    state.phase = "running";
+    state.statusText = "正在采集待处理商品";
+    setOneboundPageCaptureButtonState("正在采集...", true, state.statusText);
+    renderOneboundPageCaptureStatus();
+    try {
+      const response = await safeSendRuntimeMessage({
+        type: "START_1688_ONEBOUND_PAGE_CAPTURE",
+        batch_token: state.batchToken
+      });
+      if (!isCurrentOneboundPageCapture(state, state.batchToken) || oneboundPageCapture !== state) {
+        invalidateOneboundPageCaptureForNavigation();
+        return;
+      }
+      applyOneboundPageCaptureFinal(state, response || {});
+    } catch (error) {
+      if (!isCurrentOneboundPageCapture(state, state.batchToken) || oneboundPageCapture !== state) {
+        invalidateOneboundPageCaptureForNavigation();
+        return;
+      }
+      state.phase = "error";
+      state.statusText = String(error?.message || error || "整页采集失败");
+      setOneboundPageCaptureButtonState("整页采集失败", false, state.statusText);
+      setProductListCancelButtonState(false);
+      renderOneboundPageCaptureStatus();
+    }
+  }
+
+  function applyOneboundPageCaptureFinal(state, response) {
+    if (!isCurrentOneboundPageCapture(state, state?.batchToken) || oneboundPageCapture !== state) return;
+    if (!oneboundFinalHasUsableSummary(response)) {
+      state.phase = "error";
+      state.statusText = response?.statusText || response?.help || response?.error || "整页采集失败";
+      setOneboundPageCaptureButtonState("整页采集失败", false, state.statusText);
+      setProductListCancelButtonState(false);
+      renderOneboundPageCaptureStatus();
+      return;
+    }
+    state.phase = "finished";
+    applyOneboundPageCaptureFinalState(state, response);
+    setOneboundPageCaptureButtonState(state.cancelled ? "已中断整页采集" : "整页采集完成", false, state.statusText);
+    setProductListCancelButtonState(false);
+    renderOneboundPageCaptureStatus();
+    window.setTimeout(refreshProductListCaptureButton, 3600);
+  }
+
   async function captureProductListToWorkbench() {
-    if (productListCaptureBusy) return;
     setProductListButtonState("正在采集...", true);
     setProductListCancelButtonState(true, "中断采集", false);
     try {
