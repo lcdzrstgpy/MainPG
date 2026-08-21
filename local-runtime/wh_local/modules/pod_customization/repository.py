@@ -1130,7 +1130,7 @@ class PodCustomizationRepository:
                        visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
                        error_message = '', started_at = ?, finished_at = '', updated_at = ?
                    WHERE batch_id = ? AND style_index = ? AND style_task_id <> ''
-                     AND status IN ('completed', 'failed')""",
+                     AND status = 'failed'""",
                 (now, now, batch_id, style_index),
             )
             if result.rowcount != 1:
@@ -1710,7 +1710,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_batch_items
                    SET status = 'generating_pattern', error_message = '', updated_at = ?
                    WHERE batch_id = ? AND item_id = ? AND workspace_id = ? AND owner_user_id = ?
-                     AND status IN ('completed', 'failed')""",
+                     AND status = 'failed'""",
                 (now, batch_id, item_id, workspace_id, owner_user_id),
             )
         if result.rowcount != 1:
@@ -1737,7 +1737,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_style_grid_results
                    SET status = 'generating_pattern', error_message = '', updated_at = ?
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ? AND style_index = ?
-                     AND status IN ('completed', 'failed')""",
+                     AND status = 'failed'""",
                 (now, batch_id, workspace_id, owner_user_id, style_index),
             )
             if result.rowcount != 4:

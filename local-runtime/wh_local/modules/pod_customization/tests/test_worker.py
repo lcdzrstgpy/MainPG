@@ -682,7 +682,7 @@ def test_worker_makes_one_initial_grid_call_per_style_and_keeps_four_results_tog
     assert all(item["public_url"].startswith("https://cos.example.com/") for item in stored["items"])
     assert len(runtime.publications) == 80
     assert all(item["pattern_fingerprint"] for item in service.repository.get_batch_internal(batch["id"])["items"])
-    assert len({item["pattern_fingerprint"] for item in service.repository.get_batch_internal(batch["id"])["items"][:4]}) == 1
+    assert len({item["pattern_fingerprint"] for item in service.repository.get_batch_internal(batch["id"])["items"][:4]}) == 4
     assert all(
         item["composite_preview_url"].startswith("/api/pod-customization/assets/")
         for item in stored["items"]

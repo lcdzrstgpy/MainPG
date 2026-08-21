@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from threading import Event
 
 import pytest
 
 from wh_local.modules.pod_customization.ai_runtime import PodCustomizationAiRuntime
-from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
+from wh_local.modules.pod_customization.billing_contract import (
+    PodBillingAuthorizationRequired,
+    PodExecutionGrant,
+)
 from wh_local.modules.pod_customization.contracts import BusinessFields
 from wh_local.modules.product_processing.doubao_ark import DoubaoArkError
 
@@ -268,6 +272,27 @@ def test_title_validator_rejects_policy_word_classes(prohibited_content: str) ->
         validate_title_result(title_result_from_dict(_payload(title=_title(prohibited_content, "ocean fern"))))
 
 
+@pytest.mark.parametrize(
+    "field,value,expected_reason",
+    [
+        ("english_title", "Temu exclusive canvas tote", "english_title contains prohibited term"),
+        ("english_title", "海岸植物帆布包", "english_title must use ASCII"),
+        ("description", "Official Disney artwork for everyday carry.", "description contains prohibited term"),
+        ("description", "适合日常携带的海岸植物图案。", "description must use ASCII"),
+    ],
+)
+def test_title_validator_rejects_non_ascii_or_prohibited_short_copy(
+    field: str, value: str, expected_reason: str
+) -> None:
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    payload = _payload()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=expected_reason):
+        validate_title_result(title_result_from_dict(payload))
+
+
 def test_title_validator_requires_english_alphabetic_tokens() -> None:
     from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
 
@@ -402,10 +427,55 @@ def test_missing_ark_grant_fails_without_provider_attempt() -> None:
 
     runtime = PodTitleRuntime(requests_per_minute=0)
     try:
-        with pytest.raises(DoubaoArkError) as captured:
+        with pytest.raises(PodBillingAuthorizationRequired) as captured:
             runtime.generate_title(_request(), grant=_grant(), call_id="style-task-72:title:1")
     finally:
         runtime.close()
 
-    assert captured.value.error_kind == "configuration"
-    assert captured.value.attempt_count == 0
+    assert "expired" in str(captured.value)
+
+
+def test_ark_grant_is_rechecked_after_waiting_for_provider_slot() -> None:
+    from wh_local.modules.pod_customization.title_runtime import PodTitleRuntime
+
+    class BlockingGate:
+        def __init__(self) -> None:
+            self.entered = Event()
+            self.allow = Event()
+
+        def acquire(self, *_args, **_kwargs) -> bool:
+            self.entered.set()
+            return self.allow.wait(timeout=1)
+
+        def release(self) -> None:
+            return None
+
+    class ClockGrant:
+        def __init__(self) -> None:
+            self.clock = 0
+
+        def provider_key(self, provider: str) -> str:
+            assert provider == "ark"
+            return "short-lived-key" if self.clock < 1 else ""
+
+    session = _Session([_Response(_payload())])
+    runtime = PodTitleRuntime(session=session, requests_per_minute=0)
+    grant = ClockGrant()
+    gate = BlockingGate()
+    runtime._providers = gate  # type: ignore[assignment]
+    future = runtime.submit(
+        runtime.generate_title,
+        _request(),
+        grant=grant,
+        call_id="style-task-72:title:1",
+    )
+    try:
+        assert gate.entered.wait(timeout=1)
+        grant.clock = 2
+        gate.allow.set()
+        with pytest.raises(PodBillingAuthorizationRequired, match="expired"):
+            future.result(timeout=1)
+        assert session.requests == []
+    finally:
+        gate.allow.set()
+        runtime.close()

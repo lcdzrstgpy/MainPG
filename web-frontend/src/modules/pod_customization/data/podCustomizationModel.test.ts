@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { POD_BATCH_COUNTS, businessFieldsForApi, isActiveBatchStatus, isPodBatchCount, podBatchStatusLabel } from "./podCustomizationModel.ts";
+import {
+  POD_BATCH_COUNTS,
+  businessFieldsForApi,
+  canRegeneratePodStyle,
+  canRegeneratePodStyleTitle,
+  isActiveBatchStatus,
+  isPodBatchCount,
+  podBatchStatusLabel,
+} from "./podCustomizationModel.ts";
 
 test("POD count accepts custom integers from 1 through 200", () => {
   assert.deepEqual(POD_BATCH_COUNTS, [2, 10, 20, 40, 60, 100]);
@@ -33,4 +41,15 @@ test("business list fields are normalized at the API boundary", () => {
   });
   assert.deepEqual(payload.core_selling_points, ["轻量", "防漏"]);
   assert.deepEqual(payload.style_keywords, ["复古", "粗线条"]);
+});
+
+test("successful POD results do not expose retry actions", () => {
+  const publicResults = Array.from({ length: 4 }, () => ({
+    status: "completed" as const,
+    public_url: "https://images.example.com/result.png",
+  }));
+  assert.equal(canRegeneratePodStyle("completed", "completed"), false);
+  assert.equal(canRegeneratePodStyle("failed", "failed"), true);
+  assert.equal(canRegeneratePodStyleTitle("completed", "completed", publicResults), false);
+  assert.equal(canRegeneratePodStyleTitle("partial_failure", "failed", publicResults), true);
 });

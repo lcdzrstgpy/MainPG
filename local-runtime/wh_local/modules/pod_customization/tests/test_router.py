@@ -5,16 +5,32 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from wh_local.modules.pod_customization.router import create_router
 from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia
+from wh_local.customer.contracts import (
+    CustomerAuthRejected,
+    CustomerAuthUnavailable,
+    CustomerBillingPermissionError,
+    CustomerBillingProtocolError,
+)
 
 
 def _png() -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (320, 240), "#eee9df").save(output, "PNG")
+    return output.getvalue()
+
+
+def _panel(index: int) -> bytes:
+    image = Image.new("RGB", (320, 240), (40 + index * 30, 70 + index * 20, 100 + index * 15))
+    draw = ImageDraw.Draw(image)
+    for offset in range(-240, 500, 20 + index):
+        draw.line((offset, 0, offset - 240, 240), fill="white", width=4)
+    output = io.BytesIO()
+    image.save(output, "PNG")
     return output.getvalue()
 
 
@@ -47,7 +63,7 @@ class RouterRuntime:
         return [
             GeneratedMedia(
                 stage=f"grid_image_{index}",
-                content=_png(),
+                content=_panel(index),
                 content_type="image/png",
                 suffix=".png",
                 provider="local-split",
@@ -83,6 +99,78 @@ def _client(tmp_path) -> TestClient:
         )
     )
     return TestClient(app)
+
+
+def _billing_error_client(tmp_path, error: Exception) -> TestClient:
+    class Billing:
+        def freeze(self, actor, plan):
+            raise error
+
+        def settle(self, actor, grant, plan, outcomes):
+            return None
+
+        def regrant(self, actor, freeze_id):
+            raise error
+
+    app = FastAPI()
+    app.include_router(
+        create_router(
+            tmp_path / "workbench.sqlite3",
+            tmp_path / "pod-assets",
+            RouterRuntime(),
+            billing_coordinator=Billing(),
+            start_workers=False,
+        )
+    )
+    return TestClient(app)
+
+
+def _post_trial_that_freezes(client: TestClient) -> object:
+    headers = {"Authorization": "Bearer dev-admin-token"}
+    template = client.post(
+        "/api/pod-customization/templates",
+        headers=headers,
+        data={"name": "Billing error template"},
+        files={"file": ("scene.png", _png(), "image/png")},
+    ).json()
+    return client.post(
+        "/api/pod-customization/direct-listing-trials",
+        headers=headers,
+        json={"template_id": template["id"], "business_fields": {}, "creative_prompt": ""},
+    )
+
+
+def test_router_preserves_validated_remote_402_without_leaking_remote_detail(tmp_path) -> None:
+    response = _post_trial_that_freezes(
+        _billing_error_client(
+            tmp_path,
+            CustomerAuthRejected(
+                402,
+                "balance low key=LEAK https://billing.example.test/freeze?token=LEAK",
+            ),
+        )
+    )
+
+    assert response.status_code == 402
+    assert response.json()["detail"] == "POD billing request was rejected"
+    assert "LEAK" not in response.text
+    assert "billing.example" not in response.text
+
+
+def test_router_maps_real_remote_session_and_protocol_errors_to_stable_statuses(tmp_path) -> None:
+    cases = (
+        (CustomerBillingPermissionError(), 401, "POD billing authentication is required"),
+        (CustomerAuthUnavailable("https://upstream.test?key=LEAK"), 503, "POD billing service is unavailable"),
+        (CustomerBillingProtocolError(), 502, "POD billing service returned an invalid response"),
+    )
+
+    for index, (error, status_code, detail) in enumerate(cases):
+        response = _post_trial_that_freezes(
+            _billing_error_client(tmp_path / str(index), error)
+        )
+        assert response.status_code == status_code
+        assert response.json()["detail"] == detail
+        assert "LEAK" not in response.text
 
 
 def test_template_upload_list_calibrate_and_asset_download_contract(tmp_path) -> None:
@@ -174,6 +262,23 @@ def test_batch_create_list_detail_and_scene_optimization_contract(tmp_path) -> N
     detail = client.get(f"/api/pod-customization/batches/{batch['id']}", headers=headers)
     assert detail.status_code == 200
     assert detail.json()["prompt_version"] == "v1"
+
+    scene = client.post(
+        f"/api/pod-customization/batches/{batch['id']}/items/{batch['items'][0]['id']}/optimize-scene",
+        headers=headers,
+        json={"instruction": "warmer light"},
+    )
+    assert scene.status_code == 409
+    assert scene.json()["detail"] == "POD scene optimization is not available in this release"
+    unchanged = client.get(f"/api/pod-customization/batches/{batch['id']}", headers=headers).json()
+    assert unchanged["items"][0]["status"] == batch["items"][0]["status"]
+    item_retry = client.post(
+        f"/api/pod-customization/batches/{batch['id']}/items/{batch['items'][0]['id']}/regenerate",
+        headers=headers,
+        json={"creative_prompt": "try again"},
+    )
+    assert item_retry.status_code == 409
+    assert item_retry.json()["detail"] == "POD single-image regeneration is not available in this release"
 
 
 def test_direct_listing_trial_api_returns_one_grid_and_four_public_listing_images(tmp_path) -> None:

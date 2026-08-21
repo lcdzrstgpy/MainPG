@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from wh_local.modules.pod_customization.billing_contract import (
     PodCallOutcome,
     PodCallPlan,
@@ -50,6 +52,17 @@ def test_settlement_payload_has_one_outcome_for_every_frozen_call() -> None:
             {"call_id": "batch-1:style:1:title:3", "feature": "pod.title", "status": "no_return"},
         ],
     }
+
+
+def test_batch_plan_accepts_200_styles_as_exactly_1000_calls_and_rejects_more() -> None:
+    plan = PodCallPlan.for_batch("batch-max-200", style_count=200)
+
+    assert len(plan.calls) == 1000
+    assert sum(call.feature == "pod.image" for call in plan.calls) == 400
+    assert sum(call.feature == "pod.title" for call in plan.calls) == 600
+
+    with pytest.raises(ValueError, match="1 and 200"):
+        PodCallPlan.for_batch("batch-too-large", style_count=201)
 
 
 def test_execution_grant_repr_never_exposes_keys_or_remote_token() -> None:

@@ -221,8 +221,11 @@ export function isActivePodStyleTitleStatus(status: PodStyleTitleStatus): boolea
   return ACTIVE_TITLE_STATUSES.has(status);
 }
 
-export function canRegeneratePodItem(batchStatus: PodBatchStatus, itemStatus: PodBatchItemStatus): boolean {
-  return SETTLED_BATCH_STATUSES.has(batchStatus) && (itemStatus === "completed" || itemStatus === "failed");
+export function canRegeneratePodStyle(
+  batchStatus: PodBatchStatus,
+  styleStatus: PodStyleRow["status"],
+): boolean {
+  return SETTLED_BATCH_STATUSES.has(batchStatus) && styleStatus === "failed";
 }
 
 export function canRegeneratePodStyleTitle(
@@ -231,13 +234,9 @@ export function canRegeneratePodStyleTitle(
   results: Array<Pick<PodBatchItem, "status" | "public_url"> | undefined>,
 ): boolean {
   return SETTLED_BATCH_STATUSES.has(batchStatus)
-    && (titleStatus === "completed" || titleStatus === "failed")
+    && titleStatus === "failed"
     && results.length === 4
     && results.every((item) => item?.status === "completed" && Boolean(item.public_url));
-}
-
-export function canOptimizePodScene(batchStatus: PodBatchStatus, itemStatus: PodBatchItemStatus): boolean {
-  return SETTLED_BATCH_STATUSES.has(batchStatus) && itemStatus === "completed";
 }
 
 export function shouldPollPodBatch(

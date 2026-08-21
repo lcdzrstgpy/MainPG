@@ -1,11 +1,14 @@
 import { getAuthToken, httpBlob, httpJson } from "../../../transport/http/client";
 import { parseDianxiaomiExportFilename, parseDianxiaomiExportHeaderCount } from "../data/dianxiaomiExport";
 import { podStyleTitleRegenerateRequest } from "../data/styleTitleRequest";
+import { podBillingPendingRequest, podBillingResumeRequest } from "../data/billingRuns";
 import type {
   CreatePodBatchRequest,
   PodBatch,
   PodBatchItem,
   PodBatchListResponse,
+  PodBillingRun,
+  PodBillingRunListResponse,
   PodStyleTitle,
   PodTemplate,
   PodTemplateCalibration,
@@ -100,10 +103,6 @@ export const podCustomizationApi = {
     body,
   }),
   getBatch: (batchId: string) => httpJson<PodBatch>(`${API_BASE}/batches/${encodeURIComponent(batchId)}`),
-  regenerateItem: (batchId: string, itemId: string, creativePrompt?: string) => httpJson<PodBatchItem>(
-    `${API_BASE}/batches/${encodeURIComponent(batchId)}/items/${encodeURIComponent(itemId)}/regenerate`,
-    { method: "POST", body: creativePrompt?.trim() ? { creative_prompt: creativePrompt.trim() } : {} },
-  ),
   regenerateStyle: (batchId: string, styleIndex: number, creativePrompt?: string) => httpJson<{ style_index: number; results: PodBatchItem[] }>(
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/styles/${styleIndex}/regenerate`,
     { method: "POST", body: creativePrompt?.trim() ? { creative_prompt: creativePrompt.trim() } : {} },
@@ -112,10 +111,14 @@ export const podCustomizationApi = {
     const request = podStyleTitleRegenerateRequest(batchId, styleIndex);
     return httpJson<PodStyleTitle>(request.path, request.options);
   },
-  optimizeScene: (batchId: string, itemId: string, instruction?: string) => httpJson<PodBatchItem>(
-    `${API_BASE}/batches/${encodeURIComponent(batchId)}/items/${encodeURIComponent(itemId)}/optimize-scene`,
-    { method: "POST", body: instruction?.trim() ? { instruction: instruction.trim() } : {} },
-  ),
+  listPendingBillingRuns: () => {
+    const request = podBillingPendingRequest();
+    return httpJson<PodBillingRunListResponse>(request.path);
+  },
+  resumeBillingRun: (runId: string) => {
+    const request = podBillingResumeRequest(runId);
+    return httpJson<PodBillingRun>(request.path, request.options);
+  },
   exportDianxiaomi,
   downloadAsset,
 };

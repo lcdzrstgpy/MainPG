@@ -445,11 +445,18 @@ class PodCustomizationService:
         creative_prompt: str = "",
         enqueue: bool = True,
     ) -> dict[str, Any]:
-        results = self.repository.claim_style_regeneration(batch_id, style_index, actor.workspace_id, actor.id)
+        self._preflight_style_retry(actor, batch_id, style_index)
         action_id = f"{batch_id}:style:{style_index}:retry:{uuid.uuid4().hex}"
         billing_run = self._freeze_style_retry(
             actor, action_id, batch_id, style_index, creative_prompt
         )
+        try:
+            results = self.repository.claim_style_regeneration(
+                batch_id, style_index, actor.workspace_id, actor.id
+            )
+        except Exception:
+            self._settle_unclaimed_retry(billing_run)
+            raise
         if self.worker is not None:
             self.worker.register_action_billing_run(f"style:{batch_id}:{style_index}", billing_run)
         if enqueue:
@@ -473,9 +480,7 @@ class PodCustomizationService:
         enqueue: bool = True,
     ) -> dict[str, Any]:
         self._require_title_runtime_configured(require_present=True)
-        title = self.repository.claim_title_regeneration(
-            batch_id, style_index, actor.workspace_id, actor.id
-        )
+        self._preflight_title_retry(actor, batch_id, style_index)
         action_id = f"{batch_id}:style:{style_index}:title-retry:{uuid.uuid4().hex}"
         billing_run = self._freeze_retry(
             actor,
@@ -485,6 +490,13 @@ class PodCustomizationService:
             target_id=str(style_index),
             batch_id=batch_id,
         )
+        try:
+            title = self.repository.claim_title_regeneration(
+                batch_id, style_index, actor.workspace_id, actor.id
+            )
+        except Exception:
+            self._settle_unclaimed_retry(billing_run)
+            raise
         if self.worker is not None:
             self.worker.register_action_billing_run(f"title:{batch_id}:{style_index}", billing_run)
         if enqueue:
@@ -492,6 +504,44 @@ class PodCustomizationService:
                 raise RuntimeError("POD worker is disabled")
             self.worker.submit_title_regeneration(batch_id, style_index, billing_run)
         return self._title_payload(title)
+
+    def _preflight_style_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch["status"] not in {"completed", "partial_failure", "failed"}:
+            raise PodRepositoryError("POD batch must settle before regenerating one style", 409)
+        results = [
+            item for item in batch.get("items", [])
+            if int(item.get("style_index") or 0) == int(style_index)
+        ]
+        if len(results) != 4 or any(item.get("status") != "failed" for item in results):
+            raise PodRepositoryError("only a failed POD style can be regenerated", 409)
+
+    def _preflight_title_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch["status"] not in {"completed", "partial_failure", "failed"}:
+            raise PodRepositoryError("POD batch must settle before regenerating its title", 409)
+        title = next(
+            (row for row in batch.get("style_titles", []) if int(row["style_index"]) == int(style_index)),
+            None,
+        )
+        results = [
+            item for item in batch.get("items", [])
+            if int(item.get("style_index") or 0) == int(style_index)
+        ]
+        if title is None or title.get("status") != "failed":
+            raise PodRepositoryError("only a failed POD title can be regenerated", 409)
+        if len(results) != 4 or any(
+            item.get("status") != "completed" or not item.get("public_url") for item in results
+        ):
+            raise PodRepositoryError("all four public POD images are required before regenerating a title", 409)
+
+    @staticmethod
+    def _settle_unclaimed_retry(billing_run: PodBillingRun) -> None:
+        try:
+            billing_run.settle()
+        except Exception:
+            # The durable billing run remains settlement_pending and can be resumed.
+            pass
 
     def close(self) -> None:
         if self.worker is not None:

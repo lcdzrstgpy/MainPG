@@ -660,7 +660,8 @@ class PodBatchWorker:
                 retry_reasons[style_index] = str(exc).strip() or exc.__class__.__name__
                 continue
             prepared[style_index] = (call, grid, panels, fingerprints)
-            accepted_fingerprints.extend(fingerprints)
+            for variant_index, fingerprint in enumerate(fingerprints, start=1):
+                accepted_fingerprints[variant_index].append(fingerprint)
 
         retry_indices = sorted(set(style_indices) - set(prepared))
         if retry_indices:
@@ -684,7 +685,8 @@ class PodBatchWorker:
                     retry_reasons[style_index] = str(exc).strip() or exc.__class__.__name__
                     continue
                 prepared[style_index] = (call, grid, panels, fingerprints)
-                accepted_fingerprints.extend(fingerprints)
+                for variant_index, fingerprint in enumerate(fingerprints, start=1):
+                    accepted_fingerprints[variant_index].append(fingerprint)
 
         for style_index in style_indices:
             if style_index not in prepared:
@@ -781,32 +783,41 @@ class PodBatchWorker:
     def _validate_style_grid(
         self,
         grid: Any,
-        accepted_fingerprints: list[str],
+        accepted_fingerprints: dict[int, list[str]],
     ) -> tuple[list[Any], list[str]]:
         panels = self.ai_runtime.split_listing_grid(grid)
         if len(panels) != 4:
             raise RuntimeError("generated four-grid image did not yield exactly four panels")
-        assessment = self.style_quality_gate.assess(
-            panels[1].content,
-            accepted_fingerprints=accepted_fingerprints,
-        )
-        if not assessment.accepted:
-            reason = assessment.rejection_reason or "invalid"
-            raise RuntimeError(f"style_detail_{reason}")
-        return panels, [assessment.fingerprint] * len(panels)
+        panel_fingerprints: list[str] = []
+        for panel_index, panel in enumerate(panels, start=1):
+            assessment = self.style_quality_gate.assess(
+                panel.content,
+                accepted_fingerprints=accepted_fingerprints.get(panel_index, []),
+            )
+            if not assessment.accepted:
+                reason = assessment.rejection_reason or "invalid"
+                raise RuntimeError(f"style_panel_{panel_index}_{reason}")
+            if assessment.fingerprint in panel_fingerprints:
+                raise RuntimeError(f"style_panel_{panel_index}_duplicate")
+            panel_fingerprints.append(assessment.fingerprint)
+        return panels, panel_fingerprints
 
     def _accepted_style_fingerprints(
         self,
         batch: dict[str, Any],
         *,
         exclude_style_index: int | None = None,
-    ) -> list[str]:
-        return [
-            item["pattern_fingerprint"]
-            for item in self.repository.get_batch_internal(batch["batch_id"])["items"]
-            if item.get("pattern_fingerprint")
-            and (exclude_style_index is None or item.get("style_index") != exclude_style_index)
-        ]
+    ) -> dict[int, list[str]]:
+        fingerprints = {index: [] for index in range(1, 5)}
+        for item in self.repository.get_batch_internal(batch["batch_id"])["items"]:
+            if not item.get("pattern_fingerprint"):
+                continue
+            if exclude_style_index is not None and item.get("style_index") == exclude_style_index:
+                continue
+            variant_index = int(item.get("variant_index") or 0)
+            if variant_index in fingerprints:
+                fingerprints[variant_index].append(item["pattern_fingerprint"])
+        return fingerprints
 
     def _generate_listing_grid(
         self,

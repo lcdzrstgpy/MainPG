@@ -202,6 +202,61 @@ def test_pod_freeze_fails_closed_until_both_prices_are_configured(tmp_path: Path
     assert response.json()["detail"] == "POD pricing is not configured"
 
 
+def test_pod_freeze_accepts_200_style_plan_and_rejects_1001_calls(tmp_path: Path, monkeypatch) -> None:
+    client, database_path, private_key = _client(tmp_path, monkeypatch)
+    token, account_id = _register_and_login(client, database_path)
+    _grant_points(database_path, account_id, units=100_000)
+    headers = {"Authorization": f"Bearer {token}"}
+    _configure_pod_pricing(client, headers)
+    encrypted_session_key, _ = _encrypted_session(private_key)
+    calls = [
+        {
+            "call_id": f"batch-max:style:{style}:image:{attempt}",
+            "feature": "pod.image",
+        }
+        for style in range(1, 201)
+        for attempt in range(1, 3)
+    ] + [
+        {
+            "call_id": f"batch-max:style:{style}:title:{attempt}",
+            "feature": "pod.title",
+        }
+        for style in range(1, 201)
+        for attempt in range(1, 4)
+    ]
+
+    accepted = client.post(
+        "/api/customer/billing/pod/freeze",
+        headers=headers,
+        json={
+            "idempotency_key": "pod-batch-max-200-styles",
+            "title_call_count": 600,
+            "image_call_count": 400,
+            "calls": calls,
+            "encrypted_session_key": encrypted_session_key,
+        },
+    )
+    rejected = client.post(
+        "/api/customer/billing/pod/freeze",
+        headers=headers,
+        json={
+            "idempotency_key": "pod-batch-over-maximum",
+            "title_call_count": 601,
+            "image_call_count": 400,
+            "calls": [
+                *calls,
+                {"call_id": "batch-max:style:201:title:1", "feature": "pod.title"},
+            ],
+            "encrypted_session_key": encrypted_session_key,
+        },
+    )
+
+    assert accepted.status_code == 200, accepted.text
+    assert len(accepted.json()["freeze"]["calls"]) == 1000
+    assert rejected.status_code == 400
+    assert rejected.json()["detail"] == "POD total call count must be 1..1000"
+
+
 def test_pod_freeze_rejects_invalid_envelope_before_locking_points(tmp_path: Path, monkeypatch) -> None:
     client, database_path, _ = _client(tmp_path, monkeypatch)
     token, account_id = _register_and_login(client, database_path)

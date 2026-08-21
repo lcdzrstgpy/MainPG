@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { batchProgress, canRegeneratePodStyleTitle, groupPodStyleRows, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
+import { batchProgress, canRegeneratePodStyle, canRegeneratePodStyleTitle, groupPodStyleRows, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
 import { dianxiaomiExportBlockMessage, isDianxiaomiExportEnabled } from "../data/dianxiaomiExport";
 import { PodAssetImage } from "../data/usePodAssetUrl";
 import type { PodBatch, PodBatchItem } from "../types";
@@ -65,7 +65,7 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
       {styles.map((style) => {
         const regenerating = busyAction === `regenerate-style:${style.index}`;
         const regeneratingTitle = busyAction === `regenerate-title:${style.index}`;
-        const canRegenerate = Boolean(batch.style_grid) && ["completed", "partial_failure", "failed"].includes(batch.status);
+        const canRegenerate = Boolean(batch.style_grid) && canRegeneratePodStyle(batch.status, style.status);
         const canRegenerateTitle = !busyAction && canRegeneratePodStyleTitle(batch.status, style.title_status, style.results);
         return <article className={`pod-style-row status-${style.status}`} key={style.index}>
           <header><span className="pod-style-row-status" aria-hidden="true">{style.status === "completed" ? "✓" : style.status === "failed" ? "!" : "·"}</span><div className="pod-style-row-main"><button type="button" className="pod-style-title-button" title={style.title} onClick={() => setSelectedStyleIndex(style.index)}>{style.title}</button><small>{podStyleTitleStatusLabel(style.title_status, style.listing_ready)} · {style.status === "partial_failure" ? "四宫格部分失败" : style.status === "generating" ? "四宫格正在生成" : podItemStatusLabel(style.status)}</small>{style.title_error_message && <small className="pod-style-title-error" title={style.title_error_message}>标题生成失败，可重新生成</small>}</div><div className="pod-style-row-actions"><button type="button" disabled={!style.title.trim()} onClick={() => void copyTitle(style.title)}>复制标题</button><button type="button" disabled={!canRegenerateTitle || regeneratingTitle} onClick={() => onRegenerateTitle(style.index)}>{regeneratingTitle ? "标题生成中" : "只重生标题"}</button><button type="button" disabled={!canRegenerate || regenerating} onClick={() => onRegenerateStyle(style.index)}>{regenerating ? "重新生成中" : "整款重生成"}</button></div></header>

@@ -19,7 +19,7 @@ from .session import Actor
 
 
 POD_FEATURE_KEYS = ("pod.title", "pod.image")
-POD_MAX_CALLS = 200
+POD_MAX_CALLS = 1000
 
 
 POD_BILLING_SCHEMA_SQL = """
@@ -506,7 +506,10 @@ def _normalize_plan(
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="POD call counts are required") from exc
     if title_count < 0 or image_count < 0 or not 1 <= title_count + image_count <= POD_MAX_CALLS:
-        raise HTTPException(status_code=400, detail="POD total call count must be 1..200")
+        raise HTTPException(
+            status_code=400,
+            detail=f"POD total call count must be 1..{POD_MAX_CALLS}",
+        )
     if not isinstance(calls, list) or len(calls) != title_count + image_count:
         raise HTTPException(status_code=400, detail="POD calls do not match declared counts")
     normalized: list[dict[str, str]] = []

@@ -4,10 +4,14 @@ import io
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from wh_local.modules.pod_customization.contracts import BusinessFields, DirectListingTrialCreate
-from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
+from wh_local.modules.pod_customization.billing_contract import (
+    PodBillingAuthorizationRequired,
+    PodExecutionGrant,
+)
+from wh_local.modules.pod_customization.errors import PodProviderResultReceivedError
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia, MediaProcessingError
 from wh_local.session import Actor
@@ -37,6 +41,17 @@ def _media(content: bytes, *, stage: str = "grid_image", model: str = "test-mode
     )
 
 
+def _panel(seed: int) -> bytes:
+    image = Image.new("RGB", (1024, 1024), (40 + seed * 20, 80 + seed * 15, 120 + seed * 10))
+    draw = ImageDraw.Draw(image)
+    for offset in range(-1024, 2048, 70 + seed):
+        draw.line((offset, 0, offset - 1024, 1024), fill="white", width=12)
+    draw.ellipse((180 + seed * 20, 200, 720, 760), outline="black", width=18)
+    output = io.BytesIO()
+    image.save(output, "PNG")
+    return output.getvalue()
+
+
 class DirectTrialRuntime:
     def __init__(self, grids: list[GeneratedMedia | Exception], *, publish_failure_role: str = "") -> None:
         self.grids = list(grids)
@@ -56,10 +71,10 @@ class DirectTrialRuntime:
     def split_listing_grid(self, media: GeneratedMedia) -> list[GeneratedMedia]:
         if media.model == "invalid-layout":
             raise MediaProcessingError("generated four-grid image cannot be split")
-        return [
-            _media(_png(color, size=(1024, 1024)), stage=f"grid_image_{index}")
-            for index, color in enumerate(("#bfdbfe", "#fed7aa", "#bbf7d0", "#ddd6fe"), start=1)
-        ]
+        panels = [_panel(index) for index in range(1, 5)]
+        if media.model.startswith("blank-panel-"):
+            panels[int(media.model.rsplit("-", 1)[1]) - 1] = _png("#ffffff", size=(1024, 1024))
+        return [_media(content, stage=f"grid_image_{index}") for index, content in enumerate(panels, start=1)]
 
     def publish_listing_image(self, media: GeneratedMedia, *, namespace: str, role: str) -> str:
         self.published.append((media, namespace, role))
@@ -169,6 +184,22 @@ def test_direct_listing_trial_retries_only_once_for_invalid_grid_and_retains_bot
     assert all(attempt["preview_url"].startswith("/api/pod-customization/assets/") for attempt in result["grid_attempts"])
 
 
+def test_direct_listing_trial_quality_checks_each_panel_before_publication(tmp_path: Path) -> None:
+    runtime = DirectTrialRuntime([
+        _media(_png("#fef3c7"), model="blank-panel-4"),
+        _media(_png("#f8fafc")),
+    ])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = service.upload_template(actor, name="WPS shirt", filename="wps-shirt.png", content=_png("#ffffff"))
+
+    result = service.run_direct_listing_trial(actor, _request(template["id"]))
+
+    assert len(runtime.requests) == 2
+    assert result["status"] == "completed"
+    assert len(runtime.published) == 4
+
+
 def test_direct_listing_trial_returns_a_fetchable_failed_trial_after_two_invalid_splits(tmp_path: Path) -> None:
     runtime = DirectTrialRuntime([
         _media(_png("#fef3c7"), model="invalid-layout"),
@@ -199,6 +230,89 @@ def test_direct_listing_trial_reports_image_auth_error_without_persisting_or_pub
 
     assert service.list_direct_listing_trials(actor) == {"trials": [], "total": 0}
     assert runtime.published == []
+
+
+def test_direct_listing_trial_bills_provider_success_when_local_result_download_failed(tmp_path: Path) -> None:
+    runtime = DirectTrialRuntime(
+        [PodProviderResultReceivedError("wuyin", "local result decode failed key=DO-NOT-LEAK")]
+    )
+    coordinator = BillingCoordinator()
+    service = PodCustomizationService(
+        tmp_path / "workbench.sqlite3",
+        tmp_path / "pod-assets",
+        runtime,
+        billing_coordinator=coordinator,
+        start_workers=False,
+    )
+    actor = _actor()
+    template = service.upload_template(
+        actor,
+        name="WPS shirt",
+        filename="wps-shirt.png",
+        content=_png("#ffffff"),
+    )
+
+    with pytest.raises(RuntimeError, match="POD 四宫格生成失败"):
+        service.run_direct_listing_trial(actor, _request(template["id"]))
+
+    outcomes = {outcome.call_id: outcome.status for outcome in coordinator.settlements[0][1]}
+    assert outcomes[next(call_id for call_id in outcomes if call_id.endswith(":image:1"))] == "success"
+    assert outcomes[next(call_id for call_id in outcomes if call_id.endswith(":image:2"))] == "no_return"
+    assert "DO-NOT-LEAK" not in str(coordinator.settlements)
+
+
+def test_direct_listing_trial_image_expiry_pauses_durable_billing_for_regrant(tmp_path: Path) -> None:
+    runtime = DirectTrialRuntime(
+        [PodBillingAuthorizationRequired("POD wuyin grant expired before provider request")]
+    )
+    coordinator = BillingCoordinator()
+    service = PodCustomizationService(
+        tmp_path / "workbench.sqlite3",
+        tmp_path / "pod-assets",
+        runtime,
+        billing_coordinator=coordinator,
+        start_workers=False,
+    )
+    actor = _actor()
+    template = service.upload_template(
+        actor, name="WPS shirt", filename="wps-shirt.png", content=_png("#ffffff")
+    )
+
+    with pytest.raises(PodBillingAuthorizationRequired, match="expired"):
+        service.run_direct_listing_trial(actor, _request(template["id"]))
+
+    pending = service.list_pending_billing_runs(actor)
+    assert pending["total"] == 1
+    assert pending["runs"][0]["status"] == "auth_required"
+    assert coordinator.settlements == []
+
+
+def test_direct_listing_trial_title_expiry_pauses_instead_of_persisting_failed_copy(tmp_path: Path) -> None:
+    class ExpiredTitleRuntime:
+        def generate_title(self, *_args, **_kwargs):
+            raise PodBillingAuthorizationRequired("POD ark grant expired before provider request")
+
+    runtime = DirectTrialRuntime([_media(_png("#f8fafc"))])
+    coordinator = BillingCoordinator()
+    service = PodCustomizationService(
+        tmp_path / "workbench.sqlite3",
+        tmp_path / "pod-assets",
+        runtime,
+        title_runtime=ExpiredTitleRuntime(),
+        billing_coordinator=coordinator,
+        start_workers=False,
+    )
+    actor = _actor()
+    template = service.upload_template(
+        actor, name="WPS shirt", filename="wps-shirt.png", content=_png("#ffffff")
+    )
+
+    with pytest.raises(PodBillingAuthorizationRequired, match="expired"):
+        service.run_direct_listing_trial(actor, _request(template["id"]))
+
+    assert service.list_direct_listing_trials(actor) == {"trials": [], "total": 0}
+    assert service.list_pending_billing_runs(actor)["runs"][0]["status"] == "auth_required"
+    assert coordinator.settlements == []
 
 
 def test_direct_listing_trial_returns_persisted_partial_result_when_publication_fails(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from .dianxiaomi import DXM_COLUMNS, build_dianxiaomi_workbook
+from .title_runtime import validate_listing_copy_text
 
 
 LISTING_IMAGE_ROLES = ("hero", "detail_a", "detail_b", "lifestyle")
@@ -224,13 +225,20 @@ def _build_row(
     business_fields: dict[str, Any],
     listing_fields: dict[str, Any],
 ) -> list[Any]:
+    safe_title = validate_listing_copy_text("title", copy.get("title"), max_length=200)
+    safe_english_title = validate_listing_copy_text(
+        "english_title", copy.get("english_title"), max_length=200
+    )
+    safe_description = validate_listing_copy_text(
+        "description", copy.get("description"), max_length=1000
+    )
     suffix = f"{style_index:03d}"
     image_urls = [images[role] for role in LISTING_IMAGE_ROLES]
     description = "\n".join(
-        [copy["description"], *(f'<img src="{url}" />' for url in image_urls)]
+        [safe_description, *(f'<img src="{url}" />' for url in image_urls)]
     )
     selected_title = (
-        copy["english_title"] if listing_fields.get("title_mode") == "short" else copy["title"]
+        safe_english_title if listing_fields.get("title_mode") == "short" else safe_title
     )
     category = business_fields["product_category"]
     row: list[Any] = ["" for _ in DXM_COLUMNS]

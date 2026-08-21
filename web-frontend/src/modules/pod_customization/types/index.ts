@@ -171,6 +171,27 @@ export type PodBatchListResponse = {
   total: number;
 };
 
+export type PodBillingRunStatus = "auth_required" | "authorized" | "settling" | "settlement_pending" | "settled";
+
+export type PodBillingRun = {
+  id: string;
+  action_type: string;
+  target_id: string;
+  batch_id: string;
+  freeze_id: string;
+  rule_version: number;
+  expires_at: string;
+  status: PodBillingRunStatus;
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PodBillingRunListResponse = {
+  runs: PodBillingRun[];
+  total: number;
+};
+
 export type CreatePodBatchRequest = {
   template_id: string;
   count: PodBatchCount;

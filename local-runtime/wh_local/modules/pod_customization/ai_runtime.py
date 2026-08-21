@@ -11,7 +11,7 @@ import base64
 import hashlib
 import io
 import time
-from typing import Any
+from typing import Any, Callable
 
 from PIL import Image, ImageDraw
 
@@ -19,8 +19,16 @@ from wh_local.modules.product_processing.domain.policy import is_safe_external_u
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia, MediaProcessingError
 from wh_local.modules.product_processing.infrastructure.media import ProductImageProcessor
 from wh_local.modules.product_processing.service import ProductProcessingService
+from wh_local.data_collection.public_image_fetch import (
+    FetchedPublicImage,
+    PublicImageFetchError,
+    fetch_public_image,
+)
 
+from .assets import MAX_IMAGE_BYTES, inspect_pod_image
 from .billing_contract import PodExecutionGrant
+from .billing_contract import PodBillingAuthorizationRequired
+from .errors import PodProviderResultReceivedError, safe_error_message
 from .runtime import AiRuntime, AiRuntimeConfig
 from .runtime_contracts import (
     SUPPORTED_TEMPLATE_IMAGE_CONTENT_TYPES,
@@ -44,6 +52,7 @@ class PodCustomizationAiRuntime(AiRuntime):
         requests_per_minute: float = 0.0,
         session: Any | None = None,
         poll_interval_seconds: float = 3.0,
+        public_image_fetcher: Callable[..., FetchedPublicImage] | None = None,
     ) -> None:
         # The named fields document the independent POD capacity budget.  Image
         # calls use the provider semaphore; other work stays in the POD executor.
@@ -73,6 +82,7 @@ class PodCustomizationAiRuntime(AiRuntime):
         if hasattr(self.session, "trust_env"):
             self.session.trust_env = False
         self._poll_interval_seconds = max(0.0, float(poll_interval_seconds))
+        self._public_image_fetcher = public_image_fetcher or fetch_public_image
 
     def generate_pattern_grid(self, request: PatternGridRequest, *, grant: PodExecutionGrant, call_id: str) -> bytes:
         raise MediaProcessingError(
@@ -92,18 +102,24 @@ class PodCustomizationAiRuntime(AiRuntime):
         This remains one provider request per service-level attempt.  The
         service decides whether a malformed grid receives its single retry.
         """
-        image_key = grant.provider_key("wuyin")
-        if not image_key:
-            raise MediaProcessingError(
-                "POD image grant is missing or expired",
-                status_class="non_retryable_local",
-            )
+        _required_provider_key(grant, "wuyin")
         reference_url = self._publish_listing_reference(request)
         try:
             with self.provider_slot():
-                task_id = self._submit_suchuang_grid(image_key, request, reference_url)
-                result_url = self._poll_suchuang_grid(image_key, task_id)
-                content, content_type = self._download_suchuang_grid(result_url)
+                _required_provider_key(grant, "wuyin")
+                task_id = self._submit_suchuang_grid(grant, request, reference_url)
+                result_url = self._poll_suchuang_grid(grant, task_id)
+                try:
+                    content, content_type = self._download_suchuang_grid(result_url)
+                except Exception as exc:
+                    raise PodProviderResultReceivedError(
+                        "wuyin",
+                        f"速创已返回结果，但本地下载或解析失败：{safe_error_message(exc)}",
+                    ) from exc
+        except PodProviderResultReceivedError:
+            raise
+        except PodBillingAuthorizationRequired:
+            raise
         except MediaProcessingError:
             raise
         except Exception as exc:
@@ -148,12 +164,13 @@ class PodCustomizationAiRuntime(AiRuntime):
 
     def _submit_suchuang_grid(
         self,
-        image_key: str,
+        grant: PodExecutionGrant,
         request: DirectListingGridRequest,
         reference_url: str,
     ) -> str:
         self.acquire_request_token()
         with self.connection_slot(timeout_seconds=30.0):
+            image_key = _required_provider_key(grant, "wuyin")
             response = self.session.post(
                 "https://api.wuyinkeji.com/api/async/image_gpt",
                 params={"key": image_key},
@@ -185,13 +202,15 @@ class PodCustomizationAiRuntime(AiRuntime):
             raise MediaProcessingError("速创返回中没有生图任务 ID", attempt_count=1, status_class="transient")
         return task_id
 
-    def _poll_suchuang_grid(self, image_key: str, task_id: str) -> str:
+    def _poll_suchuang_grid(self, grant: PodExecutionGrant, task_id: str) -> str:
         deadline = time.monotonic() + 600.0
         last_message = ""
         while time.monotonic() < deadline:
             if self._poll_interval_seconds:
                 time.sleep(self._poll_interval_seconds)
+            self.acquire_request_token()
             with self.connection_slot(timeout_seconds=30.0):
+                image_key = _required_provider_key(grant, "wuyin")
                 response = self.session.get(
                     "https://api.wuyinkeji.com/api/async/detail",
                     params={"key": image_key, "id": task_id},
@@ -253,24 +272,21 @@ class PodCustomizationAiRuntime(AiRuntime):
         )
 
     def _download_suchuang_grid(self, result_url: str) -> tuple[bytes, str]:
-        if not is_safe_external_url(result_url):
-            raise MediaProcessingError("速创返回的图片地址不安全", status_class="transient")
-        with self.connection_slot(timeout_seconds=360.0):
-            response = self.session.get(result_url, timeout=360.0, allow_redirects=False)
-            try:
-                if not bool(response.ok):
-                    raise MediaProcessingError(
-                        f"速创结果下载返回 HTTP {int(response.status_code)}",
-                        status_code=int(response.status_code),
-                        attempt_count=1,
-                        status_class=_suchuang_status_class(int(response.status_code)),
-                    )
-                content = bytes(response.content)
-                content_type = str(response.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0].strip().lower()
-            finally:
-                response.close()
-        if not content or content_type not in SUPPORTED_TEMPLATE_IMAGE_CONTENT_TYPES:
-            raise MediaProcessingError("速创结果不是受支持的图片", attempt_count=1, status_class="transient")
+        try:
+            fetched = self._public_image_fetcher(
+                result_url,
+                max_bytes=MAX_IMAGE_BYTES,
+                max_redirects=0,
+                timeout_seconds=360.0,
+            )
+            content = bytes(fetched.content)
+            content_type, _suffix, _width, _height = inspect_pod_image(content)
+        except (PublicImageFetchError, ValueError, OSError) as exc:
+            raise MediaProcessingError(
+                "provider result is not a safe valid image",
+                attempt_count=1,
+                status_class="transient",
+            ) from exc
         return content, content_type
 
     def split_listing_grid(self, media):
@@ -370,7 +386,7 @@ def _suchuang_message(payload: object) -> str:
     for key in ("msg", "message", "error", "reason"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()[:180]
+            return safe_error_message(value, fallback="未提供错误说明")[:180]
     return "未提供错误说明"
 
 
@@ -380,3 +396,12 @@ def _suffix_for_content_type(content_type: str) -> str:
         "image/webp": ".webp",
         "image/gif": ".gif",
     }.get(content_type, ".png")
+
+
+def _required_provider_key(grant: PodExecutionGrant, provider: str) -> str:
+    key = grant.provider_key(provider)
+    if not key:
+        raise PodBillingAuthorizationRequired(
+            f"POD {provider} grant expired before the provider request started"
+        )
+    return key

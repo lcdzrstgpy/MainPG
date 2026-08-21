@@ -494,3 +494,39 @@ def test_export_endpoint_requires_the_dedicated_export_permission(
     )
 
     assert response.status_code == 403
+
+
+def test_short_title_export_rejects_noncompliant_copy_instead_of_using_it() -> None:
+    from wh_local.modules.pod_customization.export import _build_row
+
+    with pytest.raises(ValueError, match="english_title contains prohibited term"):
+        _build_row(
+            1,
+            {
+                "hero": "https://images.example.com/hero.png",
+                "detail_a": "https://images.example.com/a.png",
+                "detail_b": "https://images.example.com/b.png",
+                "lifestyle": "https://images.example.com/lifestyle.png",
+            },
+            {
+                "title": (
+                    "Coastal Botanical Canvas Tote with Ocean Fern Artwork and Layered Ink Details "
+                    "for Everyday Home Office Studio Carry"
+                ),
+                "english_title": "Temu exclusive canvas tote",
+                "description": "A factual canvas tote description for everyday use.",
+            },
+            {"product_category": "tote bag"},
+            {
+                "title_mode": "short",
+                "product_code_prefix": "POD",
+                "sku_prefix": "SKU",
+                "declared_price": 20,
+                "suggested_price_usd": 30,
+                "length_cm": 20,
+                "width_cm": 10,
+                "height_cm": 5,
+                "weight_g": 300,
+                "category_id": "123",
+            },
+        )

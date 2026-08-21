@@ -71,21 +71,7 @@ class PodAssetStore:
         )
 
     def inspect_image(self, content: bytes) -> tuple[str, str, int, int]:
-        if not content or len(content) > MAX_IMAGE_BYTES:
-            raise ValueError("image must be between 1 byte and 20 MB")
-        try:
-            with Image.open(io.BytesIO(content)) as image:
-                image_format = str(image.format or "").upper()
-                details = _FORMAT_DETAILS.get(image_format)
-                if details is None:
-                    raise ValueError("only PNG, JPEG, and WEBP images are supported")
-                width, height = image.size
-                if width < 16 or height < 16 or width * height > MAX_IMAGE_PIXELS:
-                    raise ValueError("image dimensions are outside the supported range")
-                image.verify()
-        except (UnidentifiedImageError, OSError) as exc:
-            raise ValueError("uploaded content is not a valid image") from exc
-        return details[0], details[1], width, height
+        return inspect_pod_image(content)
 
     def read(self, relative_path: str) -> bytes:
         target = (self.root / relative_path).resolve()
@@ -104,3 +90,22 @@ class PodAssetStore:
     def _require_managed(self, path: Path) -> None:
         if path != self.root and self.root not in path.parents:
             raise ValueError("POD asset path is outside the managed root")
+
+
+def inspect_pod_image(content: bytes) -> tuple[str, str, int, int]:
+    """Validate bounded decoded raster content before storage or AI result use."""
+    if not content or len(content) > MAX_IMAGE_BYTES:
+        raise ValueError("image must be between 1 byte and 20 MB")
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            image_format = str(image.format or "").upper()
+            details = _FORMAT_DETAILS.get(image_format)
+            if details is None:
+                raise ValueError("only PNG, JPEG, and WEBP images are supported")
+            width, height = image.size
+            if width < 16 or height < 16 or width * height > MAX_IMAGE_PIXELS:
+                raise ValueError("image dimensions are outside the supported range")
+            image.verify()
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError("uploaded content is not a valid image") from exc
+    return details[0], details[1], width, height
