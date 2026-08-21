@@ -118,6 +118,12 @@
   gap: 8px;
 }
 
+.dimension-command-actions {
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .dimension-command-actions button,
 .dimension-empty-card > button {
   display: inline-flex;
@@ -193,6 +199,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(280px, .7fr);
   gap: 14px;
+  min-width: 0;
 }
 
 .dimension-empty-card {

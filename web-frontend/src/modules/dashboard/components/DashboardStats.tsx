@@ -1,10 +1,77 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
-import { getDashboardStats, type DashboardStats } from "../api/dashboardApi";
+import { getDashboardStats, type DashboardStats, type DashboardTrendPoint } from "../api/dashboardApi";
 import "./../styles/dashboardStats.css";
 import { AppleAppGlyph } from "../../../shared/components/AppleAppGlyph";
 
 type DashboardStatsProps = { onOpenModule: (id: WorkspaceModuleId) => void; variant?: "classic" | "apple" };
+
+type TrendMetric = "all" | "inbound" | "processed";
+
+function getTrendValue(point: DashboardTrendPoint, metric: TrendMetric) {
+  if (metric === "inbound") return point.inboundCount;
+  if (metric === "processed") return point.processedCount;
+  return point.inboundCount + point.processedCount;
+}
+
+function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
+  const [days, setDays] = useState(14);
+  const [metric, setMetric] = useState<TrendMetric>("all");
+  const visiblePoints = useMemo(() => points.slice(-days), [days, points]);
+  const values = useMemo(() => visiblePoints.map((point) => getTrendValue(point, metric)), [metric, visiblePoints]);
+  const total = values.reduce((sum, value) => sum + value, 0);
+  const maximum = Math.max(...values, 1);
+  const lastPoint = visiblePoints[visiblePoints.length - 1];
+  const rangeLabel = visiblePoints.length
+    ? `${visiblePoints[0].date.replace(/-/g, "/")} - ${lastPoint?.date.replace(/-/g, "/")}`
+    : "暂无日期";
+
+  return (
+    <section className="dashboard-trend-card">
+      <div className="dashboard-trend-toolbar">
+        <label>
+          <span>统计范围</span>
+          <select value={days} onChange={(event) => setDays(Number(event.target.value))}>
+            <option value={7}>近 7 天</option>
+            <option value={14}>近 14 天</option>
+            <option value={30}>近 30 天</option>
+          </select>
+        </label>
+        <div className="dashboard-trend-range"><span>日期</span><strong>{rangeLabel}</strong></div>
+        <label>
+          <span>业务类型</span>
+          <select value={metric} onChange={(event) => setMetric(event.target.value as TrendMetric)}>
+            <option value="all">全部业务</option>
+            <option value="inbound">产品入库</option>
+            <option value="processed">产品处理</option>
+          </select>
+        </label>
+        <div className="dashboard-trend-total"><span>总计</span><strong>{total}</strong></div>
+      </div>
+
+      <div
+        className="dashboard-trend-plot"
+        style={{ gridTemplateColumns: `repeat(${Math.max(visiblePoints.length, 1)}, minmax(0, 1fr))` }}
+        aria-label={`${rangeLabel}业务趋势，总计${total}`}
+      >
+        {visiblePoints.map((point, index) => {
+          const value = values[index];
+          const date = new Date(`${point.date}T00:00:00`);
+          const label = `${date.getMonth() + 1}/${date.getDate()}`;
+          return (
+            <div className="dashboard-trend-column" key={point.date} title={`${point.date}：${value}`}>
+              <div className="dashboard-trend-value">{value > 0 ? value : ""}</div>
+              <div className="dashboard-trend-bar-track"><i style={{ height: `${Math.max(value ? 8 : 0, (value / maximum) * 100)}%` }} /></div>
+              <span>{label}</span>
+            </div>
+          );
+        })}
+        {total === 0 && <div className="dashboard-trend-empty">当前时间范围暂无业务记录</div>}
+      </div>
+      <div className="dashboard-trend-legend"><span><i className="is-primary" />当前筛选业务量</span><small>数据每分钟自动更新</small></div>
+    </section>
+  );
+}
 
 export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardStatsProps) {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -85,6 +152,7 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
           <span className="stats-note">按北京时间统计</span>
         </button>
       </div>
+      <DashboardTrendChart points={stats?.trend ?? []} />
     </section>
   );
 }

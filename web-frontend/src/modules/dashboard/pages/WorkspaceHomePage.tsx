@@ -16,16 +16,6 @@ function getGreeting(): string {
 
 type WorkspaceHomePageProps = { onOpenModule: (id: WorkspaceModuleId) => void };
 
-type ShortcutItem =
-  | { type: "module"; id: WorkspaceModuleId; label: string; text: string }
-  | { type: "external"; label: string; text: string; url: string };
-
-const shortcuts: ShortcutItem[] = [
-  { type: "module", id: "daily_selection", label: "每日选品", text: "开始采集并查看候选商品" },
-  { type: "module", id: "product_processing", label: "产品处理", text: "进入草稿池和处理任务" },
-  { type: "module", id: "profit_activity", label: "利润活动", text: "查看利润核算和活动筛选" },
-];
-
 const launchpadItems: Array<{ id: WorkspaceModuleId; label: string; tone: string }> = [
   { id: "daily_selection", label: "每日选品", tone: "blue" },
   { id: "product_processing", label: "AI 产品处理", tone: "violet" },
@@ -108,36 +98,6 @@ export function WorkspaceHomePage({ onOpenModule }: WorkspaceHomePageProps) {
         <img className="brand-logo-hero" src={BRAND_LOGO_URL} alt={BRAND_NAME} />
         <p className="eyebrow">JIEYE ECOMMERCE PLATFORM · 界野电商平台</p>
         <h1>{greeting}，准备开始今天的工作。</h1>
-      </section>
-      <section>
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">QUICK START</p>
-            <h2>快捷入口</h2>
-          </div>
-        </div>
-        <div className="shortcut-grid">
-          {shortcuts.map((item) =>
-            item.type === "external" ? (
-              <button
-                className="shortcut-card"
-                key={item.url}
-                type="button"
-                onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}
-              >
-                <strong>{item.label}</strong>
-                <span>{item.text}</span>
-                <b>打开 →</b>
-              </button>
-            ) : (
-              <button className="shortcut-card" key={item.id} onClick={() => onOpenModule(item.id)}>
-                <strong>{item.label}</strong>
-                <span>{item.text}</span>
-                <b>打开 →</b>
-              </button>
-            )
-          )}
-        </div>
       </section>
       <DashboardStats onOpenModule={onOpenModule} />
     </div>
