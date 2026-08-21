@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Literal, Mapping, Protocol, Sequence
 
@@ -142,6 +143,14 @@ class PodExecutionGrant:
         )
 
     def provider_key(self, provider: str) -> str:
+        try:
+            expires_at = datetime.fromisoformat(self.expires_at.replace("Z", "+00:00"))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            return ""
+        if expires_at <= datetime.now(timezone.utc):
+            return ""
         return str(self.provider_keys.get(str(provider)) or "")
 
 

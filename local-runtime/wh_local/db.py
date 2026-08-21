@@ -742,6 +742,31 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 shop_candidate_uniqueness_sql.read_text(encoding="utf-8"),
             )
         )
+    pod_customization_migrations = (
+        "001_pod_customization",
+        "002_direct_listing_trials",
+        "003_style_grid_v2",
+        "004_style_grid_publications",
+        "005_dianxiaomi_exports",
+        "006_pod_titles",
+        "007_requested_count_upgrade",
+    )
+    for migration_name in pod_customization_migrations:
+        sql_path = (
+            root
+            / "modules"
+            / "pod_customization"
+            / "migrations"
+            / f"{migration_name}.sql"
+        )
+        if sql_path.exists():
+            migrations.append(
+                (
+                    f"pod_customization:{migration_name}",
+                    "pod_customization",
+                    sql_path.read_text(encoding="utf-8"),
+                )
+            )
     ai_service_sql = root / "modules" / "ai_service" / "migrations" / "001_ai_service.sql"
     if ai_service_sql.exists():
         migrations.append(

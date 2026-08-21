@@ -61,6 +61,13 @@ from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
 from ..modules.basic_settings.service import SystemConfigService
 from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
+from ..modules.pod_customization import create_router as create_pod_customization_router
+from ..modules.pod_customization.ai_runtime import PodCustomizationAiRuntime
+from ..modules.pod_customization.remote_billing import (
+    RemotePodBillingCoordinator,
+    sqlite_remote_token_resolver,
+)
+from ..modules.pod_customization.title_runtime import PodTitleRuntime
 from ..modules.product_processing.api.router import create_product_processing_router
 from ..modules.product_processing.domain.models import DailySelectionHandoffEnvelope
 from ..modules.product_processing.infrastructure.assets import ProductProcessingAssets
@@ -169,6 +176,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         update_manager.start_check()
         patch_manager.start_check()
         shop_worker = getattr(runtime_app.state, "shop_collection_worker", None)
+        pod_service = getattr(runtime_app.state, "pod_customization_service", None)
+        pod_ai_runtime = getattr(runtime_app.state, "pod_customization_ai_runtime", None)
+        pod_title_runtime = getattr(runtime_app.state, "pod_customization_title_runtime", None)
         if shop_worker is not None:
             shop_worker.start()
         try:
@@ -176,6 +186,12 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         finally:
             if shop_worker is not None:
                 shop_worker.close()
+            if pod_service is not None:
+                pod_service.close()
+            if pod_title_runtime is not None:
+                pod_title_runtime.close()
+            if pod_ai_runtime is not None:
+                pod_ai_runtime.close()
 
     app = FastAPI(
         title="H Smart Ecommerce Local Runtime",
@@ -233,6 +249,25 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             legacy_pod_enabled=False,
         )
     )
+    pod_ai_runtime = PodCustomizationAiRuntime()
+    pod_title_runtime = PodTitleRuntime()
+    pod_billing = RemotePodBillingCoordinator(
+        remote_customer_auth,
+        sqlite_remote_token_resolver(db_path),
+    )
+    pod_router = create_pod_customization_router(
+        db_path,
+        db_path.parent / "pod-customization-assets",
+        pod_ai_runtime,
+        title_runtime=pod_title_runtime,
+        billing_coordinator=pod_billing,
+    )
+    app.include_router(pod_router)
+    app.state.pod_customization_service = getattr(
+        pod_router, "pod_customization_service"
+    )
+    app.state.pod_customization_ai_runtime = pod_ai_runtime
+    app.state.pod_customization_title_runtime = pod_title_runtime
 
     # Normal requests delete transient references immediately. This startup
     # construction sweep handles objects left by a prior interrupted process.

@@ -6,6 +6,7 @@ export type WorkspaceModuleId =
   | "product_processing_history"
   | "product_processing_tasks"
   | "dimension_canvas"
+  | "pod_customization"
   | "profit_activity"
   | "profit_activity_products"
   | "price_verification"
@@ -70,6 +71,14 @@ const dimensionCanvas: WorkspaceModule = {
   icon: "",
   iconClass: "iconfont icon-column-width",
   description: "精确制作并审核商品尺寸图",
+};
+
+const podCustomization: WorkspaceModule = {
+  id: "pod_customization",
+  label: "POD定制",
+  icon: "",
+  iconClass: "iconfont icon-picture",
+  description: "批量生成 POD 图片、豆包标题并导出店小秘文件",
 };
 
 const productProcessingHistory: WorkspaceModule = {
@@ -139,7 +148,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     iconClass: "iconfont icon-build",
     description: "采集、处理与尺寸图制作",
     defaultChildId: "daily_selection",
-    children: [collection, productProcessing, productProcessingHistory, dimensionCanvas],
+    children: [collection, productProcessing, productProcessingHistory, dimensionCanvas, podCustomization],
   },
   {
     id: "sourcing_workflow",
@@ -161,6 +170,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   productProcessingHistory,
   processingTasks,
   dimensionCanvas,
+  podCustomization,
   priceVerification,
   profitActivity,
   productLibrary,
