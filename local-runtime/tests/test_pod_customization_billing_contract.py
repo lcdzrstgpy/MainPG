@@ -61,6 +61,7 @@ def test_pod_batch_reuses_product_processing_freeze_contract_per_style() -> None
         "idempotency_key": "pod:batch:batch-1:initial",
         "link_count": 2,
         "scope": ["title", "four_grid"],
+        "billing_profile": "pod_random_v1",
     }
 
 

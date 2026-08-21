@@ -77,6 +77,7 @@ def test_remote_coordinator_adapts_exact_plan_and_keeps_token_out_of_repr() -> N
             "idempotency_key": "pod:retry:title-action",
             "link_count": 1,
             "scope": ["title"],
+            "billing_profile": "pod_random_v1",
         },
     )
     assert remote.calls[1] == (
@@ -96,7 +97,12 @@ def test_remote_coordinator_adapts_exact_plan_and_keeps_token_out_of_repr() -> N
     assert remote.calls[3] == (
         "freeze",
         "remote-session",
-        {"idempotency_key": "pod:retry:title-action", "link_count": 1, "scope": []},
+        {
+            "idempotency_key": "pod:retry:title-action",
+            "link_count": 1,
+            "scope": [],
+            "billing_profile": "pod_random_v1",
+        },
     )
     assert grant.provider_key("ark") == "short-ark"
     assert renewed.provider_key("wuyin") == "short-wuyin"

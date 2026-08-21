@@ -127,6 +127,7 @@ class PodCallPlan:
             "idempotency_key": self.idempotency_key,
             "link_count": len(groups),
             "scope": [remote for pod, remote in _PRODUCT_BATCH_FEATURES if pod in present],
+            "billing_profile": "pod_random_v1",
         }
 
     def product_batch_settlement_payload(

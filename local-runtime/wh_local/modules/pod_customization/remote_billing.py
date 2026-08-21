@@ -61,7 +61,12 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
             raise RuntimeError("POD billing service returned an invalid freeze status") from exc
         response = self._remote_client.freeze_batch_points(
             remote_token,
-            {"idempotency_key": freeze_id, "link_count": link_count, "scope": []},
+            {
+                "idempotency_key": freeze_id,
+                "link_count": link_count,
+                "scope": list(status.get("scope") or []),
+                "billing_profile": "pod_random_v1",
+            },
         )
         freeze = response.get("freeze") if isinstance(response, Mapping) else None
         if not isinstance(freeze, Mapping):

@@ -642,6 +642,9 @@ CREATE TABLE IF NOT EXISTS billing_batch_freezes (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     settled_at TEXT NOT NULL DEFAULT '',
     expires_at TEXT NOT NULL DEFAULT (datetime('now', '+7 days')),
+    billing_profile TEXT NOT NULL DEFAULT 'product_processing',
+    rule_version INTEGER NOT NULL DEFAULT 0,
+    link_prices_json TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE,
     CHECK (link_count > 0),
     CHECK (frozen_points >= 0)
@@ -949,6 +952,14 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_ai_gateway_requests", "lease_expires_at", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "billing_ai_gateway_requests", "phase", "TEXT NOT NULL DEFAULT 'claimed'")
     _ensure_column(conn, "billing_ai_gateway_requests", "provider_task_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(
+        conn,
+        "billing_batch_freezes",
+        "billing_profile",
+        "TEXT NOT NULL DEFAULT 'product_processing'",
+    )
+    _ensure_column(conn, "billing_batch_freezes", "rule_version", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "billing_batch_freezes", "link_prices_json", "TEXT NOT NULL DEFAULT '[]'")
     _migrate_billing_points_to_tenths(conn)
 
 

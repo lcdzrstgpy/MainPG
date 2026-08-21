@@ -423,7 +423,8 @@ def pod_freeze_status(
     with transaction(database_path) as conn:
         row = conn.execute(
             """
-            SELECT b.*, p.rule_version, p.title_call_count, p.image_call_count, p.plan_hash
+            SELECT b.*, p.rule_version AS pod_rule_version,
+                   p.title_call_count, p.image_call_count, p.plan_hash
             FROM billing_batch_freezes b
             JOIN billing_pod_freezes p ON p.freeze_id = b.freeze_id
             WHERE b.freeze_id = ? AND b.account_id = ?
@@ -442,7 +443,7 @@ def pod_freeze_status(
     return {
         "freeze_id": str(row["freeze_id"]),
         "status": str(row["status"]),
-        "rule_version": int(row["rule_version"]),
+        "rule_version": int(row["pod_rule_version"]),
         "frozen_points": _display_points(int(row["frozen_points"])),
         "charged_points": _display_points(int(row["charged_points"])),
         "refunded_points": _display_points(int(row["refunded_points"])),

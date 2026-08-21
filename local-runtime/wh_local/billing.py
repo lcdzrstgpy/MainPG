@@ -18,6 +18,10 @@ from .session import Actor
 
 TEST_GRANT_POINTS = int(os.environ.get("WH_BILLING_TEST_GRANT_POINTS", "10000") or "10000")
 GATEWAY_LEGACY_LEASE_SECONDS = 900
+BATCH_BILLING_PROFILE_PRODUCT = "product_processing"
+BATCH_BILLING_PROFILE_POD = "pod_random_v1"
+POD_LINK_PRICE_MIN_POINTS = 40
+POD_LINK_PRICE_VARIANTS = 6
 
 
 @dataclass(frozen=True)
@@ -1267,6 +1271,7 @@ def freeze_batch_points(
     link_count: int,
     scope: list[str] | None = None,
     idempotency_key: str = "",
+    billing_profile: str = BATCH_BILLING_PROFILE_PRODUCT,
 ) -> dict[str, Any]:
     """Reserve batch points (N x freeze_per_link) before the client starts work.
 
@@ -1274,12 +1279,12 @@ def freeze_batch_points(
     the billing layer stays free of any credential handling.
     """
     link_count = max(1, int(link_count))
+    profile = str(billing_profile or BATCH_BILLING_PROFILE_PRODUCT).strip()
+    if profile not in {BATCH_BILLING_PROFILE_PRODUCT, BATCH_BILLING_PROFILE_POD}:
+        raise HTTPException(status_code=400, detail="invalid batch billing profile")
     pricing = pricing_items(database_path)
-    freeze_units_per_link = int(pricing["freeze_units_per_link"])
-    # 钱包与账本统一以「单位」（tenths of a point）存储，与现有 reserve/settle 一致。
-    frozen_units = freeze_units_per_link * link_count
-    frozen_points = frozen_units // PIC_UNIT_SCALE
     idem = str(idempotency_key or "").strip()
+    normalized_scope = [str(item) for item in (scope or []) if str(item).strip()]
     with transaction(database_path) as conn:
         _ensure_billing_account(conn, actor)
         _ensure_wallet(conn, actor.id, actor.workspace_id)
@@ -1292,7 +1297,28 @@ def freeze_batch_points(
                 (actor.id, idem),
             ).fetchone()
             if existing is not None:
-                return dict(existing)
+                if str(existing["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT) != profile:
+                    raise HTTPException(status_code=409, detail="batch billing profile conflict")
+                return _batch_freeze_response(existing, pricing=pricing, already_frozen=True)
+        if profile == BATCH_BILLING_PROFILE_POD:
+            allowed_scope = {"title", "four_grid"}
+            if (
+                not normalized_scope
+                or len(set(normalized_scope)) != len(normalized_scope)
+                or set(normalized_scope) - allowed_scope
+            ):
+                raise HTTPException(status_code=400, detail="invalid POD batch billing scope")
+            link_price_units = [
+                (POD_LINK_PRICE_MIN_POINTS + secrets.randbelow(POD_LINK_PRICE_VARIANTS))
+                * PIC_UNIT_SCALE
+                for _ in range(link_count)
+            ]
+            frozen_units = sum(link_price_units)
+        else:
+            freeze_units_per_link = int(pricing["freeze_units_per_link"])
+            link_price_units = []
+            frozen_units = freeze_units_per_link * link_count
+        frozen_points = _display_points(frozen_units)
         wallet = conn.execute(
             """
             SELECT points_balance, locked_points, manual_frozen_points
@@ -1313,7 +1339,8 @@ def freeze_batch_points(
             )
         freeze_id = idem or f"frz_{secrets.token_urlsafe(18)}"
         now = _utc_now()
-        scope_json = json.dumps([str(item) for item in (scope or []) if str(item).strip()], ensure_ascii=False)
+        scope_json = json.dumps(normalized_scope, ensure_ascii=False)
+        link_prices_json = json.dumps(link_price_units, ensure_ascii=False)
         expires_at = (
             datetime.now(timezone.utc) + timedelta(days=BATCH_FREEZE_TTL_DAYS)
         ).isoformat(timespec="seconds")
@@ -1329,9 +1356,10 @@ def freeze_batch_points(
             """
             INSERT INTO billing_batch_freezes (
                 freeze_id, account_id, workspace_id, link_count, scope_json,
-                frozen_points, status, created_at, expires_at
+                frozen_points, status, created_at, expires_at,
+                billing_profile, rule_version, link_prices_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'frozen', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 'frozen', ?, ?, ?, ?, ?)
             """,
             (
                 freeze_id,
@@ -1342,6 +1370,9 @@ def freeze_batch_points(
                 frozen_units,
                 now,
                 expires_at,
+                profile,
+                int(pricing["rule_version"]),
+                link_prices_json,
             ),
         )
         _append_ledger(
@@ -1353,7 +1384,11 @@ def freeze_batch_points(
             source_type="batch_freeze",
             source_id=freeze_id,
             idempotency_key=f"batch_freeze:{freeze_id}:lock",
-            metadata={"link_count": link_count, "freeze_units_per_link": freeze_units_per_link},
+            metadata={
+                "link_count": link_count,
+                "billing_profile": profile,
+                "rule_version": int(pricing["rule_version"]),
+            },
         )
     return {
         "freeze_id": freeze_id,
@@ -1361,10 +1396,54 @@ def freeze_batch_points(
         "workspace_id": actor.workspace_id or "default",
         "link_count": link_count,
         "frozen_points": _display_points(frozen_units),
-        "freeze_per_link": pricing["freeze_per_link"],
+        "freeze_per_link": (
+            pricing["freeze_per_link"]
+            if profile == BATCH_BILLING_PROFILE_PRODUCT
+            else None
+        ),
         "rule_version": int(pricing["rule_version"]),
+        "billing_profile": profile,
+        "link_prices": [_display_points(units) for units in link_price_units],
+        "scope": normalized_scope,
         "status": "frozen",
         "expires_at": expires_at,
+        "already_frozen": False,
+    }
+
+
+def _batch_freeze_response(
+    row: Any,
+    *,
+    pricing: dict[str, Any],
+    already_frozen: bool,
+) -> dict[str, Any]:
+    profile = str(row["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
+    try:
+        link_price_units = [int(value) for value in json.loads(str(row["link_prices_json"] or "[]"))]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        link_price_units = []
+    try:
+        normalized_scope = [str(value) for value in json.loads(str(row["scope_json"] or "[]"))]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        normalized_scope = []
+    return {
+        "freeze_id": str(row["freeze_id"]),
+        "account_id": str(row["account_id"]),
+        "workspace_id": str(row["workspace_id"] or "default"),
+        "link_count": int(row["link_count"]),
+        "frozen_points": _display_points(int(row["frozen_points"])),
+        "freeze_per_link": (
+            pricing["freeze_per_link"]
+            if profile == BATCH_BILLING_PROFILE_PRODUCT
+            else None
+        ),
+        "rule_version": int(row["rule_version"] or pricing["rule_version"]),
+        "billing_profile": profile,
+        "link_prices": [_display_points(units) for units in link_price_units],
+        "scope": normalized_scope,
+        "status": str(row["status"]),
+        "expires_at": str(row["expires_at"] or ""),
+        "already_frozen": bool(already_frozen),
     }
 
 
@@ -1610,8 +1689,34 @@ def settle_batch_points(
                 "refunded_points": _display_points(int(freeze["refunded_points"])),
                 "already_settled": True,
             }
+        profile = str(freeze["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
         pricing = pricing_items(database_path, rule_version=None)
-        freeze_rule_version = int(pricing["rule_version"])
+        freeze_rule_version = (
+            int(freeze["rule_version"] or pricing["rule_version"])
+            if profile == BATCH_BILLING_PROFILE_POD
+            else int(pricing["rule_version"])
+        )
+        pod_link_price_units: list[int] = []
+        pod_scope: tuple[str, ...] = ()
+        if profile == BATCH_BILLING_PROFILE_POD:
+            try:
+                pod_link_price_units = [
+                    int(value)
+                    for value in json.loads(str(freeze["link_prices_json"] or "[]"))
+                ]
+                pod_scope = tuple(
+                    str(value)
+                    for value in json.loads(str(freeze["scope_json"] or "[]"))
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=409, detail="invalid POD billing snapshot") from exc
+            if (
+                len(pod_link_price_units) != int(freeze["link_count"])
+                or not pod_scope
+                or len(set(pod_scope)) != len(pod_scope)
+                or set(pod_scope) - {"title", "four_grid"}
+            ):
+                raise HTTPException(status_code=409, detail="invalid POD billing snapshot")
         if not isinstance(item_results, list):
             raise HTTPException(status_code=400, detail="item_results must be a list")
         frozen_link_count = int(freeze["link_count"] or 1)
@@ -1631,18 +1736,45 @@ def settle_batch_points(
         for index, entry in enumerate(item_results, start=1):
             if not isinstance(entry, dict):
                 raise HTTPException(status_code=400, detail="item_results entry must be an object")
+            if profile == BATCH_BILLING_PROFILE_POD:
+                try:
+                    supplied_link_index = int(entry.get("link_idx"))
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(status_code=400, detail="POD link_idx is required") from exc
+                if supplied_link_index != index:
+                    raise HTTPException(status_code=400, detail="POD link_idx order mismatch")
             link_results = entry.get("subitems")
             if not isinstance(link_results, list):
                 raise HTTPException(status_code=400, detail="subitems must be a list")
-            computed = compute_batch_charge(
-                database_path,
-                rule_version=freeze_rule_version,
-                item_results=[dict(result) for result in link_results if isinstance(result, dict)],
-            )
-            total_charge_units += int(computed["charge_units"])
-            total_refund_units += int(computed["refund_units"])
-            for detail in computed["details"]:
-                stored_items.append((freeze_id, index, detail["feature"], detail["status"]))
+            if profile == BATCH_BILLING_PROFILE_POD:
+                statuses: dict[str, str] = {}
+                for result in link_results:
+                    if not isinstance(result, dict):
+                        raise HTTPException(status_code=400, detail="invalid POD subitem result")
+                    feature = str(result.get("feature") or "").strip()
+                    status = str(result.get("status") or "").strip()
+                    if feature not in pod_scope or feature in statuses or status not in {"success", "no_return"}:
+                        raise HTTPException(status_code=400, detail="invalid POD subitem result")
+                    statuses[feature] = status
+                if set(statuses) != set(pod_scope):
+                    raise HTTPException(status_code=400, detail="POD subitems must match frozen scope")
+                link_units = pod_link_price_units[index - 1]
+                if all(statuses[feature] == "success" for feature in pod_scope):
+                    total_charge_units += link_units
+                else:
+                    total_refund_units += link_units
+                for feature in pod_scope:
+                    stored_items.append((freeze_id, index, feature, statuses[feature]))
+            else:
+                computed = compute_batch_charge(
+                    database_path,
+                    rule_version=freeze_rule_version,
+                    item_results=[dict(result) for result in link_results if isinstance(result, dict)],
+                )
+                total_charge_units += int(computed["charge_units"])
+                total_refund_units += int(computed["refund_units"])
+                for detail in computed["details"]:
+                    stored_items.append((freeze_id, index, detail["feature"], detail["status"]))
         frozen_units = int(freeze["frozen_points"])
         if total_charge_units + total_refund_units > frozen_units:
             raise HTTPException(
@@ -1689,7 +1821,11 @@ def settle_batch_points(
             source_type="batch_settle",
             source_id=freeze_id,
             idempotency_key=f"batch_settle:{freeze_id}:debit",
-            metadata={"rule_version": freeze_rule_version, "link_count": int(freeze["link_count"])},
+            metadata={
+                "rule_version": freeze_rule_version,
+                "link_count": int(freeze["link_count"]),
+                "billing_profile": profile,
+            },
         )
         if total_refund_units:
             _append_ledger(
@@ -1701,7 +1837,7 @@ def settle_batch_points(
                 source_type="batch_settle",
                 source_id=freeze_id,
                 idempotency_key=f"batch_settle:{freeze_id}:unlock",
-                metadata={"rule_version": freeze_rule_version},
+                metadata={"rule_version": freeze_rule_version, "billing_profile": profile},
             )
     return {
         "freeze_id": freeze_id,
@@ -1737,6 +1873,18 @@ def batch_freeze_status(database_path: Path, freeze_id: str, *, expected_account
             "refunded_points": _display_points(int(freeze["refunded_points"])),
             "settled_at": str(freeze["settled_at"] or ""),
             "expires_at": str(freeze["expires_at"] or ""),
+            "billing_profile": str(
+                freeze["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT
+            ),
+            "rule_version": int(freeze["rule_version"] or 0),
+            "scope": [
+                str(value)
+                for value in json.loads(str(freeze["scope_json"] or "[]"))
+            ],
+            "link_prices": [
+                _display_points(int(value))
+                for value in json.loads(str(freeze["link_prices_json"] or "[]"))
+            ],
             "items": [
                 {
                     "link_idx": int(row["link_idx"]),

@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from requests import Response
 
+import wh_local.billing as billing_module
 from wh_local.customer.auth_server import create_auth_app
 from wh_local.db import transaction
 from wh_local.modules.product_processing import doubao_ark
@@ -222,6 +223,60 @@ def test_full_chain_freeze_grants_direct_consume_and_settle(tmp_path: Path, monk
         headers=headers,
     )
     assert repeated.json()["settle"]["already_settled"] is True
+
+
+def test_batch_route_enables_random_prices_only_for_pod_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WH_EMAIL_CODE_SECRET", _EMAIL_CODE_SECRET)
+    monkeypatch.setattr(
+        "wh_local.customer.auth_server.TencentCloudSESEmailSender.from_env",
+        lambda: object(),
+    )
+    picks = iter((0, 5))
+    monkeypatch.setattr(billing_module.secrets, "randbelow", lambda upper: next(picks))
+    db_path = tmp_path / "auth.sqlite3"
+    client = TestClient(create_auth_app(db_path))
+    token = _register_and_login(client, db_path)
+    _grant_points(db_path, username="chain_user")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    product = client.post(
+        "/api/customer/billing/batch/freeze",
+        json={"link_count": 1, "idempotency_key": "product-random-isolation-0001"},
+        headers=headers,
+    )
+    assert product.status_code == 200
+    assert product.json()["freeze"]["billing_profile"] == "product_processing"
+    assert product.json()["freeze"]["frozen_points"] == 45
+    assert product.json()["freeze"]["link_prices"] == []
+
+    pod = client.post(
+        "/api/customer/billing/batch/freeze",
+        json={
+            "link_count": 2,
+            "scope": ["title", "four_grid"],
+            "idempotency_key": "pod:batch:route-random-0001",
+            "billing_profile": "pod_random_v1",
+        },
+        headers=headers,
+    )
+    assert pod.status_code == 200, pod.text
+    assert pod.json()["freeze"]["billing_profile"] == "pod_random_v1"
+    assert pod.json()["freeze"]["link_prices"] == [40, 45]
+    assert pod.json()["freeze"]["frozen_points"] == 85
+
+    invalid = client.post(
+        "/api/customer/billing/batch/freeze",
+        json={
+            "link_count": 1,
+            "idempotency_key": "invalid-billing-profile-0001",
+            "billing_profile": "client_selected_price",
+        },
+        headers=headers,
+    )
+    assert invalid.status_code == 400
 
 
 def test_settle_rejects_item_count_mismatch(tmp_path: Path, monkeypatch) -> None:

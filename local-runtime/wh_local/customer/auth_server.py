@@ -27,6 +27,8 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, Header, HTTPException, Request
 
 from ..billing import (
+    BATCH_BILLING_PROFILE_POD,
+    BATCH_BILLING_PROFILE_PRODUCT,
     active_pricing,
     batch_freeze_status,
     compute_batch_charge,
@@ -837,12 +839,23 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         idempotency_key = str(payload.get("idempotency_key") or "").strip()
         if idempotency_key and not 16 <= len(idempotency_key) <= 200:
             raise HTTPException(status_code=400, detail="idempotency_key length must be 16..200")
+        billing_profile = str(
+            payload.get("billing_profile") or BATCH_BILLING_PROFILE_PRODUCT
+        ).strip()
+        if billing_profile not in {
+            BATCH_BILLING_PROFILE_PRODUCT,
+            BATCH_BILLING_PROFILE_POD,
+        }:
+            raise HTTPException(status_code=400, detail="invalid batch billing profile")
+        if billing_profile == BATCH_BILLING_PROFILE_POD:
+            _require_pod_create_permission(db_path, account)
         freeze = freeze_batch_points(
             db_path,
             _billing_actor(account),
             link_count=link_count,
             scope=[str(item) for item in (scope or [])] if scope is not None else None,
             idempotency_key=idempotency_key,
+            billing_profile=billing_profile,
         )
         keys = _issue_batch_keys(db_path, account, freeze["freeze_id"])
         return {"ok": True, "freeze": {**freeze, "keys": keys}}

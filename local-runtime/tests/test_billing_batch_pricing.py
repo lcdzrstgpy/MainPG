@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+import wh_local.billing as billing_module
 from wh_local.billing import (
     batch_freeze_status,
     compute_batch_charge,
@@ -220,3 +221,174 @@ def test_freeze_is_idempotent_by_idempotency_key(tmp_path: Path) -> None:
         ).fetchone()
     # Only locked once (450 units = 45 points).
     assert wallet["locked_points"] == 450
+
+
+def test_pod_random_profile_persists_prices_and_settles_whole_styles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=2000)
+    picks = iter((0, 5))
+    monkeypatch.setattr(billing_module.secrets, "randbelow", lambda upper: next(picks))
+
+    first = freeze_batch_points(
+        database_path,
+        actor,
+        link_count=2,
+        scope=["title", "four_grid"],
+        idempotency_key="pod:batch:random-price-0001",
+        billing_profile="pod_random_v1",
+    )
+    repeated = freeze_batch_points(
+        database_path,
+        actor,
+        link_count=2,
+        scope=["title", "four_grid"],
+        idempotency_key="pod:batch:random-price-0001",
+        billing_profile="pod_random_v1",
+    )
+
+    assert first["billing_profile"] == "pod_random_v1"
+    assert first["link_prices"] == [40, 45]
+    assert first["frozen_points"] == 85
+    assert repeated["link_prices"] == [40, 45]
+    assert repeated["frozen_points"] == 85
+
+    settled = settle_batch_points(
+        database_path,
+        first["freeze_id"],
+        item_results=[
+            {
+                "link_idx": 1,
+                "subitems": [
+                    {"feature": "title", "status": "success"},
+                    {"feature": "four_grid", "status": "success"},
+                ],
+            },
+            {
+                "link_idx": 2,
+                "subitems": [
+                    {"feature": "title", "status": "success"},
+                    {"feature": "four_grid", "status": "no_return"},
+                ],
+            },
+        ],
+        expected_account_id=actor.id,
+    )
+
+    assert settled["charged_points"] == 40
+    assert settled["refunded_points"] == 45
+    status = batch_freeze_status(
+        database_path,
+        first["freeze_id"],
+        expected_account_id=actor.id,
+    )
+    assert status["billing_profile"] == "pod_random_v1"
+    assert status["link_prices"] == [40, 45]
+
+    with transaction(database_path) as conn:
+        wallet = conn.execute(
+            "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
+            (actor.id,),
+        ).fetchone()
+    assert dict(wallet) == {"points_balance": 1600, "locked_points": 0}
+
+
+def test_pod_random_profile_rejects_duplicate_scope_before_freezing(tmp_path: Path) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+
+    with pytest.raises(HTTPException) as exc:
+        freeze_batch_points(
+            database_path,
+            actor,
+            link_count=1,
+            scope=["title", "title"],
+            idempotency_key="pod:batch:duplicate-scope-0001",
+            billing_profile="pod_random_v1",
+        )
+
+    assert exc.value.status_code == 400
+    with transaction(database_path) as conn:
+        wallet = conn.execute(
+            "SELECT locked_points FROM billing_wallets WHERE account_id = ?",
+            (actor.id,),
+        ).fetchone()
+    assert wallet["locked_points"] == 0
+
+
+def test_product_batch_still_uses_current_rule_when_settled(tmp_path: Path) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    freeze = freeze_batch_points(
+        database_path,
+        actor,
+        link_count=1,
+        idempotency_key="product:settlement-rule-0001",
+    )
+    assert freeze["frozen_points"] == 45
+    update_pricing_items(
+        database_path,
+        items={
+            "title": {"charge_points": 8},
+            "description": {"charge_points": 6},
+            "product_dimensions": {"charge_points": 7},
+            "four_grid": {"charge_points": 12},
+            "detail_images": {"charge_points": 10},
+        },
+        updated_by="admin-1",
+        change_reason="verify product billing isolation",
+    )
+
+    settled = settle_batch_points(
+        database_path,
+        freeze["freeze_id"],
+        item_results=_full_success_subitems(),
+        expected_account_id=actor.id,
+    )
+
+    assert settled["charged_points"] == 43
+
+
+def test_pod_random_settlement_rejects_reordered_link_indexes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    picks = iter((0, 5))
+    monkeypatch.setattr(billing_module.secrets, "randbelow", lambda upper: next(picks))
+    freeze = freeze_batch_points(
+        database_path,
+        actor,
+        link_count=2,
+        scope=["title", "four_grid"],
+        idempotency_key="pod:batch:reordered-links-0001",
+        billing_profile="pod_random_v1",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        settle_batch_points(
+            database_path,
+            freeze["freeze_id"],
+            item_results=[
+                {
+                    "link_idx": 2,
+                    "subitems": [
+                        {"feature": "title", "status": "no_return"},
+                        {"feature": "four_grid", "status": "no_return"},
+                    ],
+                },
+                {
+                    "link_idx": 1,
+                    "subitems": [
+                        {"feature": "title", "status": "success"},
+                        {"feature": "four_grid", "status": "success"},
+                    ],
+                },
+            ],
+            expected_account_id=actor.id,
+        )
+
+    assert exc.value.status_code == 400
