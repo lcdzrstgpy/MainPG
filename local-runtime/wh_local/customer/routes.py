@@ -1,11 +1,55 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+import re
 from typing import Any
 
 from .contracts import CustomerAuthRejected, CustomerAuthUnavailable
 from .local_session import LocalSessionService
 from .remote_client import CustomerAuthClient
+
+
+_AUTHORIZATION_VALUE = re.compile(
+    r"(?i)(\bauthorization\b\s*[:=]\s*)((?:bearer\s+)?[^\s,;]+)"
+)
+_CREDENTIAL_VALUE = re.compile(
+    r"(?i)(\b(?:remote[\s._-]*token|access[\s._-]*token|session[\s._-]*token|"
+    r"ark[\s._-]*api[\s._-]*key|wuyin[\s._-]*api[\s._-]*key|api[\s._-]*key|token)"
+    r"\b\s*[:=]\s*)[^\s,;]+"
+)
+_BEARER_VALUE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+
+
+def _public_account(customer: Any) -> dict[str, Any]:
+    """Serialize only fields that belong to the local customer API contract."""
+    return {
+        "customer_id": customer.customer_id,
+        "username": customer.username,
+        "email": customer.email,
+        "account_status": customer.account_status,
+        "login_status": customer.login_status,
+        "role": customer.role,
+        "workspace_code": customer.workspace_code,
+        "workspace_name": customer.workspace_name,
+    }
+
+
+def _public_action(result: Any) -> dict[str, Any]:
+    """Do not forward an upstream action's arbitrary ``raw`` envelope."""
+    return {"ok": bool(result.ok), "message": str(result.message)}
+
+
+def _safe_error_detail(value: object) -> str:
+    detail = str(value).strip()[:300]
+    detail = _AUTHORIZATION_VALUE.sub(
+        lambda match: (
+            f"{match.group(1)}Bearer [redacted]"
+            if match.group(2).lower().startswith("bearer ")
+            else f"{match.group(1)}[redacted]"
+        ),
+        detail,
+    )
+    detail = _BEARER_VALUE.sub("Bearer [redacted]", detail)
+    return _CREDENTIAL_VALUE.sub(lambda match: f"{match.group(1)}[redacted]", detail)
 
 
 def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessionService):
@@ -21,13 +65,13 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
 
     def handle_auth_error(exc: Exception):
         if isinstance(exc, CustomerAuthUnavailable):
-            raise HTTPException(status_code=503, detail=str(exc))
+            raise HTTPException(status_code=503, detail=_safe_error_detail(exc))
         if isinstance(exc, CustomerAuthRejected):
-            raise HTTPException(status_code=exc.status_code, detail=exc.message)
+            raise HTTPException(status_code=exc.status_code, detail=_safe_error_detail(exc.message))
         if isinstance(exc, PermissionError):
-            raise HTTPException(status_code=403, detail=str(exc))
+            raise HTTPException(status_code=403, detail=_safe_error_detail(exc))
         if isinstance(exc, ValueError):
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=_safe_error_detail(exc))
         raise exc
 
     def bearer_token(authorization: str | None) -> str:
@@ -40,56 +84,62 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         try:
             customer = remote_auth.login(payload)
             session = sessions.login_customer(customer)
-            return {"ok": True, "user_id": session.user_id, "token": session.token, "expires_at": session.expires_at, "account": asdict(customer)}
+            return {
+                "ok": True,
+                "user_id": session.user_id,
+                "token": session.token,
+                "expires_at": session.expires_at,
+                "account": _public_account(customer),
+            }
         except Exception as exc:
             handle_auth_error(exc)
 
     @router.post("/register")
     def register(payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            return asdict(remote_auth.register(payload))
+            return _public_action(remote_auth.register(payload))
         except Exception as exc:
             handle_auth_error(exc)
 
     @router.post("/activate")
     def activate(payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            return asdict(remote_auth.activate(payload))
+            return _public_action(remote_auth.activate(payload))
         except Exception as exc:
             handle_auth_error(exc)
 
     @router.post("/email-code")
     def email_code(payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            return asdict(remote_auth.email_code(payload))
+            return _public_action(remote_auth.email_code(payload))
         except Exception as exc:
             handle_auth_error(exc)
 
     @router.post("/password-reset")
     def password_reset(payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            return asdict(remote_auth.password_reset(payload))
+            return _public_action(remote_auth.password_reset(payload))
         except Exception as exc:
             handle_auth_error(exc)
 
     @router.post("/change-password")
     def change_password(payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            return asdict(remote_auth.change_password(payload))
+            return _public_action(remote_auth.change_password(payload))
         except Exception as exc:
             handle_auth_error(exc)
 
     @router.post("/forgot-password")
     def forgot_password(payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            return asdict(remote_auth.forgot_password(payload))
+            return _public_action(remote_auth.forgot_password(payload))
         except Exception as exc:
             handle_auth_error(exc)
 
     @router.post("/reset-password")
     def reset_password(payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            return asdict(remote_auth.reset_password(payload))
+            return _public_action(remote_auth.reset_password(payload))
         except Exception as exc:
             handle_auth_error(exc)
 

@@ -43,18 +43,33 @@ from ..customer.admin_proxy import create_admin_proxy_router
 from ..data_collection import (
     DailySelectionActor,
     DailySelectionRouteDependencies,
+    PluginOneBoundCaptureDependencies,
     register_daily_selection_routes,
+    register_plugin_onebound_capture_routes,
 )
 from ..data_collection.provider import OneBound1688Provider
+from ..data_collection.budget import SQLiteDailyApiBudget
 from ..data_collection.plugin_queue import DataCollectionPluginQueue
 from ..data_collection.image_cache import PublicDailySelectionImageCache
+from ..data_collection.shop_repository import ShopCollectionRepository
+from ..data_collection.shop_routes import (
+    ShopCollectionRouteDependencies,
+    create_shop_collection_router,
+)
+from ..data_collection.shop_worker import ShopCollectionWorker
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
 from ..modules.ai_service import create_router as create_ai_service_router
-from ..modules.ai_service.service import AiService
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
 from ..modules.basic_settings.service import SystemConfigService
 from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
+from ..modules.pod_customization import create_router as create_pod_customization_router
+from ..modules.pod_customization.ai_runtime import PodCustomizationAiRuntime
+from ..modules.pod_customization.remote_billing import (
+    RemotePodBillingCoordinator,
+    session_remote_token_resolver,
+)
+from ..modules.pod_customization.title_runtime import PodTitleRuntime
 from ..modules.product_processing.api.router import create_product_processing_router
 from ..modules.product_processing.domain.models import DailySelectionHandoffEnvelope
 from ..modules.product_processing.infrastructure.assets import ProductProcessingAssets
@@ -87,8 +102,9 @@ def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
     The API key/secret never ship with the client software. Each collection
     obtains them from the server (which verifies the user account) using an
     RSA-wrapped one-time AES session key, so credentials stay out of the
-    client's disk and source code. Source/dev runtimes may use their existing
-    local OneBound configuration only when the remote service is unreachable.
+    client's disk and source code. Failure to obtain the server grant fails
+    closed; production and development runtimes never use a local long-lived
+    OneBound key as a fallback.
     """
     config = default_config()
     try:
@@ -102,20 +118,6 @@ def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
             workspace_code="",
         )
     except CollectCredentialsError as error:
-        local_credentials_ready = bool(
-            config.onebound_1688_enabled
-            and config.onebound_1688_api_key
-            and config.onebound_1688_api_secret
-            and config.onebound_1688_base_url
-        )
-        if str(error).startswith("cannot reach collect-key service:") and local_credentials_ready:
-            logger.warning("collect-key service unavailable; using configured local OneBound credentials")
-            return {
-                "api_key": config.onebound_1688_api_key,
-                "api_secret": config.onebound_1688_api_secret,
-                "base_url": config.onebound_1688_base_url,
-                "enabled": True,
-            }
         raise HTTPException(status_code=403, detail=str(error)) from error
     return {
         "api_key": credentials.get("api_key", ""),
@@ -157,12 +159,28 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
 
     @asynccontextmanager
-    async def app_lifespan(_: FastAPI):
+    async def app_lifespan(runtime_app: FastAPI):
         # This method only starts daemon workers, so an offline release server
         # cannot delay or make the desktop runtime unhealthy.
         update_manager.start_check()
         patch_manager.start_check()
-        yield
+        shop_worker = getattr(runtime_app.state, "shop_collection_worker", None)
+        pod_service = getattr(runtime_app.state, "pod_customization_service", None)
+        pod_ai_runtime = getattr(runtime_app.state, "pod_customization_ai_runtime", None)
+        pod_title_runtime = getattr(runtime_app.state, "pod_customization_title_runtime", None)
+        if shop_worker is not None:
+            shop_worker.start()
+        try:
+            yield
+        finally:
+            if shop_worker is not None:
+                shop_worker.close()
+            if pod_service is not None:
+                pod_service.close()
+            if pod_title_runtime is not None:
+                pod_title_runtime.close(wait=False, cancel_futures=True)
+            if pod_ai_runtime is not None:
+                pod_ai_runtime.close(wait=False, cancel_futures=True)
 
     app = FastAPI(
         title="H Smart Ecommerce Local Runtime",
@@ -213,8 +231,32 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
     app.include_router(create_basic_settings_router(db_path))
     ai_service_assets = config.data_dir / "ai-service" / "assets"
-    AiService(db_path, ai_service_assets).mark_interrupted_pod_groups()
-    app.include_router(create_ai_service_router(db_path, ai_service_assets))
+    app.include_router(
+        create_ai_service_router(
+            db_path,
+            ai_service_assets,
+            legacy_pod_enabled=False,
+        )
+    )
+    pod_ai_runtime = PodCustomizationAiRuntime()
+    pod_title_runtime = PodTitleRuntime()
+    pod_billing = RemotePodBillingCoordinator(
+        remote_customer_auth,
+        session_remote_token_resolver(customer_sessions),
+    )
+    pod_router = create_pod_customization_router(
+        db_path,
+        db_path.parent / "pod-customization-assets",
+        pod_ai_runtime,
+        title_runtime=pod_title_runtime,
+        billing_coordinator=pod_billing,
+    )
+    app.include_router(pod_router)
+    app.state.pod_customization_service = getattr(
+        pod_router, "pod_customization_service"
+    )
+    app.state.pod_customization_ai_runtime = pod_ai_runtime
+    app.state.pod_customization_title_runtime = pod_title_runtime
 
     # Normal requests delete transient references immediately. This startup
     # construction sweep handles objects left by a prior interrupted process.
@@ -299,11 +341,14 @@ def _register_data_collection(
     product_processing: ProductProcessingService,
 ) -> None:
     """Register daily-selection routes with the host-owned adapters."""
+    shared_api_budget = SQLiteDailyApiBudget(db_path)
+    app.state.data_collection_api_budget = shared_api_budget
     dependencies = DailySelectionRouteDependencies(
         resolve_actor=daily_selection_actor_from_authorization,
         provider_config_resolver=_provider_config,
         provider_factory=_provider_factory,
         database_path=db_path,
+        budget=shared_api_budget,
         plugin_queue=plugin_queue,
         plugin_draft_writer=product_processing,
         handoff_consumer=lambda handoffs: product_processing.consume_daily_selection_handoffs(
@@ -317,6 +362,38 @@ def _register_data_collection(
         image_cache=PublicDailySelectionImageCache(),
     )
     register_daily_selection_routes(app.router, dependencies)
+    app.state.plugin_onebound_capture_service = register_plugin_onebound_capture_routes(
+        app.router,
+        PluginOneBoundCaptureDependencies(
+            plugin_queue=plugin_queue,
+            provider_config_resolver=_provider_config,
+            provider_factory=_provider_factory,
+            budget=shared_api_budget,
+            draft_writer=product_processing,
+            database_path=str(db_path),
+            resolve_actor=daily_selection_actor_from_authorization,
+        ),
+    )
+    shop_repository = ShopCollectionRepository(db_path)
+    shop_worker = ShopCollectionWorker(
+        repository=shop_repository,
+        provider_config_resolver=_provider_config,
+        provider_factory=_provider_factory,
+        intake_shop_candidate=product_processing.intake_shop_candidate,
+        budget=shared_api_budget,
+    )
+    app.state.shop_collection_worker = shop_worker
+    app.include_router(
+        create_shop_collection_router(
+            ShopCollectionRouteDependencies(
+                resolve_actor=daily_selection_actor_from_authorization,
+                database_path=db_path,
+                provider_config_resolver=_provider_config,
+                worker=shop_worker,
+                repository=shop_repository,
+            )
+        )
+    )
 
 
 def _register_profit_activity(app: FastAPI, db_path: Path) -> Any:

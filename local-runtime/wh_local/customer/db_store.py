@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 import secrets
 import sqlite3
+import threading
 
 from ..db import transaction
 from .contracts import CustomerAuthResult, LocalSession
@@ -25,6 +26,8 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
 
     def __init__(self, database_path: Path):
         self.database_path = database_path
+        self._remote_tokens: dict[str, tuple[str, str, str, str]] = {}
+        self._remote_tokens_lock = threading.Lock()
 
     def upsert_customer_user(self, customer: CustomerAuthResult) -> tuple[str, str]:
         user_id = _stable_user_id(customer)
@@ -147,7 +150,14 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 )
                 VALUES (?, ?, ?, ?, '', ?, ?, ?)
                 """,
-                (session_id, session.user_id, _hash_token(session.token), session.expires_at, now, now, session.remote_token),
+                (session_id, session.user_id, _hash_token(session.token), session.expires_at, now, now, ""),
+            )
+        with self._remote_tokens_lock:
+            self._remote_tokens[_hash_token(session.token)] = (
+                session.user_id,
+                session.workspace_id,
+                session.expires_at,
+                session.remote_token,
             )
 
     def get_session(self, token: str) -> LocalSession | None:
@@ -159,7 +169,6 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 SELECT
                     s.user_id,
                     s.expires_at,
-                    s.remote_token,
                     u.username,
                     u.role,
                     u.workspace_id,
@@ -185,7 +194,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 workspace_id=row["workspace_id"] or DEFAULT_WORKSPACE_ID,
                 workspace_code=row["workspace_code"] or "",
                 workspace_name=row["workspace_name"] or "",
-                remote_token=row["remote_token"] or "",
+                remote_token=self._remote_token_for_hash(token_hash),
             )
         # last_used_at 更新放在读事务之外单独短事务执行：同一事务里“先读后写”
         # 会把读快照升级为写锁，WAL 模式下若期间有并发提交会立即抛
@@ -214,6 +223,30 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 """,
                 (_utc_now(), token_hash),
             )
+        with self._remote_tokens_lock:
+            self._remote_tokens.pop(token_hash, None)
+
+    def remote_token_for_actor(self, user_id: str, workspace_id: str) -> str:
+        now = _utc_now()
+        with self._remote_tokens_lock:
+            for stored_user, stored_workspace, expires_at, remote_token in reversed(
+                tuple(self._remote_tokens.values())
+            ):
+                if (
+                    stored_user == user_id
+                    and stored_workspace == workspace_id
+                    and expires_at > now
+                    and remote_token
+                ):
+                    return remote_token
+        return ""
+
+    def _remote_token_for_hash(self, token_hash: str) -> str:
+        with self._remote_tokens_lock:
+            stored = self._remote_tokens.get(token_hash)
+        if stored is None or stored[2] <= _utc_now():
+            return ""
+        return stored[3]
 
 
 def _stable_user_id(customer: CustomerAuthResult) -> str:

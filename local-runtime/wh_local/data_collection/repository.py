@@ -593,6 +593,7 @@ class DailySelectionRepository:
         status: str,
         candidates: Sequence[DailySelectionCandidate],
         metadata: Mapping[str, Any] | BaseModel | None = None,
+        enqueue_sku_repull: bool = False,
     ) -> None:
         """Replace a run's collected candidates and terminal state.
 
@@ -642,6 +643,8 @@ class DailySelectionRepository:
                     """,
                     (status, len(tuple(candidates)), stamp, workspace_id, run_id),
                 )
+            if enqueue_sku_repull:
+                self._enqueue_sku_repull(connection, workspace_id=workspace_id, run_id=run_id)
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -656,8 +659,85 @@ class DailySelectionRepository:
         connection = self._connect()
         try:
             connection.executescript(migration)
+            outbox = Path(__file__).with_name("migrations") / "007_sku_repull_outbox.sql"
+            connection.executescript(outbox.read_text(encoding="utf-8"))
         finally:
             connection.close()
+
+    def enqueue_sku_repull(self, *, workspace_id: str, run_id: str) -> None:
+        with self._connect() as connection:
+            self._enqueue_sku_repull(connection, workspace_id=workspace_id, run_id=run_id)
+
+    @staticmethod
+    def _enqueue_sku_repull(connection: sqlite3.Connection, *, workspace_id: str, run_id: str) -> None:
+        connection.execute(
+            """INSERT INTO daily_selection_sku_repull_outbox
+            (workspace_id, run_id, status, attempts, available_at, claim_token, claimed_at, last_error)
+            VALUES (?, ?, 'pending', 0, datetime('now'), '', NULL, '')
+            ON CONFLICT (workspace_id, run_id) DO UPDATE SET
+                status = 'pending', available_at = datetime('now'), claim_token = '',
+                claimed_at = NULL, last_error = '', updated_at = datetime('now')""",
+            (workspace_id, run_id),
+        )
+
+    def claim_sku_repull_outbox(self) -> Mapping[str, Any] | None:
+        token = uuid.uuid4().hex
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """UPDATE daily_selection_sku_repull_outbox
+                SET status = 'pending', claim_token = '', claimed_at = NULL,
+                    available_at = datetime('now'), updated_at = datetime('now')
+                WHERE status = 'processing' AND claimed_at < datetime('now', '-5 minutes')"""
+            )
+            row = connection.execute(
+                """SELECT workspace_id, run_id FROM daily_selection_sku_repull_outbox
+                WHERE status = 'pending' AND available_at <= datetime('now')
+                ORDER BY created_at, workspace_id, run_id LIMIT 1"""
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+            connection.execute(
+                """UPDATE daily_selection_sku_repull_outbox
+                SET status = 'processing', attempts = attempts + 1, claim_token = ?,
+                    claimed_at = datetime('now'), updated_at = datetime('now')
+                WHERE workspace_id = ? AND run_id = ? AND status = 'pending'""",
+                (token, row["workspace_id"], row["run_id"]),
+            )
+            connection.commit()
+            return {"workspace_id": row["workspace_id"], "run_id": row["run_id"], "claim_token": token}
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def complete_sku_repull_outbox(self, *, workspace_id: str, run_id: str, claim_token: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE daily_selection_sku_repull_outbox
+                SET status = 'completed', claim_token = '', claimed_at = NULL,
+                    last_error = '', updated_at = datetime('now')
+                WHERE workspace_id = ? AND run_id = ? AND status = 'processing' AND claim_token = ?""",
+                (workspace_id, run_id, claim_token),
+            )
+        return bool(cursor.rowcount)
+
+    def retry_sku_repull_outbox(
+        self, *, workspace_id: str, run_id: str, claim_token: str, error: str, delay_seconds: float
+    ) -> bool:
+        modifier = f"+{max(0, int(delay_seconds))} seconds"
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE daily_selection_sku_repull_outbox
+                SET status = 'pending', claim_token = '', claimed_at = NULL,
+                    available_at = datetime('now', ?), last_error = ?, updated_at = datetime('now')
+                WHERE workspace_id = ? AND run_id = ? AND status = 'processing' AND claim_token = ?""",
+                (modifier, str(error)[:500], workspace_id, run_id, claim_token),
+            )
+        return bool(cursor.rowcount)
 
     def _connect(self) -> sqlite3.Connection:
         return self._new_connection()

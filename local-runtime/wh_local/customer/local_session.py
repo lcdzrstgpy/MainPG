@@ -60,6 +60,17 @@ class MemoryCustomerSessionStore:
     def revoke_session(self, token: str) -> None:
         self.sessions_by_token.pop(token, None)
 
+    def remote_token_for_actor(self, user_id: str, workspace_id: str) -> str:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for session in reversed(tuple(self.sessions_by_token.values())):
+            if (
+                session.user_id == user_id
+                and session.workspace_id == workspace_id
+                and session.expires_at > now
+            ):
+                return session.remote_token
+        return ""
+
 
 class LocalSessionService:
     """Creates local workbench sessions after remote auth succeeds."""
@@ -97,3 +108,9 @@ class LocalSessionService:
 
     def logout(self, token: str) -> None:
         self.store.revoke_session(token)
+
+    def remote_token_for_actor(self, user_id: str, workspace_id: str) -> str:
+        resolver = getattr(self.store, "remote_token_for_actor", None)
+        if not callable(resolver):
+            return ""
+        return str(resolver(user_id, workspace_id) or "")

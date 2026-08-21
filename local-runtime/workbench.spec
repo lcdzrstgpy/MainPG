@@ -35,6 +35,7 @@ for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "op
 for _rel in (
     "wh_local/data_collection/migrations",
     "wh_local/modules/ai_service/migrations",
+    "wh_local/modules/pod_customization/migrations",
     "wh_local/modules/product_processing/migrations",
     "wh_local/modules/profit_activity/migrations",
     "wh_local/price_verification/migrations",

@@ -5,6 +5,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .pod_migrations import (
+    ensure_pod_migration,
+    pod_migration_effect_is_present,
+    recover_interrupted_pod_migrations,
+)
+
 
 SCHEMA_SQL = """
 -- 数据库迁移记录表：记录哪些模块迁移已经执行，避免重复执行建表脚本。
@@ -113,7 +119,7 @@ CREATE TABLE IF NOT EXISTS user_permission_overrides (
 );
 
 -- 登录会话表：只保存 token_hash，不保存明文 token。
--- remote_token：远端账号服务的 wh_auth_* token 原文，仅用于工作台登出时联动撤销云端登录态。
+-- remote_token：兼容旧库保留的空列；远端 token 仅存在当前进程内存，会在 init_db 时清除历史明文。
 CREATE TABLE IF NOT EXISTS customer_sessions (
     session_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -685,6 +691,34 @@ def _module_migrations() -> list[tuple[str, str, str]]:
             "data_collection:003_plugin_command_requests",
             root / "data_collection" / "migrations" / "003_plugin_command_requests.sql",
         ),
+        (
+            "data_collection:004_plugin_session_client_identity",
+            root / "data_collection" / "migrations" / "004_plugin_session_client_identity.sql",
+        ),
+        (
+            "data_collection:005_shop_collection",
+            root / "data_collection" / "migrations" / "005_shop_collection.sql",
+        ),
+        (
+            "data_collection:006_shop_collection_lease_tokens",
+            root / "data_collection" / "migrations" / "006_shop_collection_lease_tokens.sql",
+        ),
+        (
+            "data_collection:007_sku_repull_outbox",
+            root / "data_collection" / "migrations" / "007_sku_repull_outbox.sql",
+        ),
+        (
+            "data_collection:008_plugin_onebound_capture_batches",
+            root / "data_collection" / "migrations" / "008_plugin_onebound_capture_batches.sql",
+        ),
+        (
+            "data_collection:009_plugin_onebound_capture_item_attempts",
+            root / "data_collection" / "migrations" / "009_plugin_onebound_capture_item_attempts.sql",
+        ),
+        (
+            "data_collection:010_plugin_onebound_capture_persistent_columns",
+            root / "data_collection" / "migrations" / "010_plugin_onebound_capture_persistent_columns.sql",
+        ),
     ]
     for migration_id, sql_path in data_collection_migrations:
         if sql_path.exists():
@@ -695,18 +729,6 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                     sql_path.read_text(encoding="utf-8"),
                 )
             )
-    plugin_session_client_identity_sql = (
-        root / "data_collection" / "migrations" / "004_plugin_session_client_identity.sql"
-    )
-    if plugin_session_client_identity_sql.exists():
-        migrations.append(
-            (
-                "data_collection:004_plugin_session_client_identity",
-                "data_collection",
-                plugin_session_client_identity_sql.read_text(encoding="utf-8"),
-            )
-        )
-
     product_processing_sql = root / "modules" / "product_processing" / "migrations" / "001_product_processing.sql"
     if product_processing_sql.exists():
         migrations.append(
@@ -734,6 +756,44 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 source_image_sync_lease_sql.read_text(encoding="utf-8"),
             )
         )
+    shop_candidate_uniqueness_sql = (
+        root / "modules" / "product_processing" / "migrations" / "004_shop_candidate_uniqueness.sql"
+    )
+    if shop_candidate_uniqueness_sql.exists():
+        migrations.append(
+            (
+                "product_processing:004_shop_candidate_uniqueness",
+                "product_processing",
+                shop_candidate_uniqueness_sql.read_text(encoding="utf-8"),
+            )
+        )
+    pod_customization_migrations = (
+        "001_pod_customization",
+        "002_direct_listing_trials",
+        "003_style_grid_v2",
+        "004_style_grid_publications",
+        "005_dianxiaomi_exports",
+        "006_pod_titles",
+        "007_requested_count_upgrade",
+        "008_persistent_billing_runs",
+        "009_export_records",
+    )
+    for migration_name in pod_customization_migrations:
+        sql_path = (
+            root
+            / "modules"
+            / "pod_customization"
+            / "migrations"
+            / f"{migration_name}.sql"
+        )
+        if sql_path.exists():
+            migrations.append(
+                (
+                    f"pod_customization:{migration_name}",
+                    "pod_customization",
+                    sql_path.read_text(encoding="utf-8"),
+                )
+            )
     ai_service_sql = root / "modules" / "ai_service" / "migrations" / "001_ai_service.sql"
     if ai_service_sql.exists():
         migrations.append(
@@ -860,6 +920,20 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 skc_source_links_sql.read_text(encoding="utf-8"),
             )
         )
+    price_verification_forward_migrations = (
+        ("007_prescreen_settings", "007_prescreen_settings.sql"),
+        ("008_batch_sourcing_sessions", "008_batch_sourcing_sessions.sql"),
+    )
+    for migration_name, filename in price_verification_forward_migrations:
+        sql_path = root / "price_verification" / "migrations" / filename
+        if sql_path.exists():
+            migrations.append(
+                (
+                    f"price_verification:{migration_name}",
+                    "price_verification",
+                    sql_path.read_text(encoding="utf-8"),
+                )
+            )
     return migrations
 
 
@@ -1041,6 +1115,10 @@ DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (
     ("seller_listing.price_confirm", "seller_listing", "price_confirm", "处理核价、调价和价格待确认产品"),
     ("seller_listing.attribute_write", "seller_listing", "attribute_write", "修改产品属性、详情和库存"),
     ("seller_listing.publish", "seller_listing", "publish", "执行或确认产品上架完成"),
+    ("pod_customization.read", "pod_customization", "read", "查看 POD 模板、个人批次和生成结果"),
+    ("pod_customization.create", "pod_customization", "create", "创建和重试 POD 图片与标题任务"),
+    ("pod_customization.template_manage", "pod_customization", "template_manage", "维护工作区共享 POD 模板"),
+    ("pod_customization.export", "pod_customization", "export", "导出本人 POD 结果和店小秘文件"),
     ("ai_service.read", "ai_service", "read", "查看本地 AI 服务会话和素材"),
     ("ai_service.create", "ai_service", "create", "发起 AI 对话、上传素材和创建商品图"),
     ("ai_service.delete", "ai_service", "delete", "删除本人 AI 会话和素材"),
@@ -1089,6 +1167,10 @@ OPERATOR_PERMISSIONS: frozenset[str] = frozenset(
         "seller_listing.read",
         "seller_listing.price_confirm",
         "seller_listing.attribute_write",
+        "pod_customization.read",
+        "pod_customization.create",
+        "pod_customization.template_manage",
+        "pod_customization.export",
         "ai_service.read",
         "ai_service.create",
         "ai_service.delete",
@@ -1175,6 +1257,7 @@ def init_db(database_path: Path) -> None:
     try:
         conn.executescript(SCHEMA_SQL)
         _migrate_core_schema(conn)
+        conn.execute("UPDATE customer_sessions SET remote_token = '' WHERE remote_token <> ''")
         conn.execute(
             """
             INSERT OR IGNORE INTO workspaces (workspace_id, workspace_code, workspace_name, status)
@@ -1183,21 +1266,91 @@ def init_db(database_path: Path) -> None:
         )
         _seed_roles(conn)
         _seed_permissions(conn)
-        for migration_id, module, sql in _module_migrations():
+        module_migrations = _module_migrations()
+        recover_interrupted_pod_migrations(
+            conn,
+            {
+                migration_id.split(":", 1)[1]: sql
+                for migration_id, module, sql in module_migrations
+                if module == "pod_customization"
+            },
+        )
+        for migration_id, module, sql in module_migrations:
+            if module == "pod_customization":
+                ensure_pod_migration(conn, migration_id.split(":", 1)[1], sql)
+                continue
+            if migration_id == "data_collection:005_shop_collection":
+                # 005 contains only idempotent CREATE IF NOT EXISTS statements.
+                # Replay it even when an older build already wrote the marker:
+                # early shop schemas did not include every later table/index.
+                conn.executescript(sql)
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",
+                    (migration_id, module),
+                )
+                continue
             exists = conn.execute(
                 "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
                 (migration_id,),
             ).fetchone()
             if exists:
                 continue
+            if migration_id == "data_collection:009_plugin_onebound_capture_item_attempts":
+                item_columns = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(plugin_onebound_capture_items)")
+                }
+                if "attempts" in item_columns:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",
+                        (migration_id, module),
+                    )
+                    continue
+            if migration_id == "data_collection:010_plugin_onebound_capture_persistent_columns":
+                batch_columns = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(plugin_onebound_capture_batches)")
+                }
+                item_columns = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(plugin_onebound_capture_items)")
+                }
+                batch_additions = {
+                    "page_url": "TEXT NOT NULL DEFAULT ''",
+                    "total_count": "INTEGER NOT NULL DEFAULT 0",
+                    "error_message": "TEXT NOT NULL DEFAULT ''",
+                }
+                item_additions = {
+                    "source_title": "TEXT NOT NULL DEFAULT ''",
+                    "error_message": "TEXT NOT NULL DEFAULT ''",
+                }
+                for column_name, definition in batch_additions.items():
+                    if column_name not in batch_columns:
+                        conn.execute(
+                            f"ALTER TABLE plugin_onebound_capture_batches ADD COLUMN {column_name} {definition}"
+                        )
+                for column_name, definition in item_additions.items():
+                    if column_name not in item_columns:
+                        conn.execute(
+                            f"ALTER TABLE plugin_onebound_capture_items ADD COLUMN {column_name} {definition}"
+                        )
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",
+                    (migration_id, module),
+                )
+                continue
             conn.executescript(sql)
             conn.execute(
-                "INSERT INTO schema_migrations (migration_id, module) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",
                 (migration_id, module),
             )
         conn.commit()
     finally:
         conn.close()
+
+
+def _pod_migration_effect_is_present(conn: sqlite3.Connection, migration_name: str) -> bool:
+    return pod_migration_effect_is_present(conn, migration_name)
 
 
 @contextmanager

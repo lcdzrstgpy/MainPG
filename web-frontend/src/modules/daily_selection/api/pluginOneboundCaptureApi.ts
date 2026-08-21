@@ -1,0 +1,49 @@
+import { apiRequest } from "../../../shared/api/apiClient";
+import type {
+  PluginOneboundCaptureBatch,
+  PluginOneboundCaptureBatchPage,
+  PluginOneboundCaptureItemsPage,
+} from "../data/pluginOneboundCaptureModel";
+
+const PLUGIN_BATCHES_PATH = "/desktop/data-collection/plugin-onebound-batches";
+
+export function listPluginOneboundCaptureBatches(limit = 30, offset = 0): Promise<PluginOneboundCaptureBatchPage> {
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return apiRequest(`${PLUGIN_BATCHES_PATH}?${query}`);
+}
+
+export async function getPluginOneboundCaptureBatch(batchId: string): Promise<PluginOneboundCaptureBatch> {
+  const response = await apiRequest<{ batch: PluginOneboundCaptureBatch }>(
+    `${PLUGIN_BATCHES_PATH}/${encodeURIComponent(batchId)}`,
+  );
+  return response.batch;
+}
+
+export function listPluginOneboundCaptureItems(batchId: string, limit = 80, offset = 0): Promise<PluginOneboundCaptureItemsPage> {
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return apiRequest(`${PLUGIN_BATCHES_PATH}/${encodeURIComponent(batchId)}/items?${query}`);
+}
+
+export async function startPluginOneboundCaptureBatch(batchId: string): Promise<PluginOneboundCaptureBatch> {
+  const response = await apiRequest<{ batch: PluginOneboundCaptureBatch }>(
+    `${PLUGIN_BATCHES_PATH}/${encodeURIComponent(batchId)}/start`,
+    { method: "POST" },
+  );
+  return response.batch;
+}
+
+export async function retryPluginOneboundCaptureFailures(batchId: string): Promise<PluginOneboundCaptureBatch> {
+  const response = await apiRequest<{ batch: PluginOneboundCaptureBatch }>(
+    `${PLUGIN_BATCHES_PATH}/${encodeURIComponent(batchId)}/retry-failed`,
+    { method: "POST" },
+  );
+  return response.batch;
+}
+
+export const pluginOneboundCaptureApi = {
+  listBatches: listPluginOneboundCaptureBatches,
+  getBatch: getPluginOneboundCaptureBatch,
+  listItems: listPluginOneboundCaptureItems,
+  startBatch: startPluginOneboundCaptureBatch,
+  retryFailed: retryPluginOneboundCaptureFailures,
+};

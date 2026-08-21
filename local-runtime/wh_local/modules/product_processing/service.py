@@ -5,17 +5,23 @@ import contextvars
 import importlib.util
 import hashlib
 import json
+import math
 import os
 import re
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from wh_local.data_collection.contracts import DailySelectionError
+from wh_local.data_collection.contracts import (
+    DailySelectionError,
+    is_sensitive_field,
+    redact_sensitive_text,
+)
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 from wh_local.config import default_config
 from wh_local.customer.contracts import (
@@ -127,6 +133,54 @@ _CACHE_VOLATILE_RAW_KEYS = frozenset(
 
 _STAGE_CACHE_VERSION = 3
 _TASK_HEARTBEAT_SECONDS = 10.0
+_DROP_SHOP_CANDIDATE_VALUE = object()
+_SHOP_SENSITIVE_FIELD_NAMES = frozenset(
+    {
+        "client_secret",
+        "client_token",
+        "credential",
+        "credentials",
+        "password",
+        "passwd",
+        "private_key",
+        "refresh_token",
+    }
+)
+
+
+def _is_sensitive_shop_candidate_field(value: object) -> bool:
+    normalized = str(value).strip().replace("-", "_").casefold()
+    return is_sensitive_field(normalized) or normalized in _SHOP_SENSITIVE_FIELD_NAMES
+
+
+def _safe_shop_candidate_value(value: Any) -> Any:
+    """Return JSON-safe candidate data without credentials or binary values."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return _DROP_SHOP_CANDIDATE_VALUE
+    if isinstance(value, Mapping):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            if _is_sensitive_shop_candidate_field(key):
+                continue
+            safe_item = _safe_shop_candidate_value(item)
+            if safe_item is not _DROP_SHOP_CANDIDATE_VALUE:
+                cleaned[str(key)] = safe_item
+        return cleaned
+    if isinstance(value, (list, tuple)):
+        return [
+            safe_item
+            for item in value
+            if (safe_item := _safe_shop_candidate_value(item)) is not _DROP_SHOP_CANDIDATE_VALUE
+        ]
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else _DROP_SHOP_CANDIDATE_VALUE
+    if isinstance(value, Decimal):
+        return str(value) if value.is_finite() else _DROP_SHOP_CANDIDATE_VALUE
+    return _DROP_SHOP_CANDIDATE_VALUE
 
 # 失败项自动补跑轮数：WH_PP_AUTO_REPULL_ROUNDS，默认 1（任务结束后自动重跑一轮
 # 技术可重试的失败项），0 关闭；避免无限重跑反复消耗 AI 额度。
@@ -767,6 +821,109 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         draft = self.repository.create_draft(values)
         self._seed_draft_source_images(draft, raw)
         return draft, True
+
+    def intake_shop_candidate(
+        self,
+        *,
+        batch_id: str,
+        workspace_id: str,
+        candidate: Mapping[str, Any],
+        shop_fence: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        """Idempotently place one normalized shop candidate into the draft pool."""
+        if not isinstance(candidate, Mapping):
+            raise ValueError("shop candidate must be a mapping")
+        raw = _safe_shop_candidate_value(candidate)
+        if not isinstance(raw, dict):
+            raise ValueError("shop candidate must contain JSON-safe mapping values")
+        batch = self._text(batch_id)
+        workspace = self._text(workspace_id)
+        offer_id = self._text(raw.get("offer_id"))
+        candidate_id = self._text(raw.get("candidate_id")) or (
+            f"1688:{offer_id}" if offer_id else ""
+        )
+        if not batch:
+            raise ValueError("batch_id is required")
+        if not workspace:
+            raise ValueError("workspace_id is required")
+        if not candidate_id:
+            raise ValueError("candidate_id is required")
+
+        raw.update(
+            {
+                "candidate_id": candidate_id,
+                "source_type": "onebound_api",
+                "selection_run_id": batch,
+                "source_ref": self._text(
+                    raw.get("source_ref") or raw.get("source_url") or candidate_id
+                ),
+                "title": self._text(
+                    raw.get("title") or raw.get("source_title") or raw.get("product_name")
+                ),
+                "product_name": self._text(
+                    raw.get("product_name") or raw.get("title") or raw.get("source_title")
+                ),
+                "image_url": self._text(raw.get("image_url") or raw.get("main_image_url")),
+            }
+        )
+        action, draft = self.repository.intake_shop_candidate_with_media(
+            draft_values=self._shop_draft_values(
+                raw,
+                batch_id=batch,
+                workspace_id=workspace,
+                candidate_id=candidate_id,
+            ),
+            media_entries=self._handoff_media_entries(raw),
+            workspace_id=workspace,
+            candidate_id=candidate_id,
+            shop_fence=dict(shop_fence) if shop_fence is not None else None,
+        )
+        return {"action": action, "draft": draft}
+
+    def _shop_draft_values(
+        self,
+        raw: Mapping[str, Any],
+        *,
+        batch_id: str,
+        workspace_id: str,
+        candidate_id: str,
+    ) -> dict[str, Any]:
+        title = self._text(raw.get("title") or raw.get("source_title") or raw.get("product_name"))
+        product_name = self._text(raw.get("product_name") or title)
+        image_url = self._text(
+            raw.get("image_url")
+            or raw.get("main_image_url")
+            or self._first(raw.get("source_image_urls"))
+        )
+        source_ref = self._text(
+            raw.get("source_ref")
+            or raw.get("source_url")
+            or raw.get("product_link")
+            or candidate_id
+            or raw.get("offer_id")
+        )
+        return {
+            "workspace_id": workspace_id,
+            "source_type": "onebound_api",
+            "source_ref": source_ref,
+            "candidate_id": candidate_id,
+            "selection_run_id": batch_id,
+            "handoff_id": None,
+            "handoff_idempotency_key": None,
+            "skc": self._text(raw.get("skc")) or None,
+            "sku": self._text(raw.get("sku")) or None,
+            "product_name": product_name,
+            "title": title,
+            "description": self._text(raw.get("description")),
+            "image_url": image_url,
+            "image_path": self._text(raw.get("image_path")),
+            "cost": self._number(
+                raw.get("cost") if raw.get("cost") is not None else raw.get("price_cny")
+            ),
+            "declared_price": self._number(raw.get("declared_price")),
+            "status": "draft",
+            "raw_payload_json": self._json(dict(raw)),
+        }
 
     def demo_draft(self, workspace_id: str = "local") -> dict[str, Any]:
         draft, created = self.create_draft(

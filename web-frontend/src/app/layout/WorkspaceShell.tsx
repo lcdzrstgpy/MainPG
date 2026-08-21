@@ -22,6 +22,7 @@ import { ProductProcessingTaskPage } from "../../modules/product_processing/page
 import { ProductProcessingHistoryPage } from "../../modules/product_processing/pages/ProductProcessingHistoryPage";
 import { ProductProcessingPrecheckPage } from "../../modules/product_processing/pages/ProductProcessingPrecheckPage";
 import { DimensionCanvasPage } from "../../modules/product_processing/pages/DimensionCanvasPage";
+import { PodCustomizationPage } from "../../modules/pod_customization/pages/PodCustomizationPage";
 import {
   importPreviewItem,
   listDimensionNotifications,
@@ -393,7 +394,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         return <WorkspaceHomePage onOpenModule={openModule} />;
       case "daily_selection":
       case "daily_selection_collection":
-        return <DailySelectionPage view="collection" initialDirectionId={tab.directionId} topbarStatusVisible={isActive} isActive={isActive} />;
+        return <DailySelectionPage view="collection" initialDirectionId={tab.directionId} onOpenProductProcessingDraft={() => openModule("product_processing")} topbarStatusVisible={isActive} isActive={isActive} />;
       case "profit_activity":
         return <ProfitActivityTestPage isActive={isActive} />;
       case "profit_activity_products":
@@ -418,6 +419,8 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         );
       case "dimension_canvas":
         return <DimensionCanvasPage initialBatchId={tab.dimensionBatchId} initialItemId={tab.dimensionItemId} onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
+      case "pod_customization":
+        return <PodCustomizationPage isActive={isActive} />;
       case "personal_center":
         return <PersonalCenterPage />;
       default:

@@ -15,6 +15,8 @@ import {
   startSkuRepull,
 } from "../api/dailySelectionApi";
 import { getApiToken } from "../../../shared/api/apiClient";
+import { ShopCollectionPanel } from "../components/ShopCollectionPanel";
+import { PluginOneboundCapturePanel } from "../components/PluginOneboundCapturePanel";
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -220,15 +222,17 @@ type DailySelectionPageProps = {
   view?: "directions" | "collection";
   initialDirectionId?: string;
   onOpenCollection?: (directionId: string, directionName: string) => void;
+  onOpenProductProcessingDraft?: (draftId: number) => void;
   topbarStatusVisible?: boolean;
   isActive?: boolean;
 };
 
-export function DailySelectionPage({ view = "directions", initialDirectionId, onOpenCollection, topbarStatusVisible = true, isActive = true }: DailySelectionPageProps) {
+export function DailySelectionPage({ view = "directions", initialDirectionId, onOpenCollection, onOpenProductProcessingDraft, topbarStatusVisible = true, isActive = true }: DailySelectionPageProps) {
   // 视图支持内部轮转：主模块默认直接进采集视图，点「模板预设」切到预设页，
   // 在预设页点方向卡再回到采集视图，而不再新开独立面板。
   const [internalView, setInternalView] = useState<"directions" | "collection">(view);
   const collectionView = internalView === "collection";
+  const [collectionWorkspaceMode, setCollectionWorkspaceMode] = useState<"daily" | "shop" | "plugin">("daily");
   const [customDirections, setCustomDirections] = useState<Direction[]>(loadCustomDirections);
   const [updatedDefaultDirections, setUpdatedDefaultDirections] = useState<Direction[]>(loadUpdatedDefaultDirections);
   const [removedDefaultDirectionIds, setRemovedDefaultDirectionIds] = useState<string[]>(loadRemovedDefaultDirectionIds);
@@ -1142,8 +1146,36 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 <span>DAILY SELECTION</span>
                 <strong>采集与候选商品</strong>
               </div>
-              <span className="collection-workspace-context">来源：每日选品</span>
+              <span className="collection-workspace-context">来源：{collectionWorkspaceMode === "shop" ? "1688 整店" : collectionWorkspaceMode === "plugin" ? "1688 插件 · 万邦 API" : "每日选品"}</span>
             </header>
+            <div className="collection-workspace-tabs" role="tablist" aria-label="采集入口">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={collectionWorkspaceMode === "daily"}
+                className={collectionWorkspaceMode === "daily" ? "is-active" : ""}
+                onClick={() => setCollectionWorkspaceMode("daily")}
+              >每日选品</button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={collectionWorkspaceMode === "shop"}
+                className={collectionWorkspaceMode === "shop" ? "is-active" : ""}
+                onClick={() => setCollectionWorkspaceMode("shop")}
+              >整店采集</button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={collectionWorkspaceMode === "plugin"}
+                className={collectionWorkspaceMode === "plugin" ? "is-active" : ""}
+                onClick={() => setCollectionWorkspaceMode("plugin")}
+              >插件采集</button>
+            </div>
+            {collectionWorkspaceMode === "plugin" ? (
+              <PluginOneboundCapturePanel isActive={isActive} onOpenDraft={onOpenProductProcessingDraft} />
+            ) : collectionWorkspaceMode === "shop" ? (
+              <ShopCollectionPanel isActive={isActive} />
+            ) : (
             <div className="daily-drawer-body">
               <div className="daily-work-grid">
         <form className="daily-panel collection-panel" onSubmit={submitCollection}>
@@ -1417,6 +1449,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         )}
       </section>
             </div>
+            )}
           </section>
         </div>
       )}

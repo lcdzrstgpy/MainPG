@@ -22,6 +22,16 @@ export type PricingItemsPayload = {
   };
 };
 
+export type PodPricingItemsPayload = {
+  ok: boolean;
+  pricing: {
+    rule_version: number;
+    point_unit_scale: number;
+    items: Record<string, Pick<PricingSubItem, "charge_points" | "charge_units">>;
+    effective_at: string;
+  };
+};
+
 export type PricingChangelogEntry = {
   id: number;
   rule_version: number;
@@ -53,6 +63,20 @@ export function updatePricingItems(payload: {
   change_reason: string;
 }) {
   return httpJson<PricingItemsPayload>("/api/admin/billing/pricing/items", {
+    method: "PUT",
+    body: payload,
+  });
+}
+
+export function loadPodPricingItems() {
+  return httpJson<PodPricingItemsPayload>("/api/admin/billing/pricing/pod");
+}
+
+export function updatePodPricingItems(payload: {
+  items: Record<string, { charge_points: number }>;
+  change_reason: string;
+}) {
+  return httpJson<PodPricingItemsPayload>("/api/admin/billing/pricing/pod", {
     method: "PUT",
     body: payload,
   });

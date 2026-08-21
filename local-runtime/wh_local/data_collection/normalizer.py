@@ -15,6 +15,7 @@ from urllib.parse import urlparse, urlunparse
 from .contracts import (
     ApiEvidence,
     DailySelectionCandidate,
+    SourceTierPrice,
     SourceVariantRecord,
     is_sensitive_field,
     redact_sensitive_text,
@@ -25,6 +26,8 @@ MAX_PRODUCT_IMAGES = 8
 MAX_DETAIL_IMAGES = 12
 
 _NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
+_DESCRIPTION_IMAGE = re.compile(r"\bsrc\s*=\s*['\"]((?:https?:)?//[^'\"\s>]+)", re.IGNORECASE)
+_RAW_DESCRIPTION_FIELDS = frozenset({"desc", "description", "desc_html", "description_html"})
 
 
 def sanitize_raw_payload(value: Any) -> Any:
@@ -171,6 +174,87 @@ normalize_search_results = normalize_search_response
 merge_detail_response = enrich_candidate_with_detail
 
 
+def normalize_detail_response(
+    payload: Mapping[str, Any], *, evidence: ApiEvidence | None = None
+) -> DailySelectionCandidate:
+    """Normalize one complete OneBound item response into the canonical candidate contract."""
+    cleaned = sanitize_raw_payload(payload)
+    detail = _detail_from_payload(cleaned)
+    offer_id = _text_value(detail, ("num_iid", "offer_id", "item_id", "id"))
+    if offer_id is None:
+        raise ValueError("item detail did not include an offer ID")
+    source_url = _canonical_1688_url(
+        _text_value(detail, ("detail_url", "url", "item_url", "offer_url")), offer_id
+    )
+    if source_url is None:
+        raise ValueError("item detail did not include a valid 1688 URL")
+    title = _text_value(detail, ("title", "name"))
+    if title is None:
+        raise ValueError("item detail did not include a title")
+    main_image = _url_value(detail, ("main_image_url", "main_image", "pic_url", "image_url", "image", "pic"))
+    product_images = _limited_urls(
+        _urls_from(detail, ("item_imgs", "images", "image_urls", "item_images")),
+        MAX_PRODUCT_IMAGES,
+        prefix=(main_image,) if main_image else (),
+    )
+    detail_images = _limited_urls(
+        _urls_from(detail, ("detail_images", "desc_imgs", "desc_img", "detail_img", "description_images"))
+        + _description_image_urls(detail),
+        MAX_DETAIL_IMAGES,
+    )
+    attributes = _mapping_value(detail, ("props", "item_props", "attributes", "properties"))
+    variants = _variants_from(detail)
+    price = _number_value(detail, ("price", "price_cny", "promotion_price"))
+    moq = _integer_value(detail, ("moq", "min_order_quantity", "begin_num", "start_quantity", "min_num", "begin_amount", "beginAmount"))
+    stock = _integer_value(detail, ("quantity", "stock", "inventory", "num"))
+    sales = _text_value(detail, ("sales", "sales_text", "sold", "volume"))
+    missing = _missing_fields(
+        (),
+        {
+            "main_image_url": main_image,
+            "price_cny": price,
+            "min_order_quantity": moq,
+            "source_image_urls": product_images,
+            "source_detail_image_urls": detail_images,
+            "source_attributes": attributes,
+            "source_variant_records": variants,
+        },
+    )
+    return DailySelectionCandidate(
+        candidate_id=f"1688:{offer_id}",
+        offer_id=offer_id,
+        source_platform="1688",
+        source_url=source_url,
+        source_title=title,
+        listed_at=_text_value(detail, ("listed_at", "listing_time", "online_time", "start_time")),
+        main_image_url=main_image,
+        source_image_urls=product_images,
+        source_detail_image_urls=detail_images,
+        source_variant_records=variants,
+        source_attributes=attributes,
+        category_path=_text_value(detail, ("cat_name", "category_name", "category_path", "categoryPath", "category")),
+        category_id=_text_value(detail, ("cat_id", "category_id", "leaf_category_id", "cid")),
+        price_cny=price,
+        min_order_quantity=moq,
+        evidence=(evidence or _response_evidence(cleaned, "item_get"),),
+        shop_name=_shop_name_from_detail(detail),
+        location=_text_value(detail, ("location", "area", "province")),
+        sales_text=sales,
+        weight_text=_text_value(detail, ("weight", "weight_text", "item_weight")),
+        package_info_text=_text_value(detail, ("package_info", "package_info_text", "package", "packing")),
+        freight_cny=_number_value(detail, ("freight", "freight_cny", "post_fee", "shipping_fee")),
+        original_price_cny=_number_value(detail, ("original_price", "original_price_cny", "market_price")),
+        stock_quantity=stock,
+        unit=_text_value(detail, ("unit", "unit_name")),
+        brand=_text_value(detail, ("brand", "brand_name")),
+        video_url=_url_value(detail, ("video", "video_url", "videoUrl")),
+        tiered_prices=_tiered_prices(detail),
+        captured_fields=_captured_fields(missing),
+        missing_capture_fields=missing,
+        raw_payload=_without_raw_description_html(cleaned),
+    )
+
+
 def _candidate_from_search_item(
     item: Mapping[str, Any], raw_payload: Mapping[str, Any], evidence: ApiEvidence
 ) -> DailySelectionCandidate | None:
@@ -269,11 +353,21 @@ def _is_http_url(value: Any) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def _normalized_http_url(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if candidate.startswith("//"):
+        candidate = f"https:{candidate}"
+    return candidate if _is_http_url(candidate) else None
+
+
 def _url_value(source: Mapping[str, Any], names: Sequence[str]) -> str | None:
     for name in names:
         value = source.get(name)
-        if _is_http_url(value):
-            return value.strip()
+        normalized = _normalized_http_url(value)
+        if normalized:
+            return normalized
     return None
 
 
@@ -289,16 +383,18 @@ def _urls_from(source: Mapping[str, Any], names: Sequence[str]) -> tuple[str, ..
     for value in values:
         if isinstance(value, Mapping):
             value = _url_value(value, ("url", "image_url", "pic_url", "image"))
-        if _is_http_url(value):
-            urls.append(value.strip())
+        normalized = _normalized_http_url(value)
+        if normalized:
+            urls.append(normalized)
     return tuple(urls)
 
 
 def _limited_urls(urls: Sequence[str], limit: int, *, prefix: Sequence[str] = ()) -> tuple[str, ...]:
     selected: list[str] = []
     for url in tuple(prefix) + tuple(urls):
-        if _is_http_url(url) and url not in selected:
-            selected.append(url)
+        normalized = _normalized_http_url(url)
+        if normalized and normalized not in selected:
+            selected.append(normalized)
         if len(selected) == limit:
             break
     return tuple(selected)
@@ -422,6 +518,51 @@ def _string_spec_attributes(value: Any) -> dict[str, str]:
             # No attribute name exposed; keep the value under a generic key.
             result.setdefault("规格", parts[0])
     return result
+
+
+def _description_image_urls(detail: Mapping[str, Any]) -> tuple[str, ...]:
+    urls: list[str] = []
+    for name in _RAW_DESCRIPTION_FIELDS:
+        value = detail.get(name)
+        if not isinstance(value, str):
+            continue
+        for match in _DESCRIPTION_IMAGE.finditer(value):
+            normalized = _normalized_http_url(match.group(1))
+            if normalized and normalized not in urls:
+                urls.append(normalized)
+    return tuple(urls)
+
+
+def _without_raw_description_html(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _without_raw_description_html(item)
+            for key, item in value.items()
+            if str(key).casefold() not in _RAW_DESCRIPTION_FIELDS
+        }
+    if isinstance(value, (list, tuple)):
+        return tuple(_without_raw_description_html(item) for item in value)
+    return value
+
+
+def _tiered_prices(source: Mapping[str, Any]) -> tuple[SourceTierPrice, ...]:
+    entries: Any = None
+    for name in ("price_range", "price_ranges", "tiered_prices", "price_ladder"):
+        if name in source:
+            entries = source[name]
+            break
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes, bytearray)):
+        return ()
+    tiers: list[SourceTierPrice] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        moq = _integer_value(entry, ("begin_amount", "min_order_quantity", "moq", "start_quantity"))
+        price = _number_value(entry, ("price", "price_cny", "promotion_price"))
+        if moq is None or moq < 1 or price is None:
+            continue
+        tiers.append(SourceTierPrice(min_order_quantity=moq, price_cny=price))
+    return tuple(tiers)
 
 
 def _missing_fields(existing: Sequence[str], values: Mapping[str, Any]) -> tuple[str, ...]:

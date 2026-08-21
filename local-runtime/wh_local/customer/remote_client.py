@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import base64
 import json
+import os
 import threading
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+from .collect_credentials import SERVER_RSA_PUBLIC_KEY_PEM
 from .contracts import (
     CustomerAuthActionResult,
     CustomerAuthRejected,
@@ -151,6 +158,74 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def freeze_pod_points(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Freeze a POD plan and decrypt its scoped grants only in memory."""
+        encrypted_session_key, session_key = _new_pod_grant_session()
+        response = self._billing_post(
+            "/api/customer/billing/pod/freeze",
+            remote_token,
+            {**payload, "encrypted_session_key": encrypted_session_key},
+        )
+        freeze = response.get("freeze")
+        if not isinstance(freeze, dict):
+            raise CustomerBillingProtocolError()
+        decrypted = _decrypt_pod_grant_envelope(freeze.get("grant_envelope"), session_key)
+        if str(decrypted.get("freeze_id") or "") != str(freeze.get("freeze_id") or ""):
+            raise CustomerBillingProtocolError()
+        freeze_expires_at = str(freeze.get("expires_at") or "")
+        grant_expires_at = str(decrypted.get("expires_at") or "")
+        if not freeze_expires_at or not grant_expires_at:
+            raise CustomerBillingProtocolError()
+        return {
+            **response,
+            "freeze": {
+                **{key: value for key, value in freeze.items() if key != "grant_envelope"},
+                "freeze_expires_at": freeze_expires_at,
+                "expires_at": grant_expires_at,
+                "keys": _pod_provider_key_mapping(decrypted["keys"]),
+            },
+        }
+
+    def settle_pod_points(
+        self,
+        remote_token: str,
+        freeze_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._billing_post(
+            "/api/customer/billing/pod/settle",
+            remote_token,
+            {**payload, "freeze_id": freeze_id},
+        )
+
+    def pod_freeze_status(self, remote_token: str, freeze_id: str) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._get,
+            f"/api/customer/billing/pod/{freeze_id}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def regrant_pod_keys(self, remote_token: str, freeze_id: str) -> dict[str, Any]:
+        encrypted_session_key, session_key = _new_pod_grant_session()
+        response = self._billing_post(
+            f"/api/customer/billing/pod/{freeze_id}/regrant",
+            remote_token,
+            {"encrypted_session_key": encrypted_session_key},
+        )
+        decrypted = _decrypt_pod_grant_envelope(response.get("grant_envelope"), session_key)
+        if (
+            str(response.get("freeze_id") or "") != str(freeze_id)
+            or str(decrypted.get("freeze_id") or "") != str(freeze_id)
+        ):
+            raise CustomerBillingProtocolError()
+        return {
+            **{key: value for key, value in response.items() if key != "grant_envelope"},
+            "expires_at": str(decrypted.get("expires_at") or ""),
+            "keys": _pod_provider_key_mapping(decrypted["keys"]),
+        }
+
     def admin_request(
         self,
         remote_token: str,
@@ -253,7 +328,7 @@ class CustomerAuthClient:
         except HTTPError as exc:
             detail = _extract_error_message(exc)
             if exc.code in (401, 403):
-                raise PermissionError(detail or f"customer auth service returned HTTP {exc.code}") from exc
+                raise CustomerBillingPermissionError(exc.code) from exc
             if 400 <= exc.code < 500:
                 raise CustomerAuthRejected(
                     exc.code,
@@ -280,7 +355,7 @@ class CustomerAuthClient:
         except HTTPError as exc:
             detail = _extract_error_message(exc)
             if exc.code in (401, 403):
-                raise PermissionError(detail or f"customer auth service returned HTTP {exc.code}") from exc
+                raise CustomerBillingPermissionError(exc.code) from exc
             if 400 <= exc.code < 500:
                 raise CustomerAuthRejected(
                     exc.code,
@@ -289,6 +364,64 @@ class CustomerAuthClient:
             raise CustomerAuthUnavailable(f"customer auth service returned HTTP {exc.code}: {detail}") from exc
         except (URLError, TimeoutError) as exc:
             raise CustomerAuthUnavailable(str(getattr(exc, "reason", exc))) from exc
+
+
+def _new_pod_grant_session() -> tuple[str, bytes]:
+    session_key = os.urandom(32)
+    try:
+        public_key = serialization.load_pem_public_key(
+            SERVER_RSA_PUBLIC_KEY_PEM.encode("utf-8")
+        )
+        encrypted = public_key.encrypt(
+            session_key,
+            asymmetric_padding.OAEP(
+                mgf=asymmetric_padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+    except Exception as exc:
+        raise CustomerBillingProtocolError() from exc
+    return base64.b64encode(encrypted).decode("ascii"), session_key
+
+
+def _decrypt_pod_grant_envelope(envelope: Any, session_key: bytes) -> dict[str, Any]:
+    if not isinstance(envelope, dict):
+        raise CustomerBillingProtocolError()
+    try:
+        ciphertext = base64.b64decode(str(envelope["payload"]), validate=True)
+        nonce = base64.b64decode(str(envelope["nonce"]), validate=True)
+        tag = base64.b64decode(str(envelope["tag"]), validate=True)
+        decryptor = Cipher(algorithms.AES(session_key), modes.GCM(nonce, tag)).decryptor()
+        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+        payload = json.loads(plaintext.decode("utf-8"))
+    except Exception as exc:
+        raise CustomerBillingProtocolError() from exc
+    if (
+        not isinstance(payload, dict)
+        or not str(payload.get("freeze_id") or "")
+        or not str(payload.get("expires_at") or "")
+        or not isinstance(payload.get("keys"), list)
+    ):
+        raise CustomerBillingProtocolError()
+    keys = payload["keys"]
+    if any(
+        not isinstance(item, dict)
+        or str(item.get("provider") or "") not in {"ark", "wuyin"}
+        or not str(item.get("api_key") or "")
+        for item in keys
+    ):
+        raise CustomerBillingProtocolError()
+    return payload
+
+
+def _pod_provider_key_mapping(keys: Any) -> dict[str, str]:
+    if not isinstance(keys, list):
+        raise CustomerBillingProtocolError()
+    mapped = {str(item["provider"]): str(item["api_key"]) for item in keys}
+    if len(mapped) != len(keys):
+        raise CustomerBillingProtocolError()
+    return mapped
 
 
 def _extract_error_message(exc: HTTPError) -> str:

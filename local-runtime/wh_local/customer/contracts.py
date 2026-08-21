@@ -34,7 +34,10 @@ class CustomerBillingProtocolError(CustomerAuthError):
 class CustomerBillingPermissionError(PermissionError):
     """Raised when the remote billing service rejects the current session."""
 
-    def __init__(self) -> None:
+    def __init__(self, status_code: int = 401) -> None:
+        if type(status_code) is not int or status_code not in {401, 403}:
+            raise ValueError("billing permission status must be 401 or 403")
+        self.status_code = status_code
         super().__init__("remote billing session was rejected")
 
 

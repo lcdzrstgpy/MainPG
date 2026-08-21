@@ -27,6 +27,8 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, Header, HTTPException, Request
 
 from ..billing import (
+    BATCH_BILLING_PROFILE_POD,
+    BATCH_BILLING_PROFILE_PRODUCT,
     active_pricing,
     batch_freeze_status,
     compute_batch_charge,
@@ -46,6 +48,15 @@ from ..config import default_config
 from .. import cache as _cache
 from ..db import init_db, transaction
 from ..modules.product_processing.domain.policy import is_safe_external_url
+from ..pod_billing import (
+    freeze_pod_points,
+    init_pod_billing_schema,
+    pod_freeze_status,
+    pod_grantable_freeze_status,
+    pod_pricing_items,
+    settle_pod_points,
+    update_pod_pricing_items,
+)
 from ..session import Actor
 from .auth_service import SQLiteCustomerAuthService
 from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
@@ -253,10 +264,43 @@ BATCH_KEY_PROVIDERS = (
 )
 
 
+POD_GRANT_COMPENSATION_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS billing_pod_grant_compensations (
+    freeze_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'issued', 'compensated')),
+    error_code TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (freeze_id) REFERENCES billing_pod_freezes (freeze_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_pod_grant_compensation_status
+    ON billing_pod_grant_compensations (status, updated_at);
+
+CREATE TRIGGER IF NOT EXISTS trg_billing_pod_grant_compensation_intent
+AFTER INSERT ON billing_pod_freezes
+BEGIN
+    INSERT OR IGNORE INTO billing_pod_grant_compensations (
+        freeze_id, account_id, status, error_code, attempt_count, created_at, updated_at
+    )
+    SELECT NEW.freeze_id, account_id, 'pending', '', 0, datetime('now'), datetime('now')
+    FROM billing_batch_freezes
+    WHERE freeze_id = NEW.freeze_id;
+END;
+"""
+
+
 def _issue_batch_keys(
     database_path: Path,
     account: dict[str, Any],
     freeze_id: str,
+    *,
+    include_secret_suffix_in_label: bool = True,
+    resolved_secrets: dict[str, str] | None = None,
+    expires_at_override: str = "",
 ) -> list[dict[str, str]]:
     """Issue short-lived provider keys to the client for this freeze batch.
 
@@ -265,17 +309,25 @@ def _issue_batch_keys(
     """
     account_id = str(account["account_id"])
     workspace_id = str(account.get("workspace_id") or "default")
-    expires_at = (
+    expires_at = str(expires_at_override or "").strip() or (
         datetime.now(timezone.utc) + timedelta(hours=BATCH_KEY_TTL_HOURS)
     ).isoformat(timespec="seconds")
     granted: list[dict[str, str]] = []
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for kind, provider_name, environment_name in BATCH_KEY_PROVIDERS:
-        secret = _server_provider_secret(kind, environment_name)
+        secret = (
+            str(resolved_secrets.get(provider_name) or "")
+            if resolved_secrets is not None
+            else _server_provider_secret(kind, environment_name)
+        )
         if not secret:
             continue
         grant_id = f"grant_{secrets.token_urlsafe(18)}"
-        label = f"{provider_name}:{kind}::{secret[-4:]}"
+        label = (
+            f"{provider_name}:{kind}::{secret[-4:]}"
+            if include_secret_suffix_in_label
+            else f"{provider_name}:{kind}:short-lived"
+        )
         with transaction(database_path) as conn:
             conn.execute(
                 """
@@ -308,6 +360,248 @@ def _issue_batch_keys(
     return granted
 
 
+def _issue_pod_grant_envelope(
+    database_path: Path,
+    account: dict[str, Any],
+    freeze_id: str,
+    session_key: bytes,
+    provider_secrets: dict[str, str],
+    freeze_expires_at: str,
+) -> dict[str, str]:
+    """Issue POD grants only inside the designated hybrid-encrypted envelope."""
+    expires_at = _pod_grant_expires_at(freeze_expires_at)
+    keys = _issue_batch_keys(
+        database_path,
+        account,
+        freeze_id,
+        include_secret_suffix_in_label=False,
+        resolved_secrets=provider_secrets,
+        expires_at_override=expires_at,
+    )
+    if {str(item.get("provider") or "") for item in keys} != {"ark", "wuyin"}:
+        raise HTTPException(status_code=503, detail="POD provider credentials are unavailable")
+    plaintext = json.dumps(
+        {"freeze_id": freeze_id, "expires_at": expires_at, "keys": keys},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    nonce = os.urandom(12)
+    encryptor = Cipher(algorithms.AES(session_key), modes.GCM(nonce)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+    return {
+        "payload": base64.b64encode(ciphertext).decode("ascii"),
+        "nonce": base64.b64encode(nonce).decode("ascii"),
+        "tag": base64.b64encode(encryptor.tag).decode("ascii"),
+        "expires_at": expires_at,
+    }
+
+
+def _pod_grant_expires_at(freeze_expires_at: str) -> str:
+    try:
+        freeze_deadline = datetime.fromisoformat(str(freeze_expires_at or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="POD freeze is no longer active") from exc
+    now = datetime.now(timezone.utc)
+    if freeze_deadline.tzinfo is None:
+        freeze_deadline = freeze_deadline.replace(tzinfo=timezone.utc)
+    if freeze_deadline <= now:
+        raise HTTPException(status_code=409, detail="POD freeze is no longer active")
+    grant_deadline = min(
+        freeze_deadline,
+        now + timedelta(hours=BATCH_KEY_TTL_HOURS),
+    )
+    return grant_deadline.isoformat(timespec="seconds")
+
+
+def _pod_grant_prerequisites(encrypted_session_key: str) -> tuple[bytes, dict[str, str]]:
+    """Validate the encrypted session and provider availability before locking."""
+    try:
+        session_key = _rsa_decrypt_session_key(str(encrypted_session_key or ""))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="cannot decrypt session key") from exc
+    if len(session_key) != 32:
+        raise HTTPException(status_code=400, detail="invalid session key")
+    provider_secrets = {
+        provider_name: _server_provider_secret(kind, environment_name)
+        for kind, provider_name, environment_name in BATCH_KEY_PROVIDERS
+    }
+    if any(not provider_secrets.get(provider) for provider in ("ark", "wuyin")):
+        raise HTTPException(status_code=503, detail="POD provider credentials are unavailable")
+    return session_key, provider_secrets
+
+
+def _init_pod_grant_compensation_schema(database_path: Path) -> None:
+    """Install the grant intent trigger in the same database as POD freezes."""
+    with transaction(database_path) as conn:
+        conn.executescript(POD_GRANT_COMPENSATION_SCHEMA_SQL)
+
+
+def _require_pod_create_permission(database_path: Path, account: dict[str, Any]) -> None:
+    """Authorize against the account's current role and per-user override."""
+    account_id = str(account["account_id"])
+    workspace_id = str(account.get("workspace_id") or "default")
+    permission_key = "pod_customization.create"
+    with transaction(database_path) as conn:
+        current = conn.execute(
+            """
+            SELECT role FROM auth_accounts
+            WHERE account_id = ? AND COALESCE(workspace_id, 'default') = ?
+            """,
+            (account_id, workspace_id),
+        ).fetchone()
+        override = conn.execute(
+            """
+            SELECT effect FROM user_permission_overrides
+            WHERE user_id = ? AND workspace_id = ? AND permission_key = ?
+            """,
+            (account_id, workspace_id, permission_key),
+        ).fetchone()
+        allowed_by_role = (
+            conn.execute(
+                """
+                SELECT 1 FROM role_permissions
+                WHERE role = ? AND permission_key = ?
+                """,
+                (str(current["role"]) if current is not None else "", permission_key),
+            ).fetchone()
+            is not None
+        )
+    if current is None or (
+        (override is not None and str(override["effect"]) == "deny")
+        or (override is None and not allowed_by_role)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="permission required: pod_customization.create",
+        )
+
+
+def _mark_pod_grant_issued(
+    database_path: Path,
+    freeze_id: str,
+    account_id: str,
+) -> None:
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO billing_pod_grant_compensations (
+                freeze_id, account_id, status, error_code, attempt_count,
+                created_at, updated_at
+            ) VALUES (?, ?, 'issued', '', 0, datetime('now'), datetime('now'))
+            ON CONFLICT(freeze_id) DO UPDATE SET
+                status = 'issued', error_code = '', updated_at = datetime('now')
+            """,
+            (freeze_id, account_id),
+        )
+
+
+def _compensate_failed_pod_grant(
+    database_path: Path,
+    freeze_id: str,
+    account_id: str,
+) -> bool:
+    """Revoke audit grants and refund a newly frozen plan in full.
+
+    A trigger creates the pending row atomically with the POD plan. Returning
+    False means this freeze had already issued a grant and must not be refunded
+    merely because a later idempotent replay failed.
+    """
+    with transaction(database_path) as conn:
+        intent = conn.execute(
+            """
+            SELECT status FROM billing_pod_grant_compensations
+            WHERE freeze_id = ? AND account_id = ?
+            """,
+            (freeze_id, account_id),
+        ).fetchone()
+        if intent is None or str(intent["status"]) != "pending":
+            return False
+        conn.execute(
+            """
+            UPDATE billing_key_grants
+            SET revoked_at = CASE
+                WHEN revoked_at = '' THEN datetime('now') ELSE revoked_at END
+            WHERE freeze_id = ? AND account_id = ?
+            """,
+            (freeze_id, account_id),
+        )
+        conn.execute(
+            """
+            UPDATE billing_pod_grant_compensations
+            SET attempt_count = attempt_count + 1,
+                error_code = 'grant_issuance_failed',
+                updated_at = datetime('now')
+            WHERE freeze_id = ?
+            """,
+            (freeze_id,),
+        )
+    try:
+        freeze = pod_freeze_status(
+            database_path,
+            freeze_id,
+            expected_account_id=account_id,
+        )
+        if str(freeze["status"]) != "settled":
+            settle_pod_points(
+                database_path,
+                freeze_id,
+                item_results=[
+                    {
+                        "call_id": str(call["call_id"]),
+                        "feature": str(call["feature"]),
+                        "status": "no_return",
+                    }
+                    for call in freeze["calls"]
+                ],
+                expected_account_id=account_id,
+            )
+    except Exception:
+        with transaction(database_path) as conn:
+            conn.execute(
+                """
+                UPDATE billing_pod_grant_compensations
+                SET status = 'pending', error_code = 'compensation_retry_failed',
+                    updated_at = datetime('now')
+                WHERE freeze_id = ?
+                """,
+                (freeze_id,),
+            )
+        return False
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            UPDATE billing_pod_grant_compensations
+            SET status = 'compensated', error_code = 'grant_issuance_failed',
+                updated_at = datetime('now')
+            WHERE freeze_id = ?
+            """,
+            (freeze_id,),
+        )
+    return True
+
+
+def _recover_pending_pod_grant_compensations(database_path: Path) -> None:
+    """Retry durable incomplete refunds when the auth service starts."""
+    with transaction(database_path) as conn:
+        pending = conn.execute(
+            """
+            SELECT freeze_id, account_id FROM billing_pod_grant_compensations
+            WHERE status = 'pending'
+            ORDER BY created_at, freeze_id
+            """
+        ).fetchall()
+    for row in pending:
+        try:
+            _compensate_failed_pod_grant(
+                database_path,
+                str(row["freeze_id"]),
+                str(row["account_id"]),
+            )
+        except Exception:
+            # The durable pending row remains available for the next scan.
+            continue
+
+
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
     """Create the standalone platform customer-auth service.
 
@@ -320,6 +614,9 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     config = default_config()
     db_path = database_path or config.database_path
     init_db(db_path)
+    init_pod_billing_schema(db_path)
+    _init_pod_grant_compensation_schema(db_path)
+    _recover_pending_pod_grant_compensations(db_path)
     service = SQLiteCustomerAuthService(
         db_path,
         email_sender=TencentCloudSESEmailSender.from_env(),
@@ -400,7 +697,131 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             pricing["subitems"] = pricing_items(db_path)
         except HTTPException:
             pricing["subitems"] = None
+        try:
+            pricing["pod"] = pod_pricing_items(db_path)
+        except HTTPException:
+            pricing["pod"] = None
         return {"ok": True, "pricing": pricing}
+
+    @app.post("/api/customer/billing/pod/freeze")
+    def customer_billing_pod_freeze(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        _require_pod_create_permission(db_path, account)
+        session_key, provider_secrets = _pod_grant_prerequisites(
+            str(payload.get("encrypted_session_key") or "")
+        )
+        freeze = freeze_pod_points(
+            db_path,
+            _billing_actor(account),
+            calls=payload.get("calls"),
+            title_call_count=payload.get("title_call_count"),
+            image_call_count=payload.get("image_call_count"),
+            idempotency_key=str(payload.get("idempotency_key") or ""),
+        )
+        if freeze["status"] != "frozen":
+            raise HTTPException(status_code=409, detail="POD freeze is no longer active")
+        freeze_id = str(freeze["freeze_id"])
+        account_id = str(account["account_id"])
+        try:
+            envelope = _issue_pod_grant_envelope(
+                db_path,
+                account,
+                freeze_id,
+                session_key,
+                provider_secrets,
+                str(freeze["expires_at"]),
+            )
+            _mark_pod_grant_issued(db_path, freeze_id, account_id)
+        except Exception:
+            try:
+                compensated = _compensate_failed_pod_grant(
+                    db_path,
+                    freeze_id,
+                    account_id,
+                )
+            except Exception:
+                raise HTTPException(
+                    status_code=503,
+                    detail="POD grant issuance failed; compensation is pending",
+                ) from None
+            detail = (
+                "POD grant issuance failed; reserved points were released"
+                if compensated
+                else "POD grant issuance failed; compensation is pending"
+            )
+            raise HTTPException(status_code=503, detail=detail) from None
+        return {"ok": True, "freeze": {**freeze, "grant_envelope": envelope}}
+
+    @app.post("/api/customer/billing/pod/settle")
+    def customer_billing_pod_settle(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        freeze_id = str(payload.get("freeze_id") or "").strip()
+        if not freeze_id:
+            raise HTTPException(status_code=400, detail="freeze_id is required")
+        return {
+            "ok": True,
+            "settle": settle_pod_points(
+                db_path,
+                freeze_id,
+                item_results=payload.get("items"),
+                expected_account_id=str(account["account_id"]),
+            ),
+        }
+
+    @app.get("/api/customer/billing/pod/{freeze_id}")
+    def customer_billing_pod_status(
+        freeze_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        return {
+            "ok": True,
+            "freeze": pod_freeze_status(
+                db_path,
+                freeze_id,
+                expected_account_id=str(account["account_id"]),
+            ),
+        }
+
+    @app.post("/api/customer/billing/pod/{freeze_id}/regrant")
+    def customer_billing_pod_regrant(
+        freeze_id: str,
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        _require_pod_create_permission(db_path, account)
+        freeze = pod_grantable_freeze_status(
+            db_path,
+            freeze_id,
+            expected_account_id=str(account["account_id"]),
+        )
+        if freeze["status"] != "frozen":
+            raise HTTPException(status_code=409, detail="POD freeze is no longer active")
+        session_key, provider_secrets = _pod_grant_prerequisites(
+            str(payload.get("encrypted_session_key") or "")
+        )
+        envelope = _issue_pod_grant_envelope(
+            db_path,
+            account,
+            freeze_id,
+            session_key,
+            provider_secrets,
+            str(freeze["expires_at"]),
+        )
+        return {
+            "ok": True,
+            "freeze_id": freeze_id,
+            "rule_version": int(freeze["rule_version"]),
+            "expires_at": str(envelope["expires_at"]),
+            "grant_envelope": envelope,
+        }
 
     @app.post("/api/customer/billing/batch/freeze")
     def customer_billing_batch_freeze(
@@ -419,12 +840,23 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         idempotency_key = str(payload.get("idempotency_key") or "").strip()
         if idempotency_key and not 16 <= len(idempotency_key) <= 200:
             raise HTTPException(status_code=400, detail="idempotency_key length must be 16..200")
+        billing_profile = str(
+            payload.get("billing_profile") or BATCH_BILLING_PROFILE_PRODUCT
+        ).strip()
+        if billing_profile not in {
+            BATCH_BILLING_PROFILE_PRODUCT,
+            BATCH_BILLING_PROFILE_POD,
+        }:
+            raise HTTPException(status_code=400, detail="invalid batch billing profile")
+        if billing_profile == BATCH_BILLING_PROFILE_POD:
+            _require_pod_create_permission(db_path, account)
         freeze = freeze_batch_points(
             db_path,
             _billing_actor(account),
             link_count=link_count,
             scope=[str(item) for item in (scope or [])] if scope is not None else None,
             idempotency_key=idempotency_key,
+            billing_profile=billing_profile,
         )
         keys = _issue_batch_keys(db_path, account, freeze["freeze_id"])
         return {"ok": True, "freeze": {**freeze, "keys": keys}}
@@ -551,6 +983,30 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     def admin_billing_pricing_items(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         _require_billing_admin(db_path, authorization)
         return {"ok": True, "pricing": pricing_items(db_path)}
+
+    @app.get("/api/admin/billing/pricing/pod")
+    def admin_billing_pod_pricing(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        _require_billing_admin(db_path, authorization)
+        return {"ok": True, "pricing": pod_pricing_items(db_path, require_configured=False)}
+
+    @app.put("/api/admin/billing/pricing/pod")
+    def update_admin_billing_pod_pricing(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        admin = _require_billing_admin(db_path, authorization)
+        items = payload.get("items")
+        if not isinstance(items, dict):
+            raise HTTPException(status_code=400, detail="items must be an object")
+        return {
+            "ok": True,
+            "pricing": update_pod_pricing_items(
+                db_path,
+                items=items,
+                updated_by=str(admin["account_id"]),
+                change_reason=str(payload.get("change_reason") or ""),
+            ),
+        }
 
     @app.put("/api/admin/billing/pricing/items")
     def update_admin_billing_pricing_items(

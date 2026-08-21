@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from wh_local.data_collection import empty_collection as module
+from wh_local.data_collection.repository import DailySelectionRepository
 
 
 class FakeRepository:
@@ -27,9 +28,13 @@ class FakeRepository:
         return self.run
 
     def replace_run_collection(
-        self, *, workspace_id: str, run_id: str, status: str, candidates: tuple, metadata: dict
+        self, *, workspace_id: str, run_id: str, status: str, candidates: tuple,
+        metadata: dict, enqueue_sku_repull: bool = False,
     ) -> None:
-        self.replaced.append({"status": status, "count": len(candidates), "metadata": metadata})
+        self.replaced.append({
+            "status": status, "count": len(candidates), "metadata": metadata,
+            "enqueue_sku_repull": enqueue_sku_repull,
+        })
         self.run = SimpleNamespace(
             run_id=self.run.run_id,
             workspace_id=self.run.workspace_id,
@@ -71,6 +76,7 @@ def _make_runner(
     *,
     rounds: int | None = 2,
     block_event: threading.Event | None = None,
+    on_recovered: object | None = None,
 ) -> module.EmptyCollectionRetryRunner:
     calls: list[str] = []
 
@@ -101,6 +107,7 @@ def _make_runner(
         budget=object(),
         provider_config_resolver=lambda actor: {"api_key": "x"},
         provider_factory=lambda config: object(),
+        on_recovered=on_recovered,
     )
     runner._calls = calls  # type: ignore[attr-defined]
     return runner
@@ -140,6 +147,64 @@ def test_retry_recovers_when_later_round_has_candidates(monkeypatch: pytest.Monk
     assert repository.replaced and repository.replaced[0]["count"] == 2
     assert repository.replaced[0]["metadata"]["collection_retry"]["status"] == "completed"
     assert runner._calls == ["collect", "collect"]  # type: ignore[attr-defined]
+
+
+def test_retry_success_restarts_sku_repull_for_recovered_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _make_run()
+    repository = FakeRepository(run)
+    recovered: list[tuple[str, str]] = []
+    runner = _make_runner(
+        repository,
+        [_collect_result(("c1",))],
+        monkeypatch,
+        on_recovered=lambda actor, run_id: recovered.append((actor.workspace_id, run_id)),
+    )
+    actor = SimpleNamespace(workspace_id="ws-1", actor_id="actor-1")
+
+    runner.maybe_start(actor=actor, run=run)
+
+    _wait_until(lambda: runner.state(actor=actor, run=run)["status"] == "completed")
+    assert recovered == [("ws-1", "run-1")]
+    assert repository.replaced[0]["enqueue_sku_repull"] is True
+
+
+def test_sku_repull_outbox_survives_restart_and_retries(tmp_path) -> None:
+    repository = DailySelectionRepository(tmp_path / "outbox.sqlite3")
+    repository.enqueue_sku_repull(workspace_id="ws-1", run_id="run-1")
+    attempts: list[tuple[str, str]] = []
+
+    failing = module.SkuRepullOutboxDispatcher(
+        repository=repository,
+        callback=lambda actor, run_id: (_ for _ in ()).throw(RuntimeError("temporary")),
+        retry_delay=0,
+    )
+    assert failing.drain_once() is True
+
+    restarted = module.SkuRepullOutboxDispatcher(
+        repository=DailySelectionRepository(tmp_path / "outbox.sqlite3"),
+        callback=lambda actor, run_id: attempts.append((actor.workspace_id, run_id)),
+        retry_delay=0,
+    )
+    assert restarted.drain_once() is True
+    assert attempts == [("ws-1", "run-1")]
+    assert restarted.drain_once() is False
+
+
+def test_sku_repull_outbox_background_start_drains_pending(tmp_path) -> None:
+    repository = DailySelectionRepository(tmp_path / "background-outbox.sqlite3")
+    repository.enqueue_sku_repull(workspace_id="ws-2", run_id="run-2")
+    delivered = threading.Event()
+    dispatcher = module.SkuRepullOutboxDispatcher(
+        repository=repository,
+        callback=lambda actor, run_id: delivered.set(),
+        retry_delay=0.05,
+    )
+
+    dispatcher.start()
+
+    assert delivered.wait(timeout=2)
 
 
 def test_retry_marks_failed_when_all_rounds_empty(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -19,6 +19,7 @@ from .collector import DailySelectionCollector, DailySelectionProvider
 from .criteria import DailySelectionCriteria
 from .empty_collection import (
     EmptyCollectionRetryRunner,
+    SkuRepullOutboxDispatcher,
     empty_collection_retry_state,
 )
 from .filtering import filter_and_score_candidates
@@ -150,12 +151,18 @@ class DailySelectionService:
             provider_config_resolver=provider_config_resolver,
             provider_factory=provider_factory,
         )
+        self._sku_repull_outbox = SkuRepullOutboxDispatcher(
+            repository=repository,
+            callback=lambda actor, run_id: self.auto_start_sku_repull(actor=actor, run_id=run_id),
+        )
         self._empty_collection_retry_runner = EmptyCollectionRetryRunner(
             repository=repository,
             budget=budget,
             provider_config_resolver=provider_config_resolver,
             provider_factory=provider_factory,
+            on_recovered=self._sku_repull_outbox.notify,
         )
+        self._sku_repull_outbox.start()
 
     @classmethod
     def from_database_path(

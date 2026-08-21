@@ -63,6 +63,13 @@ const pricingFeatures: Array<{ key: string; label: string; note: string }> = [
   { key: "product_processing.batch", label: "批量链接处理", note: "整批商品处理任务" },
 ];
 
+function usageServiceLabel(featureKey: string) {
+  if (featureKey === "pod_customization.batch") return "POD 定制";
+  if (featureKey === "product_processing.image_grid_2k") return "四宫格生图";
+  if (featureKey === "product_processing.batch") return "批量链接处理";
+  return "商品文本";
+}
+
 export function PersonalCenterPage() {
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing">("wallet");
@@ -562,7 +569,7 @@ export function PersonalCenterPage() {
                   <tbody>{usageEntries.length ? usageEntries.map((entry) => (
                     <tr key={entry.usage_id}>
                       <td><b>{formatUsageTime(entry.created_at)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
-                      <td>{entry.feature_key === "product_processing.image_grid_2k" ? "智能生图" : entry.feature_key === "product_processing.batch" ? "批量链接处理" : "商品文本"}<small>{entry.model || entry.provider || "等待上游"}</small></td>
+                      <td>{usageServiceLabel(entry.feature_key)}<small>{entry.model || entry.provider || "等待上游"}</small></td>
                       <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" || entry.status === "frozen" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
                       <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
                       <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.usage_id.slice(0, 14)}…</small></td>

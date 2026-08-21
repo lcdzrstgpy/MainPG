@@ -44,6 +44,11 @@ from .service import (
     ProviderFactory,
     RunIdFactory,
 )
+from .plugin_onebound_capture import (
+    PluginOneBoundCaptureDependencies,
+    PluginOneBoundCaptureService,
+    register_plugin_onebound_capture_routes,
+)
 
 
 class DailySelectionFeedbackRequest(BaseModel):
@@ -955,4 +960,7 @@ __all__ = [
     "DailySelectionActor",
     "DailySelectionRouteDependencies",
     "register_daily_selection_routes",
+    "PluginOneBoundCaptureDependencies",
+    "PluginOneBoundCaptureService",
+    "register_plugin_onebound_capture_routes",
 ]

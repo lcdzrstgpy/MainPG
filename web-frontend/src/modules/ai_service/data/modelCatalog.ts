@@ -7,7 +7,7 @@ export const TEXT_MODELS: AiModel[] = [
 ];
 
 export const IMAGE_MODELS: AiModel[] = [
-  { id: "gpt-image-2-1k", name: "GPT Image 2 · 1K", description: "快速商品图创作", capabilities: ["generate", "edit", "pod"] },
+  { id: "gpt-image-2-1k", name: "GPT Image 2 · 1K", description: "快速商品图创作", capabilities: ["generate", "edit"] },
   { id: "gpt-image-2-2k", name: "GPT Image 2 · 2K", description: "高品质商品图创作", capabilities: ["generate", "edit"] },
   { id: "gpt-image-2-4k", name: "GPT Image 2 · 4K", description: "高分辨率商品图创作", capabilities: ["generate", "edit"] },
 ];

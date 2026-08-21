@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterable
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Select, and_, delete, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import Select, and_, delete, func, or_, select, text, update
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import selectinload
+from sqlalchemy.pool import StaticPool
 
 from .database import ProductProcessingDatabase
 from .orm import (
@@ -46,6 +49,10 @@ class StalePreviewRevision(RuntimeError):
 
 class PreviewSlotConflict(StalePreviewRevision):
     """Raised when the target image slot changed after canvas import."""
+
+
+class StaleShopIntakeFence(RuntimeError):
+    """Raised when a shop batch or item no longer owns its intake lease."""
 
 
 class ProductProcessingRepository:
@@ -330,16 +337,208 @@ class ProductProcessingRepository:
                 session.flush()
             return self._draft(draft_row), self._handoff_receipt(receipt_row)
 
-    def draft_by_candidate(self, candidate_id: str, workspace_id: str = "local") -> dict[str, Any] | None:
+    def intake_shop_candidate_with_media(
+        self,
+        *,
+        draft_values: dict[str, Any],
+        media_entries: list[dict[str, Any]],
+        workspace_id: str,
+        candidate_id: str,
+        shop_fence: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Create or refresh one shop draft and its source-media bindings atomically."""
+        for attempt in range(3):
+            try:
+                return self._intake_shop_candidate_with_media_once(
+                    draft_values=draft_values,
+                    media_entries=media_entries,
+                    workspace_id=workspace_id,
+                    candidate_id=candidate_id,
+                    shop_fence=shop_fence,
+                )
+            except IntegrityError:
+                if attempt == 2:
+                    raise
+            except OperationalError as error:
+                if attempt == 2 or "locked" not in str(error).casefold():
+                    raise
+            time.sleep(0.01 * (attempt + 1))
+        raise AssertionError("unreachable")
+
+    def _intake_shop_candidate_with_media_once(
+        self,
+        *,
+        draft_values: dict[str, Any],
+        media_entries: list[dict[str, Any]],
+        workspace_id: str,
+        candidate_id: str,
+        shop_fence: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        with self._shop_intake_transaction() as session:
+            if shop_fence is not None:
+                self._assert_shop_intake_fence(
+                    session, workspace_id=workspace_id, fence=shop_fence
+                )
+            draft_row = session.scalar(
+                select(ProductDraftRow)
+                .where(
+                    ProductDraftRow.workspace_id == workspace_id,
+                    ProductDraftRow.candidate_id == candidate_id,
+                    ProductDraftRow.source_type == "onebound_api",
+                    ProductDraftRow.handoff_id.is_(None),
+                )
+                .order_by(ProductDraftRow.id.desc())
+                .limit(1)
+            )
+            if draft_row is not None and draft_row.status in {"processing", "processed"}:
+                return "skipped", self._draft(draft_row)
+
+            if draft_row is None:
+                draft_row = ProductDraftRow(media_contract_version=2, **draft_values)
+                session.add(draft_row)
+                action = "created"
+            else:
+                for key, value in draft_values.items():
+                    setattr(draft_row, key, value)
+                draft_row.status = "draft"
+                draft_row.media_contract_version = 2
+                draft_row.updated_at = utc_now()
+                action = "refreshed"
+            session.flush()
+
+            draft_id = int(draft_row.id)
+            session.execute(
+                delete(MediaBindingRow).where(
+                    MediaBindingRow.workspace_id == workspace_id,
+                    MediaBindingRow.product_draft_id == draft_id,
+                    MediaBindingRow.role.in_(("main", "gallery", "detail", "sku")),
+                )
+            )
+            asset_by_identity: dict[str, MediaAssetRow] = {}
+            for entry in media_entries:
+                source_identity_hash = str(entry.get("source_identity_hash") or "")
+                asset_row = asset_by_identity.get(source_identity_hash)
+                if asset_row is None:
+                    asset_row = session.scalar(
+                        select(MediaAssetRow).where(
+                            MediaAssetRow.workspace_id == workspace_id,
+                            MediaAssetRow.source_identity_hash == source_identity_hash,
+                        )
+                    )
+                    if asset_row is None:
+                        asset_row = MediaAssetRow(
+                            workspace_id=workspace_id,
+                            origin="remote_source",
+                            source_url=str(entry.get("source_url") or ""),
+                            source_identity_hash=source_identity_hash,
+                            status="pending",
+                        )
+                        session.add(asset_row)
+                        session.flush()
+                    asset_by_identity[source_identity_hash] = asset_row
+                role = str(entry.get("role") or "gallery")
+                slot_id = str(entry.get("slot_id") or "")
+                sku_id = str(entry.get("sku_id") or "")
+                variant_label = str(entry.get("variant_label") or "")
+                sort_order = int(entry.get("sort_order") or 0)
+                session.add(
+                    MediaBindingRow(
+                        workspace_id=workspace_id,
+                        asset_id=asset_row.id,
+                        product_draft_id=draft_id,
+                        task_id=int(entry.get("task_id") or 0),
+                        task_item_id=int(entry.get("task_item_id") or 0),
+                        role=role,
+                        slot_id=slot_id,
+                        sku_id=sku_id,
+                        variant_label=variant_label,
+                        sort_order=sort_order,
+                        binding_key=media_binding_key(
+                            draft_id,
+                            role,
+                            slot_id,
+                            sku_id,
+                            variant_label,
+                            source_identity_hash,
+                            sort_order,
+                        ),
+                        active=1,
+                    )
+                )
+            session.flush()
+            return action, self._draft(draft_row)
+
+    @staticmethod
+    def _assert_shop_intake_fence(session: Any, *, workspace_id: str, fence: dict[str, Any]) -> None:
+        """Validate both leases while holding the same SQLite writer transaction."""
+        required = (
+            "batch_id", "batch_lease_owner", "batch_lease_token",
+            "item_id", "item_lease_owner", "item_lease_token", "offer_id",
+        )
+        if any(not str(fence.get(key) or "") for key in required):
+            raise StaleShopIntakeFence("shop intake fence is incomplete")
+        row = session.execute(
+            text(
+                """SELECT 1
+                FROM shop_collection_batches AS batch
+                JOIN shop_collection_items AS item ON item.batch_id = batch.batch_id
+                WHERE batch.batch_id = :batch_id
+                  AND batch.workspace_id = :workspace_id
+                  AND batch.status = 'enriching'
+                  AND batch.lease_owner = :batch_lease_owner
+                  AND batch.lease_token = :batch_lease_token
+                  AND batch.lease_expires_at > datetime('now')
+                  AND item.item_id = :item_id
+                  AND item.workspace_id = :workspace_id
+                  AND item.offer_id = :offer_id
+                  AND item.detail_status = 'running'
+                  AND item.lease_owner = :item_lease_owner
+                  AND item.lease_token = :item_lease_token
+                  AND item.lease_expires_at > datetime('now')"""
+            ),
+            {key: str(fence[key]) for key in required} | {"workspace_id": workspace_id},
+        ).first()
+        if row is None:
+            raise StaleShopIntakeFence("shop intake lease is stale or batch was cancelled")
+
+    @contextmanager
+    def _shop_intake_transaction(self):
+        """Acquire SQLite's writer lease before reading a replayable candidate."""
+        if isinstance(self.database.engine.pool, StaticPool):
+            with self.database.shop_intake_lock:
+                with self.database.sessions.begin() as session:
+                    yield session
+            return
+        with self.database.sessions() as session:
+            if session.get_bind().dialect.name != "sqlite":
+                with session.begin():
+                    yield session
+                return
+            session.execute(text("BEGIN IMMEDIATE"))
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+    def draft_by_candidate(
+        self,
+        candidate_id: str,
+        workspace_id: str = "local",
+        *,
+        source_type: str | None = None,
+    ) -> dict[str, Any] | None:
         if not candidate_id:
             return None
         with self.database.sessions() as session:
-            row = session.scalar(
-                select(ProductDraftRow).where(
-                    ProductDraftRow.workspace_id == workspace_id,
-                    ProductDraftRow.candidate_id == candidate_id,
-                ).order_by(ProductDraftRow.id.desc()).limit(1)
+            statement = select(ProductDraftRow).where(
+                ProductDraftRow.workspace_id == workspace_id,
+                ProductDraftRow.candidate_id == candidate_id,
             )
+            if source_type is not None:
+                statement = statement.where(ProductDraftRow.source_type == source_type)
+            row = session.scalar(statement.order_by(ProductDraftRow.id.desc()).limit(1))
             return self._draft(row) if row else None
 
     def get_draft(
