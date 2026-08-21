@@ -35,11 +35,11 @@ test("workspace does not import or render the AI service page", () => {
   assert.doesNotMatch(source, /case "ai_service":/);
 });
 
-test("system admin page is owned by the workspace system_admin module", () => {
+test("workspace does not render the internal system admin page", () => {
   assert.doesNotMatch(source, /BasicSettingsPage/);
   assert.doesNotMatch(source, /case "basic_settings":/);
-  assert.match(source, /SystemAdminPage/);
-  assert.match(source, /case "system_admin":/);
+  assert.doesNotMatch(source, /SystemAdminPage/);
+  assert.doesNotMatch(source, /case "system_admin":/);
 });
 
 test("product processing distinguishes remote service outages from API key failures", () => {

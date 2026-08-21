@@ -28,7 +28,6 @@ import {
   markDimensionNotificationRead,
 } from "../../modules/product_processing/api/dimensionCanvasApi";
 import { PersonalCenterPage } from "../../modules/personal_center/pages/PersonalCenterPage";
-import { SystemAdminPage } from "../../modules/basic_settings/pages/SystemAdminPage";
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
@@ -421,8 +420,6 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         return <DimensionCanvasPage initialBatchId={tab.dimensionBatchId} initialItemId={tab.dimensionItemId} onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
       case "personal_center":
         return <PersonalCenterPage />;
-      case "system_admin":
-        return <SystemAdminPage />;
       default:
         return <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;
     }

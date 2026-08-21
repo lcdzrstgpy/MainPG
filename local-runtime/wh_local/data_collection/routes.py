@@ -221,7 +221,9 @@ def register_daily_selection_routes(
                 progress_tracker.mark_cancelled(task_id, run_id=run.run_id)
                 return
             progress_tracker.complete(task_id, run_id=run.run_id)
-            # 与同步接口保持一致：结果返回后才启动 SKU 缺失项的低频后台补齐。
+            # 结果返回后：先处理「空采集自动重试」（0 候选时按同一 criteria
+            # 后台重采），再启动 SKU 缺失项的低频后台补齐。
+            service.auto_retry_empty_collection(actor=actor, run_id=run.run_id)
             service.auto_start_sku_repull(actor=actor, run_id=run.run_id)
         except (
             DailySelectionCriteriaError,
@@ -292,6 +294,8 @@ def register_daily_selection_routes(
         try:
             run = service.preview(actor=actor, request=request)
             # 采集预览不写入草稿池：候选需用户在每日选品页确认入池后才会进入。
+            # 空采集（0 候选）自动重试后，再启动 SKU 缺失项补齐。
+            background_tasks.add_task(service.auto_retry_empty_collection, actor=actor, run_id=run.run_id)
             background_tasks.add_task(service.auto_start_sku_repull, actor=actor, run_id=run.run_id)
             return run
         except (
@@ -703,6 +707,19 @@ def register_daily_selection_routes(
     ) -> Mapping[str, Any]:
         try:
             return service.cancel_sku_repull(actor=actor, run_id=run_id)
+        except DailySelectionRunNotFound as error:
+            raise _run_not_found(error) from error
+
+    @router.get(
+        "/desktop/daily-selection/runs/{run_id}/collection-retry/state",
+        response_model=dict[str, Any],
+    )
+    def collection_retry_state(
+        run_id: str,
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return service.get_collection_retry_state(actor=actor, run_id=run_id)
         except DailySelectionRunNotFound as error:
             raise _run_not_found(error) from error
 

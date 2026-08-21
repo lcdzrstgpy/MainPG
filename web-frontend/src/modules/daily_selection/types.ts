@@ -128,3 +128,11 @@ export type SkuRepullState = {
   message: string;
   updated_at: string;
 };
+
+export type CollectionRetryState = {
+  status: "idle" | "running" | "completed" | "failed";
+  round: number;
+  total: number;
+  message: string;
+  updated_at: string;
+};

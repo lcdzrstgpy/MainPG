@@ -1,4 +1,5 @@
 import type {
+  CollectionRetryState,
   DailySelectionCriteria,
   DailySelectionConfirmResult,
   DailySelectionRun,
@@ -68,4 +69,8 @@ export function cancelSkuRepull(runId: string): Promise<SkuRepullState> {
   return apiRequest(`/desktop/daily-selection/runs/${encodeURIComponent(runId)}/sku-repull/cancel`, {
     method: "POST",
   });
+}
+
+export function getCollectionRetryState(runId: string): Promise<CollectionRetryState> {
+  return apiRequest(`/desktop/daily-selection/runs/${encodeURIComponent(runId)}/collection-retry/state`);
 }

@@ -5,6 +5,7 @@ import {
   cancelCollectionTask,
   cancelSkuRepull,
   confirmCandidates,
+  getCollectionRetryState,
   getCollectionTask,
   getSelectionRun,
   getSkuRepullState,
@@ -17,6 +18,7 @@ import { getApiToken } from "../../../shared/api/apiClient";
 import type {
   CollectionMode,
   CollectionPlatform,
+  CollectionRetryState,
   DailySelectionCandidate,
   DailySelectionCriteria,
   DailySelectionRun,
@@ -280,6 +282,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [skuRepull, setSkuRepull] = useState<SkuRepullState | null>(null);
   const [skuRepullBusy, setSkuRepullBusy] = useState(false);
+  const [collectionRetry, setCollectionRetry] = useState<CollectionRetryState | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [noticeLeaving, setNoticeLeaving] = useState(false);
@@ -383,10 +386,15 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           if (stopped) return;
           setActiveRun(run);
           setSelectedCandidates([]);
-          setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选`);
           setCollecting(false);
           setCollectionTaskId(null);
           void listSelectionRuns().then(setRuns).catch(() => undefined);
+          if (run.candidate_count === 0) {
+            // 空采集：后台已按同一条件自动重采，同步一次状态并让轮询接管展示
+            void syncCollectionRetry(run.run_id);
+          } else {
+            setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选`);
+          }
           return;
         }
         if (task.status === "failed") {
@@ -501,6 +509,82 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     }, 1500);
     return () => window.clearInterval(timer);
   }, [activeRun, skuRepull?.status]);
+
+  // 打开批次时同步一次空采集自动重试状态（内存任务或历史轮次持久化）；
+  // 重试已在后台完成后自动刷新批次，避免停留在 0 条的旧数据。
+  useEffect(() => {
+    if (!activeRun) {
+      setCollectionRetry(null);
+      return;
+    }
+    if (activeRun.candidate_count > 0) {
+      setCollectionRetry(null);
+      return;
+    }
+    let alive = true;
+    getCollectionRetryState(activeRun.run_id)
+      .then((state) => {
+        if (!alive) return;
+        setCollectionRetry(state);
+        if (state.status === "completed") {
+          void (async () => {
+            try {
+              const run = await getSelectionRun(activeRun.run_id);
+              if (!alive) return;
+              setActiveRun(run);
+              setSelectedCandidates([]);
+              void listSelectionRuns().then(setRuns).catch(() => undefined);
+            } catch {
+              // 刷新失败保持当前展示
+            }
+          })();
+        }
+      })
+      .catch(() => { if (alive) setCollectionRetry(null); });
+    return () => { alive = false; };
+  }, [activeRun]);
+
+  // 空采集自动重试轮询：运行中每秒刷新状态；结束后刷新批次展示最新候选。
+  useEffect(() => {
+    if (!activeRun || collectionRetry?.status !== "running") return;
+    const timer = window.setInterval(async () => {
+      try {
+        const state = await getCollectionRetryState(activeRun.run_id);
+        setCollectionRetry(state);
+        if (state.status !== "running") {
+          const run = await getSelectionRun(activeRun.run_id);
+          setActiveRun(run);
+          setSelectedCandidates([]);
+          void listSelectionRuns().then(setRuns).catch(() => undefined);
+          if (state.status === "completed") {
+            setNotice(`批次 ${activeRun.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选（自动重试成功）`);
+          }
+        }
+      } catch (requestError) {
+        setError(requestError instanceof Error ? requestError.message : "空采集重试进度读取失败");
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [activeRun, collectionRetry?.status]);
+
+  // 空采集：同步一次后台自动重试状态；已完成则直接刷新批次为最新候选。
+  async function syncCollectionRetry(runId: string) {
+    try {
+      const state = await getCollectionRetryState(runId);
+      setCollectionRetry(state);
+      if (state.status === "completed") {
+        const run = await getSelectionRun(runId);
+        setActiveRun(run);
+        setSelectedCandidates([]);
+        void listSelectionRuns().then(setRuns).catch(() => undefined);
+        setNotice(`批次 ${runId.slice(0, 8)} 已返回 ${run.candidate_count} 个候选（自动重试成功）`);
+      } else if (state.status !== "running") {
+        setNotice("本次未采集到商品，系统已自动重试仍无结果，可稍后手动重新采集");
+      }
+    } catch {
+      setCollectionRetry(null);
+    }
+  }
 
   async function startSkuRepullNow() {
     if (!activeRun || skuRepull?.status === "running") return;
@@ -1225,6 +1309,25 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                     )}
                   </span>
                 )}
+              </div>
+            )}
+            {activeRun && collectionRetry && collectionRetry.status !== "idle" && activeRun.candidate_count === 0 && (
+              <div className={`collection-retry-control ${collectionRetry.status === "running" ? "is-running" : ""}`}>
+                <span className="collection-retry-state">
+                  {collectionRetry.status === "running" ? (
+                    <>
+                      <span className="collection-retry-icon" aria-hidden="true">↻</span>
+                      <b>正在自动重新尝试采集（第 {collectionRetry.round} 轮）…</b>
+                    </>
+                  ) : collectionRetry.status === "completed" ? (
+                    <>
+                      <span className="collection-retry-icon" aria-hidden="true">✓</span>
+                      <b>自动重试成功，正在更新候选…</b>
+                    </>
+                  ) : (
+                    <i>{collectionRetry.message}</i>
+                  )}
+                </span>
               </div>
             )}
             <label className="select-all-check" title={allCandidatesSelected ? "取消全选" : "全选"}>

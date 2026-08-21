@@ -9,7 +9,9 @@ read the current round, progress, and cancel the round at any time.
 
 from __future__ import annotations
 
+import os
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
@@ -17,6 +19,14 @@ from typing import Any, Mapping, Sequence
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _repull_worker_count() -> int:
+    """并发补齐的工作线程数，默认 4，可用 WH_SKU_REPULL_WORKERS 覆盖（1-8）。"""
+    try:
+        return max(1, min(8, int(os.environ.get("WH_SKU_REPULL_WORKERS", "4"))))
+    except ValueError:
+        return 4
 
 
 def candidate_sku_incomplete(candidate: Any) -> bool:
@@ -55,6 +65,7 @@ class SkuRepullJob:
     status: str = "running"  # running / completed / cancelled / failed
     message: str = ""
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    progress_lock: threading.Lock = field(default_factory=threading.Lock)
     updated_at: str = ""
 
     def to_state(self) -> dict[str, Any]:
@@ -160,29 +171,25 @@ class SkuRepullRunner:
             return
         from .normalizer import enrich_candidate_with_detail
 
-        for candidate in targets:
-            if job.cancel_event.is_set():
-                break
-            try:
-                response = provider.get_item_detail(candidate.offer_id)
-                if response.error is None:
-                    enriched = enrich_candidate_with_detail(
-                        candidate, response.response, evidence=response.audit
-                    )
-                    self._repository.update_candidate(
-                        workspace_id=job.workspace_id,
-                        run_id=job.run_id,
-                        candidate=enriched,
-                        timestamp=_now(),
-                    )
-                    job.succeeded += 1
-                else:
-                    job.failed += 1
-            except Exception:
-                job.failed += 1
-            finally:
-                job.done += 1
-                job.updated_at = _now()
+        # 补齐是纯 IO（逐条拉取 1688 详情），线程池并发可显著缩短轮次时长。
+        with ThreadPoolExecutor(
+            max_workers=_repull_worker_count(), thread_name_prefix="sku-repull"
+        ) as executor:
+            futures = {
+                executor.submit(
+                    self._repull_one,
+                    job,
+                    provider,
+                    enrich_candidate_with_detail,
+                    candidate,
+                ): candidate
+                for candidate in targets
+            }
+            for _ in as_completed(futures):
+                if job.cancel_event.is_set():
+                    for pending in futures:
+                        pending.cancel()
+                    break
         if job.status == "running" and job.cancel_event.is_set():
             # 取消标志可能在某个候选取回期间被设置：以用户请求为准，
             # 本轮标记为已中断而不是已完成。
@@ -197,6 +204,39 @@ class SkuRepullRunner:
             )
             job.updated_at = _now()
         self._persist(actor, job)
+
+    def _repull_one(
+        self,
+        job: SkuRepullJob,
+        provider: Any,
+        enrich: Any,
+        candidate: Any,
+    ) -> None:
+        """并发执行单个候选的补齐：拉详情 → 富化 → 落库 → 计数。"""
+        if job.cancel_event.is_set():
+            return
+        try:
+            response = provider.get_item_detail(candidate.offer_id)
+            if response.error is None:
+                enriched = enrich(candidate, response.response, evidence=response.audit)
+                self._repository.update_candidate(
+                    workspace_id=job.workspace_id,
+                    run_id=job.run_id,
+                    candidate=enriched,
+                    timestamp=_now(),
+                )
+                with job.progress_lock:
+                    job.succeeded += 1
+            else:
+                with job.progress_lock:
+                    job.failed += 1
+        except Exception:
+            with job.progress_lock:
+                job.failed += 1
+        finally:
+            with job.progress_lock:
+                job.done += 1
+                job.updated_at = _now()
 
     def _persist(self, actor: Any, job: SkuRepullJob) -> None:
         """Record the round outcome in run metadata so it survives restarts."""

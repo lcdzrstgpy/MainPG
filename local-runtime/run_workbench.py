@@ -29,6 +29,11 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
+# 全量开启产品处理客户端直连模式：任务走批次冻结 + 客户端直连（火山方舟/无印），
+# 不再经服务器 AI 网关中转（网关并发闸会串行化图片生成导致处理变慢）。
+# setdefault 允许运维用显式环境变量覆盖关闭（WH_PRODUCT_AI_DIRECT=0）。
+os.environ.setdefault("WH_PRODUCT_AI_DIRECT", "1")
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8010
 

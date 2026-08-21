@@ -17,6 +17,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .budget import TaskApiBudget
 from .collector import DailySelectionCollector, DailySelectionProvider
 from .criteria import DailySelectionCriteria
+from .empty_collection import (
+    EmptyCollectionRetryRunner,
+    empty_collection_retry_state,
+)
 from .filtering import filter_and_score_candidates
 from .repository import (
     DailySelectionFeedback,
@@ -131,6 +135,12 @@ class DailySelectionService:
         self._run_id_factory = run_id_factory or (lambda: str(uuid.uuid4()))
         self._sku_repull_runner = SkuRepullRunner(
             repository=repository,
+            provider_config_resolver=provider_config_resolver,
+            provider_factory=provider_factory,
+        )
+        self._empty_collection_retry_runner = EmptyCollectionRetryRunner(
+            repository=repository,
+            budget=budget,
             provider_config_resolver=provider_config_resolver,
             provider_factory=provider_factory,
         )
@@ -323,6 +333,24 @@ class DailySelectionService:
             targets=incomplete_candidates(run),
             previous_round=previous_round,
         )
+
+    def auto_retry_empty_collection(
+        self, *, actor: DailySelectionActor, run_id: str
+    ) -> Mapping[str, Any]:
+        """Automatically re-run collection when a batch collected zero candidates.
+
+        采集接口偶尔因上游波动返回空结果；这里在后台按同一 criteria 自动
+        重采最多 WH_DAILY_SELECTION_COLLECT_RETRIES 轮（默认 2），一旦采到
+        候选即原位替换该批次，保证不因一次接口波动导致整个批次为空。
+        """
+        run = self.get_run(actor=actor, run_id=run_id)
+        return self._empty_collection_retry_runner.maybe_start(actor=actor, run=run)
+
+    def get_collection_retry_state(
+        self, *, actor: DailySelectionActor, run_id: str
+    ) -> Mapping[str, Any]:
+        run = self.get_run(actor=actor, run_id=run_id)
+        return self._empty_collection_retry_runner.state(actor=actor, run=run)
 
     def get_sku_repull_state(
         self, *, actor: DailySelectionActor, run_id: str

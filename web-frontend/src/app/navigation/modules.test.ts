@@ -43,8 +43,7 @@ test("system configuration is not a standalone workspace module", () => {
   assert.equal(workspacePageModules.some((module) => module.id === "basic_settings"), false);
 });
 
-test("system admin module is registered for admin-only roles", () => {
-  const module = workspaceModules.find((item) => item.id === "system_admin");
-  assert.equal(module && "adminOnly" in module ? module.adminOnly === true : false, true);
-  assert.equal(workspacePageModules.some((item) => item.id === "system_admin"), true);
+test("system admin module is not registered in user-visible workspace navigation", () => {
+  assert.equal(workspaceModules.some((item) => item.id === "system_admin"), false);
+  assert.equal(workspacePageModules.some((item) => item.id === "system_admin"), false);
 });

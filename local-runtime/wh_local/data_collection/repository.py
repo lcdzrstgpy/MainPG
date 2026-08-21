@@ -558,6 +558,70 @@ class DailySelectionRepository:
         finally:
             connection.close()
 
+    def replace_run_collection(
+        self,
+        *,
+        workspace_id: str,
+        run_id: str,
+        status: str,
+        candidates: Sequence[DailySelectionCandidate],
+        metadata: Mapping[str, Any] | BaseModel | None = None,
+    ) -> None:
+        """Replace a run's collected candidates and terminal state.
+
+        Used by the background empty-collection retry: the first attempt returned
+        zero candidates due to upstream fluctuation, and a later round produced
+        a result that should replace the placeholder run in place.
+        """
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        run_id = _required_text(run_id, "run_id")
+        status = _required_text(status, "status")
+        stamp = _now()
+        metadata_json = _dump_json(metadata) if metadata is not None else None
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._owned_run(connection, workspace_id=workspace_id, run_id=run_id)
+            connection.execute(
+                """
+                DELETE FROM daily_selection_candidates
+                WHERE workspace_id = ? AND run_id = ?
+                """,
+                (workspace_id, run_id),
+            )
+            for candidate in tuple(candidates):
+                self._upsert_candidate(
+                    connection,
+                    workspace_id=workspace_id,
+                    run_id=run_id,
+                    candidate=candidate,
+                    timestamp=stamp,
+                )
+            if metadata_json is not None:
+                connection.execute(
+                    """
+                    UPDATE daily_selection_runs
+                    SET status = ?, candidate_count = ?, metadata_json = ?, updated_at = ?
+                    WHERE workspace_id = ? AND run_id = ?
+                    """,
+                    (status, len(tuple(candidates)), metadata_json, stamp, workspace_id, run_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE daily_selection_runs
+                    SET status = ?, candidate_count = ?, updated_at = ?
+                    WHERE workspace_id = ? AND run_id = ?
+                    """,
+                    (status, len(tuple(candidates)), stamp, workspace_id, run_id),
+                )
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def _initialize(self) -> None:
         migration = (
             Path(__file__).with_name("migrations") / "001_daily_selection.sql"

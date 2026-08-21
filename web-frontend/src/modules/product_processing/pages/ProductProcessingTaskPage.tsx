@@ -76,6 +76,30 @@ function api(): ApiContext {
   return productProcessingApiContext();
 }
 
+// 「最大并行」线程数记忆：用户设置一次后，后续新建采集任务沿用该值，
+// 无需每次重新手动设置。仅记录 1~20 范围内的合法值。
+const MAX_PARALLEL_STORAGE_KEY = 'wh_product_processing_max_parallel';
+const MAX_PARALLEL_DEFAULT = 8;
+
+function readSavedMaxParallel(): number {
+  try {
+    const raw = window.localStorage.getItem(MAX_PARALLEL_STORAGE_KEY);
+    const value = raw === null ? NaN : Number(raw);
+    if (Number.isFinite(value) && value >= 1 && value <= 20) return Math.round(value);
+  } catch {
+    // localStorage 不可用时回退默认值
+  }
+  return MAX_PARALLEL_DEFAULT;
+}
+
+function persistMaxParallel(value: number): void {
+  try {
+    window.localStorage.setItem(MAX_PARALLEL_STORAGE_KEY, String(value));
+  } catch {
+    // localStorage 不可用时静默忽略
+  }
+}
+
 function taskStatusLabel(status: string): string {
   return ({
     queued: '等待处理',
@@ -99,7 +123,9 @@ function formatDuration(seconds?: number): string {
 
 export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck }: Props) {
   const ctx = api();
-  const [options, setOptions] = useState<ProductProcessingOptions>(
+  // 新建采集任务时「最大并行」沿用用户上次选择的线程数；从历史任务打开时
+  // 使用该任务保存时的设置（initialOptions），不被本地记忆覆盖。
+  const [options, setOptions] = useState<ProductProcessingOptions>(() =>
     initialOptions || {
       targetSite: 'US',
       targetLanguage: 'en',
@@ -109,8 +135,9 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       includeProductVideo: false,
       skipDuplicates: false,
       ipCheck: true,
-      maxParallelDrafts: 8,
+      maxParallelDrafts: readSavedMaxParallel(),
       imageTemplate: 'A',
+      autoRepull: true,
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
@@ -121,6 +148,15 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   const startInFlightRef = useRef(false);
   const startRequestRef = useRef<{ signature: string; key: string } | null>(null);
   const pollGenerationRef = useRef(0);
+  // 失败商品明细默认折叠：自动补跑已覆盖大部分缺陷项，避免把错误明细
+  // 直接摊在结果页上（展开才可见并可手动重试）。
+  const [showFailures, setShowFailures] = useState(false);
+
+  // 失败项自动补跑（后台自动重处理）状态
+  const autoRepull = batch?.auto_repull ?? null;
+  const autoRepullRunning = autoRepull?.status === 'running';
+  const autoRepullDone = autoRepull?.status === 'completed';
+  const autoRepullFailed = autoRepull?.status === 'failed';
 
   const failureItems = useMemo(
     () => batch?.items.filter(
@@ -235,6 +271,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       ip_check: options.ipCheck,
       max_parallel_drafts: options.maxParallelDrafts,
       image_template: options.imageTemplate || 'A',
+      // 用户选择是否对技术可重试的失败项自动补跑（默认开启）
+      auto_repull: options.autoRepull !== false,
       // 兼容旧 API 字段；新任务统一走四宫格策略，不再由用户选择。
       image_generation_count: 4,
     };
@@ -299,7 +337,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     setError('');
     try {
       const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/retry-attention`, {
-        body: { draft_ids: draftIds },
+        body: { draft_ids: draftIds, auto_repull: options.autoRepull !== false },
       });
       setBatch(data);
       notify(data.message || `已提交 ${draftIds.length} 个失败项重新处理`);
@@ -330,6 +368,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           ip_check: options.ipCheck,
           max_parallel_drafts: options.maxParallelDrafts,
           image_template: options.imageTemplate || 'A',
+          // 强制入库是用户明确放行，不再触发失败项自动补跑
+          auto_repull: false,
         },
       });
       setBatch(data);
@@ -425,6 +465,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
               ))}
               <label className="verify-scope-check"><input type="checkbox" checked={options.includeProductVideo} onChange={(e) => setOptions((p) => ({ ...p, includeProductVideo: e.target.checked }))} />生成商品视频</label>
               <label className="verify-scope-check"><input type="checkbox" checked={options.skipDuplicates} onChange={(e) => setOptions((p) => ({ ...p, skipDuplicates: e.target.checked }))} />跳过已处理</label>
+              <label className="verify-scope-check" title="处理结束后，对技术可重试的失败项（如图片质量、AI 服务波动）自动在后台重跑一轮，无需手动确认"><input type="checkbox" checked={options.autoRepull !== false} onChange={(e) => setOptions((p) => ({ ...p, autoRepull: e.target.checked }))} />失败项自动重跑</label>
               <label className="verify-scope-check"><input type="checkbox" checked={options.ipCheck} onChange={(e) => setOptions((p) => ({ ...p, ipCheck: e.target.checked }))} />侵权词过滤</label>
             </div>
             <div className="verify-form-row">
@@ -449,7 +490,11 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
             </div>
             <div className="verify-slider-row">
               <span className="verify-scope-label">最大并行：</span>
-              <input className="verify-slider" type="range" min={1} max={20} step={1} value={options.maxParallelDrafts} onChange={(e) => setOptions((p) => ({ ...p, maxParallelDrafts: Number(e.target.value) || 1 }))} />
+              <input className="verify-slider" type="range" min={1} max={20} step={1} value={options.maxParallelDrafts} onChange={(e) => {
+                const value = Number(e.target.value) || 1;
+                persistMaxParallel(value);
+                setOptions((p) => ({ ...p, maxParallelDrafts: value }));
+              }} />
               <span className="verify-slider-value">{options.maxParallelDrafts} 线程{options.maxParallelDrafts <= 1 ? '（串行）' : ''}</span>
             </div>
             <div className="verify-actions">
@@ -502,6 +547,13 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <div className="verify-count">技术可重试 <b>{batch.technical_retryable_count}</b></div>
                   <div className="verify-count">配置阻断 <b>{batch.configuration_blocked_count}</b></div>
                 </div>
+                {(autoRepullRunning || autoRepullDone || autoRepullFailed) && autoRepull && (
+                  <div className={`verify-repull-banner ${autoRepull.status}`} role="status">
+                    <i className={`iconfont ${autoRepullRunning ? 'icon-loading' : autoRepullDone ? 'icon-check-circle' : 'icon-infomation'}`} aria-hidden="true" />
+                    <span>{autoRepull.message}</span>
+                    {autoRepullRunning && <em>无需手动操作，完成后自动刷新</em>}
+                  </div>
+                )}
                 <div className="verify-actions">
                   {batchProcessing && (
                     <button
@@ -529,8 +581,11 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           {failureItems.length > 0 && (
             <section className="verify-section">
               <div className="verify-section-head">
-                <h2>失败商品</h2>
+                <h2>失败商品 <span className="verify-failure-count">（{failureItems.length} 项{autoRepullRunning ? ' · 自动补跑中' : ''}）</span></h2>
                 <span className="verify-actions">
+                  <button className="btn-mini" onClick={() => setShowFailures((v) => !v)} title={showFailures ? '收起失败明细' : '展开失败明细，可手动重新处理或知晓入库'}>{showFailures ? '收起明细' : '查看明细'}</button>
+                  {showFailures && (
+                    <>
                   {technicalFailureItems.length > 0 && (
                     <button
                       className="btn-mini primary"
@@ -555,8 +610,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       title={batchProcessing ? '当前批次处理中，完成后可操作' : '主图存在多个或遮挡主体；确认可售后跳过主体识别门，继续文案与生图直至入库'}
                     ><i className="iconfont icon-check-circle" aria-hidden="true" />全部确认主体可售（{identityFailureItems.length}）</button>
                   )}
+                    </>
+                  )}
                 </span>
               </div>
+              {showFailures && (
+                <>
                   {hasAiConfigIssue && (
                     <p className="verify-ai-config-hint"><i className="iconfont icon-infomation" aria-hidden="true" />{AI_CONFIG_HINT}</p>
                   )}
@@ -612,6 +671,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   })}
                 </tbody>
               </table>
+                </>
+              )}
             </section>
           )}
         </div>

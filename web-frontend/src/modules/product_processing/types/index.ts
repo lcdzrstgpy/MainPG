@@ -158,6 +158,8 @@ export interface ProductProcessingOptions {
   imageTemplate?: 'A' | 'B';
   /** 历史/API 兼容字段；新前端任务固定发送 4，不再向用户暴露。 */
   imageGenerationCount?: 1 | 2 | 4;
+  /** 失败项自动补跑：任务结束后对技术可重试的失败项后台自动重跑一轮（默认开启） */
+  autoRepull?: boolean;
 }
 
 /** 生图提示词模板注册表（对齐后端 IMAGE_TEMPLATES） */
@@ -414,6 +416,14 @@ export interface TaskOutputsResponse {
   technical_retryable_count: number;
   configuration_blocked_count: number;
   skipped_count: number;
+  /** 失败项自动补跑（后台自动重处理）状态；未触发时为 null */
+  auto_repull?: {
+    round: number;
+    total: number;
+    status: 'running' | 'completed' | 'failed';
+    message: string;
+    updated_at: string;
+  } | null;
   output_file: string;
   error_report_file: string;
   video_manifest_file: string;

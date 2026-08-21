@@ -282,10 +282,83 @@
   border-color: #fecdd3;
 }
 
+/* ── 顶部积分概览指标条 ── */
+.personal-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.personal-stat {
+  display: grid;
+  gap: 6px;
+  padding: 18px 20px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+}
+
+.personal-stat.is-balance {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #0f172a, #0b5d87);
+  box-shadow: 0 16px 34px rgba(11, 93, 135, 0.24);
+}
+
+.personal-stat span {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #64748b;
+}
+
+.personal-stat.is-balance span {
+  opacity: 0.75;
+  color: #fff;
+}
+
+.personal-stat b {
+  font-size: 26px;
+  letter-spacing: -0.03em;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.personal-stat.is-balance b {
+  color: #fff;
+}
+
+.personal-stats-refresh {
+  justify-self: start;
+  padding: 5px 12px;
+  margin-top: 4px;
+  border: 1px solid #dbe5ef;
+  border-radius: 999px;
+  color: #64748b;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+  transition: border-color 0.16s ease, color 0.16s ease;
+}
+
+.personal-stats-refresh:hover {
+  border-color: #7cc7ee;
+  color: #075985;
+}
+
 .personal-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 18px;
+  align-items: start;
+}
+
+.personal-stack {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
 }
 
 .personal-content-layout {
@@ -337,7 +410,7 @@
 
 .personal-panel-content { min-width: 0; }
 
-.usage-card { min-height: 480px; }
+.usage-card { min-height: 0; }
 .usage-card .personal-card-title > div { flex: 1; }
 .usage-card .personal-card-title small { display: block; margin-top: 3px; color: #718096; font-size: 12px; font-weight: 500; }
 
@@ -412,35 +485,10 @@
   letter-spacing: -0.04em;
 }
 
-.wallet-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.wallet-metrics div {
-  padding: 12px;
-  border-radius: 16px;
-  background: #f7fbff;
-}
-
-.wallet-metrics span,
-.wallet-metrics b {
-  display: block;
-}
-
-.wallet-metrics span,
-.wallet-note,
 .order-row span,
 .payment-result span,
 .empty-orders {
   color: #64748b;
-}
-
-.wallet-note {
-  margin: 14px 0 0;
-  line-height: 1.6;
 }
 
 .provider-switch,
@@ -571,13 +619,13 @@
     grid-template-columns: 1fr;
   }
 
+  .personal-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .personal-grid {
     display: flex;
     flex-direction: column;
-  }
-
-  .wallet-metrics {
-    grid-template-columns: 1fr;
   }
 
   .personal-hero {
@@ -592,6 +640,10 @@
 }
 
 @media (max-width: 620px) {
+  .personal-stats {
+    grid-template-columns: 1fr;
+  }
+
   .personal-security-pill {
     align-items: flex-start;
     flex-wrap: wrap;

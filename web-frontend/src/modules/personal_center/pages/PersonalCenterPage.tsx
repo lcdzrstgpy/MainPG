@@ -281,6 +281,26 @@ export function PersonalCenterPage() {
       {error && <div className="personal-alert is-error">{error}</div>}
       {loading && <div className="personal-alert">正在读取服务器账户与积分数据...</div>}
 
+      <div className="personal-stats">
+        <div className="personal-stat is-balance">
+          <span>可用积分</span>
+          <b>{summary?.wallet.available_points.toLocaleString() ?? "--"}</b>
+        </div>
+        <div className="personal-stat">
+          <span>总积分</span>
+          <b>{summary?.wallet.points_balance.toLocaleString() ?? "--"}</b>
+        </div>
+        <div className="personal-stat">
+          <span>冻结积分</span>
+          <b>{summary?.wallet.frozen_points.toLocaleString() ?? "--"}</b>
+        </div>
+        <div className="personal-stat">
+          <span>换算比例</span>
+          <b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b>
+          <button type="button" className="personal-stats-refresh" onClick={refresh} aria-label="刷新余额">↻ 刷新</button>
+        </div>
+      </div>
+
       <div className="personal-content-layout">
         <aside className="personal-subnav" aria-label="个人中心二级导航">
           <button type="button" className={activePanel === "wallet" ? "is-active" : ""} onClick={() => setActivePanel("wallet")}>
@@ -294,24 +314,6 @@ export function PersonalCenterPage() {
 
         <div className="personal-panel-content">
         {activePanel === "wallet" ? <div className="personal-grid">
-        <article className="personal-card wallet-card">
-          <div className="personal-card-title">
-            <span className="iconfont icon-wallet-fill" aria-hidden="true" />
-            <h2>积分钱包</h2>
-            <button type="button" onClick={refresh}>刷新</button>
-          </div>
-          <div className="wallet-balance">
-            <span>可用积分</span>
-            <strong>{summary?.wallet.available_points.toLocaleString() ?? "--"}</strong>
-          </div>
-          <div className="wallet-metrics">
-            <div><span>总积分</span><b>{summary?.wallet.points_balance.toLocaleString() ?? "--"}</b></div>
-            <div><span>冻结积分</span><b>{summary?.wallet.frozen_points.toLocaleString() ?? "--"}</b></div>
-            <div><span>换算比例</span><b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b></div>
-          </div>
-          <p className="wallet-note">充值、扣费、退款都以服务器账本为准；客户端仅展示结果，不能本地改余额。</p>
-        </article>
-
         <article className="personal-card topup-card">
           <div className="personal-card-title">
             <span className="iconfont icon-moneycollect" aria-hidden="true" />
@@ -357,19 +359,7 @@ export function PersonalCenterPage() {
           )}
         </article>
 
-        <article className="personal-card security-card">
-          <div className="personal-card-title">
-            <span className="iconfont icon-safetycertificate" aria-hidden="true" />
-            <h2>安全策略</h2>
-          </div>
-          <ul>
-            <li>积分余额、充值订单、扣费记录全部存放在平台服务器。</li>
-            <li>微信/支付宝回调未完成验签前，订单不会入账。</li>
-            <li>账本按用户账号和工作区关联，后续扣费接口必须带幂等键。</li>
-            <li>本地数据库或浏览器缓存被改，不影响服务器余额。</li>
-          </ul>
-        </article>
-
+        <div className="personal-stack">
         <article className="personal-card orders-card">
           <div className="personal-card-title">
             <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
@@ -390,6 +380,20 @@ export function PersonalCenterPage() {
             )) : <p className="empty-orders">暂无充值订单</p>}
           </div>
         </article>
+
+        <article className="personal-card security-card">
+          <div className="personal-card-title">
+            <span className="iconfont icon-safetycertificate" aria-hidden="true" />
+            <h2>安全策略</h2>
+          </div>
+          <ul>
+            <li>积分余额、充值订单、扣费记录全部存放在平台服务器。</li>
+            <li>微信/支付宝回调未完成验签前，订单不会入账。</li>
+            <li>账本按用户账号和工作区关联，后续扣费接口必须带幂等键。</li>
+            <li>本地数据库或浏览器缓存被改，不影响服务器余额。</li>
+          </ul>
+        </article>
+        </div>
         </div> : (
           <article className="personal-card usage-card">
             <div className="personal-card-title">

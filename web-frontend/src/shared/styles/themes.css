@@ -3847,3 +3847,224 @@
     animation: none !important;
   }
 }
+
+/* ================================================================
+   模块风格统一层：产品处理 & 核价及货源
+
+   各板块先后演进导致视觉不一致（hero 浅深不一、主色三套蓝、按钮/
+   卡片圆角各异、预检小控件跑偏、货源工作区无样式等）。此层统一语义
+   并全部走 --theme-* 变量，因此切换主题（经典/暖阳/深空/水墨/怪趣/
+   钻石）时这些板块的画面会自动随之适配。
+   ================================================================ */
+
+/* ---- 1. 页面头部统一为当前主题主渐变色（hero）---- */
+/* 维度画布：原为纯白卡，纳入 hero 渐变体系（全主题，变量自动适配）。 */
+.dimension-commandbar {
+  color: #fff;
+  border-color: var(--theme-module-border-strong);
+  background: var(--theme-hero-gradient);
+  box-shadow: 0 16px 38px var(--theme-module-shadow);
+}
+.dimension-commandbar :is(h1, .dimension-title-row) { color: #fff; }
+.dimension-commandbar p { color: var(--theme-hero-text); }
+.dimension-commandbar .dimension-eyebrow { color: var(--theme-hero-eyebrow); }
+.dimension-commandbar .dimension-title-icon {
+  color: #fff;
+  border-color: rgba(255, 255, 255, .32);
+  background: rgba(255, 255, 255, .14);
+}
+
+/* 经典主题：草稿池、任务/历史/预检、核价页头部统一为深色主渐变。
+   其余主题由各自的 hero 特效规则处理，此处不做覆盖。 */
+[data-theme="classic"] :is(
+  .product-processing-hero,
+  .verify-commandbar,
+  .price-verification-hero
+) {
+  color: #fff;
+  border-color: var(--theme-module-border-strong);
+  background: var(--theme-hero-gradient);
+  box-shadow: 0 16px 38px var(--theme-module-shadow);
+}
+[data-theme="classic"] :is(
+  .product-processing-hero h1,
+  .verify-commandbar h1,
+  .price-verification-hero h1
+) {
+  color: #fff;
+}
+[data-theme="classic"] :is(
+  .product-processing-hero p:not(.eyebrow),
+  .verify-commandbar p,
+  .price-verification-hero p:not(.eyebrow)
+) {
+  color: var(--theme-hero-text);
+}
+[data-theme="classic"] :is(
+  .product-processing-hero .eyebrow,
+  .verify-commandbar .verify-eyebrow,
+  .price-verification-hero .eyebrow
+) {
+  color: var(--theme-hero-eyebrow);
+}
+
+/* ---- 2. 主按钮统一 ---- */
+:is(
+  .verify-page .verify-actions button.primary,
+  .verify-page .verify-row-actions button.primary,
+  .verify-page .verify-history-foot .primary,
+  .verify-page .btn-mini.primary,
+  .precheck-finalize button.primary,
+  .dimension-page button.primary,
+  .price-verification-primary-button,
+  .pv-source-run-button,
+  .pv-source-refloat-button
+) {
+  color: var(--theme-on-primary) !important;
+  border-color: transparent !important;
+  background: var(--theme-primary-button-gradient) !important;
+  box-shadow: 0 8px 18px var(--theme-primary-button-shadow) !important;
+  border-radius: 10px !important;
+}
+
+/* ---- 3. 次级按钮 / 小控件统一（排除 danger/激活/已关联等语义变体）---- */
+:is(
+  .verify-page .verify-actions button:not(.primary):not(.danger),
+  .verify-page .verify-history button:not(.primary):not(.danger),
+  .verify-page .verify-row-actions button:not(.primary):not(.danger),
+  .verify-page .btn-mini:not(.danger):not(.force-import):not(.confirm-subject),
+  .verify-page .verify-pagination button,
+  .verify-page .verify-pagination-pages button,
+  .precheck-expand-actions button,
+  .precheck-pagination button,
+  .precheck-card-actions button,
+  .precheck-search,
+  .precheck-page-size select,
+  .price-verification-secondary-button:not(.is-active),
+  .price-verification-back-button,
+  .pv-source-link-button:not(.is-linked)
+) {
+  color: var(--theme-text-secondary) !important;
+  border-color: var(--theme-module-border) !important;
+  background: var(--theme-module-surface) !important;
+  border-radius: 9px !important;
+}
+
+/* ---- 4. 卡片 / 面板统一（不含怪趣/水墨主题单独装饰过的通用卡）---- */
+:is(
+  .product-processing-surface,
+  .verify-page .verify-section,
+  .verify-page .processing-history-items li,
+  .product-processing-test-page .section,
+  .precheck-card,
+  .precheck-manager-section,
+  .precheck-asset-card,
+  .pv-source-card,
+  .price-verification-linked-group,
+  .batch-review-table-wrap
+) {
+  color: var(--theme-text-primary) !important;
+  border-color: var(--theme-module-border) !important;
+  background: var(--theme-module-surface) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 10px 28px var(--theme-module-shadow) !important;
+}
+
+/* 被怪趣/水墨主题定制边框装饰的通用卡：只统一表面色，不强制圆角。 */
+:is(
+  .product-processing-page .product-draft-card,
+  .verify-page .pool-card,
+  .price-verification-workflow-card
+) {
+  border-color: var(--theme-module-border) !important;
+  background: var(--theme-module-surface) !important;
+}
+
+/* ---- 5. 面板标题 / 统计文字统一 ---- */
+:is(
+  .verify-page .verify-section-head h2,
+  .product-processing-test-page .section h2,
+  .precheck-finalize h2,
+  .price-verification-panel-heading h2,
+  .pv-source-head h2
+) {
+  color: var(--theme-text-primary) !important;
+}
+:is(.price-verification-panel-heading h2, .pv-source-head h2) {
+  font-size: 1.3rem !important;
+}
+:is(.pv-source-head .pv-eyebrow, .price-verification-source-eyebrow) {
+  color: var(--theme-primary) !important;
+}
+
+/* ---- 6. 消息条 / 通知统一（仅信息态；error/warning/success 语义色保留）---- */
+:is(
+  .verify-page .verify-message:not(.error),
+  .product-processing-notice,
+  .product-processing-test-page .message:not(.error),
+  .dimension-banner:not(.is-error):not(.is-warning):not(.is-success),
+  .price-verification-notice
+) {
+  color: var(--theme-text-secondary) !important;
+  border-color: var(--theme-module-border-strong) !important;
+  background: var(--theme-module-surface-soft) !important;
+  border-radius: 10px !important;
+}
+
+/* ---- 7. 产品处理主色统一（tabs / 视图切换 / 预检编辑态）---- */
+.product-processing-tabs button.is-active {
+  color: var(--theme-primary) !important;
+  border-bottom-color: var(--theme-primary) !important;
+}
+.verify-page .verify-view-toggle button.is-active {
+  color: var(--theme-on-primary) !important;
+  background: var(--theme-primary-button-gradient) !important;
+}
+:is(.precheck-card.is-edited, .precheck-card .precheck-thumb.is-main) {
+  border-color: var(--theme-primary) !important;
+}
+
+/* ---- 8. 核价 STEP 03 货源工作区基础补全 ---- */
+.pv-source-workspace {
+  display: grid;
+  gap: 18px;
+}
+
+/* ---- 9. 工作流 step 激活态覆盖修正（组件输出 is-current-flow）---- */
+.price-verification-steps .price-verification-step.is-current-flow {
+  border-color: var(--theme-module-border-strong) !important;
+  color: var(--theme-module-primary-strong) !important;
+  background-color: var(--theme-module-surface-tint) !important;
+}
+.price-verification-steps .price-verification-step.is-current-flow .price-verification-step-number {
+  color: var(--theme-on-primary) !important;
+  background: var(--theme-primary) !important;
+}
+
+/* ---- 10. 钻石主题深色适配补充（此前未覆盖的板块）---- */
+[data-theme="diamond"] :is(
+  .dimension-page,
+  .dimension-meta-strip,
+  .dimension-editor-layout,
+  .dimension-toolbar,
+  .dimension-queue,
+  .dimension-empty-card,
+  .dimension-history,
+  .dimension-modal,
+  .dimension-review-panel,
+  .precheck-toolbar,
+  .precheck-card,
+  .precheck-manager-section,
+  .precheck-asset-card,
+  .precheck-finalize,
+  .pv-source-workspace,
+  .pv-source-inline-stats
+) {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-module-border);
+  background: var(--theme-module-surface);
+}
+[data-theme="diamond"] .dimension-commandbar,
+[data-theme="diamond"] .price-verification-hero {
+  background: var(--theme-hero-gradient);
+}

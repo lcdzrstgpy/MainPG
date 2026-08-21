@@ -51,6 +51,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     skipDuplicates: false,
     ipCheck: true,
     maxParallelDrafts: 8,
+    autoRepull: true,
   });
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());

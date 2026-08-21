@@ -51,6 +51,7 @@ const DEFAULT_OPTIONS: ProductProcessingOptions = {
   skipDuplicates: false,
   ipCheck: true,
   maxParallelDrafts: 8,
+  autoRepull: true,
 };
 
 function getApiContext(): ApiContext {

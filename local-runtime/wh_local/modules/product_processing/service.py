@@ -127,6 +127,20 @@ _CACHE_VOLATILE_RAW_KEYS = frozenset(
 _STAGE_CACHE_VERSION = 3
 _TASK_HEARTBEAT_SECONDS = 10.0
 
+# 失败项自动补跑轮数：WH_PP_AUTO_REPULL_ROUNDS，默认 1（任务结束后自动重跑一轮
+# 技术可重试的失败项），0 关闭；避免无限重跑反复消耗 AI 额度。
+def _auto_repull_rounds() -> int:
+    try:
+        return max(0, int(os.environ.get("WH_PP_AUTO_REPULL_ROUNDS", "1")))
+    except ValueError:
+        return 1
+
+
+def _iso_utc_now() -> str:
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    return datetime.now(timezone.utc).isoformat()
+
 
 def _submit_with_context(
     executor: Any,
@@ -2692,8 +2706,182 @@ class ProductProcessingService:
             video_manifest_file=str(paths.video_manifest) if paths.video_manifest else "",
             workspace_id=workspace_id,
         )
+        # 自动补跑：任务首次结束且存在技术可重试的失败项时，无需用户二次授权，
+        # 自动在后台重跑一轮（体验对齐每日采集 SKU 补齐）；前台展示进度提示。
+        # 必须早于 _cleanup_terminal_billing_state：补跑线程需要先捕获本任务的
+        # 远程 token 用于计费结算，而清理步骤会把该 token 从内存中移除。
+        if not preflight_only:
+            self._maybe_launch_auto_repull(task_id, workspace_id, failures)
         self._cleanup_terminal_billing_state(task_id)
         return completed_task
+
+    def _maybe_launch_auto_repull(
+        self,
+        task_id: int,
+        workspace_id: str,
+        failures: list[dict[str, Any]],
+    ) -> None:
+        """任务结束后的自动补跑判定（体验对齐每日采集 SKU 补齐）。
+
+        规则：
+        - 仅自动补跑 result.retryable 的技术失败/待确认项（身份待复核、
+          配置阻断等需要人工判断的不自动重跑）。
+        - 补跑轮数受 WH_PP_AUTO_REPULL_ROUNDS 限制（默认 1 轮，0 关闭），
+          避免无限重跑反复消耗额度。
+        - 直连计费任务必须仍有可用远程 token 才会自动补跑；否则保持现状，
+          留给用户在结果页手动重新处理。
+        """
+        if not failures:
+            return
+        task = self._require_task(task_id, workspace_id)
+        settings = dict(task["settings"] or {})
+        if not bool(settings.get("auto_repull", True)):
+            # 用户在提交时选择「不自动修复失败项」：任务结束后保留失败项，
+            # 留给用户在结果页手动重新处理（默认开启，保持原有自动补跑行为）。
+            return
+        state = settings.get("_auto_repull")
+        previous_state = state if isinstance(state, dict) else {}
+        if previous_state.get("status") == "running":
+            # 本轮执行就是自动补跑轮：记录结果并结束，不再继续触发。
+            remaining = sum(
+                1
+                for item in task["items"]
+                if item["status"] in {"failed", "attention_required"}
+            )
+            total = int(previous_state.get("total") or 0)
+            done_state = {
+                "round": int(previous_state.get("round") or 1),
+                "total": total,
+                "status": "completed",
+                "message": (
+                    f"自动补跑完成：成功 {max(0, total - remaining)} · 失败 {remaining}"
+                ),
+                "updated_at": _iso_utc_now(),
+            }
+            self.repository.merge_task_settings(
+                task_id, workspace_id, _auto_repull=done_state
+            )
+            return
+        max_rounds = _auto_repull_rounds()
+        if max_rounds <= 0:
+            return
+        done_rounds = int(previous_state.get("round") or 0)
+        if done_rounds >= max_rounds:
+            return
+        retryable_drafts = sorted({
+            int(item["product_draft_id"])
+            for item in failures
+            if item.get("product_draft_id")
+            and item.get("status") in {"failed", "attention_required"}
+            and bool((item.get("result") or {}).get("retryable"))
+        })
+        if not retryable_drafts:
+            return
+        billing = settings.get("_billing")
+        billed = isinstance(billing, dict) and bool(self._text(billing.get("account_id")))
+        token = self._task_remote_token(task_id)
+        if billed and not token:
+            # 计费任务缺少远程 token（如进程重启后），自动补跑无法结算，留给用户手动重试。
+            return
+        launch_state = {
+            "round": done_rounds + 1,
+            "total": len(retryable_drafts),
+            "status": "running",
+            "message": f"正在自动重新处理缺陷项（第 {done_rounds + 1} 轮）…",
+            "updated_at": _iso_utc_now(),
+        }
+        self.repository.merge_task_settings(task_id, workspace_id, _auto_repull=launch_state)
+        self._launch_auto_repull(task_id, workspace_id, retryable_drafts, remote_token=token)
+
+    def _launch_auto_repull(
+        self,
+        task_id: int,
+        workspace_id: str,
+        draft_ids: list[int],
+        *,
+        remote_token: str,
+    ) -> None:
+        """后台线程自动补跑：重置指定失败项并重新执行任务。
+
+        等当前执行线程从 _task_workers 注销后再注册自己，避免与
+        _launch_background_execute 的「同任务去重」互相干扰。
+        remote_token 在启动前捕获传入：任务收尾的计费清理会把它从内存移除，
+        线程不能再依赖 _task_remote_token 读取。
+        """
+
+        def _run() -> None:
+            try:
+                time.sleep(1.0)
+                task = self._require_task(task_id, workspace_id)
+                billing = task["settings"].get("_billing")
+                billed = isinstance(billing, dict) and bool(
+                    self._text(billing.get("account_id"))
+                )
+                if billed and not remote_token:
+                    raise CustomerBillingPermissionError()
+                # 等原执行线程从 _task_workers 注销后再注册自己。任务收尾（计费结算、
+                # 文件落盘等）可能超过 1 秒；若此刻误判主线程仍存活而直接放弃，
+                # _auto_repull 会永远停在 running。超时仍未注销则放弃并标记失败。
+                deadline = time.monotonic() + 15.0
+                while True:
+                    with self._task_worker_lock:
+                        current = self._task_workers.get((workspace_id, task_id))
+                        if current is None or not current.is_alive():
+                            break
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("原任务线程未及时注销，自动补跑已放弃")
+                    time.sleep(0.5)
+                with self._task_worker_lock:
+                    self._task_workers[(workspace_id, task_id)] = threading.current_thread()
+                self.repository.reset_failed_items(task_id, workspace_id, draft_ids=draft_ids)
+                # 清除视觉识别缓存，避免「多主体/遮挡」低置信度结论被缓存后重跑
+                # 永远命中同一结果（与手动重试行为一致）。
+                retry_item_ids = [
+                    int(item.get("id") or item.get("item_id") or 0)
+                    for item in task["items"]
+                    if item["status"] in {"failed", "attention_required"}
+                    and int(item.get("product_draft_id") or 0) in set(draft_ids)
+                ]
+                if retry_item_ids and callable(
+                    getattr(self.repository, "delete_downstream_stage_receipts", None)
+                ):
+                    for item_id in retry_item_ids:
+                        try:
+                            self.repository.delete_downstream_stage_receipts(
+                                task_id,
+                                item_id,
+                                ["vision_identity"],
+                                workspace_id=workspace_id,
+                            )
+                        except Exception:
+                            pass
+                if remote_token:
+                    with self._submission_lock:
+                        self._task_remote_tokens[task_id] = remote_token
+                self._execute_task(task_id, workspace_id)
+            except Exception:
+                try:
+                    task = self._require_task(task_id, workspace_id)
+                    settings = dict(task["settings"] or {})
+                    state = dict(settings.get("_auto_repull") or {})
+                    state["status"] = "failed"
+                    state["message"] = "自动补跑未能完成，可在结果页手动重新处理"
+                    state["updated_at"] = _iso_utc_now()
+                    self.repository.merge_task_settings(
+                        task_id, workspace_id, _auto_repull=state
+                    )
+                except Exception:
+                    pass
+            finally:
+                with self._task_worker_lock:
+                    self._task_workers.pop((workspace_id, task_id), None)
+
+        thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name=f"pp-auto-repull-{task_id}",
+        )
+        thread.start()
 
     def _run_with_item_heartbeat(
         self,
@@ -6253,6 +6441,10 @@ class ProductProcessingService:
             "processing_scope": settings.get("processing_scope", []),
             "qualification_mode": settings.get("qualification_mode", "standard"),
             "include_product_video": settings.get("product_video_template", False),
+            # 失败项自动补跑状态（后台自动重处理），无补跑则为 None
+            "auto_repull": settings.get("_auto_repull")
+            if isinstance(settings.get("_auto_repull"), dict)
+            else None,
             "items": items,
             "task": task_projection,
             "outputs": outputs,
