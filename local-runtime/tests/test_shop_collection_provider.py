@@ -11,6 +11,7 @@ import pytest
 from wh_local.data_collection.provider import HttpResponse, OneBound1688Provider
 from wh_local.data_collection.shop_parsing import (
     extract_1688_offer_id,
+    extract_1688_shop_sid,
     normalize_shop_page,
     validate_shop_sid,
 )
@@ -49,6 +50,35 @@ def test_extract_1688_offer_id_accepts_plain_ids_and_canonical_1688_urls(value: 
 def test_extract_1688_offer_id_rejects_unusable_input(value: str) -> None:
     with pytest.raises(ValueError, match="1688 offer"):
         extract_1688_offer_id(value)
+
+
+@pytest.mark.parametrize(
+    ("value", "sid"),
+    (
+        ("https://b2b-22165305319342b.1688.com/", "b2b-22165305319342b"),
+        ("https://shop1234567890123.1688.com/page/offerlist.htm", "shop1234567890123"),
+        (
+            "https://winport.m.1688.com/page/index.html?memberId=b2b-22165305319342b",
+            "b2b-22165305319342b",
+        ),
+        ("https://m.1688.com/winport/b2b-22165305319342b.html", "b2b-22165305319342b"),
+    ),
+)
+def test_extract_1688_shop_sid_accepts_real_shop_home_urls(value: str, sid: str) -> None:
+    assert extract_1688_shop_sid(value) == sid
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "https://detail.1688.com/offer/123456.html",
+        "https://www.1688.com/",
+        "https://example.test/b2b-shop",
+    ),
+)
+def test_extract_1688_shop_sid_rejects_non_shop_urls(value: str) -> None:
+    with pytest.raises(ValueError, match="shop"):
+        extract_1688_shop_sid(value)
 
 
 @pytest.mark.parametrize("value", ("shop-123", " shop_abc ", 123456))

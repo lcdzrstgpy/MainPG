@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from types import SimpleNamespace
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
@@ -65,6 +66,57 @@ class EmptyCollectionRetryJob:
             "message": self.message,
             "updated_at": self.updated_at,
         }
+
+
+class SkuRepullOutboxDispatcher:
+    """Retry durable SKU re-pull scheduling across process restarts."""
+
+    def __init__(self, *, repository: Any, callback: Callable[[Any, str], Any], retry_delay: float = 3.0) -> None:
+        self._repository = repository
+        self._callback = callback
+        self._retry_delay = retry_delay
+        self._wake = threading.Event()
+        self._started = False
+
+    def start(self) -> None:
+        if self._started or not hasattr(self._repository, "claim_sku_repull_outbox"):
+            return
+        self._started = True
+        threading.Thread(target=self._run, name="sku-repull-outbox", daemon=True).start()
+
+    def notify(self, *_args: Any) -> None:
+        self._wake.set()
+
+    def drain_once(self) -> bool:
+        record = self._repository.claim_sku_repull_outbox()
+        if record is None:
+            return False
+        workspace_id = str(record["workspace_id"])
+        run_id = str(record["run_id"])
+        claim_token = str(record["claim_token"])
+        actor = SimpleNamespace(workspace_id=workspace_id, actor_id="system:sku-repull-outbox")
+        try:
+            self._callback(actor, run_id)
+        except Exception as error:
+            self._repository.retry_sku_repull_outbox(
+                workspace_id=workspace_id, run_id=run_id, claim_token=claim_token,
+                error=str(error), delay_seconds=self._retry_delay,
+            )
+        else:
+            self._repository.complete_sku_repull_outbox(
+                workspace_id=workspace_id, run_id=run_id, claim_token=claim_token
+            )
+        return True
+
+    def _run(self) -> None:
+        while True:
+            try:
+                while self.drain_once():
+                    pass
+            except Exception:
+                pass
+            self._wake.wait(timeout=max(0.05, self._retry_delay))
+            self._wake.clear()
 
 
 class EmptyCollectionRetryRunner:
@@ -186,6 +238,7 @@ class EmptyCollectionRetryRunner:
                     status=collected.status if collected is not None else "completed",
                     candidates=candidates,
                     metadata=metadata,
+                    enqueue_sku_repull=True,
                 )
                 if self._on_recovered is not None:
                     try:

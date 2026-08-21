@@ -50,6 +50,10 @@ class PreviewSlotConflict(StalePreviewRevision):
     """Raised when the target image slot changed after canvas import."""
 
 
+class StaleShopIntakeFence(RuntimeError):
+    """Raised when a shop batch or item no longer owns its intake lease."""
+
+
 class ProductProcessingRepository:
     SOURCE_IMAGE_SYNC_LEASE = timedelta(minutes=5)
 
@@ -339,6 +343,7 @@ class ProductProcessingRepository:
         media_entries: list[dict[str, Any]],
         workspace_id: str,
         candidate_id: str,
+        shop_fence: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Create or refresh one shop draft and its source-media bindings atomically."""
         for attempt in range(3):
@@ -348,6 +353,7 @@ class ProductProcessingRepository:
                     media_entries=media_entries,
                     workspace_id=workspace_id,
                     candidate_id=candidate_id,
+                    shop_fence=shop_fence,
                 )
             except IntegrityError:
                 if attempt == 2:
@@ -365,8 +371,13 @@ class ProductProcessingRepository:
         media_entries: list[dict[str, Any]],
         workspace_id: str,
         candidate_id: str,
+        shop_fence: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         with self._shop_intake_transaction() as session:
+            if shop_fence is not None:
+                self._assert_shop_intake_fence(
+                    session, workspace_id=workspace_id, fence=shop_fence
+                )
             draft_row = session.scalar(
                 select(ProductDraftRow)
                 .where(
@@ -455,6 +466,39 @@ class ProductProcessingRepository:
                 )
             session.flush()
             return action, self._draft(draft_row)
+
+    @staticmethod
+    def _assert_shop_intake_fence(session: Any, *, workspace_id: str, fence: dict[str, Any]) -> None:
+        """Validate both leases while holding the same SQLite writer transaction."""
+        required = (
+            "batch_id", "batch_lease_owner", "batch_lease_token",
+            "item_id", "item_lease_owner", "item_lease_token", "offer_id",
+        )
+        if any(not str(fence.get(key) or "") for key in required):
+            raise StaleShopIntakeFence("shop intake fence is incomplete")
+        row = session.execute(
+            text(
+                """SELECT 1
+                FROM shop_collection_batches AS batch
+                JOIN shop_collection_items AS item ON item.batch_id = batch.batch_id
+                WHERE batch.batch_id = :batch_id
+                  AND batch.workspace_id = :workspace_id
+                  AND batch.status = 'enriching'
+                  AND batch.lease_owner = :batch_lease_owner
+                  AND batch.lease_token = :batch_lease_token
+                  AND batch.lease_expires_at > datetime('now')
+                  AND item.item_id = :item_id
+                  AND item.workspace_id = :workspace_id
+                  AND item.offer_id = :offer_id
+                  AND item.detail_status = 'running'
+                  AND item.lease_owner = :item_lease_owner
+                  AND item.lease_token = :item_lease_token
+                  AND item.lease_expires_at > datetime('now')"""
+            ),
+            {key: str(fence[key]) for key in required} | {"workspace_id": workspace_id},
+        ).first()
+        if row is None:
+            raise StaleShopIntakeFence("shop intake lease is stale or batch was cancelled")
 
     @contextmanager
     def _shop_intake_transaction(self):

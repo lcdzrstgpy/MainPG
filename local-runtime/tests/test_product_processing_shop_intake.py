@@ -5,6 +5,7 @@ from decimal import Decimal
 import json
 from pathlib import Path
 from threading import Barrier
+import time
 
 import pytest
 from sqlalchemy import func, select
@@ -15,6 +16,9 @@ from wh_local.modules.product_processing.infrastructure.database import create_d
 from wh_local.modules.product_processing.infrastructure.media_asset_orm import MediaAssetRow
 from wh_local.modules.product_processing.infrastructure.orm import ProductDraftRow
 from wh_local.modules.product_processing.infrastructure.repository import ProductProcessingRepository
+from wh_local.modules.product_processing.infrastructure.repository import StaleShopIntakeFence
+from wh_local.data_collection.shop_repository import ShopCollectionRepository
+from wh_local.db import connect
 from wh_local.modules.product_processing.domain.models import DailySelectionHandoffEnvelope
 from wh_local.modules.product_processing.service import ProductProcessingService
 
@@ -24,6 +28,38 @@ def _service(tmp_path: Path) -> ProductProcessingService:
         ProductProcessingRepository(create_database("sqlite:///:memory:")),
         ProductProcessingAssets(tmp_path / "assets"),
     )
+
+
+def _fenced_service(tmp_path: Path) -> tuple[ProductProcessingService, ShopCollectionRepository, dict[str, str]]:
+    path = tmp_path / "fenced.sqlite3"
+    shops = ShopCollectionRepository(path)
+    shops.create_batch(
+        batch_id="batch-fenced", workspace_id="default", actor_id="actor", shop_sid="shop"
+    )
+    shops.record_shop_page(
+        batch_id="batch-fenced", page=1,
+        items=({"offer_id": "offer-1", "source_url": "https://detail.1688.com/offer/offer-1.html"},),
+        has_next=False,
+    )
+    shops.transition_batch("batch-fenced", "resolving")
+    shops.transition_batch("batch-fenced", "listing")
+    shops.transition_batch("batch-fenced", "enriching")
+    batch = shops.claim_batch(batch_id="batch-fenced", owner="batch-worker", lease_seconds=60)
+    assert batch is not None
+    item = shops.claim_pending_items(batch_id="batch-fenced", owner="item-worker", limit=1, lease_seconds=60)[0]
+    service = ProductProcessingService(
+        ProductProcessingRepository(create_database(f"sqlite:///{path.as_posix()}")),
+        ProductProcessingAssets(tmp_path / "fenced-assets"),
+    )
+    return service, shops, {
+        "batch_id": batch.batch_id,
+        "batch_lease_owner": batch.lease_owner,
+        "batch_lease_token": batch.lease_token,
+        "item_id": item.item_id,
+        "item_lease_owner": item.lease_owner,
+        "item_lease_token": item.lease_token,
+        "offer_id": item.offer_id,
+    }
 
 
 def _candidate(**overrides: object) -> dict[str, object]:
@@ -79,6 +115,50 @@ def test_shop_candidate_intake_creates_v2_draft_and_media_bindings(tmp_path: Pat
         "detail",
         "sku",
     }
+
+
+@pytest.mark.parametrize("invalidate", ["cancel", "stale_item_token"])
+def test_cancelled_or_stale_shop_fence_never_creates_a_draft(
+    tmp_path: Path, invalidate: str
+) -> None:
+    service, shops, fence = _fenced_service(tmp_path)
+    if invalidate == "cancel":
+        shops.transition_batch(
+            "batch-fenced", "cancelling", expected_statuses={"enriching"},
+            owner=fence["batch_lease_owner"], lease_token=fence["batch_lease_token"],
+        )
+    else:
+        fence["item_lease_token"] = "stale-token"
+
+    with pytest.raises(StaleShopIntakeFence):
+        service.intake_shop_candidate(
+            batch_id="batch-fenced", workspace_id="default", candidate=_candidate(),
+            shop_fence=fence,
+        )
+
+    assert service.repository.draft_by_candidate("1688:offer-1", "default") is None
+
+
+def test_concurrent_cancel_commits_before_intake_fence_and_prevents_draft(tmp_path: Path) -> None:
+    service, shops, fence = _fenced_service(tmp_path)
+    connection = connect(shops.database_path)
+    connection.execute("BEGIN IMMEDIATE")
+    connection.execute(
+        "UPDATE shop_collection_batches SET status = 'cancelling' WHERE batch_id = 'batch-fenced'"
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            service.intake_shop_candidate,
+            batch_id="batch-fenced", workspace_id="default", candidate=_candidate(), shop_fence=fence,
+        )
+        time.sleep(0.05)
+        assert not future.done()
+        connection.commit()
+        connection.close()
+        with pytest.raises(StaleShopIntakeFence):
+            future.result(timeout=5)
+
+    assert service.repository.draft_by_candidate("1688:offer-1", "default") is None
 
 
 def test_shop_candidate_intake_replay_refreshes_one_existing_draft(tmp_path: Path) -> None:

@@ -254,7 +254,10 @@ class ShopCollectionWorker:
                 self._transition(lease, status, {"enriching"})
                 return
             with ThreadPoolExecutor(max_workers=self.DETAIL_CONCURRENCY, thread_name_prefix="shop-detail") as pool:
-                futures = {pool.submit(self._enrich_one, provider, batch, item): item for item in claimed}
+                futures = {
+                    pool.submit(self._enrich_one, provider, batch, item, lease): item
+                    for item in claimed
+                }
                 for future in as_completed(futures):
                     item = futures[future]
                     try:
@@ -285,7 +288,9 @@ class ShopCollectionWorker:
                         except ShopLeaseLost:
                             pass
 
-    def _enrich_one(self, provider: Any, batch: Any, item: Any) -> tuple[Mapping[str, Any], str]:
+    def _enrich_one(
+        self, provider: Any, batch: Any, item: Any, lease: ShopBatchLease | None = None
+    ) -> tuple[Mapping[str, Any], str]:
         with self._seed_lock:
             result = self._seed_details.pop((batch.batch_id, item.offer_id), None)
         if result is None:
@@ -310,6 +315,21 @@ class ShopCollectionWorker:
             batch_id=batch.batch_id,
             workspace_id=batch.workspace_id,
             candidate=candidate,
+            **(
+                {
+                    "shop_fence": {
+                        "batch_id": batch.batch_id,
+                        "batch_lease_owner": lease.lease_owner,
+                        "batch_lease_token": lease.lease_token,
+                        "item_id": item.item_id,
+                        "item_lease_owner": item.lease_owner,
+                        "item_lease_token": item.lease_token,
+                        "offer_id": item.offer_id,
+                    }
+                }
+                if lease is not None
+                else {}
+            ),
         )
         action = str(intake.get("action") or "")
         if action not in {"created", "refreshed", "skipped"}:

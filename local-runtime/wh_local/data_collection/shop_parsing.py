@@ -14,6 +14,11 @@ from .normalizer import sanitize_raw_payload
 _OFFER_ID = re.compile(r"^[0-9]+$")
 _OFFER_PATH = re.compile(r"/(?:offer/)?([0-9]+)(?:\.html?)?/?$", re.IGNORECASE)
 _SHOP_OFFER_FRAGMENT = re.compile(r"(?:^|&)\s*offerid-([0-9]+)(?:\s*(?:&|$))", re.IGNORECASE)
+_SHOP_SID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_@.-]{0,127}$")
+_WINPORT_PATH = re.compile(r"/winport/([A-Za-z0-9][A-Za-z0-9_@.-]{0,127})\.html?/?$", re.IGNORECASE)
+_NON_SHOP_HOST_LABELS = frozenset(
+    {"1688", "www", "detail", "m", "winport", "s", "search", "show", "login", "work"}
+)
 _MAX_SHOP_PAGES = 100
 
 
@@ -41,6 +46,37 @@ def extract_1688_offer_id(value: str) -> str:
     raise ValueError("1688 offer URL did not include an offer ID")
 
 
+def extract_1688_shop_sid(value: str) -> str:
+    """Extract an upstream shop SID from a public 1688 shop-home URL."""
+    if not isinstance(value, str):
+        raise ValueError("1688 shop input must be a string")
+    parsed = urlparse(value.strip())
+    hostname = (parsed.hostname or "").rstrip(".").casefold()
+    if parsed.scheme not in {"http", "https"} or not (
+        hostname == "1688.com" or hostname.endswith(".1688.com")
+    ):
+        raise ValueError("1688 shop input must be a public 1688 URL")
+
+    query = {
+        key.casefold(): item
+        for key, values in parse_qs(parsed.query).items()
+        for item in values[:1]
+    }
+    for key in ("memberid", "member_id", "sellerid", "seller_id", "shopid", "shop_id", "sid"):
+        candidate = query.get(key)
+        if isinstance(candidate, str) and _SHOP_SID.fullmatch(candidate.strip()):
+            return candidate.strip()
+
+    path_match = _WINPORT_PATH.fullmatch(parsed.path)
+    if path_match:
+        return path_match.group(1)
+
+    host_label = hostname.removesuffix(".1688.com").split(".")[0]
+    if host_label not in _NON_SHOP_HOST_LABELS and _SHOP_SID.fullmatch(host_label):
+        return host_label
+    raise ValueError("1688 shop URL did not include a shop SID")
+
+
 def validate_shop_sid(value: object) -> str:
     """Return a non-empty upstream shop identifier without coercing booleans."""
     if isinstance(value, bool) or value is None:
@@ -53,6 +89,8 @@ def validate_shop_sid(value: object) -> str:
         raise ValueError("shop sid must be a string or integer")
     if not candidate:
         raise ValueError("shop sid is required")
+    if _SHOP_SID.fullmatch(candidate) is None:
+        raise ValueError("shop sid contains unsupported characters")
     return candidate
 
 

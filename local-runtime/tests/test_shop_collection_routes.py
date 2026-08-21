@@ -78,6 +78,26 @@ def test_create_list_detail_items_and_workspace_safe_shape(tmp_path: Path) -> No
     assert client.get(f"/desktop/data-collection/shop-batches/{batch['batch_id']}/items").json() == {"items": [], "total": 0}
 
 
+def test_create_accepts_shop_home_url_and_explicit_numeric_sid(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+
+    shop_home = client.post(
+        "/desktop/data-collection/shop-batches",
+        json={"source_input": "https://b2b-22165305319342b.1688.com/page/offerlist.htm"},
+    )
+    numeric_sid = client.post(
+        "/desktop/data-collection/shop-batches",
+        json={"source_input": "sid:1234567890"},
+    )
+
+    assert shop_home.status_code == 202
+    assert shop_home.json()["shop_sid"] == "b2b-22165305319342b"
+    assert shop_home.json()["seed_offer_id"] == ""
+    assert numeric_sid.status_code == 202
+    assert numeric_sid.json()["shop_sid"] == "1234567890"
+    assert numeric_sid.json()["seed_offer_id"] == ""
+
+
 def test_routes_map_validation_conflict_not_found_and_provider_unavailable(tmp_path: Path) -> None:
     client, _ = _client(tmp_path)
     assert client.post("/desktop/data-collection/shop-batches", json={"source_input": "bad sid"}).status_code == 422

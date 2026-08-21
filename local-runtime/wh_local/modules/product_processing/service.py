@@ -672,6 +672,7 @@ class ProductProcessingService:
         batch_id: str,
         workspace_id: str,
         candidate: Mapping[str, Any],
+        shop_fence: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         """Idempotently place one normalized shop candidate into the draft pool."""
         if not isinstance(candidate, Mapping):
@@ -719,6 +720,7 @@ class ProductProcessingService:
             media_entries=self._handoff_media_entries(raw),
             workspace_id=workspace,
             candidate_id=candidate_id,
+            shop_fence=dict(shop_fence) if shop_fence is not None else None,
         )
         return {"action": action, "draft": draft}
 

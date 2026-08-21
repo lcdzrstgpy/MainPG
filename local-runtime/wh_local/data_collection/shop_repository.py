@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from ..db import connect
+from ..db import connect, init_db
 from .shop_contracts import ShopBatch, ShopBatchItem
 
 
@@ -73,27 +73,37 @@ class ShopCollectionRepository:
         self._initialize()
 
     def _initialize(self) -> None:
-        """Keep the repository usable before the host migration is wired.
-
-        The host still records the forward-only migration markers.  This local
-        guard mirrors the existing plugin queue boundary and makes construction
-        safe in focused tests and injected hosts.
-        """
+        """Apply the same marker-aware migrations used by the shared runtime."""
+        init_db(self.database_path)
         migrations = Path(__file__).with_name("migrations")
         with connect(self.database_path) as conn:
-            conn.executescript(
-                (migrations / "005_shop_collection.sql").read_text(encoding="utf-8")
-            )
-            for table in ("shop_collection_batches", "shop_collection_items"):
-                columns = {
-                    str(row["name"])
-                    for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-                }
-                if "lease_token" not in columns:
-                    conn.execute(
-                        f"ALTER TABLE {table} "
-                        "ADD COLUMN lease_token TEXT NOT NULL DEFAULT ''"
-                    )
+            marker = "data_collection:005_shop_collection"
+            if conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE migration_id = ?", (marker,)
+            ).fetchone() is None:
+                conn.executescript((migrations / "005_shop_collection.sql").read_text(encoding="utf-8"))
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, 'data_collection')",
+                    (marker,),
+                )
+
+            marker = "data_collection:006_shop_collection_lease_tokens"
+            if conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE migration_id = ?", (marker,)
+            ).fetchone() is None:
+                for table in ("shop_collection_batches", "shop_collection_items"):
+                    columns = {
+                        str(row["name"])
+                        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                    }
+                    if "lease_token" not in columns:
+                        conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN lease_token TEXT NOT NULL DEFAULT ''"
+                        )
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, 'data_collection')",
+                    (marker,),
+                )
 
     def record_api_call_reservation(
         self,

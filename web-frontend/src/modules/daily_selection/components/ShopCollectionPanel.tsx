@@ -152,8 +152,8 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
 
       <form className="shop-collection-create" onSubmit={createBatch}>
         <label>
-          <span>1688 商品链接或商品 ID</span>
-          <input value={sourceInput} onChange={(event) => setSourceInput(event.target.value)} placeholder="粘贴商品链接或纯商品 ID，系统将识别所属店铺" />
+          <span>1688 店铺主页、商品链接或商品 ID</span>
+          <input value={sourceInput} onChange={(event) => setSourceInput(event.target.value)} placeholder="数字店铺 SID 请写成 sid:123456；纯数字默认按商品 ID 识别" />
         </label>
         <button type="submit" disabled={submitting}>{submitting ? "正在创建…" : "开始整店采集"}</button>
       </form>
@@ -202,4 +202,3 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
     </section>
   );
 }
-

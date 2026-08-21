@@ -131,7 +131,11 @@ def _parse_source_input(source_input: str) -> tuple[str, str, str]:
     if len(value) > 4096:
         raise ShopCollectionInputError("source_input is too long")
 
-    if re.fullmatch(r"[A-Za-z_@-][A-Za-z0-9_@-]{2,127}", value) and "://" not in value:
+    explicit_sid = re.fullmatch(r"sid:\s*([0-9]+)", value, re.IGNORECASE)
+    if explicit_sid:
+        return explicit_sid.group(1), "", ""
+
+    if re.fullmatch(r"[A-Za-z_@-][A-Za-z0-9_.@-]{2,127}", value) and "://" not in value:
         try:
             from .shop_parsing import validate_shop_sid
 
@@ -140,13 +144,17 @@ def _parse_source_input(source_input: str) -> tuple[str, str, str]:
             return value, "", ""
 
     try:
-        from .shop_parsing import extract_1688_offer_id
+        from .shop_parsing import extract_1688_offer_id, extract_1688_shop_sid
 
         offer_id = extract_1688_offer_id(value)
     except ImportError:
         offer_id = _fallback_offer_id(value)
-    except ValueError as error:
-        raise ShopCollectionInputError(str(error)) from error
+    except ValueError as offer_error:
+        try:
+            shop_sid = extract_1688_shop_sid(value)
+        except ValueError:
+            raise ShopCollectionInputError(str(offer_error)) from offer_error
+        return shop_sid, "", value
     return f"pending:{offer_id}", offer_id, value if "://" in value else ""
 
 

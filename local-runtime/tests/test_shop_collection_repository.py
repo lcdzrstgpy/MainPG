@@ -28,6 +28,37 @@ def _repository(tmp_path: Path) -> ShopCollectionRepository:
     return ShopCollectionRepository(database)
 
 
+def test_repository_first_initialization_records_migrations_and_remains_idempotent(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "repository-first.sqlite3"
+
+    ShopCollectionRepository(database)
+    init_db(database)
+    init_db(database)
+    ShopCollectionRepository(database)
+
+    with connect(database) as connection:
+        markers = connection.execute(
+            """SELECT migration_id, COUNT(*) AS count
+            FROM schema_migrations
+            WHERE migration_id IN (
+                'data_collection:005_shop_collection',
+                'data_collection:006_shop_collection_lease_tokens'
+            )
+            GROUP BY migration_id ORDER BY migration_id"""
+        ).fetchall()
+        assert [(row["migration_id"], row["count"]) for row in markers] == [
+            ("data_collection:005_shop_collection", 1),
+            ("data_collection:006_shop_collection_lease_tokens", 1),
+        ]
+        assert [
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(shop_collection_batches)")
+            if row["name"] == "lease_token"
+        ] == ["lease_token"]
+
+
 def test_batches_are_workspace_isolated_and_active_shop_is_unique(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     first = repository.create_batch(

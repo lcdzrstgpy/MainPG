@@ -1,4 +1,4 @@
-importScripts("tenant_context.js");
+importScripts("tenant_context.js", "plugin_command_contract.js");
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8010";
 const tenantContext = self.WorkbenchTenantContext;
@@ -710,13 +710,13 @@ function connectWebSocket(connectionContext) {
           return;
         }
         if (message.type === "commands") {
-          for (const command of message.commands || []) {
+          await WorkbenchPluginCommandContract.dispatchPolledCommands(message, async (command) => {
             try {
               await executeCommand(connection.http_base, connection.session_token, command);
             } catch (commandError) {
               warnWorkbench("workbench websocket command failed", command?.id || command?.command_id, commandError);
             }
-          }
+          });
         }
       } catch (messageError) {
         warnWorkbench("workbench websocket message ignored", messageError);
@@ -796,11 +796,10 @@ async function performPluginPoll(connection) {
     if (!Array.isArray(payload) && payload.runtime_config && typeof payload.runtime_config === "object") {
       await chrome.storage.local.set({ workbenchRuntimeConfig: payload.runtime_config });
     }
-    const commands = Array.isArray(payload) ? payload : (payload.commands || []);
-    for (const command of commands) {
+    await WorkbenchPluginCommandContract.dispatchPolledCommands(payload, async (command) => {
       if (!connectionMatchesActive(connection)) return false;
       await executeCommand(connection.http_base, connection.session_token, command);
-    }
+    });
     return true;
   } catch (error) {
     if (error instanceof tenantContext.TenantContextError && connectionMatchesActive(connection)) {
