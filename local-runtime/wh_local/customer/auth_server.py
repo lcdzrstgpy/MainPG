@@ -45,6 +45,14 @@ from ..billing import (
 from ..config import default_config
 from ..db import init_db, transaction
 from ..modules.product_processing.domain.policy import is_safe_external_url
+from ..pod_billing import (
+    freeze_pod_points,
+    init_pod_billing_schema,
+    pod_freeze_status,
+    pod_pricing_items,
+    settle_pod_points,
+    update_pod_pricing_items,
+)
 from ..session import Actor
 from .auth_service import SQLiteCustomerAuthService
 from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
@@ -256,6 +264,9 @@ def _issue_batch_keys(
     database_path: Path,
     account: dict[str, Any],
     freeze_id: str,
+    *,
+    include_secret_suffix_in_label: bool = True,
+    resolved_secrets: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """Issue short-lived provider keys to the client for this freeze batch.
 
@@ -270,11 +281,19 @@ def _issue_batch_keys(
     granted: list[dict[str, str]] = []
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for kind, provider_name, environment_name in BATCH_KEY_PROVIDERS:
-        secret = _server_provider_secret(kind, environment_name)
+        secret = (
+            str(resolved_secrets.get(provider_name) or "")
+            if resolved_secrets is not None
+            else _server_provider_secret(kind, environment_name)
+        )
         if not secret:
             continue
         grant_id = f"grant_{secrets.token_urlsafe(18)}"
-        label = f"{provider_name}:{kind}::{secret[-4:]}"
+        label = (
+            f"{provider_name}:{kind}::{secret[-4:]}"
+            if include_secret_suffix_in_label
+            else f"{provider_name}:{kind}:short-lived"
+        )
         with transaction(database_path) as conn:
             conn.execute(
                 """
@@ -307,6 +326,55 @@ def _issue_batch_keys(
     return granted
 
 
+def _issue_pod_grant_envelope(
+    database_path: Path,
+    account: dict[str, Any],
+    freeze_id: str,
+    session_key: bytes,
+    provider_secrets: dict[str, str],
+) -> dict[str, str]:
+    """Issue POD grants only inside the designated hybrid-encrypted envelope."""
+    keys = _issue_batch_keys(
+        database_path,
+        account,
+        freeze_id,
+        include_secret_suffix_in_label=False,
+        resolved_secrets=provider_secrets,
+    )
+    if {str(item.get("provider") or "") for item in keys} != {"ark", "wuyin"}:
+        raise HTTPException(status_code=503, detail="POD provider credentials are unavailable")
+    plaintext = json.dumps(
+        {"freeze_id": freeze_id, "keys": keys},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    nonce = os.urandom(12)
+    encryptor = Cipher(algorithms.AES(session_key), modes.GCM(nonce)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+    return {
+        "payload": base64.b64encode(ciphertext).decode("ascii"),
+        "nonce": base64.b64encode(nonce).decode("ascii"),
+        "tag": base64.b64encode(encryptor.tag).decode("ascii"),
+    }
+
+
+def _pod_grant_prerequisites(encrypted_session_key: str) -> tuple[bytes, dict[str, str]]:
+    """Validate the encrypted session and provider availability before locking."""
+    try:
+        session_key = _rsa_decrypt_session_key(str(encrypted_session_key or ""))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="cannot decrypt session key") from exc
+    if len(session_key) != 32:
+        raise HTTPException(status_code=400, detail="invalid session key")
+    provider_secrets = {
+        provider_name: _server_provider_secret(kind, environment_name)
+        for kind, provider_name, environment_name in BATCH_KEY_PROVIDERS
+    }
+    if any(not provider_secrets.get(provider) for provider in ("ark", "wuyin")):
+        raise HTTPException(status_code=503, detail="POD provider credentials are unavailable")
+    return session_key, provider_secrets
+
+
 def create_auth_app(database_path: Path | None = None) -> FastAPI:
     """Create the standalone platform customer-auth service.
 
@@ -319,6 +387,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     config = default_config()
     db_path = database_path or config.database_path
     init_db(db_path)
+    init_pod_billing_schema(db_path)
     service = SQLiteCustomerAuthService(
         db_path,
         email_sender=TencentCloudSESEmailSender.from_env(),
@@ -399,7 +468,108 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             pricing["subitems"] = pricing_items(db_path)
         except HTTPException:
             pricing["subitems"] = None
+        try:
+            pricing["pod"] = pod_pricing_items(db_path)
+        except HTTPException:
+            pricing["pod"] = None
         return {"ok": True, "pricing": pricing}
+
+    @app.post("/api/customer/billing/pod/freeze")
+    def customer_billing_pod_freeze(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        session_key, provider_secrets = _pod_grant_prerequisites(
+            str(payload.get("encrypted_session_key") or "")
+        )
+        freeze = freeze_pod_points(
+            db_path,
+            _billing_actor(account),
+            calls=payload.get("calls"),
+            title_call_count=payload.get("title_call_count"),
+            image_call_count=payload.get("image_call_count"),
+            idempotency_key=str(payload.get("idempotency_key") or ""),
+        )
+        if freeze["status"] != "frozen":
+            raise HTTPException(status_code=409, detail="POD freeze is no longer active")
+        envelope = _issue_pod_grant_envelope(
+            db_path,
+            account,
+            str(freeze["freeze_id"]),
+            session_key,
+            provider_secrets,
+        )
+        return {"ok": True, "freeze": {**freeze, "grant_envelope": envelope}}
+
+    @app.post("/api/customer/billing/pod/settle")
+    def customer_billing_pod_settle(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        freeze_id = str(payload.get("freeze_id") or "").strip()
+        if not freeze_id:
+            raise HTTPException(status_code=400, detail="freeze_id is required")
+        return {
+            "ok": True,
+            "settle": settle_pod_points(
+                db_path,
+                freeze_id,
+                item_results=payload.get("items"),
+                expected_account_id=str(account["account_id"]),
+            ),
+        }
+
+    @app.get("/api/customer/billing/pod/{freeze_id}")
+    def customer_billing_pod_status(
+        freeze_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        return {
+            "ok": True,
+            "freeze": pod_freeze_status(
+                db_path,
+                freeze_id,
+                expected_account_id=str(account["account_id"]),
+            ),
+        }
+
+    @app.post("/api/customer/billing/pod/{freeze_id}/regrant")
+    def customer_billing_pod_regrant(
+        freeze_id: str,
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        freeze = pod_freeze_status(
+            db_path,
+            freeze_id,
+            expected_account_id=str(account["account_id"]),
+        )
+        if freeze["status"] != "frozen":
+            raise HTTPException(status_code=409, detail="POD freeze is no longer active")
+        try:
+            expires_at = datetime.fromisoformat(str(freeze["expires_at"]))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="POD freeze is no longer active") from exc
+        if expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=409, detail="POD freeze is no longer active")
+        session_key, provider_secrets = _pod_grant_prerequisites(
+            str(payload.get("encrypted_session_key") or "")
+        )
+        return {
+            "ok": True,
+            "freeze_id": freeze_id,
+            "grant_envelope": _issue_pod_grant_envelope(
+                db_path,
+                account,
+                freeze_id,
+                session_key,
+                provider_secrets,
+            ),
+        }
 
     @app.post("/api/customer/billing/batch/freeze")
     def customer_billing_batch_freeze(
@@ -550,6 +720,30 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     def admin_billing_pricing_items(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         _require_billing_admin(db_path, authorization)
         return {"ok": True, "pricing": pricing_items(db_path)}
+
+    @app.get("/api/admin/billing/pricing/pod")
+    def admin_billing_pod_pricing(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        _require_billing_admin(db_path, authorization)
+        return {"ok": True, "pricing": pod_pricing_items(db_path, require_configured=False)}
+
+    @app.put("/api/admin/billing/pricing/pod")
+    def update_admin_billing_pod_pricing(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        admin = _require_billing_admin(db_path, authorization)
+        items = payload.get("items")
+        if not isinstance(items, dict):
+            raise HTTPException(status_code=400, detail="items must be an object")
+        return {
+            "ok": True,
+            "pricing": update_pod_pricing_items(
+                db_path,
+                items=items,
+                updated_by=str(admin["account_id"]),
+                change_reason=str(payload.get("change_reason") or ""),
+            ),
+        }
 
     @app.put("/api/admin/billing/pricing/items")
     def update_admin_billing_pricing_items(

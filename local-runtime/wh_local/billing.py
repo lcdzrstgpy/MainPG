@@ -1002,6 +1002,7 @@ def pricing_items(database_path: Path, *, rule_version: int | None = None) -> di
             SELECT feature_key, charge_points, intercept_refund_ratio, no_return_refund_ratio
             FROM billing_pricing_items
             WHERE rule_version = ?
+              AND feature_key IN ('title', 'description', 'product_dimensions', 'four_grid', 'detail_images')
             ORDER BY CASE feature_key
                 WHEN 'title' THEN 1 WHEN 'description' THEN 2
                 WHEN 'product_dimensions' THEN 3 WHEN 'four_grid' THEN 4
@@ -1096,6 +1097,34 @@ def update_pricing_items(
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (next_version, key, charge_units, intercept, no_return, now),
+            )
+        # POD pricing shares the global rule version. Product-only revisions
+        # must carry configured POD items forward instead of silently making
+        # subsequent POD freezes fail closed.
+        pod_rows = conn.execute(
+            """
+            SELECT feature_key, charge_points, intercept_refund_ratio, no_return_refund_ratio
+            FROM billing_pricing_items
+            WHERE rule_version = ? AND feature_key IN ('pod.title', 'pod.image')
+            """,
+            (current_version,),
+        ).fetchall()
+        for row in pod_rows:
+            conn.execute(
+                """
+                INSERT INTO billing_pricing_items (
+                    rule_version, feature_key, charge_points,
+                    intercept_refund_ratio, no_return_refund_ratio, effective_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    next_version,
+                    str(row["feature_key"]),
+                    int(row["charge_points"]),
+                    float(row["intercept_refund_ratio"]),
+                    float(row["no_return_refund_ratio"]),
+                    now,
+                ),
             )
         after = {
             "rule_version": next_version,
@@ -1336,6 +1365,215 @@ def freeze_batch_points(
         "rule_version": int(pricing["rule_version"]),
         "status": "frozen",
         "expires_at": expires_at,
+    }
+
+
+def freeze_planned_points(
+    database_path: Path,
+    actor: Actor,
+    *,
+    frozen_units: int,
+    item_count: int,
+    scope: list[str],
+    idempotency_key: str,
+    source_type: str,
+    persist_plan: Any | None = None,
+) -> dict[str, Any]:
+    """Lock an exact server-computed amount for a versioned call plan.
+
+    This is the shared wallet/ledger primitive used by non-product batch
+    bridges. Callers own plan validation and pricing; amounts are integer
+    tenths of a point and are never accepted from an HTTP request directly.
+    """
+    units = int(frozen_units)
+    count = int(item_count)
+    idem = str(idempotency_key or "").strip()
+    if units < 0 or count < 1 or not idem:
+        raise HTTPException(status_code=400, detail="invalid planned point freeze")
+    with transaction(database_path) as conn:
+        _ensure_billing_account(conn, actor)
+        _ensure_wallet(conn, actor.id, actor.workspace_id)
+        existing = conn.execute(
+            """
+            SELECT * FROM billing_batch_freezes
+            WHERE account_id = ? AND freeze_id = ?
+            """,
+            (actor.id, idem),
+        ).fetchone()
+        if existing is not None:
+            return {
+                "freeze_id": str(existing["freeze_id"]),
+                "account_id": str(existing["account_id"]),
+                "workspace_id": str(existing["workspace_id"]),
+                "item_count": int(existing["link_count"]),
+                "frozen_points": _display_points(int(existing["frozen_points"])),
+                "status": str(existing["status"]),
+                "expires_at": str(existing["expires_at"]),
+                "already_frozen": True,
+            }
+        wallet = conn.execute(
+            """
+            SELECT points_balance, locked_points, manual_frozen_points
+            FROM billing_wallets WHERE account_id = ?
+            """,
+            (actor.id,),
+        ).fetchone()
+        available = (
+            int(wallet["points_balance"])
+            - int(wallet["locked_points"])
+            - int(wallet["manual_frozen_points"])
+        )
+        if available < units:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"积分不足：需要冻结 {_display_points(units)}，"
+                    f"当前可用 {_display_points(available)}"
+                ),
+            )
+        now = _utc_now()
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(days=BATCH_FREEZE_TTL_DAYS)
+        ).isoformat(timespec="seconds")
+        conn.execute(
+            """
+            UPDATE billing_wallets
+            SET locked_points = locked_points + ?, version = version + 1, updated_at = ?
+            WHERE account_id = ?
+            """,
+            (units, now, actor.id),
+        )
+        conn.execute(
+            """
+            INSERT INTO billing_batch_freezes (
+                freeze_id, account_id, workspace_id, link_count, scope_json,
+                frozen_points, status, created_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'frozen', ?, ?)
+            """,
+            (
+                idem,
+                actor.id,
+                actor.workspace_id or "default",
+                count,
+                json.dumps(scope, ensure_ascii=False),
+                units,
+                now,
+                expires_at,
+            ),
+        )
+        _append_ledger(
+            conn,
+            account_id=actor.id,
+            workspace_id=actor.workspace_id or "default",
+            direction="lock",
+            points_delta=units,
+            source_type=source_type,
+            source_id=idem,
+            idempotency_key=f"{source_type}:{idem}:lock",
+            metadata={"item_count": count},
+        )
+        if persist_plan is not None:
+            persist_plan(conn, idem)
+    return {
+        "freeze_id": idem,
+        "account_id": actor.id,
+        "workspace_id": actor.workspace_id or "default",
+        "item_count": count,
+        "frozen_points": _display_points(units),
+        "status": "frozen",
+        "expires_at": expires_at,
+        "already_frozen": False,
+    }
+
+
+def settle_planned_points(
+    database_path: Path,
+    freeze_id: str,
+    *,
+    expected_account_id: str,
+    charge_units: int,
+    refund_units: int,
+    source_type: str,
+    metadata: dict[str, Any] | None = None,
+    persist_settlement: Any | None = None,
+) -> dict[str, Any]:
+    """Atomically debit an exact planned charge and release its full lock."""
+    charge = int(charge_units)
+    refund = int(refund_units)
+    if charge < 0 or refund < 0:
+        raise HTTPException(status_code=400, detail="invalid planned settlement")
+    with transaction(database_path) as conn:
+        freeze = conn.execute(
+            "SELECT * FROM billing_batch_freezes WHERE freeze_id = ?",
+            (freeze_id,),
+        ).fetchone()
+        if freeze is None or str(freeze["account_id"]) != str(expected_account_id):
+            raise HTTPException(status_code=404, detail="POD freeze not found")
+        if str(freeze["status"]) == "settled":
+            return {
+                "freeze_id": freeze_id,
+                "status": "settled",
+                "charged_points": _display_points(int(freeze["charged_points"])),
+                "refunded_points": _display_points(int(freeze["refunded_points"])),
+                "already_settled": True,
+            }
+        if str(freeze["status"]) != "frozen":
+            raise HTTPException(status_code=409, detail="POD freeze is no longer active")
+        frozen = int(freeze["frozen_points"])
+        if charge + refund != frozen:
+            raise HTTPException(status_code=400, detail="settlement does not reconcile to frozen points")
+        now = _utc_now()
+        conn.execute(
+            """
+            UPDATE billing_wallets
+            SET points_balance = points_balance - ?,
+                locked_points = locked_points - ?,
+                version = version + 1,
+                updated_at = ?
+            WHERE account_id = ?
+            """,
+            (charge, frozen, now, expected_account_id),
+        )
+        conn.execute(
+            """
+            UPDATE billing_batch_freezes
+            SET charged_points = ?, refunded_points = ?, status = 'settled', settled_at = ?
+            WHERE freeze_id = ?
+            """,
+            (charge, refund, now, freeze_id),
+        )
+        ledger_metadata = dict(metadata or {})
+        _append_ledger(
+            conn,
+            account_id=expected_account_id,
+            workspace_id=str(freeze["workspace_id"] or "default"),
+            direction="debit",
+            points_delta=charge,
+            source_type=source_type,
+            source_id=freeze_id,
+            idempotency_key=f"{source_type}:{freeze_id}:debit",
+            metadata=ledger_metadata,
+        )
+        if refund:
+            _append_ledger(
+                conn,
+                account_id=expected_account_id,
+                workspace_id=str(freeze["workspace_id"] or "default"),
+                direction="unlock",
+                points_delta=refund,
+                source_type=source_type,
+                source_id=freeze_id,
+                idempotency_key=f"{source_type}:{freeze_id}:unlock",
+                metadata=ledger_metadata,
+            )
+        if persist_settlement is not None:
+            persist_settlement(conn, freeze_id)
+    return {
+        "freeze_id": freeze_id,
+        "status": "settled",
+        "charged_points": _display_points(charge),
+        "refunded_points": _display_points(refund),
+        "already_settled": False,
     }
 
 
