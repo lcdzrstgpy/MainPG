@@ -106,8 +106,13 @@ class DailySelectionRouteDependencies:
     plugin_queue: DataCollectionPluginQueue | None = None
     plugin_draft_writer: Any | None = None
     handoff_consumer: DailySelectionHandoffConsumer | None = None
+    existing_source_refs: Callable[[str], frozenset[str]] | None = None
 
-    def build_service(self) -> DailySelectionService:
+    def build_service(
+        self,
+        *,
+        existing_source_refs: Callable[[str], frozenset[str]] | None = None,
+    ) -> DailySelectionService:
         repository = self.repository
         if repository is None:
             if self.database_path is None:
@@ -126,6 +131,7 @@ class DailySelectionRouteDependencies:
             provider_factory=self.provider_factory,
             image_cache=self.image_cache,
             run_id_factory=self.run_id_factory,
+            existing_source_refs=existing_source_refs,
         )
 
 
@@ -133,7 +139,6 @@ def register_daily_selection_routes(
     router: APIRouter, dependencies: DailySelectionRouteDependencies
 ) -> None:
     """Register daily-selection routes on a host-provided router."""
-    service = dependencies.build_service()
     progress_tracker = DailySelectionProgressTracker()
     plugin_queue = dependencies.plugin_queue
     if plugin_queue is None and dependencies.database_path is not None:
@@ -169,6 +174,10 @@ def register_daily_selection_routes(
             )
 
         handoff_consumer = consume_handoffs
+
+    service = dependencies.build_service(
+        existing_source_refs=_draft_pool_source_refs(plugin_draft_writer)
+    )
 
     def actor_dependency(
         actor_value: Any = Depends(dependencies.resolve_actor),
@@ -905,6 +914,40 @@ def _canonical_url(value: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def _draft_pool_source_refs(
+    plugin_draft_writer: Any,
+) -> Callable[[str], frozenset[str]] | None:
+    """构造采集去重用的草稿池查询：返回某工作区已入池商品的归一化链接集合。
+
+    草稿池存在即视为「已入池」（含已处理完成），采集完成后据此剔除重复商品。
+    查询失败时返回空集（fail-open）：宁可不去重也不让采集流程失败。
+    """
+    if plugin_draft_writer is None:
+        return None
+
+    def resolve(workspace_id: str) -> frozenset[str]:
+        try:
+            refs: set[str] = set()
+            offset = 0
+            while True:
+                page = plugin_draft_writer.list_drafts(
+                    None, 500, offset, summary=True, workspace_id=workspace_id
+                )
+                drafts = page.get("drafts") or []
+                for draft in drafts:
+                    ref = _canonical_url(str(draft.get("source_ref") or ""))
+                    if ref:
+                        refs.add(ref)
+                if len(drafts) < 500:
+                    break
+                offset += 500
+            return frozenset(refs)
+        except Exception:
+            return frozenset()
+
+    return resolve
 
 
 __all__ = [

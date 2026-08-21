@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from .db import transaction
 from .session import Actor
+from . import cache as _cache
 
 
 TEST_GRANT_POINTS = int(os.environ.get("WH_BILLING_TEST_GRANT_POINTS", "10000") or "10000")
@@ -51,9 +52,16 @@ def feature_reserve_points(feature_key: str) -> int:
 
 
 def active_pricing(database_path: Path) -> dict[str, Any]:
-    """Return the active server rule; callers must never accept a client price."""
-    with transaction(database_path) as conn:
-        return _pricing_payload(_active_pricing(conn))
+    """Return the active server rule; callers must never accept a client price.
+
+    定价规则变更频率极低（仅管理员改价），读取走 5 分钟缓存；
+    update_active_pricing 成功后会主动失效该缓存。
+    """
+    def _load() -> dict[str, Any]:
+        with transaction(database_path) as conn:
+            return _pricing_payload(_active_pricing(conn))
+
+    return _cache.get_or_set("pricing:active", 300, _load)
 
 
 def update_active_pricing(
@@ -116,7 +124,10 @@ def update_active_pricing(
                 next_rule["min_client_version"], now, now, updated_by[:160],
             ),
         )
-        return _pricing_payload(_active_pricing(conn))
+        payload = _pricing_payload(_active_pricing(conn))
+    # 事务提交后再失效缓存，避免读到旧规则。
+    _cache.invalidate_pricing()
+    return payload
 
 
 def usage_history(
@@ -127,11 +138,17 @@ def usage_history(
     limit: int = 30,
     feature_key: str = "",
     usage_status: str = "",
+    date_from: str = "",
+    date_to: str = "",
 ) -> dict[str, Any]:
     """Read an account-scoped, sanitized consumption ledger.
 
     Provider keys and prompts are deliberately absent.  A user sees only the
     identifiers and amounts needed to reconcile their own balance.
+
+    ``usage_status`` accepts comma-separated values (e.g. ``reserved,frozen``)
+    matched against the status column; ``date_from`` / ``date_to`` are
+    ``YYYY-MM-DD`` bounds applied to the record's creation date.
     """
     page_size = max(1, min(int(limit), 100))
     clauses = ["account_id = ?"]
@@ -140,8 +157,17 @@ def usage_history(
         clauses.append("feature_key = ?")
         params.append(feature_key)
     if usage_status:
-        clauses.append("status = ?")
-        params.append(usage_status)
+        statuses = [value.strip() for value in usage_status.split(",") if value.strip()]
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+    if date_from:
+        clauses.append("substr(created_at, 1, 10) >= ?")
+        params.append(date_from)
+    if date_to:
+        clauses.append("substr(created_at, 1, 10) <= ?")
+        params.append(date_to)
     if cursor:
         clauses.append("usage_id < ?")
         params.append(cursor)
@@ -163,15 +189,23 @@ def usage_history(
         ).fetchall()
         # 直连模式走批量冻结/结算（按链接计费），结算记录在 batch 表而不写 usage_events，
         # 这里把批量结算合并进客户端「消费流水」，与调用级流水统一按时间倒序展示。
+        batch_clauses = ["account_id = ?"]
+        batch_params: list[Any] = [account_id]
+        if date_from:
+            batch_clauses.append("substr(created_at, 1, 10) >= ?")
+            batch_params.append(date_from)
+        if date_to:
+            batch_clauses.append("substr(created_at, 1, 10) <= ?")
+            batch_params.append(date_to)
         batch_rows = conn.execute(
-            """
+            f"""
             SELECT freeze_id, link_count, frozen_points, charged_points,
                    refunded_points, status, created_at, settled_at
             FROM billing_batch_freezes
-            WHERE account_id = ?
+            WHERE {" AND ".join(batch_clauses)}
             ORDER BY created_at DESC, freeze_id DESC
             """,
-            (account_id,),
+            batch_params,
         ).fetchall()
     scale = int(rule["point_unit_scale"])
     has_more = len(rows) > page_size
@@ -355,6 +389,7 @@ def reserve_ai_usage(
             idempotency_key=f"{idempotency_key}:lock",
             metadata={"feature_key": feature_key},
         )
+    _cache.invalidate_wallet(actor.id)
     return {
         "usage_id": usage_id,
         "account_id": actor.id,
@@ -478,6 +513,7 @@ def settle_ai_usage_success(
             "SELECT * FROM billing_ai_usage_events WHERE usage_id = ?",
             (usage_id,),
         ).fetchone()
+    _cache.invalidate_wallet(str(settled["account_id"]))
     return dict(settled)
 
 
@@ -538,12 +574,14 @@ def settle_ai_usage_failure(
                     detail="provider request is still in progress",
                 )
             if "succeeded" in gateway_statuses:
-                return _settle_consumed_usage_after_business_failure(
+                result = _settle_consumed_usage_after_business_failure(
                     conn,
                     row,
                     error_message=error_message,
                     settled_at=now,
                 )
+                _cache.invalidate_wallet(str(row["account_id"]))
+                return result
         conn.execute(
             """
             UPDATE billing_wallets
@@ -572,6 +610,7 @@ def settle_ai_usage_failure(
             idempotency_key=f"{row['idempotency_key']}:fail-unlock",
             metadata={"error": str(error_message)[:300]},
         )
+        _cache.invalidate_wallet(str(row["account_id"]))
         settled = conn.execute(
             "SELECT * FROM billing_ai_usage_events WHERE usage_id = ?",
             (usage_id,),
@@ -1326,6 +1365,7 @@ def freeze_batch_points(
             idempotency_key=f"batch_freeze:{freeze_id}:lock",
             metadata={"link_count": link_count, "freeze_units_per_link": freeze_units_per_link},
         )
+    _cache.invalidate_wallet(actor.id)
     return {
         "freeze_id": freeze_id,
         "account_id": actor.id,
@@ -1462,6 +1502,7 @@ def settle_batch_points(
                 idempotency_key=f"batch_settle:{freeze_id}:unlock",
                 metadata={"rule_version": freeze_rule_version},
             )
+    _cache.invalidate_wallet(str(expected_account_id))
     return {
         "freeze_id": freeze_id,
         "status": "settled",

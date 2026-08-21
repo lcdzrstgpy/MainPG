@@ -65,6 +65,11 @@ export function PersonalCenterPage() {
   // 消费流水刷新保护时间：切换「消费流水」页签时，距上次请求小于该时长则直接复用已加载数据，不重复请求。
   const USAGE_REFRESH_COOLDOWN_MS = 30_000;
   const lastUsageFetchAt = useRef(0);
+  // 消费流水筛选条件（服务/状态/日期）；筛选变更时强制重新拉取。
+  const [filterFeature, setFilterFeature] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
 
   const loadUsage = useCallback((force = false) => {
     if (!force && Date.now() - lastUsageFetchAt.current < USAGE_REFRESH_COOLDOWN_MS) {
@@ -73,11 +78,25 @@ export function PersonalCenterPage() {
     lastUsageFetchAt.current = Date.now();
     setUsageLoading(true);
     setUsageError("");
-    loadBillingUsageHistory()
+    loadBillingUsageHistory({
+      featureKey: filterFeature || undefined,
+      usageStatus: filterStatus || undefined,
+      dateFrom: filterDateFrom || undefined,
+      dateTo: filterDateTo || undefined,
+    })
       .then((payload) => setUsageEntries(payload.items))
       .catch((exc) => setUsageError(exc instanceof Error ? exc.message : "读取消费流水失败"))
       .finally(() => setUsageLoading(false));
-  }, []);
+  }, [filterFeature, filterStatus, filterDateFrom, filterDateTo]);
+
+  const hasUsageFilter = Boolean(filterFeature || filterStatus || filterDateFrom || filterDateTo);
+  const resetUsageFilters = () => {
+    setFilterFeature("");
+    setFilterStatus("");
+    setFilterDateFrom("");
+    setFilterDateTo("");
+    loadUsage(true);
+  };
 
   const activePackage = useMemo(
     () => summary?.topup_products.find((item) => item.package_id === selectedPackage) ?? summary?.topup_products[0],
@@ -401,6 +420,67 @@ export function PersonalCenterPage() {
               <div><h2>消费流水</h2><small>每条记录包含冻结、实际扣费、释放、模型与结算状态。</small></div>
               <button type="button" onClick={() => loadUsage(true)}>刷新</button>
             </div>
+            <div className="usage-filters">
+              <label>
+                <span>开始日期</span>
+                <input
+                  type="date"
+                  value={filterDateFrom}
+                  max={filterDateTo || undefined}
+                  onChange={(event) => {
+                    setFilterDateFrom(event.target.value);
+                    loadUsage(true);
+                  }}
+                />
+              </label>
+              <label>
+                <span>结束日期</span>
+                <input
+                  type="date"
+                  value={filterDateTo}
+                  min={filterDateFrom || undefined}
+                  onChange={(event) => {
+                    setFilterDateTo(event.target.value);
+                    loadUsage(true);
+                  }}
+                />
+              </label>
+              <label>
+                <span>服务</span>
+                <select
+                  value={filterFeature}
+                  onChange={(event) => {
+                    setFilterFeature(event.target.value);
+                    loadUsage(true);
+                  }}
+                >
+                  <option value="">全部服务</option>
+                  <option value="product_processing.image_grid_2k">四宫格生图</option>
+                  <option value="product_processing.text">商品文本</option>
+                  <option value="product_processing.batch">批量链接处理</option>
+                </select>
+              </label>
+              <label>
+                <span>状态</span>
+                <select
+                  value={filterStatus}
+                  onChange={(event) => {
+                    setFilterStatus(event.target.value);
+                    loadUsage(true);
+                  }}
+                >
+                  <option value="">全部状态</option>
+                  <option value="succeeded">已结算</option>
+                  <option value="reserved,frozen">处理中</option>
+                  <option value="failed">已释放</option>
+                </select>
+              </label>
+              {hasUsageFilter && (
+                <button type="button" className="usage-filter-reset" onClick={resetUsageFilters}>
+                  重置筛选
+                </button>
+              )}
+            </div>
             {usageLoading && <p className="usage-state">正在读取服务器消费账本…</p>}
             {usageError && <p className="usage-state is-error">{usageError}</p>}
             {!usageLoading && !usageError && (
@@ -415,7 +495,7 @@ export function PersonalCenterPage() {
                       <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
                       <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.usage_id.slice(0, 14)}…</small></td>
                     </tr>
-                  )) : <tr><td colSpan={8} className="usage-empty">暂无消费流水</td></tr>}</tbody>
+                  )) : <tr><td colSpan={8} className="usage-empty">{hasUsageFilter ? "没有匹配的消费流水，试试调整筛选条件" : "暂无消费流水"}</td></tr>}</tbody>
                 </table>
               </div>
             )}

@@ -119,10 +119,24 @@ export function loadBillingSummary() {
   return httpJson<BillingSummary>("/api/customer/billing/summary");
 }
 
-export function loadBillingUsageHistory(cursor = "") {
-  const query = new URLSearchParams({ limit: "30" });
-  if (cursor) query.set("cursor", cursor);
-  return httpJson<BillingUsageHistory>(`/api/customer/billing/usage?${query.toString()}`);
+export type BillingUsageQuery = {
+  cursor?: string;
+  featureKey?: string;
+  /** 逗号分隔的多状态值，例如 "reserved,frozen" 表示处理中 */
+  usageStatus?: string;
+  /** YYYY-MM-DD，按记录创建日期过滤（含当日） */
+  dateFrom?: string;
+  dateTo?: string;
+};
+
+export function loadBillingUsageHistory(query: BillingUsageQuery = {}) {
+  const params = new URLSearchParams({ limit: "30" });
+  if (query.cursor) params.set("cursor", query.cursor);
+  if (query.featureKey) params.set("feature_key", query.featureKey);
+  if (query.usageStatus) params.set("usage_status", query.usageStatus);
+  if (query.dateFrom) params.set("date_from", query.dateFrom);
+  if (query.dateTo) params.set("date_to", query.dateTo);
+  return httpJson<BillingUsageHistory>(`/api/customer/billing/usage?${params.toString()}`);
 }
 
 export function createTopupOrder(input: {

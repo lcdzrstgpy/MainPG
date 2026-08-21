@@ -43,6 +43,7 @@ from ..billing import (
     usage_history,
 )
 from ..config import default_config
+from .. import cache as _cache
 from ..db import init_db, transaction
 from ..modules.product_processing.domain.policy import is_safe_external_url
 from ..session import Actor
@@ -630,6 +631,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         limit: int = 50,
         feature_key: str = "",
         usage_status: str = "",
+        date_from: str = "",
+        date_to: str = "",
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_billing_admin(db_path, authorization)
@@ -642,6 +645,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             limit=limit,
             feature_key=feature_key,
             usage_status=usage_status,
+            date_from=date_from,
+            date_to=date_to,
         )
 
     @app.post("/api/customer/billing/usage/{usage_id}/succeed")
@@ -902,6 +907,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                         """,
                         (_utc_now(), session_row["account_id"]),
                     )
+        # 登出后立即失效会话缓存，避免残留 token 在 TTL 内继续通过鉴权。
+        _cache.invalidate_session(_hash_token(token))
         return {"ok": True}
 
     @app.post("/api/customer/activate")
@@ -1138,8 +1145,17 @@ def _issue_platform_session(
 
 
 def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
+    """按 token 查账户；命中 Redis 会话缓存直接返回，DB miss 时回填。
+
+    缓存命中时不再写 last_used_at（由 DB 命中路径节流更新），
+    降低高并发下每次请求的无效写放大。被强制下线/登出会主动失效缓存。
+    """
     now = _utc_now()
     token_hash = _hash_token(token)
+    cache_key = f"sess:{token_hash}"
+    cached = _cache.cache_get(cache_key)
+    if cached is not None:
+        return cached
     with transaction(database_path) as conn:
         row = conn.execute(
             """
@@ -1169,7 +1185,7 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
             "UPDATE auth_platform_sessions SET last_used_at = ? WHERE token_hash = ?",
             (now, token_hash),
         )
-    return {
+    account = {
         "account_id": row["account_id"],
         "customer_id": row["account_id"],
         "username": row["username"],
@@ -1183,6 +1199,8 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
         "workspace_name": row["workspace_name"] or "",
         "workspace": {"code": row["workspace_code"] or "", "name": row["workspace_name"] or ""},
     }
+    _cache.cache_set(cache_key, account, ttl=120)
+    return account
 
 
 def _required_account(database_path: Path, authorization: str | None) -> dict[str, Any]:
@@ -2045,6 +2063,11 @@ def _safe_billing_metadata(value: dict[str, Any]) -> dict[str, Any]:
 def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, Any]:
     account_id = str(account["account_id"])
     workspace_id = str(account.get("workspace_id") or "default")
+    # 展示型余额/流水缓存（短 TTL）；冻结/结算/充值等写路径会主动失效。
+    cache_key = f"wallet:{account_id}"
+    cached = _cache.cache_get(cache_key)
+    if cached is not None:
+        return cached
     pricing = active_pricing(database_path)
     with transaction(database_path) as conn:
         _ensure_wallet(conn, account_id, workspace_id)
@@ -2077,7 +2100,7 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             """,
             (account_id,),
         ).fetchall()
-    return {
+    payload = {
         "ok": True,
         "account": {
             "account_id": account_id,
@@ -2109,6 +2132,8 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             "settlement_requires_signed_provider_callback": True,
         },
     }
+    _cache.cache_set(cache_key, payload, ttl=30)
+    return payload
 
 
 def _display_billing_points(units: int, pricing: dict[str, Any]) -> int | float:

@@ -414,6 +414,16 @@
 .usage-card .personal-card-title > div { flex: 1; }
 .usage-card .personal-card-title small { display: block; margin-top: 3px; color: #718096; font-size: 12px; font-weight: 500; }
 
+.usage-filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-top: 16px; padding: 12px 14px; border: 1px solid #e5edf5; border-radius: 12px; background: #f8fbfe; }
+.usage-filters label { display: flex; flex-direction: column; gap: 5px; }
+.usage-filters label span { color: #64748b; font-size: 11px; font-weight: 700; }
+.usage-filters input[type="date"],
+.usage-filters select { min-height: 32px; padding: 0 8px; border: 1px solid #d8e3ee; border-radius: 8px; background: #fff; color: #334155; font-size: 13px; outline: none; }
+.usage-filters input[type="date"]:focus,
+.usage-filters select:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12); }
+.usage-filter-reset { min-height: 32px; padding: 0 14px; border: 1px solid #d8e3ee; border-radius: 8px; background: #fff; color: #be123c; font-size: 12px; font-weight: 700; cursor: pointer; }
+.usage-filter-reset:hover { border-color: #fecdd3; background: #fff1f2; }
+
 .usage-table-wrap { margin-top: 18px; overflow: auto; border: 1px solid #e5edf5; border-radius: 14px; }
 .usage-table { width: 100%; min-width: 850px; border-collapse: collapse; font-size: 13px; }
 .usage-table th { padding: 12px; color: #64748b; background: #f7fbfe; text-align: left; font-weight: 800; white-space: nowrap; }

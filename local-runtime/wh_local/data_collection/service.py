@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -114,6 +114,14 @@ class CollectionProgressCallback(Protocol):
     ) -> None: ...
 
 
+def _canonical_collection_ref(value: str) -> str:
+    """归一化商品链接用于去重匹配（忽略 query/fragment）。"""
+    parsed = urlsplit(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
 class DailySelectionService:
     """The sole orchestration entry point used by FastAPI routes."""
 
@@ -126,6 +134,7 @@ class DailySelectionService:
         provider_factory: ProviderFactory,
         image_cache: DailySelectionImageCache | None = None,
         run_id_factory: RunIdFactory | None = None,
+        existing_source_refs: Callable[[str], frozenset[str]] | None = None,
     ) -> None:
         self._repository = repository
         self._budget = budget
@@ -133,6 +142,9 @@ class DailySelectionService:
         self._provider_factory = provider_factory
         self._image_cache = image_cache
         self._run_id_factory = run_id_factory or (lambda: str(uuid.uuid4()))
+        # 宿主注入：返回某工作区草稿池已存在商品的 source_ref（归一化链接）集合。
+        # 用于采集完成后剔除「已入池/已处理」的商品；未注入时只做模块内确认剔除。
+        self._existing_source_refs = existing_source_refs
         self._sku_repull_runner = SkuRepullRunner(
             repository=repository,
             provider_config_resolver=provider_config_resolver,
@@ -199,13 +211,21 @@ class DailySelectionService:
             *filtered.filtered,
         )
         _report_progress(progress_callback, "saving", 97, 0, 1, "正在保存采集结果")
+        kept_candidates, removed = self._deduplicate(
+            actor.workspace_id, public_candidates
+        )
+        metadata = dict(_collection_metadata(collected))
+        metadata["deduplicated"] = {
+            "count": len(removed),
+            "removed_identifiers": sorted(removed),
+        }
         run = self._repository.save_run(
             workspace_id=actor.workspace_id,
             run_id=self._run_id_factory(),
             status=collected.status,
-            candidates=public_candidates,
+            candidates=kept_candidates,
             criteria=criteria,
-            metadata=_collection_metadata(collected),
+            metadata=metadata,
         )
         _report_progress(progress_callback, "saving", 99, 1, 1, "采集结果已保存")
         return run
@@ -261,14 +281,54 @@ class DailySelectionService:
             "seed_image_used": image_url is not None,
             "detail_evidence": [item.model_dump(mode="json") for item in detail.audits],
         }
+        kept_candidates, removed = self._deduplicate(
+            actor.workspace_id, public_candidates
+        )
+        metadata["deduplicated"] = {
+            "count": len(removed),
+            "removed_identifiers": sorted(removed),
+        }
         return self._repository.save_run(
             workspace_id=actor.workspace_id,
             run_id=self._run_id_factory(),
             status=collected.status,
-            candidates=public_candidates,
+            candidates=kept_candidates,
             criteria=seed_criteria,
             metadata=metadata,
         )
+
+    def _deduplicate(
+        self,
+        workspace_id: str,
+        candidates: tuple[Any, ...],
+    ) -> tuple[tuple[Any, ...], frozenset[str]]:
+        """剔除本次采集结果中「已入池/已处理」的商品。
+
+        上游采集接口无法按历史去重，这里在保存前做剔除：
+        - 历史任意批次已确认入池的 offer_id（模块内 daily_selection_candidates）；
+        - 草稿池已存在该商品链接（宿主注入的 existing_source_refs，
+          覆盖已生成草稿/已处理完成的商品）。
+        被剔除的标识随 metadata 返回给前端提示数量。
+        """
+        confirmed = self._repository.confirmed_offer_ids(workspace_id=workspace_id)
+        existing = (
+            self._existing_source_refs(workspace_id)
+            if self._existing_source_refs is not None
+            else frozenset()
+        )
+        removed: set[str] = set()
+        kept: list[Any] = []
+        for candidate in candidates:
+            offer_id = str(candidate.offer_id or "").strip()
+            source_ref = _canonical_collection_ref(str(candidate.source_url or ""))
+            if offer_id and offer_id in confirmed:
+                removed.add(offer_id)
+                continue
+            if source_ref and source_ref in existing:
+                removed.add(offer_id or source_ref)
+                continue
+            kept.append(candidate)
+        return tuple(kept), frozenset(removed)
 
     def list_runs(
         self, *, actor: DailySelectionActor, limit: int = 20, offset: int = 0
