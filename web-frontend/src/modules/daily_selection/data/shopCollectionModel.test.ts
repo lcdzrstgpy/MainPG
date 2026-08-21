@@ -44,7 +44,6 @@ test("maps every server batch status to a readable Chinese label", () => {
   assert.equal(shopBatchStatusLabel("partial"), "部分完成");
   assert.equal(shopBatchStatusLabel("failed"), "采集失败");
 });
-
 test("calculates finite progress from the counters returned by the batch API", () => {
   assert.equal(shopBatchProgress(batch()), 40);
   assert.equal(shopBatchProgress(batch({ discovered_count: 0, status: "listing" })), 0);
@@ -83,4 +82,3 @@ test("formats API errors without exposing authorization or credential values", (
   assert.match(formatted, /\[已隐藏\]/);
   assert.equal(formatShopCollectionError(null), "整店采集请求失败，请稍后重试");
 });
-

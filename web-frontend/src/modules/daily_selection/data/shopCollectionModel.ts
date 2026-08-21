@@ -94,7 +94,6 @@ const TERMINAL_STATUSES = new Set<ShopBatchStatus>(["cancelled", "completed", "p
 export function shopBatchStatusLabel(status: ShopBatchStatus): string {
   return STATUS_LABELS[status];
 }
-
 export function isActiveShopBatchStatus(status: ShopBatchStatus): boolean {
   return ACTIVE_STATUSES.has(status);
 }
@@ -133,4 +132,3 @@ export function formatShopCollectionError(error: unknown): string {
 function finiteCount(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0;
 }
-

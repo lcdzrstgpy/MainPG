@@ -7,7 +7,6 @@ export type ShopCollectionBatchPage = {
   items: ShopCollectionBatch[];
   total: number;
 };
-
 export function listShopCollectionBatches(limit = 30, offset = 0): Promise<ShopCollectionBatchPage> {
   const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   return apiRequest(`${SHOP_BATCHES_PATH}?${query}`);
@@ -43,4 +42,3 @@ export const shopCollectionApi = {
   cancel: (batchId: string) => batchAction(batchId, "cancel"),
   retryFailed: (batchId: string) => batchAction(batchId, "retry-failed"),
 };
-
