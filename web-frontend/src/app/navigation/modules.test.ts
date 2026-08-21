@@ -33,6 +33,7 @@ test("POD customization is a top-level section beside product and sourcing workf
 
   const podCustomization = workspaceModules.find((module) => module.id === "pod_customization");
   assert.equal(podCustomization?.label, "POD定制");
+  assert.equal(podCustomization?.iconClass, "iconfont icon-skin");
 });
 
 test("sidebar navigation prioritizes price and source matching in its default sourcing workflow", () => {
