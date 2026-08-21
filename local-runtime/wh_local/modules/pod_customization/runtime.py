@@ -144,4 +144,3 @@ class AiRuntime:
         close = getattr(self._session, "close", None)
         if callable(close):
             close()
-
