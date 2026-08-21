@@ -115,7 +115,8 @@ export function getShopBatchActions(batch: ShopCollectionBatch): ShopBatchAction
     pause,
     resume: batch.status === "paused",
     cancel: pause || batch.status === "paused" || batch.status === "pausing",
-    retryFailed: ["partial", "failed"].includes(batch.status) && finiteCount(batch.failed_count) > 0,
+    retryFailed: batch.status === "failed"
+      || (batch.status === "partial" && finiteCount(batch.failed_count) > 0),
   };
 }
 

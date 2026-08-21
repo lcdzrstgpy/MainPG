@@ -69,6 +69,7 @@ test("only exposes controls supported by the current batch state", () => {
   assert.deepEqual(getShopBatchActions(batch({ status: "completed", failed_count: 1 })), { pause: false, resume: false, cancel: false, retryFailed: false });
   assert.deepEqual(getShopBatchActions(batch({ status: "cancelled", failed_count: 1 })), { pause: false, resume: false, cancel: false, retryFailed: false });
   assert.deepEqual(getShopBatchActions(batch({ status: "failed", failed_count: 1 })), { pause: false, resume: false, cancel: false, retryFailed: true });
+  assert.deepEqual(getShopBatchActions(batch({ status: "failed", failed_count: 0, discovered_count: 0, listing_complete: false })), { pause: false, resume: false, cancel: false, retryFailed: true });
 });
 
 test("formats API errors without exposing authorization or credential values", () => {
