@@ -682,6 +682,18 @@ def _module_migrations() -> list[tuple[str, str, str]]:
             "data_collection:003_plugin_command_requests",
             root / "data_collection" / "migrations" / "003_plugin_command_requests.sql",
         ),
+        (
+            "data_collection:004_plugin_session_client_identity",
+            root / "data_collection" / "migrations" / "004_plugin_session_client_identity.sql",
+        ),
+        (
+            "data_collection:005_shop_collection",
+            root / "data_collection" / "migrations" / "005_shop_collection.sql",
+        ),
+        (
+            "data_collection:006_shop_collection_lease_tokens",
+            root / "data_collection" / "migrations" / "006_shop_collection_lease_tokens.sql",
+        ),
     ]
     for migration_id, sql_path in data_collection_migrations:
         if sql_path.exists():
@@ -692,18 +704,6 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                     sql_path.read_text(encoding="utf-8"),
                 )
             )
-    plugin_session_client_identity_sql = (
-        root / "data_collection" / "migrations" / "004_plugin_session_client_identity.sql"
-    )
-    if plugin_session_client_identity_sql.exists():
-        migrations.append(
-            (
-                "data_collection:004_plugin_session_client_identity",
-                "data_collection",
-                plugin_session_client_identity_sql.read_text(encoding="utf-8"),
-            )
-        )
-
     product_processing_sql = root / "modules" / "product_processing" / "migrations" / "001_product_processing.sql"
     if product_processing_sql.exists():
         migrations.append(
@@ -729,6 +729,17 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 "product_processing:003_source_image_sync_lease",
                 "product_processing",
                 source_image_sync_lease_sql.read_text(encoding="utf-8"),
+            )
+        )
+    shop_candidate_uniqueness_sql = (
+        root / "modules" / "product_processing" / "migrations" / "004_shop_candidate_uniqueness.sql"
+    )
+    if shop_candidate_uniqueness_sql.exists():
+        migrations.append(
+            (
+                "product_processing:004_shop_candidate_uniqueness",
+                "product_processing",
+                shop_candidate_uniqueness_sql.read_text(encoding="utf-8"),
             )
         )
     ai_service_sql = root / "modules" / "ai_service" / "migrations" / "001_ai_service.sql"

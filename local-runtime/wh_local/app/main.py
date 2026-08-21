@@ -48,6 +48,12 @@ from ..data_collection import (
 from ..data_collection.provider import OneBound1688Provider
 from ..data_collection.plugin_queue import DataCollectionPluginQueue
 from ..data_collection.image_cache import PublicDailySelectionImageCache
+from ..data_collection.shop_repository import ShopCollectionRepository
+from ..data_collection.shop_routes import (
+    ShopCollectionRouteDependencies,
+    create_shop_collection_router,
+)
+from ..data_collection.shop_worker import ShopCollectionWorker
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
 from ..modules.ai_service import create_router as create_ai_service_router
@@ -156,12 +162,19 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
 
     @asynccontextmanager
-    async def app_lifespan(_: FastAPI):
+    async def app_lifespan(runtime_app: FastAPI):
         # This method only starts daemon workers, so an offline release server
         # cannot delay or make the desktop runtime unhealthy.
         update_manager.start_check()
         patch_manager.start_check()
-        yield
+        shop_worker = getattr(runtime_app.state, "shop_collection_worker", None)
+        if shop_worker is not None:
+            shop_worker.start()
+        try:
+            yield
+        finally:
+            if shop_worker is not None:
+                shop_worker.close()
 
     app = FastAPI(
         title="H Smart Ecommerce Local Runtime",
@@ -321,6 +334,25 @@ def _register_data_collection(
         image_cache=PublicDailySelectionImageCache(),
     )
     register_daily_selection_routes(app.router, dependencies)
+    shop_repository = ShopCollectionRepository(db_path)
+    shop_worker = ShopCollectionWorker(
+        repository=shop_repository,
+        provider_config_resolver=_provider_config,
+        provider_factory=_provider_factory,
+        intake_shop_candidate=product_processing.intake_shop_candidate,
+    )
+    app.state.shop_collection_worker = shop_worker
+    app.include_router(
+        create_shop_collection_router(
+            ShopCollectionRouteDependencies(
+                resolve_actor=daily_selection_actor_from_authorization,
+                database_path=db_path,
+                provider_config_resolver=_provider_config,
+                worker=shop_worker,
+                repository=shop_repository,
+            )
+        )
+    )
 
 
 def _register_profit_activity(app: FastAPI, db_path: Path) -> Any:

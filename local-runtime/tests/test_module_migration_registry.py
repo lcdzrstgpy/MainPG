@@ -12,6 +12,17 @@ def test_price_verification_forward_migrations_are_registered_in_order() -> None
     assert prescreen < batch_sessions
 
 
+def test_shop_and_direct_intake_migrations_are_registered_in_dependency_order() -> None:
+    migration_ids = [migration_id for migration_id, _module, _sql in _module_migrations()]
+
+    shop_schema = migration_ids.index("data_collection:005_shop_collection")
+    shop_leases = migration_ids.index("data_collection:006_shop_collection_lease_tokens")
+    direct_intake = migration_ids.index("product_processing:004_shop_candidate_uniqueness")
+
+    assert shop_schema < shop_leases
+    assert direct_intake > migration_ids.index("product_processing:003_source_image_sync_lease")
+
+
 def test_operator_role_receives_new_pod_permissions(tmp_path: Path) -> None:
     database_path = tmp_path / "permissions.sqlite3"
     init_db(database_path)

@@ -15,6 +15,7 @@ import {
   startSkuRepull,
 } from "../api/dailySelectionApi";
 import { getApiToken } from "../../../shared/api/apiClient";
+import { ShopCollectionPanel } from "../components/ShopCollectionPanel";
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -229,6 +230,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   // 在预设页点方向卡再回到采集视图，而不再新开独立面板。
   const [internalView, setInternalView] = useState<"directions" | "collection">(view);
   const collectionView = internalView === "collection";
+  const [collectionWorkspaceMode, setCollectionWorkspaceMode] = useState<"daily" | "shop">("daily");
   const [customDirections, setCustomDirections] = useState<Direction[]>(loadCustomDirections);
   const [updatedDefaultDirections, setUpdatedDefaultDirections] = useState<Direction[]>(loadUpdatedDefaultDirections);
   const [removedDefaultDirectionIds, setRemovedDefaultDirectionIds] = useState<string[]>(loadRemovedDefaultDirectionIds);
@@ -1136,8 +1138,27 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 <span>DAILY SELECTION</span>
                 <strong>采集与候选商品</strong>
               </div>
-              <span className="collection-workspace-context">来源：每日选品</span>
+              <span className="collection-workspace-context">来源：{collectionWorkspaceMode === "shop" ? "1688 整店" : "每日选品"}</span>
             </header>
+            <div className="collection-workspace-tabs" role="tablist" aria-label="采集入口">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={collectionWorkspaceMode === "daily"}
+                className={collectionWorkspaceMode === "daily" ? "is-active" : ""}
+                onClick={() => setCollectionWorkspaceMode("daily")}
+              >每日选品</button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={collectionWorkspaceMode === "shop"}
+                className={collectionWorkspaceMode === "shop" ? "is-active" : ""}
+                onClick={() => setCollectionWorkspaceMode("shop")}
+              >整店采集</button>
+            </div>
+            {collectionWorkspaceMode === "shop" ? (
+              <ShopCollectionPanel isActive={isActive} />
+            ) : (
             <div className="daily-drawer-body">
               <div className="daily-work-grid">
         <form className="daily-panel collection-panel" onSubmit={submitCollection}>
@@ -1411,6 +1432,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         )}
       </section>
             </div>
+            )}
           </section>
         </div>
       )}

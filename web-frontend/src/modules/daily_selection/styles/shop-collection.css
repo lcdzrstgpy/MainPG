@@ -7,4 +7,25 @@
   .shop-collection-grid { grid-template-columns: 1fr; }
   .shop-collection-header, .shop-batch-summary { align-items: stretch; flex-direction: column; }
   .shop-collection-create { grid-template-columns: 1fr; }
+.collection-workspace-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 14px 18px 0;
+  border-top: 1px solid var(--line, #e5e7eb);
+}
+
+.collection-workspace-tabs button {
+  border: 1px solid var(--line, #d1d5db);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+
+.collection-workspace-tabs button.is-active {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
 
