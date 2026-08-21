@@ -234,7 +234,7 @@ def test_batch_route_enables_random_prices_only_for_pod_profile(
         "wh_local.customer.auth_server.TencentCloudSESEmailSender.from_env",
         lambda: object(),
     )
-    picks = iter((0, 5))
+    picks = iter((0, 10))
     monkeypatch.setattr(billing_module.secrets, "randbelow", lambda upper: next(picks))
     db_path = tmp_path / "auth.sqlite3"
     client = TestClient(create_auth_app(db_path))
@@ -264,8 +264,8 @@ def test_batch_route_enables_random_prices_only_for_pod_profile(
     )
     assert pod.status_code == 200, pod.text
     assert pod.json()["freeze"]["billing_profile"] == "pod_random_v1"
-    assert pod.json()["freeze"]["link_prices"] == [40, 45]
-    assert pod.json()["freeze"]["frozen_points"] == 85
+    assert pod.json()["freeze"]["link_prices"] == [80, 90]
+    assert pod.json()["freeze"]["frozen_points"] == 170
 
     invalid = client.post(
         "/api/customer/billing/batch/freeze",

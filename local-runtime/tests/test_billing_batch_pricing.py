@@ -275,7 +275,7 @@ def test_pod_random_profile_persists_prices_and_settles_whole_styles(
 ) -> None:
     database_path = tmp_path / "billing.sqlite3"
     actor = _service_account(database_path, balance=2000)
-    picks = iter((0, 5))
+    picks = iter((0, 10))
     monkeypatch.setattr(billing_module.secrets, "randbelow", lambda upper: next(picks))
 
     first = freeze_batch_points(
@@ -296,10 +296,10 @@ def test_pod_random_profile_persists_prices_and_settles_whole_styles(
     )
 
     assert first["billing_profile"] == "pod_random_v1"
-    assert first["link_prices"] == [40, 45]
-    assert first["frozen_points"] == 85
-    assert repeated["link_prices"] == [40, 45]
-    assert repeated["frozen_points"] == 85
+    assert first["link_prices"] == [80, 90]
+    assert first["frozen_points"] == 170
+    assert repeated["link_prices"] == [80, 90]
+    assert repeated["frozen_points"] == 170
 
     settled = settle_batch_points(
         database_path,
@@ -323,22 +323,23 @@ def test_pod_random_profile_persists_prices_and_settles_whole_styles(
         expected_account_id=actor.id,
     )
 
-    assert settled["charged_points"] == 40
-    assert settled["refunded_points"] == 45
+    assert settled["charged_points"] == 80
+    assert settled["refunded_points"] == 90
     status = batch_freeze_status(
         database_path,
         first["freeze_id"],
         expected_account_id=actor.id,
     )
     assert status["billing_profile"] == "pod_random_v1"
-    assert status["link_prices"] == [40, 45]
+    assert status["link_prices"] == [80, 90]
 
     with transaction(database_path) as conn:
         wallet = conn.execute(
             "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
             (actor.id,),
         ).fetchone()
-    assert dict(wallet) == {"points_balance": 1600, "locked_points": 0}
+    # 冻结 170 积分（1700 单位）全释放，成功款扣 80 积分（800 单位）：2000 - 800 = 1200。
+    assert dict(wallet) == {"points_balance": 1200, "locked_points": 0}
 
 
 def test_usage_history_identifies_pod_batch_charge(
@@ -378,7 +379,7 @@ def test_usage_history_identifies_pod_batch_charge(
     assert item["provider"] == "POD 定制结算"
     assert item["model"] == "1 款创作"
     assert item["rule_version"] == freeze["rule_version"]
-    assert item["charged_points"] == 42
+    assert item["charged_points"] == 82
 
 
 def test_pod_random_profile_rejects_duplicate_scope_before_freezing(tmp_path: Path) -> None:
@@ -442,8 +443,8 @@ def test_pod_random_settlement_rejects_reordered_link_indexes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = tmp_path / "billing.sqlite3"
-    actor = _service_account(database_path, balance=1000)
-    picks = iter((0, 5))
+    actor = _service_account(database_path, balance=2000)
+    picks = iter((0, 10))
     monkeypatch.setattr(billing_module.secrets, "randbelow", lambda upper: next(picks))
     freeze = freeze_batch_points(
         database_path,
