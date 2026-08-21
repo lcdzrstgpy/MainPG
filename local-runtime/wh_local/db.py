@@ -5,6 +5,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .pod_migrations import (
+    ensure_pod_migration,
+    pod_migration_effect_is_present,
+    recover_interrupted_pod_migrations,
+)
+
 
 SCHEMA_SQL = """
 -- 数据库迁移记录表：记录哪些模块迁移已经执行，避免重复执行建表脚本。
@@ -755,6 +761,7 @@ def _module_migrations() -> list[tuple[str, str, str]]:
         "006_pod_titles",
         "007_requested_count_upgrade",
         "008_persistent_billing_runs",
+        "009_export_records",
     )
     for migration_name in pod_customization_migrations:
         sql_path = (
@@ -1236,20 +1243,24 @@ def init_db(database_path: Path) -> None:
         )
         _seed_roles(conn)
         _seed_permissions(conn)
-        for migration_id, module, sql in _module_migrations():
+        module_migrations = _module_migrations()
+        recover_interrupted_pod_migrations(
+            conn,
+            {
+                migration_id.split(":", 1)[1]: sql
+                for migration_id, module, sql in module_migrations
+                if module == "pod_customization"
+            },
+        )
+        for migration_id, module, sql in module_migrations:
+            if module == "pod_customization":
+                ensure_pod_migration(conn, migration_id.split(":", 1)[1], sql)
+                continue
             exists = conn.execute(
                 "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
                 (migration_id,),
             ).fetchone()
             if exists:
-                continue
-            if module == "pod_customization" and _pod_migration_effect_is_present(
-                conn, migration_id.split(":", 1)[1]
-            ):
-                conn.execute(
-                    "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",
-                    (migration_id, module),
-                )
                 continue
             conn.executescript(sql)
             conn.execute(
@@ -1262,71 +1273,7 @@ def init_db(database_path: Path) -> None:
 
 
 def _pod_migration_effect_is_present(conn: sqlite3.Connection, migration_name: str) -> bool:
-    def table_exists(table: str) -> bool:
-        return conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
-        ).fetchone() is not None
-
-    def has_column(table: str, column: str) -> bool:
-        return any(str(row["name"]) == column for row in conn.execute(f"PRAGMA table_info({table})"))
-
-    def index_exists(index: str) -> bool:
-        return conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?", (index,)
-        ).fetchone() is not None
-
-    expected_objects = {
-        "001_pod_customization": (
-            (
-                "pod_customization_assets", "pod_customization_templates",
-                "pod_customization_template_snapshots", "pod_customization_batches",
-                "pod_customization_batch_items", "pod_customization_generation_calls",
-                "pod_customization_pattern_candidates",
-            ),
-            (
-                "idx_pod_customization_assets_owner", "idx_pod_customization_templates_owner",
-                "idx_pod_customization_template_snapshots_owner", "idx_pod_customization_batches_owner",
-                "idx_pod_customization_batches_status", "idx_pod_customization_batch_items_owner",
-                "idx_pod_customization_generation_calls_batch", "idx_pod_customization_pattern_candidates_batch",
-            ),
-        ),
-        "002_direct_listing_trials": (("pod_customization_direct_listing_trials",), ("idx_pod_direct_listing_trials_owner",)),
-        "003_style_grid_v2": (
-            ("pod_customization_style_grid_batches", "pod_customization_style_grid_results"),
-            ("idx_pod_style_grid_results_batch",),
-        ),
-        "004_style_grid_publications": (("pod_customization_style_grid_publications",), ()),
-        "006_pod_titles": (
-            ("pod_customization_style_titles", "pod_customization_direct_listing_titles"),
-            ("idx_pod_customization_style_titles_status",),
-        ),
-        "008_persistent_billing_runs": (
-            ("pod_customization_billing_runs", "pod_customization_billing_outcomes"),
-            ("idx_pod_billing_runs_owner_status", "idx_pod_billing_runs_batch", "idx_pod_billing_outcomes_run_status"),
-        ),
-    }
-    if migration_name == "005_dianxiaomi_exports":
-        return (
-            table_exists("pod_customization_style_copy")
-            and index_exists("idx_pod_customization_style_copy_batch")
-            and has_column("pod_customization_batches", "listing_fields_json")
-        )
-    if migration_name == "007_requested_count_upgrade":
-        row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pod_customization_batches'"
-        ).fetchone()
-        return row is not None and "requested_count BETWEEN 1 AND 200" in str(row["sql"])
-    objects = expected_objects.get(migration_name)
-    if not objects:
-        return False
-    tables, indexes = objects
-    if not all(table_exists(table) for table in tables) or not all(
-        index_exists(index) for index in indexes
-    ):
-        return False
-    if migration_name == "008_persistent_billing_runs":
-        return has_column("pod_customization_billing_runs", "action_payload_json")
-    return True
+    return pod_migration_effect_is_present(conn, migration_name)
 
 
 @contextmanager

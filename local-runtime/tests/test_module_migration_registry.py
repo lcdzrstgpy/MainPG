@@ -41,6 +41,8 @@ def test_pod_customization_migrations_are_registered_in_forward_order() -> None:
         "pod_customization:005_dianxiaomi_exports",
         "pod_customization:006_pod_titles",
         "pod_customization:007_requested_count_upgrade",
+        "pod_customization:008_persistent_billing_runs",
+        "pod_customization:009_export_records",
     ]
 
 
