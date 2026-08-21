@@ -1256,6 +1256,16 @@ def init_db(database_path: Path) -> None:
             if module == "pod_customization":
                 ensure_pod_migration(conn, migration_id.split(":", 1)[1], sql)
                 continue
+            if migration_id == "data_collection:005_shop_collection":
+                # 005 contains only idempotent CREATE IF NOT EXISTS statements.
+                # Replay it even when an older build already wrote the marker:
+                # early shop schemas did not include every later table/index.
+                conn.executescript(sql)
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",
+                    (migration_id, module),
+                )
+                continue
             exists = conn.execute(
                 "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
                 (migration_id,),

@@ -59,6 +59,27 @@ def test_repository_first_initialization_records_migrations_and_remains_idempote
         ] == ["lease_token"]
 
 
+def test_repository_repairs_missing_api_call_table_when_migration_marker_exists(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "marker-with-partial-shop-schema.sqlite3"
+    init_db(database)
+    with connect(database) as connection:
+        connection.execute("DROP TABLE shop_collection_api_calls")
+        assert connection.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+            ("data_collection:005_shop_collection",),
+        ).fetchone() is not None
+
+    ShopCollectionRepository(database)
+
+    with connect(database) as connection:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("shop_collection_api_calls",),
+        ).fetchone() is not None
+
+
 def test_batches_are_workspace_isolated_and_active_shop_is_unique(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     first = repository.create_batch(
