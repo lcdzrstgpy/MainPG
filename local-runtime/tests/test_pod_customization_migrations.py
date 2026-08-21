@@ -120,6 +120,36 @@ def test_008_is_registered_by_the_application_migration_registry() -> None:
     assert "pod_customization:008_persistent_billing_runs" in migration_ids
 
 
+def test_009_adds_secret_free_owner_scoped_export_records(tmp_path: Path) -> None:
+    database = tmp_path / "export-records.sqlite3"
+    names = sorted(path.name for path in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))
+    apply_migrations(database, names)
+
+    with sqlite3.connect(database) as connection:
+        columns = {
+            row[1] for row in connection.execute(
+                "PRAGMA table_info(pod_customization_export_records)"
+            )
+        }
+
+    assert {
+        "export_id",
+        "batch_id",
+        "workspace_id",
+        "owner_user_id",
+        "file_name",
+        "format",
+        "exported_count",
+        "skipped_count",
+        "created_at",
+    } == columns
+    assert not any(
+        word in column.lower()
+        for column in columns
+        for word in ("content", "payload", "token", "secret", "key")
+    )
+
+
 def test_repository_recovers_when_ddl_exists_but_pod_markers_are_missing(tmp_path: Path) -> None:
     database = tmp_path / "markerless.sqlite3"
     names = sorted(path.name for path in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))

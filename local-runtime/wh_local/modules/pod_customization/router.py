@@ -144,6 +144,13 @@ def create_router(
         permitted(actor, "pod_customization.create")
         return _call(service.resume_billing_run, actor, run_id, enqueue=start_workers)
 
+    @router.get("/batches/{batch_id}/exports")
+    def list_exports(
+        batch_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.read")
+        return _call(service.list_exports, actor, batch_id)
+
     @router.get("/batches/{batch_id}/exports/dianxiaomi")
     def export_dianxiaomi(
         batch_id: str, actor: Actor = Depends(actor_from_authorization)
@@ -157,6 +164,7 @@ def create_router(
                 "Content-Disposition": f'attachment; filename="{exported.filename}"',
                 "X-POD-Exported-Styles": str(exported.exported_style_count),
                 "X-POD-Skipped-Styles": str(exported.skipped_style_count),
+                "X-POD-Export-ID": exported.export_id,
             },
         )
 

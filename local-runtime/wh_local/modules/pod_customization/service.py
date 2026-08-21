@@ -23,6 +23,7 @@ from .export import (
     analyze_dianxiaomi_export,
     build_pod_dianxiaomi_export,
 )
+from .export_records import PodExportRecordStore
 from .errors import image_provider_outcome_for_exception, safe_error_message
 from .images import PatternQualityGate
 from .ocr import PodTextInspector
@@ -55,6 +56,7 @@ class PodCustomizationService:
         self.title_runtime = title_runtime
         self.billing_coordinator = billing_coordinator
         self.repository = PodCustomizationRepository(self.database_path)
+        self.export_records = PodExportRecordStore(self.database_path)
         self.quality_gate = quality_gate or PatternQualityGate(text_inspector=PodTextInspector())
         if start_workers:
             self.repository.recover_interrupted_batches()
@@ -376,7 +378,32 @@ class PodCustomizationService:
                 "no_exportable_styles": "POD batch has zero exportable styles",
             }
             raise PodRepositoryError(messages[analysis.block_reason], 409)
-        return build_pod_dianxiaomi_export(batch, copies)
+        exported = build_pod_dianxiaomi_export(batch, copies)
+        record = self.export_records.record_success(
+            batch_id=batch_id,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            file_name=exported.filename,
+            format="dianxiaomi_xlsx",
+            exported_count=exported.exported_style_count,
+            skipped_count=exported.skipped_style_count,
+        )
+        return DianxiaomiExport(
+            content=exported.content,
+            exported_style_count=exported.exported_style_count,
+            skipped_style_count=exported.skipped_style_count,
+            filename=exported.filename,
+            export_id=record["id"],
+        )
+
+    def list_exports(self, actor: Actor, batch_id: str) -> dict[str, Any]:
+        self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        rows = self.export_records.list_for_batch(
+            batch_id=batch_id,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+        )
+        return {"exports": rows, "total": len(rows)}
 
     def optimize_scene(
         self,

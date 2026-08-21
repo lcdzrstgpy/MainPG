@@ -461,13 +461,73 @@ def test_export_endpoint_returns_xlsx_headers_and_preserves_404_ownership(tmp_pa
     )
     assert response.headers["x-pod-exported-styles"] == "1"
     assert response.headers["x-pod-skipped-styles"] == "0"
+    export_id = response.headers["x-pod-export-id"]
+    assert len(export_id) == 32
     assert response.content.startswith(b"PK")
+
+    history = client.get(
+        f"/api/pod-customization/batches/{batch['id']}/exports",
+        headers={"Authorization": "Bearer dev-admin-token"},
+    )
+    assert history.status_code == 200
+    assert history.json() == {
+        "exports": [
+            {
+                "id": export_id,
+                "batch_id": batch["id"],
+                "file_name": f"pod_dxm_{batch['id'][:8]}.xlsx",
+                "format": "dianxiaomi_xlsx",
+                "exported_count": 1,
+                "skipped_count": 0,
+                "created_at": history.json()["exports"][0]["created_at"],
+            }
+        ],
+        "total": 1,
+    }
 
     missing = client.get(
         "/api/pod-customization/batches/not-owned/exports/dianxiaomi",
         headers={"Authorization": "Bearer dev-admin-token"},
     )
     assert missing.status_code == 404
+
+
+def test_export_history_is_owner_private_and_contains_no_payload_or_credentials(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    owner = _actor("owner-1")
+    batch = _batch(service, owner, count=1)
+    _complete_style(service, batch["id"], 1)
+    _settle(service, batch["id"])
+    service.repository.upsert_style_copy(
+        batch["id"], owner.workspace_id, owner.id, 1,
+        title="Title", english_title="English", description="Description",
+    )
+
+    first = service.export_dianxiaomi(owner, batch["id"])
+    second = service.export_dianxiaomi(owner, batch["id"])
+    history = service.list_exports(owner, batch["id"])
+
+    assert first.export_id != second.export_id
+    assert [record["id"] for record in history["exports"]] == [
+        second.export_id,
+        first.export_id,
+    ]
+    assert history["total"] == 2
+    serialized = json.dumps(history)
+    assert "PK" not in serialized
+    assert "token" not in serialized.lower()
+    assert "key" not in serialized.lower()
+    with pytest.raises(PodRepositoryError) as wrong_owner:
+        service.list_exports(_actor("owner-2"), batch["id"])
+    assert wrong_owner.value.status_code == 404
+    with pytest.raises(PodRepositoryError) as wrong_workspace:
+        service.list_exports(
+            Actor(id=owner.id, username=owner.username, role="operator", workspace_id="workspace-b"),
+            batch["id"],
+        )
+    assert wrong_workspace.value.status_code == 404
 
 
 def test_export_endpoint_requires_the_dedicated_export_permission(

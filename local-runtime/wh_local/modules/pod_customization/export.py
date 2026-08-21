@@ -43,6 +43,7 @@ class DianxiaomiExport:
     exported_style_count: int
     skipped_style_count: int
     filename: str
+    export_id: str = ""
 
 
 @dataclass(frozen=True)
