@@ -51,6 +51,11 @@ class SQLiteDailyApiBudget:
         self._database_path = str(database_path)
         self._initialize()
 
+    def start(self) -> None:
+        """Match the collector budget protocol without resetting daily usage."""
+
+        return None
+
     def reserve(
         self,
         *,
