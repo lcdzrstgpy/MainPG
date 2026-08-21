@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import io
+import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
 from PIL import Image, ImageDraw
 
 from wh_local.modules.pod_customization.contracts import (
     BatchCreate,
     BusinessFields,
     Calibration,
+    DirectListingTrialCreate,
     ListingFields,
     NormalizedPoint,
     NormalizedRect,
@@ -142,8 +146,10 @@ def _actor() -> Actor:
 class BillingCoordinator:
     def __init__(self) -> None:
         self.settlements = []
+        self.freezes = []
 
     def freeze(self, _actor, _plan):
+        self.freezes.append(_plan)
         return PodExecutionGrant(
             "freeze-1", 1, "2099-01-01T00:00:00Z", {"wuyin": "test-wuyin-key", "ark": "test-ark-key"}
         )
@@ -158,6 +164,56 @@ class BillingCoordinator:
 class FailingSettlementCoordinator(BillingCoordinator):
     def settle(self, _actor, _grant, _plan, _outcomes):
         raise OSError("billing network unavailable")
+
+
+class RecoveringSettlementCoordinator(BillingCoordinator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.regrants: list[tuple[str, str, str]] = []
+
+    def regrant(self, actor, freeze_id):
+        self.regrants.append((actor.workspace_id, actor.id, freeze_id))
+        return PodExecutionGrant(
+            freeze_id,
+            1,
+            "2099-01-01T00:00:00Z",
+            {"wuyin": "replacement-wuyin-key", "ark": "replacement-ark-key"},
+        )
+
+
+class ExpiringGrant:
+    freeze_id = "freeze-expiring"
+    rule_version = 1
+    expires_at = "2099-01-01T00:00:00Z"
+
+    def __init__(self) -> None:
+        self.expired = False
+
+    def provider_key(self, _provider: str) -> str:
+        return "temporary-provider-key" if not self.expired else ""
+
+
+class ExpiringRuntime(ListingOnlyRuntime):
+    def generate_listing_grid(self, request, *, grant=None, call_id="") -> GeneratedMedia:
+        media = super().generate_listing_grid(request, grant=grant, call_id=call_id)
+        if len(self.requests) == 1:
+            grant.expired = True
+        return media
+
+
+class ExpiringCoordinator(BillingCoordinator):
+    def __init__(self, grant: ExpiringGrant) -> None:
+        super().__init__()
+        self.grant = grant
+
+    def freeze(self, _actor, _plan):
+        return self.grant
+
+    def regrant(self, _actor, freeze_id):
+        assert freeze_id == self.grant.freeze_id
+        return PodExecutionGrant(
+            freeze_id, 1, "2099-01-01T00:00:00Z", {"wuyin": "replacement-wuyin-key"}
+        )
 
 
 def _service(tmp_path: Path, runtime: FakePodRuntime, billing=None) -> PodCustomizationService:
@@ -208,6 +264,326 @@ def test_settlement_network_failure_moves_batch_to_pending(tmp_path: Path) -> No
     stored = service.get_batch(actor, batch["id"])
     assert stored["status"] == "settlement_pending"
     assert "billing network unavailable" in stored["error_message"]
+    service.close()
+    runtime.close()
+
+
+def test_pending_billing_run_survives_restart_and_resume_never_replays_provider(tmp_path: Path) -> None:
+    database = tmp_path / "workbench.sqlite3"
+    runtime = ListingOnlyRuntime([_grid([_pattern(index) for index in range(4)])])
+    service = _service(tmp_path, runtime, FailingSettlementCoordinator())
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+    assert len(runtime.requests) == 1
+    pending = service.list_pending_billing_runs(actor)
+    assert pending["total"] == 1
+    assert pending["runs"][0]["batch_id"] == batch["id"]
+    run_id = pending["runs"][0]["id"]
+    service.close()
+
+    replacement_runtime = ListingOnlyRuntime([])
+    coordinator = RecoveringSettlementCoordinator()
+    recovered = PodCustomizationService(
+        database,
+        tmp_path / "pod-assets",
+        replacement_runtime,
+        billing_coordinator=coordinator,
+        quality_gate=PatternQualityGate(text_inspector=lambda _content: []),
+        start_workers=True,
+    )
+    result = recovered.resume_billing_run(actor, run_id)
+
+    assert result["status"] == "settled"
+    assert coordinator.regrants == [(actor.workspace_id, actor.id, "freeze-1")]
+    assert len(coordinator.settlements) == 1
+    assert replacement_runtime.requests == []
+    statuses = {outcome.call_id: outcome.status for outcome in coordinator.settlements[0][1]}
+    assert statuses[f"{batch['id']}:style:1:image:1"] == "success"
+    assert statuses[f"{batch['id']}:style:1:image:2"] == "no_return"
+
+    other_workspace = Actor(
+        id=actor.id,
+        username=actor.username,
+        role=actor.role,
+        workspace_id="workspace-b",
+    )
+    with pytest.raises(Exception, match="not found"):
+        recovered.resume_billing_run(other_workspace, run_id)
+    other_owner = Actor(
+        id="designer-2",
+        username="other",
+        role=actor.role,
+        workspace_id=actor.workspace_id,
+    )
+    with pytest.raises(Exception, match="not found"):
+        recovered.resume_billing_run(other_owner, run_id)
+    recovered.close()
+    runtime.close()
+    replacement_runtime.close()
+
+
+def test_persistent_billing_rows_never_store_grant_secrets(tmp_path: Path) -> None:
+    import sqlite3
+
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, BillingCoordinator())
+    actor = _actor()
+    template = _ready_template(service, actor)
+    service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+
+    with sqlite3.connect(tmp_path / "workbench.sqlite3") as connection:
+        serialized = "\n".join(
+            "|".join(str(value) for value in row)
+            for row in connection.execute("SELECT * FROM pod_customization_billing_runs")
+        )
+    assert "test-wuyin-key" not in serialized
+    assert "test-ark-key" not in serialized
+    service.close()
+    runtime.close()
+
+
+def test_expired_grant_pauses_unstarted_calls_and_resume_does_not_replay_success(tmp_path: Path) -> None:
+    first = _grid([_pattern(index) for index in range(4)])
+    second = _grid([_pattern(index) for index in range(10, 14)])
+    grant = ExpiringGrant()
+    runtime = ExpiringRuntime([first, second])
+    runtime.executor.shutdown(wait=True, cancel_futures=True)
+    runtime.executor = ThreadPoolExecutor(max_workers=1)
+    service = _service(tmp_path, runtime, ExpiringCoordinator(grant))
+    actor = _actor()
+    template = _ready_template(service, actor)
+    request = _batch_request_for_test(template["id"]).model_copy(update={"count": 2})
+    batch = service.create_batch(actor, request, enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+
+    assert service.get_batch(actor, batch["id"])["status"] == "billing_auth_required"
+    pending = service.list_pending_billing_runs(actor)["runs"]
+    assert pending[0]["status"] == "auth_required"
+    assert len(runtime.requests) == 1
+
+    grant.expired = False
+    resumed = service.resume_billing_run(actor, pending[0]["id"])
+
+    assert resumed["status"] == "settled"
+    assert len(runtime.requests) == 2
+    recovered_batch = service.get_batch(actor, batch["id"])
+    assert recovered_batch["completed_count"] == 2
+    assert sum(item["status"] == "completed" for item in recovered_batch["items"]) == 8
+    service.close()
+    runtime.close()
+
+
+def test_started_call_after_crash_is_neither_replayed_nor_guessed_as_success(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    coordinator = RecoveringSettlementCoordinator()
+    service = _service(tmp_path, runtime, coordinator)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+    stored = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)[0]
+    first_call = stored["plan"]["calls"][0]
+    service.repository.start_billing_call(
+        stored["action_key"], first_call["call_id"], first_call["feature"]
+    )
+    service.repository.recover_billing_runs()
+
+    with pytest.raises(Exception, match="uncertain"):
+        service.resume_billing_run(actor, stored["run_id"])
+
+    refreshed = service.repository.get_billing_run(
+        stored["run_id"], actor.workspace_id, actor.id
+    )
+    assert refreshed["status"] == "settlement_pending"
+    assert refreshed["outcomes"][0]["status"] == "started"
+    assert coordinator.regrants == []
+    assert coordinator.settlements == []
+    assert runtime.requests == []
+    service.close()
+    runtime.close()
+
+
+def test_batch_preflight_rejects_invalid_template_before_remote_freeze(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    coordinator = BillingCoordinator()
+    service = _service(tmp_path, runtime, coordinator)
+    actor = _actor()
+    request = _batch_request_for_test("missing-template")
+
+    with pytest.raises(Exception, match="not found"):
+        service.create_batch(actor, request, enqueue=False)
+
+    assert coordinator.freezes == []
+    service.close()
+    runtime.close()
+
+
+def test_local_batch_insert_failure_compensates_frozen_plan_with_no_return(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = ListingOnlyRuntime([])
+    coordinator = BillingCoordinator()
+    service = _service(tmp_path, runtime, coordinator)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    request = _batch_request_for_test(template["id"])
+    monkeypatch.setattr(
+        service.repository,
+        "create_batch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        service.create_batch(actor, request, enqueue=False)
+
+    assert len(coordinator.settlements) == 1
+    assert {outcome.status for outcome in coordinator.settlements[0][1]} == {"no_return"}
+    stored = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
+    assert stored == []
+    service.close()
+    runtime.close()
+
+
+def test_ledger_insert_failure_uses_immediate_compensation_settlement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = ListingOnlyRuntime([])
+    coordinator = BillingCoordinator()
+    service = _service(tmp_path, runtime, coordinator)
+    actor = _actor()
+    monkeypatch.setattr(
+        service.repository,
+        "create_billing_run",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("ledger unavailable")),
+    )
+
+    with pytest.raises(OSError, match="ledger unavailable"):
+        service._freeze_batch(actor, "batch-ledger-failure", 1)
+
+    assert len(coordinator.settlements) == 1
+    assert {outcome.status for outcome in coordinator.settlements[0][1]} == {"no_return"}
+    service.close()
+    runtime.close()
+
+
+def test_orphaned_persisted_batch_run_refunds_without_leaking_worker_state(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    coordinator = BillingCoordinator()
+    service = _service(tmp_path, runtime, coordinator)
+    actor = _actor()
+    run = service._freeze_batch(actor, "missing-local-batch", 1)
+    stored = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)[0]
+
+    service.worker.process_batch("missing-local-batch", run)
+
+    refreshed = service.repository.get_billing_run(
+        stored["run_id"], actor.workspace_id, actor.id
+    )
+    assert refreshed["status"] == "settled"
+    assert {outcome.status for outcome in coordinator.settlements[0][1]} == {"no_return"}
+    assert "missing-local-batch" not in service.worker._billing_runs
+    service.close()
+    runtime.close()
+
+
+def test_worker_shutdown_cancels_queue_without_waiting_for_running_provider_work(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, BillingCoordinator())
+    blocker = threading.Event()
+    service.worker._coordinator.submit(blocker.wait)
+
+    started = time.monotonic()
+    service.worker.close()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    with pytest.raises(RuntimeError, match="shutting down"):
+        service.worker.submit("never-started")
+    blocker.set()
+    runtime.close()
+
+
+def test_direct_trial_settlement_resume_never_replays_provider(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([_grid([_pattern(index) for index in range(4)])])
+    service = _service(tmp_path, runtime, FailingSettlementCoordinator())
+    actor = _actor()
+    template = _ready_template(service, actor)
+
+    with pytest.raises(OSError, match="billing network unavailable"):
+        service.run_direct_listing_trial(
+            actor,
+            DirectListingTrialCreate(
+                template_id=template["id"],
+                business_fields=BusinessFields(product_name="Canvas tote"),
+            ),
+        )
+    assert len(runtime.requests) == 1
+    run = next(
+        row
+        for row in service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
+        if row["action_type"] == "direct_trial"
+    )
+    coordinator = RecoveringSettlementCoordinator()
+    service.billing_coordinator = coordinator
+
+    resumed = service.resume_billing_run(actor, run["run_id"])
+
+    assert resumed["status"] == "settled"
+    assert len(runtime.requests) == 1
+    assert len(coordinator.settlements) == 1
+    service.close()
+    runtime.close()
+
+
+def test_batch_resume_enqueue_returns_without_processing_inline(tmp_path: Path, monkeypatch) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, RecoveringSettlementCoordinator())
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+    run = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)[0]
+    service.repository.mark_billing_auth_required(run["action_key"], "restart")
+    submitted: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        service.worker,
+        "submit",
+        lambda batch_id, billing_run: submitted.append((batch_id, billing_run)),
+    )
+
+    response = service.resume_billing_run(actor, run["run_id"], enqueue=True)
+    duplicate = service.resume_billing_run(actor, run["run_id"], enqueue=True)
+
+    assert response["status"] == "authorized"
+    assert duplicate["status"] == "authorized"
+    assert [entry[0] for entry in submitted] == [batch["id"]]
+    assert runtime.requests == []
+    service.close()
+    runtime.close()
+
+
+def test_billing_resume_claim_is_atomic_for_concurrent_requests(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, BillingCoordinator())
+    actor = _actor()
+    run = service._freeze_batch(actor, "concurrent-resume", 1)
+    stored = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)[0]
+    service.repository.mark_billing_auth_required(stored["action_key"], "restart")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _index: service.repository.claim_billing_resume(
+                    stored["run_id"], actor.workspace_id, actor.id
+                ),
+                range(2),
+            )
+        )
+
+    assert sorted(results) == [False, True]
+    service.worker.process_batch("concurrent-resume", run)
     service.close()
     runtime.close()
 
@@ -365,6 +741,56 @@ def test_style_grid_retries_a_duplicate_detail_panel_with_a_new_design(tmp_path:
         if item["variant_index"] == 2
     ]
     assert len(set(fingerprints)) == 2
+    service.close()
+    runtime.close()
+
+
+@pytest.mark.parametrize("bad_panel_index", range(4))
+def test_style_grid_quality_gate_checks_every_panel(
+    tmp_path: Path, bad_panel_index: int
+) -> None:
+    first_panels = [_pattern(index + 1) for index in range(4)]
+    first_panels[bad_panel_index] = _pattern(90 + bad_panel_index, text_error=True)
+    retry_panels = [_pattern(120 + index) for index in range(4)]
+    runtime = ListingOnlyRuntime([_grid(first_panels), _grid(retry_panels)])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"], count=1)
+
+    service.worker.process_batch(batch["id"])
+    stored = service.get_batch(actor, batch["id"])
+
+    assert len(runtime.requests) == 2
+    assert [request.attempt for request in runtime.requests] == [1, 2]
+    assert stored["status"] == "completed"
+    assert all(item["status"] == "completed" for item in stored["items"])
+    service.close()
+    runtime.close()
+
+
+def test_style_grid_rejects_duplicate_panels_within_the_same_grid(tmp_path: Path) -> None:
+    duplicate = _pattern(201)
+    runtime = ListingOnlyRuntime([
+        _grid([duplicate, duplicate, duplicate, duplicate]),
+        _grid([_pattern(120 + index) for index in range(4)]),
+    ])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"], count=1)
+
+    service.worker.process_batch(batch["id"])
+    stored = service.get_batch(actor, batch["id"])
+
+    assert len(runtime.requests) == 2
+    assert stored["status"] == "completed"
+    fingerprints = [
+        item["pattern_fingerprint"]
+        for item in service.repository.get_batch_internal(batch["id"])["items"]
+    ]
+    assert len(fingerprints) == 4
+    assert len(set(fingerprints)) == 4
     service.close()
     runtime.close()
 

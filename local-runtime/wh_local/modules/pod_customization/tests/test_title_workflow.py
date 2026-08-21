@@ -23,7 +23,7 @@ from wh_local.modules.pod_customization.contracts import (
     NormalizedPoint,
     NormalizedRect,
 )
-from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
+from wh_local.modules.pod_customization.billing_contract import PodCallOutcome, PodExecutionGrant
 from wh_local.modules.pod_customization.images import PatternQualityGate, split_grid_2x2
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.pod_customization.router import create_router
@@ -461,6 +461,41 @@ def test_title_only_regeneration_preserves_task_id_and_does_not_call_image_runti
     assert stored["style_titles"][0]["status"] == "completed"
     assert stored["listing_ready_count"] == 1
     assert stored["status"] == "completed"
+    service.close()
+    titles.close()
+    images.close()
+
+
+def test_title_resume_skips_persisted_success_and_uses_only_remaining_calls(tmp_path: Path) -> None:
+    images = ImageRuntime([_grid(21)])
+    titles = TitleRuntime()
+    service = _service(tmp_path, images, titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+    prior_title_requests = len(titles.requests)
+
+    service.regenerate_title(actor, batch["id"], 1, enqueue=False)
+    pending = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
+    run = next(row for row in pending if row["action_type"] == "title_retry")
+    first = run["plan"]["calls"][0]
+    service.repository.start_billing_call(run["action_key"], first["call_id"], first["feature"])
+    service.repository.record_billing_outcome(
+        run["action_key"], PodCallOutcome(first["call_id"], first["feature"], "success")
+    )
+    service.repository.mark_billing_auth_required(run["action_key"], "restart")
+
+    resumed = service.resume_billing_run(actor, run["run_id"])
+
+    assert resumed["status"] == "settled"
+    assert len(titles.requests) == prior_title_requests + 1
+    refreshed = service.repository.get_billing_run(run["run_id"], actor.workspace_id, actor.id)
+    assert [outcome["status"] for outcome in refreshed["outcomes"]] == [
+        "success",
+        "success",
+        "no_return",
+    ]
     service.close()
     titles.close()
     images.close()

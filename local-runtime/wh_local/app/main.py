@@ -65,7 +65,7 @@ from ..modules.pod_customization import create_router as create_pod_customizatio
 from ..modules.pod_customization.ai_runtime import PodCustomizationAiRuntime
 from ..modules.pod_customization.remote_billing import (
     RemotePodBillingCoordinator,
-    sqlite_remote_token_resolver,
+    session_remote_token_resolver,
 )
 from ..modules.pod_customization.title_runtime import PodTitleRuntime
 from ..modules.product_processing.api.router import create_product_processing_router
@@ -253,7 +253,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     pod_title_runtime = PodTitleRuntime()
     pod_billing = RemotePodBillingCoordinator(
         remote_customer_auth,
-        sqlite_remote_token_resolver(db_path),
+        session_remote_token_resolver(customer_sessions),
     )
     pod_router = create_pod_customization_router(
         db_path,

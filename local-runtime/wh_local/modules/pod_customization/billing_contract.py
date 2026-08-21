@@ -12,6 +12,10 @@ PodFeature = Literal["pod.title", "pod.image"]
 PodCallStatus = Literal["success", "no_return"]
 
 
+class PodBillingAuthorizationRequired(RuntimeError):
+    """The durable billing action must pause until a fresh grant is issued."""
+
+
 @dataclass(frozen=True)
 class PodPlannedCall:
     call_id: str
@@ -42,8 +46,8 @@ class PodCallPlan:
 
     @classmethod
     def for_batch(cls, batch_id: str, *, style_count: int) -> "PodCallPlan":
-        if style_count < 1:
-            raise ValueError("style_count must be positive")
+        if isinstance(style_count, bool) or not isinstance(style_count, int) or not 1 <= style_count <= 200:
+            raise ValueError("style_count must be between 1 and 200")
         calls = tuple(
             call
             for style_index in range(1, style_count + 1)

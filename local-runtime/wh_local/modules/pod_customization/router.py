@@ -6,6 +6,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 
+from ...customer.contracts import (
+    CustomerAuthRejected,
+    CustomerAuthUnavailable,
+    CustomerBillingPermissionError,
+    CustomerBillingProtocolError,
+)
 from ...session import Actor, actor_from_authorization, require_permission
 from .contracts import (
     BatchCreate,
@@ -15,6 +21,7 @@ from .contracts import (
     SceneOptimizationCreate,
 )
 from .billing_contract import PodBillingCoordinator
+from .errors import safe_error_message
 from .repository import PodRepositoryError
 from .runtime_contracts import PodAiRuntime
 from .service import PodCustomizationService
@@ -123,6 +130,20 @@ def create_router(
         permitted(actor, "pod_customization.read")
         return _call(service.get_batch, actor, batch_id)
 
+    @router.get("/billing-runs/pending")
+    def list_pending_billing_runs(
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.list_pending_billing_runs, actor)
+
+    @router.post("/billing-runs/{run_id}/resume")
+    def resume_billing_run(
+        run_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.resume_billing_run, actor, run_id, enqueue=start_workers)
+
     @router.get("/batches/{batch_id}/exports/dianxiaomi")
     def export_dianxiaomi(
         batch_id: str, actor: Actor = Depends(actor_from_authorization)
@@ -147,13 +168,9 @@ def create_router(
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
-        return _call(
-            service.optimize_scene,
-            actor,
-            batch_id,
-            item_id,
-            instruction=body.instruction,
-            enqueue=start_workers,
+        raise HTTPException(
+            status_code=409,
+            detail="POD scene optimization is not available in this release",
         )
 
     @router.post("/batches/{batch_id}/items/{item_id}/regenerate")
@@ -164,13 +181,9 @@ def create_router(
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
-        return _call(
-            service.regenerate_item,
-            actor,
-            batch_id,
-            item_id,
-            creative_prompt=body.creative_prompt,
-            enqueue=start_workers,
+        raise HTTPException(
+            status_code=409,
+            detail="POD single-image regeneration is not available in this release",
         )
 
     @router.post("/batches/{batch_id}/styles/{style_index}/regenerate")
@@ -227,11 +240,31 @@ def create_router(
 def _call(function, *args, **kwargs):
     try:
         return function(*args, **kwargs)
+    except CustomerAuthRejected as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail="POD billing request was rejected",
+        ) from exc
+    except CustomerBillingPermissionError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail="POD billing authentication is required",
+        ) from exc
+    except CustomerBillingProtocolError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="POD billing service returned an invalid response",
+        ) from exc
+    except CustomerAuthUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="POD billing service is unavailable",
+        ) from exc
     except PodRepositoryError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.status_code, detail=safe_error_message(exc)) from exc
     except HTTPException:
         raise
     except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=safe_error_message(exc)) from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=safe_error_message(exc)) from exc

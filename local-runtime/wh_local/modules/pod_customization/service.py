@@ -1,19 +1,29 @@
 from __future__ import annotations
 
 import json
+import inspect
 import uuid
 from pathlib import Path
 from typing import Any
 
+from ...customer.contracts import CustomerBillingPermissionError
 from ...session import Actor
 from .assets import PodAssetStore
-from .billing_contract import PodBillingCoordinator, PodCallPlan
+from .billing_contract import (
+    PodBillingAuthorizationRequired,
+    PodBillingCoordinator,
+    PodCallOutcome,
+    PodCallPlan,
+    PodExecutionGrant,
+    PodPlannedCall,
+)
 from .contracts import BatchCreate, Calibration, DirectListingTrialCreate, NormalizedPoint, NormalizedRect
 from .export import (
     DianxiaomiExport,
     analyze_dianxiaomi_export,
     build_pod_dianxiaomi_export,
 )
+from .errors import image_provider_outcome_for_exception, safe_error_message
 from .images import PatternQualityGate
 from .ocr import PodTextInspector
 from .repository import PodCustomizationRepository, PodRepositoryError
@@ -48,6 +58,7 @@ class PodCustomizationService:
         self.quality_gate = quality_gate or PatternQualityGate(text_inspector=PodTextInspector())
         if start_workers:
             self.repository.recover_interrupted_batches()
+            self.repository.recover_billing_runs()
         self.worker = (
             PodBatchWorker(
                 self.repository,
@@ -141,8 +152,14 @@ class PodCustomizationService:
 
     def create_batch(self, actor: Actor, request: BatchCreate, *, enqueue: bool = True) -> dict[str, Any]:
         batch_id = uuid.uuid4().hex
+        self.repository.preflight_batch(actor.workspace_id, actor.id, request)
         billing_run = self._freeze_batch(actor, batch_id, request.count) if (enqueue or self.billing_coordinator) else None
-        batch = self.repository.create_batch(actor.workspace_id, actor.id, request, batch_id=batch_id)
+        try:
+            batch = self.repository.create_batch(actor.workspace_id, actor.id, request, batch_id=batch_id)
+        except Exception:
+            if billing_run is not None:
+                billing_run.settle()
+            raise
         if billing_run is not None and self.worker is not None:
             self.worker.register_billing_run(batch_id, billing_run)
         if enqueue and self.worker is not None:
@@ -162,12 +179,13 @@ class PodCustomizationService:
         if template_content_type not in SUPPORTED_TEMPLATE_IMAGE_CONTENT_TYPES:
             raise ValueError("direct POD listing template must be a JPEG, PNG, or WEBP image")
         trial_id = uuid.uuid4().hex
-        billing_run = self._freeze_trial(actor, trial_id)
+        billing_run = self._freeze_trial(actor, trial_id, request)
         prompt = build_direct_listing_prompt(request.business_fields, request.creative_prompt)
         grid_asset_ids: list[str] = []
         generated_grids: list[Any] = []
         split_error = ""
 
+        billing_auth_required = False
         try:
             return self._run_direct_listing_trial_authorized(
                 actor,
@@ -178,8 +196,16 @@ class PodCustomizationService:
                 prompt=prompt,
                 billing_run=billing_run,
             )
+        except PodBillingAuthorizationRequired:
+            billing_auth_required = True
+            self.repository.mark_billing_auth_required(
+                billing_run.action_key,
+                "POD provider grant expired; sign in to resume this direct trial",
+            )
+            raise
         finally:
-            billing_run.settle()
+            if not billing_auth_required:
+                billing_run.settle()
 
     def _run_direct_listing_trial_authorized(
         self,
@@ -206,22 +232,41 @@ class PodCustomizationService:
                 attempt=attempt,
             )
             try:
+                billing_run.start(provider_call_id, "pod.image")
                 grid = self.ai_runtime.generate_listing_grid(
                     grid_request,
                     grant=billing_run.grant,
                     call_id=provider_call_id,
                 )
                 billing_run.record(provider_call_id, "pod.image", "success")
+            except PodBillingAuthorizationRequired:
+                if billing_run.call_status(provider_call_id) == "started":
+                    billing_run.record(provider_call_id, "pod.image", "no_return")
+                raise
             except Exception as exc:
-                billing_run.record(provider_call_id, "pod.image", "no_return")
+                billing_run.record(
+                    provider_call_id,
+                    "pod.image",
+                    image_provider_outcome_for_exception(exc),
+                )
                 self._raise_direct_trial_generation_error(exc)
             generated_grids.append(grid)
             try:
                 panels = self.ai_runtime.split_listing_grid(grid)
                 if len(panels) != 4:
                     raise RuntimeError("generated four-grid image did not yield exactly four panels")
+                panel_fingerprints: list[str] = []
+                for panel_index, panel in enumerate(panels, start=1):
+                    assessment = self.quality_gate.assess(
+                        panel.content,
+                        accepted_fingerprints=panel_fingerprints,
+                    )
+                    if not assessment.accepted:
+                        reason = assessment.rejection_reason or "invalid"
+                        raise RuntimeError(f"style_panel_{panel_index}_{reason}")
+                    panel_fingerprints.append(assessment.fingerprint)
             except Exception as exc:
-                split_error = str(exc)
+                split_error = safe_error_message(exc)
                 if attempt == 1:
                     continue
                 grid_asset_ids = self._save_direct_trial_grid_attempts(actor, trial_id, generated_grids)
@@ -265,6 +310,8 @@ class PodCustomizationService:
                             request.creative_prompt,
                             billing_run,
                         )
+            except PodBillingAuthorizationRequired:
+                raise
             except Exception as exc:
                 failed = self.repository.create_direct_listing_trial(
                     trial_id=trial_id,
@@ -276,7 +323,7 @@ class PodCustomizationService:
                     grid_attempt_asset_ids=grid_asset_ids,
                     panel_asset_ids={role: asset["asset_id"] for role, asset in panel_assets.items()},
                     public_urls=public_urls,
-                    error_message=f"POD 图床发布失败：{str(exc).strip() or exc.__class__.__name__}",
+                    error_message=f"POD 图床发布失败：{safe_error_message(exc)}",
                     title_result=title_result,
                 )
                 return self._direct_listing_trial_payload(failed)
@@ -343,7 +390,15 @@ class PodCustomizationService:
         item = self.repository.claim_scene_optimization(
             batch_id, item_id, actor.workspace_id, actor.id
         )
-        billing_run = self._freeze_retry(actor, f"{batch_id}:item:{item_id}:scene:{uuid.uuid4().hex}", "pod.image")
+        billing_run = self._freeze_retry(
+            actor,
+            f"{batch_id}:item:{item_id}:scene:{uuid.uuid4().hex}",
+            "pod.image",
+            action_type="scene_optimization",
+            target_id=item_id,
+            batch_id=batch_id,
+            action_payload={"instruction": instruction},
+        )
         if self.worker is not None:
             self.worker.register_action_billing_run(f"scene:{batch_id}:{item_id}", billing_run)
         if enqueue:
@@ -364,7 +419,15 @@ class PodCustomizationService:
         item = self.repository.claim_item_regeneration(
             batch_id, item_id, actor.workspace_id, actor.id
         )
-        billing_run = self._freeze_retry(actor, f"{batch_id}:item:{item_id}:retry:{uuid.uuid4().hex}", "pod.image")
+        billing_run = self._freeze_retry(
+            actor,
+            f"{batch_id}:item:{item_id}:retry:{uuid.uuid4().hex}",
+            "pod.image",
+            action_type="item_retry",
+            target_id=item_id,
+            batch_id=batch_id,
+            action_payload={"creative_prompt": creative_prompt},
+        )
         if self.worker is not None:
             self.worker.register_action_billing_run(f"item:{batch_id}:{item_id}", billing_run)
         if enqueue:
@@ -384,7 +447,9 @@ class PodCustomizationService:
     ) -> dict[str, Any]:
         results = self.repository.claim_style_regeneration(batch_id, style_index, actor.workspace_id, actor.id)
         action_id = f"{batch_id}:style:{style_index}:retry:{uuid.uuid4().hex}"
-        billing_run = self._freeze_style_retry(actor, action_id)
+        billing_run = self._freeze_style_retry(
+            actor, action_id, batch_id, style_index, creative_prompt
+        )
         if self.worker is not None:
             self.worker.register_action_billing_run(f"style:{batch_id}:{style_index}", billing_run)
         if enqueue:
@@ -412,7 +477,14 @@ class PodCustomizationService:
             batch_id, style_index, actor.workspace_id, actor.id
         )
         action_id = f"{batch_id}:style:{style_index}:title-retry:{uuid.uuid4().hex}"
-        billing_run = self._freeze_retry(actor, action_id, "pod.title")
+        billing_run = self._freeze_retry(
+            actor,
+            action_id,
+            "pod.title",
+            action_type="title_retry",
+            target_id=str(style_index),
+            batch_id=batch_id,
+        )
         if self.worker is not None:
             self.worker.register_action_billing_run(f"title:{batch_id}:{style_index}", billing_run)
         if enqueue:
@@ -426,7 +498,186 @@ class PodCustomizationService:
             self.worker.close()
 
     def recover_interrupted_work(self) -> int:
-        return self.repository.recover_interrupted_batches()
+        recovered = self.repository.recover_interrupted_batches()
+        self.repository.recover_billing_runs()
+        return recovered
+
+    def list_pending_billing_runs(self, actor: Actor) -> dict[str, Any]:
+        rows = self.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
+        return {"runs": [self._billing_run_payload(row) for row in rows], "total": len(rows)}
+
+    def resume_billing_run(
+        self, actor: Actor, run_id: str, *, enqueue: bool = False
+    ) -> dict[str, Any]:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        stored = self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+        if stored["status"] == "settled":
+            return self._billing_run_payload(stored)
+        if not self.repository.claim_billing_resume(run_id, actor.workspace_id, actor.id):
+            current = self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+            if current["status"] in {"settled", "resume_claimed", "authorized", "settling"}:
+                return self._billing_run_payload(current)
+            raise PodRepositoryError("POD billing run is already active", 409)
+        stored = self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+        plan = self._billing_plan(stored["plan"])
+        has_planned_calls = any(
+            outcome["status"] == "planned" for outcome in stored["outcomes"]
+        )
+        has_uncertain_calls = any(
+            outcome["status"] == "started" for outcome in stored["outcomes"]
+        )
+        if has_uncertain_calls:
+            message = (
+                "POD provider call outcome is uncertain after interruption; "
+                "automatic resume and settlement are blocked"
+            )
+            self.repository.mark_billing_pending(stored["action_key"], message)
+            raise PodRepositoryError(message, 409)
+        settlement_grant = getattr(self.billing_coordinator, "settlement_grant", None)
+        try:
+            if not has_planned_calls and callable(settlement_grant):
+                grant = settlement_grant(
+                    actor,
+                    stored["freeze_id"],
+                    rule_version=stored["rule_version"],
+                    expires_at=stored["grant_expires_at"],
+                )
+            else:
+                grant = self.billing_coordinator.regrant(actor, stored["freeze_id"])
+        except CustomerBillingPermissionError:
+            self.repository.mark_billing_auth_required(
+                stored["action_key"], "POD billing authentication is required"
+            )
+            raise
+        except Exception as exc:
+            self.repository.mark_billing_pending(stored["action_key"], str(exc))
+            raise
+        if grant.freeze_id != stored["freeze_id"]:
+            raise RuntimeError("POD billing service returned a mismatched freeze")
+        self.repository.mark_billing_authorized(
+            stored["action_key"], rule_version=grant.rule_version, expires_at=grant.expires_at
+        )
+        run = PodBillingRun(
+            actor,
+            self.billing_coordinator,
+            plan,
+            grant,
+            repository=self.repository,
+            action_key=stored["action_key"],
+            resumed=True,
+        )
+        if stored["action_type"] == "batch_initial" and has_planned_calls:
+            if self.worker is None:
+                raise RuntimeError("POD worker is disabled")
+            if enqueue:
+                self.worker.submit(stored["batch_id"], run)
+            else:
+                self.worker.process_batch(stored["batch_id"], run)
+            return self._billing_run_payload(
+                self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+            )
+        if has_planned_calls and stored["action_type"] == "direct_trial":
+            finalized = [
+                outcome for outcome in stored["outcomes"] if outcome["status"] != "planned"
+            ]
+            if finalized:
+                message = "POD direct trial has partial provider outcomes; automatic replay is blocked"
+                self.repository.mark_billing_pending(stored["action_key"], message)
+                raise PodRepositoryError(message, 409)
+            def continue_direct_trial() -> None:
+                request = DirectListingTrialCreate.model_validate(stored["action_payload"])
+                template = self.repository.get_template(
+                    request.template_id, actor.workspace_id, actor.id
+                )
+                template_asset = self.repository.get_asset(
+                    template["asset_id"], actor.workspace_id, actor.id
+                )
+                try:
+                    self._run_direct_listing_trial_authorized(
+                        actor,
+                        request,
+                        template_image=self.assets.read(template_asset["relative_path"]),
+                        template_content_type=template_asset["content_type"],
+                        trial_id=stored["target_id"],
+                        prompt=build_direct_listing_prompt(
+                            request.business_fields, request.creative_prompt
+                        ),
+                        billing_run=run,
+                    )
+                except PodBillingAuthorizationRequired as exc:
+                    self.repository.mark_billing_auth_required(run.action_key, str(exc))
+                    return
+                try:
+                    run.settle()
+                except Exception as exc:
+                    self.repository.mark_billing_pending(run.action_key, str(exc))
+
+            if enqueue:
+                if self.worker is None:
+                    raise RuntimeError("POD worker is disabled")
+                self.worker.submit_billing_action(run_id, continue_direct_trial)
+            else:
+                continue_direct_trial()
+            return self._billing_run_payload(
+                self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+            )
+        if has_planned_calls and stored["action_type"] in {
+            "scene_optimization",
+            "item_retry",
+            "style_retry",
+            "title_retry",
+        }:
+            if self.worker is None:
+                raise RuntimeError("POD worker is disabled")
+            payload = stored["action_payload"]
+            if stored["action_type"] == "scene_optimization":
+                function = (
+                    self.worker.submit_scene_optimization
+                    if enqueue
+                    else self.worker.optimize_scene
+                )
+                function(stored["batch_id"], stored["target_id"], str(payload.get("instruction") or ""), run)
+            elif stored["action_type"] == "item_retry":
+                function = (
+                    self.worker.submit_item_regeneration
+                    if enqueue
+                    else self.worker.regenerate_item
+                )
+                function(stored["batch_id"], stored["target_id"], str(payload.get("creative_prompt") or ""), run)
+            elif stored["action_type"] == "style_retry":
+                function = (
+                    self.worker.submit_style_regeneration
+                    if enqueue
+                    else self.worker.regenerate_style
+                )
+                function(stored["batch_id"], int(stored["target_id"]), str(payload.get("creative_prompt") or ""), run)
+            else:
+                function = (
+                    self.worker.submit_title_regeneration
+                    if enqueue
+                    else self.worker.regenerate_title
+                )
+                function(stored["batch_id"], int(stored["target_id"]), run)
+            return self._billing_run_payload(
+                self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+            )
+        try:
+            run.settle()
+        except PodBillingAuthorizationRequired:
+            raise
+        except Exception as exc:
+            if stored["batch_id"]:
+                self.repository.set_batch_status(stored["batch_id"], "settlement_pending", str(exc))
+            raise
+        if stored["batch_id"]:
+            refreshed = self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+            result_status = refreshed["result_status"]
+            if result_status and result_status not in {"billing_auth_required", "settlement_pending"}:
+                self.repository.set_batch_status(stored["batch_id"], result_status)
+        return self._billing_run_payload(
+            self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+        )
 
     def asset_info(self, actor: Actor, asset_id: str) -> dict[str, Any]:
         return self.repository.get_asset(asset_id, actor.workspace_id, actor.id)
@@ -472,21 +723,56 @@ class PodCustomizationService:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
         plan = PodCallPlan.for_batch(batch_id, style_count=style_count)
-        return PodBillingRun(actor, self.billing_coordinator, plan, self.billing_coordinator.freeze(actor, plan))
+        return self._freeze_action(
+            actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
+        )
 
-    def _freeze_trial(self, actor: Actor, trial_id: str) -> PodBillingRun:
+    def _freeze_trial(
+        self, actor: Actor, trial_id: str, request: DirectListingTrialCreate
+    ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
         plan = PodCallPlan.for_trial(trial_id, include_title=self.title_runtime is not None)
-        return PodBillingRun(actor, self.billing_coordinator, plan, self.billing_coordinator.freeze(actor, plan))
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="direct_trial",
+            target_id=trial_id,
+            batch_id="",
+            action_payload=request.model_dump(mode="json"),
+        )
 
-    def _freeze_style_retry(self, actor: Actor, action_id: str) -> PodBillingRun:
+    def _freeze_style_retry(
+        self,
+        actor: Actor,
+        action_id: str,
+        batch_id: str,
+        style_index: int,
+        creative_prompt: str,
+    ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
         plan = PodCallPlan.for_style_retry(action_id, include_title=self.title_runtime is not None)
-        return PodBillingRun(actor, self.billing_coordinator, plan, self.billing_coordinator.freeze(actor, plan))
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="style_retry",
+            target_id=str(style_index),
+            batch_id=batch_id,
+            action_payload={"creative_prompt": creative_prompt},
+        )
 
-    def _freeze_retry(self, actor: Actor, action_id: str, feature: str) -> PodBillingRun:
+    def _freeze_retry(
+        self,
+        actor: Actor,
+        action_id: str,
+        feature: str,
+        *,
+        action_type: str,
+        target_id: str,
+        batch_id: str,
+        action_payload: dict[str, Any] | None = None,
+    ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
         plan = PodCallPlan.for_retry(
@@ -494,7 +780,85 @@ class PodCustomizationService:
             feature=feature,  # type: ignore[arg-type]
             max_attempts=3 if feature == "pod.title" else 1,
         )
-        return PodBillingRun(actor, self.billing_coordinator, plan, self.billing_coordinator.freeze(actor, plan))
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type=action_type,
+            target_id=target_id,
+            batch_id=batch_id,
+            action_payload=action_payload,
+        )
+
+    def _freeze_action(
+        self,
+        actor: Actor,
+        plan: PodCallPlan,
+        *,
+        action_type: str,
+        target_id: str,
+        batch_id: str,
+        action_payload: dict[str, Any] | None = None,
+    ) -> PodBillingRun:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        grant = self.billing_coordinator.freeze(actor, plan)
+        try:
+            stored = self.repository.create_billing_run(
+                action_key=plan.idempotency_key,
+                action_type=action_type,
+                target_id=target_id,
+                batch_id=batch_id,
+                actor_id=actor.id,
+                workspace_id=actor.workspace_id,
+                plan=plan,
+                grant=grant,
+                action_payload=action_payload,
+            )
+        except Exception as ledger_error:
+            outcomes = tuple(
+                PodCallOutcome(call.call_id, call.feature, "no_return") for call in plan.calls
+            )
+            try:
+                self.billing_coordinator.settle(actor, grant, plan, outcomes)
+            except Exception as settlement_error:
+                raise RuntimeError(
+                    "POD freeze succeeded but both the local ledger and compensation settlement failed"
+                ) from settlement_error
+            raise ledger_error
+        return PodBillingRun(
+            actor,
+            self.billing_coordinator,
+            plan,
+            grant,
+            repository=self.repository,
+            action_key=stored["action_key"],
+        )
+
+    @staticmethod
+    def _billing_plan(payload: dict[str, Any]) -> PodCallPlan:
+        return PodCallPlan(
+            idempotency_key=str(payload["idempotency_key"]),
+            calls=tuple(
+                PodPlannedCall(str(call["call_id"]), str(call["feature"]))  # type: ignore[arg-type]
+                for call in payload["calls"]
+            ),
+        )
+
+    @staticmethod
+    def _billing_run_payload(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["run_id"],
+            "action_type": row["action_type"],
+            "target_id": row["target_id"],
+            "batch_id": row["batch_id"],
+            "freeze_id": row["freeze_id"],
+            "rule_version": row["rule_version"],
+            "expires_at": row["grant_expires_at"],
+            "status": row["status"],
+            "error_message": row["error_message"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 
     def _generate_direct_trial_title(
         self,
@@ -517,20 +881,30 @@ class PodCustomizationService:
         )
         call_ids = tuple(call.call_id for call in billing_run.plan.calls if call.feature == "pod.title")
         try:
-            generated = self.title_runtime.generate_title(
-                request,
-                grant=billing_run.grant,
-                call_id=call_ids[0],
-                call_ids=call_ids,
-                on_outcome=lambda call_id, status: billing_run.record(
+            title_kwargs = {
+                "grant": billing_run.grant,
+                "call_id": call_ids[0],
+                "call_ids": call_ids,
+                "on_outcome": lambda call_id, status: billing_run.record(
                     call_id, "pod.title", status
                 ),
-            )
+            }
+            parameters = inspect.signature(self.title_runtime.generate_title).parameters
+            if "on_start" in parameters or any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            ):
+                title_kwargs["on_start"] = lambda call_id: billing_run.start(
+                    call_id, "pod.title"
+                )
+            generated = self.title_runtime.generate_title(request, **title_kwargs)
             if not any(billing_run.has_outcome(call_id) for call_id in call_ids):
                 billing_run.record(call_ids[0], "pod.title", "success")
             result = vars(generated)
             result["visual_signature"] = visual_signature(generated)
             return {"style_task_id": trial_id, "status": "completed", "error_message": "", **result}
+        except PodBillingAuthorizationRequired:
+            raise
         except Exception as exc:
             if not any(billing_run.has_outcome(call_id) for call_id in call_ids):
                 billing_run.record(call_ids[0], "pod.title", "no_return")
@@ -555,7 +929,9 @@ class PodCustomizationService:
             raise RuntimeError(
                 f"图片服务鉴权失败（HTTP {status_code}）：请检查 POD 图片服务的 API Key 与权限配置；未保存试跑结果。"
             ) from exc
-        raise RuntimeError(f"POD 四宫格生成失败：{str(exc).strip() or exc.__class__.__name__}") from exc
+        raise RuntimeError(
+            f"POD 四宫格生成失败：{safe_error_message(exc, fallback=exc.__class__.__name__)}"
+        ) from exc
 
     @staticmethod
     def _template_payload(template: dict[str, Any]) -> dict[str, Any]:

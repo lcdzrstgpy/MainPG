@@ -35,6 +35,17 @@ class FakeRemoteBilling:
             "keys": {"ark": "short-ark", "wuyin": "short-wuyin"},
         }
 
+    def pod_freeze_status(self, token: str, freeze_id: str) -> dict[str, object]:
+        self.calls.append(("status", token, freeze_id))
+        return {
+            "freeze": {
+                "freeze_id": freeze_id,
+                "status": "settled",
+                "rule_version": 7,
+                "expires_at": "2000-01-01T00:00:00Z",
+            }
+        }
+
 
 class RealClientShapeRemoteBilling(FakeRemoteBilling):
     def freeze_pod_points(self, token: str, payload: dict[str, object]) -> dict[str, object]:
@@ -100,3 +111,33 @@ def test_coordinator_accepts_normalized_real_client_grant_shape() -> None:
     assert grant.rule_version == 9
     assert grant.expires_at == "2099-01-01T06:00:00Z"
     assert grant.provider_key("ark") == "short-ark"
+
+
+def test_missing_live_remote_token_is_an_authentication_error() -> None:
+    coordinator = RemotePodBillingCoordinator(FakeRemoteBilling(), lambda _actor: "")
+    actor = Actor(id="user-1", username="user", role="operator", workspace_id="workspace-1")
+
+    with pytest.raises(CustomerBillingPermissionError):
+        coordinator.freeze(
+            actor,
+            PodCallPlan.for_retry("missing-live-token", feature="pod.image"),
+        )
+
+
+def test_settlement_auth_checks_status_without_requesting_provider_keys() -> None:
+    remote = FakeRemoteBilling()
+    coordinator = RemotePodBillingCoordinator(remote, lambda _actor: "remote-session")
+    actor = Actor(id="user-1", username="user", role="operator", workspace_id="workspace-1")
+
+    grant = coordinator.settlement_grant(
+        actor,
+        "pod-freeze-1",
+        rule_version=7,
+        expires_at="2000-01-01T00:00:00Z",
+    )
+
+    assert grant.provider_keys == {}
+    assert remote.calls == [("status", "remote-session", "pod-freeze-1")]
+import pytest
+
+from wh_local.customer.contracts import CustomerBillingPermissionError

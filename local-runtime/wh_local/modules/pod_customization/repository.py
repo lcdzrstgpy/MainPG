@@ -8,8 +8,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from .billing_contract import PodCallOutcome, PodCallPlan, PodExecutionGrant
 from .contracts import BatchCreate, Calibration, grid_call_count, style_grid_call_count
+from .errors import safe_error_message
 from .prompts import build_direct_listing_prompt
+
+
+def _safe_error(value: object) -> str:
+    return safe_error_message(value) if str(value or "").strip() else ""
 
 
 class PodRepositoryError(RuntimeError):
@@ -38,9 +44,15 @@ class PodCustomizationRepository:
                     (migration_id,),
                 ).fetchone():
                     continue
+                if _migration_effect_is_present(connection, migration.stem):
+                    connection.execute(
+                        "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, 'pod_customization')",
+                        (migration_id,),
+                    )
+                    continue
                 connection.executescript(migration.read_text(encoding="utf-8"))
                 connection.execute(
-                    "INSERT INTO schema_migrations (migration_id, module) VALUES (?, 'pod_customization')",
+                    "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, 'pod_customization')",
                     (migration_id,),
                 )
 
@@ -181,7 +193,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_templates
                    SET calibration_status = ?, error_message = ?, updated_at = ?
                    WHERE template_id = ? AND workspace_id = ? AND deleted_at = ''""",
-                (status, error_message[:500], _now(), template_id, workspace_id),
+                (status, _safe_error(error_message), _now(), template_id, workspace_id),
             )
         if result.rowcount != 1:
             raise PodRepositoryError("POD template not found", 404)
@@ -252,7 +264,7 @@ class PodCustomizationRepository:
                     json.dumps(grid_attempt_asset_ids),
                     json.dumps(panel_asset_ids),
                     json.dumps(public_urls),
-                    error_message[:500],
+                    _safe_error(error_message),
                     now,
                     now,
                 ),
@@ -373,6 +385,28 @@ class PodCustomizationRepository:
                 [(batch_id, style_index, now, now) for style_index in range(1, request.count + 1)],
             )
         return self.get_batch(batch_id, workspace_id, owner_user_id)
+
+    def preflight_batch(self, workspace_id: str, owner_user_id: str, request: BatchCreate) -> None:
+        """Validate all stable local prerequisites before remote points are frozen."""
+        del owner_user_id
+        with self._connect() as connection:
+            template = connection.execute(
+                """SELECT template_id, version, calibration_status
+                   FROM pod_customization_templates
+                   WHERE template_id = ? AND workspace_id = ? AND deleted_at = ''""",
+                (request.template_id, workspace_id),
+            ).fetchone()
+            if template is None:
+                raise PodRepositoryError("POD template not found", 404)
+            if template["calibration_status"] != "ready":
+                raise PodRepositoryError("POD template must be calibrated before use", 409)
+            snapshot = connection.execute(
+                """SELECT 1 FROM pod_customization_template_snapshots
+                   WHERE template_id = ? AND workspace_id = ? AND version = ?""",
+                (request.template_id, workspace_id, template["version"]),
+            ).fetchone()
+            if snapshot is None:
+                raise PodRepositoryError("POD template snapshot is unavailable", 409)
 
     def get_batch(self, batch_id: str, workspace_id: str, owner_user_id: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -601,12 +635,31 @@ class PodCustomizationRepository:
             ).fetchall()
             for row in rows:
                 batch_id = row["batch_id"]
+                resumable_billing = (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pod_customization_billing_runs'"
+                    ).fetchone()
+                    and connection.execute(
+                        """SELECT 1 FROM pod_customization_billing_runs
+                           WHERE batch_id = ? AND status IN ('authorized', 'settling', 'auth_required')
+                           LIMIT 1""",
+                        (batch_id,),
+                    ).fetchone()
+                )
                 connection.execute(
                     """UPDATE pod_customization_generation_calls
                        SET status = 'interrupted', error_message = ?, finished_at = ?
                        WHERE batch_id = ? AND status IN ('queued', 'running')""",
                     (message, now, batch_id),
                 )
+                if resumable_billing:
+                    connection.execute(
+                        """UPDATE pod_customization_batches
+                           SET status = 'billing_auth_required', error_message = ?, updated_at = ?
+                           WHERE batch_id = ?""",
+                        (message, now, batch_id),
+                    )
+                    continue
                 connection.execute(
                     """UPDATE pod_customization_style_titles
                        SET status = 'failed', error_message = ?, updated_at = ?, finished_at = ?
@@ -666,15 +719,322 @@ class PodCustomizationRepository:
             ).fetchall()
         return [row["batch_id"] for row in rows]
 
-    def claim_batch(self, batch_id: str) -> bool:
+    def create_billing_run(
+        self,
+        *,
+        action_key: str,
+        action_type: str,
+        target_id: str,
+        batch_id: str,
+        actor_id: str,
+        workspace_id: str,
+        plan: PodCallPlan,
+        grant: PodExecutionGrant,
+        action_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        run_id = uuid.uuid4().hex
+        now = _now()
+        plan_json = json.dumps(
+            {
+                "idempotency_key": plan.idempotency_key,
+                "calls": [call.payload() for call in plan.calls],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO pod_customization_billing_runs
+                   (run_id, action_key, action_type, target_id, batch_id, workspace_id,
+                    owner_user_id, freeze_id, rule_version, grant_expires_at, plan_json, action_payload_json,
+                    status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'authorized', ?, ?)""",
+                (
+                    run_id,
+                    action_key,
+                    action_type,
+                    target_id,
+                    batch_id,
+                    workspace_id,
+                    actor_id,
+                    grant.freeze_id,
+                    grant.rule_version,
+                    grant.expires_at,
+                    plan_json,
+                    json.dumps(action_payload or {}, ensure_ascii=False, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+            connection.executemany(
+                """INSERT INTO pod_customization_billing_outcomes
+                   (run_id, call_id, feature, status, updated_at)
+                   VALUES (?, ?, ?, 'planned', ?)""",
+                [(run_id, call.call_id, call.feature, now) for call in plan.calls],
+            )
+        return self.get_billing_run(run_id, workspace_id, actor_id)
+
+    def get_billing_run(
+        self, run_id: str, workspace_id: str, owner_user_id: str
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_billing_runs
+                   WHERE run_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (run_id, workspace_id, owner_user_id),
+            ).fetchone()
+            outcomes = (
+                connection.execute(
+                    """SELECT call_id, feature, status, updated_at
+                       FROM pod_customization_billing_outcomes
+                       WHERE run_id = ? ORDER BY rowid""",
+                    (run_id,),
+                ).fetchall()
+                if row is not None
+                else []
+            )
+        if row is None:
+            raise PodRepositoryError("POD billing run not found", 404)
+        result = dict(row)
+        result["plan"] = json.loads(result.pop("plan_json"))
+        result["action_payload"] = json.loads(result.pop("action_payload_json"))
+        result["outcomes"] = [dict(outcome) for outcome in outcomes]
+        return result
+
+    def list_pending_billing_runs(
+        self, workspace_id: str, owner_user_id: str
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT run_id FROM pod_customization_billing_runs
+                   WHERE workspace_id = ? AND owner_user_id = ?
+                     AND status IN ('authorized', 'settling', 'settlement_pending', 'auth_required')
+                   ORDER BY created_at, run_id""",
+                (workspace_id, owner_user_id),
+            ).fetchall()
+        return [self.get_billing_run(row["run_id"], workspace_id, owner_user_id) for row in rows]
+
+    def start_billing_call(self, action_key: str, call_id: str, feature: str) -> None:
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT outcomes.status, outcomes.feature
+                   FROM pod_customization_billing_outcomes AS outcomes
+                   INNER JOIN pod_customization_billing_runs AS runs ON runs.run_id = outcomes.run_id
+                   WHERE runs.action_key = ? AND outcomes.call_id = ?""",
+                (action_key, call_id),
+            ).fetchone()
+            if row is None or row["feature"] != feature:
+                raise PodRepositoryError("POD billing call is not in the frozen plan", 409)
+            if row["status"] != "planned":
+                raise PodRepositoryError("POD billing call was already started", 409)
+            connection.execute(
+                """UPDATE pod_customization_billing_outcomes
+                   SET status = 'started', updated_at = ?
+                   WHERE run_id = (SELECT run_id FROM pod_customization_billing_runs WHERE action_key = ?)
+                     AND call_id = ?""",
+                (now, action_key, call_id),
+            )
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET updated_at = ?, error_message = '' WHERE action_key = ?""",
+                (now, action_key),
+            )
+
+    def record_billing_outcome(
+        self, action_key: str, outcome: PodCallOutcome
+    ) -> None:
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT outcomes.status, outcomes.feature
+                   FROM pod_customization_billing_outcomes AS outcomes
+                   INNER JOIN pod_customization_billing_runs AS runs ON runs.run_id = outcomes.run_id
+                   WHERE runs.action_key = ? AND outcomes.call_id = ?""",
+                (action_key, outcome.call_id),
+            ).fetchone()
+            if row is None or row["feature"] != outcome.feature:
+                raise PodRepositoryError("POD billing call is not in the frozen plan", 409)
+            if row["status"] in {"success", "no_return"}:
+                if row["status"] != outcome.status:
+                    raise PodRepositoryError("POD billing call has conflicting outcomes", 409)
+                return
+            connection.execute(
+                """UPDATE pod_customization_billing_outcomes
+                   SET status = ?, updated_at = ?
+                   WHERE run_id = (SELECT run_id FROM pod_customization_billing_runs WHERE action_key = ?)
+                     AND call_id = ?""",
+                (outcome.status, now, action_key, outcome.call_id),
+            )
+            connection.execute(
+                "UPDATE pod_customization_billing_runs SET updated_at = ? WHERE action_key = ?",
+                (now, action_key),
+            )
+
+    def prepare_billing_settlement(self, action_key: str) -> tuple[PodCallOutcome, ...]:
+        """Freeze known outcomes for settlement without guessing crash-window calls."""
+        now = _now()
+        with self._connect() as connection:
+            uncertain = connection.execute(
+                """SELECT outcomes.call_id
+                   FROM pod_customization_billing_outcomes AS outcomes
+                   INNER JOIN pod_customization_billing_runs AS runs ON runs.run_id = outcomes.run_id
+                   WHERE runs.action_key = ? AND outcomes.status = 'started' LIMIT 1""",
+                (action_key,),
+            ).fetchone()
+        if uncertain is not None:
+            message = (
+                "POD provider call outcome is uncertain after interruption; "
+                "automatic settlement is blocked"
+            )
+            self.mark_billing_pending(action_key, message)
+            raise PodRepositoryError(message, 409)
+        with self._connect() as connection:
+            run = connection.execute(
+                "SELECT run_id, batch_id FROM pod_customization_billing_runs WHERE action_key = ?",
+                (action_key,),
+            ).fetchone()
+            if run is None:
+                raise PodRepositoryError("POD billing run not found", 404)
+            if run["batch_id"]:
+                batch = connection.execute(
+                    "SELECT status FROM pod_customization_batches WHERE batch_id = ?",
+                    (run["batch_id"],),
+                ).fetchone()
+                if batch is not None and batch["status"] not in {
+                    "billing_auth_required",
+                    "settlement_pending",
+                }:
+                    connection.execute(
+                        """UPDATE pod_customization_billing_runs
+                           SET result_status = ? WHERE action_key = ? AND result_status = ''""",
+                        (batch["status"], action_key),
+                    )
+            connection.execute(
+                """UPDATE pod_customization_billing_outcomes
+                   SET status = 'no_return', updated_at = ?
+                   WHERE run_id = ? AND status = 'planned'""",
+                (now, run["run_id"]),
+            )
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'settling', error_message = '', updated_at = ?
+                   WHERE run_id = ? AND status <> 'settled'""",
+                (now, run["run_id"]),
+            )
+            rows = connection.execute(
+                """SELECT call_id, feature, status FROM pod_customization_billing_outcomes
+                   WHERE run_id = ? ORDER BY rowid""",
+                (run["run_id"],),
+            ).fetchall()
+        return tuple(PodCallOutcome(row["call_id"], row["feature"], row["status"]) for row in rows)
+
+    def mark_billing_pending(self, action_key: str, error_message: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'settlement_pending', error_message = ?, updated_at = ?
+                   WHERE action_key = ? AND status <> 'settled'""",
+                (_safe_error(error_message), _now(), action_key),
+            )
+
+    def mark_billing_auth_required(self, action_key: str, error_message: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'auth_required', error_message = ?, updated_at = ?
+                   WHERE action_key = ? AND status <> 'settled'""",
+                (_safe_error(error_message), _now(), action_key),
+            )
+
+    def mark_billing_authorized(
+        self, action_key: str, *, rule_version: int, expires_at: str
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'authorized', rule_version = ?, grant_expires_at = ?,
+                       error_message = '', updated_at = ?
+                   WHERE action_key = ? AND status <> 'settled'""",
+                (rule_version, expires_at, _now(), action_key),
+            )
+
+    def claim_billing_resume(
+        self, run_id: str, workspace_id: str, owner_user_id: str
+    ) -> bool:
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'resume_claimed', error_message = '', updated_at = ?
+                   WHERE run_id = ? AND workspace_id = ? AND owner_user_id = ?
+                     AND status IN ('auth_required', 'settlement_pending')""",
+                (_now(), run_id, workspace_id, owner_user_id),
+            )
+        return result.rowcount == 1
+
+    def mark_billing_settled(self, action_key: str) -> None:
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'settled', error_message = '', updated_at = ?, settled_at = ?
+                   WHERE action_key = ?""",
+                (now, now, action_key),
+            )
+
+    def recover_billing_runs(self) -> int:
+        now = _now()
+        message = "POD short-lived grant was discarded during restart; sign in to resume billing"
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT run_id FROM pod_customization_billing_runs
+                   WHERE status IN ('authorized', 'resume_claimed', 'settling')"""
+            ).fetchall()
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'auth_required', error_message = ?, updated_at = ?
+                   WHERE status IN ('authorized', 'resume_claimed', 'settling')""",
+                (message, now),
+            )
+        return len(rows)
+
+    def pause_billing_runs_for_shutdown(self) -> int:
+        now = _now()
+        message = "POD worker stopped; sign in after restart to resume unfinished billing actions"
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT run_id, batch_id FROM pod_customization_billing_runs
+                   WHERE status = 'authorized'"""
+            ).fetchall()
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'auth_required', error_message = ?, updated_at = ?
+                   WHERE status = 'authorized'""",
+                (message, now),
+            )
+            batch_ids = [str(row["batch_id"]) for row in rows if str(row["batch_id"])]
+            if batch_ids:
+                placeholders = ",".join("?" for _ in batch_ids)
+                connection.execute(
+                    f"""UPDATE pod_customization_batches
+                        SET status = 'billing_auth_required', error_message = ?, updated_at = ?
+                        WHERE batch_id IN ({placeholders})
+                          AND status IN ('queued', 'generating_patterns', 'compositing', 'generating_titles')""",
+                    (message, now, *batch_ids),
+                )
+        return len(rows)
+
+    def claim_batch(self, batch_id: str, *, allow_billing_resume: bool = False) -> bool:
         now = _now()
         with self._connect() as connection:
             result = connection.execute(
                 """UPDATE pod_customization_batches
                    SET status = 'generating_patterns', started_at = CASE WHEN started_at = '' THEN ? ELSE started_at END,
                        updated_at = ?, error_message = ''
-                   WHERE batch_id = ? AND status = 'queued'""",
-                (now, now, batch_id),
+                   WHERE batch_id = ? AND (
+                     status = 'queued' OR (? = 1 AND status = 'billing_auth_required')
+                   )""",
+                (now, now, batch_id, int(allow_billing_resume)),
             )
         return result.rowcount == 1
 
@@ -686,7 +1046,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_batches SET status = ?, error_message = ?, updated_at = ?,
                        finished_at = CASE WHEN ? <> '' THEN ? ELSE finished_at END
                    WHERE batch_id = ?""",
-                (status, error_message[:500], now, finished_at, finished_at, batch_id),
+                (status, _safe_error(error_message), now, finished_at, finished_at, batch_id),
             )
         if result.rowcount != 1:
             raise PodRepositoryError("POD batch not found", 404)
@@ -697,6 +1057,7 @@ class PodCustomizationRepository:
         style_index: int,
         *,
         style_task_id: str | None = None,
+        allow_billing_resume: bool = False,
     ) -> dict[str, Any]:
         """Atomically start a title attempt, optionally replacing its image task identity."""
         now = _now()
@@ -708,8 +1069,17 @@ class PodCustomizationRepository:
                        visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
                        error_message = '', started_at = ?, finished_at = '', updated_at = ?
                    WHERE batch_id = ? AND style_index = ?
-                     AND status IN ('queued', 'completed', 'failed')""",
-                (style_task_id, style_task_id, now, now, batch_id, style_index),
+                     AND (status IN ('queued', 'completed', 'failed')
+                          OR (? = 1 AND status = 'generating'))""",
+                (
+                    style_task_id,
+                    style_task_id,
+                    now,
+                    now,
+                    batch_id,
+                    style_index,
+                    int(allow_billing_resume),
+                ),
             )
             row = connection.execute(
                 "SELECT * FROM pod_customization_style_titles WHERE batch_id = ? AND style_index = ?",
@@ -856,7 +1226,7 @@ class PodCustomizationRepository:
                     style_task_id,
                     style_task_id,
                     max(0, int(attempt_count)),
-                    error_message[:500],
+                    _safe_error(error_message),
                     now,
                     now,
                     batch_id,
@@ -888,7 +1258,7 @@ class PodCustomizationRepository:
                             AND results.style_index = titles.style_index
                             AND results.status = 'completed'
                             AND publications.public_url <> '') <> 4""",
-                (error_message[:500], now, now, batch_id),
+                (_safe_error(error_message), now, now, batch_id),
             )
         return int(result.rowcount or 0)
 
@@ -1010,7 +1380,7 @@ class PodCustomizationRepository:
             connection.execute(
                 """UPDATE pod_customization_batches
                    SET status = ?, error_message = ?, updated_at = ?, finished_at = ? WHERE batch_id = ?""",
-                (status, error_message[:500], now, now, batch_id),
+                (status, _safe_error(error_message), now, now, batch_id),
             )
         return status
 
@@ -1040,6 +1410,42 @@ class PodCustomizationRepository:
                     (now, batch["batch_id"]),
                 )
         return {"call_id": call_id, "call_kind": call_kind, "call_index": call_index}
+
+    def get_or_create_generation_call(
+        self,
+        batch: dict[str, Any],
+        *,
+        call_kind: str,
+        call_index: int,
+        prompt_snapshot: str | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_generation_calls
+                   WHERE batch_id = ? AND call_kind = ? AND call_index = ?""",
+                (batch["batch_id"], call_kind, call_index),
+            ).fetchone()
+        if row is not None:
+            return dict(row)
+        return self.create_generation_call(
+            batch,
+            call_kind=call_kind,
+            call_index=call_index,
+            prompt_snapshot=prompt_snapshot,
+        )
+
+    def billing_call_status(self, action_key: str, call_id: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT outcomes.status
+                   FROM pod_customization_billing_outcomes AS outcomes
+                   INNER JOIN pod_customization_billing_runs AS runs ON runs.run_id = outcomes.run_id
+                   WHERE runs.action_key = ? AND outcomes.call_id = ?""",
+                (action_key, call_id),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD billing call is not in the frozen plan", 409)
+        return str(row["status"])
 
     def next_generation_call_index(self, batch_id: str, call_kind: str) -> int:
         with self._connect() as connection:
@@ -1071,7 +1477,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_generation_calls
                    SET status = ?, grid_asset_id = ?, error_message = ?, finished_at = ?
                    WHERE call_id = ?""",
-                (status, grid_asset_id, error_message[:500], _now(), call_id),
+                (status, grid_asset_id, _safe_error(error_message), _now(), call_id),
             )
 
     def record_candidate(
@@ -1092,7 +1498,7 @@ class PodCustomizationRepository:
                     rejection_reason, fingerprint, pattern_asset_id, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (uuid.uuid4().hex, batch["batch_id"], call_id, batch["workspace_id"], batch["owner_user_id"],
-                 grid_cell, status, rejection_reason, fingerprint, pattern_asset_id, _now()),
+                 grid_cell, status, _safe_error(rejection_reason), fingerprint, pattern_asset_id, _now()),
             )
 
     def accept_candidate(
@@ -1167,7 +1573,7 @@ class PodCustomizationRepository:
                        error_message = ?, updated_at = ?
                    WHERE batch_id = ? AND style_index = ? AND variant_index = ?""",
                 (status, pattern_asset_id, pattern_asset_id, composite_asset_id, composite_asset_id,
-                 fingerprint, fingerprint, pattern_asset_id, error_message[:500], now,
+                 fingerprint, fingerprint, pattern_asset_id, _safe_error(error_message), now,
                  batch["batch_id"], style_index, variant_index),
             )
             if result.rowcount != 1:
@@ -1194,7 +1600,7 @@ class PodCustomizationRepository:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (uuid.uuid4().hex, batch["batch_id"], call_id, batch["workspace_id"], batch["owner_user_id"],
                  variant_index, "accepted" if status == "completed" else "rejected",
-                 error_message[:500], fingerprint, pattern_asset_id, now),
+                 _safe_error(error_message), fingerprint, pattern_asset_id, now),
             )
             self._refresh_counts(connection, batch["batch_id"], now)
 
@@ -1205,7 +1611,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_style_grid_results
                    SET status = 'failed', error_message = ?, updated_at = ?
                    WHERE batch_id = ? AND style_index = ? AND status IN ('queued', 'generating_pattern', 'compositing')""",
-                (error_message[:500], now, batch["batch_id"], style_index),
+                (_safe_error(error_message), now, batch["batch_id"], style_index),
             )
             self._refresh_counts(connection, batch["batch_id"], now)
 
@@ -1240,7 +1646,7 @@ class PodCustomizationRepository:
                 if self._is_style_grid_batch(connection, batch_id) else
                 """UPDATE pod_customization_batch_items SET status = 'failed', error_message = ?, updated_at = ?
                    WHERE batch_id = ? AND status = 'queued'""",
-                (message[:500], now, batch_id),
+                (_safe_error(message), now, batch_id),
             )
             self._refresh_counts(connection, batch_id, now)
         return int(result.rowcount or 0)
@@ -1414,7 +1820,7 @@ class PodCustomizationRepository:
             connection.execute(
                 """UPDATE pod_customization_batch_items SET status = ?, error_message = ?, updated_at = ?
                    WHERE batch_id = ? AND item_id = ?""",
-                (restored_status, error_message[:500], now, batch_id, item_id),
+                (restored_status, _safe_error(error_message), now, batch_id, item_id),
             )
             self._refresh_counts(connection, batch_id, now)
 
@@ -1442,7 +1848,7 @@ class PodCustomizationRepository:
                        error_message = ?, updated_at = ?
                    WHERE batch_id = ? AND item_id = ? AND status = 'optimizing_scene'""",
                 (composite_asset_id, composite_asset_id, composite_asset_id,
-                 "" if succeeded else error_message[:500], now, batch_id, item_id),
+                 "" if succeeded else _safe_error(error_message), now, batch_id, item_id),
             )
             self._refresh_counts(connection, batch_id, now)
         if result.rowcount != 1:
@@ -1547,3 +1953,79 @@ def _normalize_title(value: str) -> str:
 
 def _table_has_column(connection: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row["name"] == column for row in connection.execute(f"PRAGMA table_info({table})"))
+
+
+def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone() is not None
+
+
+def _migration_effect_is_present(connection: sqlite3.Connection, migration_name: str) -> bool:
+    expected_objects = {
+        "001_pod_customization": (
+            (
+                "pod_customization_assets", "pod_customization_templates",
+                "pod_customization_template_snapshots", "pod_customization_batches",
+                "pod_customization_batch_items", "pod_customization_generation_calls",
+                "pod_customization_pattern_candidates",
+            ),
+            (
+                "idx_pod_customization_assets_owner", "idx_pod_customization_templates_owner",
+                "idx_pod_customization_template_snapshots_owner", "idx_pod_customization_batches_owner",
+                "idx_pod_customization_batches_status", "idx_pod_customization_batch_items_owner",
+                "idx_pod_customization_generation_calls_batch", "idx_pod_customization_pattern_candidates_batch",
+            ),
+        ),
+        "002_direct_listing_trials": (
+            ("pod_customization_direct_listing_trials",),
+            ("idx_pod_direct_listing_trials_owner",),
+        ),
+        "003_style_grid_v2": (
+            ("pod_customization_style_grid_batches", "pod_customization_style_grid_results"),
+            ("idx_pod_style_grid_results_batch",),
+        ),
+        "004_style_grid_publications": (("pod_customization_style_grid_publications",), ()),
+        "006_pod_titles": (
+            ("pod_customization_style_titles", "pod_customization_direct_listing_titles"),
+            ("idx_pod_customization_style_titles_status",),
+        ),
+        "008_persistent_billing_runs": (
+            ("pod_customization_billing_runs", "pod_customization_billing_outcomes"),
+            (
+                "idx_pod_billing_runs_owner_status", "idx_pod_billing_runs_batch",
+                "idx_pod_billing_outcomes_run_status",
+            ),
+        ),
+    }
+    if migration_name == "005_dianxiaomi_exports":
+        return (
+            _table_exists(connection, "pod_customization_style_copy")
+            and connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_pod_customization_style_copy_batch'"
+            ).fetchone() is not None
+            and _table_has_column(connection, "pod_customization_batches", "listing_fields_json")
+        )
+    if migration_name == "007_requested_count_upgrade":
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pod_customization_batches'"
+        ).fetchone()
+        return row is not None and "requested_count BETWEEN 1 AND 200" in str(row["sql"])
+    objects = expected_objects.get(migration_name)
+    if not objects:
+        return False
+    tables, indexes = objects
+    if not all(_table_exists(connection, table) for table in tables):
+        return False
+    if not all(
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?", (index,)
+        ).fetchone() is not None
+        for index in indexes
+    ):
+        return False
+    if migration_name == "008_persistent_billing_runs":
+        return _table_has_column(
+            connection, "pod_customization_billing_runs", "action_payload_json"
+        )
+    return True

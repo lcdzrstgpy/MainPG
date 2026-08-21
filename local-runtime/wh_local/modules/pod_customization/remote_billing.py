@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from ...db import connect
+from ...customer.contracts import CustomerBillingPermissionError
 from ...session import Actor
 from .billing_contract import (
     PodBillingCoordinator,
@@ -58,10 +56,33 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
             raise RuntimeError("POD billing service returned an invalid grant")
         return self._grant(response, remote_token=remote_token)
 
+    def settlement_grant(
+        self,
+        actor: Actor,
+        freeze_id: str,
+        *,
+        rule_version: int,
+        expires_at: str,
+    ) -> PodExecutionGrant:
+        """Authenticate settlement without requiring an active provider-key grant."""
+        remote_token = self._required_remote_token(actor)
+        response = self._remote_client.pod_freeze_status(remote_token, freeze_id)
+        freeze = response.get("freeze") if isinstance(response, Mapping) else None
+        status = freeze if isinstance(freeze, Mapping) else response
+        if not isinstance(status, Mapping) or str(status.get("freeze_id") or "") != freeze_id:
+            raise RuntimeError("POD billing service returned an invalid freeze status")
+        return PodExecutionGrant(
+            freeze_id=freeze_id,
+            rule_version=int(status.get("rule_version") or rule_version),
+            expires_at=str(status.get("expires_at") or expires_at),
+            provider_keys={},
+            remote_token=remote_token,
+        )
+
     def _required_remote_token(self, actor: Actor) -> str:
         token = str(self._remote_token_resolver(actor) or "")
         if not token:
-            raise RuntimeError("POD billing authentication is required")
+            raise CustomerBillingPermissionError()
         return token
 
     @staticmethod
@@ -82,28 +103,16 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
         )
 
 
-def sqlite_remote_token_resolver(database_path: Path) -> Callable[[Actor], str]:
-    """Resolve the latest active remote session without exposing it to routes."""
+def session_remote_token_resolver(sessions: Any) -> Callable[[Actor], str]:
+    """Resolve a remote token from the live session service only."""
 
     def resolve(actor: Actor) -> str:
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with connect(database_path) as connection:
-            row = connection.execute(
-                """SELECT sessions.remote_token
-                   FROM customer_sessions AS sessions
-                   JOIN customer_users AS users ON users.user_id = sessions.user_id
-                   WHERE sessions.user_id = ?
-                     AND users.workspace_id = ?
-                     AND sessions.revoked_at = ''
-                     AND sessions.expires_at > ?
-                     AND sessions.remote_token <> ''
-                   ORDER BY sessions.created_at DESC
-                   LIMIT 1""",
-                (actor.id, actor.workspace_id, now),
-            ).fetchone()
-        return str(row["remote_token"] or "") if row is not None else ""
+        resolver = getattr(sessions, "remote_token_for_actor", None)
+        if not callable(resolver):
+            return ""
+        return str(resolver(actor.id, actor.workspace_id) or "")
 
     return resolve
 
 
-__all__ = ["RemotePodBillingCoordinator", "sqlite_remote_token_resolver"]
+__all__ = ["RemotePodBillingCoordinator", "session_remote_token_resolver"]

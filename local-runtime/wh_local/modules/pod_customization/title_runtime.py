@@ -14,7 +14,7 @@ import requests
 
 from wh_local.modules.product_processing.doubao_ark import MODEL_ID, DoubaoArkError
 
-from .billing_contract import PodExecutionGrant
+from .billing_contract import PodBillingAuthorizationRequired, PodExecutionGrant
 from .contracts import BusinessFields
 from .runtime import AiRuntime, AiRuntimeConfig
 
@@ -157,6 +157,8 @@ def validate_title_result(
     prohibited = _prohibited_term(title)
     if prohibited:
         raise ValueError(f"title contains prohibited term: {prohibited}")
+    validate_listing_copy_text("english_title", result.english_title, max_length=TITLE_MAX_LENGTH)
+    validate_listing_copy_text("description", result.description, max_length=1000)
 
     normalized_accepted = tuple(_normalize_title(value) for value in accepted_titles if _normalized_text(value))
     if any(title.casefold() == prior.casefold() for prior in normalized_accepted):
@@ -179,6 +181,22 @@ def visual_signature(result: PodTitleResult) -> str:
     normalized_theme = _normalized_text(result.visual_theme).casefold()
     normalized_motifs = sorted(_normalized_text(value).casefold() for value in result.motif_keywords)
     return "|".join((normalized_theme, *normalized_motifs))
+
+
+def validate_listing_copy_text(field: str, value: object, *, max_length: int) -> str:
+    normalized = _normalized_text(value)
+    if not normalized:
+        raise ValueError(f"{field} is required")
+    if not normalized.isascii():
+        raise ValueError(f"{field} must use ASCII characters")
+    if len(normalized) > max(1, int(max_length)):
+        raise ValueError(f"{field} exceeds {max_length} characters")
+    if not re.findall(r"[A-Za-z]+", normalized):
+        raise ValueError(f"{field} must contain English alphabetic tokens")
+    prohibited = _prohibited_term(normalized)
+    if prohibited:
+        raise ValueError(f"{field} contains prohibited term: {prohibited}")
+    return normalized
 
 
 class PodTitleRuntime(AiRuntime):
@@ -215,29 +233,28 @@ class PodTitleRuntime(AiRuntime):
         grant: PodExecutionGrant,
         call_id: str,
         call_ids: tuple[str, ...] | None = None,
+        on_start: Callable[[str], None] | None = None,
         on_outcome: Callable[[str, str], None] | None = None,
     ) -> PodTitleResult:
         _validate_request(request)
-        api_key = grant.provider_key("ark")
-        if not api_key:
-            raise DoubaoArkError(
-                "POD title grant is missing or expired",
-                error_kind="configuration",
-                retryable=False,
-            )
+        _required_ark_key(grant)
         last_feedback = _normalized_text(request.rejected_reason)
         planned_call_ids = call_ids or tuple(
             f"{call_id.rsplit(':', 1)[0]}:{attempt}"
             for attempt in range(1, MAX_ATTEMPTS + 1)
         )
-        if len(planned_call_ids) < MAX_ATTEMPTS:
-            raise ValueError("POD title runtime requires one frozen call id per provider attempt")
-        for attempt in range(1, MAX_ATTEMPTS + 1):
+        if not planned_call_ids or len(planned_call_ids) > MAX_ATTEMPTS:
+            raise ValueError("POD title runtime requires one to three frozen provider calls")
+        max_attempts = len(planned_call_ids)
+        for attempt in range(1, max_attempts + 1):
             attempt_call_id = planned_call_ids[attempt - 1]
             outcome_recorded = False
             try:
                 self.acquire_request_token()
                 with self.provider_slot(), self.connection_slot(timeout_seconds=REQUEST_TIMEOUT_SECONDS):
+                    api_key = _required_ark_key(grant)
+                    if on_start is not None:
+                        on_start(attempt_call_id)
                     content = self._complete(
                         api_key,
                         _messages_for_request(request, rejection_feedback=last_feedback),
@@ -272,17 +289,17 @@ class PodTitleRuntime(AiRuntime):
                 exc.attempt_count = attempt
                 if exc.error_kind == "invalid_response":
                     exc.retryable = True
-                if not exc.retryable or attempt >= MAX_ATTEMPTS:
+                if not exc.retryable or attempt >= max_attempts:
                     raise
                 last_feedback = _normalized_text(str(exc)) or "provider response was invalid"
             except ValueError as exc:
                 # A contract-invalid title still came back from the provider,
                 # so its attempt was already reported as success above.
                 error = _invalid_response("POD title output failed the listing contract", attempt_count=attempt)
-                if attempt >= MAX_ATTEMPTS:
+                if attempt >= max_attempts:
                     raise error from exc
                 last_feedback = _normalized_text(str(exc)) or "title output violated the listing contract"
-            if attempt < MAX_ATTEMPTS:
+            if attempt < max_attempts:
                 self._sleeper(RETRY_BACKOFF_SECONDS)
         raise AssertionError("unreachable")
 
@@ -490,3 +507,12 @@ def _token_jaccard(left: str, right: str) -> float:
 
 def _invalid_response(message: str, *, attempt_count: int = 0) -> DoubaoArkError:
     return DoubaoArkError(message, error_kind="invalid_response", retryable=True, attempt_count=attempt_count)
+
+
+def _required_ark_key(grant: PodExecutionGrant) -> str:
+    key = grant.provider_key("ark")
+    if not key:
+        raise PodBillingAuthorizationRequired(
+            "POD ark grant expired before the provider request started"
+        )
+    return key
