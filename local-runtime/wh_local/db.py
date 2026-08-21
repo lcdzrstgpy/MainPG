@@ -636,6 +636,9 @@ CREATE TABLE IF NOT EXISTS billing_batch_freezes (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     settled_at TEXT NOT NULL DEFAULT '',
     expires_at TEXT NOT NULL DEFAULT (datetime('now', '+7 days')),
+    billing_profile TEXT NOT NULL DEFAULT 'product_processing',
+    rule_version INTEGER NOT NULL DEFAULT 0,
+    link_prices_json TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE,
     CHECK (link_count > 0),
     CHECK (frozen_points >= 0)
@@ -793,15 +796,6 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 profit_activity_threshold_sql.read_text(encoding="utf-8"),
             )
         )
-    profit_activity_store_name_sql = root / "modules" / "profit_activity" / "migrations" / "006_product_library_store_name.sql"
-    if profit_activity_store_name_sql.exists():
-        migrations.append(
-            (
-                "profit_activity:006_product_library_store_name",
-                "profit_activity",
-                profit_activity_store_name_sql.read_text(encoding="utf-8"),
-            )
-        )
     price_verification_sql = root / "price_verification" / "migrations" / "001_price_verification.sql"
     if price_verification_sql.exists():
         migrations.append(
@@ -866,15 +860,6 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 skc_source_links_sql.read_text(encoding="utf-8"),
             )
         )
-    capture_batch_store_name_sql = root / "price_verification" / "migrations" / "009_capture_batch_store_name.sql"
-    if capture_batch_store_name_sql.exists():
-        migrations.append(
-            (
-                "price_verification:009_capture_batch_store_name",
-                "price_verification",
-                capture_batch_store_name_sql.read_text(encoding="utf-8"),
-            )
-        )
     return migrations
 
 
@@ -905,6 +890,14 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_ai_gateway_requests", "lease_expires_at", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "billing_ai_gateway_requests", "phase", "TEXT NOT NULL DEFAULT 'claimed'")
     _ensure_column(conn, "billing_ai_gateway_requests", "provider_task_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(
+        conn,
+        "billing_batch_freezes",
+        "billing_profile",
+        "TEXT NOT NULL DEFAULT 'product_processing'",
+    )
+    _ensure_column(conn, "billing_batch_freezes", "rule_version", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "billing_batch_freezes", "link_prices_json", "TEXT NOT NULL DEFAULT '[]'")
     _migrate_billing_points_to_tenths(conn)
 
 

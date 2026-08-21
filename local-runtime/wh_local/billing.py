@@ -19,6 +19,10 @@ from . import cache as _cache
 
 TEST_GRANT_POINTS = int(os.environ.get("WH_BILLING_TEST_GRANT_POINTS", "10000") or "10000")
 GATEWAY_LEGACY_LEASE_SECONDS = 900
+BATCH_BILLING_PROFILE_PRODUCT = "product_processing"
+BATCH_BILLING_PROFILE_POD = "pod_random_v1"
+POD_LINK_PRICE_MIN_POINTS = 40
+POD_LINK_PRICE_VARIANTS = 6
 
 
 @dataclass(frozen=True)
@@ -200,7 +204,8 @@ def usage_history(
         batch_rows = conn.execute(
             f"""
             SELECT freeze_id, link_count, frozen_points, charged_points,
-                   refunded_points, status, created_at, settled_at
+                   refunded_points, status, billing_profile, rule_version,
+                   created_at, settled_at
             FROM billing_batch_freezes
             WHERE {" AND ".join(batch_clauses)}
             ORDER BY created_at DESC, freeze_id DESC
@@ -216,6 +221,7 @@ def usage_history(
             {
                 "usage_id": str(row["usage_id"]),
                 "feature_key": str(row["feature_key"]),
+                "billing_profile": "ai_usage",
                 "source_ref": str(row["source_ref"]),
                 "reserved_points": _display_points(int(row["reserved_points"]), scale),
                 "charged_points": _display_points(int(row["charged_points"]), scale),
@@ -236,6 +242,8 @@ def usage_history(
         )
     for row in batch_rows:
         raw_status = str(row["status"] or "")
+        billing_profile = str(row["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
+        is_pod = billing_profile == BATCH_BILLING_PROFILE_POD
         if raw_status == "settled":
             status = "succeeded"
         elif raw_status == "released":
@@ -245,14 +253,19 @@ def usage_history(
         result.append(
             {
                 "usage_id": f"batch:{row['freeze_id']}",
-                "feature_key": "product_processing.batch",
+                "feature_key": "pod_customization.batch" if is_pod else "product_processing.batch",
+                "billing_profile": billing_profile,
                 "source_ref": "",
                 "reserved_points": _display_points(int(row["frozen_points"]), scale),
                 "charged_points": _display_points(int(row["charged_points"]), scale),
                 "refunded_points": _display_points(int(row["refunded_points"]), scale),
                 "status": status,
-                "provider": "批量链接结算",
-                "model": f"{int(row['link_count'])} 条链接",
+                "provider": "POD 定制结算" if is_pod else "批量链接结算",
+                "model": (
+                    f"{int(row['link_count'])} 款创作"
+                    if is_pod
+                    else f"{int(row['link_count'])} 条链接"
+                ),
                 "channel": "",
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -260,7 +273,7 @@ def usage_history(
                 "error_message": "",
                 "created_at": str(row["created_at"]),
                 "settled_at": str(row["settled_at"] or ""),
-                "rule_version": "",
+                "rule_version": int(row["rule_version"] or 0),
                 "task": "",
             }
         )
@@ -432,9 +445,20 @@ def settle_ai_usage_success(
         # The upstream providers do not expose a reliable per-request cost.
         # Charge the versioned server rule snapshot, never an unverifiable
         # number posted by a desktop client.
-        charge_points = max(min_points, fallback_points)
-        charge_points = min(charge_points, int(row["reserved_points"]))
-        refund_points = int(row["reserved_points"]) - charge_points
+        base_charge_points = max(min_points, fallback_points)
+        base_charge_points = min(base_charge_points, int(row["reserved_points"]))
+        # 重试溢价：链接发生过 AI 重试/重绘/修复时加收一次（只认图像子项，
+        # 避免同链接 text/image 两个 usage 各加一遍）。溢价不在冻结范围内，
+        # 直接从余额扣除，不参与 reserved 封顶。
+        event_metadata = _merge_metadata(row["metadata_json"], metadata or {}, provider_task_id)
+        premium_units = 0
+        if (
+            str(row["feature_key"]) == RETRY_PREMIUM_FEATURE
+            and bool(event_metadata.get("billing_retried"))
+        ):
+            premium_units = RETRY_PREMIUM_UNITS
+        charge_points = base_charge_points + premium_units
+        refund_points = int(row["reserved_points"]) - base_charge_points
         wallet = conn.execute(
             "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
             (row["account_id"],),
@@ -453,6 +477,8 @@ def settle_ai_usage_success(
             (charge_points, int(row["reserved_points"]), now, row["account_id"]),
         )
         event_metadata = _merge_metadata(row["metadata_json"], metadata or {}, provider_task_id)
+        if premium_units:
+            event_metadata["retry_premium_units"] = premium_units
         conn.execute(
             """
             UPDATE billing_ai_usage_events
@@ -495,6 +521,7 @@ def settle_ai_usage_success(
                 "actual_cost_cny": actual_cost_cny,
                 "provider_task_id": provider_task_id,
                 "model": model,
+                "retry_premium_units": premium_units,
             },
         )
         if refund_points:
@@ -1021,6 +1048,11 @@ SUBITEM_FEATURE_KEYS = (
 # 冻结按最大范围预扣：默认每子项 charge 之和封顶 45 积分。
 DEFAULT_BATCH_FREEZE_PER_LINK = 400  # 固定 40 积分/链接（400 单位）；与子项定价总和联动见 pricing_items
 BATCH_FREEZE_TTL_DAYS = 7
+# 重试溢价：链接发生过 AI 重试/重绘/修复时，该链接加收 10 积分（100 单位）。
+# 语义是「单条链接计一次重试溢价」，不按重试次数累加，也不跨链接共享。
+RETRY_PREMIUM_UNITS = 100
+# 服务端托管结算只认图像子项携带重试标记，避免 text/image 两个 usage 重复计费。
+RETRY_PREMIUM_FEATURE = "product_processing.image_grid_2k"
 
 
 def pricing_items(database_path: Path, *, rule_version: int | None = None) -> dict[str, Any]:
@@ -1230,6 +1262,9 @@ def compute_batch_charge(
     charge_units = 0
     refund_units = 0
     details: list[dict[str, Any]] = []
+    # 重试溢价：该链接任一子项带 retried 标记即整条链接加收一次（不按子项重复累加）。
+    retried = any(str(result.get("retried") or "").lower() in {"true", "1", "yes"} for result in item_results)
+    premium_units = RETRY_PREMIUM_UNITS if retried else 0
     for result in item_results:
         key = str(result.get("feature") or "").strip()
         status = str(result.get("status") or "").strip()
@@ -1266,6 +1301,8 @@ def compute_batch_charge(
         "refund_units": refund_units,
         "charge_points": _display_points(charge_units),
         "refund_points": _display_points(refund_units),
+        "premium_units": premium_units,
+        "premium_points": _display_points(premium_units),
         "details": details,
     }
 
@@ -1277,6 +1314,7 @@ def freeze_batch_points(
     link_count: int,
     scope: list[str] | None = None,
     idempotency_key: str = "",
+    billing_profile: str = BATCH_BILLING_PROFILE_PRODUCT,
 ) -> dict[str, Any]:
     """Reserve batch points (N x freeze_per_link) before the client starts work.
 
@@ -1284,12 +1322,12 @@ def freeze_batch_points(
     the billing layer stays free of any credential handling.
     """
     link_count = max(1, int(link_count))
+    profile = str(billing_profile or BATCH_BILLING_PROFILE_PRODUCT).strip()
+    if profile not in {BATCH_BILLING_PROFILE_PRODUCT, BATCH_BILLING_PROFILE_POD}:
+        raise HTTPException(status_code=400, detail="invalid batch billing profile")
     pricing = pricing_items(database_path)
-    freeze_units_per_link = int(pricing["freeze_units_per_link"])
-    # 钱包与账本统一以「单位」（tenths of a point）存储，与现有 reserve/settle 一致。
-    frozen_units = freeze_units_per_link * link_count
-    frozen_points = frozen_units // PIC_UNIT_SCALE
     idem = str(idempotency_key or "").strip()
+    normalized_scope = [str(item) for item in (scope or []) if str(item).strip()]
     with transaction(database_path) as conn:
         _ensure_billing_account(conn, actor)
         _ensure_wallet(conn, actor.id, actor.workspace_id)
@@ -1302,7 +1340,28 @@ def freeze_batch_points(
                 (actor.id, idem),
             ).fetchone()
             if existing is not None:
-                return dict(existing)
+                if str(existing["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT) != profile:
+                    raise HTTPException(status_code=409, detail="batch billing profile conflict")
+                return _batch_freeze_response(existing, pricing=pricing, already_frozen=True)
+        if profile == BATCH_BILLING_PROFILE_POD:
+            allowed_scope = {"title", "four_grid"}
+            if (
+                not normalized_scope
+                or len(set(normalized_scope)) != len(normalized_scope)
+                or set(normalized_scope) - allowed_scope
+            ):
+                raise HTTPException(status_code=400, detail="invalid POD batch billing scope")
+            link_price_units = [
+                (POD_LINK_PRICE_MIN_POINTS + secrets.randbelow(POD_LINK_PRICE_VARIANTS))
+                * PIC_UNIT_SCALE
+                for _ in range(link_count)
+            ]
+            frozen_units = sum(link_price_units)
+        else:
+            freeze_units_per_link = int(pricing["freeze_units_per_link"])
+            link_price_units = []
+            frozen_units = freeze_units_per_link * link_count
+        frozen_points = _display_points(frozen_units)
         wallet = conn.execute(
             """
             SELECT points_balance, locked_points, manual_frozen_points
@@ -1323,7 +1382,8 @@ def freeze_batch_points(
             )
         freeze_id = idem or f"frz_{secrets.token_urlsafe(18)}"
         now = _utc_now()
-        scope_json = json.dumps([str(item) for item in (scope or []) if str(item).strip()], ensure_ascii=False)
+        scope_json = json.dumps(normalized_scope, ensure_ascii=False)
+        link_prices_json = json.dumps(link_price_units, ensure_ascii=False)
         expires_at = (
             datetime.now(timezone.utc) + timedelta(days=BATCH_FREEZE_TTL_DAYS)
         ).isoformat(timespec="seconds")
@@ -1339,9 +1399,10 @@ def freeze_batch_points(
             """
             INSERT INTO billing_batch_freezes (
                 freeze_id, account_id, workspace_id, link_count, scope_json,
-                frozen_points, status, created_at, expires_at
+                frozen_points, status, created_at, expires_at,
+                billing_profile, rule_version, link_prices_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'frozen', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 'frozen', ?, ?, ?, ?, ?)
             """,
             (
                 freeze_id,
@@ -1352,6 +1413,9 @@ def freeze_batch_points(
                 frozen_units,
                 now,
                 expires_at,
+                profile,
+                int(pricing["rule_version"]),
+                link_prices_json,
             ),
         )
         _append_ledger(
@@ -1363,7 +1427,11 @@ def freeze_batch_points(
             source_type="batch_freeze",
             source_id=freeze_id,
             idempotency_key=f"batch_freeze:{freeze_id}:lock",
-            metadata={"link_count": link_count, "freeze_units_per_link": freeze_units_per_link},
+            metadata={
+                "link_count": link_count,
+                "billing_profile": profile,
+                "rule_version": int(pricing["rule_version"]),
+            },
         )
     _cache.invalidate_wallet(actor.id)
     return {
@@ -1372,10 +1440,54 @@ def freeze_batch_points(
         "workspace_id": actor.workspace_id or "default",
         "link_count": link_count,
         "frozen_points": _display_points(frozen_units),
-        "freeze_per_link": pricing["freeze_per_link"],
+        "freeze_per_link": (
+            pricing["freeze_per_link"]
+            if profile == BATCH_BILLING_PROFILE_PRODUCT
+            else None
+        ),
         "rule_version": int(pricing["rule_version"]),
+        "billing_profile": profile,
+        "link_prices": [_display_points(units) for units in link_price_units],
+        "scope": normalized_scope,
         "status": "frozen",
         "expires_at": expires_at,
+        "already_frozen": False,
+    }
+
+
+def _batch_freeze_response(
+    row: Any,
+    *,
+    pricing: dict[str, Any],
+    already_frozen: bool,
+) -> dict[str, Any]:
+    profile = str(row["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
+    try:
+        link_price_units = [int(value) for value in json.loads(str(row["link_prices_json"] or "[]"))]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        link_price_units = []
+    try:
+        normalized_scope = [str(value) for value in json.loads(str(row["scope_json"] or "[]"))]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        normalized_scope = []
+    return {
+        "freeze_id": str(row["freeze_id"]),
+        "account_id": str(row["account_id"]),
+        "workspace_id": str(row["workspace_id"] or "default"),
+        "link_count": int(row["link_count"]),
+        "frozen_points": _display_points(int(row["frozen_points"])),
+        "freeze_per_link": (
+            pricing["freeze_per_link"]
+            if profile == BATCH_BILLING_PROFILE_PRODUCT
+            else None
+        ),
+        "rule_version": int(row["rule_version"] or pricing["rule_version"]),
+        "billing_profile": profile,
+        "link_prices": [_display_points(units) for units in link_price_units],
+        "scope": normalized_scope,
+        "status": str(row["status"]),
+        "expires_at": str(row["expires_at"] or ""),
+        "already_frozen": bool(already_frozen),
     }
 
 
@@ -1409,8 +1521,34 @@ def settle_batch_points(
                 "refunded_points": _display_points(int(freeze["refunded_points"])),
                 "already_settled": True,
             }
+        profile = str(freeze["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
         pricing = pricing_items(database_path, rule_version=None)
-        freeze_rule_version = int(pricing["rule_version"])
+        freeze_rule_version = (
+            int(freeze["rule_version"] or pricing["rule_version"])
+            if profile == BATCH_BILLING_PROFILE_POD
+            else int(pricing["rule_version"])
+        )
+        pod_link_price_units: list[int] = []
+        pod_scope: tuple[str, ...] = ()
+        if profile == BATCH_BILLING_PROFILE_POD:
+            try:
+                pod_link_price_units = [
+                    int(value)
+                    for value in json.loads(str(freeze["link_prices_json"] or "[]"))
+                ]
+                pod_scope = tuple(
+                    str(value)
+                    for value in json.loads(str(freeze["scope_json"] or "[]"))
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=409, detail="invalid POD billing snapshot") from exc
+            if (
+                len(pod_link_price_units) != int(freeze["link_count"])
+                or not pod_scope
+                or len(set(pod_scope)) != len(pod_scope)
+                or set(pod_scope) - {"title", "four_grid"}
+            ):
+                raise HTTPException(status_code=409, detail="invalid POD billing snapshot")
         if not isinstance(item_results, list):
             raise HTTPException(status_code=400, detail="item_results must be a list")
         frozen_link_count = int(freeze["link_count"] or 1)
@@ -1426,28 +1564,60 @@ def settle_batch_points(
             )
         total_charge_units = 0
         total_refund_units = 0
+        total_premium_units = 0
         stored_items: list[dict[str, Any]] = []
         for index, entry in enumerate(item_results, start=1):
             if not isinstance(entry, dict):
                 raise HTTPException(status_code=400, detail="item_results entry must be an object")
+            if profile == BATCH_BILLING_PROFILE_POD:
+                try:
+                    supplied_link_index = int(entry.get("link_idx"))
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(status_code=400, detail="POD link_idx is required") from exc
+                if supplied_link_index != index:
+                    raise HTTPException(status_code=400, detail="POD link_idx order mismatch")
             link_results = entry.get("subitems")
             if not isinstance(link_results, list):
                 raise HTTPException(status_code=400, detail="subitems must be a list")
-            computed = compute_batch_charge(
-                database_path,
-                rule_version=freeze_rule_version,
-                item_results=[dict(result) for result in link_results if isinstance(result, dict)],
-            )
-            total_charge_units += int(computed["charge_units"])
-            total_refund_units += int(computed["refund_units"])
-            for detail in computed["details"]:
-                stored_items.append((freeze_id, index, detail["feature"], detail["status"]))
+            if profile == BATCH_BILLING_PROFILE_POD:
+                statuses: dict[str, str] = {}
+                for result in link_results:
+                    if not isinstance(result, dict):
+                        raise HTTPException(status_code=400, detail="invalid POD subitem result")
+                    feature = str(result.get("feature") or "").strip()
+                    status = str(result.get("status") or "").strip()
+                    if feature not in pod_scope or feature in statuses or status not in {"success", "no_return"}:
+                        raise HTTPException(status_code=400, detail="invalid POD subitem result")
+                    statuses[feature] = status
+                if set(statuses) != set(pod_scope):
+                    raise HTTPException(status_code=400, detail="POD subitems must match frozen scope")
+                link_units = pod_link_price_units[index - 1]
+                if all(statuses[feature] == "success" for feature in pod_scope):
+                    total_charge_units += link_units
+                else:
+                    total_refund_units += link_units
+                for feature in pod_scope:
+                    stored_items.append((freeze_id, index, feature, statuses[feature]))
+            else:
+                computed = compute_batch_charge(
+                    database_path,
+                    rule_version=freeze_rule_version,
+                    item_results=[dict(result) for result in link_results if isinstance(result, dict)],
+                )
+                total_charge_units += int(computed["charge_units"])
+                total_refund_units += int(computed["refund_units"])
+                total_premium_units += int(computed.get("premium_units") or 0)
+                for detail in computed["details"]:
+                    stored_items.append((freeze_id, index, detail["feature"], detail["status"]))
         frozen_units = int(freeze["frozen_points"])
+        # 冻结按正常链接封顶（base charge + refund <= frozen）；重试溢价不在冻结范围，
+        # 属于额外扣费，直接从余额扣除，避免 500 单位超出 400 单位冻结上限被误拦截。
         if total_charge_units + total_refund_units > frozen_units:
             raise HTTPException(
                 status_code=400,
                 detail="settle totals exceed the frozen points",
             )
+        total_charged_units = total_charge_units + total_premium_units
         # release the unused lock (refund) and debit the charge; wallet stores units.
         conn.execute(
             """
@@ -1458,7 +1628,7 @@ def settle_batch_points(
                 updated_at = ?
             WHERE account_id = ?
             """,
-            (total_charge_units, frozen_units, _utc_now(), expected_account_id),
+            (total_charged_units, frozen_units, _utc_now(), expected_account_id),
         )
         now = _utc_now()
         conn.execute(
@@ -1467,7 +1637,7 @@ def settle_batch_points(
             SET charged_points = ?, refunded_points = ?, status = 'settled', settled_at = ?
             WHERE freeze_id = ?
             """,
-            (total_charge_units, total_refund_units, now, freeze_id),
+            (total_charged_units, total_refund_units, now, freeze_id),
         )
         for freeze_key, link_idx, feature_key, status_value in stored_items:
             conn.execute(
@@ -1484,11 +1654,16 @@ def settle_batch_points(
             account_id=expected_account_id,
             workspace_id=str(freeze["workspace_id"] or "default"),
             direction="debit",
-            points_delta=total_charge_units,
+            points_delta=total_charged_units,
             source_type="batch_settle",
             source_id=freeze_id,
             idempotency_key=f"batch_settle:{freeze_id}:debit",
-            metadata={"rule_version": freeze_rule_version, "link_count": int(freeze["link_count"])},
+            metadata={
+                "rule_version": freeze_rule_version,
+                "link_count": int(freeze["link_count"]),
+                "billing_profile": profile,
+                "retry_premium_units": total_premium_units,
+            },
         )
         if total_refund_units:
             _append_ledger(
@@ -1500,14 +1675,15 @@ def settle_batch_points(
                 source_type="batch_settle",
                 source_id=freeze_id,
                 idempotency_key=f"batch_settle:{freeze_id}:unlock",
-                metadata={"rule_version": freeze_rule_version},
+                metadata={"rule_version": freeze_rule_version, "billing_profile": profile},
             )
     _cache.invalidate_wallet(str(expected_account_id))
     return {
         "freeze_id": freeze_id,
         "status": "settled",
-        "charged_points": _display_points(total_charge_units),
+        "charged_points": _display_points(total_charged_units),
         "refunded_points": _display_points(total_refund_units),
+        "retry_premium_points": _display_points(total_premium_units),
         "already_settled": False,
     }
 
@@ -1537,6 +1713,18 @@ def batch_freeze_status(database_path: Path, freeze_id: str, *, expected_account
             "refunded_points": _display_points(int(freeze["refunded_points"])),
             "settled_at": str(freeze["settled_at"] or ""),
             "expires_at": str(freeze["expires_at"] or ""),
+            "billing_profile": str(
+                freeze["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT
+            ),
+            "rule_version": int(freeze["rule_version"] or 0),
+            "scope": [
+                str(value)
+                for value in json.loads(str(freeze["scope_json"] or "[]"))
+            ],
+            "link_prices": [
+                _display_points(int(value))
+                for value in json.loads(str(freeze["link_prices_json"] or "[]"))
+            ],
             "items": [
                 {
                     "link_idx": int(row["link_idx"]),

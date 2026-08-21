@@ -144,6 +144,11 @@ def derive_item_results(
             subitems = [{"feature": feature, "status": "success"} for feature in features]
         else:
             subitems = [{"feature": feature, "status": "no_return"} for feature in features]
+        # 重试溢价：链接发生过 AI 重试/重绘/修复时给每个子项打 retried 标记，
+        # 服务端按重试单价结算（老服务端忽略该字段，保持固定价兼容）。
+        if bool(item.get("billing_retried")):
+            for subitem in subitems:
+                subitem["retried"] = True
         results.append({"link_idx": index, "subitems": subitems})
     return results
 

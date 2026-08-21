@@ -243,7 +243,7 @@
   cursor: pointer;
 }
 
-/* 精品模式开关：一次 4K 四宫格，本地拆成四张高清独立图 */
+/* 精品模式开关：一次 4K 智能生图，本地拆成四张高清独立图 */
 .pool-premium {
   flex-shrink: 0;
   padding-top: 40px;

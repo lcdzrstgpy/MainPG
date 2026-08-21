@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
+import { PromptCustomizePanel } from '../components/PromptCustomizePanel';
 import type {
   ProductProcessingOptions,
   TaskOutputsResponse,
@@ -14,15 +15,6 @@ const SITES = [
   { code: 'CO', label: '哥伦比亚站' },
   { code: 'EC', label: '厄瓜多尔站' },
 ] as const;
-
-const SCOPES: { key: string; label: string }[] = [
-  { key: 'title', label: '标题' },
-  { key: 'details', label: '详情' },
-  { key: 'product_dimensions', label: '物流包裹尺寸/重量' },
-  { key: 'four_grid', label: '四宫格' },
-  { key: 'detail_images', label: '详情图' },
-  { key: 'qualification', label: '资质' },
-];
 
 // 生图提示词模板（对齐后端 IMAGE_TEMPLATES：A/B 直观标题区分两套生图逻辑）
 const IMAGE_TEMPLATES: { id: 'A' | 'B'; name: string; description: string }[] = [
@@ -65,7 +57,7 @@ type Props = {
   /** 从历史记录重新打开时传入，任务会从服务端恢复并在处理中继续轮询。 */
   initialTaskId?: number;
   initialDraftIds?: number[];
-  /** 精品模式草稿：一次 4K 四宫格，本地拆成四张高清独立图 */
+  /** 精品模式草稿：一次 4K 智能生图，本地拆成四张高清独立图 */
   initialPremiumDraftIds?: number[];
   initialOptions?: ProductProcessingOptions;
   /** 任务完成后打开预检页（生成表格 → 预检修改 → 导出最终版） */
@@ -74,30 +66,6 @@ type Props = {
 
 function api(): ApiContext {
   return productProcessingApiContext();
-}
-
-// 「最大并行」线程数记忆：用户设置一次后，后续新建采集任务沿用该值，
-// 无需每次重新手动设置。仅记录 1~20 范围内的合法值。
-const MAX_PARALLEL_STORAGE_KEY = 'wh_product_processing_max_parallel';
-const MAX_PARALLEL_DEFAULT = 8;
-
-function readSavedMaxParallel(): number {
-  try {
-    const raw = window.localStorage.getItem(MAX_PARALLEL_STORAGE_KEY);
-    const value = raw === null ? NaN : Number(raw);
-    if (Number.isFinite(value) && value >= 1 && value <= 20) return Math.round(value);
-  } catch {
-    // localStorage 不可用时回退默认值
-  }
-  return MAX_PARALLEL_DEFAULT;
-}
-
-function persistMaxParallel(value: number): void {
-  try {
-    window.localStorage.setItem(MAX_PARALLEL_STORAGE_KEY, String(value));
-  } catch {
-    // localStorage 不可用时静默忽略
-  }
 }
 
 function taskStatusLabel(status: string): string {
@@ -123,8 +91,8 @@ function formatDuration(seconds?: number): string {
 
 export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck }: Props) {
   const ctx = api();
-  // 新建采集任务时「最大并行」沿用用户上次选择的线程数；从历史任务打开时
-  // 使用该任务保存时的设置（initialOptions），不被本地记忆覆盖。
+  // 处理参数全部为系统默认（范围全开、全部数量、8 线程并行、自动补跑等），
+  // 精简设置界面后不再向用户暴露这些项；仅站点 / 语言 / 生图模板可选。
   const [options, setOptions] = useState<ProductProcessingOptions>(() =>
     initialOptions || {
       targetSite: 'US',
@@ -135,7 +103,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       includeProductVideo: false,
       skipDuplicates: false,
       ipCheck: true,
-      maxParallelDrafts: readSavedMaxParallel(),
+      maxParallelDrafts: 8,
       imageTemplate: 'A',
       autoRepull: true,
     }
@@ -273,7 +241,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       image_template: options.imageTemplate || 'A',
       // 用户选择是否对技术可重试的失败项自动补跑（默认开启）
       auto_repull: options.autoRepull !== false,
-      // 兼容旧 API 字段；新任务统一走四宫格策略，不再由用户选择。
+      // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
       image_generation_count: 4,
     };
     const signature = JSON.stringify(body);
@@ -424,7 +392,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           {initialTaskId == null && <section className="verify-section">
             <div className="verify-section-head">
               <h2>处理设置</h2>
-              <span className="verify-sub">站点 / 语言 / 范围 / 数量</span>
+              <span className="verify-sub">站点 / 语言 / 生图模板</span>
             </div>
             <div className="verify-form-row">
               <label>站点
@@ -441,32 +409,6 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <option value="es">西班牙语 · Espanol</option>
                 </select>
               </label>
-              <label>资质模式
-                <select value={options.qualificationMode} onChange={(e) => setOptions((p) => ({ ...p, qualificationMode: e.target.value as any }))}>
-                  <option value="standard">标准</option>
-                  <option value="strict">严格</option>
-                </select>
-              </label>
-            </div>
-            <div className="verify-scope-row">
-              <span className="verify-scope-label">处理范围：</span>
-              {SCOPES.map((scope) => (
-                <label key={scope.key} className="verify-scope-check">
-                  <input
-                    type="checkbox"
-                    checked={options.processingScope.includes(scope.key)}
-                    onChange={() => setOptions((p) => {
-                      const next = new Set(p.processingScope);
-                      if (next.has(scope.key)) next.delete(scope.key); else next.add(scope.key);
-                      return { ...p, processingScope: Array.from(next) };
-                    })}
-                  />{scope.label}
-                </label>
-              ))}
-              <label className="verify-scope-check"><input type="checkbox" checked={options.includeProductVideo} onChange={(e) => setOptions((p) => ({ ...p, includeProductVideo: e.target.checked }))} />生成商品视频</label>
-              <label className="verify-scope-check"><input type="checkbox" checked={options.skipDuplicates} onChange={(e) => setOptions((p) => ({ ...p, skipDuplicates: e.target.checked }))} />跳过已处理</label>
-              <label className="verify-scope-check" title="处理结束后，对技术可重试的失败项（如图片质量、AI 服务波动）自动在后台重跑一轮，无需手动确认"><input type="checkbox" checked={options.autoRepull !== false} onChange={(e) => setOptions((p) => ({ ...p, autoRepull: e.target.checked }))} />失败项自动重跑</label>
-              <label className="verify-scope-check"><input type="checkbox" checked={options.ipCheck} onChange={(e) => setOptions((p) => ({ ...p, ipCheck: e.target.checked }))} />侵权词过滤</label>
             </div>
             <div className="verify-form-row">
               <span className="verify-scope-label">生图模板：</span>
@@ -483,25 +425,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 </label>
               ))}
             </div>
-            <div className="verify-slider-row">
-              <span className="verify-scope-label">处理数量：</span>
-              <input className="verify-slider" type="range" min={0} max={100} step={1} value={options.maxProducts} onChange={(e) => setOptions((p) => ({ ...p, maxProducts: Number(e.target.value) || 0 }))} />
-              <span className="verify-slider-value">{options.maxProducts === 0 ? `全部 (${initialDraftIds?.length || 0}项)` : options.maxProducts}</span>
-            </div>
-            <div className="verify-slider-row">
-              <span className="verify-scope-label">最大并行：</span>
-              <input className="verify-slider" type="range" min={1} max={20} step={1} value={options.maxParallelDrafts} onChange={(e) => {
-                const value = Number(e.target.value) || 1;
-                persistMaxParallel(value);
-                setOptions((p) => ({ ...p, maxParallelDrafts: value }));
-              }} />
-              <span className="verify-slider-value">{options.maxParallelDrafts} 线程{options.maxParallelDrafts <= 1 ? '（串行）' : ''}</span>
-            </div>
+            <PromptCustomizePanel />
             <div className="verify-actions">
               <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
               <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
               {!!initialPremiumDraftIds?.length && (
-                <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条：一次 4K 四宫格，拆为 4 张高清图</span>
+                <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条：一次 4K 智能生图，拆为 4 张高清图</span>
               )}
             </div>
           </section>}

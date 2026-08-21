@@ -16,6 +16,7 @@ from .orm import (
     DailySelectionHandoffReceiptRow,
     DailySelectionIntakeRow,
     EnginePromptRow,
+    EnginePromptTemplateRow,
     ProcessingStageReceiptRow,
     ProcessingTaskItemRow,
     ProcessingTaskRow,
@@ -1123,6 +1124,78 @@ class ProductProcessingRepository:
         with self.database.sessions.begin() as session:
             for row in session.scalars(select(EnginePromptRow)).all():
                 session.delete(row)
+
+    # ------------------------------------------------------------------
+    # 预设提示词模板（账号级多命名模板，追加指令模式）
+    # ------------------------------------------------------------------
+
+    def prompt_templates(self) -> list[dict[str, Any]]:
+        with self.database.sessions() as session:
+            rows = session.scalars(
+                select(EnginePromptTemplateRow).order_by(EnginePromptTemplateRow.updated_at.desc())
+            ).all()
+            return [self._prompt_template(row) for row in rows]
+
+    def active_prompt_template(self) -> dict[str, Any] | None:
+        with self.database.sessions() as session:
+            row = session.scalar(
+                select(EnginePromptTemplateRow).where(EnginePromptTemplateRow.is_active.is_(True))
+            )
+            return self._prompt_template(row) if row is not None else None
+
+    def save_prompt_template(
+        self,
+        *,
+        template_id: int | None,
+        name: str,
+        prompts: dict[str, str],
+        activate: bool,
+    ) -> dict[str, Any]:
+        with self.database.sessions.begin() as session:
+            if template_id is not None:
+                row = session.get(EnginePromptTemplateRow, template_id)
+                if row is None:
+                    raise ValueError("prompt template not found")
+            else:
+                row = EnginePromptTemplateRow()
+                session.add(row)
+            row.name = str(name or "").strip() or "未命名模板"
+            row.prompts_json = json.dumps(prompts, ensure_ascii=False, separators=(",", ":"))
+            row.updated_at = utc_now()
+            if activate:
+                for other in session.scalars(select(EnginePromptTemplateRow)).all():
+                    other.is_active = other.id == row.id
+                row.is_active = True
+            session.flush()
+            return self._prompt_template(row)
+
+    def activate_prompt_template(self, template_id: int) -> dict[str, Any] | None:
+        with self.database.sessions.begin() as session:
+            target = session.get(EnginePromptTemplateRow, template_id)
+            if target is None:
+                return None
+            for row in session.scalars(select(EnginePromptTemplateRow)).all():
+                row.is_active = row.id == template_id
+            return self._prompt_template(target)
+
+    def delete_prompt_template(self, template_id: int) -> bool:
+        with self.database.sessions.begin() as session:
+            row = session.get(EnginePromptTemplateRow, template_id)
+            if row is None:
+                return False
+            session.delete(row)
+            return True
+
+    @staticmethod
+    def _prompt_template(row: EnginePromptTemplateRow) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "name": row.name,
+            "prompts": loads(row.prompts_json, {}),
+            "is_active": bool(row.is_active),
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
 
     def get_ai_stage_cache(
         self, cache_key: str, *, workspace_id: str = "local"

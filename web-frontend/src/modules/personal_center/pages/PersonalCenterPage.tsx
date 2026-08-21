@@ -31,6 +31,21 @@ function money(amountCents: number) {
   return `¥${(amountCents / 100).toFixed(2)}`;
 }
 
+/** 服务端返回的计费流水时间为 UTC（如 2026-08-21T14:17:12+00:00），
+ *  这里转换为浏览器本地时区显示，避免直接截断显示成 UTC 时间。 */
+function formatUsageTime(iso: string): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso.replace("T", " ").slice(0, 19);
+  }
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  );
+}
+
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
     pending: "待支付",
@@ -42,9 +57,15 @@ function statusLabel(status: string) {
   return labels[status] ?? status;
 }
 
+const pricingFeatures: Array<{ key: string; label: string; note: string }> = [
+  { key: "product_processing.image_grid_2k", label: "智能生图", note: "商品图片生成" },
+  { key: "product_processing.text", label: "商品文本", note: "标题 / 卖点 / 详情文案" },
+  { key: "product_processing.batch", label: "批量链接处理", note: "整批商品处理任务" },
+];
+
 export function PersonalCenterPage() {
   const [summary, setSummary] = useState<BillingSummary | null>(null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing">("wallet");
   const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>([]);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageError, setUsageError] = useState("");
@@ -328,6 +349,9 @@ export function PersonalCenterPage() {
           <button type="button" className={activePanel === "usage" ? "is-active" : ""} onClick={() => setActivePanel("usage")}>
             <span className="iconfont icon-accountbook-fill" aria-hidden="true" /> 消费流水
           </button>
+          <button type="button" className={activePanel === "pricing" ? "is-active" : ""} onClick={() => setActivePanel("pricing")}>
+            <span className="iconfont icon-calculator" aria-hidden="true" /> 计费规则
+          </button>
           <p>余额、费率与消费记录均由服务器账本实时校验。</p>
         </aside>
 
@@ -413,7 +437,55 @@ export function PersonalCenterPage() {
           </ul>
         </article>
         </div>
-        </div> : (
+        </div> : activePanel === "pricing" ? (
+          <article className="personal-card pricing-card">
+            <div className="personal-card-title">
+              <span className="iconfont icon-calculator" aria-hidden="true" />
+              <div><h2>计费规则</h2><small>服务端权威定价，按规则版本生效，客户端不参与报价。</small></div>
+              <button type="button" onClick={refresh} disabled={loading}>刷新</button>
+            </div>
+
+            <div className="pricing-hero">
+              <span className="pricing-hero-kicker">单条处理链接 · 消费定价</span>
+              <div className="pricing-hero-range">
+                <b>{summary?.pricing.product_link.actual_charge_min_points.toLocaleString() ?? "--"}</b>
+                <em>~</em>
+                <b>{summary?.pricing.product_link.actual_charge_max_points.toLocaleString() ?? "--"}</b>
+                <i>积分 / 条</i>
+              </div>
+              <p className="pricing-hero-note">
+                受服务商模型波动影响，单条链接定价在{" "}
+                {summary?.pricing.product_link.actual_charge_min_points ?? "--"} 积分到{" "}
+                {summary?.pricing.product_link.actual_charge_max_points ?? "--"} 积分区间波动哦~
+              </p>
+            </div>
+
+            <div className="pricing-feature-grid">
+              {pricingFeatures.map(({ key, label, note }) => {
+                const feature = summary?.pricing.features[key];
+                if (!feature) return null;
+                return (
+                  <div key={key} className="pricing-feature">
+                    <span className="pricing-feature-name">
+                      <b>{label}</b>
+                      <small>{note}</small>
+                    </span>
+                    <span className="pricing-feature-points">
+                      <b>{feature.charge_points.toLocaleString()}</b>
+                      <i>积分 / 条</i>
+                      <small>预冻结 {feature.reserve_points.toLocaleString()}</small>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="pricing-foot">
+              <span>充值换算：{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</span>
+              <span>规则版本 v{summary?.pricing.rule_version ?? "--"}{summary?.pricing.effective_at ? ` · 生效于 ${summary.pricing.effective_at.replace("T", " ").slice(0, 16)}` : ""}</span>
+            </div>
+          </article>
+        ) : (
           <article className="personal-card usage-card">
             <div className="personal-card-title">
               <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
@@ -455,7 +527,7 @@ export function PersonalCenterPage() {
                   }}
                 >
                   <option value="">全部服务</option>
-                  <option value="product_processing.image_grid_2k">四宫格生图</option>
+                  <option value="product_processing.image_grid_2k">智能生图</option>
                   <option value="product_processing.text">商品文本</option>
                   <option value="product_processing.batch">批量链接处理</option>
                 </select>
@@ -489,8 +561,8 @@ export function PersonalCenterPage() {
                   <thead><tr><th>时间</th><th>服务</th><th>状态</th><th>冻结</th><th>实际扣费</th><th>释放</th><th>规则</th><th>调用信息</th></tr></thead>
                   <tbody>{usageEntries.length ? usageEntries.map((entry) => (
                     <tr key={entry.usage_id}>
-                      <td><b>{entry.created_at.replace("T", " ").slice(0, 19)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
-                      <td>{entry.feature_key === "product_processing.image_grid_2k" ? "四宫格生图" : entry.feature_key === "product_processing.batch" ? "批量链接处理" : "商品文本"}<small>{entry.model || entry.provider || "等待上游"}</small></td>
+                      <td><b>{formatUsageTime(entry.created_at)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
+                      <td>{entry.feature_key === "product_processing.image_grid_2k" ? "智能生图" : entry.feature_key === "product_processing.batch" ? "批量链接处理" : "商品文本"}<small>{entry.model || entry.provider || "等待上游"}</small></td>
                       <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" || entry.status === "frozen" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
                       <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
                       <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.usage_id.slice(0, 14)}…</small></td>

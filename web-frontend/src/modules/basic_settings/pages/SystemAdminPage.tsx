@@ -15,7 +15,7 @@ const SUBITEM_LABELS: Record<string, string> = {
   title: "标题",
   description: "描述",
   product_dimensions: "尺寸",
-  four_grid: "四宫格",
+  four_grid: "智能生图",
   detail_images: "详情图",
 };
 
@@ -362,7 +362,7 @@ export function SystemAdminPage() {
               <input
                 type="text"
                 maxLength={500}
-                placeholder="例如：图片上游涨价，四宫格单价上调 2 积分"
+                placeholder="例如：图片上游涨价，智能生图单价上调 2 积分"
                 value={changeReason}
                 onChange={(event) => setChangeReason(event.target.value)}
                 disabled={busy}

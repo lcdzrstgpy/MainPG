@@ -6,12 +6,12 @@ import {
   type ApiContext,
 } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
+import { PromptCustomizePanel } from '../components/PromptCustomizePanel';
 import {
   type DraftSummary,
   type DraftUpdateRequest,
   type DraftVariant,
   type ProductProcessingOptions,
-  type ProcessingScopeOption,
   type TaskHistoryItem,
   type TaskHistoryResponse,
   type TaskOutputsResponse,
@@ -29,16 +29,6 @@ const SITES: { code: 'US' | 'CO' | 'EC'; label: string }[] = [
 const LANGUAGES: { code: 'en' | 'es'; label: string }[] = [
   { code: 'en', label: '英语 · English' },
   { code: 'es', label: '西班牙语 · Español' },
-];
-
-const PROCESSING_SCOPE_OPTIONS: ProcessingScopeOption[] = [
-  { key: 'title', label: '标题' },
-  { key: 'details', label: '详情' },
-  { key: 'product_dimensions', label: '产品尺寸' },
-  { key: 'four_grid', label: '四宫格' },
-  { key: 'detail_images', label: '详情图' },
-  { key: 'sku_images', label: 'SKU 图' },
-  { key: 'qualification', label: '资质' },
 ];
 
 const DEFAULT_OPTIONS: ProductProcessingOptions = {
@@ -181,15 +171,6 @@ export function ProductProcessingTestPage() {
     setOptions((prev) => {
       const defaultLang = SITES.find((s) => s.code === site)?.code === 'CO' || site === 'EC' ? 'es' : 'en';
       return { ...prev, targetSite: site, targetLanguage: defaultLang };
-    });
-  };
-
-  const toggleScope = (key: string) => {
-    setOptions((prev) => {
-      const next = new Set(prev.processingScope);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return { ...prev, processingScope: Array.from(next) };
     });
   };
 
@@ -540,73 +521,8 @@ export function ProductProcessingTestPage() {
               ))}
             </select>
           </label>
-          <label>
-            处理数量（滑动选择，0=全部，最多 100）
-            <input
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              value={options.maxProducts}
-              onChange={(e) => setOptions((p) => ({ ...p, maxProducts: Number(e.target.value) || 0 }))}
-              style={{ accentColor: '#0a8fca' }}
-            />
-            <span className="slider-value">
-              {options.maxProducts === 0 ? '全部（≤100）' : options.maxProducts}
-            </span>
-          </label>
-          <label>
-            资质模式
-            <select
-              value={options.qualificationMode}
-              onChange={(e) => setOptions((p) => ({ ...p, qualificationMode: e.target.value as any }))}
-            >
-              <option value="standard">标准</option>
-              <option value="strict">严格</option>
-            </select>
-          </label>
         </div>
-
-        <div className="form-row scope-row">
-          <span className="scope-label">处理范围：</span>
-          {PROCESSING_SCOPE_OPTIONS.map((opt) => (
-            <label key={opt.key} className="scope-checkbox">
-              <input
-                type="checkbox"
-                checked={options.processingScope.includes(opt.key)}
-                onChange={() => toggleScope(opt.key)}
-              />
-              {opt.label}
-            </label>
-          ))}
-        </div>
-
-        <div className="form-row">
-          <label className="scope-checkbox">
-            <input
-              type="checkbox"
-              checked={options.includeProductVideo}
-              onChange={(e) => setOptions((p) => ({ ...p, includeProductVideo: e.target.checked }))}
-            />
-            生成商品视频
-          </label>
-          <label className="scope-checkbox">
-            <input
-              type="checkbox"
-              checked={options.skipDuplicates}
-              onChange={(e) => setOptions((p) => ({ ...p, skipDuplicates: e.target.checked }))}
-            />
-            跳过已处理
-          </label>
-          <label className="scope-checkbox">
-            <input
-              type="checkbox"
-              checked={options.ipCheck}
-              onChange={(e) => setOptions((p) => ({ ...p, ipCheck: e.target.checked }))}
-            />
-            侵权词过滤
-          </label>
-        </div>
+        <PromptCustomizePanel />
       </section>
 
       <section className="section draft-section">

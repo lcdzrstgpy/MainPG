@@ -121,6 +121,51 @@ def test_settle_with_intercept_refunds_half_and_no_return_full(tmp_path: Path) -
     assert settled["refunded_points"] == 24
 
 
+def test_retry_premium_batch_settle_charges_extra_per_link(tmp_path: Path) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    freeze = freeze_batch_points(database_path, actor, link_count=1, idempotency_key="freeze:retry-1")
+
+    retried_subitems = [
+        {"feature": "title", "status": "success", "retried": True},
+        {"feature": "description", "status": "success", "retried": True},
+        {"feature": "product_dimensions", "status": "success", "retried": True},
+        {"feature": "four_grid", "status": "success", "retried": True},
+        {"feature": "detail_images", "status": "success", "retried": True},
+    ]
+    settled = settle_batch_points(
+        database_path,
+        freeze["freeze_id"],
+        item_results=[{"subitems": retried_subitems}],
+        expected_account_id=actor.id,
+    )
+    # 基础 45 积分（450 单位）+ 重试溢价 10 积分（100 单位）= 55 积分。
+    assert settled["charged_points"] == 55
+    assert settled["retry_premium_points"] == 10
+    assert settled["refunded_points"] == 0
+    with transaction(database_path) as conn:
+        wallet = conn.execute(
+            "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
+            (actor.id,),
+        ).fetchone()
+    # 冻结 450 全扣（无退款），额外 100 单位从余额扣：1000 - 450 - 100 = 450。
+    assert dict(wallet) == {"points_balance": 450, "locked_points": 0}
+
+
+def test_retry_premium_not_charged_when_no_retry_marker(tmp_path: Path) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    freeze = freeze_batch_points(database_path, actor, link_count=1, idempotency_key="freeze:noretry-1")
+    settled = settle_batch_points(
+        database_path,
+        freeze["freeze_id"],
+        item_results=_full_success_subitems(),
+        expected_account_id=actor.id,
+    )
+    assert settled["charged_points"] == 45
+    assert settled["retry_premium_points"] == 0
+
+
 def test_freeze_rejects_insufficient_balance(tmp_path: Path) -> None:
     database_path = tmp_path / "billing.sqlite3"
     actor = _service_account(database_path, balance=40)

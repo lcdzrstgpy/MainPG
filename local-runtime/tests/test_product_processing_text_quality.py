@@ -134,6 +134,10 @@ class _PromptRepository:
             )
         }
 
+    @staticmethod
+    def active_prompt_template() -> None:
+        return None
+
 
 class _ReceiptRepository(_PromptRepository):
     def __init__(self) -> None:
@@ -222,6 +226,63 @@ def test_doubao_text_stage_uses_subject_json_and_source_facts_without_image(monk
     assert "image_url" not in prompt
 
 
+def test_chinese_template_addition_is_translated_before_injection(monkeypatch) -> None:
+    """含中文的模板附加词先翻译成目标语言再拼入生成提示词，避免 AI 复写中文被拒。"""
+    service = object.__new__(ProductProcessingService)
+
+    class _TemplateRepo(_PromptRepository):
+        @staticmethod
+        def active_prompt_template():
+            return {
+                "prompts": {
+                    "title": "必须加入节日促销关键词，如七夕节送礼必备",
+                    "desc": "必须加入节日促销关键词，如七夕节送礼必备",
+                    "variant_values": "",
+                }
+            }
+
+    service.repository = _TemplateRepo()
+    monkeypatch.setattr(
+        service,
+        "_translate_prompt_addition",
+        lambda text, lang: "Include holiday gift keywords such as Valentine's Day gift",
+    )
+    client = _DoubaoListingClient(
+        DoubaoTextResult(
+            optimized_title="Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
+            description=VALID_DESCRIPTION,
+            variant_translations=(),
+            product_dimensions={},
+        )
+    )
+    monkeypatch.setattr(service, "_doubao_text_client", lambda: client)
+
+    result = service._generate_doubao_text(
+        "500 ml Stainless Steel Travel Mug",
+        "Kitchen & Dining",
+        _raw(),
+        "en",
+        "US",
+        [],
+        vision_identity={
+            "sellable_subject": "insulated stainless steel travel mug",
+            "subject_explanation": "The foreground mug is the complete sellable product.",
+            "visible_attributes": ["blue cylindrical body", "fitted lid"],
+            "excluded_elements": ["table"],
+            "confidence": "high",
+            "uncertainty_reason": "",
+        },
+        needs_title=True,
+        needs_description=True,
+        needs_dimensions=False,
+    )
+
+    assert result["title"].startswith("Insulated Stainless Steel Travel Mug")
+    prompt = client.prompts[0]
+    assert "Include holiday gift keywords such as Valentine's Day gift" in prompt
+    assert "必须加入节日促销关键词" not in prompt
+
+
 def test_doubao_text_dimension_scope_requests_complete_numeric_estimates(monkeypatch) -> None:
     service = object.__new__(ProductProcessingService)
     service.repository = _PromptRepository()
@@ -306,6 +367,10 @@ def _process_service(monkeypatch) -> ProductProcessingService:
         @staticmethod
         def prompts() -> dict[str, str]:
             return {}
+
+        @staticmethod
+        def active_prompt_template() -> None:
+            return None
 
     service.repository = _Repository()
     monkeypatch.setattr(service_module, "product_policy_issue", lambda *args, **kwargs: None)
@@ -648,6 +713,10 @@ def test_doubao_identity_receipt_avoids_repeat_recognition_on_task_retry(monkeyp
         def prompts() -> dict[str, str]:
             return {}
 
+        @staticmethod
+        def active_prompt_template() -> None:
+            return None
+
         def load_stage_receipt(self, _task_id, _item_id, stage, **_kwargs):
             return self.receipts.get(stage)
 
@@ -830,6 +899,10 @@ def test_retry_reuses_successful_images_and_only_retries_failed_doubao_text(monk
         @staticmethod
         def prompts() -> dict[str, str]:
             return {}
+
+        @staticmethod
+        def active_prompt_template() -> None:
+            return None
 
         def load_stage_receipt(self, _task_id, _item_id, stage, **_kwargs):
             return self.receipts.get(stage)
@@ -1187,10 +1260,9 @@ def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> 
     )
 
     assert result["status"] == "failed"
-    assert result["reason"] == "服务端生图暂时不可用"
-    assert result["result"]["error_type"] == "image_generation_unavailable"
-    assert "本地质量门" not in result["result"]["operator_hint"]
-    assert "本地 API Key" in result["result"]["operator_hint"]
+    assert result["reason"] == "普通智能生图未生成4张可用轮播图"
+    assert result["result"]["error_type"] == "image_grid_incomplete"
+    assert "本地质量门" in result["result"]["operator_hint"]
     assert "doubao_text" in service.repository.receipts
     assert service.repository.receipts["doubao_text"]["output"]["title"].startswith(
         "Insulated Stainless Steel Travel Mug"
