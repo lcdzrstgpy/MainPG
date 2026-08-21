@@ -67,6 +67,69 @@
   min-width: 0;
 }
 
+.price-verification-batch-summary > :is(.price-verification-current-batch, .price-verification-batch-switch, .price-verification-prescreen-result) {
+  min-height: 92px;
+  padding: 15px 17px;
+  border: 1px solid color-mix(in srgb, var(--theme-module-border, #d6e1dd) 88%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--theme-module-surface, #fffdf8) 76%, transparent);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--theme-card-shadow, rgba(35, 67, 61, .08)) 55%, transparent);
+}
+
+.price-verification-prescreen-flow {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(14px, 2.6vw, 42px);
+  min-width: 0;
+  padding: 12px 18px;
+  border-top: 1px dashed color-mix(in srgb, var(--theme-module-border, #d6e1dd) 72%, transparent);
+  border-bottom: 1px dashed color-mix(in srgb, var(--theme-module-border, #d6e1dd) 72%, transparent);
+  color: var(--theme-text-secondary, #526d68);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--theme-module-surface-soft, #f1f5f1) 72%, transparent), transparent);
+}
+
+.price-verification-prescreen-flow > span {
+  display: grid;
+  grid-template-columns: 30px auto;
+  grid-template-rows: auto auto;
+  gap: 1px 9px;
+  min-width: 145px;
+  align-items: center;
+}
+
+.price-verification-prescreen-flow i {
+  grid-row: 1 / span 2;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary, #376f68);
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--theme-primary, #376f68) 22%, transparent);
+  font-size: .68rem;
+  font-style: normal;
+  font-weight: 850;
+}
+
+.price-verification-prescreen-flow b {
+  color: var(--theme-text-primary, #294b46);
+  font-size: .78rem;
+}
+
+.price-verification-prescreen-flow small {
+  color: var(--theme-text-muted, #81948f);
+  font-size: .68rem;
+}
+
+.price-verification-prescreen-flow em {
+  color: color-mix(in srgb, var(--theme-primary, #376f68) 70%, transparent);
+  font-size: 1.2rem;
+  font-style: normal;
+}
+
 .price-verification-current-batch,
 .price-verification-prescreen-result {
   display: grid;
@@ -159,6 +222,103 @@
   margin-top: 30px;
 }
 
+/* STEP 01 的标题位置保持不变，下方摘要贴近加高后的白板底部。
+   高度随视口增长，让内容白板在桌面端自然延伸到侧栏底部附近。 */
+@media (min-width: 701px) and (min-height: 801px) {
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-batch-panel {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    align-content: stretch;
+    min-height: clamp(290px, calc(100vh - 620px), 440px);
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-batch-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: minmax(92px, auto) minmax(104px, auto);
+    gap: 14px 18px;
+    align-self: stretch;
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-current-batch {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-batch-switch {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-result {
+    grid-column: 1 / span 2;
+    grid-row: 2;
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-flow {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    align-self: stretch;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    padding: 14px 20px;
+    border: 1px solid color-mix(in srgb, var(--theme-module-border, #d6e1dd) 88%, transparent);
+    border-radius: 13px;
+    background:
+      radial-gradient(circle at 88% 12%, color-mix(in srgb, var(--theme-primary, #376f68) 9%, transparent), transparent 34%),
+      linear-gradient(145deg, color-mix(in srgb, var(--theme-module-surface, #fffdf8) 90%, transparent), color-mix(in srgb, var(--theme-module-surface-soft, #f1f5f1) 80%, transparent));
+    box-shadow: 0 8px 22px color-mix(in srgb, var(--theme-card-shadow, rgba(35, 67, 61, .08)) 55%, transparent);
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-flow > span {
+    position: relative;
+    width: min(300px, 100%);
+    min-width: 0;
+    padding: 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-module-border, #d6e1dd) 74%, transparent);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--theme-module-surface, #fffdf8) 82%, transparent);
+    box-shadow: 0 5px 14px color-mix(in srgb, var(--theme-card-shadow, rgba(35, 67, 61, .08)) 45%, transparent);
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-flow > span:last-of-type {
+    border-color: color-mix(in srgb, var(--theme-primary, #376f68) 34%, var(--theme-module-border, #d6e1dd));
+    background: color-mix(in srgb, var(--theme-primary, #376f68) 8%, var(--theme-module-surface, #fffdf8));
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-flow em {
+    position: relative;
+    width: 18px;
+    height: 14px;
+    overflow: visible;
+    color: transparent;
+    font-size: 0;
+    transform: none;
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-flow em::before {
+    content: "";
+    position: absolute;
+    top: -2px;
+    left: 50%;
+    height: 13px;
+    border-left: 1px dashed color-mix(in srgb, var(--theme-primary, #376f68) 58%, transparent);
+    transform: translateX(-50%);
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-flow em::after {
+    content: "";
+    position: absolute;
+    bottom: 1px;
+    left: 50%;
+    width: 5px;
+    height: 5px;
+    border-right: 1px solid color-mix(in srgb, var(--theme-primary, #376f68) 72%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--theme-primary, #376f68) 72%, transparent);
+    transform: translateX(-50%) rotate(45deg);
+  }
+}
+
 @media (max-width: 1180px) {
   .price-verification-batch-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -186,6 +346,17 @@
 
   .price-verification-prescreen-result .price-verification-action-bar {
     align-items: stretch;
+  }
+
+  .price-verification-prescreen-flow {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .price-verification-prescreen-flow em {
+    align-self: center;
+    transform: rotate(90deg);
   }
 }
 

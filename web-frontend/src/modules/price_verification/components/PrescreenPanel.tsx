@@ -54,6 +54,13 @@ export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, 
         />
         <small>调整后申报价（CNY）需 &gt; 该值</small>
       </label>
+      <div className="price-verification-prescreen-flow" aria-label="初筛流程状态">
+        <span><i>01</i><b>采集完成</b><small>{totalSkc} 个 SKC</small></span>
+        <em aria-hidden="true">→</em>
+        <span><i>02</i><b>{thresholdActive ? "应用价格门槛" : "保留全部数据"}</b><small>{thresholdActive ? `高于 ¥${prescreen?.min_adjusted_price_cny}` : "当前未设置门槛"}</small></span>
+        <em aria-hidden="true">→</em>
+        <span><i>03</i><b>等待批次审核</b><small>{passedItems} 个 SKC 待确认</small></span>
+      </div>
       <div className="price-verification-prescreen-result">
         <span>初筛结果</span>
         <strong>{passedItems} 个 SKC</strong>

@@ -665,3 +665,231 @@
     padding-left: 16px;
   }
 }
+
+/* 桌面首屏紧凑排版：完整保留功能，同时避免个人中心需要纵向滚动。 */
+@media (min-width: 1081px) {
+  .personal-center-page {
+    min-height: 100%;
+    gap: 10px;
+  }
+
+  .personal-hero {
+    min-height: 84px;
+    padding: 12px 18px;
+    border-radius: 19px;
+  }
+
+  .personal-avatar-card {
+    gap: 13px;
+  }
+
+  .personal-avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: 18px;
+    font-size: 27px;
+  }
+
+  .personal-avatar-card p {
+    font-size: 12px;
+  }
+
+  .personal-avatar-card h1 {
+    margin-top: 1px;
+    font-size: 23px;
+    line-height: 1.1;
+  }
+
+  .personal-avatar-card span,
+  .personal-security-pill span {
+    font-size: 12px;
+  }
+
+  .personal-security-pill,
+  .personal-password-entry {
+    padding: 9px 13px;
+  }
+
+  .personal-stats {
+    gap: 10px;
+  }
+
+  .personal-stat {
+    min-height: 82px;
+    gap: 3px;
+    padding: 11px 16px;
+    border-radius: 16px;
+  }
+
+  .personal-stat b {
+    font-size: 22px;
+    line-height: 1.05;
+  }
+
+  .personal-stats-refresh {
+    padding: 3px 9px;
+    margin-top: 1px;
+    font-size: 11px;
+  }
+
+  .personal-content-layout {
+    grid-template-columns: 174px minmax(0, 1fr);
+    flex: 1 1 auto;
+    gap: 12px;
+    min-height: 0;
+  }
+
+  .personal-subnav {
+    gap: 6px;
+    padding: 9px;
+    border-radius: 15px;
+  }
+
+  .personal-subnav button {
+    gap: 8px;
+    padding: 9px 10px;
+  }
+
+  .personal-subnav p {
+    margin-top: 2px;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .personal-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 12px;
+    height: 100%;
+    align-items: stretch;
+  }
+
+  .personal-panel-content {
+    min-height: 0;
+    height: 100%;
+  }
+
+  .topup-card,
+  .orders-card {
+    height: 100%;
+  }
+
+  .topup-card {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .topup-card .primary-topup {
+    margin-top: auto;
+  }
+
+  .personal-stack {
+    display: contents;
+  }
+
+  .personal-card {
+    padding: 14px 16px;
+    border-radius: 17px;
+  }
+
+  .personal-card-title {
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .personal-card-title h2 {
+    font-size: 17px;
+  }
+
+  .personal-card-title > .iconfont {
+    font-size: 18px;
+  }
+
+  .provider-switch,
+  .topup-products {
+    gap: 8px;
+  }
+
+  .provider-switch button,
+  .topup-products button,
+  .primary-topup {
+    padding: 9px 11px;
+    border-radius: 12px;
+  }
+
+  .topup-products {
+    margin-top: 10px;
+  }
+
+  .topup-products span {
+    margin-top: 3px;
+  }
+
+  .primary-topup {
+    margin-top: 10px;
+  }
+
+  .orders-card {
+    min-height: 0;
+  }
+
+  .order-list {
+    gap: 7px;
+  }
+
+  .order-row {
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 12px;
+  }
+
+  .order-row div {
+    gap: 2px;
+  }
+
+  .order-row strong,
+  .order-row b {
+    font-size: 13px;
+  }
+
+  .order-row span {
+    font-size: 11px;
+  }
+
+  .security-card {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 160px minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .security-card .personal-card-title {
+    margin: 0;
+  }
+
+  .security-card ul {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 28px;
+    margin: 0;
+    padding-left: 18px;
+    color: #526274;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+}
+
+/* 个人中心内容较短时，外层白板仍与桌面侧栏底边对齐。 */
+@media (min-width: 801px) {
+  .workspace-main:has(.personal-center-page) {
+    min-height: calc(100vh - var(--workspace-gutter, 18px) - var(--workspace-gutter, 18px));
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .content-card:has(.personal-center-page) {
+    height: 100%;
+  }
+}
