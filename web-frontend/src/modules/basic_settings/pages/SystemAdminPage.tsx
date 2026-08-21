@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   loadKeyGrants,
+  loadPodPricingItems,
   loadPricingChangelog,
   loadPricingItems,
+  updatePodPricingItems,
   updatePricingItems,
   type KeyGrant,
   type PricingChangelogEntry,
@@ -22,6 +24,13 @@ const SUBITEM_LABELS: Record<string, string> = {
 const SUBITEM_ORDER = ["title", "description", "product_dimensions", "four_grid", "detail_images"];
 
 const FEATURE_KEYS = SUBITEM_ORDER;
+
+const POD_FEATURE_LABELS: Record<string, string> = {
+  "pod.title": "豆包标题",
+  "pod.image": "POD 图片",
+};
+
+const POD_FEATURE_KEYS = ["pod.title", "pod.image"];
 
 type Tab = "pricing" | "changelog" | "keys";
 
@@ -54,6 +63,11 @@ export function SystemAdminPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [draftItems, setDraftItems] = useState<Record<string, number>>({});
   const [changeReason, setChangeReason] = useState("");
+  const [podRuleVersion, setPodRuleVersion] = useState(0);
+  const [podItems, setPodItems] = useState<Record<string, PricingSubItem>>({});
+  const [podEditOpen, setPodEditOpen] = useState(false);
+  const [podDraftItems, setPodDraftItems] = useState<Record<string, number>>({});
+  const [podChangeReason, setPodChangeReason] = useState("");
 
   // 变更日志 / 密钥发放
   const [changelog, setChangelog] = useState<PricingChangelogEntry[]>([]);
@@ -63,12 +77,14 @@ export function SystemAdminPage() {
     setBusy(true);
     setError("");
     try {
-      const payload = await loadPricingItems();
+      const [payload, podPayload] = await Promise.all([loadPricingItems(), loadPodPricingItems()]);
       setRuleVersion(payload.pricing.rule_version);
       setItems(payload.pricing.items ?? {});
       setMaxChargePerLink(payload.pricing.max_charge_per_link);
       setFreezePerLink(payload.pricing.freeze_per_link);
       setTtlDays(payload.pricing.ttl_days);
+      setPodRuleVersion(podPayload.pricing.rule_version);
+      setPodItems(podPayload.pricing.items as Record<string, PricingSubItem>);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -128,6 +144,14 @@ export function SystemAdminPage() {
 
   const draftTotal = useMemo(() => Object.values(draftItems).reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0), [draftItems]);
 
+  const openPodEdit = () => {
+    setPodDraftItems(Object.fromEntries(POD_FEATURE_KEYS.map((key) => [key, podItems[key]?.charge_points ?? 0])));
+    setPodChangeReason("");
+    setMessage("");
+    setError("");
+    setPodEditOpen(true);
+  };
+
   const savePricing = async () => {
     const reason = changeReason.trim();
     if (!reason) {
@@ -154,6 +178,37 @@ export function SystemAdminPage() {
       setTtlDays(payload.pricing.ttl_days);
       setEditOpen(false);
       setMessage(`定价已更新（规则版本 v${payload.pricing.rule_version}）`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const savePodPricing = async () => {
+    const reason = podChangeReason.trim();
+    if (!reason) {
+      setError("请填写 POD 定价变更原因（必填，将写入审计日志）");
+      return;
+    }
+    if (POD_FEATURE_KEYS.some((key) => !Number.isFinite(podDraftItems[key]) || podDraftItems[key] < 0)) {
+      setError("POD 调用单价必须是大于或等于 0 的数字");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await updatePodPricingItems({
+        items: Object.fromEntries(
+          POD_FEATURE_KEYS.map((key) => [key, { charge_points: podDraftItems[key] ?? 0 }]),
+        ),
+        change_reason: reason,
+      });
+      setPodRuleVersion(payload.pricing.rule_version);
+      setRuleVersion(payload.pricing.rule_version);
+      setPodItems(payload.pricing.items as Record<string, PricingSubItem>);
+      setPodEditOpen(false);
+      setMessage(`POD 定价已更新（规则版本 v${payload.pricing.rule_version}）`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -194,7 +249,7 @@ export function SystemAdminPage() {
       {message && <p className="settings-status is-success">{message}</p>}
       {error && <p className="settings-status is-error" role="alert">{error}</p>}
 
-      {tab === "pricing" && (
+      {tab === "pricing" && (<>
         <section className="settings-card settings-card-wide" aria-label="定价规则">
           <div className="settings-card-head">
             <div>
@@ -243,7 +298,36 @@ export function SystemAdminPage() {
             </tbody>
           </table>
         </section>
-      )}
+        <section className="settings-card settings-card-wide" aria-label="POD AI 调用单价">
+          <div className="settings-card-head">
+            <div>
+              <h3>POD AI 调用单价</h3>
+              <p className="settings-card-description">
+                标题与图片独立计价；成功调用扣费，上游无返回或预冻结但未执行的调用全退。
+              </p>
+            </div>
+            <button type="button" className="settings-secondary-button" onClick={openPodEdit} disabled={busy}>
+              编辑 POD 定价
+            </button>
+          </div>
+          <div className="settings-summary-bar">
+            <span>当前规则版本：<strong>v{podRuleVersion}</strong></span>
+            <span>积分精度：<strong>0.1 积分</strong></span>
+          </div>
+          <table className="settings-table">
+            <thead><tr><th>调用项</th><th>单价（积分）</th><th>无返回退款</th></tr></thead>
+            <tbody>
+              {POD_FEATURE_KEYS.map((key) => (
+                <tr key={key}>
+                  <td>{POD_FEATURE_LABELS[key]}<small>{key}</small></td>
+                  <td>{podItems[key]?.charge_points ?? "未配置"}</td>
+                  <td>100%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      </>)}
 
       {tab === "changelog" && (
         <section className="settings-card settings-card-wide" aria-label="变更日志">
@@ -377,6 +461,60 @@ export function SystemAdminPage() {
                 </button>
                 <button type="button" className="primary-button" onClick={() => void savePricing()} disabled={busy}>
                   {busy ? "保存中…" : "保存新版本"}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {podEditOpen && (
+        <div className="settings-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setPodEditOpen(false)}>
+          <section
+            className="settings-edit-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pod-pricing-edit-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2 id="pod-pricing-edit-title">编辑 POD AI 调用单价</h2>
+            <p className="settings-card-description">
+              当前规则版本 v{podRuleVersion}；保存后生成新版本，在途任务仍按冻结版本结算。
+            </p>
+            <div className="settings-edit-grid">
+              {POD_FEATURE_KEYS.map((key) => (
+                <label key={key} className="settings-field">
+                  <span>{POD_FEATURE_LABELS[key]}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={10000}
+                    step={0.1}
+                    value={Number.isFinite(podDraftItems[key]) ? podDraftItems[key] : ""}
+                    onChange={(event) => setPodDraftItems((current) => ({ ...current, [key]: Number(event.target.value) }))}
+                    disabled={busy}
+                  />
+                </label>
+              ))}
+            </div>
+            <label className="settings-field">
+              <span>变更原因（必填）</span>
+              <input
+                type="text"
+                maxLength={500}
+                placeholder="例如：POD 图片供应商成本调整"
+                value={podChangeReason}
+                onChange={(event) => setPodChangeReason(event.target.value)}
+                disabled={busy}
+              />
+            </label>
+            {error && <p className="settings-status is-error" role="alert">{error}</p>}
+            <div className="settings-actions">
+              <div />
+              <div className="settings-action-buttons">
+                <button type="button" className="settings-secondary-button" onClick={() => setPodEditOpen(false)} disabled={busy}>取消</button>
+                <button type="button" className="primary-button" onClick={() => void savePodPricing()} disabled={busy}>
+                  {busy ? "保存中…" : "保存 POD 新版本"}
                 </button>
               </div>
             </div>
