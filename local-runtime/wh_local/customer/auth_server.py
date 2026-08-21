@@ -577,17 +577,20 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         session_key, provider_secrets = _pod_grant_prerequisites(
             str(payload.get("encrypted_session_key") or "")
         )
+        envelope = _issue_pod_grant_envelope(
+            db_path,
+            account,
+            freeze_id,
+            session_key,
+            provider_secrets,
+            str(freeze["expires_at"]),
+        )
         return {
             "ok": True,
             "freeze_id": freeze_id,
-            "grant_envelope": _issue_pod_grant_envelope(
-                db_path,
-                account,
-                freeze_id,
-                session_key,
-                provider_secrets,
-                str(freeze["expires_at"]),
-            ),
+            "rule_version": int(freeze["rule_version"]),
+            "expires_at": str(envelope["expires_at"]),
+            "grant_envelope": envelope,
         }
 
     @app.post("/api/customer/billing/batch/freeze")

@@ -36,6 +36,19 @@ class FakeRemoteBilling:
         }
 
 
+class RealClientShapeRemoteBilling(FakeRemoteBilling):
+    def freeze_pod_points(self, token: str, payload: dict[str, object]) -> dict[str, object]:
+        self.calls.append(("freeze", token, payload))
+        return {
+            "freeze": {
+                "freeze_id": "pod-freeze-real-shape",
+                "rule_version": 9,
+                "expires_at": "2099-01-01T06:00:00Z",
+                "freeze_expires_at": "2099-01-08T00:00:00Z",
+                "keys": {"ark": "short-ark", "wuyin": "short-wuyin"},
+            }
+        }
+
 def test_remote_coordinator_adapts_exact_plan_and_keeps_token_out_of_repr() -> None:
     remote = FakeRemoteBilling()
     coordinator = RemotePodBillingCoordinator(remote, lambda _actor: "remote-session")
@@ -71,3 +84,19 @@ def test_expired_grant_refuses_provider_keys_in_normal_client_execution() -> Non
 
     assert grant.provider_key("ark") == ""
     assert grant.provider_key("wuyin") == ""
+
+
+def test_coordinator_accepts_normalized_real_client_grant_shape() -> None:
+    remote = RealClientShapeRemoteBilling()
+    coordinator = RemotePodBillingCoordinator(remote, lambda _actor: "remote-session")
+    actor = Actor(id="user-1", username="user", role="operator", workspace_id="workspace-1")
+
+    grant = coordinator.freeze(
+        actor,
+        PodCallPlan.for_retry("real-client-shape", feature="pod.title"),
+    )
+
+    assert grant.freeze_id == "pod-freeze-real-shape"
+    assert grant.rule_version == 9
+    assert grant.expires_at == "2099-01-01T06:00:00Z"
+    assert grant.provider_key("ark") == "short-ark"

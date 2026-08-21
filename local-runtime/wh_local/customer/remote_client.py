@@ -172,11 +172,17 @@ class CustomerAuthClient:
         decrypted = _decrypt_pod_grant_envelope(freeze.get("grant_envelope"), session_key)
         if str(decrypted.get("freeze_id") or "") != str(freeze.get("freeze_id") or ""):
             raise CustomerBillingProtocolError()
+        freeze_expires_at = str(freeze.get("expires_at") or "")
+        grant_expires_at = str(decrypted.get("expires_at") or "")
+        if not freeze_expires_at or not grant_expires_at:
+            raise CustomerBillingProtocolError()
         return {
             **response,
             "freeze": {
                 **{key: value for key, value in freeze.items() if key != "grant_envelope"},
-                "keys": decrypted["keys"],
+                "freeze_expires_at": freeze_expires_at,
+                "expires_at": grant_expires_at,
+                "keys": _pod_provider_key_mapping(decrypted["keys"]),
             },
         }
 
@@ -209,9 +215,15 @@ class CustomerAuthClient:
             {"encrypted_session_key": encrypted_session_key},
         )
         decrypted = _decrypt_pod_grant_envelope(response.get("grant_envelope"), session_key)
+        if (
+            str(response.get("freeze_id") or "") != str(freeze_id)
+            or str(decrypted.get("freeze_id") or "") != str(freeze_id)
+        ):
+            raise CustomerBillingProtocolError()
         return {
             **{key: value for key, value in response.items() if key != "grant_envelope"},
-            "keys": decrypted["keys"],
+            "expires_at": str(decrypted.get("expires_at") or ""),
+            "keys": _pod_provider_key_mapping(decrypted["keys"]),
         }
 
     def admin_request(
@@ -385,7 +397,12 @@ def _decrypt_pod_grant_envelope(envelope: Any, session_key: bytes) -> dict[str, 
         payload = json.loads(plaintext.decode("utf-8"))
     except Exception as exc:
         raise CustomerBillingProtocolError() from exc
-    if not isinstance(payload, dict) or not isinstance(payload.get("keys"), list):
+    if (
+        not isinstance(payload, dict)
+        or not str(payload.get("freeze_id") or "")
+        or not str(payload.get("expires_at") or "")
+        or not isinstance(payload.get("keys"), list)
+    ):
         raise CustomerBillingProtocolError()
     keys = payload["keys"]
     if any(
@@ -396,6 +413,15 @@ def _decrypt_pod_grant_envelope(envelope: Any, session_key: bytes) -> dict[str, 
     ):
         raise CustomerBillingProtocolError()
     return payload
+
+
+def _pod_provider_key_mapping(keys: Any) -> dict[str, str]:
+    if not isinstance(keys, list):
+        raise CustomerBillingProtocolError()
+    mapped = {str(item["provider"]): str(item["api_key"]) for item in keys}
+    if len(mapped) != len(keys):
+        raise CustomerBillingProtocolError()
+    return mapped
 
 
 def _extract_error_message(exc: HTTPError) -> str:

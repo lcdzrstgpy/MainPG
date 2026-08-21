@@ -18,6 +18,7 @@ def test_remote_client_wraps_pod_freeze_session_and_decrypts_grants_in_memory(mo
         "_decrypt_pod_grant_envelope",
         lambda envelope, key: {
             "freeze_id": "pod-freeze-stable-key-0001",
+            "expires_at": "2030-01-01T06:00:00+00:00",
             "keys": [{"provider": "ark", "api_key": "in-memory-only"}],
         },
     )
@@ -28,6 +29,8 @@ def test_remote_client_wraps_pod_freeze_session_and_decrypts_grants_in_memory(mo
             "ok": True,
             "freeze": {
                 "freeze_id": "pod-freeze-stable-key-0001",
+                "rule_version": 7,
+                "expires_at": "2030-01-08T00:00:00+00:00",
                 "grant_envelope": {"payload": "cipher", "nonce": "nonce", "tag": "tag"},
             },
         }
@@ -50,7 +53,9 @@ def test_remote_client_wraps_pod_freeze_session_and_decrypts_grants_in_memory(mo
         )
     ]
     assert "encrypted_session_key" not in plan
-    assert result["freeze"]["keys"] == [{"provider": "ark", "api_key": "in-memory-only"}]
+    assert result["freeze"]["keys"] == {"ark": "in-memory-only"}
+    assert result["freeze"]["expires_at"] == "2030-01-01T06:00:00+00:00"
+    assert result["freeze"]["freeze_expires_at"] == "2030-01-08T00:00:00+00:00"
     assert "grant_envelope" not in result["freeze"]
 
 
@@ -67,7 +72,11 @@ def test_remote_client_pod_settle_status_and_regrant_use_dedicated_paths(monkeyp
     monkeypatch.setattr(
         remote_client_module,
         "_decrypt_pod_grant_envelope",
-        lambda envelope, key: {"keys": [{"provider": "wuyin", "api_key": "memory"}]},
+        lambda envelope, key: {
+            "freeze_id": "pod-freeze-stable-key-0001",
+            "expires_at": "2030-01-01T06:00:00+00:00",
+            "keys": [{"provider": "wuyin", "api_key": "memory"}],
+        },
     )
 
     def billing_post(path: str, token: str, payload: dict) -> dict:
@@ -76,6 +85,7 @@ def test_remote_client_pod_settle_status_and_regrant_use_dedicated_paths(monkeyp
             return {
                 "ok": True,
                 "freeze_id": "pod-freeze-stable-key-0001",
+                "rule_version": 7,
                 "grant_envelope": {"payload": "cipher", "nonce": "nonce", "tag": "tag"},
             }
         return {"ok": True, "settle": {"status": "settled"}}
@@ -102,5 +112,7 @@ def test_remote_client_pod_settle_status_and_regrant_use_dedicated_paths(monkeyp
     assert posts[1][0] == "/api/customer/billing/pod/pod-freeze-stable-key-0001/regrant"
     assert posts[1][2] == {"encrypted_session_key": "rsa-wrapped-session"}
     assert status["freeze"]["status"] == "frozen"
-    assert regrant["keys"] == [{"provider": "wuyin", "api_key": "memory"}]
+    assert regrant["keys"] == {"wuyin": "memory"}
+    assert regrant["rule_version"] == 7
+    assert regrant["expires_at"] == "2030-01-01T06:00:00+00:00"
     assert "grant_envelope" not in regrant
