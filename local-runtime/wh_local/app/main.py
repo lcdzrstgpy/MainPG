@@ -189,9 +189,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             if pod_service is not None:
                 pod_service.close()
             if pod_title_runtime is not None:
-                pod_title_runtime.close()
+                pod_title_runtime.close(wait=False, cancel_futures=True)
             if pod_ai_runtime is not None:
-                pod_ai_runtime.close()
+                pod_ai_runtime.close(wait=False, cancel_futures=True)
 
     app = FastAPI(
         title="H Smart Ecommerce Local Runtime",

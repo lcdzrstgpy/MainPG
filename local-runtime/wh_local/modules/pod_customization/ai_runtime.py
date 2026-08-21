@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 import io
 import time
 from typing import Any, Callable
@@ -29,7 +30,7 @@ from .assets import MAX_IMAGE_BYTES, inspect_pod_image
 from .billing_contract import PodExecutionGrant
 from .billing_contract import PodBillingAuthorizationRequired
 from .errors import PodProviderResultReceivedError, safe_error_message
-from .runtime import AiRuntime, AiRuntimeConfig
+from .runtime import AiRuntime, AiRuntimeConfig, RuntimeClosedError
 from .runtime_contracts import (
     SUPPORTED_TEMPLATE_IMAGE_CONTENT_TYPES,
     DirectListingGridRequest,
@@ -53,6 +54,7 @@ class PodCustomizationAiRuntime(AiRuntime):
         session: Any | None = None,
         poll_interval_seconds: float = 3.0,
         public_image_fetcher: Callable[..., FetchedPublicImage] | None = None,
+        public_image_timeout_seconds: float = 30.0,
     ) -> None:
         # The named fields document the independent POD capacity budget.  Image
         # calls use the provider semaphore; other work stays in the POD executor.
@@ -83,6 +85,7 @@ class PodCustomizationAiRuntime(AiRuntime):
             self.session.trust_env = False
         self._poll_interval_seconds = max(0.0, float(poll_interval_seconds))
         self._public_image_fetcher = public_image_fetcher or fetch_public_image
+        self._public_image_timeout_seconds = max(1.0, min(float(public_image_timeout_seconds), 60.0))
 
     def generate_pattern_grid(self, request: PatternGridRequest, *, grant: PodExecutionGrant, call_id: str) -> bytes:
         raise MediaProcessingError(
@@ -96,7 +99,14 @@ class PodCustomizationAiRuntime(AiRuntime):
             status_class="non_retryable_local",
         )
 
-    def generate_listing_grid(self, request: DirectListingGridRequest, *, grant: PodExecutionGrant, call_id: str) -> GeneratedMedia:
+    def generate_listing_grid(
+        self,
+        request: DirectListingGridRequest,
+        *,
+        grant: PodExecutionGrant,
+        call_id: str,
+        on_start: Callable[[], None] | None = None,
+    ) -> GeneratedMedia:
         """Generate one reference-locked grid through POD's SuChuang client.
 
         This remains one provider request per service-level attempt.  The
@@ -107,7 +117,8 @@ class PodCustomizationAiRuntime(AiRuntime):
         try:
             with self.provider_slot():
                 _required_provider_key(grant, "wuyin")
-                task_id = self._submit_suchuang_grid(grant, request, reference_url)
+                submit_kwargs = {"on_start": on_start} if on_start is not None else {}
+                task_id = self._submit_suchuang_grid(grant, request, reference_url, **submit_kwargs)
                 result_url = self._poll_suchuang_grid(grant, task_id)
                 try:
                     content, content_type = self._download_suchuang_grid(result_url)
@@ -119,6 +130,8 @@ class PodCustomizationAiRuntime(AiRuntime):
         except PodProviderResultReceivedError:
             raise
         except PodBillingAuthorizationRequired:
+            raise
+        except RuntimeClosedError:
             raise
         except MediaProcessingError:
             raise
@@ -167,10 +180,16 @@ class PodCustomizationAiRuntime(AiRuntime):
         grant: PodExecutionGrant,
         request: DirectListingGridRequest,
         reference_url: str,
+        *,
+        on_start: Callable[[], None] | None = None,
     ) -> str:
         self.acquire_request_token()
         with self.connection_slot(timeout_seconds=30.0):
             image_key = _required_provider_key(grant, "wuyin")
+            self._ensure_open()
+            if on_start is not None:
+                on_start()
+            self._ensure_open()
             response = self.session.post(
                 "https://api.wuyinkeji.com/api/async/image_gpt",
                 params={"key": image_key},
@@ -207,7 +226,7 @@ class PodCustomizationAiRuntime(AiRuntime):
         last_message = ""
         while time.monotonic() < deadline:
             if self._poll_interval_seconds:
-                time.sleep(self._poll_interval_seconds)
+                self.interruptible_wait(self._poll_interval_seconds)
             self.acquire_request_token()
             with self.connection_slot(timeout_seconds=30.0):
                 image_key = _required_provider_key(grant, "wuyin")
@@ -273,12 +292,16 @@ class PodCustomizationAiRuntime(AiRuntime):
 
     def _download_suchuang_grid(self, result_url: str) -> tuple[bytes, str]:
         try:
-            fetched = self._public_image_fetcher(
-                result_url,
-                max_bytes=MAX_IMAGE_BYTES,
-                max_redirects=0,
-                timeout_seconds=360.0,
-            )
+            self._ensure_open()
+            fetch_kwargs: dict[str, Any] = {
+                "max_bytes": MAX_IMAGE_BYTES,
+                "max_redirects": 0,
+                "timeout_seconds": self._public_image_timeout_seconds,
+            }
+            if _accepts_keyword(self._public_image_fetcher, "shutdown_event"):
+                fetch_kwargs["shutdown_event"] = self.shutdown_event
+            fetched = self._public_image_fetcher(result_url, **fetch_kwargs)
+            self._ensure_open()
             content = bytes(fetched.content)
             content_type, _suffix, _width, _height = inspect_pod_image(content)
         except (PublicImageFetchError, ValueError, OSError) as exc:
@@ -336,6 +359,17 @@ def _image_data_url(content: bytes, content_type: str = "image/png") -> str:
     if normalized_content_type not in SUPPORTED_TEMPLATE_IMAGE_CONTENT_TYPES:
         raise ValueError("POD reference image must be JPEG, PNG, or WEBP")
     return f"data:{normalized_content_type};base64," + base64.b64encode(content).decode("ascii")
+
+
+def _accepts_keyword(function: Callable[..., Any], name: str) -> bool:
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
 
 
 def _suchuang_size(value: str | None) -> str:

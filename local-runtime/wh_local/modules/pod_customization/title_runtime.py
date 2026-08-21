@@ -247,14 +247,17 @@ class PodTitleRuntime(AiRuntime):
             raise ValueError("POD title runtime requires one to three frozen provider calls")
         max_attempts = len(planned_call_ids)
         for attempt in range(1, max_attempts + 1):
+            self._ensure_open()
             attempt_call_id = planned_call_ids[attempt - 1]
             outcome_recorded = False
             try:
                 self.acquire_request_token()
                 with self.provider_slot(), self.connection_slot(timeout_seconds=REQUEST_TIMEOUT_SECONDS):
                     api_key = _required_ark_key(grant)
+                    self._ensure_open()
                     if on_start is not None:
                         on_start(attempt_call_id)
+                    self._ensure_open()
                     content = self._complete(
                         api_key,
                         _messages_for_request(request, rejection_feedback=last_feedback),
@@ -300,12 +303,23 @@ class PodTitleRuntime(AiRuntime):
                     raise error from exc
                 last_feedback = _normalized_text(str(exc)) or "title output violated the listing contract"
             if attempt < max_attempts:
-                self._sleeper(RETRY_BACKOFF_SECONDS)
+                self._retry_wait(RETRY_BACKOFF_SECONDS)
         raise AssertionError("unreachable")
+
+    def _retry_wait(self, seconds: float) -> None:
+        # Injected sleepers keep deterministic unit tests fast. Production
+        # sleeps are event-backed so shutdown wakes them immediately.
+        if self._sleeper is time.sleep:
+            self.interruptible_wait(seconds)
+            return
+        self._ensure_open()
+        self._sleeper(seconds)
+        self._ensure_open()
 
     def _complete(self, api_key: str, messages: list[dict[str, Any]]) -> str:
         response: Any | None = None
         try:
+            self._ensure_open()
             response = self.session.post(
                 "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
                 headers={

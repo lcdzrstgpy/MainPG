@@ -22,6 +22,7 @@ from .billing_contract import (
 from .images import PatternQualityGate, compose_fixed_scene, split_grid_2x2
 from .prompts import LISTING_IMAGE_ROLES, build_style_listing_prompt
 from .repository import PodCustomizationRepository, PodRepositoryError
+from .runtime import RuntimeClosedError
 from .runtime_contracts import DirectListingGridRequest, PatternGridRequest, PodAiRuntime, SceneOptimizationRequest
 from .title_runtime import PodTitleRequest, visual_signature
 
@@ -582,6 +583,8 @@ class PodBatchWorker:
             self._discard_billing_run(f"title:{batch_id}:{style_index}", run)
 
     def close(self) -> None:
+        if self._closing.is_set():
+            return
         self._closing.set()
         self.repository.pause_billing_runs_for_shutdown()
         with self._futures_lock:
@@ -830,12 +833,17 @@ class PodBatchWorker:
         self.repository.mark_generation_call_running(call["call_id"])
         provider_returned = False
         try:
-            billing_run.start(provider_call_id, "pod.image")
-            media = self.ai_runtime.generate_listing_grid(
-                request,
-                grant=billing_run.grant,
-                call_id=provider_call_id,
-            )
+            runtime_kwargs = {
+                "grant": billing_run.grant,
+                "call_id": provider_call_id,
+            }
+            if _accepts_keyword(self.ai_runtime.generate_listing_grid, "on_start"):
+                runtime_kwargs["on_start"] = lambda: billing_run.start(
+                    provider_call_id, "pod.image"
+                )
+            else:
+                billing_run.start(provider_call_id, "pod.image")
+            media = self.ai_runtime.generate_listing_grid(request, **runtime_kwargs)
             provider_returned = True
             # Billing follows provider return, not downstream quality acceptance.
             billing_run.record(provider_call_id, "pod.image", "success")
@@ -849,6 +857,10 @@ class PodBatchWorker:
             return media
         except PodBillingAuthorizationRequired:
             raise
+        except RuntimeClosedError as exc:
+            raise PodBillingAuthorizationRequired(
+                "POD runtime stopped before this provider call; sign in to resume"
+            ) from exc
         except Exception as exc:
             if not provider_returned:
                 billing_run.record(
@@ -1095,6 +1107,10 @@ class PodBatchWorker:
                 )
             except PodBillingAuthorizationRequired:
                 raise
+            except RuntimeClosedError as exc:
+                raise PodBillingAuthorizationRequired(
+                    "POD runtime stopped before the next title call; sign in to resume"
+                ) from exc
             except Exception as exc:
                 if not any(billing_run.has_outcome(call_id) for call_id in provider_call_ids):
                     billing_run.record(provider_call_ids[0], "pod.title", "no_return")

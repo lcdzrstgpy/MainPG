@@ -51,10 +51,12 @@ class _TokenBucket:
         self._updated = clock()
         self._lock = threading.Lock()
 
-    def acquire(self) -> None:
+    def acquire(self, *, shutdown_event: threading.Event | None = None) -> None:
         if not self._rate:
             return
         while True:
+            if shutdown_event is not None and shutdown_event.is_set():
+                raise RuntimeClosedError("AI runtime closed while waiting for request capacity")
             with self._lock:
                 now = self._clock()
                 self._tokens = min(self._capacity, self._tokens + max(0.0, now - self._updated) * self._rate)
@@ -63,7 +65,11 @@ class _TokenBucket:
                     self._tokens -= 1.0
                     return
                 delay = (1.0 - self._tokens) / self._rate
-            self._sleeper(min(delay, 0.5))
+            bounded_delay = min(delay, 0.1)
+            if shutdown_event is None:
+                self._sleeper(bounded_delay)
+            elif shutdown_event.wait(bounded_delay):
+                raise RuntimeClosedError("AI runtime closed while waiting for request capacity")
 
 
 class AiRuntime:
@@ -80,6 +86,7 @@ class AiRuntime:
         self._providers = threading.BoundedSemaphore(config.provider_concurrency)
         self._lock = threading.Lock()
         self._closed = False
+        self._shutdown_event = threading.Event()
 
     @staticmethod
     def _build_session(config: AiRuntimeConfig) -> requests.Session:
@@ -101,6 +108,11 @@ class AiRuntime:
     def executor(self) -> ThreadPoolExecutor:
         return self._executor
 
+    @property
+    def shutdown_event(self) -> threading.Event:
+        """Read-only cooperative cancellation signal for injected transports."""
+        return self._shutdown_event
+
     def _ensure_open(self) -> None:
         with self._lock:
             if self._closed:
@@ -112,13 +124,47 @@ class AiRuntime:
 
     def acquire_request_token(self) -> None:
         self._ensure_open()
-        self._limiter.acquire()
+        self._limiter.acquire(shutdown_event=self._shutdown_event)
+        self._ensure_open()
+
+    def interruptible_wait(self, timeout_seconds: float) -> None:
+        self._ensure_open()
+        if self._shutdown_event.wait(max(0.0, float(timeout_seconds))):
+            raise RuntimeClosedError(f"AI runtime {self.config.name!r} is closed")
+        self._ensure_open()
+
+    def _acquire_slot(
+        self,
+        semaphore: threading.BoundedSemaphore,
+        *,
+        timeout_seconds: float | None,
+        timeout_message: str,
+    ) -> None:
+        deadline = None if timeout_seconds is None else time.monotonic() + max(0.0, timeout_seconds)
+        while True:
+            self._ensure_open()
+            if deadline is None:
+                wait_for = 0.1
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AiRuntimeCapacityError(timeout_message)
+                wait_for = min(0.1, remaining)
+            if semaphore.acquire(timeout=wait_for):
+                try:
+                    self._ensure_open()
+                except Exception:
+                    semaphore.release()
+                    raise
+                return
 
     @contextmanager
     def connection_slot(self, timeout_seconds: float) -> Iterator[None]:
-        self._ensure_open()
-        if not self._connections.acquire(timeout=max(0.0, timeout_seconds)):
-            raise AiRuntimeCapacityError("AI provider connection pool timed out")
+        self._acquire_slot(
+            self._connections,
+            timeout_seconds=timeout_seconds,
+            timeout_message="AI provider connection pool timed out",
+        )
         try:
             yield
         finally:
@@ -126,10 +172,11 @@ class AiRuntime:
 
     @contextmanager
     def provider_slot(self, timeout_seconds: float | None = None) -> Iterator[None]:
-        self._ensure_open()
-        acquired = self._providers.acquire() if timeout_seconds is None else self._providers.acquire(timeout=max(0.0, timeout_seconds))
-        if not acquired:
-            raise AiRuntimeCapacityError("AI provider concurrency slot timed out")
+        self._acquire_slot(
+            self._providers,
+            timeout_seconds=timeout_seconds,
+            timeout_message="AI provider concurrency slot timed out",
+        )
         try:
             yield
         finally:
@@ -140,7 +187,8 @@ class AiRuntime:
             if self._closed:
                 return
             self._closed = True
-        self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+            self._shutdown_event.set()
         close = getattr(self._session, "close", None)
         if callable(close):
             close()
+        self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
