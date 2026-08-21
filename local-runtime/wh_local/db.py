@@ -694,6 +694,10 @@ def _module_migrations() -> list[tuple[str, str, str]]:
             "data_collection:006_shop_collection_lease_tokens",
             root / "data_collection" / "migrations" / "006_shop_collection_lease_tokens.sql",
         ),
+        (
+            "data_collection:007_sku_repull_outbox",
+            root / "data_collection" / "migrations" / "007_sku_repull_outbox.sql",
+        ),
     ]
     for migration_id, sql_path in data_collection_migrations:
         if sql_path.exists():

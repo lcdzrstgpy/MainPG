@@ -17,9 +17,11 @@ def test_shop_and_direct_intake_migrations_are_registered_in_dependency_order() 
 
     shop_schema = migration_ids.index("data_collection:005_shop_collection")
     shop_leases = migration_ids.index("data_collection:006_shop_collection_lease_tokens")
+    sku_repull_outbox = migration_ids.index("data_collection:007_sku_repull_outbox")
     direct_intake = migration_ids.index("product_processing:004_shop_candidate_uniqueness")
 
     assert shop_schema < shop_leases
+    assert shop_leases < sku_repull_outbox
     assert direct_intake > migration_ids.index("product_processing:003_source_image_sync_lease")
 
 
