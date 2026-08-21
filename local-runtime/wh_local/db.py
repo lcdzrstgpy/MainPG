@@ -857,6 +857,20 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 skc_source_links_sql.read_text(encoding="utf-8"),
             )
         )
+    price_verification_forward_migrations = (
+        ("007_prescreen_settings", "007_prescreen_settings.sql"),
+        ("008_batch_sourcing_sessions", "008_batch_sourcing_sessions.sql"),
+    )
+    for migration_name, filename in price_verification_forward_migrations:
+        sql_path = root / "price_verification" / "migrations" / filename
+        if sql_path.exists():
+            migrations.append(
+                (
+                    f"price_verification:{migration_name}",
+                    "price_verification",
+                    sql_path.read_text(encoding="utf-8"),
+                )
+            )
     return migrations
 
 
