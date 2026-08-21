@@ -328,7 +328,7 @@ class CustomerAuthClient:
         except HTTPError as exc:
             detail = _extract_error_message(exc)
             if exc.code in (401, 403):
-                raise PermissionError(detail or f"customer auth service returned HTTP {exc.code}") from exc
+                raise CustomerBillingPermissionError(exc.code) from exc
             if 400 <= exc.code < 500:
                 raise CustomerAuthRejected(
                     exc.code,
@@ -355,7 +355,7 @@ class CustomerAuthClient:
         except HTTPError as exc:
             detail = _extract_error_message(exc)
             if exc.code in (401, 403):
-                raise PermissionError(detail or f"customer auth service returned HTTP {exc.code}") from exc
+                raise CustomerBillingPermissionError(exc.code) from exc
             if 400 <= exc.code < 500:
                 raise CustomerAuthRejected(
                     exc.code,

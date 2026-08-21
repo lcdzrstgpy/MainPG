@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import io
 from concurrent.futures import ThreadPoolExecutor
+from urllib.error import HTTPError
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
+import pytest
 
 from wh_local.modules.pod_customization.router import create_router
 from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
@@ -16,6 +18,8 @@ from wh_local.customer.contracts import (
     CustomerBillingPermissionError,
     CustomerBillingProtocolError,
 )
+from wh_local.customer.remote_client import CustomerAuthClient
+from wh_local.modules.pod_customization.remote_billing import RemotePodBillingCoordinator
 
 
 def _png() -> bytes:
@@ -171,6 +175,58 @@ def test_router_maps_real_remote_session_and_protocol_errors_to_stable_statuses(
         assert response.status_code == status_code
         assert response.json()["detail"] == detail
         assert "LEAK" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("remote_status", "local_status", "detail"),
+    (
+        (401, 401, "POD billing authentication is required"),
+        (403, 403, "POD billing permission is required"),
+    ),
+)
+def test_real_remote_client_composition_preserves_pod_auth_status_without_detail_leak(
+    tmp_path,
+    monkeypatch,
+    remote_status: int,
+    local_status: int,
+    detail: str,
+) -> None:
+    def reject_remote_request(*_args, **_kwargs):
+        raise HTTPError(
+            "https://customer.example.test/api/customer/billing/pod/freeze",
+            remote_status,
+            "rejected",
+            None,
+            io.BytesIO(
+                b'{"detail":"permission denied Authorization: Bearer LEAK token=LEAK"}'
+            ),
+        )
+
+    monkeypatch.setattr(
+        "wh_local.customer.remote_client.urlopen",
+        reject_remote_request,
+    )
+    billing = RemotePodBillingCoordinator(
+        CustomerAuthClient("https://customer.example.test"),
+        lambda _actor: "live-remote-token",
+    )
+    app = FastAPI()
+    app.include_router(
+        create_router(
+            tmp_path / "workbench.sqlite3",
+            tmp_path / "pod-assets",
+            RouterRuntime(),
+            billing_coordinator=billing,
+            start_workers=False,
+        )
+    )
+
+    response = _post_trial_that_freezes(TestClient(app))
+
+    assert response.status_code == local_status
+    assert response.json()["detail"] == detail
+    assert "LEAK" not in response.text
+    assert "customer.example" not in response.text
 
 
 def test_template_upload_list_calibrate_and_asset_download_contract(tmp_path) -> None:

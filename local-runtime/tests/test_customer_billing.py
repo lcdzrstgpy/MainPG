@@ -498,8 +498,17 @@ def test_remote_billing_client_normalizes_remote_permission_error(monkeypatch) -
     with pytest.raises(CustomerBillingPermissionError) as caught:
         client.reserve_ai_usage("remote-token", {"feature_key": "product_processing.text"})
 
+    assert caught.value.status_code == 401
     assert str(caught.value) == "remote billing session was rejected"
     assert "remote secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("status_code", [400, 402, 500, True, "403"])
+def test_billing_permission_error_accepts_only_authentication_or_authorization_status(
+    status_code: object,
+) -> None:
+    with pytest.raises(ValueError, match="401 or 403"):
+        CustomerBillingPermissionError(status_code)  # type: ignore[arg-type]
 
 
 def _customer_router_client(remote_auth: object) -> tuple[TestClient, str]:

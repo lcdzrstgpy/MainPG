@@ -254,9 +254,16 @@ def _call(function, *args, **kwargs):
             detail="POD billing request was rejected",
         ) from exc
     except CustomerBillingPermissionError as exc:
+        status_code = getattr(exc, "status_code", 401)
+        if type(status_code) is not int or status_code not in {401, 403}:
+            status_code = 401
         raise HTTPException(
-            status_code=401,
-            detail="POD billing authentication is required",
+            status_code=status_code,
+            detail=(
+                "POD billing permission is required"
+                if status_code == 403
+                else "POD billing authentication is required"
+            ),
         ) from exc
     except CustomerBillingProtocolError as exc:
         raise HTTPException(
