@@ -22,7 +22,14 @@ SENSITIVE_FIELD_NAMES = frozenset(
         "cookie",
         "session",
         "authorization",
+        "remote_token",
+        "ark_api_key",
+        "wuyin_api_key",
     }
+)
+_FIELD_NAME_SEPARATOR = re.compile(r"[\s._-]+")
+_SENSITIVE_FIELD_IDENTIFIERS = frozenset(
+    _FIELD_NAME_SEPARATOR.sub("", name).casefold() for name in SENSITIVE_FIELD_NAMES
 )
 _BEARER_CREDENTIAL = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
 _INLINE_CREDENTIAL = re.compile(
@@ -37,9 +44,9 @@ class DailySelectionContractError(ValueError):
 
 
 def is_sensitive_field(name: object) -> bool:
-    """Match only an explicit credential field name, never an English substring."""
-    normalized = str(name).strip().replace("-", "_").casefold()
-    return normalized in SENSITIVE_FIELD_NAMES
+    """Match exact credential identifiers across common field-name styles."""
+    normalized = _FIELD_NAME_SEPARATOR.sub("", str(name).strip()).casefold()
+    return normalized in _SENSITIVE_FIELD_IDENTIFIERS
 
 
 def redact_sensitive_text(value: str, sensitive_values: tuple[str, ...] = ()) -> str:

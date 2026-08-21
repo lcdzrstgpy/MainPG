@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from wh_local.data_collection.contracts import ApiEvidence
+from wh_local.data_collection.contracts import ApiEvidence, is_sensitive_field
 from wh_local.data_collection.normalizer import normalize_detail_response
 
 
@@ -129,3 +129,54 @@ def test_normalize_detail_response_drops_raw_description_html_and_credentials_fr
     assert "leaked-key" not in str(payload)
     assert "leaked-token" not in str(payload)
     assert candidate.source_detail_image_urls == ("https://images.example/description.jpg",)
+
+
+def test_sensitive_provider_grant_field_variants_are_exact_without_business_false_positives() -> None:
+    sensitive = (
+        "remote_token",
+        "REMOTE-TOKEN",
+        "remoteToken",
+        "remote token",
+        "ark_api_key",
+        "ARK-API-KEY",
+        "arkApiKey",
+        "wuyin_api_key",
+        "WUYIN.API.KEY",
+        "wuyinApiKey",
+    )
+    ordinary_business_fields = (
+        "remote_token_count",
+        "ark_model_key",
+        "wuyin_api_key_hint",
+        "monkey",
+        "keynote",
+        "session_duration",
+    )
+
+    assert all(is_sensitive_field(name) for name in sensitive)
+    assert not any(is_sensitive_field(name) for name in ordinary_business_fields)
+
+
+def test_normalized_provider_response_never_retains_remote_or_pod_grant_keys() -> None:
+    secrets = {
+        "remoteToken": "remote-secret",
+        "ARK-API-KEY": "ark-secret",
+        "wuyin_api_key": "wuyin-secret",
+    }
+    candidate = normalize_detail_response(
+        {
+            "item": {
+                "num_iid": "1004",
+                "title": "安全持久化商品",
+                "safe_business_field": "retained",
+                "nested": secrets,
+            }
+        },
+        evidence=_evidence(),
+    )
+
+    serialized = str(candidate.raw_payload)
+    assert candidate.raw_payload["item"]["safe_business_field"] == "retained"
+    for name, secret in secrets.items():
+        assert name not in serialized
+        assert secret not in serialized

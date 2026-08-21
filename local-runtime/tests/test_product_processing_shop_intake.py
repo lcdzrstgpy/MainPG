@@ -366,6 +366,10 @@ def test_shop_candidate_intake_drops_nested_secrets_binary_and_non_json_values(t
             source_title="Safe name; Bearer top-secret",
             raw_payload={
                 "client_secret": "api-secret",
+                "remoteToken": "remote-session-secret",
+                "ARK-API-KEY": "ark-provider-secret",
+                "wuyin_api_key": "wuyin-provider-secret",
+                "remote_token_count": 3,
                 "nested": {
                     "authorization": "Bearer nested-secret",
                     "note": "token=inline-secret",
@@ -382,10 +386,21 @@ def test_shop_candidate_intake_drops_nested_secrets_binary_and_non_json_values(t
 
     persisted = json.dumps(result["draft"]["raw_payload"], ensure_ascii=False)
     assert result["draft"]["title"] == "Safe name; Bearer [redacted]"
-    for secret in ("api-secret", "nested-secret", "inline-secret", "session-secret", "raw-bytes", "more-bytes"):
+    for secret in (
+        "api-secret",
+        "remote-session-secret",
+        "ark-provider-secret",
+        "wuyin-provider-secret",
+        "nested-secret",
+        "inline-secret",
+        "session-secret",
+        "raw-bytes",
+        "more-bytes",
+    ):
         assert secret not in persisted
     assert "client_secret" not in persisted
     assert "authorization" not in persisted
     assert "binary" not in persisted
     assert "unsupported" not in persisted
+    assert result["draft"]["raw_payload"]["raw_payload"]["remote_token_count"] == 3
     assert result["draft"]["raw_payload"]["raw_payload"]["price"] == "9.5"
