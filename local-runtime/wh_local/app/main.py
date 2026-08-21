@@ -51,7 +51,6 @@ from ..data_collection.image_cache import PublicDailySelectionImageCache
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
 from ..modules.ai_service import create_router as create_ai_service_router
-from ..modules.ai_service.service import AiService
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
 from ..modules.basic_settings.service import SystemConfigService
 from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
@@ -213,8 +212,13 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
     app.include_router(create_basic_settings_router(db_path))
     ai_service_assets = config.data_dir / "ai-service" / "assets"
-    AiService(db_path, ai_service_assets).mark_interrupted_pod_groups()
-    app.include_router(create_ai_service_router(db_path, ai_service_assets))
+    app.include_router(
+        create_ai_service_router(
+            db_path,
+            ai_service_assets,
+            legacy_pod_enabled=False,
+        )
+    )
 
     # Normal requests delete transient references immediately. This startup
     # construction sweep handles objects left by a prior interrupted process.

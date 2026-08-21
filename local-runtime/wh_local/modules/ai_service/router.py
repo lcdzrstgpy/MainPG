@@ -20,7 +20,12 @@ from .temporary_cos import TemporaryCosStore, TemporaryReference, TemporaryRefer
 from .web_search import search_context, search_public_web
 
 
-def create_router(database_path: Path, asset_root: Path) -> APIRouter:
+def create_router(
+    database_path: Path,
+    asset_root: Path,
+    *,
+    legacy_pod_enabled: bool = True,
+) -> APIRouter:
     router = APIRouter(prefix="/api/ai-service", tags=["ai-service"])
     service = AiService(database_path, asset_root)
     pod_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ai-pod")
@@ -188,40 +193,42 @@ def create_router(database_path: Path, asset_root: Path) -> APIRouter:
             if gateway is not None:
                 gateway.close()
 
-    @router.post("/pod-creations")
-    def create_pod_images(body: dict[str, Any], actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
-        """Queue the four fixed POD groups and return without waiting for images."""
-        permitted(actor, "ai_service.create")
-        conversation_id = str(body.get("conversation_id") or "")
-        prompt = str(body.get("prompt") or "").strip()
-        asset_ids = _string_list(body.get("asset_ids"))
-        if not prompt:
-            raise HTTPException(status_code=400, detail="POD product brief is required")
-        if not conversation_id:
-            conversation_id = service.create_conversation(actor, str(body.get("title") or "POD 出图"), mode="pod")["conversation_id"]
-        _call(service.append_message, actor, conversation_id, role="user", content=prompt, asset_ids=asset_ids)
-        creation = _call(service.create_pod_creation, actor, conversation_id, user_prompt=prompt, asset_ids=asset_ids)
-        for kind in ("scene", "feature", "size", "white"):
-            pod_executor.submit(_run_pod_group, service, database_path, actor, creation["creation_id"], kind, pod_references, pod_references_lock)
-        return {**creation, "groups": _call(service.pod_creation_status, actor, creation["creation_id"])["groups"]}
+    if legacy_pod_enabled:
 
-    @router.get("/pod-creations/{creation_id}")
-    def pod_creation_status(creation_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
-        permitted(actor, "ai_service.read")
-        return _call(service.pod_creation_status, actor, creation_id)
+        @router.post("/pod-creations")
+        def create_pod_images(body: dict[str, Any], actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+            """Queue the four fixed POD groups and return without waiting for images."""
+            permitted(actor, "ai_service.create")
+            conversation_id = str(body.get("conversation_id") or "")
+            prompt = str(body.get("prompt") or "").strip()
+            asset_ids = _string_list(body.get("asset_ids"))
+            if not prompt:
+                raise HTTPException(status_code=400, detail="POD product brief is required")
+            if not conversation_id:
+                conversation_id = service.create_conversation(actor, str(body.get("title") or "POD 出图"), mode="pod")["conversation_id"]
+            _call(service.append_message, actor, conversation_id, role="user", content=prompt, asset_ids=asset_ids)
+            creation = _call(service.create_pod_creation, actor, conversation_id, user_prompt=prompt, asset_ids=asset_ids)
+            for kind in ("scene", "feature", "size", "white"):
+                pod_executor.submit(_run_pod_group, service, database_path, actor, creation["creation_id"], kind, pod_references, pod_references_lock)
+            return {**creation, "groups": _call(service.pod_creation_status, actor, creation["creation_id"])["groups"]}
 
-    @router.get("/conversations/{conversation_id}/pod-creation")
-    def latest_pod_creation(conversation_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
-        permitted(actor, "ai_service.read")
-        latest = _call(service.latest_pod_creation, actor, conversation_id)
-        return _call(service.pod_creation_status, actor, latest["creation_id"]) if latest else {"creation_id": "", "groups": []}
+        @router.get("/pod-creations/{creation_id}")
+        def pod_creation_status(creation_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+            permitted(actor, "ai_service.read")
+            return _call(service.pod_creation_status, actor, creation_id)
 
-    @router.post("/pod-creations/{creation_id}/groups/{kind}/retry")
-    def retry_pod_group(creation_id: str, kind: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
-        permitted(actor, "ai_service.create")
-        group = _call(service.retry_pod_group, actor, creation_id, kind)
-        pod_executor.submit(_run_pod_group, service, database_path, actor, creation_id, kind, pod_references, pod_references_lock)
-        return group
+        @router.get("/conversations/{conversation_id}/pod-creation")
+        def latest_pod_creation(conversation_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+            permitted(actor, "ai_service.read")
+            latest = _call(service.latest_pod_creation, actor, conversation_id)
+            return _call(service.pod_creation_status, actor, latest["creation_id"]) if latest else {"creation_id": "", "groups": []}
+
+        @router.post("/pod-creations/{creation_id}/groups/{kind}/retry")
+        def retry_pod_group(creation_id: str, kind: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+            permitted(actor, "ai_service.create")
+            group = _call(service.retry_pod_group, actor, creation_id, kind)
+            pod_executor.submit(_run_pod_group, service, database_path, actor, creation_id, kind, pod_references, pod_references_lock)
+            return group
 
     @router.post("/messages/stream")
     async def stream_message(request: Request, actor: Actor = Depends(actor_from_authorization)) -> StreamingResponse:
