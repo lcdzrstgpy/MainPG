@@ -117,6 +117,69 @@ def _insert_batch_fixture(connection: sqlite3.Connection) -> None:
     )
 
 
+def _legacy_008_sql() -> str:
+    current = _migration_sql("008_persistent_billing_runs")
+    legacy = current.replace(
+        "freeze_id TEXT NOT NULL,",
+        "freeze_id TEXT NOT NULL UNIQUE,",
+        1,
+    ).replace("'authorized', 'resume_claimed', 'settling'", "'authorized', 'settling'", 1)
+    assert legacy != current
+    return legacy
+
+
+def _insert_legacy_billing_fixture(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """INSERT INTO pod_customization_billing_runs
+           (run_id, action_key, action_type, target_id, batch_id, workspace_id,
+            owner_user_id, freeze_id, rule_version, grant_expires_at, plan_json,
+            action_payload_json, status, result_status, error_message, created_at,
+            updated_at, settled_at)
+           VALUES ('run-old', 'action-old', 'batch_initial', 'batch-old', 'batch-old',
+                   'workspace-a', 'owner', 'freeze-shared', 7, '2099-01-01T00:00:00Z',
+                   '[{"call_id":"call-old"}]', '{"requested_count":20}',
+                   'authorized', '', '', 'created', 'updated', '')"""
+    )
+    connection.execute(
+        """INSERT INTO pod_customization_billing_outcomes
+           (run_id, call_id, feature, status, updated_at)
+           VALUES ('run-old', 'call-old', 'pod.image', 'started', 'updated')"""
+    )
+
+
+def _prepare_legacy_008_database(database: Path) -> None:
+    _apply_prefix(database, 7)
+    with sqlite3.connect(database) as connection:
+        connection.executescript(_legacy_008_sql())
+        connection.execute(
+            """INSERT INTO schema_migrations (migration_id, module)
+               VALUES ('pod_customization:008_persistent_billing_runs',
+                       'pod_customization')"""
+        )
+        _insert_legacy_billing_fixture(connection)
+
+
+def _simulate_partial_008_rebuild(database: Path, *, old_table_dropped: bool) -> None:
+    current = _migration_sql("008_persistent_billing_runs")
+    create_runs = current.split(
+        "CREATE INDEX IF NOT EXISTS idx_pod_billing_runs_owner_status", 1
+    )[0]
+    create_temporary = create_runs.replace(
+        "CREATE TABLE IF NOT EXISTS pod_customization_billing_runs",
+        "CREATE TABLE pod_customization_billing_runs_v2",
+        1,
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.executescript(create_temporary)
+        connection.execute(
+            """INSERT INTO pod_customization_billing_runs_v2
+               SELECT * FROM pod_customization_billing_runs"""
+        )
+        if old_table_dropped:
+            connection.execute("DROP TABLE pod_customization_billing_runs")
+
+
 @pytest.mark.parametrize("initializer", ["repository", "shared_db"])
 def test_fresh_and_repeated_startup_produces_complete_pod_schema(
     tmp_path: Path,
@@ -357,3 +420,90 @@ def test_contract_checks_008_status_semantics_not_only_object_names(tmp_path: Pa
         assert not _migration_effect_is_present(
             connection, "008_persistent_billing_runs"
         )
+
+
+@pytest.mark.parametrize("initializer", ["repository", "shared_db"])
+def test_legacy_008_marker_is_safely_upgraded_with_data_and_repeated_startup(
+    tmp_path: Path,
+    initializer: str,
+) -> None:
+    database = tmp_path / f"legacy-008-{initializer}.sqlite3"
+    _prepare_legacy_008_database(database)
+
+    for _ in range(2):
+        if initializer == "repository":
+            PodCustomizationRepository(database)
+        else:
+            init_db(database)
+
+    with sqlite3.connect(database) as connection:
+        run = connection.execute(
+            """SELECT freeze_id, plan_json, action_payload_json, status
+               FROM pod_customization_billing_runs WHERE run_id = 'run-old'"""
+        ).fetchone()
+        outcome = connection.execute(
+            """SELECT feature, status FROM pod_customization_billing_outcomes
+               WHERE run_id = 'run-old' AND call_id = 'call-old'"""
+        ).fetchone()
+        connection.execute(
+            """UPDATE pod_customization_billing_runs SET status = 'resume_claimed'
+               WHERE run_id = 'run-old'"""
+        )
+        connection.execute(
+            """INSERT INTO pod_customization_billing_runs
+               (run_id, action_key, action_type, target_id, workspace_id,
+                owner_user_id, freeze_id, rule_version, grant_expires_at,
+                plan_json, status, created_at, updated_at)
+               VALUES ('run-new', 'action-new', 'item_retry', 'item-new',
+                       'workspace-a', 'owner', 'freeze-shared', 7,
+                       '2099-01-01T00:00:00Z', '[]', 'authorized',
+                       'created', 'updated')"""
+        )
+        foreign_key_violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        marker_count = connection.execute(
+            """SELECT COUNT(*) FROM schema_migrations
+               WHERE migration_id = 'pod_customization:008_persistent_billing_runs'"""
+        ).fetchone()[0]
+
+    assert run == (
+        "freeze-shared",
+        '[{"call_id":"call-old"}]',
+        '{"requested_count":20}',
+        "authorized",
+    )
+    assert outcome == ("pod.image", "started")
+    assert foreign_key_violations == []
+    assert marker_count == 1
+
+
+@pytest.mark.parametrize("old_table_dropped", [False, True])
+def test_legacy_008_partial_rebuild_is_restart_safe_and_preserves_outcomes(
+    tmp_path: Path,
+    old_table_dropped: bool,
+) -> None:
+    database = tmp_path / f"partial-rebuild-008-{old_table_dropped}.sqlite3"
+    _prepare_legacy_008_database(database)
+    _simulate_partial_008_rebuild(database, old_table_dropped=old_table_dropped)
+
+    init_db(database)
+    init_db(database)
+
+    with sqlite3.connect(database) as connection:
+        run = connection.execute(
+            """SELECT freeze_id, status FROM pod_customization_billing_runs
+               WHERE run_id = 'run-old'"""
+        ).fetchone()
+        outcome = connection.execute(
+            """SELECT feature, status FROM pod_customization_billing_outcomes
+               WHERE run_id = 'run-old' AND call_id = 'call-old'"""
+        ).fetchone()
+        temporary = connection.execute(
+            """SELECT 1 FROM sqlite_master WHERE type = 'table'
+               AND name = 'pod_customization_billing_runs_v2'"""
+        ).fetchone()
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+
+    assert run == ("freeze-shared", "authorized")
+    assert outcome == ("pod.image", "started")
+    assert temporary is None
+    assert violations == []

@@ -15,6 +15,7 @@ class TableEffect:
     columns: tuple[str, ...]
     sql_fragments: tuple[str, ...] = ()
     sql_any: tuple[tuple[str, ...], ...] = ()
+    sql_absent_fragments: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -39,8 +40,9 @@ def _table(
     *,
     checks: tuple[str, ...] = (),
     any_checks: tuple[tuple[str, ...], ...] = (),
+    absent_checks: tuple[str, ...] = (),
 ) -> TableEffect:
-    return TableEffect(tuple(columns.split()), checks, any_checks)
+    return TableEffect(tuple(columns.split()), checks, any_checks, absent_checks)
 
 
 def _index(
@@ -247,11 +249,13 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
                 "rule_version grant_expires_at plan_json action_payload_json status result_status "
                 "error_message created_at updated_at settled_at",
                 checks=(
+                    "action_key TEXT NOT NULL UNIQUE",
                     "CHECK (action_type IN ('batch_initial', 'direct_trial', 'scene_optimization', "
                     "'item_retry', 'style_retry', 'title_retry'))",
                     "CHECK (status IN ('authorized', 'resume_claimed', 'settling', "
                     "'settlement_pending', 'auth_required', 'settled'))",
                 ),
+                absent_checks=("freeze_id TEXT NOT NULL UNIQUE",),
             ),
             "pod_customization_billing_outcomes": _table(
                 "run_id call_id feature status updated_at",
@@ -275,6 +279,7 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
                 "pod_customization_billing_outcomes", "run_id status call_id"
             ),
         },
+        absent_tables=("pod_customization_billing_runs_v2",),
     ),
     "009_export_records": MigrationEffect(
         tables={
@@ -296,6 +301,21 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
         },
     ),
 }
+
+
+_LEGACY_008_RUNS_EFFECT = TableEffect(
+    columns=POD_MIGRATION_CONTRACTS["008_persistent_billing_runs"]
+    .tables["pod_customization_billing_runs"]
+    .columns,
+    sql_fragments=(
+        "action_key TEXT NOT NULL UNIQUE",
+        "freeze_id TEXT NOT NULL UNIQUE",
+        "CHECK (action_type IN ('batch_initial', 'direct_trial', 'scene_optimization', "
+        "'item_retry', 'style_retry', 'title_retry'))",
+        "CHECK (status IN ('authorized', 'settling', 'settlement_pending', "
+        "'auth_required', 'settled'))",
+    ),
+)
 
 
 def pod_migration_effect_is_present(
@@ -342,6 +362,8 @@ def ensure_pod_migration(
         _apply_005(connection, sql)
     elif migration_name == "007_requested_count_upgrade":
         _apply_or_recover_007(connection, sql)
+    elif migration_name == "008_persistent_billing_runs":
+        _apply_or_recover_008(connection, sql, marker_exists=marker_exists)
     else:
         connection.executescript(sql)
 
@@ -435,6 +457,100 @@ def _executescript_restoring_foreign_keys(
     connection.execute("PRAGMA foreign_keys=ON")
 
 
+def _apply_or_recover_008(
+    connection: sqlite3.Connection,
+    sql: str,
+    *,
+    marker_exists: bool,
+) -> None:
+    target = "pod_customization_billing_runs"
+    temporary = "pod_customization_billing_runs_v2"
+    current_effect = POD_MIGRATION_CONTRACTS[
+        "008_persistent_billing_runs"
+    ].tables[target]
+    target_is_current = _table_effect_is_present(connection, target, current_effect)
+    target_is_legacy = _table_effect_is_present(
+        connection, target, _LEGACY_008_RUNS_EFFECT
+    )
+    temporary_is_current = _table_effect_is_present(
+        connection, temporary, current_effect
+    )
+
+    if target_is_current:
+        if _table_exists(connection, temporary):
+            connection.execute(f"DROP TABLE {_quoted(temporary)}")
+        connection.executescript(sql)
+        return
+
+    if not _table_exists(connection, target):
+        if not temporary_is_current:
+            if not marker_exists:
+                connection.executescript(sql)
+                return
+            raise PodMigrationContractError(
+                "POD migration 008_persistent_billing_runs found no recoverable "
+                "billing-runs table"
+            )
+        _finalize_008_rebuild(connection, temporary, target)
+        connection.executescript(sql)
+        return
+
+    if not target_is_legacy:
+        raise PodMigrationContractError(
+            "POD migration 008_persistent_billing_runs found an unsupported "
+            "legacy billing-runs schema"
+        )
+
+    columns = current_effect.columns
+    column_list = ", ".join(_quoted(column) for column in columns)
+    create_temporary = _008_runs_create_statement(sql, temporary)
+    rebuild_sql = (
+        "PRAGMA foreign_keys = OFF;\nBEGIN IMMEDIATE;\n"
+        f"DROP TABLE IF EXISTS {_quoted(temporary)};\n"
+        f"{create_temporary}\n"
+        f"INSERT INTO {_quoted(temporary)} ({column_list}) "
+        f"SELECT {column_list} FROM {_quoted(target)};\n"
+        f"DROP TABLE {_quoted(target)};\n"
+        f"ALTER TABLE {_quoted(temporary)} RENAME TO {_quoted(target)};\n"
+        "COMMIT;\nPRAGMA foreign_keys = ON;\n"
+    )
+    _executescript_restoring_foreign_keys(connection, rebuild_sql)
+    connection.executescript(sql)
+
+
+def _finalize_008_rebuild(
+    connection: sqlite3.Connection,
+    temporary: str,
+    target: str,
+) -> None:
+    recovery_sql = (
+        "PRAGMA foreign_keys = OFF;\nBEGIN IMMEDIATE;\n"
+        f"ALTER TABLE {_quoted(temporary)} RENAME TO {_quoted(target)};\n"
+        "COMMIT;\nPRAGMA foreign_keys = ON;\n"
+    )
+    _executescript_restoring_foreign_keys(connection, recovery_sql)
+
+
+def _008_runs_create_statement(sql: str, table_name: str) -> str:
+    token = "CREATE TABLE IF NOT EXISTS pod_customization_billing_runs"
+    start = sql.find(token)
+    if start < 0:
+        raise PodMigrationContractError(
+            "POD migration 008_persistent_billing_runs has an unsupported SQL shape"
+        )
+    end = sql.find(";", start)
+    if end < 0:
+        raise PodMigrationContractError(
+            "POD migration 008_persistent_billing_runs has an unterminated runs table"
+        )
+    statement = sql[start : end + 1]
+    return statement.replace(
+        token,
+        f"CREATE TABLE {_quoted(table_name)}",
+        1,
+    )
+
+
 def _table_effect_is_present(
     connection: sqlite3.Connection,
     table_name: str,
@@ -450,6 +566,11 @@ def _table_effect_is_present(
         return False
     normalized_sql = _normalize_sql(str(row[0]))
     if any(_normalize_sql(fragment) not in normalized_sql for fragment in effect.sql_fragments):
+        return False
+    if any(
+        _normalize_sql(fragment) in normalized_sql
+        for fragment in effect.sql_absent_fragments
+    ):
         return False
     return all(
         any(_normalize_sql(fragment) in normalized_sql for fragment in alternatives)
