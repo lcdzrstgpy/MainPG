@@ -1,6 +1,6 @@
 # POD and Shop Foundation Integration Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Work from target baseline `3c56dc17497a38babf7b706d9801fa3035e7deef`; never replace target foundation files with the old branch versions.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Work from refreshed target baseline `dac01dbb`; never replace target foundation files with the old branch versions.
 
 **Goal:** Integrate whole-shop 1688 intake and the new POD workflow into the latest auth, API-management, billing, and update foundation.
 
@@ -16,6 +16,8 @@
 - Templates are workspace-shared; POD batches/results/exports are owner-private.
 - The new POD replaces the old AI Service POD; old tables remain untouched.
 - Shared files `app/main.py`, `db.py`, Product Processing service/router/provider, customer auth, billing, and navigation are target-first manual integrations.
+- Outside `pod_customization` and the approved 1688 shop UI delta, every frontend file and navigation decision must match `upstream/feature/client-processing-auto-repair@dac01dbb`.
+- The user workspace must not expose the old `AI 服务` or `系统配置` entries; no local API-key configuration page may be restored.
 
 ## Parallel Track A: Whole-shop collection
 
@@ -43,6 +45,8 @@
 
 ## Integration Track
 
+- Merge the refreshed upstream commit `dac01dbb`, preserving its responsive dashboard, personal-center, price-verification, product-processing, and global-style changes exactly.
+- Compare every remaining frontend delta against upstream; allow only POD files, removal of the legacy AI-Service POD sub-mode, and the Daily Selection shop-collection delta.
 - Manually compose module lifecycles/routers in target `app/main.py`.
 - Append migration registration in target `db.py`, including Price Verification 007/008.
 - Merge navigation cases without weakening `adminOnly` or role filtering.
