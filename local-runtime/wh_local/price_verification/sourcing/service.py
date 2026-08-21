@@ -601,6 +601,9 @@ class SourcingService:
         if self._product_library_service is None:
             return None
         try:
+            batch = self._repository.get_quote_capture_batch(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
             selection = self._repository.get_batch_selection_by_skc(
                 workspace_id=actor.workspace_id, batch_id=batch_id, skc_id=skc_id
             )
@@ -664,6 +667,7 @@ class SourcingService:
                 "source_groups_json": json.dumps(groups, ensure_ascii=False, separators=(",", ":")),
                 "source_type": "price_verification",
                 "source_main_image_url": _text(selection.main_image_url),
+                "store_name": batch.store_name,
                 "visibility": "shared",
             }
             return self._product_library_service.upsert_product(payload, actor=actor)

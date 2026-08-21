@@ -693,6 +693,15 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 profit_activity_threshold_sql.read_text(encoding="utf-8"),
             )
         )
+    profit_activity_store_name_sql = root / "modules" / "profit_activity" / "migrations" / "006_product_library_store_name.sql"
+    if profit_activity_store_name_sql.exists():
+        migrations.append(
+            (
+                "profit_activity:006_product_library_store_name",
+                "profit_activity",
+                profit_activity_store_name_sql.read_text(encoding="utf-8"),
+            )
+        )
     price_verification_sql = root / "price_verification" / "migrations" / "001_price_verification.sql"
     if price_verification_sql.exists():
         migrations.append(
@@ -755,6 +764,15 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 "price_verification:006_skc_source_links",
                 "price_verification",
                 skc_source_links_sql.read_text(encoding="utf-8"),
+            )
+        )
+    capture_batch_store_name_sql = root / "price_verification" / "migrations" / "009_capture_batch_store_name.sql"
+    if capture_batch_store_name_sql.exists():
+        migrations.append(
+            (
+                "price_verification:009_capture_batch_store_name",
+                "price_verification",
+                capture_batch_store_name_sql.read_text(encoding="utf-8"),
             )
         )
     return migrations

@@ -215,6 +215,22 @@ def register_price_verification_routes(
             logging.getLogger(__name__).warning("capture chunk rejected: %s", error)
             _raise_http(error)
 
+    @router.put("/api/v1/price-verification/capture-batches/{batch_id}/store")
+    def set_capture_batch_store_name(
+        batch_id: str,
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return _capture_batch_response(
+                quote_service.set_capture_batch_store_name(
+                    actor, batch_id, store_name=_text(request.get("store_name"))
+                )
+            )
+        except Exception as error:
+            logging.getLogger(__name__).warning("capture batch store update rejected: %s", error)
+            _raise_http(error)
+
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/snapshots")
     def save_capture_batch_snapshot(
         batch_id: str, actor: PriceVerificationActor = Depends(actor_dependency)

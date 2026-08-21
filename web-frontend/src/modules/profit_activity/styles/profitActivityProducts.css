@@ -56,7 +56,7 @@
 .profit-products-search-bar {
   --profit-search-control-height: 44px;
   display: grid;
-  grid-template-columns: minmax(300px, 1.65fr) minmax(164px, .78fr) minmax(180px, .9fr) minmax(156px, .68fr);
+  grid-template-columns: minmax(220px, 1.15fr) minmax(150px, .72fr) minmax(150px, .72fr) minmax(165px, .78fr) minmax(156px, .68fr);
   align-items: end;
   gap: 14px;
 }
@@ -883,7 +883,7 @@
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 9;
+  z-index: 500;
   overflow: hidden;
   display: none;
   padding-top: 6px;
@@ -1186,6 +1186,24 @@
   box-shadow: 0 0 0 2px #0a8cf21f;
 }
 
+.profit-source-images-cell {
+  position: relative;
+}
+
+.profit-source-image-count {
+  position: absolute;
+  right: -8px;
+  bottom: -7px;
+  min-width: 18px;
+  padding: 2px 4px;
+  border-radius: 10px;
+  background: #087fd8;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
 /* 大图预览弹窗 */
 .profit-image-preview-mask {
   position: fixed;
@@ -1231,6 +1249,34 @@
 
 .profit-image-preview-close:hover {
   background: rgba(13, 32, 52, 0.8) !important;
+}
+
+.profit-image-preview-pager {
+  position: absolute;
+  right: 56px;
+  bottom: 12px;
+  left: 12px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #4f6780;
+  font-size: 12px;
+}
+
+.profit-image-preview-pager button {
+  min-width: 58px;
+  padding: 6px 9px;
+  border: 1px solid #d3e3ef;
+  border-radius: 6px;
+  background: #fff;
+  color: #235b87;
+}
+
+.profit-image-preview-pager button:hover {
+  border-color: #0a8cf2;
+  color: #087fd8;
 }
 
 .profit-table .profit-note-input {

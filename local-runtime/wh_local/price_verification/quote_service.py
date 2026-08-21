@@ -190,6 +190,16 @@ class QuoteService:
         actor = _actor(actor)
         return self._repository.get_quote_capture_batch(workspace_id=actor.workspace_id, batch_id=batch_id)
 
+    def set_capture_batch_store_name(
+        self, actor: PriceVerificationActor, batch_id: str, *, store_name: str
+    ) -> QuoteCaptureBatchRecord:
+        actor = _actor(actor)
+        return self._repository.set_quote_capture_batch_store_name(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            store_name=store_name,
+        )
+
     def capture_current_page(
         self,
         actor: PriceVerificationActor,

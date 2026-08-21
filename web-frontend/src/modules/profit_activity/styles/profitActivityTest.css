@@ -275,6 +275,33 @@
   font-size: 1.2rem;
 }
 
+.profit-single-store-field,
+.profit-import-store-field {
+  display: grid;
+  gap: 6px;
+  color: #496982;
+  font-size: .76rem;
+  font-weight: 700;
+}
+
+.profit-single-store-field {
+  min-width: 180px;
+  margin-left: auto;
+}
+
+.profit-single-store-field input,
+.profit-import-store-field input {
+  width: 100%;
+  min-height: 36px;
+  box-sizing: border-box;
+}
+
+.profit-import-input-stack {
+  display: grid;
+  min-width: min(100%, 520px);
+  gap: 10px;
+}
+
 .profit-help-tooltip {
   position: relative;
   display: inline-flex;

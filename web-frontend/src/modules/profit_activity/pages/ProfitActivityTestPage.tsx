@@ -84,6 +84,7 @@ type FilterTask = {
 
 type ProductForm = {
   skc: string;
+  store_name: string;
   selling_price: string;
   cost_price: string;
   weight_kg: string;
@@ -109,6 +110,7 @@ type SiteSettingField = {
 const defaultToken = localStorage.getItem("whLocalApiToken") || "dev-admin-token";
 const emptyProduct: ProductForm = {
   skc: "",
+  store_name: "",
   selling_price: "",
   cost_price: "",
   weight_kg: "",
@@ -248,6 +250,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [importFiles, setImportFiles] = useState<File[]>([]);
+  const [importStoreName, setImportStoreName] = useState("");
   const [importPreviews, setImportPreviews] = useState<ImportPreview[]>([]);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [lastImportFiles, setLastImportFiles] = useState<string[]>(() => {
@@ -634,7 +637,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
       .map((source_url) => ({ source_url, image_paths: [] }));
     const form = new FormData();
     form.append("site", site);
-    for (const [key, value] of Object.entries({ ...numericProductPayload(productForm), note: productForm.note, source_url: productForm.source_url })) {
+    for (const [key, value] of Object.entries({ ...numericProductPayload(productForm), store_name: productForm.store_name.trim(), note: productForm.note, source_url: productForm.source_url })) {
       form.append(key, String(value));
     }
     if (sourceGroups.length) {
@@ -659,6 +662,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     localStorage.setItem("profitActivityRecentSaved", JSON.stringify(nextRecent.map((item) => ({ skc: item.skc, site: item.site, form: item.form }))));
     setQuerySkcs(savedSkc);
     await queryProducts(savedSkc);
+    window.dispatchEvent(new Event("profit-activity-products-changed"));
     clearProductForm();
   }, `${productForm.skc} 入库成功`);
 
@@ -715,6 +719,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     for (const file of importFiles) {
       const form = new FormData();
       form.append("site", site);
+      form.append("store_name", importStoreName.trim());
       form.append("file", file);
       results.push(await request<ImportPreview>("/api/profit-activity/products/import/preview", { method: "POST", body: form }));
     }
@@ -741,6 +746,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     }
     setMessage(`确认导入完成：新增 ${imported}，替换 ${replaced}，跳过 ${skipped}。`);
     await queryProducts();
+    window.dispatchEvent(new Event("profit-activity-products-changed"));
   });
 
   const filterTaskId = (task: FilterTask | null | undefined): number | null => {
@@ -1003,7 +1009,10 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
               <button className="profit-settings-dialog-close" type="button" aria-label="关闭产品资料导入" onClick={() => setImportDialogOpen(false)} disabled={!!busy}><span aria-hidden="true">×</span></button>
             </div>
             <div className="profit-upload-row">
-              <label>产品资料 Excel（可多选）<input type="file" accept=".xlsx,.xlsm" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setImportFiles(files); persistImportFileNames(files); }} /></label>
+              <div className="profit-import-input-stack">
+                <label>产品资料 Excel（可多选）<input type="file" accept=".xlsx,.xlsm" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setImportFiles(files); persistImportFileNames(files); }} /></label>
+                <label className="profit-import-store-field">店铺（可选）<input value={importStoreName} maxLength={120} onChange={(event) => setImportStoreName(event.target.value)} placeholder="例如：美区一店" /></label>
+              </div>
               <button onClick={previewImport} disabled={!!busy}>预览入档</button>
               <button onClick={confirmImport} disabled={!!busy || !importPreviews.length}>确认导入</button>
             </div>
@@ -1022,6 +1031,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
               <span className="profit-title-icon iconfont icon-calculator-fill" aria-hidden="true" />
               <h2>单品利润<span className="profit-help-tooltip" tabIndex={0} aria-label="单品利润填写说明"><span className="profit-help-tooltip-mark" aria-hidden="true">!</span><span className="profit-help-tooltip-content" role="tooltip">输入商品ID（支持 SKU、SKC、SPU）、售价、成本、重量后会自动预览利润。</span></span></h2>
             </div>
+            <label className="profit-single-store-field">店铺（可选）<input value={productForm.store_name} maxLength={120} onChange={(event) => setProductForm({ ...productForm, store_name: event.target.value })} placeholder="例如：美区一店" /></label>
             <SiteTabs site={site} profiles={siteProfiles} onSite={setSite} />
           </div>
           <div className="profit-form-grid">

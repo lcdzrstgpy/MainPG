@@ -309,7 +309,13 @@ def create_profit_activity_router(
         try:
             content = await file.read()
             await file.close()
-            return service.preview_import(content, filename, str(form.get("site") or "US"), actor)
+            return service.preview_import(
+                content,
+                filename,
+                str(form.get("site") or "US"),
+                actor,
+                store_name=str(form.get("store_name") or ""),
+            )
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
@@ -388,7 +394,7 @@ def create_profit_activity_router(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     @router.post("/activity-filter/{task_id}/dispatch-flux-accel")
-    def dispatch_flux_accel(task_id: int, request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+    async def dispatch_flux_accel(task_id: int, request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         """把活动过滤结果里的可申报商品下发到流量加速插件。
 
         商品标识 + 最低申报价来自 ``eligible_activity_products``，插件领取后

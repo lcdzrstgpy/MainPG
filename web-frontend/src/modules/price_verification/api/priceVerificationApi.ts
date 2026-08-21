@@ -15,6 +15,7 @@ export const priceVerificationApi = {
   listCaptureBatches: async () => (await httpJson<{ batches: QuoteCaptureBatch[] }>(`${base}/capture-batches`)).batches,
   createCaptureBatch: (name: string) => httpJson<QuoteCaptureBatch>(`${base}/capture-batches`, { method: "POST", body: { name, make_current: true } }),
   activateCaptureBatch: (batchId: string) => httpJson<QuoteCaptureBatch>(`${base}/capture-batches/${encodeURIComponent(batchId)}/activate`, { method: "POST" }),
+  setCaptureBatchStoreName: (batchId: string, storeName: string) => httpJson<QuoteCaptureBatch>(`${base}/capture-batches/${encodeURIComponent(batchId)}/store`, { method: "PUT", body: { store_name: storeName } }),
   listCaptureBatchItems: async (batchId: string) => (await httpJson<{ batch_id: string; items: QuoteBatchReviewItem[] }>(`${base}/capture-batches/${encodeURIComponent(batchId)}/items`)).items,
   removeCaptureBatchItem: async (batchId: string, skcId: string) => httpJson<{ batch_id: string; skc_id: string; removed: number }>(`${base}/capture-batches/${encodeURIComponent(batchId)}/items?skc_id=${encodeURIComponent(skcId)}`, { method: "DELETE" }),
   stageBatchSelections: async (batchId: string, skcIds: string[], maxCandidates?: number) => (await httpJson<{ batch_id: string; selections: BatchSelection[] }>(`${base}/capture-batches/${encodeURIComponent(batchId)}/selections`, { method: "POST", body: { skc_ids: skcIds, ...(maxCandidates != null ? { max_candidates: maxCandidates } : {}) } })).selections,

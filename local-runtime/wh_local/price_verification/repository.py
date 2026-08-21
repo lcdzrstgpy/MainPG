@@ -135,6 +135,7 @@ class QuoteCaptureBatchRecord(_Record):
     batch_id: str
     workspace_id: str
     name: str
+    store_name: str = ""
     is_current: bool
     created_by: str
     created_at: str
@@ -249,13 +250,41 @@ class PriceVerificationRepository:
     def initialize(self) -> None:
         migrations = Path(__file__).with_name("migrations")
         with self._connect() as connection:
+            # 004 是早期一次性重建 capture chunks 的迁移。若进程在重建中断，
+            # 会同时留下旧表与 _v2 临时表；先把临时表数据并回正式表，避免丢失采集结果。
+            if _table_exists(connection, "price_verification_quote_capture_chunks_v2"):
+                connection.execute(
+                    """INSERT OR IGNORE INTO price_verification_quote_capture_chunks (
+                        chunk_id, workspace_id, batch_id, content_sha256, page_url, item_count,
+                        capture_json, items_json, captured_at, created_at
+                    ) SELECT chunk_id, workspace_id, batch_id, content_sha256, page_url, item_count,
+                        capture_json, items_json, captured_at, created_at
+                    FROM price_verification_quote_capture_chunks_v2"""
+                )
+                connection.execute("DROP TABLE price_verification_quote_capture_chunks_v2")
             for migration in sorted(migrations.glob("*.sql")):
+                # The shared runtime owns schema migration history. This module is
+                # also usable on its own, so column additions must be guarded here.
+                # 004 was a one-time table rebuild and is not safe to replay on
+                # every process start; current schemas are already compatible.
+                if migration.name in {"004_quote_capture_chunk_sku_capacity.sql", "009_capture_batch_store_name.sql"}:
+                    continue
                 connection.executescript(migration.read_text(encoding="utf-8"))
             # SQLite has no "ADD COLUMN IF NOT EXISTS", so guard column adds here.
             _ensure_column(connection, "price_verification_skc_source_links", "product_title", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "price_verification_skc_source_links", "site", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "price_verification_skc_source_links", "selling_price", "TEXT")
             _ensure_column(connection, "price_verification_skc_source_links", "weight_kg", "TEXT")
+            _ensure_column(
+                connection,
+                "price_verification_quote_capture_batches",
+                "store_name",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_price_verification_capture_batches_workspace_store "
+                "ON price_verification_quote_capture_batches (workspace_id, store_name)"
+            )
             connection.execute(
                 """UPDATE price_verification_skc_source_links AS link
                 SET product_title = COALESCE((
@@ -731,6 +760,7 @@ class PriceVerificationRepository:
         workspace_id: str,
         name: str,
         created_by: str,
+        store_name: str = "",
         make_current: bool = True,
         batch_id: str | None = None,
     ) -> QuoteCaptureBatchRecord:
@@ -749,9 +779,31 @@ class PriceVerificationRepository:
                     )
                 connection.execute(
                     """INSERT INTO price_verification_quote_capture_batches
-                    (batch_id, workspace_id, name, is_current, created_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (batch_id, workspace_id, name, int(make_current), created_by, now, now),
+                    (batch_id, workspace_id, name, store_name, is_current, created_by, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (batch_id, workspace_id, name, str(store_name or "").strip()[:120], int(make_current), created_by, now, now),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_quote_capture_batch(workspace_id=workspace_id, batch_id=batch_id)
+
+    def set_quote_capture_batch_store_name(
+        self, *, workspace_id: str, batch_id: str, store_name: str
+    ) -> QuoteCaptureBatchRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._owned_row_in(
+                    connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id
+                )
+                connection.execute(
+                    """UPDATE price_verification_quote_capture_batches
+                    SET store_name = ?, updated_at = ? WHERE workspace_id = ? AND batch_id = ?""",
+                    (str(store_name or "").strip()[:120], _now(), workspace_id, batch_id),
                 )
                 connection.commit()
             except BaseException:
@@ -2040,6 +2092,13 @@ def _ensure_column(connection: sqlite3.Connection, table: str, column: str, defi
     existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
     if column not in existing:
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone() is not None
 
 
 def _new_id() -> str:
