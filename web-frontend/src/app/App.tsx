@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { WorkspaceShell } from "./layout/WorkspaceShell";
 import { AuthPage } from "../modules/customer/pages/AuthPage";
 import { AppUpdateDialog } from "../modules/app_update/components/AppUpdateDialog";
+import { GlobalToast } from "../shared/components/GlobalToast";
 import { clearAuthSession, getAuthToken, httpJson } from "../transport/http/client";
 
 type MeResponse = {
@@ -67,5 +68,6 @@ export function App() {
       <AuthPage onEnter={enterWorkspaceAfterLogin} />
     )}
     <AppUpdateDialog />
+    <GlobalToast />
   </>;
 }

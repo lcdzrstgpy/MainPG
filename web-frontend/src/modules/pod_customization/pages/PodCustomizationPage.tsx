@@ -18,8 +18,11 @@ import {
   resolveCreativePrompt,
   listingFieldsForApi,
   shouldPollPodBatch,
+  summarizeSkippedPodStyles,
+  skippedPodStylesToastMessage,
 } from "../data/podCustomizationModel";
 import { usePodAssetUrl } from "../data/usePodAssetUrl";
+import { showToast } from "../../../shared/components/toastStore";
 import type {
   PodBatch,
   PodBatchCount,
@@ -445,6 +448,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     try {
       const exported = await podCustomizationApi.exportDianxiaomi(activeBatch.id);
       setNotice(`导出 ${exported.exportedStyles} 款、跳过 ${exported.skippedStyles} 款。`);
+      if (exported.skippedStyles > 0) {
+        const breakdown = summarizeSkippedPodStyles(activeBatch);
+        showToast(skippedPodStylesToastMessage(exported.skippedStyles, breakdown), "error");
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {

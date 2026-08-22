@@ -348,6 +348,29 @@
   color: #075985;
 }
 
+.personal-stats-refresh:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* 深色「可用积分」卡片内的刷新按钮 */
+.personal-stat.is-balance .personal-stats-refresh {
+  justify-self: start;
+  color: #e6f7ff;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+.personal-stat.is-balance .personal-stats-refresh:hover:not(:disabled) {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.personal-stat.is-balance .personal-stats-refresh:disabled {
+  opacity: 0.5;
+}
+
 .personal-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

@@ -9,6 +9,7 @@ import type {
   PodListingFields,
   PodListingFieldsDraft,
   PodTemplateCalibration,
+  PodStyleTitle,
   PodStyleTitleStatus,
 } from "../types";
 
@@ -313,4 +314,53 @@ export function podItemStatusLabel(status: string): string {
     failed: "失败",
     optimizing_scene: "优化场景",
   } as Record<string, string>)[status] ?? status;
+}
+
+/** 统计本批被跳过导出的款式及原因分类（以后端记录的标题失败原因为依据）。 */
+export type SkippedPodStylesBreakdown = {
+  total: number;
+  titleContract: number;
+  imagesIncomplete: number;
+  other: number;
+};
+
+export function summarizeSkippedPodStyles(
+  batch: { style_titles?: Array<Pick<PodStyleTitle, "status" | "error_message">> },
+): SkippedPodStylesBreakdown {
+  const failedTitles = (batch.style_titles ?? []).filter(
+    (title) => title.status === "failed" && Boolean(title.error_message),
+  );
+  const imagesIncomplete = failedTitles.filter((title) =>
+    /公开图片|图片未完整|四张/.test(title.error_message ?? ""),
+  ).length;
+  const titleContract = failedTitles.filter((title) =>
+    /listing contract/i.test(title.error_message ?? ""),
+  ).length;
+  return {
+    total: failedTitles.length,
+    titleContract,
+    imagesIncomplete,
+    other: failedTitles.length - imagesIncomplete - titleContract,
+  };
+}
+
+/** 生成「为什么剔除」的全局提示文案；无失败款时返回空串。 */
+export function skippedPodStylesToastMessage(
+  skippedCount: number,
+  breakdown: SkippedPodStylesBreakdown,
+): string {
+  const parts: string[] = [];
+  if (breakdown.titleContract > 0) {
+    parts.push(`${breakdown.titleContract} 款标题未通过上架校验（与已生成款式重复或不合规）`);
+  }
+  if (breakdown.imagesIncomplete > 0) {
+    parts.push(`${breakdown.imagesIncomplete} 款商品图未完整生成`);
+  }
+  if (breakdown.other > 0) {
+    parts.push(`${breakdown.other} 款未满足导出条件`);
+  }
+  if (!parts.length) {
+    return `本次导出跳过 ${skippedCount} 款：商品图或标题未完整生成，未满足上架条件。`;
+  }
+  return `本次导出跳过 ${skippedCount} 款：${parts.join("，")}。可在款式列表点击「只重生标题 / 整款重生成」重试。`;
 }

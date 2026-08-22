@@ -143,9 +143,33 @@ export function PersonalCenterPage() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => {
+  // 可用积分刷新冷却：30 秒内重复点击不重复请求，按钮禁用并倒计时。
+  const BALANCE_REFRESH_COOLDOWN_MS = 30_000;
+  const lastBalanceRefreshAt = useRef(0);
+  const [balanceCooldownSeconds, setBalanceCooldownSeconds] = useState(0);
+  const balanceCooldownActive = balanceCooldownSeconds > 0;
+
+  const refreshBalance = useCallback((force = false) => {
+    if (!force && Date.now() - lastBalanceRefreshAt.current < BALANCE_REFRESH_COOLDOWN_MS) {
+      return;
+    }
+    lastBalanceRefreshAt.current = Date.now();
+    setBalanceCooldownSeconds(BALANCE_REFRESH_COOLDOWN_MS / 1000);
     refresh();
   }, []);
+
+  useEffect(() => {
+    if (!balanceCooldownActive) return;
+    const timer = window.setInterval(
+      () => setBalanceCooldownSeconds((seconds) => Math.max(0, seconds - 1)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [balanceCooldownActive]);
+
+  useEffect(() => {
+    refreshBalance(true);
+  }, [refreshBalance]);
 
   useEffect(() => {
     if (activePanel !== "usage") return;
@@ -332,6 +356,19 @@ export function PersonalCenterPage() {
         <div className="personal-stat is-balance">
           <span>可用积分</span>
           <b>{summary?.wallet.available_points.toLocaleString() ?? "--"}</b>
+          <button
+            type="button"
+            className="personal-stats-refresh is-on-dark"
+            onClick={() => refreshBalance()}
+            disabled={balanceCooldownActive || loading}
+            aria-label="刷新可用积分"
+          >
+            {balanceCooldownActive
+              ? `${balanceCooldownSeconds} 秒后可刷新`
+              : loading
+                ? "刷新中…"
+                : "↻ 刷新"}
+          </button>
         </div>
         <div className="personal-stat">
           <span>总积分</span>
@@ -344,7 +381,9 @@ export function PersonalCenterPage() {
         <div className="personal-stat">
           <span>换算比例</span>
           <b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b>
-          <button type="button" className="personal-stats-refresh" onClick={refresh} aria-label="刷新余额">↻ 刷新</button>
+          <button type="button" className="personal-stats-refresh" onClick={() => refreshBalance()} disabled={balanceCooldownActive || loading} aria-label="刷新余额">
+            {balanceCooldownActive ? `${balanceCooldownSeconds} 秒后` : loading ? "刷新中…" : "↻ 刷新"}
+          </button>
         </div>
       </div>
 
@@ -449,7 +488,9 @@ export function PersonalCenterPage() {
             <div className="personal-card-title">
               <span className="iconfont icon-calculator" aria-hidden="true" />
               <div><h2>计费规则</h2><small>服务端权威定价，按规则版本生效，客户端不参与报价。</small></div>
-              <button type="button" onClick={refresh} disabled={loading}>刷新</button>
+              <button type="button" onClick={() => refreshBalance()} disabled={balanceCooldownActive || loading}>
+                {balanceCooldownActive ? `${balanceCooldownSeconds} 秒后` : "刷新"}
+              </button>
             </div>
 
             <div className="pricing-hero">
