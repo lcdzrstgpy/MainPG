@@ -132,3 +132,5 @@ class RegenerateItemCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     creative_prompt: str = Field(default="", max_length=4000)
+    # 超过免费重试额度后用户确认付费重试（无论失败与成功均会扣费）。
+    ack_paid_retry: bool = False

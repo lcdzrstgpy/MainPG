@@ -24,7 +24,11 @@ from .prompts import LISTING_IMAGE_ROLES, build_style_listing_prompt
 from .repository import PodCustomizationRepository, PodRepositoryError
 from .runtime import RuntimeClosedError
 from .runtime_contracts import DirectListingGridRequest, PatternGridRequest, PodAiRuntime, SceneOptimizationRequest
-from .title_runtime import PodTitleRequest, visual_signature
+from .title_runtime import PodTitleRequest, validate_title_result, visual_signature
+
+
+# 同一批次内面板发布与标题生成的并行度（用户要求的"一批次 8 个并行"）。
+POD_PANEL_WORKERS = 8
 
 
 @dataclass
@@ -123,7 +127,7 @@ class PodBatchWorker:
         )
         self._futures: dict[tuple[str, str], Future[Any]] = {}
         self._futures_lock = threading.Lock()
-        self._title_batch_locks: dict[str, threading.Lock] = {}
+        self._title_commit_locks: dict[str, threading.Lock] = {}
         self._billing_runs: dict[str, PodBillingRun] = {}
         self._closing = threading.Event()
 
@@ -959,81 +963,30 @@ class PodBatchWorker:
         billing_run: PodBillingRun,
     ) -> None:
         self.repository.set_batch_status(batch["batch_id"], "compositing")
-        roles = LISTING_IMAGE_ROLES
         title_futures: dict[Future[Any], int] = {}
-        for call, _grid, panels, fingerprints in grids:
-            style_index = call["style_index"]
-            hero_public_ready = False
-            for variant_index, (role, panel, fingerprint) in enumerate(
-                zip(roles, panels, fingerprints, strict=True), start=1
-            ):
-                panel_asset = self._save_asset(
+        title_futures_lock = threading.Lock()
+        with ThreadPoolExecutor(max_workers=POD_PANEL_WORKERS) as executor:
+            futures = [
+                executor.submit(
+                    self._publish_style_panels,
                     batch,
-                    "direct_listing_panel",
-                    f"style-{style_index}-{role}{panel.suffix}",
-                    panel.content,
+                    call,
+                    panels,
+                    fingerprints,
+                    billing_run,
+                    title_futures,
+                    title_futures_lock,
                 )
-                public_url = ""
-                publish_error = ""
-                for _attempt in (1, 2):
-                    try:
-                        public_url = self.ai_runtime.publish_listing_image(
-                            panel, namespace=batch["workspace_id"], role=role
-                        )
-                        break
-                    except Exception as exc:
-                        publish_error = str(exc).strip() or exc.__class__.__name__
-                if not public_url:
-                    self.repository.finish_style_grid_result(
-                        batch, style_index=style_index, variant_index=variant_index, call_id=call["call_id"],
-                        status="failed", pattern_asset_id=panel_asset["asset_id"], role=role,
-                        fingerprint=fingerprint, error_message=f"publish_error: {publish_error}",
-                    )
-                    continue
-                self.repository.finish_style_grid_result(
-                    batch, style_index=style_index, variant_index=variant_index, call_id=call["call_id"],
-                    status="completed", pattern_asset_id=panel_asset["asset_id"],
-                    composite_asset_id=panel_asset["asset_id"], fingerprint=fingerprint,
-                    role=role, public_url=public_url,
-                )
-                if variant_index == 1:
-                    hero_public_ready = True
-                    if self.title_runtime is not None:
-                        try:
-                            self.repository.claim_style_title(
-                                batch["batch_id"],
-                                style_index,
-                                style_task_id=call["call_id"],
-                                allow_billing_resume=billing_run.resumed,
-                            )
-                            future = self.title_runtime.submit(
-                                self._generate_style_title,
-                                batch,
-                                style_index,
-                                call["call_id"],
-                                panel,
-                                billing_run,
-                                self._title_call_ids(billing_run, batch["batch_id"], style_index),
-                            )
-                            title_futures[future] = style_index
-                        except Exception as exc:
-                            try:
-                                self.repository.fail_style_title(
-                                    batch["batch_id"],
-                                    style_index,
-                                    str(exc),
-                                    style_task_id=call["call_id"],
-                                )
-                            except Exception:
-                                pass
-            if self.title_runtime is None:
-                continue
-            if not hero_public_ready:
-                self.repository.fail_style_title(
-                    batch["batch_id"], style_index, "本款 hero 图片未成功发布，暂不能生成标题",
-                    style_task_id=call["call_id"],
-                )
-                continue
+                for call, _grid, panels, fingerprints in grids
+            ]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except PodBillingAuthorizationRequired:
+                    for pending in futures:
+                        if pending is not future:
+                            pending.cancel()
+                    raise
         for future in as_completed(title_futures):
             try:
                 future.result()
@@ -1042,6 +995,97 @@ class PodBatchWorker:
                     if pending is not future:
                         pending.cancel()
                 raise
+
+    def _publish_style_panels(
+        self,
+        batch: dict[str, Any],
+        call: dict[str, Any],
+        panels: list[Any],
+        fingerprints: list[str],
+        billing_run: PodBillingRun,
+        title_futures: dict[Future[Any], int],
+        title_futures_lock: threading.Lock,
+    ) -> None:
+        """Publish the four panels of one style (hero/detail A/detail B/scene).
+
+        Runs concurrently across styles within a batch.  Title generation is
+        submitted once the hero panel is public; uniqueness is enforced later
+        by the per-batch title commit lock.
+        """
+        style_index = call["style_index"]
+        hero_public_ready = False
+        hero_panel = None
+        for variant_index, (role, panel, fingerprint) in enumerate(
+            zip(LISTING_IMAGE_ROLES, panels, fingerprints, strict=True), start=1
+        ):
+            panel_asset = self._save_asset(
+                batch,
+                "direct_listing_panel",
+                f"style-{style_index}-{role}{panel.suffix}",
+                panel.content,
+            )
+            public_url = ""
+            publish_error = ""
+            for _attempt in (1, 2, 3):
+                try:
+                    public_url = self.ai_runtime.publish_listing_image(
+                        panel, namespace=batch["workspace_id"], role=role
+                    )
+                    break
+                except Exception as exc:
+                    publish_error = str(exc).strip() or exc.__class__.__name__
+            if not public_url:
+                self.repository.finish_style_grid_result(
+                    batch, style_index=style_index, variant_index=variant_index, call_id=call["call_id"],
+                    status="failed", pattern_asset_id=panel_asset["asset_id"], role=role,
+                    fingerprint=fingerprint, error_message=f"publish_error: {publish_error}",
+                )
+                continue
+            self.repository.finish_style_grid_result(
+                batch, style_index=style_index, variant_index=variant_index, call_id=call["call_id"],
+                status="completed", pattern_asset_id=panel_asset["asset_id"],
+                composite_asset_id=panel_asset["asset_id"], fingerprint=fingerprint,
+                role=role, public_url=public_url,
+            )
+            if variant_index == 1:
+                hero_public_ready = True
+                hero_panel = panel
+        if self.title_runtime is None:
+            return
+        if not hero_public_ready:
+            self.repository.fail_style_title(
+                batch["batch_id"], style_index, "本款 hero 图片未成功发布，暂不能生成标题",
+                style_task_id=call["call_id"],
+            )
+            return
+        try:
+            self.repository.claim_style_title(
+                batch["batch_id"],
+                style_index,
+                style_task_id=call["call_id"],
+                allow_billing_resume=billing_run.resumed,
+            )
+            future = self.title_runtime.submit(
+                self._generate_style_title,
+                batch,
+                style_index,
+                call["call_id"],
+                hero_panel,
+                billing_run,
+                self._title_call_ids(billing_run, batch["batch_id"], style_index),
+            )
+            with title_futures_lock:
+                title_futures[future] = style_index
+        except Exception as exc:
+            try:
+                self.repository.fail_style_title(
+                    batch["batch_id"],
+                    style_index,
+                    str(exc),
+                    style_task_id=call["call_id"],
+                )
+            except Exception:
+                pass
 
     def _generate_style_title(
         self,
@@ -1056,41 +1100,55 @@ class PodBatchWorker:
             raise RuntimeError("POD title runtime is disabled")
         if not provider_call_ids:
             raise RuntimeError("POD title call plan is missing")
-        with self._title_batch_lock(batch["batch_id"]):
-            try:
-                from .contracts import BusinessFields
+        try:
+            from .contracts import BusinessFields
 
-                request = PodTitleRequest(
-                    style_task_id=style_task_id,
-                    style_index=style_index,
-                    hero_image=hero.content,
-                    hero_content_type=hero.content_type,
-                    business_fields=BusinessFields.model_validate(batch["business_fields"]),
-                    creative_prompt=batch["creative_prompt"],
-                    accepted_titles=self.repository.accepted_style_titles(
-                        batch["batch_id"], exclude_style_index=style_index
-                    ),
-                    accepted_visual_signatures=self.repository.accepted_visual_signatures(
-                        batch["batch_id"], exclude_style_index=style_index
-                    ),
+            request = PodTitleRequest(
+                style_task_id=style_task_id,
+                style_index=style_index,
+                hero_image=hero.content,
+                hero_content_type=hero.content_type,
+                business_fields=BusinessFields.model_validate(batch["business_fields"]),
+                creative_prompt=batch["creative_prompt"],
+                accepted_titles=self.repository.accepted_style_titles(
+                    batch["batch_id"], exclude_style_index=style_index
+                ),
+                accepted_visual_signatures=self.repository.accepted_visual_signatures(
+                    batch["batch_id"], exclude_style_index=style_index
+                ),
+            )
+            title_kwargs = {
+                "grant": billing_run.grant,
+                "call_id": provider_call_ids[0],
+                "call_ids": provider_call_ids,
+                "on_outcome": lambda call_id, status: billing_run.record(
+                    call_id, "pod.title", status
+                ),
+            }
+            if _accepts_keyword(self.title_runtime.generate_title, "on_start"):
+                title_kwargs["on_start"] = lambda call_id: billing_run.start(
+                    call_id, "pod.title"
                 )
-                title_kwargs = {
-                    "grant": billing_run.grant,
-                    "call_id": provider_call_ids[0],
-                    "call_ids": provider_call_ids,
-                    "on_outcome": lambda call_id, status: billing_run.record(
-                        call_id, "pod.title", status
-                    ),
-                }
-                if _accepts_keyword(self.title_runtime.generate_title, "on_start"):
-                    title_kwargs["on_start"] = lambda call_id: billing_run.start(
-                        call_id, "pod.title"
-                    )
-                result = self.title_runtime.generate_title(request, **title_kwargs)
-                if not any(billing_run.has_outcome(call_id) for call_id in provider_call_ids):
-                    # Test doubles and legacy injected runtimes may not emit the
-                    # optional per-attempt callback; one returned result is one success.
-                    billing_run.record(provider_call_ids[0], "pod.title", "success")
+            result = self.title_runtime.generate_title(request, **title_kwargs)
+            if not any(billing_run.has_outcome(call_id) for call_id in provider_call_ids):
+                # Test doubles and legacy injected runtimes may not emit the
+                # optional per-attempt callback; one returned result is one success.
+                billing_run.record(provider_call_ids[0], "pod.title", "success")
+            # 标题生成在批次内并行；唯一性由提交锁内的最新集合复核保证。
+            # AI 输出基于读取时的快照，落库前必须与最新已接受标题比对，
+            # 冲突（重复/过相似/视觉签名重复）即判失败，防止并发竞态产生重复上架。
+            with self._title_commit_lock(batch["batch_id"]):
+                latest_titles = self.repository.accepted_style_titles(
+                    batch["batch_id"], exclude_style_index=style_index
+                )
+                latest_signatures = self.repository.accepted_visual_signatures(
+                    batch["batch_id"], exclude_style_index=style_index
+                )
+                validate_title_result(
+                    result,
+                    accepted_titles=latest_titles,
+                    accepted_visual_signatures=latest_signatures,
+                )
                 persisted = vars(result)
                 persisted["visual_signature"] = visual_signature(result)
                 self.repository.finish_style_title(
@@ -1105,19 +1163,19 @@ class PodBatchWorker:
                         "description": result.description,
                     },
                 )
-            except PodBillingAuthorizationRequired:
-                raise
-            except RuntimeClosedError as exc:
-                raise PodBillingAuthorizationRequired(
-                    "POD runtime stopped before the next title call; sign in to resume"
-                ) from exc
-            except Exception as exc:
-                if not any(billing_run.has_outcome(call_id) for call_id in provider_call_ids):
-                    billing_run.record(provider_call_ids[0], "pod.title", "no_return")
-                attempt_count = int(getattr(exc, "attempt_count", 0) or 0)
-                self.repository.fail_style_title(
-                    batch["batch_id"], style_index, safe_error_message(exc), attempt_count=attempt_count
-                )
+        except PodBillingAuthorizationRequired:
+            raise
+        except RuntimeClosedError as exc:
+            raise PodBillingAuthorizationRequired(
+                "POD runtime stopped before the next title call; sign in to resume"
+            ) from exc
+        except Exception as exc:
+            if not any(billing_run.has_outcome(call_id) for call_id in provider_call_ids):
+                billing_run.record(provider_call_ids[0], "pod.title", "no_return")
+            attempt_count = int(getattr(exc, "attempt_count", 0) or 0)
+            self.repository.fail_style_title(
+                batch["batch_id"], style_index, safe_error_message(exc), attempt_count=attempt_count
+            )
 
     @staticmethod
     def _title_call_ids(
@@ -1139,9 +1197,9 @@ class PodBatchWorker:
             if call.feature == "pod.title" and billing_run.call_status(call.call_id) == "planned"
         )
 
-    def _title_batch_lock(self, batch_id: str) -> threading.Lock:
+    def _title_commit_lock(self, batch_id: str) -> threading.Lock:
         with self._futures_lock:
-            return self._title_batch_locks.setdefault(batch_id, threading.Lock())
+            return self._title_commit_locks.setdefault(batch_id, threading.Lock())
 
     def _hero_media(self, context: dict[str, Any]) -> Any:
         batch = context["batch"]

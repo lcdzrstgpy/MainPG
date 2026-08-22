@@ -182,13 +182,13 @@ def _safe_shop_candidate_value(value: Any) -> Any:
         return str(value) if value.is_finite() else _DROP_SHOP_CANDIDATE_VALUE
     return _DROP_SHOP_CANDIDATE_VALUE
 
-# 失败项自动补跑轮数：WH_PP_AUTO_REPULL_ROUNDS，默认 1（任务结束后自动重跑一轮
-# 技术可重试的失败项），0 关闭；避免无限重跑反复消耗 AI 额度。
+# 失败项自动补跑轮数：WH_PP_AUTO_REPULL_ROUNDS，默认 2（任务收尾统一把所有失败
+# 链接重新投入完整处理链路，最多跑 2 轮），0 关闭；系统自动轮不向用户计费。
 def _auto_repull_rounds() -> int:
     try:
-        return max(0, int(os.environ.get("WH_PP_AUTO_REPULL_ROUNDS", "1")))
+        return max(0, int(os.environ.get("WH_PP_AUTO_REPULL_ROUNDS", "2")))
     except ValueError:
-        return 1
+        return 2
 
 
 def _iso_utc_now() -> str:
@@ -1982,6 +1982,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             and (not draft_ids or int(item.get("product_draft_id") or 0) in set(draft_ids))
         ]
         self.repository.reset_failed_items(task_id, workspace_id, draft_ids=draft_ids)
+        # 手动重试 = 付费重试：无论最终成功或失败，本次重试的链接都按 35-45 积分
+        # 全价计费（不按子项退款）。结算读取该标记后清除。
+        self.repository.merge_task_settings(task_id, workspace_id, _retry_mode="paid")
         # 显式重试时清除视觉识别缓存，强制重新识别可售主体，
         # 避免此前「多主体/遮挡」低置信度结论被缓存后重试永远命中同一结果。
         if retry_item_ids:
@@ -2752,6 +2755,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             task = self._require_task(task_id, workspace_id)
             record = _open_batch_freeze_record(freeze_id) or {}
             client = _batch_billing_client()
+            # 结算模式：paid=手动付费重试（无论成败全价扣）；free=系统自动重试轮
+            # （不加重试溢价）；空=首次正常处理。仅首次正常处理保留「重试溢价」，
+            # 系统自动轮与手动付费重试都不再叠加溢价（手动重试按 35-45 积分全价封顶）。
+            retry_mode = str(task["settings"].get("_retry_mode") or "")
             _billing_call_with_retry(
                 client.settle_batch_points,
                 token,
@@ -2759,9 +2766,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 {"items": _derive_batch_item_results(
                     _freeze_scope_items(task["items"], record),
                     task["settings"],
+                    paid_retry=retry_mode == "paid",
+                    retry_premium=retry_mode == "",
                 )},
             )
             _forget_batch_freeze(freeze_id)
+            if retry_mode:
+                self.repository.merge_task_settings(task_id, workspace_id, _retry_mode="")
         except Exception:
             # 保留 open 记录：下次有 token 的对账会补结算；服务端 7 天 TTL 兜底。
             pass
@@ -3038,10 +3049,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """任务结束后的自动补跑判定（体验对齐每日采集 SKU 补齐）。
 
         规则：
-        - 仅自动补跑 result.retryable 的技术失败/待确认项（身份待复核、
-          配置阻断等需要人工判断的不自动重跑）。
-        - 补跑轮数受 WH_PP_AUTO_REPULL_ROUNDS 限制（默认 1 轮，0 关闭），
-          避免无限重跑反复消耗额度。
+        - 处理全部完成后，把本轮失败的链接（失败 + 待确认）像草稿池进入
+          处理一样重新投入完整链路，最多自动重试 WH_PP_AUTO_REPULL_ROUNDS
+          （默认 2）轮；每轮内部仍并行，全部跑完才向用户展示最终结果。
+        - 系统自动重试轮不消耗积分（结算不加重试溢价、失败链接全额退款）。
         - 直连计费任务必须仍有可用远程 token 才会自动补跑；否则保持现状，
           留给用户在结果页手动重新处理。
         """
@@ -3055,28 +3066,75 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             return
         state = settings.get("_auto_repull")
         previous_state = state if isinstance(state, dict) else {}
+        max_rounds = _auto_repull_rounds()
         if previous_state.get("status") == "running":
-            # 本轮执行就是自动补跑轮：记录结果并结束，不再继续触发。
-            remaining = sum(
-                1
+            # 本轮执行就是自动补跑轮：仍有失败且未到轮次上限时继续自动进入下一轮
+            # （失败链接与草稿池进入处理一致地重新投入完整链路），直到跑满
+            # max_rounds 或全部成功，最后才记录终态并展示给用户。
+            remaining_items = [
+                item
                 for item in task["items"]
                 if item["status"] in {"failed", "attention_required"}
-            )
+            ]
+            remaining = len(remaining_items)
             total = int(previous_state.get("total") or 0)
+            round_no = int(previous_state.get("round") or 1)
+            if remaining > 0 and round_no < max_rounds:
+                next_round_drafts = sorted({
+                    int(item["product_draft_id"])
+                    for item in remaining_items
+                    if item.get("product_draft_id")
+                })
+                if next_round_drafts:
+                    billing = settings.get("_billing")
+                    billed = isinstance(billing, dict) and bool(
+                        self._text(billing.get("account_id"))
+                    )
+                    token = self._task_remote_token(task_id)
+                    if not (billed and not token):
+                        launch_state = {
+                            "round": round_no + 1,
+                            "total": len(next_round_drafts),
+                            "status": "running",
+                            "message": f"正在重试波动链接（第 {round_no + 1} 轮）…",
+                            "updated_at": _iso_utc_now(),
+                        }
+                        self.repository.merge_task_settings(
+                            task_id,
+                            workspace_id,
+                            _auto_repull=launch_state,
+                            _retry_mode="free",
+                        )
+                        self._launch_auto_repull(
+                            task_id,
+                            workspace_id,
+                            next_round_drafts,
+                            remote_token=token,
+                        )
+                        return
+            if remaining > 0 and round_no >= max_rounds:
+                message = (
+                    f"AI 波动服务链接已自动重试 {round_no} 轮仍不成功，"
+                    "建议在预检板块手动剔除"
+                )
+            elif remaining > 0:
+                message = (
+                    f"波动链接重试（第 {round_no} 轮）完成：成功 "
+                    f"{max(0, total - remaining)} · 剩余 {remaining}"
+                )
+            else:
+                message = f"波动链接重试（第 {round_no} 轮）完成：全部成功"
             done_state = {
-                "round": int(previous_state.get("round") or 1),
+                "round": round_no,
                 "total": total,
                 "status": "completed",
-                "message": (
-                    f"自动补跑完成：成功 {max(0, total - remaining)} · 失败 {remaining}"
-                ),
+                "message": message,
                 "updated_at": _iso_utc_now(),
             }
             self.repository.merge_task_settings(
                 task_id, workspace_id, _auto_repull=done_state
             )
             return
-        max_rounds = _auto_repull_rounds()
         if max_rounds <= 0:
             return
         done_rounds = int(previous_state.get("round") or 0)
@@ -3087,7 +3145,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             for item in failures
             if item.get("product_draft_id")
             and item.get("status") in {"failed", "attention_required"}
-            and bool((item.get("result") or {}).get("retryable"))
         })
         if not retryable_drafts:
             return
@@ -3101,10 +3158,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "round": done_rounds + 1,
             "total": len(retryable_drafts),
             "status": "running",
-            "message": f"正在自动重新处理缺陷项（第 {done_rounds + 1} 轮）…",
+            "message": f"正在重试波动链接（第 {done_rounds + 1} 轮）…",
             "updated_at": _iso_utc_now(),
         }
-        self.repository.merge_task_settings(task_id, workspace_id, _auto_repull=launch_state)
+        # 系统自动重试轮：结算时不加重试溢价、不向用户计费（标记由结算读取后清除）。
+        self.repository.merge_task_settings(
+            task_id, workspace_id, _auto_repull=launch_state, _retry_mode="free"
+        )
         self._launch_auto_repull(task_id, workspace_id, retryable_drafts, remote_token=token)
 
     def _launch_auto_repull(
@@ -3147,6 +3207,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     time.sleep(0.5)
                 with self._task_worker_lock:
                     self._task_workers[(workspace_id, task_id)] = threading.current_thread()
+                # 暂停中不启动本轮重试：reset_failed_items 会把任务状态强制改回
+                # queued，覆盖用户的暂停操作；暂停交由 resume 后的常规流程继续补跑。
+                if self._require_task(task_id, workspace_id)["status"] == "paused":
+                    return
                 self.repository.reset_failed_items(task_id, workspace_id, draft_ids=draft_ids)
                 # 清除视觉识别缓存，避免「多主体/遮挡」低置信度结论被缓存后重跑
                 # 永远命中同一结果（与手动重试行为一致）。
@@ -6703,13 +6767,26 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
     @staticmethod
     def _elapsed_seconds(task: dict[str, Any]) -> int:
-        """任务处理耗时：运行中按当前时间计算，已结束按 updated_at - created_at。"""
+        """任务处理耗时：运行中按当前时间计算，已结束按 updated_at - created_at。
+
+        自动补跑轮（settings._auto_repull.status == running）期间即使任务行状态
+        短暂回到 completed，仍视为处理中持续计时，直到最终结果（进度 100%）
+        才停止。
+        """
         from datetime import datetime, timezone  # noqa: PLC0415
 
         started = ProductProcessingService._iso_datetime(task.get("created_at"))
         if started is None:
             return 0
-        if task.get("status") in {"completed", "failed", "partial_failure"}:
+        settings = task.get("settings")
+        auto_repull = settings.get("_auto_repull") if isinstance(settings, dict) else None
+        auto_repull_running = (
+            isinstance(auto_repull, dict) and auto_repull.get("status") == "running"
+        )
+        if (
+            task.get("status") in {"completed", "failed", "partial_failure"}
+            and not auto_repull_running
+        ):
             end = ProductProcessingService._iso_datetime(task.get("updated_at")) or datetime.now(timezone.utc)
         else:
             end = datetime.now(timezone.utc)

@@ -78,7 +78,7 @@ const podCustomization: WorkspaceModule = {
   label: "POD定制",
   icon: "",
   iconClass: "iconfont icon-skin",
-  description: "批量生成 POD 图片、豆包标题并导出店小秘文件",
+  description: "批量生成 POD 图片与标题并导出店小秘文件",
 };
 
 const productProcessingHistory: WorkspaceModule = {

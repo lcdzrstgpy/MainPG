@@ -434,6 +434,8 @@
 .pod-dianxiaomi-export { display: grid; align-content: start; justify-items: end; gap: 4px; max-width: 190px; }
 .pod-dianxiaomi-export button { min-height: 34px; padding: 7px 10px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: #fff; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); font-size: .63rem; font-weight: 850; white-space: nowrap; }
 .pod-dianxiaomi-export button:disabled { cursor: not-allowed; color: var(--pod-text-muted); background: var(--pod-surface-soft); border-color: var(--pod-border); opacity: .82; }
+.pod-dianxiaomi-export .pod-batch-retry-failed { color: #7c2d12; background: linear-gradient(105deg, #ffd08a, #ffb35c); border-color: #f59e0b; }
+.pod-dianxiaomi-export .pod-batch-retry-failed:disabled { color: var(--pod-text-muted); background: var(--pod-surface-soft); border-color: var(--pod-border); }
 .pod-dianxiaomi-export small { color: #aa6351; font-size: .53rem; line-height: 1.35; text-align: right; }
 
 @keyframes pod-pulse { 50% { opacity: .55; transform: scale(.88); } }

@@ -154,9 +154,11 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         token = bearer_token(authorization)
         session = sessions.store.get_session(token)
         if session is None:
-            raise PermissionError("invalid bearer token")
+            raise CustomerAuthRejected(401, "login session expired, please sign in again")
         if not session.remote_token:
-            raise CustomerAuthUnavailable("remote customer session is missing")
+            # 本地会话仍在但远程会话缺失（应用重启或远程 token 失效）：
+            # 按登录失效处理，引导用户重新登录。
+            raise CustomerAuthRejected(401, "remote customer session is missing, please sign in again")
         return session.remote_token
 
     @router.get("/billing/summary")

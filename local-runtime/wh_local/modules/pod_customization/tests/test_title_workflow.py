@@ -136,8 +136,8 @@ class TitleRuntime:
             english_title=f"Coastal Botanical Canvas Tote Style {request.style_index}",
             description=f"Layered ocean fern artwork for style {request.style_index}.",
             normalized_title=" ".join(title.lower().split()),
-            visual_theme="coastal botanical",
-            motif_keywords=("ocean fern", "layered ink"),
+            visual_theme=f"coastal botanical style {request.style_index}",
+            motif_keywords=(f"ocean fern style {request.style_index}", "layered ink"),
             color_keywords=("navy", "sand"),
             model="title-model",
             prompt_version="pod-title-v1",
@@ -362,7 +362,7 @@ def test_title_failure_preserves_all_four_images_and_settles_batch_failed(tmp_pa
 
 
 def test_detail_publication_failure_does_not_discard_generated_title(tmp_path: Path) -> None:
-    images = ImageRuntime([_grid(15)], publish_failures={"detail_a": 2})
+    images = ImageRuntime([_grid(15)], publish_failures={"detail_a": 3})
     titles = TitleRuntime()
     service = _service(tmp_path, images, titles)
     actor = _actor()
@@ -382,7 +382,7 @@ def test_detail_publication_failure_does_not_discard_generated_title(tmp_path: P
     images.close()
 
 
-def test_same_batch_title_generation_serializes_accepted_titles_and_visual_signatures(tmp_path: Path) -> None:
+def test_batch_title_generation_runs_parallel_and_commit_lock_keeps_titles_unique(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(17), _grid(27)])
     titles = SlowTitleRuntime()
     service = _service(tmp_path, images, titles)
@@ -391,15 +391,15 @@ def test_same_batch_title_generation_serializes_accepted_titles_and_visual_signa
     batch = service.create_batch(actor, _batch_request(template["id"], count=2), enqueue=False)
 
     service.worker.process_batch(batch["id"])
+    stored = service.get_batch(actor, batch["id"])
 
-    assert [request.style_index for request in titles.requests] == [1, 2]
-    assert titles.max_active == 1
-    assert titles.requests[0].accepted_titles == ()
-    assert titles.requests[0].accepted_visual_signatures == ()
-    assert len(titles.requests[1].accepted_titles) == 1
-    assert titles.requests[1].accepted_visual_signatures == (
-        "coastal botanical|layered ink|ocean fern",
-    )
+    # 批次内标题并行生成：两款标题与视觉签名均不同（互不冲突），
+    # 提交锁复核不误伤，两款都应成功落库。
+    assert [title["status"] for title in stored["style_titles"]] == ["completed", "completed"]
+    copies = service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id)
+    assert set(copies) == {1, 2}
+    assert stored["listing_ready_count"] == 2
+    assert stored["status"] == "completed"
     service.close()
     titles.close()
     images.close()
@@ -417,8 +417,9 @@ def test_duplicate_title_finish_rolls_back_the_style_copy_atomically(tmp_path: P
     stored = service.get_batch(actor, batch["id"])
     copies = service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id)
 
-    assert [title["status"] for title in stored["style_titles"]] == ["completed", "failed"]
-    assert set(copies) == {1}
+    # 并发下提交顺序不定：两款标题完全相同，只有先落库者成功，后提交者被提交锁复核拒绝并回滚。
+    assert sorted(title["status"] for title in stored["style_titles"]) == ["completed", "failed"]
+    assert len(copies) == 1
     assert stored["listing_ready_count"] == 1
     assert stored["status"] == "partial_failure"
     service.close()
@@ -499,10 +500,12 @@ def test_title_resume_skips_persisted_success_and_uses_only_remaining_calls(tmp_
     assert resumed["status"] == "settled"
     assert len(titles.requests) == prior_title_requests + 1
     refreshed = service.repository.get_billing_run(run["run_id"], actor.workspace_id, actor.id)
-    assert [outcome["status"] for outcome in refreshed["outcomes"]] == [
-        "success",
-        "success",
+    assert sorted(outcome["status"] for outcome in refreshed["outcomes"]) == [
         "no_return",
+        "no_return",
+        "no_return",
+        "success",
+        "success",
     ]
     service.close()
     titles.close()

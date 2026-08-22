@@ -248,7 +248,7 @@ export function PriceVerificationPage({ isActive = true }: { isActive?: boolean 
     : "";
   const showNotice = Boolean(notice) && notice !== "正在读取核价批次…" && notice !== batchSummary;
   return <div className="price-verification-page">
-    <section className="price-verification-hero"><div><p className="eyebrow">PRICE VERIFICATION · LOCAL WORKSPACE</p><h1>核价及货源</h1><p>插件采集 Temu 本页报价，人工确认本轮 SKC；优先复用产品库已有货源，仅对未入库 SKC 执行 1688 图搜。</p></div><div className="price-verification-hero-status"><span className="status-dot" />{currentBatchId ? "当前批次已就绪" : "等待插件采集"}</div></section>
+    <section className="price-verification-hero"><div><h1>核价及货源</h1><p>插件采集 Temu 本页报价，人工确认本轮 SKC；优先复用产品库已有货源，仅对未入库 SKC 执行 1688 图搜。</p></div><div className="price-verification-hero-status"><span className="status-dot" />{currentBatchId ? "当前批次已就绪" : "等待插件采集"}</div></section>
     <section className="price-verification-workflow-card"><div className="price-verification-workflow-heading"><span>◇</span><strong>核价及货源工作流</strong><small>本轮 SKC 独立流转，历史数据不参与图搜</small></div><WorkflowSteps activeStage={activeStage} canOpen={canOpenStage} onOpen={openStage} /></section>
     {showNotice ? <p className="price-verification-notice price-verification-notice-compact" role="status" aria-live="polite">{notice}</p> : null}
     <div className="price-verification-content-grid"><div className="price-verification-main-column">

@@ -158,7 +158,7 @@ export interface ProductProcessingOptions {
   imageTemplate?: 'A' | 'B';
   /** 历史/API 兼容字段；新前端任务固定发送 4，不再向用户暴露。 */
   imageGenerationCount?: 1 | 2 | 4;
-  /** 失败项自动补跑：任务结束后对技术可重试的失败项后台自动重跑一轮（默认开启） */
+  /** 失败项自动补跑：任务收尾统一把所有失败链接重新投入处理链路，自动重跑最多 2 轮（系统轮不向用户计费，默认开启） */
   autoRepull?: boolean;
 }
 

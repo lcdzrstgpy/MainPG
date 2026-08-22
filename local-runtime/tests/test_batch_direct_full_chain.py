@@ -264,8 +264,8 @@ def test_batch_route_enables_random_prices_only_for_pod_profile(
     )
     assert pod.status_code == 200, pod.text
     assert pod.json()["freeze"]["billing_profile"] == "pod_random_v1"
-    assert pod.json()["freeze"]["link_prices"] == [80, 90]
-    assert pod.json()["freeze"]["frozen_points"] == 170
+    assert pod.json()["freeze"]["link_prices"] == [40, 50]
+    assert pod.json()["freeze"]["frozen_points"] == 90
 
     invalid = client.post(
         "/api/customer/billing/batch/freeze",

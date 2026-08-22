@@ -41,7 +41,7 @@ export function PodListingDetailDrawer({ batch, style, onClose }: Props) {
     <button type="button" className="pod-listing-detail-backdrop" onClick={onClose} aria-label="关闭款式上架链接详情" />
     <aside className="pod-listing-detail-drawer" role="dialog" aria-modal="true" aria-label="款式上架链接详情">
       <header className="pod-listing-detail-header">
-        <div><span>LISTING DETAILS</span><h2>款式 #{String(style.index).padStart(3, "0")}</h2><p>{podStyleTitleStatusLabel(style.title_status, style.listing_ready)} · 批次 {batch.id.slice(0, 8)}</p></div>
+        <div><h2>款式 #{String(style.index).padStart(3, "0")}</h2><p>{podStyleTitleStatusLabel(style.title_status, style.listing_ready)} · 批次 {batch.id.slice(0, 8)}</p></div>
         <button type="button" onClick={onClose} aria-label="关闭">×</button>
       </header>
 
@@ -53,14 +53,14 @@ export function PodListingDetailDrawer({ batch, style, onClose }: Props) {
         </section>
 
         <section className="pod-listing-detail-snapshot">
-          <header><span>DIANXIAOMI LISTING</span><h3>店小秘上架信息</h3><small>创建批次时冻结的上架快照</small></header>
+          <header><h3>店小秘上架信息</h3><small>创建批次时冻结的上架快照</small></header>
           {listingDetails.length ? <dl>
             {listingDetails.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
           </dl> : <p>该旧批次没有保存店小秘上架快照。</p>}
         </section>
 
         <section className="pod-listing-detail-links">
-          <header><div><span>LISTING IMAGES</span><h3>四张上架图片</h3></div><small>{style.results.filter((item) => item?.public_url).length} / 4 个公网链接</small></header>
+          <header><div><h3>四张上架图片</h3></div><small>{style.results.filter((item) => item?.public_url).length} / 4 个公网链接</small></header>
           <div>
             {style.results.map((item, offset) => {
               const preview = item?.composite_preview_url || item?.pattern_preview_url;

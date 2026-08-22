@@ -20,8 +20,8 @@ TEST_GRANT_POINTS = int(os.environ.get("WH_BILLING_TEST_GRANT_POINTS", "10000") 
 GATEWAY_LEGACY_LEASE_SECONDS = 900
 BATCH_BILLING_PROFILE_PRODUCT = "product_processing"
 BATCH_BILLING_PROFILE_POD = "pod_random_v1"
-# POD 每条款式定价：普通商品处理（40 积分）翻倍，服务器随机取 80..90 整数积分。
-POD_LINK_PRICE_MIN_POINTS = 80
+# POD 每条款式定价：服务器随机取 40..50 整数积分。
+POD_LINK_PRICE_MIN_POINTS = 40
 POD_LINK_PRICE_VARIANTS = 11
 
 
@@ -1794,7 +1794,10 @@ def settle_batch_points(
                 if set(statuses) != set(pod_scope):
                     raise HTTPException(status_code=400, detail="POD subitems must match frozen scope")
                 link_units = pod_link_price_units[index - 1]
-                if all(statuses[feature] == "success" for feature in pod_scope):
+                # 付费重试（超过免费额度后用户确认）：该链接无论成功与否都按款式价
+                # 扣费，不再按成败退款；只有未确认的普通重试才按成功/失败结算。
+                paid_retry = bool(entry.get("paid_retry") or False)
+                if paid_retry or all(statuses[feature] == "success" for feature in pod_scope):
                     total_charge_units += link_units
                 else:
                     total_refund_units += link_units
@@ -1806,6 +1809,19 @@ def settle_batch_points(
                     rule_version=freeze_rule_version,
                     item_results=[dict(result) for result in link_results if isinstance(result, dict)],
                 )
+                # 手动付费重试（paid_retry=true）：该链接无论子项成败都按整条链接
+                # 全价计费（35-45 积分区间），不退任何子项；审计明细仍保留实际状态。
+                if bool(entry.get("paid_retry") or False):
+                    full_units = sum(
+                        int(detail["charge_units"]) for detail in computed["details"]
+                    )
+                    computed = {
+                        **computed,
+                        "charge_units": full_units,
+                        "refund_units": 0,
+                        "charge_points": _display_points(full_units),
+                        "refund_points": 0,
+                    }
                 total_charge_units += int(computed["charge_units"])
                 total_refund_units += int(computed["refund_units"])
                 total_premium_units += int(computed.get("premium_units") or 0)

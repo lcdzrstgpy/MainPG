@@ -377,7 +377,6 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
       <aside className="profit-source-drawer">
         <header className="profit-source-drawer-head">
           <div>
-            <p className="eyebrow">PRODUCT SOURCES</p>
             <h2>{current.skc}</h2>
             <p>
               <span>{siteLabel(current.site || current.site_code)}</span>

@@ -120,6 +120,11 @@ export type PodStyleTitle = {
   updated_at: string;
 };
 
+export type PodStyleRetry = {
+  style_index: number;
+  retry_count: number;
+};
+
 export type PodBatchSummary = {
   id: string;
   title: string;
@@ -164,6 +169,8 @@ export type PodBatch = PodBatchSummary & {
   creative_prompt: string;
   items: PodBatchItem[];
   style_titles?: PodStyleTitle[];
+  free_retry_limit?: number;
+  style_retries?: PodStyleRetry[];
 };
 
 export type PodBatchListResponse = {

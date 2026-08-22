@@ -103,12 +103,12 @@ export const podCustomizationApi = {
     body,
   }),
   getBatch: (batchId: string) => httpJson<PodBatch>(`${API_BASE}/batches/${encodeURIComponent(batchId)}`),
-  regenerateStyle: (batchId: string, styleIndex: number, creativePrompt?: string) => httpJson<{ style_index: number; results: PodBatchItem[] }>(
+  regenerateStyle: (batchId: string, styleIndex: number, creativePrompt?: string, ackPaidRetry = false) => httpJson<{ style_index: number; results: PodBatchItem[] }>(
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/styles/${styleIndex}/regenerate`,
-    { method: "POST", body: creativePrompt?.trim() ? { creative_prompt: creativePrompt.trim() } : {} },
+    { method: "POST", body: { ...(creativePrompt?.trim() ? { creative_prompt: creativePrompt.trim() } : {}), ack_paid_retry: ackPaidRetry } },
   ),
-  regenerateStyleTitle: (batchId: string, styleIndex: number) => {
-    const request = podStyleTitleRegenerateRequest(batchId, styleIndex);
+  regenerateStyleTitle: (batchId: string, styleIndex: number, ackPaidRetry = false) => {
+    const request = podStyleTitleRegenerateRequest(batchId, styleIndex, ackPaidRetry);
     return httpJson<PodStyleTitle>(request.path, request.options);
   },
   listPendingBillingRuns: () => {

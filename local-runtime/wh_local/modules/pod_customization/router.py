@@ -208,6 +208,7 @@ def create_router(
             batch_id,
             style_index,
             creative_prompt=body.creative_prompt,
+            ack_paid_retry=body.ack_paid_retry,
             enqueue=start_workers,
         )
 
@@ -215,6 +216,7 @@ def create_router(
     def regenerate_title(
         batch_id: str,
         style_index: int,
+        body: RegenerateItemCreate,
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
@@ -223,6 +225,7 @@ def create_router(
             actor,
             batch_id,
             style_index,
+            ack_paid_retry=body.ack_paid_retry,
             enqueue=start_workers,
         )
 

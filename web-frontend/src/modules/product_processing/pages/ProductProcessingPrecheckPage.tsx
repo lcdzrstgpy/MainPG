@@ -359,7 +359,6 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       <div className="verify-page">
         <header className="verify-commandbar">
           <div className="verify-command-title">
-            <span className="verify-eyebrow">PRODUCT PROCESSING · 预检</span>
             <h1>预检</h1>
           </div>
         </header>
@@ -689,7 +688,6 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     <div className="verify-page">
       <header className="verify-commandbar">
         <div className="verify-command-title">
-          <span className="verify-eyebrow">PRODUCT PROCESSING · 预检环节</span>
           <h1>预检与最终发布</h1>
           <p>图片先以稳定素材 ID 在本地清单中增删排序；点击完成后，仅发布最终保留图片并生成店小秘表格。</p>
         </div>

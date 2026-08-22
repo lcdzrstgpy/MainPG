@@ -371,6 +371,35 @@
   opacity: 0.5;
 }
 
+/* 积分刷新加载动画：可用积分旁的转圈 + 按钮内小转圈 */
+@keyframes personal-spin {
+  to { transform: rotate(360deg); }
+}
+
+.personal-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(148, 163, 184, 0.35);
+  border-top-color: #0b5d87;
+  border-radius: 50%;
+  animation: personal-spin 0.8s linear infinite;
+  vertical-align: -2px;
+  margin-right: 6px;
+}
+
+.personal-stat-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: personal-spin 0.8s linear infinite;
+  margin-left: 8px;
+  vertical-align: 2px;
+}
+
 .personal-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

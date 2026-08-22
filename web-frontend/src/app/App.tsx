@@ -37,6 +37,18 @@ export function App() {
       .finally(() => setReady(true));
   }, []);
 
+  // 任意接口返回登录失效（登录超时 / 远程会话缺失）时统一回到登录页，避免用户
+  // 停留在工作区内反复看到报错提示。
+  useEffect(() => {
+    const onSessionExpired = () => {
+      clearAuthSession();
+      setPlayEntryAnimation(false);
+      setEnteredWorkspace(false);
+    };
+    window.addEventListener("auth:session-expired", onSessionExpired);
+    return () => window.removeEventListener("auth:session-expired", onSessionExpired);
+  }, []);
+
   async function signOut() {
     try {
       await httpJson<{ ok?: boolean }>("/api/customer/logout", { method: "POST" });

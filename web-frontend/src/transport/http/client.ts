@@ -39,6 +39,18 @@ export function clearAuthSession() {
   window.localStorage.removeItem(ACCOUNT_KEY);
 }
 
+const SESSION_EXPIRED_EVENT = "auth:session-expired";
+
+/** 通知应用层登录状态已失效（登录超时 / 远程会话缺失），用于自动返回登录页。 */
+export function notifySessionExpired(): void {
+  window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+}
+
+function isSessionExpired(response: Response, detail: string): boolean {
+  if (response.status === 401) return true;
+  return /login session expired|remote customer session is missing|invalid bearer token|missing bearer token/i.test(detail);
+}
+
 export async function httpJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   const token = authToken(options.token);
@@ -54,6 +66,7 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
 
   if (!response.ok) {
     const detail = typeof payload?.detail === "string" ? payload.detail : `请求失败 (HTTP ${response.status})`;
+    if (isSessionExpired(response, detail)) notifySessionExpired();
     throw new Error(detail);
   }
 
@@ -73,6 +86,7 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "请求失败");
+    if (isSessionExpired(response, detail)) notifySessionExpired();
     throw new Error(detail || "请求失败");
   }
 

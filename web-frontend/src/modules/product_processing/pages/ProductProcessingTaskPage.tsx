@@ -160,13 +160,33 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     [failureItems]
   );
 
-  // 实时处理进度：processed_count / total_count，与后端轮询结果同步刷新
-  const processingStatuses = ['queued', 'running', 'paused'];
-  const batchProcessing = batch ? processingStatuses.includes(batch.task.status) : false;
+  // 实时处理进度：processed_count / total_count，与后端轮询结果同步刷新。
+  // 自动补跑轮（含轮间切换的短暂窗口）仍视为「处理中」：处理过程中不展示
+  // 失败信息，进度条在全部轮次（含最多 2 轮自动重试）跑完前不显示 100%。
+  // 暂停单独识别（含重试轮中的暂停），给用户明确的「已暂停」反馈。
+  const processingStatuses = ['queued', 'running'];
+  const batchProcessing = batch
+    ? (processingStatuses.includes(batch.task.status) || autoRepullRunning)
+    : false;
+  const taskPaused = batch?.task.status === 'paused';
+  const taskActive = batchProcessing || taskPaused;
   const batchTotal = batch?.total_count || 0;
   const batchProcessed = batch?.processed_count ?? 0;
-  const progress = batchTotal > 0
-    ? Math.min(100, Math.max(0, Math.round((batchProcessed / batchTotal) * 100)))
+  const taskDone = batch
+    ? ['completed', 'partial_failure'].includes(batch.task.status) && !autoRepullRunning
+    : false;
+  const progress = taskDone
+    ? 100
+    : batchTotal > 0
+      ? Math.min(99, Math.max(0, Math.round((batchProcessed / batchTotal) * 100)))
+      : 0;
+  // 本轮自动重试进度：轮内已处理条数 = 轮总数 - 仍处于 pending/running 的条数
+  // （重试轮只有本轮失败的链接会被重置为 pending，其余已成功项保持 completed）。
+  const roundRemaining = batch
+    ? batch.items.filter((item) => item.status === 'pending' || item.status === 'running').length
+    : 0;
+  const roundDone = autoRepullRunning && autoRepull
+    ? Math.max(0, Math.min(autoRepull.total, autoRepull.total - roundRemaining))
     : 0;
 
   const notify = (ok: string) => { setMessage(ok); setError(''); };
@@ -195,7 +215,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   useEffect(() => {
     if (!batch) return;
     const running = ['queued', 'running', 'paused'];
-    if (!running.includes(batch.task.status)) return;
+    // 自动补跑轮（含轮间 task 状态短暂回到 completed 的窗口）必须继续轮询，
+    // 否则重试轮的进度与耗时更新会永远停在第 1 轮结束前。
+    const active = running.includes(batch.task.status) || batch.auto_repull?.status === 'running';
+    if (!active) return;
     const generation = ++pollGenerationRef.current;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
@@ -204,7 +227,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/outputs`);
         if (stopped || pollGenerationRef.current !== generation) return;
         setBatch(data);
-        if (!running.includes(data.task.status)) {
+        const stillActive = running.includes(data.task.status) || data.auto_repull?.status === 'running';
+        if (!stillActive) {
           return;
         }
       } catch (err) {
@@ -220,7 +244,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       if (timer) clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [batch?.task_id, batch?.task.status]);
+  }, [batch?.task_id, batch?.task.status, batch?.auto_repull?.status]);
 
   const startBatch = async () => {
     if (!initialDraftIds?.length) { setError('没有可处理的草稿'); return; }
@@ -296,9 +320,11 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     finally { setControlBusy(false); }
   };
 
-  // 重新处理失败/待确认项：以这些草稿为新的批次重新走处理流水线（async_mode 后台执行）
+  // 重新处理失败/待确认项：以这些草稿为新的批次重新走处理流水线（async_mode 后台执行）。
+  // 手动重试 = 付费重试：无论最终成功或失败都按 35-45 积分/条计费，提交前需确认。
   const retryFailed = async (draftIds: number[]) => {
     if (!draftIds.length || !batch || batchProcessing || startInFlightRef.current) return;
+    if (!window.confirm(`重新处理 ${draftIds.length} 条失败链接将按单条 35-45 积分计费，无论最终成功或失败均会扣费，确认继续？`)) return;
     startInFlightRef.current = true;
     setLoading(true);
     setMessage('');
@@ -375,9 +401,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       )}
       <header className="verify-commandbar">
         <div className="verify-command-title">
-          <span className="verify-eyebrow">PRODUCT PROCESSING · 处理任务</span>
           <h1>{initialTaskId != null ? '历史任务详情' : '处理设置与进度'}</h1>
-          <p>{initialTaskId != null ? '继续处理中的历史任务；关闭本页不会停止后台任务，可从左侧“历史记录”再次打开。' : '配置处理参数后开始，结果实时轮询；已对齐 five-stage 流水线（文本合并一次调用 + 尺寸确定性提取 + 详情图本地合成 + AI 阶段缓存），典型单商品 AI 调用 2~3 次。'}</p>
+          <p>{initialTaskId != null ? '继续处理中的历史任务；关闭本页不会停止后台任务，可从左侧“历史记录”再次打开。' : '配置处理参数后开始，结果实时轮询。'}</p>
         </div>
       </header>
 
@@ -438,7 +463,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           <section className="verify-section">
             <div className="verify-section-head">
               <h2>处理结果</h2>
-              <span className="verify-sub">{batch ? taskStatusLabel(batch.task.status) : '暂无任务'}</span>
+              <span className="verify-sub">{batch ? (taskActive ? (taskPaused ? '已暂停' : '处理中') : taskStatusLabel(batch.task.status)) : '暂无任务'}</span>
             </div>
             {batch && (
               <>
@@ -459,14 +484,22 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       <strong>{progress}%</strong>
                     </div>
                     <div className="verify-progress-meta">
-                      <strong>{batchProcessing ? '正在处理…' : taskStatusLabel(batch.task.status)}</strong>
+                      <strong>{taskPaused
+                        ? '已暂停'
+                        : batchProcessing
+                          ? (autoRepullRunning ? (autoRepull?.message || '重试波动链接中…') : '正在处理…')
+                          : taskStatusLabel(batch.task.status)}</strong>
                       <span>
-                        已处理 <b>{batchProcessed}</b> / {batchTotal} 条 · 成功 {batch.success_count} · 失败 {batch.failed_count}
+                        {autoRepullRunning && autoRepull
+                          ? <>本轮自动重试 <b>{roundDone}</b> / {autoRepull.total} 条</>
+                          : <>已处理 <b>{batchProcessed}</b> / {batchTotal} 条</>}
                       </span>
                       <span className="verify-elapsed">已用时 {formatDuration(batch.elapsed_seconds ?? batch.task.elapsed_seconds)}</span>
                     </div>
                   </div>
                 )}
+                {/* 结果汇总仅在全部处理（含自动重试轮）完成后展示，处理中/已暂停不暴露失败统计 */}
+                {!taskActive && (
                 <div className="verify-summary">
                   <div className="verify-count">总数 <b>{batch.total_count}</b></div>
                   <div className="verify-count success">成功 <b>{batch.success_count}</b></div>
@@ -476,15 +509,16 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <div className="verify-count">技术可重试 <b>{batch.technical_retryable_count}</b></div>
                   <div className="verify-count">配置阻断 <b>{batch.configuration_blocked_count}</b></div>
                 </div>
-                {(autoRepullRunning || autoRepullDone || autoRepullFailed) && autoRepull && (
-                  <div className={`verify-repull-banner ${autoRepull.status}`} role="status">
-                    <i className={`iconfont ${autoRepullRunning ? 'icon-loading' : autoRepullDone ? 'icon-check-circle' : 'icon-infomation'}`} aria-hidden="true" />
-                    <span>{autoRepull.message}</span>
-                    {autoRepullRunning && <em>无需手动操作，完成后自动刷新</em>}
+                )}
+                {(taskPaused || autoRepullRunning || autoRepullDone || autoRepullFailed) && (taskPaused || autoRepull) && (
+                  <div className={`verify-repull-banner ${taskPaused ? 'paused' : (autoRepull?.status ?? '')}`} role="status">
+                    <i className={`iconfont ${taskPaused ? 'icon-infomation' : autoRepullRunning ? 'icon-loading' : autoRepullDone ? 'icon-check-circle' : 'icon-infomation'}`} aria-hidden="true" />
+                    <span>{taskPaused ? '任务已暂停：当前商品完成后将停止，可从断点继续（含自动重试轮）' : (autoRepull?.message ?? '')}</span>
+                    {!taskPaused && autoRepullRunning && <em>无需手动操作，完成后自动刷新</em>}
                   </div>
                 )}
                 <div className="verify-actions">
-                  {batchProcessing && (
+                  {(batchProcessing || taskPaused) && (
                     <button
                       className={batch.task.status === 'paused' ? 'primary' : ''}
                       disabled={controlBusy || loading}
@@ -494,9 +528,9 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   )}
                   <button
                     className="primary"
-                    disabled={batchProcessing}
+                    disabled={taskActive}
                     onClick={() => onOpenPrecheck?.(batch.task_id)}
-                    title={batchProcessing ? '处理完成后可进入预检' : '打开预检页：核对标题/图片/字段，修改后导出最终版表格'}
+                    title={taskActive ? '处理完成后可进入预检' : '打开预检页：核对标题/图片/字段，修改后导出最终版表格'}
                   >预检并导出最终版</button>
                   {batch.outputs.dxm_import && <button onClick={() => void downloadOutput('dxm', `dxm_import_task_${batch.task_id}.xlsx`)}>下载导入表</button>}
                   {batch.outputs.error_report && <button onClick={() => void downloadOutput('errors', `error_report_task_${batch.task_id}.csv`)}>下载错误报告</button>}
@@ -507,10 +541,11 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
             {!batch && <p className="verify-empty">尚未提交处理批次。请配置参数后点击"开始处理"。</p>}
           </section>
 
-          {failureItems.length > 0 && (
+          {/* 失败明细只在全部处理（含 2 轮自动重试）跑完后展示最终失败链接及原因 */}
+          {failureItems.length > 0 && !taskActive && (
             <section className="verify-section">
               <div className="verify-section-head">
-                <h2>失败商品 <span className="verify-failure-count">（{failureItems.length} 项{autoRepullRunning ? ' · 自动补跑中' : ''}）</span></h2>
+                <h2>失败商品 <span className="verify-failure-count">（{failureItems.length} 项）</span></h2>
                 <span className="verify-actions">
                   <button className="btn-mini" onClick={() => setShowFailures((v) => !v)} title={showFailures ? '收起失败明细' : '展开失败明细，可手动重新处理或知晓入库'}>{showFailures ? '收起明细' : '查看明细'}</button>
                   {showFailures && (

@@ -65,9 +65,17 @@ const pricingFeatures: Array<{ key: string; label: string; note: string }> = [
 
 function usageServiceLabel(featureKey: string) {
   if (featureKey === "pod_customization.batch") return "POD 定制";
-  if (featureKey === "product_processing.image_grid_2k") return "四宫格生图";
+  if (featureKey === "product_processing.image_grid_2k") return "智能生图";
   if (featureKey === "product_processing.batch") return "批量链接处理";
   return "商品文本";
+}
+
+// 用量明细的调用信息：内部模型名（doubao-* 等供应商标识）不对外展示。
+function usageDetailText(entry: BillingUsageEntry): string | null {
+  const raw = entry.model || entry.provider || "";
+  if (!raw) return "等待上游";
+  if (/doubao/i.test(raw)) return null;
+  return raw;
 }
 
 export function PersonalCenterPage() {
@@ -356,6 +364,7 @@ export function PersonalCenterPage() {
         <div className="personal-stat is-balance">
           <span>可用积分</span>
           <b>{summary?.wallet.available_points.toLocaleString() ?? "--"}</b>
+          {loading && <span className="personal-stat-spinner" aria-label="积分刷新中" />}
           <button
             type="button"
             className="personal-stats-refresh is-on-dark"
@@ -366,7 +375,7 @@ export function PersonalCenterPage() {
             {balanceCooldownActive
               ? `${balanceCooldownSeconds} 秒后可刷新`
               : loading
-                ? "刷新中…"
+                ? <><span className="personal-spinner" aria-hidden="true" />刷新中…</>
                 : "↻ 刷新"}
           </button>
         </div>
@@ -382,7 +391,7 @@ export function PersonalCenterPage() {
           <span>换算比例</span>
           <b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b>
           <button type="button" className="personal-stats-refresh" onClick={() => refreshBalance()} disabled={balanceCooldownActive || loading} aria-label="刷新余额">
-            {balanceCooldownActive ? `${balanceCooldownSeconds} 秒后` : loading ? "刷新中…" : "↻ 刷新"}
+            {balanceCooldownActive ? `${balanceCooldownSeconds} 秒后` : loading ? <><span className="personal-spinner" aria-hidden="true" />刷新中…</> : "↻ 刷新"}
           </button>
         </div>
       </div>
@@ -610,7 +619,7 @@ export function PersonalCenterPage() {
                   <tbody>{usageEntries.length ? usageEntries.map((entry) => (
                     <tr key={entry.usage_id}>
                       <td><b>{formatUsageTime(entry.created_at)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
-                      <td>{usageServiceLabel(entry.feature_key)}<small>{entry.model || entry.provider || "等待上游"}</small></td>
+                      <td>{usageServiceLabel(entry.feature_key)}{usageDetailText(entry) && <small>{usageDetailText(entry)}</small>}</td>
                       <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" || entry.status === "frozen" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
                       <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
                       <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.usage_id.slice(0, 14)}…</small></td>

@@ -41,7 +41,7 @@ export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, 
   };
 
   return <section className="price-verification-batch-panel">
-    <div className="price-verification-panel-heading"><div><p className="eyebrow">STEP 01 · BATCH</p><h2>数据初筛<SectionHelp title="插件在 Temu“批量查看并确认申报价”页采集本页数据（每页最多 50 个 SKC，各 SKC 可含多条 SKU 报价）入库后，后台先按此处的初筛条件过滤：调整后申报价（CNY）低于门槛或缺失的商品不会进入 STEP 02 人工确认。新采集会覆盖旧数据，只保留最新一批。不填门槛则全部进入。" /></h2></div></div>
+    <div className="price-verification-panel-heading"><div><h2>数据初筛<SectionHelp title="插件在 Temu“批量查看并确认申报价”页采集本页数据（每页最多 50 个 SKC，各 SKC 可含多条 SKU 报价）入库后，后台先按此处的初筛条件过滤：调整后申报价（CNY）低于门槛或缺失的商品不会进入 STEP 02 人工确认。新采集会覆盖旧数据，只保留最新一批。不填门槛则全部进入。" /></h2></div></div>
     <div className="price-verification-batch-summary">
       <div className="price-verification-current-batch">
         <span>本页采集</span>

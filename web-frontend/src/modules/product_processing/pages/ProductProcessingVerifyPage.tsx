@@ -493,7 +493,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     <div className="verify-page">
       <header className="verify-commandbar">
         <div className="verify-command-title">
-          <span className="verify-eyebrow">PRODUCT PROCESSING</span>
           <h1>产品处理草稿池</h1>
           <p>采集先入池，默认只处理勾选草稿；暂停、确认与继续均以本地持久状态为准。</p>
         </div>
@@ -826,7 +825,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
             <aside className="verify-drawer">
               <header className="verify-drawer-head">
                 <div>
-                  <p className="verify-eyebrow">SKU EDITOR</p>
                   <h2 title={target.title || raw.source_title || '未命名商品'}>
                     {target.title || raw.source_title || '未命名商品'}
                   </h2>

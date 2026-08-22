@@ -11,6 +11,9 @@ import {
   POD_BATCH_COUNTS,
   buildPromptV1,
   businessFieldsForApi,
+  canRegeneratePodStyle,
+  canRegeneratePodStyleTitle,
+  groupPodStyleRows,
   isPodBatchCount,
   isActiveBatchStatus,
   isActivePodItemStatus,
@@ -38,6 +41,18 @@ import "../styles/podCustomization.css";
 type Props = {
   isActive?: boolean;
 };
+
+// 每条链接（款式）免费手动重试次数，与后端 service.POD_FREE_RETRY_LIMIT 保持一致；
+// 超过后需用户确认「无论失败与成功均会扣费」才允许继续重试。
+const DEFAULT_FREE_RETRY_LIMIT = 2;
+
+function paidRetryConfirmationMessage(limit: number): string {
+  return `该链接免费重试额度（${limit} 次）已用完，继续重试无论失败与成功均会扣费（按款式价格，约 40-50 积分），确认后方可继续。`;
+}
+
+function isPaidRetryExhaustedError(cause: unknown): boolean {
+  return /免费重试额度|免费.*用完/.test(cause instanceof Error ? cause.message : String(cause));
+}
 
 const BUSINESS_FIELDS: Array<{
   key: keyof PodBusinessFieldsDraft;
@@ -278,7 +293,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       return;
     }
     if (selectedTemplate.calibration_status !== "ready") {
-      setError("当前模板尚未完成蒙版与锚点标定。");
+      setError("当前模板尚未完成 AI 标定。");
       setTemplateDrawerOpen(true);
       return;
     }
@@ -307,7 +322,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       setSelectedItemId(undefined);
       setBatches((current) => sortBatches([toSummary(created), ...current.filter((batch) => batch.id !== created.id)]));
       setCurrentBatchEdit(null);
-      setNotice(`已提交 ${requestedCount} 款创作；每款正常请求一次四宫格，失败时最多重试一次。`);
+      setNotice(`已提交 ${requestedCount} 款创作，正在后台生成。`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -374,19 +389,67 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  const freeRetryLimit = activeBatch?.free_retry_limit ?? DEFAULT_FREE_RETRY_LIMIT;
+
+  const styleNeedsPaidRetry = (batch: PodBatch, styleIndex: number): boolean => {
+    const retryCount = batch.style_retries?.find((retry) => retry.style_index === styleIndex)?.retry_count ?? 0;
+    return retryCount >= (batch.free_retry_limit ?? DEFAULT_FREE_RETRY_LIMIT);
+  };
+
+  const confirmPaidRetryIfNeeded = (styleIndex: number): boolean => {
+    if (!activeBatch) return false;
+    if (!styleNeedsPaidRetry(activeBatch, styleIndex)) return true;
+    return window.confirm(paidRetryConfirmationMessage(freeRetryLimit));
+  };
+
+  const retryAfterPaidRetryConfirmation = async (styleIndex: number, cause: unknown, kind: "style" | "title"): Promise<boolean> => {
+    if (!activeBatch || !isPaidRetryExhaustedError(cause)) return false;
+    // 前端重试计数未及时刷新时的兜底：再次确认后按付费重试提交。
+    if (!window.confirm(paidRetryConfirmationMessage(freeRetryLimit))) return false;
+    try {
+      if (kind === "style") {
+        const updated = await podCustomizationApi.regenerateStyle(activeBatch.id, styleIndex, activeBatch.creative_prompt, true);
+        setActiveBatch((current) => current ? {
+          ...current,
+          items: current.items.map((item) => updated.results.find((result) => result.id === item.id) ?? item),
+        } : current);
+        setNotice(`款式 #${styleIndex} 已重新提交生成（付费重试）。`);
+      } else {
+        const updated = await podCustomizationApi.regenerateStyleTitle(activeBatch.id, styleIndex, true);
+        setActiveBatch((current) => current ? {
+          ...current,
+          style_titles: [...(current.style_titles ?? []).filter((title) => title.style_index !== updated.style_index), updated],
+        } : current);
+        setNotice(`款式 #${styleIndex} 已提交标题生成（付费重试）。`);
+      }
+      await refreshActiveBatch(activeBatch.id);
+      return true;
+    } catch (retryCause) {
+      setError(retryCause instanceof Error ? retryCause.message : String(retryCause));
+      return true;
+    }
+  };
+
   const regenerateStyle = async (styleIndex: number) => {
     if (!activeBatch) return;
+    if (!confirmPaidRetryIfNeeded(styleIndex)) return;
     setBusyAction(`regenerate-style:${styleIndex}`);
     clearMessages();
     try {
-      const updated = await podCustomizationApi.regenerateStyle(activeBatch.id, styleIndex, activeBatch.creative_prompt);
+      const updated = await podCustomizationApi.regenerateStyle(
+        activeBatch.id,
+        styleIndex,
+        activeBatch.creative_prompt,
+        styleNeedsPaidRetry(activeBatch, styleIndex),
+      );
       setActiveBatch((current) => current ? {
         ...current,
         items: current.items.map((item) => updated.results.find((result) => result.id === item.id) ?? item),
       } : current);
-      setNotice(`款式 #${styleIndex} 已重新提交四宫格生成。`);
+      setNotice(`款式 #${styleIndex} 已重新提交生成。`);
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
+      if (await retryAfterPaidRetryConfirmation(styleIndex, cause, "style")) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusyAction("");
@@ -395,15 +458,69 @@ export function PodCustomizationPage({ isActive = true }: Props) {
 
   const regenerateStyleTitle = async (styleIndex: number) => {
     if (!activeBatch) return;
+    if (!confirmPaidRetryIfNeeded(styleIndex)) return;
     setBusyAction(`regenerate-title:${styleIndex}`);
     clearMessages();
     try {
-      const updated = await podCustomizationApi.regenerateStyleTitle(activeBatch.id, styleIndex);
+      const updated = await podCustomizationApi.regenerateStyleTitle(
+        activeBatch.id,
+        styleIndex,
+        styleNeedsPaidRetry(activeBatch, styleIndex),
+      );
       setActiveBatch((current) => current ? {
         ...current,
         style_titles: [...(current.style_titles ?? []).filter((title) => title.style_index !== updated.style_index), updated],
       } : current);
       setNotice(`款式 #${styleIndex} 已提交标题生成。`);
+      await refreshActiveBatch(activeBatch.id);
+    } catch (cause) {
+      if (await retryAfterPaidRetryConfirmation(styleIndex, cause, "title")) return;
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const retryFailedStyles = async () => {
+    if (!activeBatch) return;
+    const failed = groupPodStyleRows(activeBatch).filter(
+      (style) =>
+        canRegeneratePodStyle(activeBatch.status, style.status)
+        || canRegeneratePodStyleTitle(activeBatch.status, style.title_status, style.results),
+    );
+    if (!failed.length) return;
+    const overQuota = failed.filter((style) => style.retry_count >= freeRetryLimit);
+    if (
+      overQuota.length > 0
+      && !window.confirm(
+        `${overQuota.length} 款已超过免费重试额度（${freeRetryLimit} 次），继续重试无论失败与成功均会扣费（按款式价格，约 40-50 积分/款），确认继续？`,
+      )
+    ) return;
+    const overQuotaIndices = new Set(overQuota.map((style) => style.index));
+    setBusyAction("batch-retry-failed");
+    clearMessages();
+    let submitted = 0;
+    let failedCount = 0;
+    try {
+      // 并行重试所有失败款式：全部一次性提交，互不阻塞；超过免费额度的款式按付费重试
+      // （无论成败均扣费），失败项只计入 failedCount 不影响其余款式。
+      const settled = await Promise.allSettled(
+        failed.map(async (style) => {
+          const ackPaidRetry = overQuotaIndices.has(style.index);
+          if (canRegeneratePodStyleTitle(activeBatch.status, style.title_status, style.results)) {
+            await podCustomizationApi.regenerateStyleTitle(activeBatch.id, style.index, ackPaidRetry);
+          } else {
+            await podCustomizationApi.regenerateStyle(activeBatch.id, style.index, activeBatch.creative_prompt, ackPaidRetry);
+          }
+        }),
+      );
+      submitted = settled.filter((result) => result.status === "fulfilled").length;
+      failedCount = settled.filter((result) => result.status === "rejected").length;
+      setNotice(
+        submitted > 0
+          ? `已批量重试 ${submitted} 款${failedCount ? `，${failedCount} 款提交失败` : ""}。`
+          : "没有可重试的款式。",
+      );
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -462,7 +579,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   return (
     <section className="pod-customization-page" aria-label="POD 定制">
       <header className="pod-page-header">
-        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION · DIRECT LISTING</span><h1>POD 定制</h1><p>一个产品模板贯穿整批；每款一次四宫格请求，自动拆分为四张商品图。</p></div></div>
+        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION</span><h1>POD 定制</h1><p>一个产品模板贯穿整批，自动为每款生成商品图。</p></div></div>
         <div className="pod-page-header-actions">
           {batchRunning && <span className="pod-live-badge"><i />批次后台运行中</span>}
           <button type="button" onClick={() => setTemplateDrawerOpen(true)}><span className="iconfont icon-upload" />上传当前批次模板</button>
@@ -475,7 +592,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       <div className="pod-workbench-grid">
         <aside className="pod-setup-column pod-brief-sidebar">
           <section className="pod-setup-card pod-business-editor">
-            <div className="pod-section-title"><span>BRIEF EDITOR</span><h2>业务信息编辑</h2><small>用于直出 Prompt</small></div>
+            <div className="pod-section-title"><h2>业务信息编辑</h2></div>
             <div className="pod-business-fields">
               {BUSINESS_FIELDS.map((field) => <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}</span>{field.multiline
                 ? <textarea rows={1} value={businessFields[field.key]} onChange={(event) => {
@@ -485,7 +602,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 : <input value={businessFields[field.key]} onChange={(event) => updateBusinessField(field.key, event.target.value)} placeholder={field.placeholder} />}</label>)}
             </div>
             <section className="pod-listing-fields" aria-labelledby="pod-dianxiaomi-listing-title">
-              <div className="pod-listing-fields-heading"><span>DIANXIAOMI LISTING</span><h3 id="pod-dianxiaomi-listing-title">店小秘上架信息</h3><small>创建批次时保存为不可缺失的上架快照</small></div>
+              <div className="pod-listing-fields-heading"><h3 id="pod-dianxiaomi-listing-title">店小秘上架信息</h3></div>
               <div className="pod-title-mode" role="radiogroup" aria-label="标题模式">
                 <span>标题模式<em>*</em></span>
                 <div>
@@ -498,24 +615,24 @@ export function PodCustomizationPage({ isActive = true }: Props) {
               </div>
             </section>
             <div className="pod-advanced-prompt">
-              <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级：本批次创意编辑</b><small>内置 POD Direct Listing Prompt v1</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
-              {advancedOpen && <div className="pod-advanced-prompt-editor"><textarea value={currentBatchEdit ?? builtInPrompt} onChange={(event) => setCurrentBatchEdit(event.target.value)} aria-label="本批次创意提示词" /><div><span>{currentBatchEdit === null ? "正在使用内置 v1" : "已为本批次自定义"}</span><button type="button" onClick={() => setCurrentBatchEdit(null)}>重置为 v1</button></div></div>}
+              <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级：本批次创意编辑</b><small>使用内置创意模板</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
+              {advancedOpen && <div className="pod-advanced-prompt-editor"><textarea value={currentBatchEdit ?? builtInPrompt} onChange={(event) => setCurrentBatchEdit(event.target.value)} aria-label="本批次创意提示词" /><div><span>{currentBatchEdit === null ? "正在使用内置模板" : "已为本批次自定义"}</span><button type="button" onClick={() => setCurrentBatchEdit(null)}>重置为内置模板</button></div></div>}
             </div>
-            <div className="pod-volume-inline"><b>生成数量</b><small>每款 = 1 次四宫格请求</small></div>
+            <div className="pod-volume-inline"><b>生成数量</b><small>每款 1 次 AI 生图</small></div>
             <div className="pod-count-options" role="radiogroup" aria-label="生成数量">
               {POD_BATCH_COUNTS.map((count) => <button key={count} type="button" role="radio" aria-checked={!customCountMode && batchCount === count} className={!customCountMode && batchCount === count ? "is-active" : ""} onClick={() => { setCustomCountMode(false); setBatchCount(count); }}><b>{count}</b><span>款</span></button>)}
               <button type="button" role="radio" aria-checked={customCountMode} className={customCountMode ? "is-active" : ""} onClick={() => { setCustomCountMode(true); setCustomCountInput(String(batchCount)); }}><b>自定义</b></button>
             </div>
             {customCountMode && <label className="pod-custom-count"><span>自定义数量</span><input type="number" min={1} max={200} step={1} value={customCountInput} aria-label="自定义生成数量" onChange={(event) => setCustomCountInput(event.target.value)} /><small>1–200 款</small></label>}
             <button type="button" className="pod-start-button" disabled={busyAction === "create-batch" || !selectedTemplate} onClick={() => void startBatch()}>{busyAction === "create-batch" ? <><span className="iconfont icon-loading" />正在提交</> : <><span className="iconfont icon-rocket" />开始生成 {customCountMode ? customCountInput || "自定义" : batchCount} 款</>}</button>
-            <p className="pod-direct-note"><span className="iconfont icon-thunderbolt" />四宫格生成后自动拆分并发布，无需中途操作。</p>
+            <p className="pod-direct-note"><span className="iconfont icon-thunderbolt" />生成后自动拆分并发布，无需中途操作。</p>
           </section>
           <button type="button" className={`pod-history-trigger ${historyOpen ? "is-open" : ""}`} onClick={() => setHistoryOpen((open) => !open)}>定制记录<span>{historyOpen ? "收起" : `${batches.length} 个批次`}</span></button>
           {historyOpen && <PodBatchHistory batches={batches} activeBatchId={activeBatch?.id} loading={loading || busyAction.startsWith("batch:")} onOpen={(batchId) => void openBatch(batchId)} onRefresh={() => void refreshHistory()} />}
         </aside>
         <main className="pod-results-column">
           <section className="pod-current-template-summary">
-            <header><div><span>CURRENT TEMPLATE</span><h2>当前批次模板图</h2></div><button type="button" onClick={() => setTemplateDrawerOpen(true)}>更换模板</button></header>
+            <header><div><h2>当前批次模板图</h2></div><button type="button" onClick={() => setTemplateDrawerOpen(true)}>更换模板</button></header>
             <div className="pod-current-template-body">
               <button type="button" className="pod-current-template-image" onClick={() => setTemplateDrawerOpen(true)}>
                 {summaryTemplatePreview ? <img src={summaryTemplatePreview} alt={summaryTemplate?.name || "当前模板"} /> : <span>选择模板</span>}
@@ -534,6 +651,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             onOpenResult={(item) => setSelectedItemId(item.id)}
             onRegenerateStyle={(styleIndex) => void regenerateStyle(styleIndex)}
             onRegenerateTitle={(styleIndex) => void regenerateStyleTitle(styleIndex)}
+            onRetryFailed={() => void retryFailedStyles()}
             onExportDianxiaomi={() => void exportDianxiaomi()}
           />
         </main>

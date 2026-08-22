@@ -949,7 +949,6 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
       <section className="profit-activity-hero">
         <div className="profit-hero-main">
           <div>
-            <p className="eyebrow">PROFIT ACTIVITY</p>
             <h1>利润活动</h1>
             <p>核算单品利润、保存产品资料，并生成活动申报与剔除结果。</p>
           </div>

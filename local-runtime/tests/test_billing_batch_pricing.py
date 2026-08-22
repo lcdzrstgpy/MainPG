@@ -296,10 +296,10 @@ def test_pod_random_profile_persists_prices_and_settles_whole_styles(
     )
 
     assert first["billing_profile"] == "pod_random_v1"
-    assert first["link_prices"] == [80, 90]
-    assert first["frozen_points"] == 170
-    assert repeated["link_prices"] == [80, 90]
-    assert repeated["frozen_points"] == 170
+    assert first["link_prices"] == [40, 50]
+    assert first["frozen_points"] == 90
+    assert repeated["link_prices"] == [40, 50]
+    assert repeated["frozen_points"] == 90
 
     settled = settle_batch_points(
         database_path,
@@ -323,23 +323,23 @@ def test_pod_random_profile_persists_prices_and_settles_whole_styles(
         expected_account_id=actor.id,
     )
 
-    assert settled["charged_points"] == 80
-    assert settled["refunded_points"] == 90
+    assert settled["charged_points"] == 40
+    assert settled["refunded_points"] == 50
     status = batch_freeze_status(
         database_path,
         first["freeze_id"],
         expected_account_id=actor.id,
     )
     assert status["billing_profile"] == "pod_random_v1"
-    assert status["link_prices"] == [80, 90]
+    assert status["link_prices"] == [40, 50]
 
     with transaction(database_path) as conn:
         wallet = conn.execute(
             "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
             (actor.id,),
         ).fetchone()
-    # 冻结 170 积分（1700 单位）全释放，成功款扣 80 积分（800 单位）：2000 - 800 = 1200。
-    assert dict(wallet) == {"points_balance": 1200, "locked_points": 0}
+    # 冻结 90 积分（900 单位）全释放，成功款扣 40 积分（400 单位）：2000 - 400 = 1600。
+    assert dict(wallet) == {"points_balance": 1600, "locked_points": 0}
 
 
 def test_usage_history_identifies_pod_batch_charge(
@@ -379,7 +379,7 @@ def test_usage_history_identifies_pod_batch_charge(
     assert item["provider"] == "POD 定制结算"
     assert item["model"] == "1 款创作"
     assert item["rule_version"] == freeze["rule_version"]
-    assert item["charged_points"] == 82
+    assert item["charged_points"] == 42
 
 
 def test_pod_random_profile_rejects_duplicate_scope_before_freezing(tmp_path: Path) -> None:

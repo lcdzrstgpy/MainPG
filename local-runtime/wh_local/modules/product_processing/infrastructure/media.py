@@ -993,8 +993,9 @@ class ProductImageProcessor:
         # Dianxiaomi fetches without our COS credentials. Verify that the canonical
         # URL itself is anonymously readable and reject redirects to avoid changing
         # the trusted host after validation.
+        # 网络抖动容忍：连接/读取超时放宽到 6s/10s，减少 COS 公开访问校验偶发超时导致的生成失败。
         try:
-            response = _SESSION.head(value, allow_redirects=False, timeout=(3, 8))
+            response = _SESSION.head(value, allow_redirects=False, timeout=(6, 10))
         except requests.RequestException as exc:
             raise MediaProcessingError(f"COS public access check failed: {_safe_error(exc)}") from exc
         if not 200 <= response.status_code < 300:

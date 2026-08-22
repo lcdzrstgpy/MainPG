@@ -10,13 +10,13 @@ const API_BASE = '/api/product-processing';
  *
  * 追加指令模式：用户在各板块填写的提示词附加在系统默认提示词之上，不覆盖默认。
  * 生图板块（grid_image/grid_image_b/premium_image）只允许附加「宫内规划」
- * （构图、场景、道具、光影、风格），四宫格结构、分界线、拆分逻辑由系统固定不可改变。
+ * （构图、场景、道具、光影、风格），图片结构、分界线、拆分逻辑由系统固定不可改变。
  */
 const PROMPT_SECTIONS: { key: string; label: string; hint: string }[] = [
   { key: 'title', label: '标题优化', hint: '英文商品标题的附加要求（约 180 字母，贴合买家搜索习惯）' },
   { key: 'desc', label: '描述 / 卖点', hint: '五点式描述文案的附加要求（Amazon 风格卖点）' },
-  { key: 'grid_image', label: '智能生图 · 标准海报', hint: 'A 模板附加：仅可写宫内规划（构图/场景/光影/风格），四宫格结构固定' },
-  { key: 'grid_image_b', label: '智能生图 · 高端模特', hint: 'B 模板附加：仅可写宫内规划，四宫格结构固定' },
+  { key: 'grid_image', label: '智能生图 · 标准海报', hint: 'A 模板附加：仅可写宫内规划（构图/场景/光影/风格），图片结构固定' },
+  { key: 'grid_image_b', label: '智能生图 · 高端模特', hint: 'B 模板附加：仅可写宫内规划，图片结构固定' },
   { key: 'premium_image', label: '精品生图', hint: '4K 精品生图附加：仅可写宫内规划，结构固定' },
   { key: 'detail_image', label: '详情图', hint: '详情页海报合成的附加要求（主图 + 细节放大 + 说明标签）' },
   { key: 'variant_values', label: '变体翻译', hint: 'SKU 选项翻译的附加要求（颜色 / 规格 / 尺寸等）' },
@@ -191,8 +191,8 @@ export function PromptCustomizePanel() {
         <div className="prompt-panel-body">
           <p className="prompt-panel-note">
             填写的内容是<strong>附加要求</strong>，会拼在系统默认提示词之后，不会覆盖默认逻辑。
-            生图板块只允许写<strong>宫内规划</strong>（构图、场景、道具、光影、风格）；四宫格结构、
-            分界线、拆分逻辑与产品保真规则由系统固定，不可被提示词改变。模板保存在当前账号本机，
+            生图板块只允许写<strong>宫内规划</strong>（构图、场景、道具、光影、风格）；图片结构、
+            拆分逻辑与产品保真规则由系统固定，不可被提示词改变。模板保存在当前账号本机，
             不随工作区变化，启用后对所有新任务生效，下次打开自动带出。
           </p>
           <div className="prompt-template-bar">

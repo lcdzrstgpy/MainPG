@@ -21,6 +21,7 @@ export type PodStyleRow = {
   title_error_message?: string;
   results: Array<PodBatchItem | undefined>;
   status: "queued" | "generating" | "completed" | "partial_failure" | "failed";
+  retry_count: number;
 };
 
 export const POD_BATCH_COUNTS = [2, 10, 20, 40, 60, 100] as const satisfies readonly PodBatchCount[];
@@ -84,7 +85,7 @@ export function buildPromptV1(fields: PodBusinessFieldsDraft): string {
     `偏好配色：${valueOrFallback(fields.color_preferences)}`,
     `禁用元素：${valueOrFallback(fields.excluded_elements)}`,
     "硬性规则：",
-    "1. 每款正常只生成一次 2x2 四宫格；生成、拆分或去重失败时最多重试一次。",
+    "1. 每款正常只生成一次四张商品图（一张 2x2 拼图）；生成、拆分或去重失败时最多重试一次。",
     "2. 四格顺序固定为主图、细节图 A、细节图 B、场景图。",
     "3. 同一款四张图必须保持产品、结构、底色、图案内容、图案尺寸与位置完全一致。",
     "4. 不同款式必须使用不同图案、构图和创意配方，禁止复用上一款图案。",
@@ -170,11 +171,12 @@ export function isPodBatchCount(value: number): value is PodBatchCount {
 }
 
 export function groupPodStyleRows(
-  batch: Pick<PodBatch, "items" | "style_grid" | "business_fields" | "style_titles">,
+  batch: Pick<PodBatch, "items" | "style_grid" | "business_fields" | "style_titles" | "style_retries">,
 ): PodStyleRow[] {
   const productName = batch.business_fields?.product_name?.trim() || "未命名商品";
   const grouped = new Map<number, Array<PodBatchItem | undefined>>();
   const titlesByStyle = new Map((batch.style_titles ?? []).map((title) => [title.style_index, title]));
+  const retriesByStyle = new Map((batch.style_retries ?? []).map((retry) => [retry.style_index, retry.retry_count]));
   for (const styleIndex of titlesByStyle.keys()) grouped.set(styleIndex, [undefined, undefined, undefined, undefined]);
   for (const item of batch.items) {
     const styleIndex = batch.style_grid ? item.style_index ?? item.index : item.index;
@@ -201,6 +203,7 @@ export function groupPodStyleRows(
       title_error_message: styleTitle?.error_message,
       results,
       status,
+      retry_count: retriesByStyle.get(index) ?? 0,
     };
   });
 }
@@ -294,7 +297,7 @@ export function defaultTemplateCalibration(): PodTemplateCalibration {
 export function podBatchStatusLabel(status: PodBatchStatus): string {
   return {
     queued: "等待启动",
-    generating_patterns: "生成四宫格",
+    generating_patterns: "生成商品图",
     compositing: "拆分并发布",
     generating_titles: "生成标题",
     completed: "已完成",
@@ -308,7 +311,7 @@ export function podBatchStatusLabel(status: PodBatchStatus): string {
 export function podItemStatusLabel(status: string): string {
   return ({
     queued: "等待中",
-    generating_pattern: "生成四宫格",
+    generating_pattern: "生成商品图",
     compositing: "拆分并发布",
     completed: "已完成",
     failed: "失败",

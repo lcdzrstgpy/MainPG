@@ -396,7 +396,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     <section className="pv-source-workspace">
       <div className="pv-source-head">
         <div>
-          <p className="eyebrow price-verification-source-eyebrow">STEP 03 · SOURCE{matchingCompleted ? <small>图搜结果已收起，已关联货源见下方第四板块；点击「重新图搜」可恢复候选列表。</small> : null}</p>
+          {matchingCompleted ? <p className="pv-source-collapsed-note">图搜结果已收起，已关联货源见下方第四板块；点击「重新图搜」可恢复候选列表。</p> : null}
           <h2>货源关联<SectionHelp title="每次搜索均以万邦图片图搜结果为候选依据；商品标题翻译后的中文关键词仅用于辅助确认同一货源，不能单独成为候选。结果按 SKC 分组，每个 SKC 默认展示前 5 条；每条候选均按 Temu 调整后申报价核算利润，源价与重量可调。" /></h2>
         </div>
         <div className="pv-source-head-actions">

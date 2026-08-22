@@ -632,7 +632,6 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     <div className="profit-products-page">
       <section className="profit-products-head">
         <div>
-          <p className="eyebrow">PROFIT ACTIVITY</p>
           <h1>产品库</h1>
           <p>查询数据库产品，按站点管理当前账号权限可见的利润活动产品。</p>
         </div>

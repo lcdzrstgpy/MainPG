@@ -466,6 +466,12 @@ class PodCustomizationRepository:
                    WHERE titles.batch_id = ? ORDER BY titles.style_index""",
                 (batch_id,),
             ).fetchall()
+            retry_rows = connection.execute(
+                """SELECT style_index, retry_count
+                   FROM pod_customization_style_retries
+                   WHERE batch_id = ? ORDER BY style_index""",
+                (batch_id,),
+            ).fetchall()
         result = dict(batch)
         result["business_fields"] = json.loads(result.pop("business_fields_json"))
         result["listing_fields"] = json.loads(result.pop("listing_fields_json"))
@@ -475,10 +481,44 @@ class PodCustomizationRepository:
         result["items"] = [dict(item) for item in items]
         result["style_grid"] = style_grid
         result["style_titles"] = [self._decode_title_row(row) for row in title_rows]
+        result["style_retries"] = [
+            {"style_index": int(row["style_index"]), "retry_count": int(row["retry_count"])}
+            for row in retry_rows
+        ]
         result["title_completed_count"] = sum(row["status"] == "completed" for row in result["style_titles"])
         result["title_failed_count"] = sum(row["status"] == "failed" for row in result["style_titles"])
         result["listing_ready_count"] = sum(bool(row["listing_ready"]) for row in result["style_titles"])
         return result
+
+    def style_retry_counts(self, batch_id: str) -> dict[int, int]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT style_index, retry_count
+                   FROM pod_customization_style_retries
+                   WHERE batch_id = ?""",
+                (batch_id,),
+            ).fetchall()
+        return {int(row["style_index"]): int(row["retry_count"]) for row in rows}
+
+    def increment_style_retry(self, batch_id: str, style_index: int) -> int:
+        """Increment the manual-retry counter for one style; returns the new count."""
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO pod_customization_style_retries
+                       (batch_id, style_index, retry_count, updated_at)
+                   VALUES (?, ?, 1, ?)
+                   ON CONFLICT(batch_id, style_index) DO UPDATE SET
+                       retry_count = retry_count + 1,
+                       updated_at = excluded.updated_at""",
+                (batch_id, int(style_index), now),
+            )
+            row = connection.execute(
+                """SELECT retry_count FROM pod_customization_style_retries
+                   WHERE batch_id = ? AND style_index = ?""",
+                (batch_id, int(style_index)),
+            ).fetchone()
+        return int(row["retry_count"]) if row is not None else 0
 
     def get_style_copies(
         self, batch_id: str, workspace_id: str, owner_user_id: str
@@ -737,6 +777,7 @@ class PodCustomizationRepository:
             {
                 "idempotency_key": plan.idempotency_key,
                 "calls": [call.payload() for call in plan.calls],
+                "paid_retry": plan.paid_retry,
             },
             ensure_ascii=False,
             separators=(",", ":"),
