@@ -214,6 +214,15 @@ export function WorkspaceShell({ onSignOut, playEntryAnimation = false, onEntryA
     setWorkspaceNotice("");
   };
 
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("module") !== "personal_center" || query.get("payment") !== "success") return;
+
+    openModule("personal_center");
+    setWorkspaceNotice("支付宝支付完成，正在读取服务器积分余额。");
+    window.history.replaceState({}, "", window.location.pathname);
+  }, []);
+
   const openNavigationGroup = (group: WorkspaceNavigationGroup) => {
     if (expandedGroupId === group.id) {
       setExpandedGroupId(null);

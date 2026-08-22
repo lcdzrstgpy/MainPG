@@ -51,9 +51,11 @@ export function PersonalCenterPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedPackage, setSelectedPackage] = useState("");
-  const [provider, setProvider] = useState<"wechat" | "alipay">("wechat");
+  const [customAmount, setCustomAmount] = useState("");
   const [creating, setCreating] = useState(false);
   const [createdOrder, setCreatedOrder] = useState<TopupOrderResponse | null>(null);
+  const [paymentNotice, setPaymentNotice] = useState("");
+  const [pendingPaymentOrderId, setPendingPaymentOrderId] = useState("");
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -63,10 +65,24 @@ export function PersonalCenterPage() {
   const [passwordSuccess, setPasswordSuccess] = useState("");
   const account = getAuthAccount<AccountSnapshot>();
 
-  const activePackage = useMemo(
-    () => summary?.topup_products.find((item) => item.package_id === selectedPackage) ?? summary?.topup_products[0],
-    [selectedPackage, summary],
-  );
+  const customAmountCents = useMemo(() => {
+    if (!/^\d+$/.test(customAmount)) return 0;
+    const yuan = Number(customAmount);
+    return Number.isSafeInteger(yuan) && yuan >= 1 && yuan <= 3000 ? yuan * 100 : 0;
+  }, [customAmount]);
+
+  const activePackage = useMemo(() => {
+    if (selectedPackage === "custom" && customAmountCents) {
+      const pointsPerCny = summary?.pricing.points_per_cny ?? 100;
+      return {
+        package_id: "custom",
+        label: "自定义积分充值",
+        amount_cents: customAmountCents,
+        points: (customAmountCents / 100) * pointsPerCny,
+      } satisfies BillingPackage;
+    }
+    return summary?.topup_products.find((item) => item.package_id === selectedPackage) ?? summary?.topup_products[0];
+  }, [customAmountCents, selectedPackage, summary]);
 
   const refresh = () => {
     setLoading(true);
@@ -93,6 +109,41 @@ export function PersonalCenterPage() {
       .catch((exc) => setUsageError(exc instanceof Error ? exc.message : "读取消费流水失败"))
       .finally(() => setUsageLoading(false));
   }, [activePanel]);
+
+  useEffect(() => {
+    if (!pendingPaymentOrderId) return;
+
+    let disposed = false;
+    const refreshPaymentStatus = () => {
+      void loadBillingSummary()
+        .then((payload) => {
+          if (disposed) return;
+          setSummary(payload);
+          const order = payload.recent_orders.find((item) => item.order_id === pendingPaymentOrderId);
+          if (order?.status === "paid") {
+            setPendingPaymentOrderId("");
+            setPaymentNotice(`充值成功，${order.points.toLocaleString()} 积分已到账。`);
+          }
+        })
+        .catch(() => {
+          // The regular refresh action remains available if the network is briefly unavailable.
+        });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshPaymentStatus();
+    };
+
+    refreshPaymentStatus();
+    const timer = window.setInterval(refreshPaymentStatus, 4000);
+    window.addEventListener("focus", refreshPaymentStatus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshPaymentStatus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [pendingPaymentOrderId]);
 
   useEffect(() => {
     if (!passwordOpen) return;
@@ -162,11 +213,25 @@ export function PersonalCenterPage() {
     if (!product) return;
     setCreating(true);
     setError("");
+    setPaymentNotice("");
     setCreatedOrder(null);
     try {
-      const response = await createTopupOrder({ provider, package_id: product.package_id });
+      const response = await createTopupOrder({
+        provider: "alipay",
+        package_id: product.package_id,
+        ...(product.package_id === "custom" ? { amount_cents: product.amount_cents } : {}),
+      });
       setCreatedOrder(response);
-      await loadBillingSummary().then(setSummary);
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      setPendingPaymentOrderId(response.order.order_id);
+
+      if (response.payment.mode === "page_pay" && response.payment.pay_url) {
+        setPaymentNotice("正在跳转支付宝付款页面，付款完成后返回此页会自动刷新积分。");
+        window.location.assign(response.payment.pay_url);
+        return;
+      }
+      setPaymentNotice(response.payment.message || "支付宝付款暂不可用，请稍后重试。");
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "创建充值订单失败");
     } finally {
@@ -307,20 +372,15 @@ export function PersonalCenterPage() {
             <h2>充值积分</h2>
           </div>
           <div className="provider-switch">
-            {(Object.keys(providerMeta) as Array<keyof typeof providerMeta>).map((key) => {
-              const meta = providerMeta[key];
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  className={`${meta.className} ${provider === key ? "is-active" : ""}`}
-                  onClick={() => setProvider(key)}
-                >
-                  <span className={meta.icon} aria-hidden="true" />
-                  {meta.label}
-                </button>
-              );
-            })}
+            <button type="button" className="is-wechat is-unavailable" disabled title="微信支付暂未开放">
+              <span className={providerMeta.wechat.icon} aria-hidden="true" />
+              微信支付
+              <small>暂未开放</small>
+            </button>
+            <button type="button" className="is-alipay is-active" aria-pressed="true">
+              <span className={providerMeta.alipay.icon} aria-hidden="true" />
+              支付宝
+            </button>
           </div>
           <div className="topup-products">
             {summary?.topup_products.map((item) => (
@@ -335,6 +395,29 @@ export function PersonalCenterPage() {
               </button>
             ))}
           </div>
+          <label className={`custom-topup ${selectedPackage === "custom" ? "is-active" : ""}`}>
+            <span>自定义金额</span>
+            <div>
+              <b>¥</b>
+              <input
+                type="number"
+                min="1"
+                max="3000"
+                step="1"
+                inputMode="numeric"
+                value={customAmount}
+                onFocus={() => setSelectedPackage("custom")}
+                onChange={(event) => {
+                  setCustomAmount(event.target.value);
+                  setSelectedPackage("custom");
+                }}
+                placeholder="1 - 3000"
+                aria-label="自定义充值金额，单位元"
+              />
+              <em>元</em>
+            </div>
+            <small>{customAmount ? (customAmountCents ? `预计到账 ${activePackage?.points.toLocaleString()} 积分` : "请输入 1 到 3000 的整数金额") : "支持 1 - 3000 元整数充值"}</small>
+          </label>
           <button className="primary-topup" type="button" disabled={!activePackage || creating} onClick={() => void submitTopup(activePackage)}>
             {creating ? "正在创建服务器订单..." : "创建充值订单"}
           </button>
@@ -344,6 +427,7 @@ export function PersonalCenterPage() {
               <span>{createdOrder.payment.message}</span>
             </div>
           )}
+          {paymentNotice && <p className="payment-notice">{paymentNotice}</p>}
         </article>
 
         <article className="personal-card security-card">

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 from datetime import datetime, timedelta, timezone
+import html
 import hashlib
 import hmac
 import json
@@ -13,7 +14,7 @@ import secrets
 import threading
 import time
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 import requests
 from dataclasses import dataclass
@@ -23,10 +24,12 @@ from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padd
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ..billing import (
     active_pricing,
     reserve_ai_usage,
+    settle_payment_order,
     settle_ai_usage_failure,
     settle_ai_usage_success,
     update_active_pricing,
@@ -40,6 +43,13 @@ from .auth_service import SQLiteCustomerAuthService
 from .credential_vault import CredentialVaultError, active_secret
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
+from .alipay_gateway import (
+    AlipayGatewayConfigurationError,
+    AlipaySignatureError,
+    build_page_payment_url,
+    is_configured as alipay_is_configured,
+    verify_callback as verify_alipay_callback,
+)
 
 
 REMOTE_SESSION_TTL = timedelta(hours=12)
@@ -64,6 +74,8 @@ TOPUP_PACKAGE_CENTS = {
     }
     for package_id, product in BILLING_TOPUP_PRODUCTS.items()
 }
+CUSTOM_TOPUP_MIN_CENTS = 100
+CUSTOM_TOPUP_MAX_CENTS = 300_000
 PAYMENT_PROVIDERS = {"wechat", "alipay"}
 TEXT_CHAT_URL = "https://api.aicoming.top/v1/chat/completions"
 TEXT_MODEL = "gpt-5.6-terra"
@@ -92,6 +104,20 @@ GATEWAY_LEASE_SECONDS = {
     "product_processing.text": 600,
     "product_processing.image_grid_2k": 900,
 }
+DEFAULT_ALIPAY_LOCAL_RETURN_URL = "http://127.0.0.1:8010/?module=personal_center&payment=success"
+
+
+def _alipay_local_return_url() -> str:
+    """Return only a local desktop-workbench URL after browser payment."""
+
+    value = os.environ.get("ALIPAY_LOCAL_RETURN_URL", DEFAULT_ALIPAY_LOCAL_RETURN_URL).strip()
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return DEFAULT_ALIPAY_LOCAL_RETURN_URL
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return DEFAULT_ALIPAY_LOCAL_RETURN_URL
+    return value
 
 
 @dataclass(frozen=True)
@@ -468,14 +494,48 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             raise
 
     @app.post("/api/customer/billing/payment-callback/{provider}")
-    def billing_payment_callback(provider: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
-        # 真正接入微信/支付宝时，这里必须按 provider 官方规则完成：
-        # 1) 平台证书/公钥验签；2) 解密资源；3) 金额、商户订单号、商户号、币种逐项比对；
-        # 4) 同一 out_trade_no 幂等入账；5) 追加 hash 链账本。
-        # 当前先 fail closed，避免任何未验签回调导致入账。
-        raise HTTPException(
-            status_code=503,
-            detail=f"{provider} payment callback verification is not configured",
+    async def billing_payment_callback(provider: str, request: Request) -> PlainTextResponse:
+        """Accept a provider callback only after its official signature checks."""
+
+        if provider.strip().lower() != "alipay":
+            raise HTTPException(status_code=503, detail="payment callback provider is not configured")
+        try:
+            # Alipay sends an application/x-www-form-urlencoded callback.
+            # Parsing its body directly avoids an extra multipart dependency.
+            raw_payload = (await request.body()).decode("utf-8")
+            payload = {
+                str(key): str(value)
+                for key, value in parse_qsl(raw_payload, keep_blank_values=True)
+            }
+            verified = verify_alipay_callback(payload)
+            settle_payment_order(
+                db_path,
+                provider="alipay",
+                out_trade_no=verified["out_trade_no"],
+                gateway_transaction_id=verified["trade_no"],
+                amount_cents=int(verified["amount_cents"]),
+                provider_status=verified["trade_status"],
+                metadata={"buyer_id": verified["buyer_id"]},
+            )
+        except AlipayGatewayConfigurationError as exc:
+            raise HTTPException(status_code=503, detail="Alipay payment is not configured") from exc
+        except AlipaySignatureError as exc:
+            raise HTTPException(status_code=400, detail="Alipay callback verification failed") from exc
+        return PlainTextResponse(content="success")
+
+    @app.get("/api/customer/billing/payment-return")
+    def billing_payment_return() -> HTMLResponse:
+        """Bring the payer back to the installed workbench after payment."""
+
+        target = _alipay_local_return_url()
+        escaped_target = html.escape(target, quote=True)
+        script_target = json.dumps(target)
+        return HTMLResponse(
+            "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
+            f"<meta http-equiv='refresh' content='0;url={escaped_target}'><title>支付完成</title></head>"
+            "<body><p>支付结果已返回工作台，正在跳转...</p>"
+            f"<script>window.location.replace({script_target});</script>"
+            f"<p><a href='{escaped_target}'>无法跳转时，点击返回工作台</a></p></body></html>"
         )
 
     @app.post("/api/customer/logout")
@@ -1734,13 +1794,32 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
     idempotency_key = str(payload.get("idempotency_key") or "").strip()
     if provider not in PAYMENT_PROVIDERS:
         raise HTTPException(status_code=400, detail="provider must be wechat or alipay")
-    if package_id not in TOPUP_PACKAGE_CENTS:
+    if package_id != "custom" and package_id not in TOPUP_PACKAGE_CENTS:
         raise HTTPException(status_code=400, detail="unknown topup package")
     if not 16 <= len(idempotency_key) <= 128:
         raise HTTPException(status_code=400, detail="idempotency_key is required")
 
     pricing = active_pricing(database_path)
-    product = TOPUP_PACKAGE_CENTS[package_id]
+    if package_id == "custom":
+        raw_amount_cents = payload.get("amount_cents")
+        if isinstance(raw_amount_cents, bool):
+            raise HTTPException(status_code=400, detail="custom amount is invalid")
+        try:
+            amount_cents = int(raw_amount_cents)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="custom amount is required") from exc
+        if (
+            amount_cents < CUSTOM_TOPUP_MIN_CENTS
+            or amount_cents > CUSTOM_TOPUP_MAX_CENTS
+            or amount_cents % 100 != 0
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="custom amount must be a whole amount from 1 to 3000 CNY",
+            )
+        product = {"amount_cents": amount_cents, "label": "自定义积分充值"}
+    else:
+        product = TOPUP_PACKAGE_CENTS[package_id]
     # Payment orders store raw 0.1-point units; user-facing responses always
     # convert through the active pricing rule.
     product_points = (
@@ -1821,17 +1900,31 @@ def _topup_order_response(
 ) -> dict[str, Any]:
     order = dict(order)
     order["points"] = _display_billing_points(int(order.get("points") or 0), pricing)
+    payment = {
+        "provider": order["provider"],
+        "mode": "gateway_not_configured",
+        "qr_code_url": "",
+        "pay_url": "",
+        "message": "支付网关尚未配置。订单已在服务器生成 pending 记录，待商户参数和回调验签接入后才可收款入账。",
+    }
+    if order["provider"] == "alipay" and alipay_is_configured():
+        payment = {
+            "provider": "alipay",
+            "mode": "page_pay",
+            "qr_code_url": "",
+            "pay_url": build_page_payment_url(
+                out_trade_no=str(order["out_trade_no"]),
+                amount_cents=int(order["amount_cents"]),
+                subject=f"界野电商平台 {order['package_id']} 积分充值",
+                expires_at=str(order["expires_at"]),
+            ),
+            "message": "请在浏览器中完成支付宝付款。付款成功后积分会自动到账。",
+        }
     return {
         "ok": True,
         "reused": reused,
         "order": order,
-        "payment": {
-            "provider": order["provider"],
-            "mode": "gateway_not_configured",
-            "qr_code_url": "",
-            "pay_url": "",
-            "message": "支付网关尚未配置。订单已在服务器生成 pending 记录，待微信/支付宝商户参数和回调验签接入后才可收款入账。",
-        },
+        "payment": payment,
     }
 
 

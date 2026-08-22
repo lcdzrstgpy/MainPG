@@ -883,6 +883,105 @@ def _append_ledger(
     )
 
 
+def settle_payment_order(
+    database_path: Path,
+    *,
+    provider: str,
+    out_trade_no: str,
+    gateway_transaction_id: str,
+    amount_cents: int,
+    provider_status: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Credit one verified payment order through the shared wallet ledger.
+
+    The provider callback must be signature-verified before reaching this
+    function. This transaction independently rechecks provider, amount and
+    state, making duplicate callbacks and mismatched orders harmless.
+    """
+
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider not in {"alipay", "wechat"}:
+        raise HTTPException(status_code=400, detail="unsupported payment provider")
+    transaction_id = str(gateway_transaction_id or "").strip()
+    if not transaction_id:
+        raise HTTPException(status_code=400, detail="payment transaction id is required")
+    normalized_order_no = str(out_trade_no or "").strip()
+    now = _utc_now()
+
+    with transaction(database_path) as conn:
+        order = conn.execute(
+            "SELECT * FROM billing_payment_orders WHERE out_trade_no = ?",
+            (normalized_order_no,),
+        ).fetchone()
+        if order is None:
+            raise HTTPException(status_code=404, detail="payment order not found")
+        if str(order["provider"]) != normalized_provider:
+            raise HTTPException(status_code=409, detail="payment provider does not match order")
+        if int(order["amount_cents"]) != int(amount_cents):
+            raise HTTPException(status_code=409, detail="payment amount does not match order")
+
+        transaction_owner = conn.execute(
+            """
+            SELECT order_id FROM billing_payment_orders
+            WHERE gateway_transaction_id = ? AND gateway_transaction_id <> '' AND order_id <> ?
+            """,
+            (transaction_id, str(order["order_id"])),
+        ).fetchone()
+        if transaction_owner is not None:
+            raise HTTPException(status_code=409, detail="payment transaction already belongs to another order")
+
+        if str(order["status"]) == "paid":
+            if str(order["gateway_transaction_id"] or "") != transaction_id:
+                raise HTTPException(status_code=409, detail="payment order transaction does not match")
+            return {"already_paid": True, "order": dict(order)}
+        if str(order["status"]) != "pending":
+            raise HTTPException(status_code=409, detail="payment order is no longer payable")
+
+        account_id = str(order["account_id"])
+        workspace_id = str(order["workspace_id"] or "default")
+        points = int(order["points"])
+        _ensure_wallet(conn, account_id, workspace_id)
+        conn.execute(
+            """
+            UPDATE billing_wallets
+            SET points_balance = points_balance + ?, version = version + 1, updated_at = ?
+            WHERE account_id = ?
+            """,
+            (points, now, account_id),
+        )
+        conn.execute(
+            """
+            UPDATE billing_payment_orders
+            SET status = 'paid', gateway_transaction_id = ?, paid_at = ?, updated_at = ?
+            WHERE order_id = ? AND status = 'pending'
+            """,
+            (transaction_id, now, now, str(order["order_id"])),
+        )
+        ledger_metadata = {
+            "out_trade_no": normalized_order_no,
+            "gateway_transaction_id": transaction_id,
+            "provider_status": str(provider_status or "")[:64],
+            **dict(metadata or {}),
+        }
+        _append_ledger(
+            conn,
+            account_id=account_id,
+            workspace_id=workspace_id,
+            direction="credit",
+            points_delta=points,
+            source_type=f"payment_{normalized_provider}",
+            source_id=str(order["order_id"]),
+            idempotency_key=f"payment:{normalized_provider}:{normalized_order_no}:credit",
+            metadata=ledger_metadata,
+        )
+        settled = conn.execute(
+            "SELECT * FROM billing_payment_orders WHERE order_id = ?",
+            (str(order["order_id"]),),
+        ).fetchone()
+    return {"already_paid": False, "order": dict(settled)}
+
+
 def _ledger_hash(payload: dict[str, Any]) -> str:
     secret = os.environ.get("WH_BILLING_LEDGER_SECRET", "local-dev-ledger-secret").encode("utf-8")
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
