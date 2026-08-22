@@ -141,8 +141,11 @@ export function loadBillingUsageHistory(query: BillingUsageQuery = {}) {
 }
 
 export function createTopupOrder(input: {
-  provider: "wechat" | "alipay";
+  // The desktop client currently exposes only Alipay. Keep other provider
+  // support on the server isolated until its payment flow is implemented.
+  provider: "alipay";
   package_id: string;
+  amount_cents?: number;
 }) {
   return httpJson<TopupOrderResponse>("/api/customer/billing/topup-orders", {
     method: "POST",
