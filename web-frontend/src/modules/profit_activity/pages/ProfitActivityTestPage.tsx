@@ -1,4 +1,5 @@
 import { type ClipboardEvent, type DragEvent, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { toUserMessage } from "../../../transport/http/client";
 import "../styles/profitActivityTest.css";
 
 type Site = string;
@@ -357,7 +358,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
       // file download/text error
     }
     setLog((items) => [`${options.method || "GET"} ${url} -> ${response.status}`, ...items].slice(0, 10));
-    if (!response.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+    if (!response.ok) throw new Error(toUserMessage(typeof data === "string" ? data : JSON.stringify(data)));
     return data as T;
   };
 
@@ -367,7 +368,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     if (token) headers.set("Authorization", `Bearer ${token}`);
     const response = await fetch(url, { headers });
     setLog((items) => [`GET ${url} -> ${response.status}`, ...items].slice(0, 10));
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new Error(toUserMessage(await response.text()));
     const blob = await response.blob();
     const objectUrl = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -1267,7 +1268,7 @@ function FilterRunSummary({ task }: { task: FilterTask }) {
       </div>
       {task.status && task.status !== "completed" && (
         <p className="profit-warn">
-          {task.status === "paused" ? "过滤已暂停，未生成可申报/剔除文件。" : task.status === "failed" ? `过滤失败：${typeof task.error === "string" ? task.error : "未知错误"}` : "过滤正在进行中，请稍候…"}
+          {task.status === "paused" ? "过滤已暂停，未生成可申报/剔除文件。" : task.status === "failed" ? `过滤失败：${typeof task.error === "string" ? toUserMessage(task.error) : "未知错误"}` : "过滤正在进行中，请稍候…"}
         </p>
       )}
       <p className="profit-formula-note">

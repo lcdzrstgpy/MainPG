@@ -1,4 +1,4 @@
-import { getAuthToken, httpBlob, httpJson } from "../../../transport/http/client";
+import { getAuthToken, httpBlob, httpJson, toUserMessage } from "../../../transport/http/client";
 import { parseDianxiaomiExportFilename, parseDianxiaomiExportHeaderCount } from "../data/dianxiaomiExport";
 import { podStyleTitleRegenerateRequest } from "../data/styleTitleRequest";
 import { podBillingPendingRequest, podBillingResumeRequest } from "../data/billingRuns";
@@ -30,7 +30,7 @@ async function uploadTemplate(file: File, name: string): Promise<PodTemplate> {
   const response = await fetch(apiUrl(`${API_BASE}/templates`), { method: "POST", headers, body: form });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(typeof payload?.detail === "string" ? payload.detail : `模板上传失败 (HTTP ${response.status})`);
+    throw new Error(toUserMessage(typeof payload?.detail === "string" ? payload.detail : `模板上传失败（状态码 ${response.status}）`));
   }
   return payload as PodTemplate;
 }
@@ -38,7 +38,7 @@ async function uploadTemplate(file: File, name: string): Promise<PodTemplate> {
 async function downloadAsset(path: string, filename: string): Promise<void> {
   const blob = /^https?:\/\//i.test(path)
     ? await fetch(path).then((response) => {
-      if (!response.ok) throw new Error(`下载失败 (HTTP ${response.status})`);
+      if (!response.ok) throw new Error(`下载失败（状态码 ${response.status}），请稍后重试`);
       return response.blob();
     })
     : await httpBlob(path);

@@ -78,13 +78,82 @@ function usageDetailText(entry: BillingUsageEntry): string | null {
   return raw;
 }
 
+/** 积分/钱包概要本地缓存：冷却窗口内页面刷新直接复用缓存，避免每次进入都请求服务器。 */
+const BALANCE_CACHE_PREFIX = "mainpg.billing.summary.cache.v1";
+
+type BalanceCachePayload = { summary: BillingSummary; fetchedAt: number };
+
+function balanceCacheKey(accountId?: string) {
+  return `${BALANCE_CACHE_PREFIX}.${accountId || "anonymous"}`;
+}
+
+function readBalanceCache(key: string): BalanceCachePayload | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) ?? "null") as BalanceCachePayload | null;
+    if (!parsed || typeof parsed.fetchedAt !== "number" || !parsed.summary) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeBalanceCache(key: string, summary: BillingSummary) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify({ summary, fetchedAt: Date.now() }));
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默忽略，退化为每次请求
+  }
+}
+
+/** 消费流水本地缓存：与积分概要同理，按账号隔离，冷却窗口内同条件复用。 */
+const USAGE_CACHE_PREFIX = "mainpg.billing.usage.cache.v1";
+
+type UsageCachePayload = { items: BillingUsageEntry[]; filterKey: string; fetchedAt: number };
+
+function usageCacheKey(accountId?: string) {
+  return `${USAGE_CACHE_PREFIX}.${accountId || "anonymous"}`;
+}
+
+function buildUsageFilterKey(feature: string, status: string, from: string, to: string) {
+  return `${feature}|${status}|${from}|${to}`;
+}
+
+function readUsageCache(key: string): UsageCachePayload | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) ?? "null") as UsageCachePayload | null;
+    if (!parsed || typeof parsed.fetchedAt !== "number" || !Array.isArray(parsed.items)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeUsageCache(key: string, payload: UsageCachePayload) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默忽略，退化为每次请求
+  }
+}
+
 export function PersonalCenterPage() {
-  const [summary, setSummary] = useState<BillingSummary | null>(null);
+  const account = getAuthAccount<AccountSnapshot>();
+  // 积分/钱包概要本地缓存：冷却窗口内页面刷新直接复用缓存，先展示、不阻塞。
+  const balanceCacheKeyValue = balanceCacheKey(account?.account_id);
+  const cachedBalance = readBalanceCache(balanceCacheKeyValue);
+  // 消费流水本地缓存：与概要缓存同理，按账号隔离、跨页面刷新复用。
+  const usageCacheKeyValue = usageCacheKey(account?.account_id);
+  const cachedUsage = readUsageCache(usageCacheKeyValue);
+  const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
+
+  const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
   const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing">("wallet");
-  const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>([]);
+  const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>(
+    cachedUsage && cachedUsage.filterKey === defaultUsageFilterKey ? cachedUsage.items : [],
+  );
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageError, setUsageError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedBalance?.summary);
   const [error, setError] = useState("");
   const [selectedPackage, setSelectedPackage] = useState("");
   const [provider, setProvider] = useState<"wechat" | "alipay">("wechat");
@@ -97,21 +166,23 @@ export function PersonalCenterPage() {
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [passwordSuccess, setPasswordSuccess] = useState("");
   const [passwordError, setPasswordError] = useState("");
-  const account = getAuthAccount<AccountSnapshot>();
-  // 消费流水刷新保护时间：切换「消费流水」页签时，距上次请求小于该时长则直接复用已加载数据，不重复请求。
+  // 消费流水刷新保护：30 秒内（含页面刷新，随缓存持久化）相同筛选条件不重复请求；筛选变更因缓存键变化自动重新拉取。
   const USAGE_REFRESH_COOLDOWN_MS = 30_000;
-  const lastUsageFetchAt = useRef(0);
-  // 消费流水筛选条件（服务/状态/日期）；筛选变更时强制重新拉取。
+  // 消费流水筛选条件（服务/状态/日期）。
   const [filterFeature, setFilterFeature] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
 
   const loadUsage = useCallback((force = false) => {
-    if (!force && Date.now() - lastUsageFetchAt.current < USAGE_REFRESH_COOLDOWN_MS) {
+    const filterKey = buildUsageFilterKey(filterFeature, filterStatus, filterDateFrom, filterDateTo);
+    const cached = readUsageCache(usageCacheKeyValue);
+    // 冷却窗口内同条件已有缓存：直接复用，不再请求服务器（页面刷新后依然有效）。
+    if (!force && cached && cached.filterKey === filterKey && Date.now() - cached.fetchedAt < USAGE_REFRESH_COOLDOWN_MS) {
+      setUsageEntries(cached.items);
+      setUsageError("");
       return;
     }
-    lastUsageFetchAt.current = Date.now();
     setUsageLoading(true);
     setUsageError("");
     loadBillingUsageHistory({
@@ -120,10 +191,13 @@ export function PersonalCenterPage() {
       dateFrom: filterDateFrom || undefined,
       dateTo: filterDateTo || undefined,
     })
-      .then((payload) => setUsageEntries(payload.items))
+      .then((payload) => {
+        setUsageEntries(payload.items);
+        writeUsageCache(usageCacheKeyValue, { items: payload.items, filterKey, fetchedAt: Date.now() });
+      })
       .catch((exc) => setUsageError(exc instanceof Error ? exc.message : "读取消费流水失败"))
       .finally(() => setUsageLoading(false));
-  }, [filterFeature, filterStatus, filterDateFrom, filterDateTo]);
+  }, [filterFeature, filterStatus, filterDateFrom, filterDateTo, usageCacheKeyValue]);
 
   const hasUsageFilter = Boolean(filterFeature || filterStatus || filterDateFrom || filterDateTo);
   const resetUsageFilters = () => {
@@ -131,7 +205,7 @@ export function PersonalCenterPage() {
     setFilterStatus("");
     setFilterDateFrom("");
     setFilterDateTo("");
-    loadUsage(true);
+    // 筛选变更后由下方 effect 依据新的筛选键自动重新拉取。
   };
 
   const activePackage = useMemo(
@@ -139,21 +213,24 @@ export function PersonalCenterPage() {
     [selectedPackage, summary],
   );
 
-  const refresh = () => {
+  const refresh = useCallback(() => {
     setLoading(true);
     setError("");
     loadBillingSummary()
       .then((payload) => {
         setSummary(payload);
+        writeBalanceCache(balanceCacheKeyValue, payload);
+        lastBalanceRefreshAt.current = Date.now();
         setSelectedPackage((current) => current || payload.topup_products[0]?.package_id || "");
       })
       .catch((exc) => setError(exc instanceof Error ? exc.message : "读取个人中心失败"))
       .finally(() => setLoading(false));
-  };
+  }, [balanceCacheKeyValue]);
 
-  // 可用积分刷新冷却：30 秒内重复点击不重复请求，按钮禁用并倒计时。
+  // 可用积分刷新冷却：30 秒内（含页面刷新，时间戳随缓存持久化到本地）不重复请求；
+  // 已读取的概要缓存到 localStorage，刷新页面时先展示缓存，新鲜则不再请求服务器。
   const BALANCE_REFRESH_COOLDOWN_MS = 30_000;
-  const lastBalanceRefreshAt = useRef(0);
+  const lastBalanceRefreshAt = useRef(cachedBalance?.fetchedAt ?? 0);
   const [balanceCooldownSeconds, setBalanceCooldownSeconds] = useState(0);
   const balanceCooldownActive = balanceCooldownSeconds > 0;
 
@@ -164,7 +241,7 @@ export function PersonalCenterPage() {
     lastBalanceRefreshAt.current = Date.now();
     setBalanceCooldownSeconds(BALANCE_REFRESH_COOLDOWN_MS / 1000);
     refresh();
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     if (!balanceCooldownActive) return;
@@ -176,6 +253,11 @@ export function PersonalCenterPage() {
   }, [balanceCooldownActive]);
 
   useEffect(() => {
+    // 冷却窗口内已有新鲜缓存：直接复用，不再请求服务器。
+    if (Date.now() - lastBalanceRefreshAt.current < BALANCE_REFRESH_COOLDOWN_MS) {
+      setLoading(false);
+      return;
+    }
     refreshBalance(true);
   }, [refreshBalance]);
 
@@ -256,7 +338,11 @@ export function PersonalCenterPage() {
     try {
       const response = await createTopupOrder({ provider, package_id: product.package_id });
       setCreatedOrder(response);
-      await loadBillingSummary().then(setSummary);
+      await loadBillingSummary().then((payload) => {
+        setSummary(payload);
+        writeBalanceCache(balanceCacheKeyValue, payload);
+        lastBalanceRefreshAt.current = Date.now();
+      });
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "创建充值订单失败");
     } finally {
@@ -556,10 +642,7 @@ export function PersonalCenterPage() {
                   type="date"
                   value={filterDateFrom}
                   max={filterDateTo || undefined}
-                  onChange={(event) => {
-                    setFilterDateFrom(event.target.value);
-                    loadUsage(true);
-                  }}
+                  onChange={(event) => setFilterDateFrom(event.target.value)}
                 />
               </label>
               <label>
@@ -568,20 +651,14 @@ export function PersonalCenterPage() {
                   type="date"
                   value={filterDateTo}
                   min={filterDateFrom || undefined}
-                  onChange={(event) => {
-                    setFilterDateTo(event.target.value);
-                    loadUsage(true);
-                  }}
+                  onChange={(event) => setFilterDateTo(event.target.value)}
                 />
               </label>
               <label>
                 <span>服务</span>
                 <select
                   value={filterFeature}
-                  onChange={(event) => {
-                    setFilterFeature(event.target.value);
-                    loadUsage(true);
-                  }}
+                  onChange={(event) => setFilterFeature(event.target.value)}
                 >
                   <option value="">全部服务</option>
                   <option value="product_processing.image_grid_2k">智能生图</option>
@@ -593,10 +670,7 @@ export function PersonalCenterPage() {
                 <span>状态</span>
                 <select
                   value={filterStatus}
-                  onChange={(event) => {
-                    setFilterStatus(event.target.value);
-                    loadUsage(true);
-                  }}
+                  onChange={(event) => setFilterStatus(event.target.value)}
                 >
                   <option value="">全部状态</option>
                   <option value="succeeded">已结算</option>

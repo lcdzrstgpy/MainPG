@@ -168,7 +168,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
           body: payload,
           token: "",
         });
-        if (!data.token) throw new Error("登录失败：服务端未返回 token");
+        if (!data.token) throw new Error("登录失败：服务端未返回登录凭证");
         saveAuthSession(data.token, data.account ?? {});
         onEnter();
       } else {

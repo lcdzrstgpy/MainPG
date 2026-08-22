@@ -1,4 +1,5 @@
 import type { ProductQueryParams, ProductSources, ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
+import { toUserMessage } from "../../../transport/http/client";
 
 export type ProfitActivitySiteOption = { site_code: ProfitActivitySite; display_name: string; builtin: boolean };
 
@@ -42,10 +43,10 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       last401.message = typeof data === "string" ? data : JSON.stringify(data);
       continue; // 会话失效时回退下一个令牌重试
     }
-    if (!response.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+    if (!response.ok) throw new Error(toUserMessage(typeof data === "string" ? data : JSON.stringify(data)));
     return data as T;
   }
-  throw last401;
+  throw new Error(toUserMessage(last401.message));
 }
 
 export async function listProfitActivityProducts(params: ProductQueryParams) {
@@ -99,7 +100,7 @@ export async function loadProductImage({
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error(toUserMessage(await response.text()));
   return URL.createObjectURL(await response.blob());
 }
 

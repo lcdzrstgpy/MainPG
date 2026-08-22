@@ -247,7 +247,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
       onChanged?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setUnlinkError(message.includes("401") || message.includes("token")
+      setUnlinkError(/401|token|登录|过期|会话/.test(message)
         ? "登录会话已失效或无权解除该关联：请登录数据所属工作区后重试。"
         : `解除关联失败：${message}`);
     } finally {
