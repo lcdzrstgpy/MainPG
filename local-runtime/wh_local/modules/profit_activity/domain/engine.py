@@ -34,13 +34,13 @@ def calculate_profit(
     validate_settings(settings)
     if site_code == "US":
         domestic, subsidy, shipping, end_fee, refund = (
-            settings.domestic_fee, settings.shipping_subsidy if selling <= Decimal("171") else Decimal("0"),
-            weight * settings.us_first_mile_rate + settings.us_first_mile_fixed, _us_end_fee(weight), settings.refund_rate,
+            settings.us_domestic_fee, settings.us_shipping_subsidy if selling <= Decimal("171") else Decimal("0"),
+            weight * settings.us_first_mile_rate + settings.us_first_mile_fixed, _us_end_fee(weight), settings.us_refund_rate,
         )
     elif site_code == "CO":
         domestic, subsidy, shipping, end_fee, refund = (
-            settings.domestic_fee, settings.shipping_subsidy if selling <= Decimal("171") else Decimal("0"),
-            weight * settings.co_first_mile_rate + settings.co_first_mile_fixed, Decimal("24"), settings.refund_rate,
+            settings.co_domestic_fee, settings.co_shipping_subsidy if selling <= Decimal("171") else Decimal("0"),
+            weight * settings.co_first_mile_rate + settings.co_first_mile_fixed, Decimal("24"), settings.co_refund_rate,
         )
     elif site_code == "EC":
         domestic, subsidy, shipping, end_fee, refund = (
@@ -82,12 +82,12 @@ def activity_decision(preview: ProfitPreview, settings: ProfitSettings) -> tuple
 
 
 def validate_settings(settings: ProfitSettings) -> None:
-    for field in ("domestic_fee", "shipping_subsidy", "us_first_mile_rate", "us_first_mile_fixed", "co_first_mile_rate", "co_first_mile_fixed", "ec_domestic_fee", "ec_shipping_subsidy", "ec_first_mile_rate", "ec_first_mile_fixed", "ec_end_fee", "activity_min_net_profit"):
+    for field in ("domestic_fee", "shipping_subsidy", "us_first_mile_rate", "us_first_mile_fixed", "us_domestic_fee", "us_shipping_subsidy", "co_first_mile_rate", "co_first_mile_fixed", "co_domestic_fee", "co_shipping_subsidy", "ec_domestic_fee", "ec_shipping_subsidy", "ec_first_mile_rate", "ec_first_mile_fixed", "ec_end_fee", "activity_min_net_profit"):
         if getattr(settings, field) < 0:
             raise ProfitValidationError(f"{field}_must_be_nonnegative")
     if settings.ec_shipping_subsidy_price_limit < 0:
         raise ProfitValidationError("ec_shipping_subsidy_price_limit_must_be_nonnegative")
-    for field in ("refund_rate", "ec_refund_rate", "activity_profit_rate_threshold"):
+    for field in ("refund_rate", "us_refund_rate", "co_refund_rate", "ec_refund_rate", "activity_profit_rate_threshold"):
         if not Decimal("0") <= getattr(settings, field) <= Decimal("1"):
             raise ProfitValidationError(f"{field}_must_be_between_zero_and_one")
     if settings.rule_version < 1:

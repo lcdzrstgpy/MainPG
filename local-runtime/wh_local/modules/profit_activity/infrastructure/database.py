@@ -64,6 +64,12 @@ def _migrate_legacy_tables(engine: Engine) -> None:
             "workspace_id": "TEXT NOT NULL DEFAULT 'default'",
             "save_root": "TEXT NOT NULL DEFAULT ''",
             "activity_threshold_configured": "BOOLEAN NOT NULL DEFAULT 0",
+            "us_domestic_fee": "NUMERIC NOT NULL DEFAULT 2.5",
+            "us_shipping_subsidy": "NUMERIC NOT NULL DEFAULT 21",
+            "us_refund_rate": "NUMERIC NOT NULL DEFAULT 0.05",
+            "co_domestic_fee": "NUMERIC NOT NULL DEFAULT 2.5",
+            "co_shipping_subsidy": "NUMERIC NOT NULL DEFAULT 21",
+            "co_refund_rate": "NUMERIC NOT NULL DEFAULT 0.05",
         },
         "profit_activity_records": {
             "workspace_id": "TEXT NOT NULL DEFAULT 'default'",
@@ -89,6 +95,7 @@ def _migrate_legacy_tables(engine: Engine) -> None:
     if engine.dialect.name != "sqlite":
         return
     threshold_state_added = False
+    site_fee_columns_added = False
     with engine.begin() as connection:
         for table, columns in additions.items():
             existing = {row[1] for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")}
@@ -97,6 +104,11 @@ def _migrate_legacy_tables(engine: Engine) -> None:
                     connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
                     if table == "profit_activity_settings" and name == "activity_threshold_configured":
                         threshold_state_added = True
+                    if table == "profit_activity_settings" and name in {
+                        "us_domestic_fee", "us_shipping_subsidy", "us_refund_rate",
+                        "co_domestic_fee", "co_shipping_subsidy", "co_refund_rate",
+                    }:
+                        site_fee_columns_added = True
         connection.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS idx_profit_activity_records_workspace_store "
             "ON profit_activity_records (workspace_id, store_name)"
@@ -120,5 +132,26 @@ def _migrate_legacy_tables(engine: Engine) -> None:
                          AND CAST(activity_profit_rate_threshold AS REAL) = 0.2 THEN 0
                         ELSE activity_profit_rate_threshold
                     END
+                """
+            )
+        if site_fee_columns_added:
+            connection.exec_driver_sql(
+                """
+                UPDATE profit_activity_settings
+                SET us_first_mile_rate = CASE WHEN CAST(us_first_mile_rate AS REAL) = 0 THEN 72 ELSE us_first_mile_rate END,
+                    us_first_mile_fixed = CASE WHEN CAST(us_first_mile_fixed AS REAL) = 0 THEN 5 ELSE us_first_mile_fixed END,
+                    co_first_mile_rate = CASE WHEN CAST(co_first_mile_rate AS REAL) = 0 THEN 80 ELSE co_first_mile_rate END,
+                    ec_first_mile_rate = CASE WHEN CAST(ec_first_mile_rate AS REAL) = 0 THEN 108 ELSE ec_first_mile_rate END,
+                    ec_domestic_fee = CASE WHEN CAST(ec_domestic_fee AS REAL) = 0 THEN 2.5 ELSE ec_domestic_fee END,
+                    ec_shipping_subsidy = CASE WHEN CAST(ec_shipping_subsidy AS REAL) = 0 THEN 15 ELSE ec_shipping_subsidy END,
+                    ec_shipping_subsidy_price_limit = CASE WHEN CAST(ec_shipping_subsidy_price_limit AS REAL) = 0 THEN 120 ELSE ec_shipping_subsidy_price_limit END,
+                    ec_end_fee = CASE WHEN CAST(ec_end_fee AS REAL) = 0 THEN 27 ELSE ec_end_fee END,
+                    ec_refund_rate = CASE WHEN CAST(ec_refund_rate AS REAL) = 0 THEN 0.05 ELSE ec_refund_rate END,
+                    us_domestic_fee = CASE WHEN CAST(domestic_fee AS REAL) = 0 THEN 2.5 ELSE domestic_fee END,
+                    us_shipping_subsidy = CASE WHEN CAST(shipping_subsidy AS REAL) = 0 THEN 21 ELSE shipping_subsidy END,
+                    us_refund_rate = CASE WHEN CAST(refund_rate AS REAL) = 0 THEN 0.05 ELSE refund_rate END,
+                    co_domestic_fee = CASE WHEN CAST(domestic_fee AS REAL) = 0 THEN 2.5 ELSE domestic_fee END,
+                    co_shipping_subsidy = CASE WHEN CAST(shipping_subsidy AS REAL) = 0 THEN 21 ELSE shipping_subsidy END,
+                    co_refund_rate = CASE WHEN CAST(refund_rate AS REAL) = 0 THEN 0.05 ELSE refund_rate END
                 """
             )

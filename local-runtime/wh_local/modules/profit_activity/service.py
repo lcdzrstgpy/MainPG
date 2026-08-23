@@ -382,14 +382,17 @@ class ProfitActivityService:
         selected = set(selected_row_ids) if selected_row_ids is not None else {row["row_id"] for row in rows if row["status"] == "ready"}
         products: list[dict[str, Any]] = []
         imported = skipped = replaced = 0
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in rows:
-            if row["row_id"] not in selected or row["status"] != "ready":
-                continue
-            row_site = _site(row.get("site") or session.site)
-            exists = self._repository.find_product(row["skc"], row_site, context.workspace_id) is not None
-            if exists and on_conflict == "skip":
+            if row["row_id"] in selected and row["status"] == "ready":
+                row_site = _site(row.get("site") or session.site)
+                grouped.setdefault((row_site, row["skc"]), []).append(row)
+        for (row_site, skc), candidates in grouped.items():
+            existing = self._repository.find_product(skc, row_site, context.workspace_id)
+            if existing is not None and on_conflict == "skip":
                 skipped += 1
                 continue
+            row = _conservative_import_row(candidates, existing)
             image = _asset_tuple(row.get("product_image_path"))
             source_image = _asset_tuple(row.get("source_image_path"))
             source_groups = row.get("source_groups") or []
@@ -410,7 +413,7 @@ class ProfitActivityService:
                 source_group_images=group_images or None,
             )
             products.append(product)
-            if exists:
+            if existing is not None:
                 replaced += 1
             else:
                 imported += 1
@@ -920,6 +923,24 @@ def _local_iso(value: Any) -> str:
         return value.replace(tzinfo=timezone.utc).astimezone().isoformat(timespec="minutes")
     except (TypeError, ValueError, AttributeError):
         return str(value)
+
+
+def _conservative_import_row(rows: list[dict[str, Any]], existing: Any | None) -> dict[str, Any]:
+    """Merge an import group into the activity-safe product snapshot."""
+    base = min(rows, key=lambda row: Decimal(str(row["selling_price"])))
+    selling = [Decimal(str(row["selling_price"])) for row in rows]
+    costs = [Decimal(str(row["cost_price"])) for row in rows]
+    weights = [Decimal(str(row["weight_kg"])) for row in rows]
+    if existing is not None:
+        selling.append(Decimal(str(existing.selling_price)))
+        costs.append(Decimal(str(existing.cost_price)))
+        weights.append(Decimal(str(existing.weight_kg)))
+    return {
+        **base,
+        "selling_price": float(min(selling)),
+        "cost_price": float(max(costs)),
+        "weight_kg": float(max(weights)),
+    }
 
 
 def _asset_tuple(path_value: Any) -> tuple[str, bytes] | None:
