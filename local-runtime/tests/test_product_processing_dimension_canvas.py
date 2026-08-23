@@ -654,7 +654,9 @@ def test_v2_canvas_refresh_materializes_media_that_finished_syncing_later(tmp_pa
         assert detail["preview_url"] == (
             f"/api/product-processing/dimension-canvas/assets/{detail['id']}/image?workspace_id=local"
         )
-        assert service.dimension_asset_image_path(detail["id"], workspace_id="local").read_bytes() == remote_bytes
+        path, media_type = service.dimension_asset_image_path(detail["id"], workspace_id="local")
+        assert path.read_bytes() == remote_bytes
+        assert media_type == "image/jpeg"
     finally:
         service.close()
         database.dispose()

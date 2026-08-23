@@ -93,7 +93,7 @@ class ProductProcessingAssets:
         if not content:
             raise ValueError("dimension asset is empty")
         safe_suffix = str(suffix or "").lower()
-        allowed_suffixes = {".png", ".jpg", ".jpeg", ".webp"} if kind == "source" else {".png", ".jpg", ".jpeg"}
+        allowed_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".avif"} if kind == "source" else {".png", ".jpg", ".jpeg"}
         if safe_suffix not in allowed_suffixes:
             raise ValueError("unsupported dimension asset suffix")
         digest = hashlib.sha256(content).hexdigest()

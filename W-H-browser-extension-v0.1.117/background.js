@@ -11346,7 +11346,11 @@ function extractPageSkuGroupsInFrame() {
   }
   const output = [];
   for (const [name, values] of grouped) {
-    if (values.length < 2) continue;
+    // 单值维度（如「尺码：通用US」）也是有效规格，不能因只有一个值被丢弃；
+    // 数量/库存等购买交互区不是规格维度，保留会把「数量：1」误当规格。
+    if (!values.length) continue;
+    if (/数量|库存|起批|已选|价格|运费|快递|包邮/i.test(String(name || ""))) continue;
+    if (/^pack$/i.test(String(name || "")) && values.length === 1 && /^\d+$/.test(String(values[0]?.value || "").trim())) continue;
     output.push({ name, source_name: name, values: values.slice(0, 50) });
   }
   return output;
@@ -13366,9 +13370,16 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         values = values.map((item) => ({ ...item, selectable: true, source_name: sourceName || "规格" }));
         hasSalesOptionEvidence = true;
       }
-      if (!hasSalesOptionEvidence) continue;
-      if (parameterNoiseGroup && !hasBoundOptionEvidence && !bareTextGroup) continue;
-      if (attributeNoiseNameRe.test(`${sourceName} ${classText} ${fullText.slice(0, 100)}`) && !hasBoundOptionEvidence && !bareTextGroup) continue;
+      // Temu 单值维度（如仅有一个「尺码：通用US」）同样是有意义的规格，不能
+      // 因缺少价格/库存等销售证据被丢弃，否则规格组会丢维度（组合只剩颜色）。
+      const labeledTemuSingleGroup = platform === "temu"
+        && values.length === 1
+        && Boolean(sourceName)
+        && !/数量/.test(text(sourceName))
+        && /^(颜色|规格|款式|型号|容量|尺寸|尺码|包装|套装|Color|Size|Style|Capacity|Pack)[:：]?$/i.test(text(sourceName).trim());
+      if (!hasSalesOptionEvidence && !labeledTemuSingleGroup) continue;
+      if (parameterNoiseGroup && !hasBoundOptionEvidence && !bareTextGroup && !labeledTemuSingleGroup) continue;
+      if (attributeNoiseNameRe.test(`${sourceName} ${classText} ${fullText.slice(0, 100)}`) && !hasBoundOptionEvidence && !bareTextGroup && !labeledTemuSingleGroup) continue;
       const deduped = [];
       const seenValues = new Set();
       for (const item of values) {
@@ -14235,20 +14246,27 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     });
   };
   const filterParameterNoiseGroups = (groups, combos = []) => {
+    const knownSpecLabel = (value) => /颜色|规格|款式|型号|容量|尺寸|尺码|包装|套装|Color|Size|Style|Capacity|Pack/i.test(text(value || ""));
     return (groups || []).filter((group) => {
       if (!group || typeof group !== "object") return false;
       const values = Array.isArray(group.values) ? group.values : [];
       if (!values.length) return false;
       const directEvidence = variantGroupHasSalesEvidence(group);
       const comboEvidence = variantGroupHasComboEvidence(group, combos);
-      if (!directEvidence && !comboEvidence) return false;
+      // Temu 带规格标签的单值维度（如「尺码：通用US」）保留，避免组合丢维度。
+      const labeledTemuSingleGroup = platform === "temu"
+        && values.length === 1
+        && knownSpecLabel(group.source_name || group.name)
+        && !/数量/.test(text(group.source_name || group.name || ""));
+      if (!directEvidence && !comboEvidence && !labeledTemuSingleGroup) return false;
       const valueText = (group.values || [])
         .map((item) => typeof item === "object" ? `${item.source_name || ""} ${item.value || ""}` : String(item || ""))
         .join(" ");
       return !(
         variantGroupLooksLikeParameterNoise(group.source_name || group.name || "", group.source || "", valueText) &&
         !variantGroupHasBoundEvidence(group) &&
-        !comboEvidence
+        !comboEvidence &&
+        !labeledTemuSingleGroup
       );
     });
   };
@@ -14351,14 +14369,19 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       (acc, list) => acc.flatMap((item) => list.map((value) => [...item, value])),
       [[]]
     );
+    const knownSpecLabel = (value) => /颜色|规格|款式|型号|容量|尺寸|尺码|包装|套装|Color|Size|Style|Capacity|Pack/i.test(text(value || ""));
     const candidateGroups = (groups || [])
-      .filter((group) => (group.values || []).some(variantOptionHasSalesEvidence))
+      .filter((group) => (
+        (group.values || []).some(variantOptionHasSalesEvidence)
+        || (platform === "temu" && knownSpecLabel(group.source_name || group.name) && !/数量/.test(text(group.source_name || group.name || "")))
+      ))
       .slice(0, 4);
     if (!candidateGroups.length) return [];
     if (candidateGroups.length === 1) {
       const group = candidateGroups[0];
+      const hasEvidence = (group.values || []).some(variantOptionHasSalesEvidence);
       return (group.values || [])
-        .filter((item) => item && typeof item === "object" && variantOptionHasSalesEvidence(item))
+        .filter((item) => item && typeof item === "object" && (hasEvidence ? variantOptionHasSalesEvidence(item) : true))
         .map((item) => {
           const sourceSkuId = text(item.source_sku_id || item.sourceSkuId || item.sku || "");
           return {
@@ -14404,6 +14427,40 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     }
     return combos;
   };
+  // 按属性子集匹配，把 JSON 组合里的价格/库存/货号回填到规格组重建的组合上。
+  const mergeComboEvidence = (targetCombos, evidenceCombos) => {
+    if (!evidenceCombos || !evidenceCombos.length) return targetCombos;
+    return (targetCombos || []).map((combo) => {
+      let best = null;
+      let bestScore = 0;
+      for (const evidence of evidenceCombos) {
+        const evAttrs = evidence.attributes || {};
+        let score = 0;
+        for (const [name, value] of Object.entries(evAttrs)) {
+          const evName = String(name).trim().toLowerCase();
+          const evValue = cleanSpecValue(value).toLowerCase();
+          for (const [targetName, targetValue] of Object.entries(combo.attributes || {})) {
+            if (String(targetName).trim().toLowerCase() === evName && evValue === cleanSpecValue(targetValue).toLowerCase()) score += 1;
+          }
+        }
+        if (score > bestScore) { bestScore = score; best = evidence; }
+      }
+      if (best && bestScore > 0) {
+        const evidenceSku = text(best.source_sku_id || best.sourceSkuId || best.sku || "");
+        return {
+          ...combo,
+          price: combo.price || best.price || "",
+          stock: combo.stock || best.stock || "",
+          sku: evidenceSku,
+          source_sku_id: text(best.source_sku_id || best.sourceSkuId || ""),
+          image_url: combo.image_url || best.image_url || "",
+          selected: Boolean(combo.selected || best.selected),
+          confidence: combo.confidence === "high" || best.confidence === "high" ? "high" : (combo.confidence || best.confidence || "low")
+        };
+      }
+      return combo;
+    });
+  };
   const jsonVariantData = extractJsonVariantData();
   const sourceAttributeData = extractSourceAttributeData();
   const variantGroups = [...extractVariantGroups(), ...pageWideSkuGroups];
@@ -14414,6 +14471,18 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     ...buildCombosFromGroups(mergedVariantGroups)
   ];
   let variantCombinations = dedupeCombos(rawVariantCombinationFragments);
+  // Temu 的 JSON SKU 模型常把规格拆成逐项（颜色每值一条 + 尺码/数量单独一条），
+  // 导致组合数与真实规格不符（如 5 色产品只出 3 条）。页面可见的规格组
+  // （variant_groups，含颜色多值 + 尺码单值）才是完整维度来源：以规格组笛卡尔积
+  // 重建组合，再按属性匹配回填 JSON 里的价格/库存/货号。
+  if (platform === "temu" && mergedVariantGroups.length) {
+    const groupCombos = buildCombosFromGroups(mergedVariantGroups);
+    const comboDims = variantCombinations.reduce((max, combo) => Math.max(max, Object.keys(combo.attributes || {}).length), 0);
+    const groupDims = mergedVariantGroups.length;
+    if (groupCombos.length && (groupDims > comboDims || groupCombos.length > variantCombinations.length)) {
+      variantCombinations = mergeComboEvidence(groupCombos, variantCombinations);
+    }
+  }
   // 首次采集成功后把结果缓存到页面 window：1688 等 SPA 的 SKU 数据由 JSONP 在
   // 页面加载早期返回，探针捕获缓冲（200 条滑窗）会被后续请求挤出，导致同页第二次
   // 采集 JSON 路径失效；此时回退到上次成功结果，保证重复采集结果稳定。

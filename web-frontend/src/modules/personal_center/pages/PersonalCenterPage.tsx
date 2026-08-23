@@ -136,6 +136,26 @@ function writeUsageCache(key: string, payload: UsageCachePayload) {
   }
 }
 
+/** 待支付订单号本地持久化：支付在新标签页完成后，即使本页刷新仍能恢复轮询识别到账。 */
+const PENDING_ORDER_STORAGE_KEY = "mainpg.billing.pending-order.v1";
+
+function readPendingOrderId(): string {
+  try {
+    return (window.localStorage.getItem(PENDING_ORDER_STORAGE_KEY) ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function writePendingOrderId(orderId: string) {
+  try {
+    if (orderId) window.localStorage.setItem(PENDING_ORDER_STORAGE_KEY, orderId);
+    else window.localStorage.removeItem(PENDING_ORDER_STORAGE_KEY);
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默忽略
+  }
+}
+
 export function PersonalCenterPage() {
   const account = getAuthAccount<AccountSnapshot>();
   // 积分/钱包概要本地缓存：冷却窗口内页面刷新直接复用缓存，先展示、不阻塞。
@@ -160,7 +180,7 @@ export function PersonalCenterPage() {
   const [creating, setCreating] = useState(false);
   const [createdOrder, setCreatedOrder] = useState<TopupOrderResponse | null>(null);
   const [paymentNotice, setPaymentNotice] = useState("");
-  const [pendingPaymentOrderId, setPendingPaymentOrderId] = useState("");
+  const [pendingPaymentOrderId, setPendingPaymentOrderId] = useState(readPendingOrderId);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -294,6 +314,7 @@ export function PersonalCenterPage() {
           const order = payload.recent_orders.find((item) => item.order_id === pendingPaymentOrderId);
           if (order?.status === "paid") {
             setPendingPaymentOrderId("");
+            writePendingOrderId("");
             setPaymentNotice(`充值成功，${order.points.toLocaleString()} 积分已到账。`);
           }
         })
@@ -399,10 +420,15 @@ export function PersonalCenterPage() {
       writeBalanceCache(balanceCacheKeyValue, payload);
       lastBalanceRefreshAt.current = Date.now();
       setPendingPaymentOrderId(response.order.order_id);
+      writePendingOrderId(response.order.order_id);
 
       if (response.payment.mode === "page_pay" && response.payment.pay_url) {
-        setPaymentNotice("正在跳转支付宝付款页面，付款完成后返回此页会自动刷新积分。");
-        window.location.assign(response.payment.pay_url);
+        setPaymentNotice("正在新窗口打开支付宝付款页面，付款完成后回到本页会自动刷新积分。");
+        const popup = window.open(response.payment.pay_url, "_blank");
+        if (!popup) {
+          // 弹窗被浏览器拦截时，回退为当前页跳转（付款完成后需手动返回本工作台）。
+          window.location.assign(response.payment.pay_url);
+        }
         return;
       }
       setPaymentNotice(response.payment.message || "支付宝付款暂不可用，请稍后重试。");

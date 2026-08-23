@@ -114,6 +114,45 @@ _DIMENSION_TRIPLE = re.compile(
     re.IGNORECASE,
 )
 _WEIGHT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(kg|g|千克|公斤|克)", re.IGNORECASE)
+# 属性名里带明确单轴的键（如「长度」「宽度」「高度」）可单独提取，不依赖三元组。
+_SINGLE_AXIS_KEY = re.compile(
+    r"(长度|宽度|高度|长|宽|高|length|width|height)", re.IGNORECASE
+)
+_SINGLE_AXIS_VALUE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(mm|cm|毫米|厘米)?", re.IGNORECASE
+)
+_WEIGHT_KEY_RE = re.compile(r"(重量|毛重|净重|单重|克重|weight|gross|net)", re.IGNORECASE)
+_WEIGHT_VALUE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(kg|g|千克|公斤|克)", re.IGNORECASE
+)
+# 显式轴文本：「长30×宽20×高10cm」「Length 30 x Width 20 x Height 10 cm」。
+_AXISED_SIZE_TEXT = re.compile(
+    r"(?:长(?:度)?|length)\s*[:：=]?\s*(\d+(?:\.\d+)?)\s*(mm|cm|毫米|厘米)?\s*[xX*×]\s*"
+    r"(?:宽(?:度)?|width)\s*[:：=]?\s*(\d+(?:\.\d+)?)\s*(mm|cm|毫米|厘米)?\s*[xX*×]\s*"
+    r"(?:高(?:度)?|height)\s*[:：=]?\s*(\d+(?:\.\d+)?)\s*(mm|cm|毫米|厘米)?",
+    re.IGNORECASE,
+)
+
+
+def _deterministic_axis_from_key(key_text: str) -> str | None:
+    """属性名只含一个轴时返回该轴（length/width/height），多轴/无轴返回 None。"""
+    tokens = [
+        token
+        for token in _SINGLE_AXIS_KEY.findall(key_text.casefold())
+    ]
+    if len(tokens) != 1:
+        return None
+    token = tokens[0]
+    if token in {"长度", "长", "length"}:
+        return "length"
+    if token in {"宽度", "宽", "width"}:
+        return "width"
+    return "height"
+
+
+def _deterministic_unit_in_key(key_text: str) -> str:
+    match = re.search(r"(mm|cm|毫米|厘米)", key_text, re.IGNORECASE)
+    return match.group(1) if match else ""
 
 # 阶段缓存 key 的易变簿记字段：处理完成时会写入 raw_payload（如 product_processing_receipt），
 # 这些字段不影响提示词内容，必须从指纹中剔除，否则同一商品重跑会 key 变化导致缓存 miss。
@@ -1428,6 +1467,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "source_detail_image_urls": detail,
             "source_variant_records": payload.get("skus") or [],
             "source_attributes": dict(attributes) if isinstance(attributes, dict) else {},
+            "weight_text": str(payload.get("weight_text") or "").strip() or None,
+            "package_info_text": str(payload.get("package_info_text") or "").strip() or None,
             "price_cny": candidate.get("price_cny"),
             "freight_cny": candidate.get("freight_cny"),
             "min_order_quantity": candidate.get("min_order_quantity"),
@@ -2525,6 +2566,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         dimensions = result.get("product_dimensions") or {}
         if not isinstance(dimensions, dict):
             dimensions = {}
+        provenance_source = str(dimensions.get("source") or "").strip()
+        dimension_provenance: dict[str, str] = {}
+        for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
+            if key in core_fields:
+                dimension_provenance[key] = "manual"
+            elif "source_evidence" in provenance_source:
+                dimension_provenance[key] = "source"
+            else:
+                dimension_provenance[key] = "ai"
         # 标题/描述：覆盖优先，其次生成结果
         title = str(saved.get("title") or result.get("optimized_title") or "").strip()
         description = str(saved.get("description") or result.get("description") or "").strip()
@@ -2553,6 +2603,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 for slot in slots
             ],
             "physical_dimensions": result.get("physical_dimensions") or {},
+            "dimension_provenance": dimension_provenance,
             "preview_revision": preview_revision,
             "result_version": task_item_result_version(result),
             "core_fields": {
@@ -3037,8 +3088,107 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         # 远程 token 用于计费结算，而清理步骤会把该 token 从内存中移除。
         if not preflight_only:
             self._maybe_launch_auto_repull(task_id, workspace_id, failures)
+            # 静默上报终态失败明细到服务器（诊断用）；补跑轮仍在进行时不报，等最后终态。
+            self._upload_failure_diagnostics(task_id, workspace_id)
         self._cleanup_terminal_billing_state(task_id)
         return completed_task
+
+    def _upload_failure_diagnostics(self, task_id: int, workspace_id: str) -> None:
+        """静默上报任务终态失败明细到服务器（诊断用，用户无感知）。
+
+        规则：
+        - 仅在上报轮次结束后的最终状态（补跑轮仍在 running 时跳过，等最后一轮）；
+        - 无失败项 / 非计费任务 / 缺远程 token 时直接跳过；
+        - 上传在独立守护线程内进行，任何异常都不影响任务主流程。
+        """
+        try:
+            task = self._require_task(task_id, workspace_id)
+            settings = dict(task.get("settings") or {})
+            billing = settings.get("_billing")
+            account_id = (
+                self._text(billing.get("account_id"))
+                if isinstance(billing, dict)
+                else ""
+            )
+            token = self._task_remote_token(task_id)
+            if not token or not account_id:
+                return
+            repull_state = settings.get("_auto_repull")
+            repull_state = repull_state if isinstance(repull_state, dict) else {}
+            if str(repull_state.get("status") or "") == "running":
+                # 下一轮自动补跑还在进行，等最后一轮终态再上报。
+                return
+            failed_items = [
+                item
+                for item in (task.get("items") or [])
+                if item.get("status") in {"failed", "attention_required"}
+            ]
+            if not failed_items:
+                return
+            attention_required = sum(
+                1
+                for item in (task.get("items") or [])
+                if item.get("status") == "attention_required"
+            )
+            payload = {
+                "report_key": f"pp-task-{int(task_id)}-final",
+                "app_version": str(default_config().app_version or ""),
+                "task_id": int(task_id),
+                "task_status": str(task.get("status") or ""),
+                "total_count": int(task.get("total_count") or 0),
+                "success_count": int(task.get("success_count") or 0),
+                "failed_count": int(task.get("failed_count") or 0),
+                "skipped_count": int(task.get("skipped_count") or 0),
+                "attention_required_count": attention_required,
+                "auto_repull_rounds": int(repull_state.get("round") or 0),
+                "auto_repull_message": str(repull_state.get("message") or ""),
+                "target_site": str(settings.get("target_site") or ""),
+                "target_language": str(settings.get("target_language") or ""),
+                "processing_scope": [
+                    str(value) for value in (settings.get("processing_scope") or [])
+                ],
+                "items": [
+                    self._failure_diagnostic_item(item) for item in failed_items
+                ],
+            }
+            threading.Thread(
+                target=self._report_failure_log,
+                name=f"pp-failure-log-{task_id}",
+                daemon=True,
+                args=(token, payload),
+            ).start()
+        except Exception:
+            # 诊断上报绝不允许影响任务主流程。
+            pass
+
+    @staticmethod
+    def _failure_diagnostic_item(item: Mapping[str, Any]) -> dict[str, Any]:
+        result = item.get("result") or {}
+        if not isinstance(result, dict):
+            result = {}
+        return {
+            "product_draft_id": (
+                int(item["product_draft_id"]) if item.get("product_draft_id") else None
+            ),
+            "skc": str(item.get("skc") or ""),
+            "spu": str(item.get("spu") or ""),
+            "title": str(item.get("title") or "")[:200],
+            "status": str(item.get("status") or ""),
+            "reason": str(item.get("reason") or "")[:2000],
+            "failure_class": str(result.get("failure_class") or ""),
+            "error_type": str(result.get("error_type") or ""),
+            "operator_hint": str(result.get("operator_hint") or "")[:2000],
+            "debug_hint": str(result.get("debug_hint") or "")[:2000],
+            "ai_notes": [str(note) for note in (result.get("ai_notes") or [])][-12:],
+        }
+
+    def _report_failure_log(self, token: str, payload: dict[str, Any]) -> None:
+        """在守护线程里执行实际上传，尽力而为，任何失败都静默吞掉。"""
+        try:
+            client = _batch_billing_client()
+            client.submit_pp_failure_log(token, payload)
+        except Exception:
+            pass
 
     def _maybe_launch_auto_repull(
         self,
@@ -3056,8 +3206,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         - 直连计费任务必须仍有可用远程 token 才会自动补跑；否则保持现状，
           留给用户在结果页手动重新处理。
         """
-        if not failures:
-            return
         task = self._require_task(task_id, workspace_id)
         settings = dict(task["settings"] or {})
         if not bool(settings.get("auto_repull", True)):
@@ -3065,6 +3213,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # 留给用户在结果页手动重新处理（默认开启，保持原有自动补跑行为）。
             return
         state = settings.get("_auto_repull")
+        if not failures and not (
+            isinstance(state, dict) and state.get("status") == "running"
+        ):
+            # 无失败且当前无补跑轮：无需自动重试。注意补跑轮结束时即使本轮全部
+            # 成功（failures 为空）也不能提前返回，否则 _auto_repull 会永远停在
+            # running，前端一直显示「正在重试波动链接」。
+            return
         previous_state = state if isinstance(state, dict) else {}
         max_rounds = _auto_repull_rounds()
         if previous_state.get("status") == "running":
@@ -3818,11 +3973,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             return {
                 **item,
                 "status": "failed",
-                "reason": "product draft not found",
+                "reason": "处理失败",
                 "result": {
                     "error_type": "not_found",
                     "failure_class": "technical_retryable",
-                    "operator_hint": "草稿不存在或已被删除",
+                    "operator_hint": "该商品草稿已失效，请重新采集后再试",
+                    "debug_hint": "product draft not found / 草稿不存在或已被删除",
                     "retryable": True,
                     "stage_timings_ms": timing_snapshot(),
                 },
@@ -3845,11 +4001,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "title": title,
                 "image_url": image_url,
                 "status": "attention_required",
-                "reason": reason,
+                "reason": "缺少必填信息",
                 "result": {
                     "error_type": "validation",
                     "failure_class": "configuration_blocked",
-                    "operator_hint": "补充标题和主图后重试",
+                    "operator_hint": "请补充商品标题和主图后重试",
+                    "debug_hint": reason,
                     "retryable": True,
                     "stage_timings_ms": timing_snapshot(),
                 },
@@ -3877,11 +4034,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "title": title,
                 "image_url": image_url,
                 "status": "attention_required",
-                "reason": issue.message,
+                "reason": "商品未通过合规检查",
                 "result": {
                     "error_type": issue.code,
                     "failure_class": failure_class,
                     "operator_hint": issue.operator_hint,
+                    "debug_hint": issue.message,
                     "retryable": failure_class in {"technical_retryable", "configuration_blocked"},
                     "stage_timings_ms": timing_snapshot(),
                 },
@@ -4027,7 +4185,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             if configuration_error or identity_error
                             else "failed"
                         ),
-                        "reason": "AI 视觉服务暂时不可用，请稍后重试",
+                        "reason": "AI 识别服务暂不可用，请稍后重试",
                         "result": {
                             "error_type": "vision_service_unavailable",
                             "failure_class": (
@@ -4040,6 +4198,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                                 )
                             ),
                             "operator_hint": (
+                                "AI 识别服务暂不可用，请稍后重试"
+                                if configuration_error
+                                else (
+                                    "AI 识别结果异常，请重新提交或更换商品后重试"
+                                    if identity_error
+                                    else "AI 识别服务暂不可用，请稍后重试"
+                                )
+                            ),
+                            "debug_hint": (
                                 "服务器主体识别服务未就绪；请检查服务器文本/识图路由、密钥与余额后重试"
                                 if configuration_error
                                 else (
@@ -4087,17 +4254,22 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     for value in settings.get("identity_override_draft_ids", [])
                     if str(value).isdigit()
                 }
-                if not identity_override:
+                low_subject = self._text(analysis.sellable_subject).strip()
+                if not identity_override and not low_subject:
+                    # 仅当模型完全无法给出可售主体时才拦截（极端兜底）；
+                    # 低置信但已识别出主体（多色号/多件套/场景展示等正常电商主图）
+                    # 直接放行，避免把常见商品误判为「多个或遮挡主体」导致大面积失败。
                     return {
                         **item,
                         "title": title,
                         "image_url": image_url,
                         "status": "attention_required",
-                        "reason": "AI 服务无法确认可售主体",
+                        "reason": "无法确认商品可售主体",
                         "result": {
                             "error_type": "vision_subject_low_confidence",
                             "failure_class": "identity_review_required",
-                            "operator_hint": "1688 主图存在多个或遮挡主体；重试可能仍无法确认，确认主体可售后可继续文案与生图",
+                            "operator_hint": "主图存在多个或遮挡主体，请更换主图后重试",
+                            "debug_hint": "1688 主图存在多个或遮挡主体；重试可能仍无法确认，确认主体可售后可继续文案与生图",
                             "retryable": True,
                             "vision_identity": vision_identity,
                             "provider_attempts": provider_attempts,
@@ -4105,9 +4277,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             "stage_timings_ms": timing_snapshot(),
                         },
                     }
-                # 用户已确认主图可售主体可接受：放行主体识别门，沿用 AI 最佳猜测
+                # 低置信但已识别出主体（或用户已确认）：放行主体识别门，沿用 AI 最佳猜测
                 # 主体继续文案与生图；保留原始低置信度证据供预审/导出参考。
-                vision_identity = {**vision_identity, "status": "user_override"}
+                vision_identity = {
+                    **vision_identity,
+                    "status": "user_override" if identity_override else "accepted",
+                }
                 if vision_receipt_input and provider_attempts["doubao_vision"] > 0:
                     self.repository.upsert_stage_receipt(
                         task_id,
@@ -4120,7 +4295,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 vision_subject = str(analysis.sellable_subject or "").strip() or source_title
                 ai_notes.extend(
                     [
-                        "subject_identity:user-override",
+                        "subject_identity:user-override"
+                        if identity_override
+                        else "subject_identity:low-confidence-pass",
                         f"subject_identity:confidence:{analysis.confidence}",
                     ]
                 )
@@ -4611,11 +4788,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     "title": optimized_title,
                     "image_url": image_url,
                     "status": "failed",
-                    "reason": f"{mode_label}未生成4张可用轮播图",
+                    "reason": "商品图片生成失败",
                     "result": {
                         "error_type": "image_grid_incomplete",
                         "failure_class": "technical_retryable",
-                        "operator_hint": "生成图未通过本地质量门；可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警",
+                        "operator_hint": "图片未达质量标准，可重试生成；或直接入库后人工替换图片",
+                        "debug_hint": f"{mode_label}未生成4张可用轮播图；生成图未通过本地质量门；可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警",
                         "retryable": True,
                         "rejected_image_paths": list(grid_output.rejected_image_paths),
                         "optimized_title": optimized_title,
@@ -4685,11 +4863,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "title": optimized_title,
                 "image_url": image_url,
                 "status": "failed",
-                "reason": "详情图未生成可用结果",
+                "reason": "详情图生成失败",
                 "result": {
                     "error_type": "detail_images_incomplete",
                     "failure_class": "technical_retryable",
-                    "operator_hint": "文本结果已保留；请重试图片分支或检查图片服务配置",
+                    "operator_hint": "可重试生成详情图",
+                    "debug_hint": "详情图未生成可用结果；文本结果已保留；请重试图片分支或检查图片服务配置",
                     "retryable": True,
                     "optimized_title": optimized_title,
                     "description": description,
@@ -4841,6 +5020,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "operator_hint": (
                 ""
                 if text_failure is None
+                else "AI 文案服务暂不可用，请稍后重试"
+            ),
+            "debug_hint": (
+                ""
+                if text_failure is None
                 else (
                     "服务端文本服务配置异常；请检查 AI 服务配置或余额后重试"
                     if text_failure_is_config
@@ -4860,7 +5044,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # desktop result exposes the sanitized failure detail (e.g. the
             # language-contract violation text) so operators understand why a
             # task failed instead of seeing only a neutral placeholder.
-            "reason": str(text_failure) if text_failure is not None else "",
+            "reason": "商品文案生成失败" if text_failure is not None else "",
             "result": result,
         }
 
@@ -5015,6 +5199,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "Conservatively estimate only missing dimension values from source measurements, product "
             "type, variant sizes, and ordinary physical proportions. Return numbers only, without unit "
             "strings, confidence fields, or explanations. These values are internal logistics estimates. "
+            "When the source provides no weight or size evidence at all, estimate within the typical "
+            "range for the product category and avoid implausible extremes (for example an ordinary "
+            "smartphone should never be estimated below 50 g or a garment above several kilograms). "
             "Do not use dimension estimates in the title or description.\n"
             if needs_dimensions
             else ""
@@ -5280,7 +5467,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         nonlocal printed_design
                         inspection = inspect_visible_text(bytes(getattr(part, "content", b"")))
                         if inspection is None:
-                            raise ValueError("智能生图质量校验未通过，已阻止未验证生成图")
+                            # OCR 引擎不可用/推理失败：无法判定即放行（fail-open），
+                            # 与 ocr_gate 文档一致；避免把本地 OCR 环境问题误判为商品失败。
+                            if ai_notes is not None and not any(
+                                note.startswith("four_grid:ocr-unavailable")
+                                for note in ai_notes
+                            ):
+                                ai_notes.append("four_grid:ocr-unavailable")
+                            return []
                         issues: list[str] = list(dict.fromkeys(inspection.get("prominent", [])))
                         if inspection.get("chinese"):
                             if printed_design is None:
@@ -6261,41 +6455,148 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """从来源属性/变种记录/重量/包装文本中确定性提取物流尺寸与重量（0 AI）。
 
         只信任来源中的显式数值证据（如 ``15*10*4cm``、``180g``）。返回部分提取结果；
-        由调用方判断是否完整，缺字段再走 AI 补缺。
+        由调用方判断是否完整，缺字段再走 AI 补缺。优先使用属性名带明确轴的键
+        （长度/宽度/高度/长/宽/高），再回退显式轴文本与通用三元组，避免把
+        包装尺寸误当成品尺寸。
         """
         texts: list[str] = []
         attributes = raw.get("source_attributes") or {}
+        axis_values: dict[str, float] = {}
+        weight_values: list[float] = []
         if isinstance(attributes, dict):
-            texts.extend(str(value) for value in attributes.values() if value not in (None, ""))
+            for key, value in attributes.items():
+                key_text = str(key or "").strip()
+                value_text = str(value or "").strip()
+                if not value_text:
+                    continue
+                texts.append(value_text)
+                axis = _deterministic_axis_from_key(key_text)
+                if axis is not None:
+                    parsed = _SINGLE_AXIS_VALUE.search(value_text)
+                    if parsed:
+                        number = float(parsed.group(1))
+                        unit = parsed.group(2) or _deterministic_unit_in_key(key_text)
+                        scale = 0.1 if unit.casefold() in {"mm", "毫米"} else 1.0
+                        if 0 < number * scale < 500:
+                            axis_values[axis] = round(number * scale, 2)
+                if _WEIGHT_KEY_RE.search(key_text):
+                    parsed = _WEIGHT_VALUE.search(value_text)
+                    if parsed:
+                        weight = float(parsed.group(1))
+                        unit = parsed.group(2).casefold()
+                        if weight > 0:
+                            weight_values.append(weight * 1000 if unit in {"kg", "千克", "公斤"} else weight)
         for variant in raw.get("source_variant_records") or []:
             if not isinstance(variant, dict):
                 continue
             variant_attrs = variant.get("attributes")
             if isinstance(variant_attrs, dict):
                 texts.extend(str(value) for value in variant_attrs.values() if value not in (None, ""))
-        for key in ("weight_text", "package_info_text", "title", "product_name"):
+            # 插件/整店采集的 SKU 记录可能直接携带重量字段。
+            variant_weight_text = str(variant.get("weight_text") or "").strip()
+            variant_weight_kg = variant.get("weight_kg")
+            if variant_weight_text:
+                texts.append(variant_weight_text)
+                parsed = _WEIGHT_VALUE.search(variant_weight_text)
+                if parsed and float(parsed.group(1)) > 0:
+                    unit = (parsed.group(2) or "").casefold()
+                    weight_values.append(
+                        float(parsed.group(1)) * (1000 if unit in {"kg", "千克", "公斤"} else 1)
+                    )
+                elif re.fullmatch(r"\d+(?:\.\d+)?", variant_weight_text):
+                    number = float(variant_weight_text)
+                    if 0 < number < 100000:
+                        weight_values.append(number)
+            elif variant_weight_kg not in (None, ""):
+                variant_kg_text = str(variant_weight_kg).strip()
+                texts.append(variant_kg_text)
+                parsed = _WEIGHT_VALUE.search(variant_kg_text)
+                if parsed and float(parsed.group(1)) > 0:
+                    weight_values.append(float(parsed.group(1)) * 1000)
+                elif re.fullmatch(r"\d+(?:\.\d+)?", variant_kg_text):
+                    number = float(variant_kg_text)
+                    if 0 < number < 1000:
+                        weight_values.append(number * 1000)
+        weight_text_value = str(raw.get("weight_text") or "").strip()
+        if not weight_text_value:
+            # 其他采集方式可能只回传 weight_kg / item_weight 等直系键。
+            for direct_key in ("weight_kg", "weight", "item_weight", "gross_weight", "net_weight", "重量", "毛重", "净重"):
+                direct = raw.get(direct_key)
+                if direct in (None, ""):
+                    continue
+                direct_text = str(direct).strip()
+                if not direct_text:
+                    continue
+                if direct_key == "weight_kg":
+                    parsed = _WEIGHT_VALUE.search(direct_text)
+                    if parsed and float(parsed.group(1)) > 0:
+                        weight_values.append(float(parsed.group(1)) * 1000)
+                    elif re.fullmatch(r"\d+(?:\.\d+)?", direct_text):
+                        weight = float(direct_text)
+                        if 0 < weight < 1000:
+                            weight_values.append(weight * 1000)
+                else:
+                    weight_text_value = direct_text
+                break
+        if weight_text_value:
+            texts.append(weight_text_value)
+            parsed = _WEIGHT_VALUE.search(weight_text_value)
+            if parsed:
+                weight = float(parsed.group(1))
+                unit = (parsed.group(2) or "").casefold()
+                if weight > 0:
+                    weight_values.append(weight * 1000 if unit in {"kg", "千克", "公斤"} else weight)
+            elif re.fullmatch(r"\d+(?:\.\d+)?", weight_text_value):
+                # OneBound 1688 item_weight 常为纯数字，按克数约定处理。
+                weight = float(weight_text_value)
+                if 0 < weight < 100000:
+                    weight_values.append(weight)
+        for key in ("package_info_text", "title", "product_name"):
             value = raw.get(key)
             if value not in (None, ""):
                 texts.append(str(value))
         joined = " | ".join(texts)
         dimensions: dict[str, Any] = {}
-        triple = _DIMENSION_TRIPLE.search(joined)
-        if triple:
-            values = [float(triple.group(index)) for index in (1, 2, 3)]
-            unit = (triple.group(4) or "cm").casefold()
-            scale = 0.1 if unit in {"mm", "毫米"} else 1.0
-            if all(value > 0 for value in values):
-                dimensions = {
-                    "length_cm": values[0] * scale,
-                    "width_cm": values[1] * scale,
-                    "height_cm": values[2] * scale,
-                }
-        weight_match = _WEIGHT_PATTERN.search(joined)
-        if weight_match:
-            value = float(weight_match.group(1))
-            unit = weight_match.group(2).casefold()
-            if value > 0:
-                dimensions["weight_g"] = value * 1000 if unit in {"kg", "千克", "公斤"} else value
+
+        def put(axis: str, value: float | None) -> None:
+            if value is not None and value > 0:
+                dimensions.setdefault(f"{axis}_cm", value)
+
+        # 1) 属性名带明确轴的键（长度/宽度/高度…），优先级最高。
+        put("length", axis_values.get("length"))
+        put("width", axis_values.get("width"))
+        put("height", axis_values.get("height"))
+        # 2) 显式轴文本「长30×宽20×高10cm」，只补缺失轴。
+        if len(dimensions) < 3:
+            axised = _AXISED_SIZE_TEXT.search(joined)
+            if axised:
+                axis_order = ("length", "width", "height")
+                for index, axis in enumerate(axis_order):
+                    number = float(axised.group(index * 2 + 1))
+                    unit = axised.group(index * 2 + 2)
+                    scale = 0.1 if unit and unit.casefold() in {"mm", "毫米"} else 1.0
+                    if number > 0:
+                        put(axis, round(number * scale, 2))
+        # 3) 通用三元组「30×20×10cm」，按常见长×宽×高顺序只补缺失轴。
+        if len(dimensions) < 3:
+            triple = _DIMENSION_TRIPLE.search(joined)
+            if triple:
+                values = [float(triple.group(index)) for index in (1, 2, 3)]
+                unit = (triple.group(4) or "cm").casefold()
+                scale = 0.1 if unit in {"mm", "毫米"} else 1.0
+                if all(value > 0 for value in values):
+                    for axis, value in zip(("length", "width", "height"), values, strict=True):
+                        put(axis, value * scale)
+        # 4) 重量：属性键优先（毛重/净重/重量…），再回退全文模式。
+        if weight_values and not dimensions.get("weight_g"):
+            dimensions["weight_g"] = round(max(weight_values), 2)
+        if not dimensions.get("weight_g"):
+            weight_match = _WEIGHT_PATTERN.search(joined)
+            if weight_match:
+                value = float(weight_match.group(1))
+                unit = weight_match.group(2).casefold()
+                if value > 0:
+                    dimensions["weight_g"] = value * 1000 if unit in {"kg", "千克", "公斤"} else value
         if not dimensions:
             return None
         dimensions["confidence"] = "high"

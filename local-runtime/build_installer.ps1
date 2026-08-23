@@ -106,6 +106,18 @@ if ($forbiddenFiles) {
     throw "Refusing to package local credentials or databases"
 }
 
+# Media publishing: precheck finalization exports final images as public COS
+# URLs. Bundle the controlled cos.local.json next to the exe so installed users
+# can publish final images without manual setup; other local credentials
+# (onebound/.env/sqlite) stay forbidden by the rule above.
+$cosSource = Join-Path $PSScriptRoot "wh_local\modules\product_processing\cos.local.json"
+if (Test-Path -LiteralPath $cosSource) {
+    Copy-Item -LiteralPath $cosSource -Destination $dist -ErrorAction Stop
+    Write-Host "[build] bundled cos.local.json (media publishing)"
+} else {
+    Write-Host "[build] WARNING: cos.local.json missing - preview export cannot publish images"
+}
+
 # 5. Pack a portable zip
 Write-Host "[build] creating portable zip ..."
 $zip = Join-Path $PSScriptRoot "dist\MainPG-portable-$Version.zip"

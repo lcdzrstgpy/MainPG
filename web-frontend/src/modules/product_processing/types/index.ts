@@ -330,6 +330,8 @@ export type PreviewItem = {
   overrides: PreviewOverrides;
   assets: PreviewImageAsset[];
   image_manifest: PreviewImageManifest;
+  /** 重量/尺寸字段来源：manual=手动 / source=采集值 / ai=AI 预估 */
+  dimension_provenance?: Record<string, string>;
 };
 
 export type PreviewResponse = {

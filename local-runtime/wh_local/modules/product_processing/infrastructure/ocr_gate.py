@@ -149,14 +149,14 @@ def inspect_visible_text(content: bytes) -> dict[str, list[str]] | None:
         searchable = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff]+", "", text)
         width_ratio = box_width / max(width, 1)
         height_ratio = box_height / max(height, 1)
-        # 显著文字只拦「跨面板海报横幅级」超大排版（高度≥8% 且宽度≥30%，或高度≥12%）。
-        # 单面板内的产品印刷标记（牌面数字/字母、型号、花纹）宽度通常 < 25%，
-        # 即便字大也不会命中，避免把产品本体设计误判为 AI 文字导致重绘死循环；
-        # 中文仍由 chinese 硬拦截，不在此处放宽。
+        # 显著文字只拦「跨面板海报横幅级」超大排版（高度≥10% 且宽度≥35%，或高度≥16%）。
+        # 单面板内的产品印刷标记（牌面数字/字母、型号、花纹）、品牌标与常规包装文字
+        # 通常不满足该比例，即使字大也不会命中，避免把商品本体设计/正常文字误判为
+        # AI 横幅导致重绘死循环或整单失败；中文仍由 chinese 硬拦截，不在此处放宽。
         if (
-            len(searchable) >= 6 and height_ratio >= 0.08 and width_ratio >= 0.30
+            len(searchable) >= 6 and height_ratio >= 0.10 and width_ratio >= 0.35
         ) or (
-            len(searchable) >= 6 and height_ratio >= 0.12
+            len(searchable) >= 6 and height_ratio >= 0.16
         ):
             prominent.append(text)
     return {"chinese": chinese, "prominent": prominent}

@@ -78,8 +78,8 @@ assert.equal(
   JSON.stringify({ type: "CANCEL_PRODUCT_BATCH_CAPTURE", batch_token: "batch-7" }),
   "prepared confirmation cancellation must identify the recoverable backend batch"
 );
-assert.equal(manifest.version, "0.1.124", "manifest version must be 0.1.124");
-assert.match(installNotes, /v0\.1\.124/);
+assert.equal(manifest.version, "0.1.125", "manifest version must be 0.1.125");
+assert.match(installNotes, /v0\.1\.125/);
 assert.match(installNotes, /整页采集/);
 
 assert.match(

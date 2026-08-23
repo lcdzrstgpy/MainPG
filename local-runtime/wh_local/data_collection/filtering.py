@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
+import re
 
 from .contracts import DailySelectionCandidate
 from .criteria import DailySelectionCriteria
@@ -271,6 +272,8 @@ def _risk_tags_in_text(text: str) -> tuple[str, ...]:
     - food/medical/infant 若与容器/包装语境词同现，说明商品是包装/容器
       （如“食品包装袋”“药品包装盒”“儿童置物架”），不是风险品本身，豁免。
     - dangerous_goods / ip 不豁免。
+    - 英文词按整词匹配（词边界），避免子串误伤（如 replica 命中 replicable、
+      baby 命中 babysitter 等）；中文词无词边界，仍按子串匹配。
     """
     scanned = text.casefold()
     for token in (*_GRADE_QUALIFIERS, *_STATE_SUFFIXES):
@@ -278,12 +281,22 @@ def _risk_tags_in_text(text: str) -> tuple[str, ...]:
     has_packaging_context = any(term in scanned for term in _PACKAGING_CONTEXT)
     detected: list[str] = []
     for tag, terms in _RISK_TERMS:
-        if not any(term in scanned for term in terms):
+        if not any(_term_contains(scanned, term) for term in terms):
             continue
         if tag in _CONSUMER_RISK_TAGS and has_packaging_context:
             continue
         detected.append(tag)
     return tuple(detected)
+
+
+def _term_contains(scanned: str, term: str) -> bool:
+    """Substring match with whole-word boundaries for ASCII-only English terms."""
+    lowered = str(term).casefold().strip()
+    if not lowered:
+        return False
+    if lowered.isascii() and lowered.isalpha():
+        return re.search(rf"(?<![A-Za-z]){re.escape(lowered)}(?![A-Za-z])", scanned) is not None
+    return lowered in scanned
 
 
 def _with_risks(candidate: DailySelectionCandidate, risks: Sequence[str]) -> DailySelectionCandidate:

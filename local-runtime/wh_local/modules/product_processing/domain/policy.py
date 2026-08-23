@@ -67,12 +67,14 @@ def product_policy_issue(
     extra_infringement_terms: Iterable[str] = (),
 ) -> PolicyIssue | None:
     """Return one explicit offline policy issue, or ``None`` when preflight passes."""
+    # 只扫描标题/类目等主体字段，不扫 description：描述常含法务免责声明
+    # （“本产品与 XX 品牌无关”“迪士尼为注册商标”）、使用说明（“不适宜儿童使用”）
+    # 等非主体语境，纳入扫描会导致侵权/资质误判（泛过滤误杀）。
     source_text = " ".join(
         part
         for part in (
             title,
             category,
-            str(raw.get("description") or ""),
             str(raw.get("source_title") or ""),
             str(raw.get("source_category_path") or ""),
         )

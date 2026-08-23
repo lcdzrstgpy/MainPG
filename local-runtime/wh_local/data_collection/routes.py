@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+import re
 import threading
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response
@@ -793,6 +794,7 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
         product.get("image_url") or product.get("imageUrl") or (source_image_urls[0] if source_image_urls else "")
     ).strip()
     candidate_id = f"plugin:{platform}:{product_id or source_ref}"
+    weight_text, package_info_text = _plugin_physical_evidence(product)
     return {
         **sanitized_product,
         "source_type": "web_manual_capture",
@@ -805,10 +807,195 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
         "source_image_urls": source_image_urls,
         "declared_price": product.get("price"),
         "sku": str(product.get("sku") or "").strip() or None,
+        "weight_text": weight_text,
+        "package_info_text": package_info_text,
         # 插件只回传 variant_combinations；这里把它换算成草稿池/导出使用的
         # 标准 SKU 记录（source_variant_records），保证草稿池能看到完整规格。
         "source_variant_records": _plugin_variant_records(product),
     }
+
+
+_PLUGIN_WEIGHT_VALUE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(g|克|kg|千克|公斤)?", re.IGNORECASE
+)
+_PLUGIN_SIZE_TRIPLE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*[xX*×]\s*(\d+(?:\.\d+)?)\s*[xX*×]\s*(\d+(?:\.\d+)?)\s*(cm|mm|厘米|毫米)?",
+    re.IGNORECASE,
+)
+# 「长30宽20高10cm」这类无分隔符的显式轴文本。
+_PLUGIN_SIZE_AXISED = re.compile(
+    r"长(?:度)?[^\d]{0,4}(\d+(?:\.\d+)?)[^\d]{0,4}宽(?:度)?[^\d]{0,4}(\d+(?:\.\d+)?)[^\d]{0,4}高(?:度)?[^\d]{0,4}(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+# 插件回传商品顶层的重量系字段（Temu/1688 详情数据里字段名不稳定）。
+_PLUGIN_WEIGHT_TOP_KEYS = (
+    "weight_text", "weight_kg", "weight", "item_weight", "itemWeight",
+    "gross_weight", "net_weight", "packaging_weight", "package_weight",
+    "重量", "毛重", "净重", "克重",
+)
+
+
+def _plugin_combos(product: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """插件变种组合列表（variant_combinations / raw_variant_combinations）。"""
+    combined = [
+        *(product.get("variant_combinations") or []),
+        *(product.get("raw_variant_combinations") or []),
+    ]
+    return [item for item in combined if isinstance(item, Mapping)]
+
+
+def _plugin_physical_evidence(
+    product: Mapping[str, Any],
+) -> tuple[str | None, str | None]:
+    """从插件回传商品提取重量/尺寸原始证据，归一到草稿池标准字段。
+
+    插件在页面详情数据（detailData / skuInfoMap 等）里能抓到商品件重/包装重量，
+    字段名不稳定（weight_text / weight_kg / weight / itemWeight / 毛重…），也
+    可能只出现在 SKU 组合里。这里统一收集第一份可用证据并归一成
+    ``weight_text`` / ``package_info_text``，让下游
+    ``_extract_deterministic_size`` 能确定性解析而非走 AI 估值。
+    """
+    weight_text: str | None = None
+    for key in _PLUGIN_WEIGHT_TOP_KEYS:
+        value = product.get(key)
+        if value in (None, ""):
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        if key == "weight_text":
+            weight_text = text[:80]
+            break
+        if key == "weight_kg":
+            match = _PLUGIN_WEIGHT_VALUE.search(text)
+            if match and float(match.group(1)) > 0:
+                weight_text = f"重量 {match.group(1)}kg"
+            break
+        match = _PLUGIN_WEIGHT_VALUE.fullmatch(text)
+        if match and float(match.group(1)) > 0:
+            # 保留原始数字文本（25 而非 25.0），单位缺失时按克约定。
+            weight_text = f"重量 {match.group(1)}{(match.group(2) or '').casefold() or 'g'}"
+        break
+    if weight_text is None:
+        # SKU 组合兜底：插件详情数据把件重放在 skuInfoMap 的每个 SKU 里。
+        for combo in _plugin_combos(product):
+            combo_text = str(combo.get("weight_text") or "").strip()
+            if combo_text:
+                weight_text = combo_text[:80]
+                break
+            combo_kg = combo.get("weight_kg")
+            if combo_kg in (None, ""):
+                continue
+            match = _PLUGIN_WEIGHT_VALUE.search(str(combo_kg).strip())
+            if match and float(match.group(1)) > 0:
+                weight_text = f"重量 {match.group(1)}kg"
+                break
+    return weight_text, _plugin_size_evidence(product)
+
+
+def _plugin_size_evidence(product: Mapping[str, Any]) -> str | None:
+    """提取尺寸/包装文本（长x宽x高），优先商品级，其次 SKU 属性值。"""
+    package_text = str(
+        product.get("package_info_text") or product.get("package_info") or ""
+    ).strip()
+    for source in (
+        [str(combo.get("spec_text") or "") for combo in _plugin_combos(product)]
+        + [str(value) for value in product.values() if isinstance(value, str)]
+    ):
+        if not source:
+            continue
+        match = _PLUGIN_SIZE_TRIPLE.search(source)
+        if match:
+            unit = (match.group(4) or "cm").casefold()
+            return f"{match.group(1)}x{match.group(2)}x{match.group(3)}{unit}"
+        match = _PLUGIN_SIZE_AXISED.search(source)
+        if match:
+            return f"{match.group(1)}x{match.group(2)}x{match.group(3)}cm"
+    return package_text or None
+
+
+_NOISE_DIMENSION_RE = re.compile(
+    r"数量|库存|起批|已选|价格|运费|快递|包邮|件数|优惠|小计|合计|剩余|remain|stock|quantity|count|price|freight|shipping",
+    re.I,
+)
+_DIMENSION_SYNONYMS: dict[str, str] = {
+    "颜色": "颜色",
+    "color": "颜色",
+    "colour": "颜色",
+    "尺码": "尺码",
+    "尺寸": "尺码",
+    "大小": "尺码",
+    "size": "尺码",
+    "容量": "容量",
+    "capacity": "容量",
+    "款式": "款式",
+    "型号": "款式",
+    "style": "款式",
+    "model": "款式",
+    "规格": "规格",
+    "spec": "规格",
+    "包装": "包装",
+    "套装": "套装",
+    "pack": "包装",
+}
+
+
+def _canonical_dimension_name(name: object) -> str:
+    """把插件/平台的规格维度名归一到中文字段名，识别不了时保留原名。"""
+    raw = str(name or "").strip().lower()
+    if not raw:
+        return "规格"
+    normalized = _DIMENSION_SYNONYMS.get(raw)
+    if normalized is not None:
+        return normalized
+    if "颜色" in raw or "colour" in raw or "color" in raw:
+        return "颜色"
+    if any(token in raw for token in ("尺码", "尺寸", "大小")) or "size" in raw:
+        return "尺码"
+    if "容量" in raw or "capacity" in raw:
+        return "容量"
+    if "款式" in raw or "型号" in raw or "style" in raw or "model" in raw:
+        return "款式"
+    if "规格" in raw or "spec" in raw:
+        return "规格"
+    return str(name or "规格").strip()
+
+
+def _plugin_group_values(group: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """把插件规格组的 values 归一成 ``{value, image_url, sku}`` 条目。"""
+    values = group.get("values") or []
+    if not isinstance(values, (list, tuple)):
+        return []
+    cleaned: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in values:
+        if isinstance(item, Mapping):
+            value = str(item.get("value") or item.get("text") or item.get("name") or "").strip()
+            image_url = str(item.get("image_url") or item.get("imageUrl") or "").strip()
+            sku = str(item.get("source_sku_id") or item.get("sku") or "").strip()
+        else:
+            value = str(item).strip()
+            image_url = ""
+            sku = ""
+        if not value or len(value) > 80:
+            continue
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append({"value": value, "image_url": image_url, "sku": sku})
+    return cleaned
+
+
+def _plugin_combo_attributes(combo: Mapping[str, Any]) -> dict[str, str]:
+    attributes = combo.get("attributes")
+    if isinstance(attributes, Mapping):
+        return {
+            _canonical_dimension_name(key): str(value).strip()
+            for key, value in attributes.items()
+            if str(value).strip()
+        }
+    return {}
 
 
 def _plugin_variant_records(product: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -818,16 +1005,48 @@ def _plugin_variant_records(product: Mapping[str, Any]) -> list[dict[str, Any]]:
     SKU 货号、价格、库存、规格图），不产出标准 ``source_variant_records``。
     这里把组合换算成与 OneBound 详情一致的记录结构，缺失货号时用
     ``{product_id}:{index}`` 兜底，保证每个规格都可独立展示与编辑。
+
+    TEMU 前端采集存在系统性缺陷：JSON 里的 SKU 模型常把规格拆成逐项
+    （每个颜色一条、尺码/数量单独一条），导致变种数明显少于真实规格。
+    页面可见的规格维度（``variant_groups``，颜色多值 + 尺码等）才是完整
+    维度来源。因此只要规格组可用且比组合更能反映真实规格，就按规格组
+    笛卡尔积重建记录，并用组合里的价格/库存/货号回填。
     """
-    combos = product.get("variant_combinations") or product.get("raw_variant_combinations") or []
-    if not isinstance(combos, (list, tuple)):
-        return []
     product_id = str(product.get("product_id") or product.get("source_product_id") or "").strip()
+    combos = product.get("variant_combinations") or product.get("raw_variant_combinations") or []
+    combos = [item for item in combos if isinstance(item, Mapping)] if isinstance(combos, (list, tuple)) else []
+    groups = product.get("variant_groups") or product.get("raw_variant_groups") or []
+    groups = [item for item in groups if isinstance(item, Mapping)] if isinstance(groups, (list, tuple)) else []
+
+    combo_records = _plugin_records_from_combos(combos, product_id)
+    group_records = _plugin_records_from_groups(groups, combos, product_id)
+    if not group_records:
+        return combo_records
+
+    combos_dim = max((len(_plugin_combo_attributes(combo)) for combo in combos), default=0)
+    distinct_combo_sets = {
+        tuple(sorted(_plugin_combo_attributes(combo).items()))
+        for combo in combos
+        if _plugin_combo_attributes(combo)
+    }
+    # 规格组更值得信赖：组数比组合维度多（组合丢了尺码等维度），或
+    # 组合是“逐项扁平”形态且去重后的变种数不高于规格组笛卡尔积。
+    group_ok = (
+        len(groups) > combos_dim
+        or (len(groups) == combos_dim and len(group_records) >= max(1, len(distinct_combo_sets)))
+    )
+    if not group_ok:
+        return combo_records
+    return group_records
+
+
+def _plugin_records_from_combos(
+    combos: list[Mapping[str, Any]],
+    product_id: str,
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, combo in enumerate(combos):
-        if not isinstance(combo, Mapping):
-            continue
         sku_id = str(
             combo.get("source_sku_id")
             or combo.get("sourceSkuId")
@@ -837,8 +1056,7 @@ def _plugin_variant_records(product: Mapping[str, Any]) -> list[dict[str, Any]]:
         ).strip()
         if not sku_id:
             sku_id = f"{product_id or 'plugin'}:variant-{index}"
-        attributes = combo.get("attributes")
-        attributes = {str(key): value for key, value in attributes.items()} if isinstance(attributes, Mapping) else {}
+        attributes = _plugin_combo_attributes(combo)
         price_cny = _plugin_decimal(combo.get("price"))
         dedupe_key = f"{sku_id}|{price_cny}"
         if dedupe_key in seen:
@@ -852,9 +1070,125 @@ def _plugin_variant_records(product: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "image_url": str(combo.get("image_url") or combo.get("imageUrl") or "") or None,
                 "price_cny": price_cny,
                 "quantity": _plugin_int(combo.get("stock") or combo.get("quantity") or combo.get("inventory")),
+                "weight_text": str(combo.get("weight_text") or "").strip() or None,
+                "weight_kg": combo.get("weight_kg"),
             }
         )
     return records
+
+
+def _plugin_records_from_groups(
+    groups: list[Mapping[str, Any]],
+    combos: list[Mapping[str, Any]],
+    product_id: str,
+) -> list[dict[str, Any]]:
+    """按规格组笛卡尔积重建 SKU 记录，并用组合里的价格/库存/货号回填。"""
+    axes: list[tuple[str, list[dict[str, Any]]]] = []
+    seen_axes: set[str] = set()
+    for group in groups:
+        name = _canonical_dimension_name(group.get("name") or group.get("source_name") or "")
+        if _NOISE_DIMENSION_RE.search(name):
+            continue
+        values = _plugin_group_values(group)
+        if not values:
+            continue
+        if name in seen_axes:
+            continue
+        seen_axes.add(name)
+        axes.append((name, values))
+    if not axes or all(len(values) < 2 for _, values in axes):
+        return []
+    if len(axes) == 1 and len(axes[0][1]) < 2:
+        return []
+
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    index = 0
+    for combination in _dimension_cartesian(axes):
+        if len(records) >= 60:
+            break
+        attributes = {name: value for name, value in combination}
+        attr_key = tuple(sorted(attributes.items()))
+        matched = _plugin_best_combo_for_attributes(combos, attributes)
+        if matched is not None:
+            sku_id = str(
+                matched.get("source_sku_id")
+                or matched.get("sourceSkuId")
+                or matched.get("sku_id")
+                or matched.get("sku")
+                or ""
+            ).strip()
+            price_cny = _plugin_decimal(matched.get("price"))
+            quantity = _plugin_int(matched.get("stock") or matched.get("quantity") or matched.get("inventory"))
+            image_url = str(matched.get("image_url") or matched.get("imageUrl") or "").strip() or None
+        else:
+            sku_id = ""
+            price_cny = None
+            quantity = None
+            image_url = None
+        if not sku_id:
+            sku_id = f"{product_id or 'plugin'}:variant-{index}"
+        if attr_key in seen:
+            index += 1
+            continue
+        seen.add(attr_key)
+        spec_parts: list[str] = []
+        for axis_index, (name, value) in enumerate(combination):
+            axis_values = axes[axis_index][1]
+            value_index = next(
+                (item_index for item_index, item in enumerate(axis_values) if item["value"] == value),
+                axis_index,
+            )
+            spec_parts.append(f"{axis_index}:{value_index}:{name}:{value}")
+        records.append(
+            {
+                "sku_id": sku_id,
+                "attributes": attributes,
+                "spec_text": ";".join(spec_parts) or None,
+                "image_url": image_url,
+                "price_cny": price_cny,
+                "quantity": quantity,
+                "weight_text": str(matched.get("weight_text") or "").strip() or None if matched is not None else None,
+                "weight_kg": matched.get("weight_kg") if matched is not None else None,
+            }
+        )
+        index += 1
+    return records
+
+
+def _dimension_cartesian(axes: list[tuple[str, list[dict[str, Any]]]]):
+    """迭代规格组所有取值组合，产出 ``((name, value), ...)``。"""
+    result: list[tuple[tuple[str, str], ...]] = [()]
+    for name, values in axes:
+        result = [
+            (*prefix, (name, item["value"]))
+            for prefix in result
+            for item in values
+        ]
+    return result
+
+
+def _plugin_best_combo_for_attributes(
+    combos: list[Mapping[str, Any]],
+    attributes: Mapping[str, str],
+) -> Mapping[str, Any] | None:
+    """按属性子集匹配组合，返回覆盖最多的那个（用于回填价格/库存/货号）。"""
+    best: Mapping[str, Any] | None = None
+    best_score = 0
+    target = {_canonical_dimension_name(k): str(v).strip() for k, v in attributes.items()}
+    for combo in combos:
+        combo_attrs = _plugin_combo_attributes(combo)
+        if not combo_attrs:
+            continue
+        score = sum(
+            1
+            for name, value in combo_attrs.items()
+            if name in target and value.casefold() == target[name].casefold()
+        )
+        if score > best_score:
+            best_score = score
+            best = combo
+    return best if best_score > 0 else None
 
 
 def _plugin_decimal(value: object) -> float | None:

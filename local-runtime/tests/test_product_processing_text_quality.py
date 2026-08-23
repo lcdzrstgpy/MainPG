@@ -541,18 +541,19 @@ def test_image_branch_never_uses_doubao_optimized_title(monkeypatch) -> None:
     assert captured["title"] == _draft()["title"]
 
 
-def test_low_confidence_doubao_subject_blocks_all_gpt_calls(monkeypatch) -> None:
+def test_low_confidence_subject_without_subject_blocks_all_gpt_calls(monkeypatch) -> None:
+    """低置信且模型完全无法给出可售主体时仍拦截（极端兜底）。"""
     service = _process_service(monkeypatch)
     monkeypatch.setattr(
         service,
         "_recognize_doubao_subject",
         lambda *_args, **_kwargs: SubjectAnalysis(
-            sellable_subject="possible textile item",
-            subject_explanation="Several foreground objects may be sellable.",
+            sellable_subject="",
+            subject_explanation="No single sellable product could be identified.",
             visible_attributes=(),
             excluded_elements=("room",),
             confidence="low",
-            uncertainty_reason="Multiple products overlap.",
+            uncertainty_reason="Nothing clearly sellable visible.",
         ),
     )
     monkeypatch.setattr(
@@ -571,6 +572,57 @@ def test_low_confidence_doubao_subject_blocks_all_gpt_calls(monkeypatch) -> None
     assert result["status"] == "attention_required"
     assert result["result"]["error_type"] == "vision_subject_low_confidence"
     assert result["result"]["retryable"] is True
+
+
+def test_low_confidence_subject_with_subject_passes_automatically(monkeypatch) -> None:
+    """低置信但模型已识别出可售主体（多色号/多件套等正常主图）直接放行，降低误杀。"""
+    service = _process_service(monkeypatch)
+    monkeypatch.setattr(
+        service,
+        "_recognize_doubao_subject",
+        lambda *_args, **_kwargs: SubjectAnalysis(
+            sellable_subject="possible textile item",
+            subject_explanation="Several foreground objects may be sellable.",
+            visible_attributes=(),
+            excluded_elements=("room",),
+            confidence="low",
+            uncertainty_reason="Multiple products overlap.",
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    def combined(*_args, **kwargs):
+        captured["identity"] = kwargs["vision_identity"]
+        return {
+            "title": "Textile Item with Multi-Use Storage",
+            "description": VALID_DESCRIPTION,
+            "variant_translations": {},
+            "vision_subject": "possible textile item",
+            "vision_preliminary_title": "",
+            "product_dimensions": {},
+        }
+
+    def grid(*_args, **kwargs):
+        captured["grid_identity"] = kwargs["vision_identity"]
+        return GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
+            attempt_count=1,
+            provider_status_class="success",
+        )
+
+    monkeypatch.setattr(service, "_generate_doubao_text", combined)
+    monkeypatch.setattr(service, "_generate_grid_images", grid)
+
+    result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
+
+    assert result["status"] == "completed"
+    assert result["result"]["vision_identity"]["status"] == "accepted"
+    assert result["result"]["vision_identity"]["confidence"] == "low"
+    assert "subject_identity:low-confidence-pass" in result["result"]["ai_notes"]
+    assert captured["identity"] == result["result"]["vision_identity"]
+    assert captured["grid_identity"] == result["result"]["vision_identity"]
 
 
 def test_low_confidence_subject_passes_when_user_confirms_sellable(monkeypatch) -> None:
@@ -1260,9 +1312,9 @@ def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> 
     )
 
     assert result["status"] == "failed"
-    assert result["reason"] == "普通智能生图未生成4张可用轮播图"
+    assert result["reason"] == "商品图片生成失败"
     assert result["result"]["error_type"] == "image_grid_incomplete"
-    assert "本地质量门" in result["result"]["operator_hint"]
+    assert "本地质量门" in result["result"]["debug_hint"]
     assert "doubao_text" in service.repository.receipts
     assert service.repository.receipts["doubao_text"]["output"]["title"].startswith(
         "Insulated Stainless Steel Travel Mug"

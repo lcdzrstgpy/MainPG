@@ -368,6 +368,13 @@ class ProductImageProcessor:
                 4,
             ),
         )
+        # 统一先把参考图 URL 归一化：Temu 等平台保存的 imageView2 缩略图地址
+        # 只有 180px/AVIF，上游生图服务无法使用；提升为高清 JPEG 版本后再转发/下载。
+        reference_values = [
+            _normalize_reference_url(str(raw or "").strip())
+            for raw in reference_values
+            if _normalize_reference_url(str(raw or "").strip())
+        ]
         server_managed_only = bool(providers) and all(
             _is_server_managed_wuyin_provider(provider) for provider in providers
         )
@@ -1415,6 +1422,12 @@ class ProductImageProcessor:
                 continue
             data = payload.get("data") or {}
             status_value = str(data.get("status") or payload.get("status") or "").strip().lower() if isinstance(data, dict) else ""
+            # 临时诊断：打印无影 detail 原始返回，确认 status 数字语义（3/4/5 是失败还是处理中）
+            if _is_wuyin_image_provider(provider):
+                try:
+                    print(f"[wuyin-detail-diag] task={task_id} raw={json.dumps(payload, ensure_ascii=False)[:600]}", flush=True)
+                except Exception:
+                    print(f"[wuyin-detail-diag] task={task_id} raw={str(payload)[:600]}", flush=True)
             result_url = _first_image_url(data) or _first_image_url(payload)
             if result_url:
                 return result_url
@@ -1462,6 +1475,32 @@ def _plausible_public_http_url(value: str) -> bool:
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith((".local", ".localhost")):
         return False
     return True
+
+
+def _normalize_reference_url(value: str) -> str:
+    """把带 kwcdn imageView2 缩略参数的参考图 URL 提升为高清版本。
+
+    Temu 采集保存的图片 URL 常形如
+    ``https://img.kwcdn.com/product/open/xxx.jpeg?imageView2/2/w/180/q/70/format/avif``，
+    实际只返回 180px 的 AVIF 缩略图，上游生图服务（image_gpt）无法据此生成
+    2K 商品图而直接失败。这里丢弃缩略管道并替换为 1200px JPEG 规格
+    （kwcdn 原图通常为 1500x2000+ 的 JPEG）。仅处理纯 imageView2 查询串，
+    带其他参数的 URL 保持原样以免破坏鉴权等语义。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return text
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return text
+    hostname = str(parts.hostname or "").lower()
+    query = parts.query or ""
+    if not hostname.endswith("kwcdn.com") or "imageView2" not in query or "&" in query:
+        return text
+    if not query.startswith("imageView2/"):
+        return text
+    return parts._replace(query="imageView2/2/w/1200/q/90").geturl()
 
 
 def _wuyin_size(value: str | None) -> str:

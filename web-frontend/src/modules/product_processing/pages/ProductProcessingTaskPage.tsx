@@ -22,12 +22,17 @@ const IMAGE_TEMPLATES: { id: 'A' | 'B'; name: string; description: string }[] = 
   { id: 'B', name: '高端模特视觉（防比价）', description: '人设+空间故事叙事、杂志编辑大片感，材质显贵、难以搜图比价，画面无文字' },
 ];
 
+// 失败类型列对客户统一展示为「已过滤」，不暴露内部排错分类（身份待复核/
+// 技术可重试等词只对运营排错有用，客户看到成功/失败/需重试即可）。
 const FAILURE_CLASS_LABELS: Record<string, string> = {
-  technical_retryable: '技术失败可重试',
-  configuration_blocked: '配置阻断',
-  identity_review_required: '身份待复核',
-  logistics_review_required: '尺寸待复核',
+  technical_retryable: '已过滤',
+  configuration_blocked: '已过滤',
+  identity_review_required: '已过滤',
+  logistics_review_required: '已过滤',
 };
+
+// 失败商品的统一客户提示：系统评判该链接生图做链接有风险，已自动过滤。
+const FAILURE_FILTER_HINT = '该条链接系统评判生图做链接有风险，已被过滤';
 
 // AI 配置/额度类失败（401 key 无效、403 权限、402/429 额度或限流、key 未配置等），
 // 用户需要去「系统配置」检查 AI key 或账户余额，而不是修改商品数据。
@@ -131,21 +136,6 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       (item) => item.status === 'attention_required' || item.status === 'failed'
     ) || [],
     [batch]
-  );
-
-  // 身份待复核（AI 无法确认可售主体）项：批量重试大概率无效，需人工确认主体可售后放行
-  const identityFailureItems = useMemo(
-    () => failureItems.filter((item) => ((item.result as any)?.error_type) === 'vision_subject_low_confidence'),
-    [failureItems]
-  );
-  const identityDraftIdSet = useMemo(
-    () => new Set(identityFailureItems.map((item) => item.product_draft_id)),
-    [identityFailureItems]
-  );
-  // 真正的技术失败（含图片质量、AI 服务等）：可批量重试 / 知晓入库
-  const technicalFailureItems = useMemo(
-    () => failureItems.filter((item) => !identityDraftIdSet.has(item.product_draft_id)),
-    [failureItems, identityDraftIdSet]
   );
 
   // 是否存在 AI 配置/额度类失败（此时应提示用户去系统配置检查 key/余额）
@@ -338,55 +328,6 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
   };
 
-  // 强制入库：用户「我已知晓，仍要入库」——图片质量门不再阻断，回退来源图继续走完流水线，
-  // 预审环节可人工修正图片/信息
-  const forceImportFailed = async (draftIds: number[]) => {
-    if (!draftIds.length) return;
-    setLoading(true);
-    setMessage('');
-    setError('');
-    try {
-      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/drafts/process`, {
-        body: {
-          title: '失败项强制入库',
-          draft_ids: draftIds,
-          force_import_draft_ids: draftIds,
-          max_products: 0,
-          async_mode: true,
-          target_site: options.targetSite,
-          target_language: options.targetLanguage,
-          processing_scope: options.processingScope,
-          qualification_mode: options.qualificationMode,
-          include_product_video: options.includeProductVideo,
-          skip_duplicates: false,
-          ip_check: options.ipCheck,
-          max_parallel_drafts: options.maxParallelDrafts,
-          image_template: options.imageTemplate || 'A',
-          // 强制入库是用户明确放行，不再触发失败项自动补跑
-          auto_repull: false,
-        },
-      });
-      setBatch(data);
-      notify(data.message || `已提交 ${draftIds.length} 个失败项强制入库`);
-    } catch (err) { fail(err); } finally { setLoading(false); }
-  };
-
-  // 确认主体可售：跳过主体识别门，继续文案与生图直至入库（身份待复核专用）
-  const confirmIdentitySellable = async (draftIds: number[]) => {
-    if (!draftIds.length || !batch || batchProcessing || startInFlightRef.current) return;
-    startInFlightRef.current = true;
-    setLoading(true);
-    setMessage('');
-    setError('');
-    try {
-      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/identity-confirm`, {
-        body: { draft_ids: draftIds },
-      });
-      setBatch(data);
-      notify(data.message || `已确认 ${draftIds.length} 个商品主体可售，继续处理`);
-    } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
-  };
-
   return (
     <div className="verify-page">
       {batchProcessing && (
@@ -547,32 +488,16 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
               <div className="verify-section-head">
                 <h2>失败商品 <span className="verify-failure-count">（{failureItems.length} 项）</span></h2>
                 <span className="verify-actions">
-                  <button className="btn-mini" onClick={() => setShowFailures((v) => !v)} title={showFailures ? '收起失败明细' : '展开失败明细，可手动重新处理或知晓入库'}>{showFailures ? '收起明细' : '查看明细'}</button>
+                  <button className="btn-mini" onClick={() => setShowFailures((v) => !v)} title={showFailures ? '收起失败明细' : '展开失败明细，可手动重新处理'}>{showFailures ? '收起明细' : '查看明细'}</button>
                   {showFailures && (
                     <>
-                  {technicalFailureItems.length > 0 && (
+                  {failureItems.length > 0 && (
                     <button
                       className="btn-mini primary"
                       disabled={loading || batchProcessing}
-                      onClick={() => retryFailed(technicalFailureItems.map((item) => item.product_draft_id).filter((id): id is number => id != null))}
-                      title={batchProcessing ? '当前批次处理中，完成后可重试' : '仅重试技术失败项（图片质量、AI 服务等）；身份待复核项请用「确认主体可售」'}
-                    ><i className="iconfont icon-rocket" aria-hidden="true" />重试全部失败（{technicalFailureItems.length}）</button>
-                  )}
-                  {technicalFailureItems.length > 0 && (
-                    <button
-                      className="btn-mini force-import"
-                      disabled={loading || batchProcessing}
-                      onClick={() => forceImportFailed(technicalFailureItems.map((item) => item.product_draft_id).filter((id): id is number => id != null))}
-                      title={batchProcessing ? '当前批次处理中，完成后可操作' : '我已知道生成图质量问题，仍要提交入库（回退来源图，预审可修改）'}
-                    ><i className="iconfont icon-check-circle" aria-hidden="true" />全部知晓入库（{technicalFailureItems.length}）</button>
-                  )}
-                  {identityFailureItems.length > 0 && (
-                    <button
-                      className="btn-mini confirm-subject"
-                      disabled={loading || batchProcessing}
-                      onClick={() => confirmIdentitySellable(identityFailureItems.map((item) => item.product_draft_id).filter((id): id is number => id != null))}
-                      title={batchProcessing ? '当前批次处理中，完成后可操作' : '主图存在多个或遮挡主体；确认可售后跳过主体识别门，继续文案与生图直至入库'}
-                    ><i className="iconfont icon-check-circle" aria-hidden="true" />全部确认主体可售（{identityFailureItems.length}）</button>
+                      onClick={() => retryFailed(failureItems.map((item) => item.product_draft_id).filter((id): id is number => id != null))}
+                      title={batchProcessing ? '当前批次处理中，完成后可重试' : '重新提交全部失败链接处理'}
+                    ><i className="iconfont icon-rocket" aria-hidden="true" />重试全部失败（{failureItems.length}）</button>
                   )}
                     </>
                   )}
@@ -596,10 +521,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                     return (
                       <tr key={item.id}>
                         <td>{item.skc || '-'}</td><td>{item.title || '-'}</td>
-                        <td>{item.status === 'attention_required' ? '待确认' : '失败'}</td>
-                        <td>{FAILURE_CLASS_LABELS[failureClass] || failureClass}</td>
-                        <td>{isAiConfigError(item.reason) ? 'AI 服务鉴权/额度问题（详见上方提示）' : (item.reason || '-')}</td>
-                        <td>{result.operator_hint || '-'}</td>
+                        <td>失败</td>
+                        <td>{FAILURE_CLASS_LABELS[failureClass] || '已过滤'}</td>
+                        <td>{item.reason || FAILURE_FILTER_HINT}</td>
+                        <td>{FAILURE_FILTER_HINT}</td>
                         <td>{result.retryable ? '是' : '否'}</td>
                         <td>
                           {draftId != null ? (
@@ -610,23 +535,6 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                                 onClick={() => retryFailed([draftId])}
                                 title="以该草稿重新提交处理流水线"
                               >重新处理</button>
-                              {result.error_type === 'vision_subject_low_confidence' ? (
-                                <button
-                                  className="btn-mini confirm-subject"
-                                  disabled={loading || batchProcessing}
-                                  onClick={() => confirmIdentitySellable([draftId])}
-                                  title="主图存在多个或遮挡主体；确认可售后跳过主体识别门，继续文案与生图直至入库"
-                                >确认主体可售</button>
-                              ) : (
-                                result.retryable && (
-                                  <button
-                                    className="btn-mini force-import"
-                                    disabled={loading || batchProcessing}
-                                    onClick={() => forceImportFailed([draftId])}
-                                    title="我已知道生成图质量问题，仍要提交入库（回退来源图，预审可修改）"
-                                  >我已知晓，仍要入库</button>
-                                )
-                              )}
                             </span>
                           ) : ('-')}
                         </td>

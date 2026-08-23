@@ -21,6 +21,38 @@ from .infrastructure.dimension_renderer import DimensionAnnotation, DimensionRen
 from .infrastructure.repository import ProductProcessingRepository
 from .media_asset_service import MediaAssetService
 
+_IMAGE_SUFFIX_BY_TYPE = {
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/avif": ".avif",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+}
+_MEDIA_TYPE_BY_SUFFIX = {
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+
+
+def _image_suffix_for(content_type: str) -> str:
+    return _IMAGE_SUFFIX_BY_TYPE.get(str(content_type or "").strip().casefold(), ".jpg")
+
+
+def _sniff_image_content_type(content: bytes) -> str:
+    """从文件头识别真实图片格式，避免来源 Content-Type 与字节不符导致加载失败。"""
+    if content[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if content[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    if content[4:8] in {b"ftypavif", b"ftypavis"}:
+        return "image/avif"
+    return "image/jpeg"
+
 
 class DimensionCanvasNotFound(LookupError):
     pass
@@ -545,8 +577,8 @@ class DimensionCanvasService:
                 # The source registry may still be syncing. Keep this canvas asset
                 # retryable; a later page refresh will snapshot it once it is ready.
                 continue
-            content_type = str(asset.get("content_type") or "")
-            suffix = ".png" if content_type.casefold() == "image/png" else ".jpg"
+            content_type = _sniff_image_content_type(content)
+            suffix = _image_suffix_for(content_type)
             path = self.assets.save_dimension_asset(
                 content,
                 kind="source",
@@ -639,26 +671,41 @@ class DimensionCanvasService:
             return f"/api/product-processing/drafts/{product_draft_id}/image"
         return ""
 
-    def dimension_asset_image_path(self, asset_id: str, *, workspace_id: str) -> Path:
+    def dimension_asset_image_path(self, asset_id: str, *, workspace_id: str) -> tuple[Path, str]:
         """Resolve one canvas asset to a local image file, downloading external URLs on demand.
 
         Serves as the browser-facing image proxy: remote 1688/other CDN sources are fetched
         server-side (SSRF-safe, size-limited) and cached under the workspace namespace, so the
-        browser never hits external hotlink protection directly.
+        browser never hits external hotlink protection directly.  Returns ``(path, media_type)``;
+        ``media_type`` is sniffed from the actual bytes so AVIF/WebP 素材不会被当作 JPEG 返回。
         """
         asset = self.canvas_repository.find_asset(asset_id, workspace_id)
         if asset is None:
             raise DimensionCanvasNotFound("dimension canvas asset not found")
         managed_path = str(asset.get("managed_path") or "").strip()
         if managed_path:
-            return self.assets.require_workspace_dimension_asset(managed_path, workspace_id=workspace_id)
+            resolved = self._resolve_preview_virtual_path(managed_path, workspace_id)
+            if resolved is not None:
+                path, content_type, digest = resolved
+                self.canvas_repository.materialize_asset(
+                    str(asset.get("id") or ""),
+                    str(asset.get("item_id") or ""),
+                    workspace_id,
+                    managed_path=str(path),
+                    content_hash=digest,
+                    content_type=content_type,
+                )
+                return path, content_type
+            path = self.assets.require_workspace_dimension_asset(managed_path, workspace_id=workspace_id)
+            return path, _MEDIA_TYPE_BY_SUFFIX.get(path.suffix.casefold(), "image/jpeg")
         source_url = str(asset.get("source_url") or "").strip()
         if not source_url or not self._is_public_dimension_url(source_url):
             raise DimensionCanvasNotFound("dimension canvas asset is not fetchable")
         content = self.source_loader(dict(asset))
         if not content:
             raise DimensionCanvasNotFound("dimension canvas asset download returned empty content")
-        suffix = ".png" if str(asset.get("content_type") or "").lower() == "image/png" else ".jpg"
+        content_type = _sniff_image_content_type(content)
+        suffix = _image_suffix_for(content_type)
         path = self.assets.save_dimension_asset(
             content,
             kind="source",
@@ -672,9 +719,58 @@ class DimensionCanvasService:
             workspace_id,
             managed_path=str(path),
             content_hash=digest,
-            content_type=str(asset.get("content_type") or ""),
+            content_type=content_type,
         )
-        return path
+        return path, content_type
+
+    def _resolve_preview_virtual_path(
+        self,
+        managed_path: str,
+        workspace_id: str,
+    ) -> tuple[Path, str, str] | None:
+        """Resolve a canvas asset whose managed_path is a preview content API URL.
+
+        V1 registrations write generated/hero carousel values from ``image_manifest`` as
+        ``/api/product-processing/preview/assets/{id}/content`` display URLs. Those are
+        browser routes, not storage authorities; on first render they are resolved back
+        to the registered preview asset bytes and copied into the dimension workspace.
+        Returns ``(path, media_type, content_hash)`` or ``None`` when unresolvable.
+        """
+        prefix = "/api/product-processing/preview/assets/"
+        if not str(managed_path or "").startswith(prefix):
+            return None
+        remainder = str(managed_path)[len(prefix):]
+        preview_asset_id = remainder.split("/", 1)[0]
+        if not preview_asset_id:
+            return None
+        preview = self.canvas_repository.find_preview_asset(preview_asset_id, workspace_id)
+        if preview is None or str(preview.get("availability") or "") == "unavailable":
+            return None
+        content: bytes | None = None
+        preview_path = str(preview.get("managed_path") or "").strip()
+        if preview_path:
+            try:
+                content = self.assets.require_managed_file(preview_path).read_bytes()
+            except (OSError, ValueError):
+                content = None
+        if not content:
+            preview_url = str(preview.get("source_url") or "").strip()
+            if preview_url and self._is_public_dimension_url(preview_url):
+                try:
+                    content = self.source_loader({"source_url": preview_url, **preview})
+                except Exception:
+                    content = None
+        if not content:
+            return None
+        content_type = _sniff_image_content_type(content)
+        path = self.assets.save_dimension_asset(
+            content,
+            kind="source",
+            suffix=_image_suffix_for(content_type),
+            workspace_id=workspace_id,
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        return path, content_type, digest
 
     @staticmethod
     def _is_public_dimension_url(value: str) -> bool:
@@ -710,7 +806,8 @@ class DimensionCanvasService:
         if not content:
             raise ValueError("source asset materialization returned empty content")
         digest = hashlib.sha256(content).hexdigest()
-        suffix = ".png" if str(asset.get("content_type") or "").lower() == "image/png" else ".jpg"
+        content_type = _sniff_image_content_type(content)
+        suffix = _image_suffix_for(content_type)
         path = self.assets.save_dimension_asset(
             content,
             kind="source",
@@ -725,7 +822,7 @@ class DimensionCanvasService:
             content_hash=digest,
             width=int(asset.get("width") or 0),
             height=int(asset.get("height") or 0),
-            content_type=str(asset.get("content_type") or ("image/png" if suffix == ".png" else "image/jpeg")),
+            content_type=content_type,
         )
 
     @staticmethod

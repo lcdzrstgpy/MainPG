@@ -85,6 +85,8 @@ def build_handoff_payload(candidate: DailySelectionCandidate) -> str:
         },
         "skus": sku_records,
         "attributes": dict(candidate.source_attributes),
+        "weight_text": candidate.weight_text,
+        "package_info_text": candidate.package_info_text,
         "source_evidence": [
             item.model_dump(mode="python") for item in candidate.evidence
         ],

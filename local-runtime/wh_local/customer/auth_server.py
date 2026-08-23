@@ -922,6 +922,16 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             ),
         }
 
+    @app.post("/api/customer/product-processing/failure-log")
+    def product_processing_failure_log(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Store a client-reported product-processing failure diagnostic."""
+        account = _required_account(db_path, authorization)
+        _store_pp_failure_log(db_path, account, payload)
+        return {"ok": True}
+
     @app.get("/api/customer/billing/usage")
     def billing_usage_history(
         cursor: str = "",
@@ -2852,6 +2862,57 @@ def _bearer_token(authorization: str | None) -> str:
     if not token:
         raise HTTPException(status_code=401, detail="missing bearer token")
     return token
+
+
+def _store_pp_failure_log(
+    database_path: Path,
+    account: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    """Store a client-reported product-processing failure diagnostic (best-effort).
+
+    客户端任务终态静默上报；按 (account_id, report_key) 幂等去重，重复上报忽略。
+    """
+    report_key = str(payload.get("report_key") or "").strip()[:200]
+    if not report_key:
+        raise HTTPException(status_code=400, detail="report_key is required")
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="items must be a list")
+    items = items[:200]
+    scope = payload.get("processing_scope")
+    account_id = str(account["account_id"])
+    username = str(account.get("username") or "")
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO product_processing_failure_logs (
+                account_id, username, app_version, report_key, task_id, task_status,
+                total_count, success_count, failed_count, skipped_count,
+                attention_required_count, auto_repull_rounds, auto_repull_message,
+                target_site, target_language, processing_scope, items_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_id,
+                username,
+                str(payload.get("app_version") or "")[:40],
+                report_key,
+                _safe_int(payload.get("task_id")),
+                str(payload.get("task_status") or "")[:40],
+                _safe_int(payload.get("total_count")),
+                _safe_int(payload.get("success_count")),
+                _safe_int(payload.get("failed_count")),
+                _safe_int(payload.get("skipped_count")),
+                _safe_int(payload.get("attention_required_count")),
+                _safe_int(payload.get("auto_repull_rounds")),
+                str(payload.get("auto_repull_message") or "")[:500],
+                str(payload.get("target_site") or "")[:40],
+                str(payload.get("target_language") or "")[:40],
+                json.dumps(scope if isinstance(scope, list) else [], ensure_ascii=False),
+                json.dumps(items, ensure_ascii=False),
+            ),
+        )
 
 
 def _hash_token(token: str) -> str:

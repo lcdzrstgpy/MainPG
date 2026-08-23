@@ -83,5 +83,5 @@ test("1688 page button remains at the existing lower-left position with an expli
 
 test("extension release version advances for the page-control recovery fix", async () => {
   const manifest = JSON.parse(await readFile(new URL("manifest.json", root), "utf8"));
-  assert.equal(manifest.version, "0.1.124");
+  assert.equal(manifest.version, "0.1.125");
 });

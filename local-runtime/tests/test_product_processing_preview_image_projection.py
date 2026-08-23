@@ -332,3 +332,70 @@ def test_saved_legacy_preview_asset_ids_resolve_to_current_v2_proxies(tmp_path: 
     assert proxy["preview_url"]
     assert len(manifest["detail_asset_ids"]) == 1
     assert manifest["detail_asset_ids"][0] == manifest["main_asset_id"]
+
+
+def _seeded_v1_product(tmp_path: Path) -> tuple[ProductProcessingService, int, int]:
+    """手动采集类 v1 草稿：源图只存 result.source_image_urls，无 v2 远程绑定。"""
+    service = ProductProcessingService(
+        ProductProcessingRepository(create_database("sqlite:///:memory:")),
+        ProductProcessingAssets(tmp_path / "assets"),
+    )
+    draft = service.repository.create_draft(
+        {
+            "workspace_id": "ws",
+            "source_type": "web_manual_capture",
+            "title": "v1 source pool product",
+            "image_url": "https://img.example.com/main.jpg",
+        }
+    )
+    assert draft["media_contract_version"] == 1
+    task = service.repository.create_task(
+        title="v1-source-pool",
+        preflight_only=False,
+        settings={},
+        drafts=[draft],
+        idempotency_key=None,
+        workspace_id="ws",
+    )
+    item = task["items"][0]
+    result = {
+        "product_draft_id": draft["id"],
+        "optimized_title": "v1 source pool title",
+        "description": "POINT - v1 source pool product.",
+        "skc": "PP-V1",
+        "sku": "SKU-V1",
+        "source_image_urls": [
+            "https://img.example.com/main.jpg",
+            "https://img.example.com/gallery.jpg",
+            "https://img.example.com/gallery2.jpg",
+        ],
+        "carousel_image_paths": [],
+        "detail_image_paths": [],
+        "product_dimensions": {"length_cm": 1, "width_cm": 1, "height_cm": 1, "weight_g": 1},
+    }
+    service.repository.finish_task(
+        task["id"],
+        [{"item_id": item["id"], "status": "completed", "reason": "", "result": result}],
+        output_file="",
+        error_report_file="",
+        video_manifest_file="",
+        workspace_id="ws",
+    )
+    return service, int(task["id"]), int(draft["id"])
+
+
+def test_v1_projection_registers_source_urls_into_source_pool(tmp_path: Path) -> None:
+    """v1 草稿（手动采集）即使源图不进轮播/详情，预检源池也必须展示原图。"""
+    service, task_id, _draft_id = _seeded_v1_product(tmp_path)
+    preview = service.task_preview(task_id, workspace_id="ws")["items"][0]
+    sources = [asset for asset in preview["assets"] if asset["bucket"] == "source"]
+    assert len(sources) == 3, [asset["bucket"] for asset in preview["assets"]]
+    assert next(asset for asset in sources if asset["source_kind"] == "main")["preview_url"] == "https://img.example.com/main.jpg"
+    gallery_urls = {
+        asset["preview_url"] for asset in sources if asset["source_kind"] == "gallery"
+    }
+    assert gallery_urls == {
+        "https://img.example.com/gallery.jpg",
+        "https://img.example.com/gallery2.jpg",
+    }
+    assert all(asset["origin"] == "source" for asset in sources)

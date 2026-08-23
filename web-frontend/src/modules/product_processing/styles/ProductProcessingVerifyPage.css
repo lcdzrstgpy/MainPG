@@ -1430,6 +1430,27 @@
   color: #526a82;
 }
 
+.precheck-dim-label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.precheck-provenance-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.precheck-provenance-badge.tone-ok   { background: #e6f9f3; color: #07966f; }
+.precheck-provenance-badge.tone-attn { background: #eef1ff; color: #5a5bd8; }
+.precheck-provenance-badge.tone-risk { background: #fff4e5; color: #b36b00; }
+
 .precheck-core-grid input {
   width: 100%;
   padding: 6px 8px;
