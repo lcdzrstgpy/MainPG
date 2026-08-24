@@ -980,11 +980,12 @@ const WORKBENCH_PAGE_CONTROL_IDS = Object.freeze([
   "temu-workbench-page-capture-status"
 ]);
 
-function is1688PageControlTab(tab) {
+function isWorkbenchPageControlTab(tab) {
   if (!Number.isInteger(tab?.id) || tab.discarded) return false;
   try {
     const parsed = new URL(String(tab.url || ""));
-    return parsed.protocol === "https:" && /(^|\.)1688\.com$/i.test(parsed.hostname);
+    return parsed.protocol === "https:"
+      && /(^|\.)(temu|1688|alibaba|pinduoduo|yangkeduo|amazon)\.com$/i.test(parsed.hostname);
   } catch (_error) {
     return false;
   }
@@ -997,8 +998,8 @@ function resetStaleWorkbenchPageControls(controlIds) {
   }
 }
 
-async function ensure1688PageCaptureControls(tab) {
-  if (!is1688PageControlTab(tab)) return { ok: false, skipped: true };
+async function ensureWorkbenchPageControls(tab) {
+  if (!isWorkbenchPageControlTab(tab)) return { ok: false, skipped: true };
   return pageControlRepairSingleflight.run(tab.id, async () => {
     try {
       const liveContext = await chrome.tabs.sendMessage(tab.id, { type: "READ_PAGE_CONTEXT" });
@@ -1026,18 +1027,26 @@ async function ensure1688PageCaptureControls(tab) {
   });
 }
 
-async function ensureOpen1688PageCaptureControls() {
+async function ensureOpenWorkbenchPageControls() {
   let tabs = [];
   try {
-    tabs = await chrome.tabs.query({ url: ["https://*.1688.com/*"] });
+    tabs = await chrome.tabs.query({ url: [
+      "https://*.temu.com/*",
+      "https://*.1688.com/*",
+      "https://*.alibaba.com/*",
+      "https://*.pinduoduo.com/*",
+      "https://*.yangkeduo.com/*",
+      "https://amazon.com/*",
+      "https://*.amazon.com/*"
+    ] });
   } catch (_error) {
     return [];
   }
-  return Promise.all(tabs.map((tab) => ensure1688PageCaptureControls(tab)));
+  return Promise.all(tabs.map((tab) => ensureWorkbenchPageControls(tab)));
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-  await ensureOpen1688PageCaptureControls();
+  await ensureOpenWorkbenchPageControls();
   const settings = await chrome.storage.local.get(["baseUrl", "baseUrlMode", "connectionContext"]);
   if (settings.connectionContext) {
     try {
@@ -1064,7 +1073,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onStartup.addListener(() => {
   schedulePollAlarm();
   void restoreConnection();
-  void ensureOpen1688PageCaptureControls();
+  void ensureOpenWorkbenchPageControls();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -1091,7 +1100,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === "CAPTURE_PRODUCT_TO_WORKBENCH") {
-    captureProductToWorkbench(sender.tab).then(sendResponse);
+    captureProductToWorkbench(sender.tab).then(sendResponse, (error) => {
+      const messageText = String(error?.message || error || "unknown capture error").replace(/\s+/g, " ").trim();
+      warnWorkbench("product capture message failed", messageText);
+      sendResponse({
+        ok: false,
+        error: "product_capture_runtime_failed",
+        statusText: `采集失败：${messageText.slice(0, 48)}`,
+        help: messageText
+      });
+    });
     return true;
   }
   if (message?.type === "CAPTURE_VISIBLE_PRODUCTS_TO_WORKBENCH") {
@@ -1122,7 +1140,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 restoreConnection();
-void ensureOpen1688PageCaptureControls();
+void ensureOpenWorkbenchPageControls();
 
 async function startConnection() {
   const connection = await readConnectionContext();
@@ -1136,7 +1154,7 @@ async function startConnection() {
   schedulePollAlarm();
   connectWebSocket(connection);
   startPollFallback(connection);
-  await ensureOpen1688PageCaptureControls();
+  await ensureOpenWorkbenchPageControls();
   await pollOnce(connection);
   return { ok: true };
 }
@@ -11346,7 +11364,11 @@ function extractPageSkuGroupsInFrame() {
   }
   const output = [];
   for (const [name, values] of grouped) {
-    if (values.length < 2) continue;
+    // 单值维度（如「尺码：通用US」）也是有效规格，不能因只有一个值被丢弃；
+    // 数量/库存等购买交互区不是规格维度，保留会把「数量：1」误当规格。
+    if (!values.length) continue;
+    if (/数量|库存|起批|已选|价格|运费|快递|包邮/i.test(String(name || ""))) continue;
+    if (/^pack$/i.test(String(name || "")) && values.length === 1 && /^\d+$/.test(String(values[0]?.value || "").trim())) continue;
     output.push({ name, source_name: name, values: values.slice(0, 50) });
   }
   return output;
@@ -11462,6 +11484,11 @@ async function captureProductFromTab(tab, { commandType, expectedProductId = "" 
   }
 
   if (/temu\.com/.test(hostname)) {
+    try {
+      await ensureTemuDomCaptureHelper(tab.id);
+    } catch (_error) {
+      // The existing JSON/network/DOM extractor still works when helper injection is blocked.
+    }
     // Temu 商品数据在 DOMContentLoaded 之后异步渲染；给足渲染时间，
     // 避免规格选项尚未出现时只采到默认单规格。
     await delay(2000);
@@ -11473,7 +11500,13 @@ async function captureProductFromTab(tab, { commandType, expectedProductId = "" 
         world: "MAIN",
         func: () => {
           try {
-            const skuArea = Array.from(document.querySelectorAll(
+            const semanticSkuArea = Array.from(document.querySelectorAll("#rightContent *")).find((el) => {
+              const label = String(el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().replace(/[:：]$/, "");
+              const rect = el.getBoundingClientRect();
+              return /^(颜色|色号|尺寸|尺码|大小|容量|规格|款式|型号|包装|套装|Color|Colour|Size|Capacity|Style|Model)$/i.test(label)
+                && rect.width > 10 && rect.height > 10;
+            });
+            const skuArea = semanticSkuArea || Array.from(document.querySelectorAll(
               "[class*='sku'], [data-testid*='sku'], [class*='spec'], [class*='option'], [class*='prop'], [class*='attribute']"
             )).filter((el) => {
               const rect = el.getBoundingClientRect();
@@ -12307,6 +12340,14 @@ function extractProductFromCurrentPage(expectedProductId = "") {
   const attr = (selector, name) => document.querySelector(selector)?.getAttribute(name) || "";
   const pick = (...values) => values.map(text).find(Boolean) || "";
   const is1688 = /1688\.com|alibaba\.com/.test(host);
+  let temuSemanticCapture = { gallery_images: [], sku_groups: [], variant_combinations: [], current_price: null };
+  if (/(^|\.)temu\.com$/i.test(host) && window.WorkbenchTemuDomCapture?.extract) {
+    try {
+      temuSemanticCapture = window.WorkbenchTemuDomCapture.extract(document, window);
+    } catch (_error) {
+      temuSemanticCapture = { gallery_images: [], sku_groups: [], variant_combinations: [], current_price: null };
+    }
+  }
   const absUrl = (url) => {
     url = text(url);
     if (!url || url.startsWith("data:") || url.startsWith("blob:")) return "";
@@ -13004,6 +13045,9 @@ function extractProductFromCurrentPage(expectedProductId = "") {
   document.querySelectorAll("[style*='background-image']").forEach((element) => {
     if (visible(element)) addImage(bgUrl(element), 4, "background-image", element);
   });
+  for (const item of temuSemanticCapture.gallery_images || []) {
+    addImage(item?.url, 38, "temu-semantic-gallery", null, "TEMU product gallery");
+  }
   const seenImages = new Set();
   for (let index = imageCandidates.length - 1; index >= 0; index -= 1) {
     const key = imageCandidates[index].url.replace(/([?&])(x-oss-process|image_process|_.+).*$/i, "");
@@ -13039,6 +13083,12 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     .filter((item) => item.amount > 0);
   const temuPriceCandidates = platform === "temu"
     ? (() => {
+      const semanticCurrentPrice = temuSemanticCapture.current_price?.amount > 0
+        ? [{
+            ...temuSemanticCapture.current_price,
+            score: 1000
+          }]
+        : [];
       const priceRoot = document.querySelector("#goods_price");
       const priceRows = Array.from(priceRoot?.children || [])
         .filter(visible)
@@ -13082,7 +13132,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
           }))
           .filter((item) => item.amount > 0);
       });
-      return [...directPriceCandidates, ...genericCandidates];
+      return [...semanticCurrentPrice, ...directPriceCandidates, ...genericCandidates];
     })()
     : [];
   const selectedTemuPrice = temuPriceCandidates
@@ -13366,9 +13416,16 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         values = values.map((item) => ({ ...item, selectable: true, source_name: sourceName || "规格" }));
         hasSalesOptionEvidence = true;
       }
-      if (!hasSalesOptionEvidence) continue;
-      if (parameterNoiseGroup && !hasBoundOptionEvidence && !bareTextGroup) continue;
-      if (attributeNoiseNameRe.test(`${sourceName} ${classText} ${fullText.slice(0, 100)}`) && !hasBoundOptionEvidence && !bareTextGroup) continue;
+      // Temu 单值维度（如仅有一个「尺码：通用US」）同样是有意义的规格，不能
+      // 因缺少价格/库存等销售证据被丢弃，否则规格组会丢维度（组合只剩颜色）。
+      const labeledTemuSingleGroup = platform === "temu"
+        && values.length === 1
+        && Boolean(sourceName)
+        && !/数量/.test(text(sourceName))
+        && /^(颜色|规格|款式|型号|容量|尺寸|尺码|包装|套装|Color|Size|Style|Capacity|Pack)[:：]?$/i.test(text(sourceName).trim());
+      if (!hasSalesOptionEvidence && !labeledTemuSingleGroup) continue;
+      if (parameterNoiseGroup && !hasBoundOptionEvidence && !bareTextGroup && !labeledTemuSingleGroup) continue;
+      if (attributeNoiseNameRe.test(`${sourceName} ${classText} ${fullText.slice(0, 100)}`) && !hasBoundOptionEvidence && !bareTextGroup && !labeledTemuSingleGroup) continue;
       const deduped = [];
       const seenValues = new Set();
       for (const item of values) {
@@ -14169,7 +14226,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
           ? { ...item, source_name: item.source_name || sourceName || "", value: cleaned, image_url: normalizeImageUrl(item.image_url || item.imageUrl || "") }
           : { source_name: sourceName || "", value: cleaned, image_url: "" };
         const sameValueIndex = target.values.findIndex((existing) => cleanSpecValue(existing.value).toLowerCase() === cleaned.toLowerCase());
-        if (sameValueIndex >= 0 && (!variantOptionHasSalesEvidence(normalized) || !variantOptionHasSalesEvidence(target.values[sameValueIndex]))) {
+        if (sameValueIndex >= 0 && (platform === "temu" || !variantOptionHasSalesEvidence(normalized) || !variantOptionHasSalesEvidence(target.values[sameValueIndex]))) {
           const existing = target.values[sameValueIndex];
           target.values[sameValueIndex] = {
             ...existing,
@@ -14235,20 +14292,27 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     });
   };
   const filterParameterNoiseGroups = (groups, combos = []) => {
+    const knownSpecLabel = (value) => /颜色|规格|款式|型号|容量|尺寸|尺码|包装|套装|Color|Size|Style|Capacity|Pack/i.test(text(value || ""));
     return (groups || []).filter((group) => {
       if (!group || typeof group !== "object") return false;
       const values = Array.isArray(group.values) ? group.values : [];
       if (!values.length) return false;
       const directEvidence = variantGroupHasSalesEvidence(group);
       const comboEvidence = variantGroupHasComboEvidence(group, combos);
-      if (!directEvidence && !comboEvidence) return false;
+      // Temu 带规格标签的单值维度（如「尺码：通用US」）保留，避免组合丢维度。
+      const labeledTemuSingleGroup = platform === "temu"
+        && values.length === 1
+        && knownSpecLabel(group.source_name || group.name)
+        && !/数量/.test(text(group.source_name || group.name || ""));
+      if (!directEvidence && !comboEvidence && !labeledTemuSingleGroup) return false;
       const valueText = (group.values || [])
         .map((item) => typeof item === "object" ? `${item.source_name || ""} ${item.value || ""}` : String(item || ""))
         .join(" ");
       return !(
         variantGroupLooksLikeParameterNoise(group.source_name || group.name || "", group.source || "", valueText) &&
         !variantGroupHasBoundEvidence(group) &&
-        !comboEvidence
+        !comboEvidence &&
+        !labeledTemuSingleGroup
       );
     });
   };
@@ -14347,18 +14411,19 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     return selected;
   };
   const buildCombosFromGroups = (groups) => {
-    const cartesianProduct = (arrays) => arrays.reduce(
-      (acc, list) => acc.flatMap((item) => list.map((value) => [...item, value])),
-      [[]]
-    );
+    const knownSpecLabel = (value) => /颜色|规格|款式|型号|容量|尺寸|尺码|包装|套装|Color|Size|Style|Capacity|Pack/i.test(text(value || ""));
     const candidateGroups = (groups || [])
-      .filter((group) => (group.values || []).some(variantOptionHasSalesEvidence))
+      .filter((group) => (
+        (group.values || []).some(variantOptionHasSalesEvidence)
+        || (platform === "temu" && knownSpecLabel(group.source_name || group.name) && !/数量/.test(text(group.source_name || group.name || "")))
+      ))
       .slice(0, 4);
     if (!candidateGroups.length) return [];
     if (candidateGroups.length === 1) {
       const group = candidateGroups[0];
+      const hasEvidence = (group.values || []).some(variantOptionHasSalesEvidence);
       return (group.values || [])
-        .filter((item) => item && typeof item === "object" && variantOptionHasSalesEvidence(item))
+        .filter((item) => item && typeof item === "object" && (hasEvidence ? variantOptionHasSalesEvidence(item) : true))
         .map((item) => {
           const sourceSkuId = text(item.source_sku_id || item.sourceSkuId || item.sku || "");
           return {
@@ -14381,15 +14446,28 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     const valueLists = candidateGroups.map((group) => (group.values || [])
       .filter((item) => item && typeof item === "object")
       .map((item) => ({ group, item })));
-    const combos = [];
-    for (const combination of cartesianProduct(valueLists)) {
-      if (combos.length >= 200) break;
+    let partialCombinations = [[]];
+    for (const valueList of valueLists) {
+      const next = [];
+      for (const partial of partialCombinations) {
+        for (const option of valueList) {
+          next.push([...partial, option]);
+          if (next.length >= 10000) break;
+        }
+        if (next.length >= 10000) break;
+      }
+      // 即使规格过多也先让每条留下全部属性，再限制传输数量；不能在中途停止
+      // 造成颜色×尺码×包装的结果缺少最后一个维度。
+      partialCombinations = next.length > 200 ? next.slice(0, 200) : next;
+      if (!partialCombinations.length) return [];
+    }
+    return partialCombinations.map((combination) => {
       const attributes = {};
       for (const entry of combination) {
         attributes[entry.group.source_name || entry.group.name] = entry.item.value;
       }
       const firstWithImage = combination.find((entry) => text(entry.item.image_url || ""));
-      combos.push({
+      return {
         attributes,
         price: "",
         stock: "",
@@ -14400,13 +14478,64 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         selectable: true,
         source: "dom-group",
         confidence: "low"
-      });
-    }
-    return combos;
+      };
+    });
+  };
+  // 按属性子集匹配，把 JSON 组合里的价格/库存/货号回填到规格组重建的组合上。
+  const mergeComboEvidence = (targetCombos, evidenceCombos) => {
+    if (!evidenceCombos || !evidenceCombos.length) return targetCombos;
+    return (targetCombos || []).map((combo) => {
+      let best = null;
+      let bestScore = 0;
+      for (const evidence of evidenceCombos) {
+        const evAttrs = evidence.attributes || {};
+        let score = 0;
+        for (const [name, value] of Object.entries(evAttrs)) {
+          const evName = String(name).trim().toLowerCase();
+          const evValue = cleanSpecValue(value).toLowerCase();
+          for (const [targetName, targetValue] of Object.entries(combo.attributes || {})) {
+            const normalizedTargetName = normalizeGroupName(targetName, "").toLowerCase();
+            const normalizedEvidenceName = normalizeGroupName(name, "").toLowerCase();
+            const namesMatch = String(targetName).trim().toLowerCase() === evName
+              || Boolean(normalizedTargetName && normalizedEvidenceName && normalizedTargetName === normalizedEvidenceName);
+            if (namesMatch && evValue === cleanSpecValue(targetValue).toLowerCase()) score += 1;
+          }
+        }
+        if (score > bestScore) { bestScore = score; best = evidence; }
+      }
+      if (best && bestScore > 0) {
+        const targetAttributeCount = Object.keys(combo.attributes || {}).length;
+        const evidenceAttributeCount = Object.keys(best.attributes || {}).length;
+        // 颜色级 JSON 记录不能给颜色×尺码的每一行复用同一个 SKU ID；否则后端
+        // 会把这些真实不同的组合去重折叠。只有属性完整相等才继承货号/库存。
+        const completeIdentityMatch = targetAttributeCount > 0
+          && bestScore === targetAttributeCount
+          && evidenceAttributeCount >= targetAttributeCount;
+        const evidenceSku = completeIdentityMatch
+          ? text(best.source_sku_id || best.sourceSkuId || best.sku || "")
+          : text(combo.source_sku_id || combo.sourceSkuId || combo.sku || "");
+        return {
+          ...combo,
+          price: combo.price || best.price || "",
+          currency: combo.currency || best.currency || "",
+          stock: combo.stock || (completeIdentityMatch ? best.stock : "") || "",
+          sku: evidenceSku,
+          source_sku_id: evidenceSku,
+          image_url: combo.image_url || best.image_url || "",
+          selected: Boolean(combo.selected || best.selected),
+          confidence: combo.confidence === "high" || best.confidence === "high" ? "high" : (combo.confidence || best.confidence || "low")
+        };
+      }
+      return combo;
+    });
   };
   const jsonVariantData = extractJsonVariantData();
   const sourceAttributeData = extractSourceAttributeData();
-  const variantGroups = [...extractVariantGroups(), ...pageWideSkuGroups];
+  const variantGroups = [
+    ...extractVariantGroups(),
+    ...pageWideSkuGroups,
+    ...temuSemanticCapture.sku_groups
+  ];
   let rawVariantGroups = filterParameterNoiseGroups([...jsonVariantData.groups, ...variantGroups], jsonVariantData.combos);
   let mergedVariantGroups = dedupeGroups(rawVariantGroups);
   const rawVariantCombinationFragments = [
@@ -14414,6 +14543,36 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     ...buildCombosFromGroups(mergedVariantGroups)
   ];
   let variantCombinations = dedupeCombos(rawVariantCombinationFragments);
+  // Temu 的 JSON SKU 模型常把规格拆成逐项（颜色每值一条 + 尺码/数量单独一条），
+  // 导致组合数与真实规格不符（如 5 色产品只出 3 条）。页面可见的规格组
+  // （variant_groups，含颜色多值 + 尺码单值）才是完整维度来源：以规格组笛卡尔积
+  // 重建组合，再按属性匹配回填 JSON 里的价格/库存/货号。
+  if (platform === "temu" && mergedVariantGroups.length) {
+    const semanticCombos = Array.isArray(temuSemanticCapture.variant_combinations)
+      ? temuSemanticCapture.variant_combinations
+      : [];
+    const semanticDims = semanticCombos.reduce(
+      (max, combo) => Math.max(max, Object.keys(combo?.attributes || {}).length),
+      0
+    );
+    const rebuiltGroupCombos = buildCombosFromGroups(mergedVariantGroups);
+    const comboDims = variantCombinations.reduce((max, combo) => Math.max(max, Object.keys(combo.attributes || {}).length), 0);
+    const groupDims = mergedVariantGroups.length;
+    const hasSemanticSkuGroups = Boolean(temuSemanticCapture.sku_groups?.length);
+    const groupCombos = semanticCombos.length && semanticDims >= comboDims
+      ? semanticCombos
+      : rebuiltGroupCombos;
+    if (groupCombos.length && (groupDims > comboDims || groupCombos.length > variantCombinations.length || hasSemanticSkuGroups && groupDims >= comboDims)) {
+      variantCombinations = mergeComboEvidence(groupCombos, jsonVariantData.combos);
+    }
+    if (capturedPrice) {
+      variantCombinations = variantCombinations.map((combo) => ({
+        ...combo,
+        price: combo.price || capturedPrice,
+        currency: combo.currency || capturedCurrency
+      }));
+    }
+  }
   // 首次采集成功后把结果缓存到页面 window：1688 等 SPA 的 SKU 数据由 JSONP 在
   // 页面加载早期返回，探针捕获缓冲（200 条滑窗）会被后续请求挤出，导致同页第二次
   // 采集 JSON 路径失效；此时回退到上次成功结果，保证重复采集结果稳定。
@@ -14458,11 +14617,12 @@ function extractProductFromCurrentPage(expectedProductId = "") {
   const selectedAttributes = selectedAttributesFromGroups(mergedVariantGroups);
   const title = titleCandidates[0]?.value || "";
   const image = imageCandidates[0] || {};
+  const productImageLimit = platform === "temu" ? 24 : 6;
   const productImageUrls = imageCandidates
     .filter((item) => item && item.url && item.score >= 20 && item.media_type !== "video_cover" && !item.video_cover && imageUrlLooksUsableForProduct(item.url))
     .map((item) => item.url)
     .filter((url, index, list) => list.indexOf(url) === index)
-    .slice(0, 6);
+    .slice(0, productImageLimit);
   const imageQualityFlags = imageQualityFlagsForCandidate(image, title);
   const productId = pageProductId;
 
@@ -14512,6 +14672,8 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       title_candidates: titleCandidates.slice(0, 4),
       image_candidates: imageCandidates.slice(0, 4).map((item) => ({ url: item.url, score: Math.round(item.score), source: item.source, media_type: item.media_type || "image" })),
       product_image_urls: productImageUrls,
+      temu_semantic_gallery_count: temuSemanticCapture.gallery_images.length,
+      temu_semantic_sku_group_count: temuSemanticCapture.sku_groups.length,
       image_quality_flags: imageQualityFlags,
       image_score: Math.round(Number(image.score || 0)),
       capture_url: canonicalProductLink(location.href, productId),
@@ -14570,6 +14732,14 @@ async function injectNetworkProbe(tabId) {
       world: "MAIN"
     });
   }
+}
+
+async function ensureTemuDomCaptureHelper(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["temu_dom_capture.js"],
+    world: "MAIN"
+  });
 }
 
 async function getProbeCaptures(tabId, captureType, since, limit) {

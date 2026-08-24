@@ -929,6 +929,76 @@
   margin-top: 8px;
 }
 
+.verify-variant-layout {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin-top: 10px;
+}
+
+.verify-sku-image,
+.verify-sku-image-placeholder {
+  width: 84px;
+  height: 84px;
+  border: 1px solid #dce9f2;
+  border-radius: 10px;
+  background: #f4f8fb;
+}
+
+.verify-sku-image {
+  display: block;
+  object-fit: cover;
+}
+
+.verify-sku-image-placeholder {
+  display: grid;
+  place-items: center;
+  color: #8aa0b4;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.verify-variant-content {
+  min-width: 0;
+}
+
+.verify-variant-attributes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.verify-variant-attribute {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid #d8e9f2;
+  border-radius: 999px;
+  background: #f3f9fc;
+  color: #294760;
+  font-size: 0.72rem;
+}
+
+.verify-variant-attribute b,
+.verify-variant-attribute em {
+  padding: 4px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verify-variant-attribute b {
+  flex: none;
+  border-right: 1px solid #d8e9f2;
+  color: #0a8fca;
+}
+
+.verify-variant-attribute em {
+  font-style: normal;
+}
+
 .verify-variant-grid label {
   display: grid;
   gap: 5px;
@@ -2943,6 +3013,14 @@
   .verify-variant-grid {
     grid-template-columns: 1fr;
     align-items: stretch;
+  }
+  .verify-variant-layout {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+  .verify-sku-image,
+  .verify-sku-image-placeholder {
+    width: 64px;
+    height: 64px;
   }
   .verify-history li {
     flex-direction: column;

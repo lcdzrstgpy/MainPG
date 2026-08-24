@@ -76,7 +76,7 @@
 
   function isExtensionContextError(error) {
     const message = String(error?.message || error || "");
-    return /Extension context invalidated|context invalidated|message port closed|Receiving end does not exist/i.test(message);
+    return /Extension context invalidated|context invalidated|message (?:port|channel) closed|Receiving end does not exist/i.test(message);
   }
 
   function extensionContextReady() {
@@ -461,7 +461,8 @@
       setCaptureButtonState("已加入待处理", false);
       window.setTimeout(refreshProductCaptureButton, 2600);
     } catch (error) {
-      setCaptureButtonState(`采集失败`, false);
+      const message = String(error?.message || error || "后台消息无响应").replace(/\s+/g, " ").trim();
+      setCaptureButtonState(`采集失败：${message.slice(0, 48)}`, false, message);
       window.setTimeout(refreshProductCaptureButton, 2600);
     }
   }

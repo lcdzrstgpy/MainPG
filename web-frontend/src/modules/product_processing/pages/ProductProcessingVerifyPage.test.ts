@@ -13,3 +13,12 @@ test("draft toolbar sticky behavior does not observe its own layout writes", () 
   assert.doesNotMatch(page, /observer\.observe\(toolbar\)/);
   assert.doesNotMatch(page, /observer\.observe\(document\.body\)/);
 });
+
+test("SKU editor renders captured SKU images and keeps each variant attribute visible", () => {
+  assert.match(page, /variantPresentation\(variant,\s*legacyTemuCurrency,/);
+  assert.match(page, /className="verify-sku-image"/);
+  assert.match(page, /referrerPolicy="no-referrer"/);
+  assert.match(page, /className="verify-variant-attributes"/);
+  assert.match(page, /presentation\.attributes\.map/);
+  assert.match(page, /className="verify-variant-attribute"/);
+});

@@ -34,6 +34,12 @@ export type DraftVariant = {
   source_sku_id?: string;
   display_name?: string;
   attributes?: Record<string, string>;
+  image_url?: string | null;
+  imageUrl?: string | null;
+  price_cny?: number | null;
+  source_price?: number | null;
+  source_currency?: string | null;
+  min_order_quantity?: number | null;
   [key: string]: any;
 };
 

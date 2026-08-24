@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TEMU Y2 AI Workbench Connector",
-  "version": "0.1.124",
+  "version": "0.1.130",
   "description": "Connects logged-in TEMU/Dianxiaomi pages to the AI workbench without storing platform credentials.",
   "permissions": ["activeTab", "storage", "scripting", "alarms", "tabs"],
   "host_permissions": [
@@ -30,7 +30,7 @@
   "content_scripts": [
     {
       "matches": ["https://*.temu.com/*", "https://*.dianxiaomi.com/*", "https://amazon.com/*", "https://*.amazon.com/*", "https://*.1688.com/*", "https://*.alibaba.com/*", "https://*.temaishuju.com/*", "https://*.pinduoduo.com/*", "https://*.yangkeduo.com/*"],
-      "js": ["network_probe_utils.js", "page_probe.js"],
+      "js": ["temu_dom_capture.js", "network_probe_utils.js", "page_probe.js"],
       "run_at": "document_start",
       "world": "MAIN",
       "all_frames": true
