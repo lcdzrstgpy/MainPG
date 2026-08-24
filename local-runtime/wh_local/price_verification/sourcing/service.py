@@ -164,9 +164,9 @@ class SourcingService:
         existing = self._repository.get_batch_sourcing_session(
             workspace_id=actor.workspace_id, batch_id=batch_id
         )
-        products = self._product_library_products(actor, selected)
-        product_skc_ids = {str(item.get("skc") or "") for item in products}
-        unresolved = tuple(skc for skc in selected if skc not in product_skc_ids)
+        products = self._product_library_products(actor, batch_id=batch_id, skc_ids=selected)
+        product_selection_skc_ids = {str(item.get("selection_skc_id") or "") for item in products}
+        unresolved = tuple(skc for skc in selected if skc not in product_selection_skc_ids)
         same_selection = existing is not None and tuple(existing["selected_skc_ids"]) == selected
         return self._repository.save_batch_sourcing_session(
             workspace_id=actor.workspace_id,
@@ -227,7 +227,9 @@ class SourcingService:
                 return session
             # 产品库命中展示每次读取都用耐久的货源关联记录补全，避免早期产品库
             # 只保存 URL 时在 STEP 04 退化成重复的空白“1688 货源”。
-            products = self._product_library_products(actor, session["selected_skc_ids"])
+            products = self._product_library_products(
+                actor, batch_id=batch_id, skc_ids=session["selected_skc_ids"]
+            )
             if products or preview_updated:
                 session = self._repository.save_batch_sourcing_session(
                     workspace_id=actor.workspace_id, batch_id=batch_id,
@@ -385,7 +387,9 @@ class SourcingService:
                 domestic_freight_cny=candidate.get("domestic_freight_cny"),
                 source_decision=_text(candidate.get("source_decision")),
             )
-        products = self._product_library_products(actor, session["selected_skc_ids"])
+        products = self._product_library_products(
+            actor, batch_id=batch_id, skc_ids=session["selected_skc_ids"]
+        )
         selected_skc_ids = {
             _text(candidate.get("skc_id"))
             for candidate in selected_candidates
@@ -404,15 +408,33 @@ class SourcingService:
         return self.get_batch_sourcing_state(actor, batch_id=batch_id)
 
     def _product_library_products(
-        self, actor: PriceVerificationActor, skc_ids: Sequence[str]
+        self, actor: PriceVerificationActor, *, batch_id: str, skc_ids: Sequence[str]
     ) -> tuple[Mapping[str, Any], ...]:
         if self._product_library_service is None or not skc_ids:
             return ()
         try:
-            products = self._product_library_service.list_products(
-                skcs=list(skc_ids), actor=actor, include_workspace_shared=True
+            batch = self._repository.get_quote_capture_batch(
+                workspace_id=actor.workspace_id, batch_id=batch_id
             )
-            selected = set(skc_ids)
+            selections = {
+                selection.skc_id: selection
+                for selection in self._repository.list_batch_selections(
+                    workspace_id=actor.workspace_id, batch_id=batch_id
+                )
+                if selection.skc_id in skc_ids
+            }
+            archive_id_to_selection = {
+                archive_id: selection.skc_id
+                for selection in selections.values()
+                for archive_id, _selling_price in self._archive_product_targets(
+                    selection, batch.archive_product_id_type
+                )
+            }
+            if not archive_id_to_selection:
+                return ()
+            products = self._product_library_service.list_products(
+                skcs=list(archive_id_to_selection), actor=actor, include_workspace_shared=True
+            )
             links_by_skc: dict[str, list[SkcSourceLinkRecord]] = {}
             for link in self._repository.list_active_skc_source_links_for_skcs(
                 workspace_id=actor.workspace_id, skc_ids=skc_ids
@@ -421,10 +443,11 @@ class SourcingService:
             enriched: list[Mapping[str, Any]] = []
             for product in products:
                 payload = dict(product)
-                skc_id = _text(payload.get("skc"))
-                if skc_id not in selected:
+                archive_id = _text(payload.get("skc"))
+                selection_skc_id = archive_id_to_selection.get(archive_id)
+                if not selection_skc_id:
                     continue
-                links = links_by_skc.get(skc_id, [])
+                links = links_by_skc.get(selection_skc_id, [])
                 if links:
                     payload["source_groups"] = [
                         {
@@ -451,6 +474,7 @@ class SourcingService:
                 if not valid_sources:
                     continue
                 payload["source_groups"] = valid_sources
+                payload["selection_skc_id"] = selection_skc_id
                 enriched.append(payload)
             return tuple(enriched)
         except Exception as exc:
@@ -583,6 +607,27 @@ class SourcingService:
         self._sync_skc_to_product_library(actor, batch_id=record.batch_id, skc_id=record.skc_id)
         return _source_link_response(record)
 
+    def _archive_product_targets(
+        self, selection: BatchSelectionRecord, archive_product_id_type: str
+    ) -> tuple[tuple[str, Decimal], ...]:
+        """Return the final library identities and their conservative selling prices."""
+        kind = _text(archive_product_id_type).upper() or "SKC"
+        if kind == "SKC":
+            price = _decimal(selection.adjusted_min)
+            return ((selection.skc_id, price),) if selection.skc_id and price and price > 0 else ()
+        values: dict[str, Decimal] = {}
+        key_name = "sku_id" if kind == "SKU" else "spu_id"
+        for row in selection.sku_prices:
+            if not isinstance(row, Mapping):
+                continue
+            product_id = _text(row.get(key_name))
+            price = _decimal(row.get("adjusted_declared_price_cny"))
+            if not product_id or price is None or price <= 0:
+                continue
+            previous = values.get(product_id)
+            values[product_id] = price if previous is None else min(previous, price)
+        return tuple(values.items())
+
     def _sync_skc_to_product_library(
         self,
         actor: PriceVerificationActor,
@@ -610,8 +655,7 @@ class SourcingService:
             if selection is None or selection.status != "retained":
                 return None
             site = _site_code(selection.site)
-            selling_price = _decimal(selection.adjusted_min)
-            if not site or selling_price is None or selling_price <= 0:
+            if not site:
                 return None
             links = tuple(
                 self._repository.list_skc_source_links(
@@ -620,57 +664,40 @@ class SourcingService:
             )
             if not links:
                 return None
-            groups: list[dict[str, Any]] = []
-            computed: list[tuple[Decimal, Mapping[str, Any]]] = []
-            for link in links:
-                profit = build_candidate_profit(
-                    {
-                        "price": link.price_cny,
-                        "promotion_price": None,
-                        "moq": link.moq,
-                        "domestic_freight": link.domestic_freight_cny,
-                    },
-                    site=site,
-                    selling_price=selling_price,
-                    weight_kg=link.weight_kg or DEFAULT_WEIGHT_KG,
-                )
-                groups.append(
-                    {
-                        "source_url": link.source_url,
-                        "source_title": link.source_title,
-                        "main_image_url": link.main_image_url,
-                        "offer_id": link.offer_id,
-                        "price_cny": link.price_cny,
-                        "weight_kg": link.weight_kg or str(DEFAULT_WEIGHT_KG),
-                        "moq": link.moq,
-                        "domestic_freight_cny": link.domestic_freight_cny,
-                        "source_decision": link.source_decision,
-                        "note": link.note,
-                        "profit": profit,
-                    }
-                )
-                cost = _decimal(profit.get("cost_price"))
-                if profit.get("available") and cost is not None:
-                    computed.append((cost, profit))
-            if not computed:
-                return None
-            _cost, best = min(computed, key=lambda item: item[0])
-            payload: dict[str, Any] = {
-                "site": site,
-                "skc": selection.skc_id,
-                "product_id": selection.skc_id,
-                "selling_price": str(selling_price),
-                "cost_price": str(best["cost_price"]),
-                "weight_kg": str(best["weight_kg"]),
-                "note": f"来自核价及货源 · 批次 {batch_id}",
-                "source_url": str(groups[0].get("source_url") or ""),
-                "source_groups_json": json.dumps(groups, ensure_ascii=False, separators=(",", ":")),
-                "source_type": "price_verification",
-                "source_main_image_url": _text(selection.main_image_url),
-                "store_name": batch.store_name,
-                "visibility": "shared",
-            }
-            return self._product_library_service.upsert_product(payload, actor=actor)
+            saved: Mapping[str, Any] | None = None
+            for product_id, selling_price in self._archive_product_targets(
+                selection, batch.archive_product_id_type
+            ):
+                groups: list[dict[str, Any]] = []
+                computed: list[tuple[Decimal, Mapping[str, Any]]] = []
+                for link in links:
+                    profit = build_candidate_profit(
+                        {"price": link.price_cny, "promotion_price": None, "moq": link.moq,
+                         "domestic_freight": link.domestic_freight_cny},
+                        site=site, selling_price=selling_price,
+                        weight_kg=link.weight_kg or DEFAULT_WEIGHT_KG,
+                    )
+                    groups.append({"source_url": link.source_url, "source_title": link.source_title,
+                        "main_image_url": link.main_image_url, "offer_id": link.offer_id,
+                        "price_cny": link.price_cny, "weight_kg": link.weight_kg or str(DEFAULT_WEIGHT_KG),
+                        "moq": link.moq, "domestic_freight_cny": link.domestic_freight_cny,
+                        "source_decision": link.source_decision, "note": link.note, "profit": profit})
+                    cost = _decimal(profit.get("cost_price"))
+                    if profit.get("available") and cost is not None:
+                        computed.append((cost, profit))
+                if not computed:
+                    continue
+                _cost, best = min(computed, key=lambda item: item[0])
+                saved = self._product_library_service.upsert_product({
+                    "site": site, "skc": product_id, "product_id": product_id,
+                    "selling_price": str(selling_price), "cost_price": str(best["cost_price"]),
+                    "weight_kg": str(best["weight_kg"]), "note": f"来自核价及货源 · 批次 {batch_id}",
+                    "source_url": str(groups[0].get("source_url") or ""),
+                    "source_groups_json": json.dumps(groups, ensure_ascii=False, separators=(",", ":")),
+                    "source_type": "price_verification", "source_main_image_url": _text(selection.main_image_url),
+                    "store_name": batch.store_name, "visibility": "shared",
+                }, actor=actor)
+            return saved
         except Exception:
             return None
 

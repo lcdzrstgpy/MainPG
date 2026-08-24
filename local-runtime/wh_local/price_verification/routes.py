@@ -231,6 +231,24 @@ def register_price_verification_routes(
             logging.getLogger(__name__).warning("capture batch store update rejected: %s", error)
             _raise_http(error)
 
+    @router.put("/api/v1/price-verification/capture-batches/{batch_id}/archive-product-id-type")
+    def set_capture_batch_archive_product_id_type(
+        batch_id: str,
+        request: Mapping[str, Any] = Body(...),
+        actor: PriceVerificationActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        try:
+            return _capture_batch_response(
+                quote_service.set_capture_batch_archive_product_id_type(
+                    actor,
+                    batch_id,
+                    archive_product_id_type=_text(request.get("archive_product_id_type")),
+                )
+            )
+        except Exception as error:
+            logging.getLogger(__name__).warning("capture batch archive id type update rejected: %s", error)
+            _raise_http(error)
+
     @router.post("/api/v1/price-verification/capture-batches/{batch_id}/snapshots")
     def save_capture_batch_snapshot(
         batch_id: str, actor: PriceVerificationActor = Depends(actor_dependency)

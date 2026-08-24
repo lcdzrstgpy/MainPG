@@ -136,6 +136,7 @@ class QuoteCaptureBatchRecord(_Record):
     workspace_id: str
     name: str
     store_name: str = ""
+    archive_product_id_type: str = "SKC"
     is_current: bool
     created_by: str
     created_at: str
@@ -267,7 +268,7 @@ class PriceVerificationRepository:
                 # also usable on its own, so column additions must be guarded here.
                 # 004 was a one-time table rebuild and is not safe to replay on
                 # every process start; current schemas are already compatible.
-                if migration.name in {"004_quote_capture_chunk_sku_capacity.sql", "009_capture_batch_store_name.sql"}:
+                if migration.name in {"004_quote_capture_chunk_sku_capacity.sql", "009_capture_batch_store_name.sql", "010_capture_batch_archive_product_id_type.sql"}:
                     continue
                 connection.executescript(migration.read_text(encoding="utf-8"))
             # SQLite has no "ADD COLUMN IF NOT EXISTS", so guard column adds here.
@@ -280,6 +281,12 @@ class PriceVerificationRepository:
                 "price_verification_quote_capture_batches",
                 "store_name",
                 "TEXT NOT NULL DEFAULT ''",
+            )
+            _ensure_column(
+                connection,
+                "price_verification_quote_capture_batches",
+                "archive_product_id_type",
+                "TEXT NOT NULL DEFAULT 'SKC'",
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_price_verification_capture_batches_workspace_store "
@@ -804,6 +811,31 @@ class PriceVerificationRepository:
                     """UPDATE price_verification_quote_capture_batches
                     SET store_name = ?, updated_at = ? WHERE workspace_id = ? AND batch_id = ?""",
                     (str(store_name or "").strip()[:120], _now(), workspace_id, batch_id),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_quote_capture_batch(workspace_id=workspace_id, batch_id=batch_id)
+
+    def set_quote_capture_batch_archive_product_id_type(
+        self, *, workspace_id: str, batch_id: str, archive_product_id_type: str
+    ) -> QuoteCaptureBatchRecord:
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        batch_id = _required_text(batch_id, "batch_id")
+        value = str(archive_product_id_type or "").strip().upper()
+        if value not in {"SKU", "SKC", "SPU"}:
+            raise ValueError("archive_product_id_type_invalid")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._owned_row_in(
+                    connection, "price_verification_quote_capture_batches", workspace_id, "batch_id", batch_id
+                )
+                connection.execute(
+                    """UPDATE price_verification_quote_capture_batches
+                    SET archive_product_id_type = ?, updated_at = ? WHERE workspace_id = ? AND batch_id = ?""",
+                    (value, _now(), workspace_id, batch_id),
                 )
                 connection.commit()
             except BaseException:

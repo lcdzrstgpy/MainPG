@@ -309,6 +309,20 @@ class QuoteService:
             "updated_by": settings.updated_by,
         }
 
+    def set_capture_batch_archive_product_id_type(
+        self,
+        actor: PriceVerificationActor,
+        batch_id: str,
+        *,
+        archive_product_id_type: str,
+    ) -> QuoteCaptureBatchRecord:
+        actor = _actor(actor)
+        return self._repository.set_quote_capture_batch_archive_product_id_type(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            archive_product_id_type=archive_product_id_type,
+        )
+
     def list_capture_batch_review_items(
         self,
         actor: PriceVerificationActor,
@@ -351,6 +365,7 @@ class QuoteService:
                 sku_prices.append(
                     {
                         "sku_id": item.sku_id or item.sku_merchant_code or item.sku_true_id,
+                        "spu_id": item.spu_or_goods_id,
                         "sku_attribute_text": item.sku_attribute_text or item.sku_attribute_set,
                         "original_declared_price_cny": _decimal_or_none(item.original_declared_price_cny),
                         "adjusted_declared_price_cny": _decimal_or_none(item.adjusted_declared_price_cny),

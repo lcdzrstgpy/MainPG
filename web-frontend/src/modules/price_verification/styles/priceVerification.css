@@ -69,11 +69,17 @@
 
 .price-verification-prescreen-fields {
   display: grid;
-  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.price-verification-store-switch input {
-  width: min(100%, 220px);
+.price-verification-prescreen-fields .price-verification-batch-switch {
+  min-height: 92px;
+  padding: 15px 17px;
+  border: 1px solid color-mix(in srgb, var(--theme-module-border, #d6e1dd) 88%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--theme-module-surface, #fffdf8) 76%, transparent);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--theme-card-shadow, rgba(35, 67, 61, .08)) 55%, transparent);
 }
 
 .price-verification-batch-summary > :is(.price-verification-current-batch, .price-verification-batch-switch, .price-verification-prescreen-result) {
@@ -183,6 +189,17 @@
   padding: 7px 9px;
 }
 
+.price-verification-batch-switch select {
+  width: 100%;
+  max-width: 230px;
+  padding: 7px 9px;
+  border: 1px solid var(--theme-module-border, #cfe2ed);
+  border-radius: 8px;
+  color: var(--theme-text-primary, #31556e);
+  background: var(--theme-module-surface, #fff);
+  font: inherit;
+}
+
 .price-verification-prescreen-result .price-verification-action-bar {
   position: static;
   justify-content: flex-start;
@@ -242,7 +259,7 @@
   }
 
   .price-verification-page:has(.price-verification-batch-panel) .price-verification-batch-summary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: minmax(250px, .8fr) minmax(620px, 1.8fr);
     grid-template-rows: minmax(92px, auto) minmax(104px, auto);
     gap: 14px 18px;
     align-self: stretch;
@@ -256,6 +273,16 @@
   .price-verification-page:has(.price-verification-batch-panel) .price-verification-batch-switch {
     grid-column: 2;
     grid-row: 1;
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-fields {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-fields .price-verification-batch-switch {
+    grid-column: auto;
+    grid-row: auto;
   }
 
   .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-result {
@@ -337,6 +364,14 @@
   .price-verification-prescreen-result {
     grid-column: 1 / -1;
   }
+
+  .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-fields {
+    grid-template-columns: repeat(3, minmax(170px, 1fr));
+  }
+
+  .price-verification-prescreen-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 700px) {
@@ -350,6 +385,10 @@
   }
 
   .price-verification-batch-switch input {
+    max-width: none;
+  }
+
+  .price-verification-batch-switch select {
     max-width: none;
   }
 

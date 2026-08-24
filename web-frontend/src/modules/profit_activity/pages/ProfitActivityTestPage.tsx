@@ -260,6 +260,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   const [importStoreName, setImportStoreName] = useState("");
   const [importPreviews, setImportPreviews] = useState<ImportPreview[]>([]);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importGuidelinesOpen, setImportGuidelinesOpen] = useState(false);
   const [lastImportFiles, setLastImportFiles] = useState<string[]>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("profitActivityImportFileNames") || "[]");
@@ -308,6 +309,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     setSettingsDialogOpen(false);
     setNewSiteOpen(false);
     setImportDialogOpen(false);
+    setImportGuidelinesOpen(false);
     setNoEligibleOpen(false);
   }, [isActive]);
 
@@ -1019,11 +1021,56 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
                 <label>产品资料 Excel（可多选）<input type="file" accept=".xlsx,.xlsm" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setImportFiles(files); persistImportFileNames(files); }} /></label>
                 <label className="profit-import-store-field">店铺（可选）<input value={importStoreName} maxLength={120} onChange={(event) => setImportStoreName(event.target.value)} placeholder="例如：美区一店" /></label>
               </div>
-              <button onClick={previewImport} disabled={!!busy}>预览入档</button>
-              <button onClick={confirmImport} disabled={!!busy || !importPreviews.length}>确认导入</button>
+              <div className="profit-import-actions">
+                <button className="profit-import-guidelines-trigger" type="button" aria-haspopup="dialog" onClick={() => setImportGuidelinesOpen(true)}>导入规范</button>
+                <div className="profit-import-actions-bottom">
+                  <button onClick={previewImport} disabled={!!busy}>预览入档</button>
+                  <button onClick={confirmImport} disabled={!!busy || !importPreviews.length}>确认导入</button>
+                </div>
+              </div>
             </div>
             {importFiles.length ? <p className="profit-warn">已选择 {importFiles.length} 个文件：{importFiles.map((item) => item.name).join("、")}</p> : lastImportFiles.length ? <p className="muted">上次选择的文件：{lastImportFiles.join("、")}（浏览器出于安全原因不保留本地完整路径，切换页面后需重新选择文件）</p> : null}
             {importPreviews.length > 0 && <ImportPreviewSummary previews={importPreviews} />}
+          </section>
+        </div>
+      )}
+
+      {importGuidelinesOpen && (
+        <div className="profit-settings-dialog-backdrop profit-import-guidelines-backdrop" role="presentation" onMouseDown={() => setImportGuidelinesOpen(false)}>
+          <section className="profit-settings-dialog profit-import-guidelines-dialog" role="dialog" aria-modal="true" aria-labelledby="profit-import-guidelines-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="profit-settings-dialog-head">
+              <div className="profit-settings-heading">
+                <h2 id="profit-import-guidelines-title">产品资料导入规范</h2>
+                <p>请按以下要求整理文件，先预览确认后再导入。</p>
+              </div>
+              <button className="profit-settings-dialog-close" type="button" aria-label="关闭导入规范" onClick={() => setImportGuidelinesOpen(false)}><span aria-hidden="true">×</span></button>
+            </div>
+            <div className="profit-import-guidelines-content">
+              <section>
+                <h3>必填信息</h3>
+                <ul>
+                  <li>每行至少应能识别出：商品 ID、售价、国内成本、重量（kg）。</li>
+                  <li>商品 ID 可来自 SKU、SKC 或 SPU 列；同一份表中请保持使用同一种商品标识。</li>
+                  <li>售价、国内成本和重量必须是大于 0 的数字；重量统一按 kg 填写。</li>
+                </ul>
+              </section>
+              <section>
+                <h3>成本与站点</h3>
+                <ul>
+                  <li>审核表的国内成本应填写商品维度成本，例如单价、损耗、包材和国内运输之和；不要填写含国际头程、尾程等的总成本。</li>
+                  <li>若文件含站点列，系统按每行站点导入；没有站点列时，按当前选择的站点导入。</li>
+                  <li>头程、尾程、操作费、运费补贴和退款率由“利润活动设置”的当前站点费率统一计算。</li>
+                </ul>
+              </section>
+              <section>
+                <h3>重复数据与确认</h3>
+                <ul>
+                  <li>同一站点、同一商品 ID 出现多次时，系统保守合并：售价取最低值，国内成本和重量取最高有效值。</li>
+                  <li>建议每个 Excel 保留一行表头和连续数据行，避免合并单元格、空白分段或非数据说明行。</li>
+                  <li>请先点击“预览入档”核对识别结果和异常提示，确认无误后再点击“确认导入”。</li>
+                </ul>
+              </section>
+            </div>
           </section>
         </div>
       )}

@@ -492,11 +492,11 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                                 </dl>
                                 <div className="pv-profit-edit">
                                   <label className="pv-profit-edit-field">候选源价（可调）
-                                    <input type="number" min="0.01" step="0.01" value={priceText} onChange={(event) => changeCandidatePrice(item, candidate, event.target.value)} disabled={profitBusy === candKey} />
+                                    <input type="number" min="0.01" step="0.01" value={priceText} onChange={(event) => changeCandidatePrice(item, candidate, event.target.value)} disabled={busy} />
                                     <small>元</small>
                                   </label>
                                   <label className="pv-profit-edit-field">重量（可调）
-                                    <input type="number" min="0.1" max="10" step="0.1" value={weightText} onChange={(event) => changeCandidateWeight(item, candidate, event.target.value)} disabled={profitBusy === candKey} />
+                                    <input type="number" min="0.1" max="10" step="0.1" value={weightText} onChange={(event) => changeCandidateWeight(item, candidate, event.target.value)} disabled={busy} />
                                     <small>kg</small>
                                   </label>
                                   <em className={profit.qualified ? "pv-profit-badge is-qualified" : "pv-profit-badge is-below"} title={qualificationText(profit.qualification)}>{profit.qualified ? "达标 ✓" : "未达标"}</em>

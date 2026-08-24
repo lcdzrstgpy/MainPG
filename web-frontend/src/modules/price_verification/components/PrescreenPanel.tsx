@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { PrescreenSettings } from "../types";
+import type { ArchiveProductIdType, PrescreenSettings } from "../types";
 import { SectionHelp } from "./SectionHelp";
 import { WorkflowActionBar } from "./WorkflowActionBar";
 
@@ -10,27 +10,33 @@ type Props = {
   passedItems: number;
   prescreen: PrescreenSettings | null;
   storeName: string;
+  archiveProductIdType: ArchiveProductIdType;
   onPrescreenChange: (minAdjustedPriceCny: string) => Promise<boolean>;
   onStoreNameChange: (storeName: string) => Promise<boolean>;
+  onArchiveProductIdTypeChange: (archiveProductIdType: ArchiveProductIdType) => Promise<boolean>;
   onRefresh: () => void;
   onContinue: () => void;
 };
 
-export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, prescreen, storeName: savedStoreName, onPrescreenChange, onStoreNameChange, onRefresh, onContinue }: Props) {
+export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, prescreen, storeName: savedStoreName, archiveProductIdType: savedArchiveProductIdType, onPrescreenChange, onStoreNameChange, onArchiveProductIdTypeChange, onRefresh, onContinue }: Props) {
   const [threshold, setThreshold] = useState(prescreen?.min_adjusted_price_cny != null && prescreen.min_adjusted_price_cny !== "" ? String(prescreen.min_adjusted_price_cny) : "");
   const [storeName, setStoreName] = useState(savedStoreName);
+  const [archiveProductIdType, setArchiveProductIdType] = useState<ArchiveProductIdType>(savedArchiveProductIdType);
   const [saving, setSaving] = useState(false);
   const thresholdActive = prescreen?.min_adjusted_price_cny != null && prescreen.min_adjusted_price_cny !== "";
   const filteredCount = Math.max(0, totalSkc - passedItems);
 
   useEffect(() => setStoreName(savedStoreName), [savedStoreName]);
+  useEffect(() => setArchiveProductIdType(savedArchiveProductIdType), [savedArchiveProductIdType]);
 
   const save = async () => {
     setSaving(true);
     try {
       const thresholdSaved = await onPrescreenChange(threshold.trim());
       if (!thresholdSaved) return false;
-      return onStoreNameChange(storeName.trim());
+      const storeSaved = await onStoreNameChange(storeName.trim());
+      if (!storeSaved) return false;
+      return onArchiveProductIdTypeChange(archiveProductIdType);
     } finally {
       setSaving(false);
     }
@@ -46,31 +52,33 @@ export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, 
       <div className="price-verification-current-batch">
         <span>本页采集</span>
         <strong>{totalSkc} 个 SKC</strong>
-        <small>{totalItems} 条 SKU 报价（每个 SKC 可含多个 SKU 规格）· 新采集覆盖旧数据，只保留最新一批</small>
+        <small>{totalItems} 条 SKU 报价 · 每个 SKC 可含多个 SKU 规格</small>
       </div>
       <div className="price-verification-prescreen-fields">
         <label className="price-verification-batch-switch">
           <span>初筛条件</span>
           <input type="number" min={0} step="0.01" value={threshold} placeholder="不填 = 不限制" disabled={isChecking || saving} onChange={(event) => setThreshold(event.target.value)} />
-          <small>调整后申报价（CNY）需 &gt; 该值</small>
+          <small>调整后申报价（CNY）需 ≥ 该值</small>
         </label>
-        <label className="price-verification-batch-switch price-verification-store-switch">
+        <label className="price-verification-batch-switch">
           <span>店铺（可选）</span>
           <input type="text" maxLength={120} value={storeName} placeholder="例如：美区一店" disabled={isChecking || saving} onChange={(event) => setStoreName(event.target.value)} />
           <small>本批次入库产品归属店铺</small>
         </label>
-      </div>
-      <div className="price-verification-prescreen-flow" aria-label="初筛流程状态">
-        <span><i>01</i><b>采集完成</b><small>{totalSkc} 个 SKC</small></span>
-        <em aria-hidden="true">→</em>
-        <span><i>02</i><b>{thresholdActive ? "应用价格门槛" : "保留全部数据"}</b><small>{thresholdActive ? `高于 ¥${prescreen?.min_adjusted_price_cny}` : "当前未设置门槛"}</small></span>
-        <em aria-hidden="true">→</em>
-        <span><i>03</i><b>等待批次审核</b><small>{passedItems} 个 SKC 待确认</small></span>
+        <label className="price-verification-batch-switch">
+          <span>入库商品标识</span>
+          <select value={archiveProductIdType} disabled={isChecking || saving} onChange={(event) => setArchiveProductIdType(event.target.value as ArchiveProductIdType)}>
+            <option value="SKC">SKC（推荐）</option>
+            <option value="SKU">SKU</option>
+            <option value="SPU">SPU</option>
+          </select>
+          <small>STEP 03 货源关联完成后，按该标识写入产品库</small>
+        </label>
       </div>
       <div className="price-verification-prescreen-result">
         <span>初筛结果</span>
         <strong>{passedItems} 个 SKC</strong>
-        <small>{thresholdActive ? `申报价 > ${prescreen?.min_adjusted_price_cny}；` : "未设置门槛；"}进入 STEP 02{filteredCount > 0 ? `，过滤 ${filteredCount} 个` : ""}</small>
+        <small>{thresholdActive ? `申报价 ≥ ${prescreen?.min_adjusted_price_cny}；` : "未设置门槛；"}进入 STEP 02{filteredCount > 0 ? `，过滤 ${filteredCount} 个` : ""}</small>
         <WorkflowActionBar label="数据初筛操作">
           <div className="price-verification-action-buttons">
             <button className="price-verification-text-action" onClick={onRefresh} disabled={isChecking}>{isChecking ? "正在刷新…" : "↻ 刷新"}</button>
