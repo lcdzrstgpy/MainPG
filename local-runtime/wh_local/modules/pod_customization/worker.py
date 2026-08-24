@@ -5,6 +5,7 @@ import inspect
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -99,6 +100,16 @@ class PodBillingRun:
         return outcome.status if outcome is not None else "planned"
 
 
+def _serial_batch_action(function):
+    @wraps(function)
+    def wrapped(self, *args, **kwargs):
+        with self._batch_action_lock:
+            self._require_open()
+            return function(self, *args, **kwargs)
+
+    return wrapped
+
+
 class PodBatchWorker:
     """Coordinates POD jobs without borrowing product-processing workers or gates."""
 
@@ -110,7 +121,7 @@ class PodBatchWorker:
         quality_gate: PatternQualityGate,
         *,
         title_runtime: Any | None = None,
-        coordinator_workers: int = 2,
+        coordinator_workers: int = 1,
     ) -> None:
         self.repository = repository
         self.assets = assets
@@ -121,6 +132,7 @@ class PodBatchWorker:
             text_inspector=quality_gate.text_inspector,
             duplicate_distance=max(1, quality_gate.duplicate_distance),
         )
+        self._batch_action_lock = threading.Lock()
         self._coordinator = ThreadPoolExecutor(
             max_workers=max(1, min(coordinator_workers, 4)),
             thread_name_prefix="pod-customization-batch",
@@ -154,8 +166,8 @@ class PodBatchWorker:
                 return existing
             future = self._coordinator.submit(self.process_batch, batch_id)
             self._futures[key] = future
-            future.add_done_callback(lambda _: self._forget(key))
-            return future
+        self._attach_forget_callback(key, future)
+        return future
 
     def submit_scene_optimization(
         self, batch_id: str, item_id: str, instruction: str, billing_run: PodBillingRun | None = None
@@ -168,8 +180,8 @@ class PodBatchWorker:
                 return existing
             future = self._coordinator.submit(self.optimize_scene, batch_id, item_id, instruction, billing_run)
             self._futures[key] = future
-            future.add_done_callback(lambda _: self._forget(key))
-            return future
+        self._attach_forget_callback(key, future)
+        return future
 
     def submit_item_regeneration(
         self, batch_id: str, item_id: str, creative_prompt: str, billing_run: PodBillingRun | None = None
@@ -182,8 +194,8 @@ class PodBatchWorker:
                 return existing
             future = self._coordinator.submit(self.regenerate_item, batch_id, item_id, creative_prompt, billing_run)
             self._futures[key] = future
-            future.add_done_callback(lambda _: self._forget(key))
-            return future
+        self._attach_forget_callback(key, future)
+        return future
 
     def submit_style_regeneration(
         self,
@@ -202,8 +214,8 @@ class PodBatchWorker:
                 self.regenerate_style, batch_id, style_index, creative_prompt, billing_run
             )
             self._futures[key] = future
-            future.add_done_callback(lambda _: self._forget(key))
-            return future
+        self._attach_forget_callback(key, future)
+        return future
 
     def submit_title_regeneration(
         self, batch_id: str, style_index: int, billing_run: PodBillingRun | None = None
@@ -216,10 +228,10 @@ class PodBatchWorker:
             existing = self._futures.get(key)
             if existing is not None and not existing.done():
                 return existing
-            future = self.title_runtime.submit(self.regenerate_title, batch_id, style_index, billing_run)
+            future = self._coordinator.submit(self.regenerate_title, batch_id, style_index, billing_run)
             self._futures[key] = future
-            future.add_done_callback(lambda _: self._forget(key))
-            return future
+        self._attach_forget_callback(key, future)
+        return future
 
     def submit_billing_action(self, action_id: str, function, *args) -> Future[Any]:
         self._require_open()
@@ -230,9 +242,10 @@ class PodBatchWorker:
                 return existing
             future = self._coordinator.submit(function, *args)
             self._futures[key] = future
-            future.add_done_callback(lambda _: self._forget(key))
-            return future
+        self._attach_forget_callback(key, future)
+        return future
 
+    @_serial_batch_action
     def process_batch(self, batch_id: str, billing_run: PodBillingRun | None = None) -> None:
         run = billing_run or self._billing_runs.get(batch_id)
         if run is None:
@@ -318,6 +331,7 @@ class PodBatchWorker:
             else:
                 self.repository.settle_batch_by_listing_readiness(batch_id, str(exc))
 
+    @_serial_batch_action
     def optimize_scene(
         self, batch_id: str, item_id: str, instruction: str, billing_run: PodBillingRun | None = None
     ) -> None:
@@ -370,6 +384,7 @@ class PodBatchWorker:
                     self.repository.set_batch_status(batch_id, "settlement_pending", str(exc))
             self._discard_billing_run(f"scene:{batch_id}:{item_id}", run)
 
+    @_serial_batch_action
     def regenerate_item(
         self, batch_id: str, item_id: str, creative_prompt: str, billing_run: PodBillingRun | None = None
     ) -> None:
@@ -452,6 +467,7 @@ class PodBatchWorker:
                     self.repository.set_batch_status(batch_id, "settlement_pending", str(exc))
             self._discard_billing_run(f"item:{batch_id}:{item_id}", run)
 
+    @_serial_batch_action
     def regenerate_style(
         self,
         batch_id: str,
@@ -549,6 +565,7 @@ class PodBatchWorker:
                     self.repository.set_batch_status(batch_id, "settlement_pending", str(exc))
             self._discard_billing_run(f"style:{batch_id}:{style_index}", run)
 
+    @_serial_batch_action
     def regenerate_title(
         self, batch_id: str, style_index: int, billing_run: PodBillingRun | None = None
     ) -> None:
@@ -1231,9 +1248,13 @@ class PodBatchWorker:
             height=stored.height,
         )
 
-    def _forget(self, key: tuple[str, str]) -> None:
+    def _forget(self, key: tuple[str, str], completed: Future[Any]) -> None:
         with self._futures_lock:
-            self._futures.pop(key, None)
+            if self._futures.get(key) is completed:
+                self._futures.pop(key, None)
+
+    def _attach_forget_callback(self, key: tuple[str, str], future: Future[Any]) -> None:
+        future.add_done_callback(lambda completed: self._forget(key, completed))
 
     def _discard_billing_run(self, key: str, run: PodBillingRun) -> None:
         with self._futures_lock:

@@ -73,6 +73,7 @@ class PodCustomizationService:
                 ai_runtime,
                 self.quality_gate,
                 title_runtime=title_runtime,
+                coordinator_workers=getattr(ai_runtime, "batch_workers", 1),
             )
             if start_workers
             else None

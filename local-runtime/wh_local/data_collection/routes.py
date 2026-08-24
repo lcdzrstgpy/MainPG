@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -811,7 +813,7 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
         "package_info_text": package_info_text,
         # 插件只回传 variant_combinations；这里把它换算成草稿池/导出使用的
         # 标准 SKU 记录（source_variant_records），保证草稿池能看到完整规格。
-        "source_variant_records": _plugin_variant_records(product),
+        "source_variant_records": _plugin_variant_records(product, fallback_image_url=image_url),
     }
 
 
@@ -998,7 +1000,9 @@ def _plugin_combo_attributes(combo: Mapping[str, Any]) -> dict[str, str]:
     return {}
 
 
-def _plugin_variant_records(product: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _plugin_variant_records(
+    product: Mapping[str, Any], *, fallback_image_url: str = ""
+) -> list[dict[str, Any]]:
     """Derive draft-pool SKU records from plugin ``variant_combinations``.
 
     1688 采集插件在页面上只产出 ``variant_combinations``（每组含属性组合、
@@ -1013,12 +1017,13 @@ def _plugin_variant_records(product: Mapping[str, Any]) -> list[dict[str, Any]]:
     笛卡尔积重建记录，并用组合里的价格/库存/货号回填。
     """
     product_id = str(product.get("product_id") or product.get("source_product_id") or "").strip()
+    platform = str(product.get("platform") or product.get("source_platform") or "").strip()
     combos = product.get("variant_combinations") or product.get("raw_variant_combinations") or []
     combos = [item for item in combos if isinstance(item, Mapping)] if isinstance(combos, (list, tuple)) else []
     groups = product.get("variant_groups") or product.get("raw_variant_groups") or []
     groups = [item for item in groups if isinstance(item, Mapping)] if isinstance(groups, (list, tuple)) else []
 
-    combo_records = _plugin_records_from_combos(combos, product_id)
+    combo_records = _plugin_records_from_combos(combos, product_id, platform=platform)
     group_records = _plugin_records_from_groups(groups, combos, product_id)
     if not group_records:
         return combo_records
@@ -1043,32 +1048,54 @@ def _plugin_variant_records(product: Mapping[str, Any]) -> list[dict[str, Any]]:
 def _plugin_records_from_combos(
     combos: list[Mapping[str, Any]],
     product_id: str,
+    *,
+    platform: str = "",
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
+    used_sku_ids: dict[str, str] = {}
     for index, combo in enumerate(combos):
-        sku_id = str(
+        if not isinstance(combo, Mapping):
+            continue
+        source_sku_id = str(
             combo.get("source_sku_id")
             or combo.get("sourceSkuId")
             or combo.get("sku_id")
             or combo.get("sku")
             or ""
         ).strip()
-        if not sku_id:
-            sku_id = f"{product_id or 'plugin'}:variant-{index}"
         attributes = _plugin_combo_attributes(combo)
-        price_cny = _plugin_decimal(combo.get("price"))
-        dedupe_key = f"{sku_id}|{price_cny}"
+        attribute_identity = json.dumps(attributes, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        sku_id = source_sku_id or f"{product_id or 'plugin'}:variant-{index}"
+        if sku_id in used_sku_ids and used_sku_ids[sku_id] != attribute_identity:
+            suffix = hashlib.sha1(attribute_identity.encode("utf-8")).hexdigest()[:10]
+            sku_id = f"{sku_id}:{suffix}"
+        used_sku_ids[sku_id] = attribute_identity
+        source_price = _plugin_decimal(combo.get("price"))
+        source_currency = _plugin_currency(
+            combo.get("currency") or product.get("currency"),
+            combo.get("price"),
+            platform,
+        )
+        price_cny = source_price if source_currency == "CNY" else None
+        dedupe_key = f"{source_sku_id}|{attribute_identity}|{source_price}|{source_currency}"
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
         records.append(
             {
                 "sku_id": sku_id,
+                "source_sku_id": source_sku_id or None,
                 "attributes": attributes,
                 "spec_text": str(combo.get("spec_text") or combo.get("properties_name") or "") or None,
-                "image_url": str(combo.get("image_url") or combo.get("imageUrl") or "") or None,
+                # 尺码、数量等纯文字规格没有单独图片时，SKU 仍代表同一个商品，
+                # 因此复用已验证的商品主图。若页面提供了颜色/图案专属图，始终优先它。
+                "image_url": str(
+                    combo.get("image_url") or combo.get("imageUrl") or fallback_image_url or ""
+                ) or None,
                 "price_cny": price_cny,
+                "source_price": source_price,
+                "source_currency": source_currency,
                 "quantity": _plugin_int(combo.get("stock") or combo.get("quantity") or combo.get("inventory")),
                 "weight_text": str(combo.get("weight_text") or "").strip() or None,
                 "weight_kg": combo.get("weight_kg"),
@@ -1191,11 +1218,34 @@ def _plugin_best_combo_for_attributes(
     return best if best_score > 0 else None
 
 
+def _plugin_currency(value: object, price: object, platform: str) -> str:
+    normalized = str(value or "").strip().upper().replace(" ", "")
+    aliases = {"RMB": "CNY", "￥": "CNY", "¥": "CNY", "US$": "USD", "$": "USD", "CA$": "CAD", "C$": "CAD"}
+    if normalized in aliases:
+        return aliases[normalized]
+    if normalized in {"CNY", "USD", "CAD", "EUR", "GBP", "AUD"}:
+        return normalized
+    raw_price = str(price or "").strip().upper()
+    if raw_price.startswith(("CA$", "C$", "CAD")):
+        return "CAD"
+    if raw_price.startswith(("US$", "USD", "$")):
+        return "USD"
+    if raw_price.startswith(("¥", "￥", "CNY", "RMB")):
+        return "CNY"
+    return "USD" if platform.lower() == "temu" else "CNY"
+
+
 def _plugin_decimal(value: object) -> float | None:
     """Parse a plugin money value (may include currency or a price range)."""
     if value is None:
         return None
-    text = str(value).strip().lstrip("¥￥$€ \t\n")
+    text = str(value).strip()
+    upper = text.upper()
+    for prefix in ("CA$", "US$", "C$", "CAD", "USD", "CNY", "RMB", "EUR", "GBP", "AUD"):
+        if upper.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    text = text.lstrip("¥￥$€£ \t\n")
     # 区间价如 "1.5-3.5" 取最小值，与 OneBound 详情价语义一致。
     for separator in ("-", "~", "至", "—"):
         if separator in text:

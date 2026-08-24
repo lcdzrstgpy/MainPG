@@ -9,3 +9,10 @@ test("POD page does not render the pending billing authorization banner", () => 
   assert.doesNotMatch(source, /个任务需要重新授权/);
   assert.doesNotMatch(source, />继续任务</);
 });
+
+test("current template card follows the selected template and current draft", () => {
+  assert.match(source, /const summaryTemplate = selectedTemplate;/);
+  assert.match(source, /const summaryFields = businessFieldsForApi\(businessFields\);/);
+  assert.doesNotMatch(source, /const summaryTemplate = activeBatch/);
+  assert.doesNotMatch(source, /const summaryFields = activeBatch/);
+});

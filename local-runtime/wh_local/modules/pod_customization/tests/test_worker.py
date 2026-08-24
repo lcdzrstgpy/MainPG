@@ -6,6 +6,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image, ImageDraw
@@ -504,6 +505,160 @@ def test_worker_shutdown_cancels_queue_without_waiting_for_running_provider_work
     with pytest.raises(RuntimeError, match="shutting down"):
         service.worker.submit("never-started")
     blocker.set()
+    runtime.close()
+
+
+def test_worker_runs_only_one_batch_level_action_at_a_time(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, BillingCoordinator())
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    release_second = threading.Event()
+
+    def first_action() -> None:
+        first_started.set()
+        release_first.wait(timeout=2)
+
+    def second_action() -> None:
+        second_started.set()
+        release_second.wait(timeout=2)
+
+    first = service.worker.submit_billing_action("first-batch", first_action)
+    assert first_started.wait(timeout=1)
+    second = service.worker.submit_billing_action("second-batch", second_action)
+    started_while_first_was_running = False
+    try:
+        started_while_first_was_running = second_started.wait(timeout=0.1)
+    finally:
+        release_first.set()
+        first.result(timeout=1)
+        second_started.wait(timeout=1)
+        release_second.set()
+        second.result(timeout=1)
+        service.close()
+        runtime.close()
+
+    assert started_while_first_was_running is False
+    assert second_started.is_set()
+
+
+def test_direct_batch_execution_uses_the_same_serial_gate(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, BillingCoordinator())
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+
+    def process_authorized(batch_id: str, _run) -> None:
+        if batch_id == "first-batch":
+            first_started.set()
+            release_first.wait(timeout=2)
+        else:
+            second_started.set()
+
+    service.worker._process_batch_authorized = process_authorized
+    first_run = SimpleNamespace(action_key="first-run", settle=lambda: None)
+    second_run = SimpleNamespace(action_key="second-run", settle=lambda: None)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(service.worker.process_batch, "first-batch", first_run)
+        assert first_started.wait(timeout=1)
+        second = executor.submit(service.worker.process_batch, "second-batch", second_run)
+        started_while_first_was_running = second_started.wait(timeout=0.1)
+        release_first.set()
+        first.result(timeout=1)
+        second.result(timeout=1)
+
+    service.close()
+    runtime.close()
+    assert started_while_first_was_running is False
+    assert second_started.is_set()
+
+
+def test_manual_title_retry_queues_on_batch_coordinator(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, BillingCoordinator())
+    retry_started = threading.Event()
+    release_retry = threading.Event()
+
+    class RejectingTitleRuntime:
+        def submit(self, *_args, **_kwargs):
+            raise AssertionError("manual title retry must not occupy the internal title pool while queued")
+
+    def regenerate_title(*_args) -> None:
+        retry_started.set()
+        release_retry.wait(timeout=2)
+
+    service.worker.title_runtime = RejectingTitleRuntime()
+    service.worker.regenerate_title = regenerate_title
+    future = service.worker.submit_title_regeneration("batch-1", 1)
+    assert retry_started.wait(timeout=1)
+    release_retry.set()
+    future.result(timeout=1)
+    service.close()
+    runtime.close()
+
+
+def test_completed_future_callback_is_registered_outside_the_future_lock(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, BillingCoordinator())
+    key = ("fast-action", "batch-1")
+    completed: Future[None] = Future()
+    completed.set_result(None)
+    with service.worker._futures_lock:
+        service.worker._futures[key] = completed
+
+    service.worker._attach_forget_callback(key, completed)
+
+    assert key not in service.worker._futures
+    service.close()
+    runtime.close()
+
+
+def test_stale_future_callback_does_not_forget_its_replacement(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, BillingCoordinator())
+    key = ("same-action", "batch-1")
+    stale: Future[None] = Future()
+    replacement: Future[None] = Future()
+    with service.worker._futures_lock:
+        service.worker._futures[key] = replacement
+
+    service.worker._forget(key, stale)
+
+    assert service.worker._futures[key] is replacement
+    replacement.cancel()
+    service.close()
+    runtime.close()
+
+
+def test_direct_action_waiting_for_serial_gate_aborts_after_close(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, BillingCoordinator())
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+
+    def process_authorized(batch_id: str, _run) -> None:
+        if batch_id == "first-batch":
+            first_started.set()
+            release_first.wait(timeout=2)
+        else:
+            second_started.set()
+
+    service.worker._process_batch_authorized = process_authorized
+    run = SimpleNamespace(action_key="run", settle=lambda: None)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(service.worker.process_batch, "first-batch", run)
+        assert first_started.wait(timeout=1)
+        second = executor.submit(service.worker.process_batch, "second-batch", run)
+        service.worker.close()
+        release_first.set()
+        first.result(timeout=1)
+        with pytest.raises(RuntimeError, match="shutting down"):
+            second.result(timeout=1)
+
+    assert second_started.is_set() is False
     runtime.close()
 
 

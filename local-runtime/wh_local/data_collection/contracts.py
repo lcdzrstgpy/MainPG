@@ -171,10 +171,13 @@ class SourceVariantRecord(_ContractModel):
     """One source SKU/variant, independent from product-level imagery."""
 
     sku_id: str
+    source_sku_id: str | None = None
     attributes: Mapping[str, Any] = Field(default_factory=dict)
     spec_text: str | None = None
     image_url: str | None = None
     price_cny: Decimal | None = None
+    source_price: Decimal | None = None
+    source_currency: str | None = None
     min_order_quantity: int | None = None
     quantity: int | None = None
     sales: int | None = None
@@ -185,6 +188,14 @@ class SourceVariantRecord(_ContractModel):
         if not isinstance(value, str) or not value.strip():
             raise DailySelectionContractError("sku_id is required")
         return value.strip()
+
+    @field_validator("source_sku_id", "source_currency", mode="before")
+    @classmethod
+    def _optional_source_text(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
     @field_validator("attributes", mode="before")
     @classmethod
@@ -207,7 +218,7 @@ class SourceVariantRecord(_ContractModel):
     def _valid_image_url(cls, value: object) -> str | None:
         return None if value is None else _url(value, "image_url")
 
-    @field_validator("price_cny", mode="before")
+    @field_validator("price_cny", "source_price", mode="before")
     @classmethod
     def _decimal_price(cls, value: object) -> Decimal | None:
         return _decimal(value, "price_cny")

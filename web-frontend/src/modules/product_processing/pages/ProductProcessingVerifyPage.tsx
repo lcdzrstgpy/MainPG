@@ -3,6 +3,7 @@ import { useChangePoller } from '../../../shared/hooks/useChangePoller';
 import { SkuBatchManager } from '../components/SkuBatchManager';
 import { ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
+import { variantPresentation } from '../data/skuPresentation';
 import type {
   DraftSummary,
   DraftVariant,
@@ -840,8 +841,12 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                 </div>
                 {variants.length === 0 && <p className="verify-drawer-status">该草稿没有 SKU（单规格）。</p>}
                 {orderedVariants.map((variant, idx) => {
-                  const attrs = variant.attributes || {};
-                  const label = Object.values(attrs).join('/');
+                  const sourcePlatform = String(raw.platform || raw.source_platform || '').toLowerCase();
+                  const legacyTemuCurrency = sourcePlatform === 'temu'
+                    ? String(raw.currency || raw.price_currency || '')
+                    : '';
+                  const presentation = variantPresentation(variant, legacyTemuCurrency, target.image_url || raw.image_url || raw.main_image_url || raw.source_image_urls?.[0]);
+                  const label = presentation.label;
                   const skuId = String(variant.sku_id || variant.source_sku_id || label || idx);
                   const deleted = isDeleted(variant, skuId, label);
                   const value = edit.skuEdits[skuId] ?? edit.skuEdits[label] ?? variant.display_name ?? label;
@@ -869,11 +874,33 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                         <button onClick={toggleDelete}>{deleted ? '恢复' : '删除'}</button>
                       </header>
                       {!deleted ? (
-                        <div className="verify-variant-grid">
-                          <label><span>{label || '规格属性'}</span>
-                            <input value={value} onChange={(e) => changeValue(e.target.value)} />
-                          </label>
-                          <small>¥{variant.price_cny ?? '-'} · 起订 {variant.min_order_quantity ?? '-'}</small>
+                        <div className="verify-variant-layout">
+                          {presentation.imageUrl ? (
+                            <img
+                              className="verify-sku-image"
+                              src={presentation.imageUrl}
+                              alt={`${label || `SKU ${idx + 1}`} 规格图`}
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <div className="verify-sku-image-placeholder" aria-label="无规格图">无图</div>
+                          )}
+                          <div className="verify-variant-content">
+                            <div className="verify-variant-attributes">
+                              {presentation.attributes.map((attribute) => (
+                                <span className="verify-variant-attribute" key={`${attribute.name}-${attribute.value}`}>
+                                  <b>{attribute.name}</b>
+                                  <em>{attribute.value}</em>
+                                </span>
+                              ))}
+                            </div>
+                            <div className="verify-variant-grid">
+                              <label><span>组合名称</span>
+                                <input value={value} onChange={(e) => changeValue(e.target.value)} />
+                              </label>
+                              <small>{presentation.priceLabel} · 起订 {variant.min_order_quantity ?? '-'}</small>
+                            </div>
+                          </div>
                         </div>
                       ) : (<p className="verify-sku-note">该 SKU 不会进入下次处理。</p>)}
                     </section>
