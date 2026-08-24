@@ -817,7 +817,6 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-<<<<<<< HEAD
 _PLUGIN_WEIGHT_VALUE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(g|克|kg|千克|公斤)?", re.IGNORECASE
 )

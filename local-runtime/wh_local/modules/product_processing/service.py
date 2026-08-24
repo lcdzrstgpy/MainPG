@@ -1376,6 +1376,70 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     def retry_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
         return self.sync_draft_source_images(draft_id, workspace_id)
 
+    def _generation_reference_values(
+        self,
+        draft_id: int,
+        remote_values: list[str],
+        workspace_id: str,
+    ) -> tuple[list[str], int]:
+        """Prefer ready managed source files while retaining remote fallbacks.
+
+        Collection already materializes source images under the product-processing
+        storage root. Reusing those bytes avoids a second network trip immediately
+        before image generation. Every remote value is kept after the local
+        candidates so server-managed providers (which require public URLs) and
+        missing/corrupt local files still have a safe fallback.
+        """
+
+        requested = list(
+            dict.fromkeys(
+                str(value or "").strip()
+                for value in remote_values
+                if str(value or "").strip()
+            )
+        )
+        if not requested:
+            return [], 0
+        try:
+            source_images = self.repository.list_source_images(
+                product_draft_id=int(draft_id),
+                workspace_id=workspace_id,
+            )
+        except Exception:
+            # The source library is an optimization, not a prerequisite for the
+            # existing remote-reference path.
+            return requested, 0
+
+        ready_by_url: dict[str, list[str]] = {}
+        all_ready_paths: list[str] = []
+        for image in source_images:
+            if str(image.get("sync_status") or "") != "ready":
+                continue
+            raw_path = str(image.get("local_path") or "").strip()
+            if not raw_path:
+                continue
+            try:
+                managed_path = str(self.assets.require_managed_file(raw_path))
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+            if managed_path not in all_ready_paths:
+                all_ready_paths.append(managed_path)
+            source_url = str(image.get("url") or "").strip()
+            if source_url:
+                ready_by_url.setdefault(source_url, []).append(managed_path)
+
+        local_candidates: list[str] = []
+        for value in requested:
+            for path in ready_by_url.get(value, []):
+                if path not in local_candidates:
+                    local_candidates.append(path)
+        # A failed/corrupt primary cache entry can fall through to another ready
+        # image belonging to the same product before any remote download is tried.
+        for path in all_ready_paths:
+            if path not in local_candidates:
+                local_candidates.append(path)
+        return [*local_candidates, *requested], len(local_candidates)
+
     def _seed_draft_source_images(self, draft: dict[str, Any], raw: dict[str, Any]) -> None:
         source_urls = [self._text(draft.get("image_url"))]
         source_urls.extend(self._url_list(raw.get("source_image_urls")))
@@ -4092,10 +4156,26 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 ]
             )
         )
+        source_reference_values, source_local_reference_count = self._generation_reference_values(
+            int(draft["id"]),
+            source_image_urls,
+            workspace_id,
+        )
+        detail_reference_values, detail_local_reference_count = self._generation_reference_values(
+            int(draft["id"]),
+            detail_reference_urls,
+            workspace_id,
+        )
         source_attributes = self._source_attributes_text(raw)
 
         ai_notes: list[str] = []
         provider_attempts: dict[str, int] = {}
+        if source_local_reference_count:
+            ai_notes.append(f"image_references:local-cache:{source_local_reference_count}")
+        elif source_image_urls:
+            ai_notes.append("image_references:remote-fallback")
+        if detail_local_reference_count and detail_reference_values != source_reference_values:
+            ai_notes.append(f"detail_references:local-cache:{detail_local_reference_count}")
         provider_status_classes: dict[str, str] = {}
         optimized_title = title
         description = self._text(draft.get("description") or raw.get("description"))
@@ -4435,7 +4515,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     raw,
                     title,
                     category,
-                    source_image_urls,
+                    source_reference_values,
                     target_language,
                     target_site,
                     media_ai_notes,
@@ -4451,7 +4531,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     raw,
                     title,
                     category,
-                    detail_reference_urls,
+                    detail_reference_values,
                     target_language,
                     target_site,
                     media_ai_notes,
@@ -4672,7 +4752,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         raw,
                         title,
                         category,
-                        source_image_urls,
+                        source_reference_values,
                         target_language,
                         target_site,
                         media_ai_notes,
@@ -4689,7 +4769,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         raw,
                         title,
                         category,
-                        source_image_urls,
+                        source_reference_values,
                         target_language,
                         target_site,
                         media_ai_notes,
@@ -4708,7 +4788,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     raw,
                     title,
                     category,
-                    detail_reference_urls,
+                    detail_reference_values,
                     target_language,
                     target_site,
                     media_ai_notes,
@@ -4776,7 +4856,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     raw,
                     title,
                     category,
-                    source_image_urls,
+                    source_reference_values,
                     target_language,
                     target_site,
                     ai_notes,
@@ -4804,17 +4884,24 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 # generation failure into a misleading completed result, even when
                 # an older task payload contains force-import compatibility flags.
                 mode_label = "精品4K" if premium_mode else "普通智能生图"
+                image_failure_detail = self._latest_ai_failure_detail(ai_notes)
                 return {
                     **item,
                     "title": optimized_title,
                     "image_url": image_url,
-                    "status": "failed",
-                    "reason": "商品图片生成失败",
+                    "status": "attention_required",
+                    "reason": "商品图片待补充",
                     "result": {
                         "error_type": "image_grid_incomplete",
                         "failure_class": "technical_retryable",
+                        "partial_result": True,
+                        "pending_stage": "carousel_images",
                         "operator_hint": "图片未达质量标准，可重试生成；或直接入库后人工替换图片",
-                        "debug_hint": f"{mode_label}未生成4张可用轮播图；生成图未通过本地质量门；可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警",
+                        "debug_hint": (
+                            f"{mode_label}未生成4张可用轮播图；生成图未通过本地质量门；"
+                            "可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警"
+                            + (f"；底层原因：{image_failure_detail}" if image_failure_detail else "")
+                        ),
                         "retryable": True,
                         "rejected_image_paths": list(grid_output.rejected_image_paths),
                         "optimized_title": optimized_title,
@@ -4861,7 +4948,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         raw,
                         title,
                         category,
-                        detail_reference_urls,
+                        detail_reference_values,
                         target_language,
                         target_site,
                         ai_notes,
@@ -4879,17 +4966,23 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if detail_image_paths:
             ai_notes.append("detail_images:ai")
         if need_detail and not detail_image_paths:
+            detail_failure_detail = self._latest_ai_failure_detail(ai_notes)
             return {
                 **item,
                 "title": optimized_title,
                 "image_url": image_url,
-                "status": "failed",
-                "reason": "详情图生成失败",
+                "status": "attention_required",
+                "reason": "详情图待补充",
                 "result": {
                     "error_type": "detail_images_incomplete",
                     "failure_class": "technical_retryable",
+                    "partial_result": True,
+                    "pending_stage": "detail_images",
                     "operator_hint": "可重试生成详情图",
-                    "debug_hint": "详情图未生成可用结果；文本结果已保留；请重试图片分支或检查图片服务配置",
+                    "debug_hint": "详情图未生成可用结果；文本结果已保留；请重试图片分支或检查图片服务配置"
+                    + (
+                        f"；底层原因：{detail_failure_detail}" if detail_failure_detail else ""
+                    ),
                     "retryable": True,
                     "optimized_title": optimized_title,
                     "description": description,
@@ -5074,6 +5167,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """向 ai_notes 追加带真实原因的失败标记，便于操作员判断重试/换配置。"""
         if ai_notes is not None:
             ai_notes.append(f"{stage}:ai-failed: {reason}")
+
+    @staticmethod
+    def _latest_ai_failure_detail(ai_notes: list[str] | None) -> str:
+        marker = ":ai-failed:"
+        for note in reversed(ai_notes or []):
+            _stage, separator, detail = str(note).partition(marker)
+            if separator and detail.strip():
+                return detail.strip()
+        return ""
+
 
     @staticmethod
     def _note_media_unconfigured(ai_notes: list[str] | None, stage: str) -> None:

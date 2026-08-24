@@ -511,3 +511,43 @@ def test_database_init_recreates_missing_stage_receipt_table(tmp_path: Path) -> 
         assert "product_processing_stage_receipts" in inspect(reopened.engine).get_table_names()
     finally:
         reopened.dispose()
+
+
+def test_generation_references_prefer_all_ready_local_images_then_remote_fallback(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    draft = _draft(service, "cached source references")
+    main_url = "https://images.example.test/main.jpg"
+    fallback_url = "https://images.example.test/fallback.jpg"
+    service.repository.preserve_source_images(
+        task_id=None,
+        product_draft_id=draft["id"],
+        source_urls=[main_url],
+        detail_urls=[fallback_url],
+    )
+
+    paths_by_url: dict[str, str] = {}
+    for image in service.repository.claim_syncable_source_images(draft["id"], "local"):
+        path = service.assets.save_source_image(
+            f"cached:{image['url']}".encode(),
+            image["url"],
+            "image/jpeg",
+        )
+        assert service.repository.complete_source_image(
+            image["id"],
+            str(path),
+            image["_sync_claim_token"],
+            "local",
+        )
+        paths_by_url[image["url"]] = str(path)
+
+    values, local_count = service._generation_reference_values(
+        draft["id"],
+        [main_url],
+        "local",
+    )
+
+    assert local_count == 2
+    assert values[:2] == [paths_by_url[main_url], paths_by_url[fallback_url]]
+    assert values[2:] == [main_url]

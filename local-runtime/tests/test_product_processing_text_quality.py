@@ -1194,9 +1194,11 @@ def test_empty_detail_image_result_is_retryable_failure(monkeypatch) -> None:
 
     result = service._process_one({"id": 1}, _draft(), settings, False, task_id=12)
 
-    assert result["status"] == "failed"
+    assert result["status"] == "attention_required"
     assert result["result"]["error_type"] == "detail_images_incomplete"
     assert result["result"]["retryable"] is True
+    assert result["result"]["partial_result"] is True
+    assert result["result"]["pending_stage"] == "detail_images"
 
 
 def test_images_receipt_hash_changes_with_real_image_prompt_key() -> None:
@@ -1281,9 +1283,11 @@ def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(mon
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
-    assert result["status"] == "failed"
+    assert result["status"] == "attention_required"
     assert result["result"]["error_type"] == "image_grid_incomplete"
     assert result["result"]["failure_class"] == "technical_retryable"
+    assert result["result"]["partial_result"] is True
+    assert result["result"]["pending_stage"] == "carousel_images"
     assert result["result"]["retryable"] is True
     assert result["result"]["optimized_title"].startswith(
         "Insulated Stainless Steel Travel Mug"
@@ -1297,24 +1301,29 @@ def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(mon
 def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> None:
     service = _process_service(monkeypatch)
     service.repository = _ReceiptRepository()
-    monkeypatch.setattr(
-        service,
-        "_generate_grid_images",
-        lambda *args, **kwargs: GridImageOutput(
+    def fail_grid(*args, **_kwargs):
+        args[8].append(
+            "image_set:ai-failed: reference image download failed: DNS lookup failed"
+        )
+        return GridImageOutput(
             carousel_urls=(),
             attempt_count=1,
             provider_status_class="gateway_unavailable",
-        ),
-    )
+        )
+
+    monkeypatch.setattr(service, "_generate_grid_images", fail_grid)
 
     result = service._process_one(
         {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
     )
 
-    assert result["status"] == "failed"
-    assert result["reason"] == "商品图片生成失败"
+    assert result["status"] == "attention_required"
+    assert result["reason"] == "商品图片待补充"
     assert result["result"]["error_type"] == "image_grid_incomplete"
     assert "本地质量门" in result["result"]["debug_hint"]
+    assert (
+        "底层原因：reference image download failed: DNS lookup failed" in result["result"]["debug_hint"]
+    )
     assert "doubao_text" in service.repository.receipts
     assert service.repository.receipts["doubao_text"]["output"]["title"].startswith(
         "Insulated Stainless Steel Travel Mug"
