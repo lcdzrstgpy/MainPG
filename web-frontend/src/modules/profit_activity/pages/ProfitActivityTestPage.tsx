@@ -144,9 +144,9 @@ const builtinSiteSettingProfiles: SiteSettingProfile[] = [
     fields: [
       { key: "us_first_mile_rate", label: "当前站点头程每kg" },
       { key: "us_first_mile_fixed", label: "当前站点头程固定费" },
-      { key: "domestic_fee", label: "国内操作费" },
-      { key: "shipping_subsidy", label: "运费补贴" },
-      { key: "refund_rate", label: "退款率 %", transform: "percent" },
+      { key: "us_domestic_fee", label: "国内操作费" },
+      { key: "us_shipping_subsidy", label: "运费补贴" },
+      { key: "us_refund_rate", label: "退款率 %", transform: "percent" },
     ],
   },
   {
@@ -156,9 +156,9 @@ const builtinSiteSettingProfiles: SiteSettingProfile[] = [
     fields: [
       { key: "co_first_mile_rate", label: "当前站点头程每kg" },
       { key: "co_first_mile_fixed", label: "当前站点头程固定费" },
-      { key: "domestic_fee", label: "国内操作费" },
-      { key: "shipping_subsidy", label: "运费补贴" },
-      { key: "refund_rate", label: "退款率 %", transform: "percent" },
+      { key: "co_domestic_fee", label: "国内操作费" },
+      { key: "co_shipping_subsidy", label: "运费补贴" },
+      { key: "co_refund_rate", label: "退款率 %", transform: "percent" },
     ],
   },
   {
@@ -201,22 +201,28 @@ function toSiteSettingProfile(data: Record<string, unknown>): SiteSettingProfile
   };
 }
 
-// 站点费率首次配置和“恢复默认设置”统一从 0 开始，避免未设置费率时误计成本。
+// 内置站点均有系统默认值；用户保存后才形成当前站点的覆盖。
 const DEFAULT_PROFIT_SETTINGS: Record<string, number> = {
-  domestic_fee: 0,
-  shipping_subsidy: 0,
-  refund_rate: 0,
-  us_first_mile_rate: 0,
-  us_first_mile_fixed: 0,
-  co_first_mile_rate: 0,
+  domestic_fee: 2.5,
+  shipping_subsidy: 21,
+  refund_rate: 0.05,
+  us_first_mile_rate: 72,
+  us_first_mile_fixed: 5,
+  us_domestic_fee: 2.5,
+  us_shipping_subsidy: 21,
+  us_refund_rate: 0.05,
+  co_first_mile_rate: 80,
   co_first_mile_fixed: 0,
-  ec_domestic_fee: 0,
-  ec_shipping_subsidy: 0,
-  ec_shipping_subsidy_price_limit: 0,
-  ec_first_mile_rate: 0,
+  co_domestic_fee: 2.5,
+  co_shipping_subsidy: 21,
+  co_refund_rate: 0.05,
+  ec_domestic_fee: 2.5,
+  ec_shipping_subsidy: 15,
+  ec_shipping_subsidy_price_limit: 120,
+  ec_first_mile_rate: 108,
   ec_first_mile_fixed: 0,
-  ec_end_fee: 0,
-  ec_refund_rate: 0,
+  ec_end_fee: 27,
+  ec_refund_rate: 0.05,
   activity_min_net_profit: 0,
   activity_profit_rate_threshold: 0,
 };
