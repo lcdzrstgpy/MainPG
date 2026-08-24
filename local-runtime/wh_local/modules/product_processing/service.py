@@ -3180,6 +3180,27 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "operator_hint": str(result.get("operator_hint") or "")[:2000],
             "debug_hint": str(result.get("debug_hint") or "")[:2000],
             "ai_notes": [str(note) for note in (result.get("ai_notes") or [])][-12:],
+            # 生成/质量门诊断详情：提供方尝试次数与状态、各阶段耗时、被拒原图路径，
+            # 服务器后台据此定位失败根因（如生图不足、被质量门拒收、某阶段超时）。
+            "provider_attempts": {
+                str(key): int(value)
+                for key, value in (result.get("provider_attempts") or {}).items()
+                if isinstance(value, (int, float))
+            },
+            "provider_status_classes": {
+                str(key): str(value)
+                for key, value in (result.get("provider_status_classes") or {}).items()
+            },
+            "stage_timings_ms": {
+                str(key): int(value)
+                for key, value in (result.get("stage_timings_ms") or {}).items()
+                if isinstance(value, (int, float))
+            },
+            "rejected_image_paths": [
+                str(path)
+                for path in (result.get("rejected_image_paths") or [])
+                if isinstance(path, (str, int))
+            ][:30],
         }
 
     def _report_failure_log(self, token: str, payload: dict[str, Any]) -> None:

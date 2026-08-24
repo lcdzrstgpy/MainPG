@@ -1434,12 +1434,16 @@ class ProductImageProcessor:
             message = _provider_message(payload)
             message_lower = message.lower()
             if status_value in {"2", "success", "succeeded", "finish", "finished", "completed", "done"}:
-                raise MediaProcessingError(f"provider image task succeeded without image url: {message}")
+                raise MediaProcessingError(
+                    f"provider image task succeeded without image url: status={status_value} code={code} {message}"
+                )
             if status_value == "5" and ("成功" in message or "success" in message_lower):
                 last_message = message or "status=5"
                 continue
             if status_value in {"3", "4", "5", "fail", "failed", "error", "cancelled", "canceled"}:
-                raise MediaProcessingError(f"provider image task failed: {message}")
+                raise MediaProcessingError(
+                    f"provider image task failed: status={status_value} code={code} {message}"
+                )
             last_message = message or f"status={status_value or 'processing'}"
         raise MediaProcessingError(f"provider image task timed out: {last_message}")
 

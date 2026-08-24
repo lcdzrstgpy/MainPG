@@ -108,14 +108,27 @@ if ($forbiddenFiles) {
 
 # Media publishing: precheck finalization exports final images as public COS
 # URLs. Bundle the controlled cos.local.json next to the exe so installed users
-# can publish final images without manual setup; other local credentials
-# (onebound/.env/sqlite) stay forbidden by the rule above.
+# can publish final images without manual setup; collection credentials
+# (onebound.local.json) are bundled the same way. The forbidden-names check
+# above only guards the pre-copy dist state so stale credentials from previous
+# builds never leak in silently; .env / databases stay forbidden entirely.
 $cosSource = Join-Path $PSScriptRoot "wh_local\modules\product_processing\cos.local.json"
 if (Test-Path -LiteralPath $cosSource) {
     Copy-Item -LiteralPath $cosSource -Destination $dist -ErrorAction Stop
     Write-Host "[build] bundled cos.local.json (media publishing)"
 } else {
     Write-Host "[build] WARNING: cos.local.json missing - preview export cannot publish images"
+}
+
+# OneBound collection credentials: daily-selection / 1688 collection needs the
+# project-local API key. Missing file still installs (feature degrades) but is
+# flagged loudly so release builds never silently ship without it.
+$oneboundSource = Join-Path $PSScriptRoot "wh_local\onebound.local.json"
+if (Test-Path -LiteralPath $oneboundSource) {
+    Copy-Item -LiteralPath $oneboundSource -Destination $dist -ErrorAction Stop
+    Write-Host "[build] bundled onebound.local.json (collection credentials)"
+} else {
+    Write-Host "[build] WARNING: onebound.local.json missing - installed users cannot collect 1688 data"
 }
 
 # 5. Pack a portable zip
