@@ -8,6 +8,7 @@ import {
   canRegeneratePodStyleTitle,
   isActiveBatchStatus,
   isPodBatchCount,
+  listingFieldsForApi,
   podBatchStatusLabel,
 } from "./podCustomizationModel.ts";
 
@@ -41,6 +42,32 @@ test("business list fields are normalized at the API boundary", () => {
   });
   assert.deepEqual(payload.core_selling_points, ["轻量", "防漏"]);
   assert.deepEqual(payload.style_keywords, ["复古", "粗线条"]);
+});
+
+test("listing fields accept a Chinese Dianxiaomi category without code prefixes", () => {
+  const result = listingFieldsForApi({
+    title_mode: "long",
+    declared_price: "18.5",
+    suggested_price_usd: "29.99",
+    length_cm: "30",
+    width_cm: "20",
+    height_cm: "10",
+    weight_g: "450",
+    category_name: " 家居收纳 > 洗衣篮 ",
+  });
+
+  assert.deepEqual(result, {
+    value: {
+      title_mode: "long",
+      declared_price: 18.5,
+      suggested_price_usd: 29.99,
+      length_cm: 30,
+      width_cm: 20,
+      height_cm: 10,
+      weight_g: 450,
+      category_name: "家居收纳 > 洗衣篮",
+    },
+  });
 });
 
 test("successful POD results do not expose retry actions", () => {

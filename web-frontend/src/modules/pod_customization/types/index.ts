@@ -63,9 +63,7 @@ export type PodListingFieldsDraft = {
   width_cm: string;
   height_cm: string;
   weight_g: string;
-  category_id: string;
-  product_code_prefix: string;
-  sku_prefix: string;
+  category_name: string;
 };
 
 export type PodListingFields = {
@@ -76,9 +74,7 @@ export type PodListingFields = {
   width_cm: number;
   height_cm: number;
   weight_g: number;
-  category_id: string;
-  product_code_prefix: string;
-  sku_prefix: string;
+  category_name: string;
 };
 
 export type PodDianxiaomiExportStatus = {

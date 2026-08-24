@@ -241,18 +241,16 @@ def _build_row(
     selected_title = (
         safe_english_title if listing_fields.get("title_mode") == "short" else safe_title
     )
-    category = business_fields["product_category"]
+    category = listing_fields.get("category_name") or business_fields["product_category"]
     row: list[Any] = ["" for _ in DXM_COLUMNS]
     values = {
         0: selected_title,
         1: selected_title,
         2: description,
-        3: f'{listing_fields["product_code_prefix"]}-{suffix}',
         4: "Style",
         5: f"Style {suffix}",
         8: images["hero"],
         9: listing_fields["declared_price"],
-        10: f'{listing_fields["sku_prefix"]}-{suffix}',
         11: listing_fields["length_cm"],
         12: listing_fields["width_cm"],
         13: listing_fields["height_cm"],
@@ -263,7 +261,6 @@ def _build_row(
         26: category,
         27: category,
         28: category,
-        29: listing_fields["category_id"],
         30: "单品",
         31: 1,
         32: "件",

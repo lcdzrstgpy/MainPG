@@ -71,9 +71,7 @@ const LISTING_FIELDS: Array<{
   { key: "width_cm", label: "宽（cm）", placeholder: "例如：20", inputMode: "decimal" },
   { key: "height_cm", label: "高（cm）", placeholder: "例如：7.5", inputMode: "decimal" },
   { key: "weight_g", label: "重量（g）", placeholder: "例如：840", inputMode: "decimal" },
-  { key: "category_id", label: "店小秘类目 ID", placeholder: "仅数字", inputMode: "numeric" },
-  { key: "product_code_prefix", label: "商品编码前缀", placeholder: "例如：POD-US" },
-  { key: "sku_prefix", label: "SKU 前缀", placeholder: "例如：TUMBLER" },
+  { key: "category_name", label: "店小秘类目", placeholder: "例如：家居收纳 > 洗衣篮" },
 ];
 
 function toSummary(batch: PodBatch): PodBatchSummary {

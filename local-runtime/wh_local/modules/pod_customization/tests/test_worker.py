@@ -757,9 +757,7 @@ def _batch_request_for_test(template_id: str) -> BatchCreate:
             width_cm=20,
             height_cm=10,
             weight_g=450,
-            category_id="123456",
-            product_code_prefix="POD-PROD",
-            sku_prefix="POD-SKU",
+            category_name="家居收纳 > 包袋",
         ),
     )
 
@@ -800,9 +798,7 @@ def _create_batch(
                 width_cm=20,
                 height_cm=10,
                 weight_g=450,
-                category_id="123456",
-                product_code_prefix="POD-PROD",
-                sku_prefix="POD-SKU",
+                category_name="家居收纳 > 包袋",
             ),
             creative_prompt="bold but uncluttered",
         ),

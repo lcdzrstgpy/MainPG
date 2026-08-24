@@ -44,9 +44,7 @@ export const EMPTY_POD_LISTING_FIELDS: PodListingFieldsDraft = {
   width_cm: "",
   height_cm: "",
   weight_g: "",
-  category_id: "",
-  product_code_prefix: "",
-  sku_prefix: "",
+  category_name: "",
 };
 
 const ACTIVE_BATCH_STATUSES = new Set<PodBatchStatus>([
@@ -137,16 +135,8 @@ export function listingFieldsForApi(fields: PodListingFieldsDraft): PodListingFi
   const weightG = positiveListingNumber(fields.weight_g, "重量");
   if (typeof weightG !== "number") return weightG;
 
-  const categoryId = fields.category_id.trim();
-  if (!/^\d+$/.test(categoryId)) return { error: "店小秘类目 ID 只能填写数字。" };
-  const productCodePrefix = fields.product_code_prefix.trim();
-  if (!productCodePrefix) return { error: "商品编码前缀不能为空。" };
-  if (!/^[A-Za-z0-9_-]+$/.test(productCodePrefix)) return { error: "商品编码前缀只能包含字母、数字、下划线或连字符。" };
-  if (/[-_]$/.test(productCodePrefix)) return { error: "商品编码前缀不能以连字符或下划线结尾。" };
-  const skuPrefix = fields.sku_prefix.trim();
-  if (!skuPrefix) return { error: "SKU 前缀不能为空。" };
-  if (!/^[A-Za-z0-9_-]+$/.test(skuPrefix)) return { error: "SKU 前缀只能包含字母、数字、下划线或连字符。" };
-  if (/[-_]$/.test(skuPrefix)) return { error: "SKU 前缀不能以连字符或下划线结尾。" };
+  const categoryName = fields.category_name.trim();
+  if (!categoryName) return { error: "请填写店小秘类目。" };
 
   return {
     value: {
@@ -157,9 +147,7 @@ export function listingFieldsForApi(fields: PodListingFieldsDraft): PodListingFi
       width_cm: widthCm,
       height_cm: heightCm,
       weight_g: weightG,
-      category_id: categoryId,
-      product_code_prefix: productCodePrefix,
-      sku_prefix: skuPrefix,
+      category_name: categoryName,
     },
   };
 }

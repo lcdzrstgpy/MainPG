@@ -72,9 +72,7 @@ def _listing(*, title_mode: str = "long") -> ListingFields:
         width_cm=20,
         height_cm=10,
         weight_g=450,
-        category_id="123456",
-        product_code_prefix="POD-PROD",
-        sku_prefix="POD-SKU",
+        category_name="家居收纳 > 包袋",
         title_mode=title_mode,
     )
 
@@ -181,10 +179,10 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
     assert row[:6] == [
         "Coastal Tote", "Coastal Tote",
         'Carry calm everywhere.\n<img src="https://images.example.com/pod/1/hero.png" />\n<img src="https://images.example.com/pod/1/detail_a.png" />\n<img src="https://images.example.com/pod/1/detail_b.png" />\n<img src="https://images.example.com/pod/1/lifestyle.png" />',
-        "POD-PROD-001", "Style", "Style 001",
+        None, "Style", "Style 001",
     ]
     assert row[6:9] == [None, None, "https://images.example.com/pod/1/hero.png"]
-    assert row[9:15] == [18.5, "POD-SKU-001", 30, 20, 10, 450]
+    assert row[9:15] == [18.5, None, 30, 20, 10, 450]
     assert row[15:18] == [None, None, None]
     assert row[18] == "\n".join(
         [
@@ -195,7 +193,7 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
         ]
     )
     assert row[19:24] == ["https://images.example.com/pod/1/hero.png", None, None, None, 29.99]
-    assert row[24:30] == [None, None, "Home > Bags", "Home > Bags", "Home > Bags", "123456"]
+    assert row[24:30] == [None, None, "家居收纳 > 包袋", "家居收纳 > 包袋", "家居收纳 > 包袋", None]
     assert row[30:33] == ["单品", 1, "件"]
     assert row[33:] == [None] * 9
 
@@ -579,14 +577,12 @@ def test_short_title_export_rejects_noncompliant_copy_instead_of_using_it() -> N
             {"product_category": "tote bag"},
             {
                 "title_mode": "short",
-                "product_code_prefix": "POD",
-                "sku_prefix": "SKU",
                 "declared_price": 20,
                 "suggested_price_usd": 30,
                 "length_cm": 20,
                 "width_cm": 10,
                 "height_cm": 5,
                 "weight_g": 300,
-                "category_id": "123",
+                "category_name": "家居收纳 > 包袋",
             },
         )
