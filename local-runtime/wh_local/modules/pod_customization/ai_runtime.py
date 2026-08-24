@@ -45,7 +45,7 @@ class PodCustomizationAiRuntime(AiRuntime):
     def __init__(
         self,
         *,
-        batch_workers: int = 2,
+        batch_workers: int = 1,
         image_workers: int = 4,
         vision_workers: int = 2,
         text_workers: int = 1,
