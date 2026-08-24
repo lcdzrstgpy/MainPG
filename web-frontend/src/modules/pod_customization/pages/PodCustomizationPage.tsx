@@ -115,9 +115,9 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const requestGenerationRef = useRef(0);
 
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId);
-  const summaryTemplate = activeBatch?.template ?? selectedTemplate;
+  const summaryTemplate = selectedTemplate;
   const summaryTemplatePreview = usePodAssetUrl(summaryTemplate?.preview_url || summaryTemplate?.original_url);
-  const summaryFields = activeBatch?.business_fields ?? businessFieldsForApi(businessFields);
+  const summaryFields = businessFieldsForApi(businessFields);
   const selectedItem = activeBatch?.items.find((item) => item.id === selectedItemId);
   const builtInPrompt = useMemo(() => buildPromptV1(businessFields), [businessFields]);
   const resolvedPrompt = resolveCreativePrompt(businessFields, currentBatchEdit ?? "");
