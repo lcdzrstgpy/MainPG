@@ -1008,7 +1008,7 @@ class PodCustomizationService:
                 f"图片服务鉴权失败（HTTP {status_code}）：请检查 POD 图片服务的 API Key 与权限配置；未保存试跑结果。"
             ) from exc
         raise RuntimeError(
-            f"POD 四宫格生成失败：{safe_error_message(exc, fallback=exc.__class__.__name__)}"
+            f"POD 图片生成失败：{safe_error_message(exc, fallback=exc.__class__.__name__)}"
         ) from exc
 
     @staticmethod

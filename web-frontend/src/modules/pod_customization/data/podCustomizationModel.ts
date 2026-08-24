@@ -83,7 +83,7 @@ export function buildPromptV1(fields: PodBusinessFieldsDraft): string {
     `偏好配色：${valueOrFallback(fields.color_preferences)}`,
     `禁用元素：${valueOrFallback(fields.excluded_elements)}`,
     "硬性规则：",
-    "1. 每款正常只生成一次 2x2 四宫格；生成、拆分或去重失败时最多重试一次。",
+    "1. 每款正常只生成一次 2×2 成组图片；生成、拆分或去重失败时最多重试一次。",
     "2. 四格顺序固定为主图、细节图 A、细节图 B、场景图。",
     "3. 同一款四张图必须保持产品、结构、底色、图案内容、图案尺寸与位置完全一致。",
     "4. 不同款式必须使用不同图案、构图和创意配方，禁止复用上一款图案。",
@@ -293,7 +293,7 @@ export function defaultTemplateCalibration(): PodTemplateCalibration {
 export function podBatchStatusLabel(status: PodBatchStatus): string {
   return {
     queued: "等待启动",
-    generating_patterns: "生成四宫格",
+    generating_patterns: "生成图片",
     compositing: "拆分并发布",
     generating_titles: "生成标题",
     completed: "已完成",
@@ -307,7 +307,7 @@ export function podBatchStatusLabel(status: PodBatchStatus): string {
 export function podItemStatusLabel(status: string): string {
   return ({
     queued: "等待中",
-    generating_pattern: "生成四宫格",
+    generating_pattern: "生成图片",
     compositing: "拆分并发布",
     completed: "已完成",
     failed: "失败",

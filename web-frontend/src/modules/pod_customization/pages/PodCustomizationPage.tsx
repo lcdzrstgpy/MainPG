@@ -304,7 +304,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       setSelectedItemId(undefined);
       setBatches((current) => sortBatches([toSummary(created), ...current.filter((batch) => batch.id !== created.id)]));
       setCurrentBatchEdit(null);
-      setNotice(`已提交 ${requestedCount} 款创作；每款正常请求一次四宫格，失败时最多重试一次。`);
+      setNotice(`已提交 ${requestedCount} 款创作，失败时最多重试一次。`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -381,7 +381,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         ...current,
         items: current.items.map((item) => updated.results.find((result) => result.id === item.id) ?? item),
       } : current);
-      setNotice(`款式 #${styleIndex} 已重新提交四宫格生成。`);
+      setNotice(`款式 #${styleIndex} 已重新提交图片生成。`);
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -455,7 +455,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   return (
     <section className="pod-customization-page" aria-label="POD 定制">
       <header className="pod-page-header">
-        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION · DIRECT LISTING</span><h1>POD 定制</h1><p>一个产品模板贯穿整批；每款一次四宫格请求，自动拆分为四张商品图。</p></div></div>
+        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION · DIRECT LISTING</span><h1>POD 定制</h1></div></div>
         <div className="pod-page-header-actions">
           {batchRunning && <span className="pod-live-badge"><i />批次后台运行中</span>}
           <button type="button" onClick={() => setTemplateDrawerOpen(true)}><span className="iconfont icon-upload" />上传当前批次模板</button>
@@ -494,14 +494,13 @@ export function PodCustomizationPage({ isActive = true }: Props) {
               <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级：本批次创意编辑</b><small>内置 POD Direct Listing Prompt v1</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
               {advancedOpen && <div className="pod-advanced-prompt-editor"><textarea value={currentBatchEdit ?? builtInPrompt} onChange={(event) => setCurrentBatchEdit(event.target.value)} aria-label="本批次创意提示词" /><div><span>{currentBatchEdit === null ? "正在使用内置 v1" : "已为本批次自定义"}</span><button type="button" onClick={() => setCurrentBatchEdit(null)}>重置为 v1</button></div></div>}
             </div>
-            <div className="pod-volume-inline"><b>生成数量</b><small>每款 = 1 次四宫格请求</small></div>
+            <div className="pod-volume-inline"><b>生成数量</b></div>
             <div className="pod-count-options" role="radiogroup" aria-label="生成数量">
               {POD_BATCH_COUNTS.map((count) => <button key={count} type="button" role="radio" aria-checked={!customCountMode && batchCount === count} className={!customCountMode && batchCount === count ? "is-active" : ""} onClick={() => { setCustomCountMode(false); setBatchCount(count); }}><b>{count}</b><span>款</span></button>)}
               <button type="button" role="radio" aria-checked={customCountMode} className={customCountMode ? "is-active" : ""} onClick={() => { setCustomCountMode(true); setCustomCountInput(String(batchCount)); }}><b>自定义</b></button>
             </div>
             {customCountMode && <label className="pod-custom-count"><span>自定义数量</span><input type="number" min={1} max={200} step={1} value={customCountInput} aria-label="自定义生成数量" onChange={(event) => setCustomCountInput(event.target.value)} /><small>1–200 款</small></label>}
             <button type="button" className="pod-start-button" disabled={busyAction === "create-batch" || !selectedTemplate} onClick={() => void startBatch()}>{busyAction === "create-batch" ? <><span className="iconfont icon-loading" />正在提交</> : <><span className="iconfont icon-rocket" />开始生成 {customCountMode ? customCountInput || "自定义" : batchCount} 款</>}</button>
-            <p className="pod-direct-note"><span className="iconfont icon-thunderbolt" />四宫格生成后自动拆分并发布，无需中途操作。</p>
           </section>
           <button type="button" className={`pod-history-trigger ${historyOpen ? "is-open" : ""}`} onClick={() => setHistoryOpen((open) => !open)}>定制记录<span>{historyOpen ? "收起" : `${batches.length} 个批次`}</span></button>
           {historyOpen && <PodBatchHistory batches={batches} activeBatchId={activeBatch?.id} loading={loading || busyAction.startsWith("batch:")} onOpen={(batchId) => void openBatch(batchId)} onRefresh={() => void refreshHistory()} />}
