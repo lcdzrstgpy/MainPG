@@ -1,11 +1,12 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-export type ThemeId = "classic" | "sunset" | "violet" | "diamond" | "quirky" | "chinese";
+export type ThemeId = "classic" | "sunset" | "dessert" | "diamond" | "quirky" | "chinese";
 
 export const THEME_META: Record<ThemeId, { label: string; swatch: string }> = {
   classic: { label: "经典", swatch: "linear-gradient(135deg, #087bf5, #14c8c0)" },
   sunset: { label: "暖阳橙", swatch: "linear-gradient(135deg, #e67e22, #f39c12)" },
-  violet: { label: "深空紫", swatch: "linear-gradient(135deg, #7c3aed, #ec4899)" },
+  dessert: { label: "焦糖", swatch: "linear-gradient(135deg, #f3e3cf 0 34%, #b8754e 34% 67%, #bd7b82 67%)" },
+
   diamond: { label: "黑白钻石", swatch: "linear-gradient(135deg, #050505, #737985 55%, #ffffff)" },
   quirky: { label: "怪趣贴纸", swatch: "linear-gradient(135deg, #a3e635 0 34%, #fde047 34% 62%, #f43f5e 62% 78%, #7c3aed 78%)" },
   chinese: { label: "水墨青黛", swatch: "linear-gradient(135deg, #eee9dc 0 36%, #52716c 36% 72%, #a74736 72%)" },
@@ -16,7 +17,7 @@ const STORAGE_KEY = "mainpg.theme";
 function readTheme(): ThemeId {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved === "sunset" || saved === "violet" || saved === "diamond" || saved === "quirky" || saved === "chinese" || saved === "classic") return saved;
+    if (saved === "sunset" || saved === "dessert" || saved === "diamond" || saved === "quirky" || saved === "chinese" || saved === "classic") return saved;
   } catch { /* ignore */ }
   return "classic";
 }
