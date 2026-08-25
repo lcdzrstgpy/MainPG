@@ -10,6 +10,7 @@ type Props = {
   onConfirm: (batchId: string, skcIds: string[], maxCandidates: number) => Promise<void>;
   onDelete: (batchId: string, skcId: string) => Promise<void>;
   onDeleteSelected: (batchId: string, skcIds: string[]) => Promise<void>;
+  onCopySelectedSkcIds: (skcIds: string[]) => Promise<void>;
 };
 
 function money(value?: string | number | null) {
@@ -22,9 +23,10 @@ function priceRange(min?: string | number | null, max?: string | number | null) 
   return `¥ ${minText} ~ ${max}`;
 }
 
-export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, onDeleteSelected }: Props) {
+export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, onDeleteSelected, onCopySelectedSkcIds }: Props) {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [confirming, setConfirming] = useState(false);
+  const [copying, setCopying] = useState(false);
   const [deletingSkcId, setDeletingSkcId] = useState("");
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [expandedSkcIds, setExpandedSkcIds] = useState<Record<string, boolean>>({});
@@ -34,7 +36,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
     () => items.filter((item) => selected[item.skc_id]).map((item) => item.skc_id),
     [items, selected],
   );
-  const selectedCount = useMemo(() => Object.values(selected).filter(Boolean).length, [selected]);
+  const selectedCount = selectedSkcIds.length;
   const allSelected = items.length > 0 && items.every((item) => selected[item.skc_id]);
 
   const clamp = (value: number) => Math.min(100, Math.max(1, Number.isFinite(value) ? value : 5));
@@ -84,6 +86,16 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
     }
   };
 
+  const copySelectedSkcIds = async () => {
+    if (!selectedSkcIds.length || copying) return;
+    setCopying(true);
+    try {
+      await onCopySelectedSkcIds(selectedSkcIds);
+    } finally {
+      setCopying(false);
+    }
+  };
+
   return (
     <section className="price-verification-batch-review-panel">
       <div className="price-verification-panel-heading">
@@ -96,6 +108,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
         <div className="price-verification-action-summary"><span>已选商品</span><strong>{selectedCount} / {items.length} 个 SKC</strong></div>
         <div className="price-verification-action-buttons">
           <button className="price-verification-secondary-button" onClick={() => toggleAll(!allSelected)} disabled={!items.length || busy}>{allSelected ? "取消全选" : "全选"}</button>
+          <button className="price-verification-secondary-button" onClick={() => void copySelectedSkcIds()} disabled={!selectedSkcIds.length || busy || copying}>{copying ? "复制中…" : `复制 SKC ID${selectedCount ? `（${selectedCount}）` : ""}`}</button>
           <button className="price-verification-danger-button" onClick={() => {
             if (window.confirm(`确认删除选中的 ${selectedCount} 个 SKC？删除后不可恢复。`)) void removeSelected();
           }} disabled={!selectedSkcIds.length || busy || confirming || deletingSelected}>{deletingSelected ? "删除中…" : `删除选中${selectedCount ? `（${selectedCount}）` : ""}`}</button>

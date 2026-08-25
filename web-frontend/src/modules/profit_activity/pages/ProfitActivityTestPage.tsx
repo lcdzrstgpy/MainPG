@@ -13,6 +13,7 @@ type ProductRow = {
   workspace_name?: string;
   created_by?: string;
   created_by_username?: string;
+  store_name?: string;
   selling_price?: number;
   cost_price?: number;
   weight_kg?: number;
@@ -119,6 +120,7 @@ const emptyProduct: ProductForm = {
   source_url: "",
   source_urls: [],
 };
+const singleStoreOptionsId = "profit-single-store-options";
 
 type SiteSettingProfile = {
   id: Site;
@@ -258,6 +260,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [importFiles, setImportFiles] = useState<File[]>([]);
   const [importStoreName, setImportStoreName] = useState("");
+  const [storeOptions, setStoreOptions] = useState<string[]>([]);
   const [importPreviews, setImportPreviews] = useState<ImportPreview[]>([]);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importGuidelinesOpen, setImportGuidelinesOpen] = useState(false);
@@ -321,6 +324,11 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   const sourceLinks = [productForm.source_url, ...productForm.source_urls];
   const sourceLinksReady = sourceLinks.some((url) => url.trim());
   const formReadyForArchive = Boolean(formReadyForPreview && productImage && sourceLinksReady);
+  const storeOptionSites = useMemo(
+    () => [...new Set(siteProfiles.map((profile) => profile.id).filter(Boolean))],
+    [siteProfiles],
+  );
+  const singleStoreOptions = useMemo(() => storeOptions.filter((store) => store !== productForm.store_name.trim()), [storeOptions, productForm.store_name]);
 
   useEffect(() => {
     void loadSettings();
@@ -369,6 +377,26 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     if (!response.ok) throw new Error(toUserMessage(typeof data === "string" ? data : JSON.stringify(data)));
     return data as T;
   };
+
+  const loadStoreOptions = async () => {
+    try {
+      const productLists = await Promise.all(storeOptionSites.map(async (optionSite) => {
+        const params = new URLSearchParams({ site: optionSite, scope, skcs: "" });
+        const data = await request<{ products: ProductRow[] }>(`/api/profit-activity/products?${params}`);
+        return data.products || [];
+      }));
+      const stores = [...new Set(productLists.flat().map((item) => (item.store_name || "").trim()).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+      setStoreOptions(stores);
+    } catch {
+      setStoreOptions([]);
+    }
+  };
+
+  useEffect(() => {
+    void loadStoreOptions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase, token, scope, storeOptionSites]);
 
   const download = async (path: string, filename: string) => {
     const url = `${apiBase}${path}`;
@@ -1084,7 +1112,10 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
               <span className="profit-title-icon iconfont icon-calculator-fill" aria-hidden="true" />
               <h2>单品利润<span className="profit-help-tooltip" tabIndex={0} aria-label="单品利润填写说明"><span className="profit-help-tooltip-mark" aria-hidden="true">!</span><span className="profit-help-tooltip-content" role="tooltip">输入商品ID（支持 SKU、SKC、SPU）、售价、成本、重量后会自动预览利润。</span></span></h2>
             </div>
-            <label className="profit-single-store-field">店铺（可选）<input value={productForm.store_name} maxLength={120} onChange={(event) => setProductForm({ ...productForm, store_name: event.target.value })} placeholder="例如：美区一店" /></label>
+            <label className="profit-single-store-field">店铺（可选）<input value={productForm.store_name} maxLength={120} list={singleStoreOptionsId} onChange={(event) => setProductForm({ ...productForm, store_name: event.target.value })} placeholder="例如：美区一店" /></label>
+            <datalist id={singleStoreOptionsId}>
+              {singleStoreOptions.map((store) => <option key={store} value={store} />)}
+            </datalist>
             <SiteTabs site={site} profiles={siteProfiles} onSite={setSite} />
           </div>
           <div className="profit-form-grid">

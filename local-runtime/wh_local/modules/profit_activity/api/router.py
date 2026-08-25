@@ -220,15 +220,13 @@ def create_profit_activity_router(
                     (*source_urls, skc),
                 ).fetchall()
                 result["links"] = [dict(row) for row in rows]
-                # 仅非核价入库产品：核价链接表可能只匹配到部分货源组（例如手工
-                # 导入的链接未做核价），这里把未匹配的 source_groups 链接补全，
-                # 保证侧边栏打开即显示全部链接。核价入库产品保持原行为。
-                if str((product or {}).get("source_type") or "") != "price_verification":
-                    matched = {str(link.get("source_url") or "").strip() for link in result["links"]}
-                    for fallback_link in _product_source_fallbacks(product, source_urls):
-                        url = str(fallback_link.get("source_url") or "").strip()
-                        if url and url not in matched:
-                            result["links"].append(fallback_link)
+                # 核价入库产品也允许在产品库侧边栏追加手工货源；这些链接
+                # 不存在于核价关联表时，从产品自身 source_groups 补回展示。
+                matched = {str(link.get("source_url") or "").strip() for link in result["links"]}
+                for fallback_link in _product_source_fallbacks(product, source_urls):
+                    url = str(fallback_link.get("source_url") or "").strip()
+                    if url and url not in matched:
+                        result["links"].append(fallback_link)
             finally:
                 conn.close()
         except Exception:
@@ -621,7 +619,9 @@ def _enrich_product_source_images(products: list[dict[str, Any]], database_path:
                     groups_by_url[source_url] = group
             group.setdefault("image_paths", [])
             group["main_image_url"] = str(link.main_image_url or "").strip()
-        product["source_main_image_url"] = str(product_links[0].main_image_url or "").strip()
+        # Keep source_main_image_url as the original SKC/Temu main image for
+        # price-verification products. 1688 thumbnails are exposed through
+        # source_groups[].main_image_url instead.
 
 
 def _product_source_group_links(product: dict[str, Any]) -> list[dict[str, Any]]:
@@ -646,7 +646,7 @@ def _product_source_group_links(product: dict[str, Any]) -> list[dict[str, Any]]
             "offer_id": "",
             "source_url": url,
             "source_title": "货源链接",
-            "main_image_url": "",
+            "main_image_url": str(group.get("main_image_url") or "").strip(),
             "image_paths": images,
             "group": group_index,
             "price_cny": group.get("cost"),
@@ -686,7 +686,7 @@ def _product_source_fallbacks(product: dict[str, Any], source_urls: list[str]) -
             "offer_id": "",
             "source_url": url,
             "source_title": "导入货源链接",
-            "main_image_url": "",
+            "main_image_url": str(group.get("main_image_url") or "").strip(),
             "image_paths": images,
             "group": group_index,
             "price_cny": group.get("cost"),

@@ -7,6 +7,7 @@ import {
   listProfitActivitySites,
   listProfitActivityProducts,
   loadProductImage,
+  updateProfitActivityProduct,
   saveProfitActivityProductEdit,
 } from "../api/profitActivityApi";
 import type { ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
@@ -56,6 +57,31 @@ const defaultColumnWidths = productTableColumns.reduce<Record<ProductTableColumn
   acc[column.key] = column.width;
   return acc;
 }, {} as Record<ProductTableColumnKey, number>);
+const productColumnWidthsStorageKey = "profitActivityProducts.columnWidths.v1";
+
+function storedProductColumnWidths(): Record<ProductTableColumnKey, number> | null {
+  try {
+    const raw = window.localStorage.getItem(productColumnWidthsStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<Record<ProductTableColumnKey, unknown>>;
+    const widths = { ...defaultColumnWidths };
+    for (const column of productTableColumns) {
+      const value = Number(parsed[column.key]);
+      if (Number.isFinite(value)) widths[column.key] = Math.max(column.minWidth, value);
+    }
+    return widths;
+  } catch {
+    return null;
+  }
+}
+
+function saveProductColumnWidths(widths: Record<ProductTableColumnKey, number>) {
+  try {
+    window.localStorage.setItem(productColumnWidthsStorageKey, JSON.stringify(widths));
+  } catch {
+    // localStorage may be disabled; resizing should still work for the session.
+  }
+}
 
 function adaptiveTextWidth(value: unknown, min: number, max: number, extra = 0) {
   const text = String(value ?? "");
@@ -107,6 +133,8 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   const [shopOptions, setShopOptions] = useState<string[]>(productLibraryCache.shopOptions ?? []);
   const [products, setProducts] = useState<ProfitActivityProduct[]>(productLibraryCache.products ?? []);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchStoreOpen, setBatchStoreOpen] = useState(false);
+  const [batchStoreName, setBatchStoreName] = useState("");
   const [page, setPage] = useState(productLibraryCache.page ?? 1);
   const [pageSize, setPageSize] = useState<(typeof pageSizeOptions)[number]>(productLibraryCache.pageSize ?? 10);
   // 页码输入框的草稿值：允许用户自由填写，回车/失焦/点“跳转”才生效
@@ -121,7 +149,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   const theadRef = useRef<HTMLTableSectionElement>(null);
   const fixedHeaderRef = useRef<HTMLDivElement>(null);
   const fixedHeaderScrollRef = useRef<HTMLDivElement>(null);
-  const columnWidthTouchedRef = useRef(false);
+  const columnWidthTouchedRef = useRef(storedProductColumnWidths() !== null);
   // 其他模块成功入库时发出浏览器事件；产品库未激活则等用户切回后再刷新。
   const pendingLibraryRefreshRef = useRef(false);
   const refreshProductsRef = useRef<() => Promise<void>>(async () => undefined);
@@ -131,7 +159,9 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   const [tableDragging, setTableDragging] = useState(false);
   // 跟随视口的横向滚动条：track 宽度等于表格实际宽度
   const [tableScrollWidth, setTableScrollWidth] = useState(0);
-  const [columnWidths, setColumnWidths] = useState<Record<ProductTableColumnKey, number>>(defaultColumnWidths);
+  const [columnWidths, setColumnWidths] = useState<Record<ProductTableColumnKey, number>>(
+    () => storedProductColumnWidths() ?? defaultColumnWidths,
+  );
   const tableMinWidth = productTableColumns.reduce((total, column) => total + columnWidths[column.key], 0);
   const startColumnResize = (column: ProductTableColumn, event: ReactMouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -141,7 +171,11 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     const startWidth = columnWidths[column.key];
     const onMove = (moveEvent: MouseEvent) => {
       const nextWidth = Math.max(column.minWidth, startWidth + moveEvent.clientX - startX);
-      setColumnWidths((current) => ({ ...current, [column.key]: nextWidth }));
+      setColumnWidths((current) => {
+        const next = { ...current, [column.key]: nextWidth };
+        saveProductColumnWidths(next);
+        return next;
+      });
     };
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
@@ -177,7 +211,11 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     () => buildAdaptiveColumnWidths(pageProducts, siteLabel),
     [pageProducts, siteOptions],
   );
-  const selectedCount = selected.size;
+  const selectedProducts = useMemo(
+    () => products.filter((product) => selected.has(productKey(product))),
+    [products, selected],
+  );
+  const selectedCount = selectedProducts.length;
   const pageSelected = pageProducts.length > 0 && pageProducts.every((item) => selected.has(productKey(item)));
 
   useEffect(() => {
@@ -252,6 +290,22 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     setSelected(new Set());
     setPage(1);
     setMessage(`查询数据库产品 完成。\n已查询到 ${nextProducts.length} 个产品。`);
+  });
+
+  const refreshDatabaseProducts = () => withBusy("刷新产品", async () => {
+    if (!sites.size) {
+      setProducts([]);
+      setSelected(new Set());
+      setPage(1);
+      setMessage("请至少勾选一个站点。");
+      return;
+    }
+    const nextProducts = await fetchProducts();
+    const nextKeys = new Set(nextProducts.map(productKey));
+    setProducts(nextProducts);
+    setSelected((current) => new Set([...current].filter((key) => nextKeys.has(key))));
+    setPage((current) => Math.min(current, Math.max(1, Math.ceil(nextProducts.length / pageSize))));
+    setMessage(`已刷新数据库产品，共 ${nextProducts.length} 个产品。`);
   });
 
   useEffect(() => {
@@ -525,13 +579,57 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   });
 
   const copySelectedProductIds = () => withBusy("复制商品ID", async () => {
-    const ids = products
-      .filter((product) => selected.has(productKey(product)))
+    const ids = selectedProducts
       .map(productIdText)
       .filter(Boolean);
     if (!ids.length) return;
     await navigator.clipboard.writeText(ids.join("\n"));
     setMessage(`已复制 ${ids.length} 个商品ID。`);
+  });
+
+  const openBatchStoreDialog = () => {
+    if (!selectedCount) {
+      setMessage("请先选择产品。");
+      return;
+    }
+    setBatchStoreName("");
+    setBatchStoreOpen(true);
+  };
+
+  const submitBatchStoreName = () => withBusy("批量修改店铺", async () => {
+    if (!selectedProducts.length) {
+      setBatchStoreOpen(false);
+      setMessage("请先选择产品。");
+      return;
+    }
+    const storeName = batchStoreName.trim();
+    let success = 0;
+    let failed = 0;
+    for (const product of selectedProducts) {
+      if (product.can_edit === false) {
+        failed += 1;
+        continue;
+      }
+      try {
+        await updateProfitActivityProduct({
+          site: (product.site || product.site_code || "US") as ProfitActivitySite,
+          skc: product.skc,
+          store_name: storeName,
+        });
+        success += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    const nextProducts = await fetchProducts();
+    setProducts(nextProducts);
+    setSelected(new Set());
+    setBatchStoreOpen(false);
+    setBatchStoreName("");
+    setPage((current) => Math.min(current, Math.max(1, Math.ceil(nextProducts.length / pageSize))));
+    setMessage(failed
+      ? `已修改 ${success} 个产品的店铺名称，${failed} 个产品修改失败。`
+      : `已修改 ${success} 个产品的店铺名称。`);
   });
 
   const beginInlineEdit = (item: ProfitActivityProduct, field: InlineEditField) => {
@@ -669,7 +767,10 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
               <option value="all">核价 + 手动</option>
             </select>
           </label>
-          <button className="primary-button profit-products-query-button" onClick={queryProducts} disabled={!!busy}>查询产品</button>
+          <div className="profit-products-search-actions">
+            <button className="primary-button profit-products-query-button" onClick={queryProducts} disabled={!!busy}>查询产品</button>
+            <button className="profit-products-refresh-button" onClick={refreshDatabaseProducts} disabled={!!busy}>刷新</button>
+          </div>
         </div>
         <p className="profit-products-message">{busy || message.split("\n").map((line, index) => (<span key={index}>{line}<br /></span>))}</p>
 
@@ -737,7 +838,13 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
                     <td>{percent(item.profit_rate)}</td>
                     <td className="profit-note-cell" title={item.note || ""}><EditableCell field="note" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{shortNote(item.note) || "-"}</EditableCell></td>
                     <td className="profit-source-cell"><button className="profit-source-open" onClick={() => setActiveProduct(item)} title="查看/编辑该 SKC 的货源链接">打开（{(item.source_groups ?? []).filter((group) => group?.source_url).length}）</button></td>
-                    <td><SourceImagesCell item={item} onPreview={(images, index) => setPreviewImage({ images, index })} /></td>
+                    <td><EditableCell field="attachment_image" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onFileChange={setInlineFile} onClearImage={clearInlineImage} disabled={item.can_edit === false}>
+                      <AttachmentImageCell
+                        item={item}
+                        onPreview={(image) => setPreviewImage({ images: [image], index: 0 })}
+                        onEdit={() => beginInlineEdit(item, "attachment_image")}
+                      />
+                    </EditableCell></td>
                   </tr>
                 );
               }) : (
@@ -752,6 +859,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
             <span>共 {products.length} 条，当前第 {safePage} / {totalPages} 页</span>
             <button onClick={togglePageSelected} disabled={!pageProducts.length}>{pageSelected ? "取消本页" : "全选本页"}</button>
             <button onClick={copySelectedProductIds} disabled={!selectedCount || !!busy}>复制已选商品ID</button>
+            <button onClick={openBatchStoreDialog} disabled={!selectedCount || !!busy}>批量修改店铺</button>
             <button className="danger-button" onClick={deleteSelected} disabled={!selectedCount || !!busy}>删除已选 {selectedCount}</button>
             <label className="profit-products-page-size">每页
               <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value) as typeof pageSize); setPage(1); }}>
@@ -785,6 +893,25 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
         onClose={() => setActiveProduct(null)}
         onChanged={refreshProducts}
       />
+      {batchStoreOpen ? createPortal(
+        <div className="profit-batch-store-mask" role="presentation" onClick={() => !busy && setBatchStoreOpen(false)}>
+          <div className="profit-batch-store-dialog" role="dialog" aria-modal="true" aria-labelledby="profit-batch-store-title" onClick={(event) => event.stopPropagation()}>
+            <div className="profit-batch-store-head">
+              <h2 id="profit-batch-store-title">批量修改店铺</h2>
+              <button type="button" aria-label="关闭批量修改店铺" onClick={() => setBatchStoreOpen(false)} disabled={!!busy}>×</button>
+            </div>
+            <p className="profit-batch-store-count">已选择 {selectedCount} 个产品。</p>
+            <label className="profit-batch-store-field">店铺名称
+              <input value={batchStoreName} maxLength={120} onChange={(event) => setBatchStoreName(event.target.value)} placeholder="例如：美区一店；留空表示清空" autoFocus />
+            </label>
+            <div className="profit-batch-store-actions">
+              <button type="button" onClick={() => setBatchStoreOpen(false)} disabled={!!busy}>取消</button>
+              <button type="button" className="primary-button" onClick={() => void submitBatchStoreName()} disabled={!!busy}>确认修改</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      ) : null}
       {previewImage ? (
         <ImagePreviewModal
           images={previewImage.images}
@@ -910,6 +1037,12 @@ function EditableCell({
 
 type PreviewImage = { url: string; label: string };
 
+function firstSourceMainImageUrl(item: ProfitActivityProduct) {
+  return String((item.source_groups ?? [])
+    .map((group) => group?.main_image_url)
+    .find((value) => String(value || "").trim()) || "").trim();
+}
+
 /** 大图预览浮层：始终位于当前可视区域中央，可在货源图片之间切换。 */
 function ImagePreviewModal({ images, index, onIndexChange, onClose }: { images: PreviewImage[]; index: number; onIndexChange: (index: number) => void; onClose: () => void }) {
   useEffect(() => {
@@ -958,6 +1091,7 @@ function toggleSet(source: Set<string>, value: string, checked: boolean) {
 function ProductImageCell({ item, onPreview, onEdit }: { item: ProfitActivityProduct; onPreview?: (image: PreviewImage) => void; onEdit?: () => void }) {
   const site = (item.site || item.site_code || "US") as ProfitActivitySite;
   const [url, setUrl] = useState("");
+  const previewTimerRef = useRef<number | null>(null);
   // 核价入库没有本地商品图时，复用执行图搜前的 Temu 主图作为产品库商品图。
   const sourcingImageUrl = item.source_type === "price_verification"
     ? String(item.source_main_image_url || "").trim()
@@ -984,77 +1118,109 @@ function ProductImageCell({ item, onPreview, onEdit }: { item: ProfitActivityPro
     };
   }, [item.skc, site, item.image_path, sourcingImageUrl]);
 
+  useEffect(() => () => {
+    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current);
+  }, []);
+
+  const openPreview = (image: PreviewImage) => {
+    if (!onPreview) return;
+    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current);
+    previewTimerRef.current = window.setTimeout(() => {
+      previewTimerRef.current = null;
+      onPreview(image);
+    }, 180);
+  };
+
+  const startEdit = () => {
+    if (previewTimerRef.current !== null) {
+      window.clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+    onEdit?.();
+  };
+
   const content = url ? (
     <img className="profit-product-image" src={url} alt={`${item.skc} 商品图`} />
   ) : <span className="profit-product-image-empty">无图</span>;
 
-  if (!url || !onPreview) return <span className="profit-product-image-cell">{content}</span>;
+  if (!url || !onPreview) {
+    if (!onEdit) return <span className="profit-product-image-cell">{content}</span>;
+    return (
+      <button type="button" className="profit-product-image-cell" onClick={(event) => { event.stopPropagation(); startEdit(); }} title="点击上传或粘贴商品图">
+        {content}
+      </button>
+    );
+  }
   return (
-    <button type="button" className="profit-product-image-cell" onClick={(event) => { event.stopPropagation(); onPreview({ url, label: `${productIdText(item)} 商品图` }); }} onDoubleClick={(event) => { event.stopPropagation(); onEdit?.(); }} title="点击查看商品图，双击更换">
+    <button type="button" className="profit-product-image-cell" onClick={(event) => { event.stopPropagation(); openPreview({ url, label: `${productIdText(item)} 商品图` }); }} onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); startEdit(); }} title="点击查看商品图，双击更换">
       {content}
     </button>
   );
 }
 
-type SourceImageReference = { group: number; index: number; path?: string; externalUrl?: string; label: string };
-
-function sourceImageReferences(item: ProfitActivityProduct): SourceImageReference[] {
-  const references: SourceImageReference[] = [];
-  (item.source_groups ?? []).forEach((group, groupIndex) => {
-    (group?.image_paths ?? []).forEach((path, index) => {
-      if (path) references.push({ group: groupIndex, index, path, label: `货源 ${groupIndex + 1} 图片 ${index + 1}` });
-    });
-    const externalUrl = String(group?.main_image_url || "").trim();
-    if (externalUrl) references.push({ group: groupIndex, index: 0, externalUrl, label: `货源 ${groupIndex + 1} 主图` });
-  });
-  if (!references.length && item.source_image_path) {
-    references.push({ group: 0, index: 0, path: item.source_image_path, label: "货源图片" });
-  }
-  if (!references.length && item.source_main_image_url) {
-    references.push({ group: 0, index: 0, externalUrl: item.source_main_image_url, label: "货源主图" });
-  }
-  return references;
-}
-
-/** 图片列：展示货源组的所有图片，与货源抽屉使用同一份来源数据。 */
-function SourceImagesCell({ item, onPreview }: { item: ProfitActivityProduct; onPreview: (images: PreviewImage[], index: number) => void }) {
+function AttachmentImageCell({ item, onPreview, onEdit }: { item: ProfitActivityProduct; onPreview?: (image: PreviewImage) => void; onEdit?: () => void }) {
   const site = (item.site || item.site_code || "US") as ProfitActivitySite;
-  const references = sourceImageReferences(item);
-  const referenceKey = references.map((reference) => `${reference.group}:${reference.index}:${reference.path || reference.externalUrl || ""}`).join("|");
-  const [images, setImages] = useState<PreviewImage[]>([]);
+  const [url, setUrl] = useState("");
+  const previewTimerRef = useRef<number | null>(null);
+  const sourceMainImageUrl = firstSourceMainImageUrl(item);
 
   useEffect(() => {
     let cancelled = false;
-    const objectUrls: string[] = [];
-    setImages([]);
-    void Promise.all(references.map(async (reference): Promise<PreviewImage | null> => {
-      if (reference.externalUrl) return { url: reference.externalUrl, label: reference.label };
-      if (!reference.path) return null;
-      try {
-        const url = await loadProductImage({ skc: item.skc, site, kind: "source", group: reference.group, index: reference.index, version: reference.path });
+    let objectUrl = "";
+    setUrl(sourceMainImageUrl);
+    if (!item.attachment_image_path) return undefined;
+    loadProductImage({ skc: item.skc, site, kind: "attachment", version: item.attachment_image_path })
+      .then((loaded) => {
         if (cancelled) {
-          URL.revokeObjectURL(url);
-          return null;
+          URL.revokeObjectURL(loaded);
+          return;
         }
-        objectUrls.push(url);
-        return { url, label: reference.label };
-      } catch {
-        return null;
-      }
-    })).then((loaded) => {
-      if (!cancelled) setImages(loaded.filter((image): image is PreviewImage => image !== null));
-    });
+        objectUrl = loaded;
+        setUrl(loaded);
+      })
+      .catch(() => setUrl(sourceMainImageUrl));
     return () => {
       cancelled = true;
-      objectUrls.forEach((url) => URL.revokeObjectURL(url));
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [item.skc, site, referenceKey]);
+  }, [item.skc, site, item.attachment_image_path, sourceMainImageUrl]);
 
-  if (!images.length) return <span className="profit-product-image-empty">无图</span>;
+  useEffect(() => () => {
+    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current);
+  }, []);
+
+  const openPreview = (image: PreviewImage) => {
+    if (!onPreview) return;
+    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current);
+    previewTimerRef.current = window.setTimeout(() => {
+      previewTimerRef.current = null;
+      onPreview(image);
+    }, 180);
+  };
+
+  const startEdit = () => {
+    if (previewTimerRef.current !== null) {
+      window.clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+    onEdit?.();
+  };
+
+  const content = url ? (
+    <img className="profit-product-image" src={url} alt={`${item.skc} 图片`} />
+  ) : <span className="profit-product-image-empty">无图</span>;
+
+  if (!url || !onPreview) {
+    if (!onEdit) return <span className="profit-product-image-cell">{content}</span>;
+    return (
+      <button type="button" className="profit-product-image-cell" onClick={(event) => { event.stopPropagation(); startEdit(); }} title="点击上传或粘贴图片">
+        {content}
+      </button>
+    );
+  }
   return (
-    <button type="button" className="profit-source-thumb-btn profit-source-images-cell" title={`点击查看全部 ${images.length} 张货源图片`} onClick={() => onPreview(images, 0)}>
-      <img className="profit-source-thumb" src={images[0].url} alt={`${item.skc} 货源图`} loading="lazy" />
-      {images.length > 1 ? <span className="profit-source-image-count">+{images.length - 1}</span> : null}
+    <button type="button" className="profit-product-image-cell" onClick={(event) => { event.stopPropagation(); openPreview({ url, label: `${productIdText(item)} 图片` }); }} onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); startEdit(); }} title="点击查看图片，双击更换">
+      {content}
     </button>
   );
 }
