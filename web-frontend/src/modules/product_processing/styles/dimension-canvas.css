@@ -464,6 +464,24 @@
   white-space: nowrap;
 }
 
+.dimension-unit-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.dimension-unit-row button {
+  min-height: 34px;
+  color: var(--theme-text-secondary);
+  font-weight: 800;
+  letter-spacing: .02em;
+}
+
+.dimension-unit-row button.is-active {
+  color: var(--theme-primary);
+  background: color-mix(in srgb, var(--theme-primary) 12%, var(--theme-module-surface-raised));
+}
+
 .dimension-tool-primary {
   display: flex;
   align-items: center;

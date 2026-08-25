@@ -331,7 +331,8 @@ def _format_dimension(value_cm: float, unit: Literal["cm", "mm", "in", "ft"]) ->
     }[unit]
     precision = 1 if unit == "mm" else 2
     number = f"{converted:.{precision}f}".rstrip("0").rstrip(".")
-    return f"{number} {unit}"
+    label = "inch" if unit == "in" else unit
+    return f"{number} {label}"
 
 
 def _draw_dashed_line(
