@@ -184,10 +184,9 @@ def test_direct_listing_trial_retries_only_once_for_invalid_grid_and_retains_bot
     assert all(attempt["preview_url"].startswith("/api/pod-customization/assets/") for attempt in result["grid_attempts"])
 
 
-def test_direct_listing_trial_quality_checks_each_panel_before_publication(tmp_path: Path) -> None:
+def test_direct_listing_trial_accepts_unvalidated_panel_without_retry(tmp_path: Path) -> None:
     runtime = DirectTrialRuntime([
         _media(_png("#fef3c7"), model="blank-panel-4"),
-        _media(_png("#f8fafc")),
     ])
     service = _service(tmp_path, runtime)
     actor = _actor()
@@ -195,7 +194,7 @@ def test_direct_listing_trial_quality_checks_each_panel_before_publication(tmp_p
 
     result = service.run_direct_listing_trial(actor, _request(template["id"]))
 
-    assert len(runtime.requests) == 2
+    assert len(runtime.requests) == 1
     assert result["status"] == "completed"
     assert len(runtime.published) == 4
 

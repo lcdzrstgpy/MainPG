@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import inspect
 import threading
@@ -20,7 +21,7 @@ from .billing_contract import (
     PodCallPlan,
     PodExecutionGrant,
 )
-from .images import PatternQualityGate, compose_fixed_scene, split_grid_2x2
+from .images import compose_fixed_scene, split_grid_2x2
 from .prompts import LISTING_IMAGE_ROLES, build_style_listing_prompt
 from .repository import PodCustomizationRepository, PodRepositoryError
 from .runtime import RuntimeClosedError
@@ -118,7 +119,6 @@ class PodBatchWorker:
         repository: PodCustomizationRepository,
         assets: PodAssetStore,
         ai_runtime: PodAiRuntime,
-        quality_gate: PatternQualityGate,
         *,
         title_runtime: Any | None = None,
         coordinator_workers: int = 1,
@@ -127,11 +127,6 @@ class PodBatchWorker:
         self.assets = assets
         self.ai_runtime = ai_runtime
         self.title_runtime = title_runtime
-        self.quality_gate = quality_gate
-        self.style_quality_gate = PatternQualityGate(
-            text_inspector=quality_gate.text_inspector,
-            duplicate_distance=max(1, quality_gate.duplicate_distance),
-        )
         self._batch_action_lock = threading.Lock()
         self._coordinator = ThreadPoolExecutor(
             max_workers=max(1, min(coordinator_workers, 4)),
@@ -421,23 +416,11 @@ class PodBatchWorker:
             )
             template_content = self.assets.read(template_asset["relative_path"])
             calibration = _calibration(batch["template"]["calibration_json"])
-            fingerprints = self.repository.accepted_fingerprints(batch_id)
             for grid_cell, cell in enumerate(split_grid_2x2(content), start=1):
-                assessment = self.quality_gate.assess(cell, accepted_fingerprints=fingerprints)
+                fingerprint = hashlib.sha256(cell).hexdigest()
                 pattern_asset = self._save_asset(
                     batch, "pattern_candidate", f"regenerate-{call['call_id']}-{grid_cell}.png", cell
                 )
-                if not assessment.accepted:
-                    self.repository.record_candidate(
-                        batch,
-                        call_id=call["call_id"],
-                        grid_cell=grid_cell,
-                        status="rejected",
-                        rejection_reason=assessment.rejection_reason,
-                        fingerprint=assessment.fingerprint,
-                        pattern_asset_id=pattern_asset["asset_id"],
-                    )
-                    continue
                 composite = compose_fixed_scene(template_content, cell, calibration)
                 composite_asset = self._save_asset(
                     batch, "fixed_composite", f"regenerate-composite-{item_id}.png", composite
@@ -447,7 +430,7 @@ class PodBatchWorker:
                     item_id,
                     call_id=call["call_id"],
                     grid_cell=grid_cell,
-                    fingerprint=assessment.fingerprint,
+                    fingerprint=fingerprint,
                     pattern_asset_id=pattern_asset["asset_id"],
                     composite_asset_id=composite_asset["asset_id"],
                 )
@@ -486,9 +469,6 @@ class PodBatchWorker:
             batch["template"]["asset_id"], batch["workspace_id"], batch["owner_user_id"]
         )
         template_content = self.assets.read(template_asset["relative_path"])
-        accepted_fingerprints = self._accepted_style_fingerprints(
-            batch, exclude_style_index=style_index
-        )
         prepared: list[tuple[dict[str, Any], Any, list[Any], list[str]]] = []
         last_error = "整款重新生成未返回完整结果"
         last_call_id = ""
@@ -516,7 +496,7 @@ class PodBatchWorker:
                     grid = self.ai_runtime.submit(
                         self._generate_listing_grid, batch, call, request, run, provider_call_id
                     ).result()
-                    panels, fingerprints = self._validate_style_grid(grid, accepted_fingerprints)
+                    panels, fingerprints = self._validate_style_grid(grid)
                     prepared = [(call, grid, panels, fingerprints)]
                     break
                 except PodBillingAuthorizationRequired:
@@ -664,7 +644,6 @@ class PodBatchWorker:
             attempt=1,
             billing_run=billing_run,
         )
-        accepted_fingerprints = self._accepted_style_fingerprints(batch)
         prepared: dict[int, tuple[dict[str, Any], Any, list[Any], list[str]]] = {}
         retry_reasons = dict(first_errors)
         for style_index in style_indices:
@@ -677,15 +656,13 @@ class PodBatchWorker:
                 continue
             call, grid = result
             try:
-                panels, fingerprints = self._validate_style_grid(grid, accepted_fingerprints)
+                panels, fingerprints = self._validate_style_grid(grid)
             except PodBillingAuthorizationRequired:
                 raise
             except Exception as exc:
                 retry_reasons[style_index] = str(exc).strip() or exc.__class__.__name__
                 continue
             prepared[style_index] = (call, grid, panels, fingerprints)
-            for variant_index, fingerprint in enumerate(fingerprints, start=1):
-                accepted_fingerprints[variant_index].append(fingerprint)
 
         retry_indices = sorted(set(style_indices) - set(prepared))
         if retry_indices:
@@ -704,13 +681,11 @@ class PodBatchWorker:
                     continue
                 call, grid = result
                 try:
-                    panels, fingerprints = self._validate_style_grid(grid, accepted_fingerprints)
+                    panels, fingerprints = self._validate_style_grid(grid)
                 except Exception as exc:
                     retry_reasons[style_index] = str(exc).strip() or exc.__class__.__name__
                     continue
                 prepared[style_index] = (call, grid, panels, fingerprints)
-                for variant_index, fingerprint in enumerate(fingerprints, start=1):
-                    accepted_fingerprints[variant_index].append(fingerprint)
 
         for style_index in style_indices:
             if style_index not in prepared:
@@ -807,41 +782,11 @@ class PodBatchWorker:
     def _validate_style_grid(
         self,
         grid: Any,
-        accepted_fingerprints: dict[int, list[str]],
     ) -> tuple[list[Any], list[str]]:
         panels = self.ai_runtime.split_listing_grid(grid)
         if len(panels) != 4:
             raise RuntimeError("generated four-grid image did not yield exactly four panels")
-        panel_fingerprints: list[str] = []
-        for panel_index, panel in enumerate(panels, start=1):
-            assessment = self.style_quality_gate.assess(
-                panel.content,
-                accepted_fingerprints=accepted_fingerprints.get(panel_index, []),
-            )
-            if not assessment.accepted:
-                reason = assessment.rejection_reason or "invalid"
-                raise RuntimeError(f"style_panel_{panel_index}_{reason}")
-            if assessment.fingerprint in panel_fingerprints:
-                raise RuntimeError(f"style_panel_{panel_index}_duplicate")
-            panel_fingerprints.append(assessment.fingerprint)
-        return panels, panel_fingerprints
-
-    def _accepted_style_fingerprints(
-        self,
-        batch: dict[str, Any],
-        *,
-        exclude_style_index: int | None = None,
-    ) -> dict[int, list[str]]:
-        fingerprints = {index: [] for index in range(1, 5)}
-        for item in self.repository.get_batch_internal(batch["batch_id"])["items"]:
-            if not item.get("pattern_fingerprint"):
-                continue
-            if exclude_style_index is not None and item.get("style_index") == exclude_style_index:
-                continue
-            variant_index = int(item.get("variant_index") or 0)
-            if variant_index in fingerprints:
-                fingerprints[variant_index].append(item["pattern_fingerprint"])
-        return fingerprints
+        return panels, [hashlib.sha256(panel.content).hexdigest() for panel in panels]
 
     def _generate_listing_grid(
         self,
@@ -928,7 +873,6 @@ class PodBatchWorker:
         grids: list[tuple[dict[str, Any], bytes]],
         template_content: bytes,
     ) -> None:
-        fingerprints = self.repository.accepted_fingerprints(batch["batch_id"])
         calibration = _calibration(batch["template"]["calibration_json"])
         self.repository.set_batch_status(batch["batch_id"], "compositing")
         for call, grid_content in grids:
@@ -941,15 +885,8 @@ class PodBatchWorker:
                 )
                 continue
             for grid_cell, content in enumerate(cells, start=1):
-                assessment = self.quality_gate.assess(content, accepted_fingerprints=fingerprints)
+                fingerprint = hashlib.sha256(content).hexdigest()
                 pattern_asset = self._save_asset(batch, "pattern_candidate", f"pattern-{call['call_id']}-{grid_cell}.png", content)
-                if not assessment.accepted:
-                    self.repository.record_candidate(
-                        batch, call_id=call["call_id"], grid_cell=grid_cell, status="rejected",
-                        rejection_reason=assessment.rejection_reason, fingerprint=assessment.fingerprint,
-                        pattern_asset_id=pattern_asset["asset_id"],
-                    )
-                    continue
                 try:
                     composite = compose_fixed_scene(template_content, content, calibration)
                     composite_asset = self._save_asset(
@@ -958,7 +895,7 @@ class PodBatchWorker:
                 except Exception:
                     self.repository.record_candidate(
                         batch, call_id=call["call_id"], grid_cell=grid_cell, status="rejected",
-                        rejection_reason="composite_error", fingerprint=assessment.fingerprint,
+                        rejection_reason="composite_error", fingerprint=fingerprint,
                         pattern_asset_id=pattern_asset["asset_id"],
                     )
                     continue
@@ -966,12 +903,10 @@ class PodBatchWorker:
                     batch,
                     call_id=call["call_id"],
                     grid_cell=grid_cell,
-                    fingerprint=assessment.fingerprint,
+                    fingerprint=fingerprint,
                     pattern_asset_id=pattern_asset["asset_id"],
                     composite_asset_id=composite_asset["asset_id"],
                 )
-                if item is not None:
-                    fingerprints.append(assessment.fingerprint)
 
     def _process_style_grids(
         self,
