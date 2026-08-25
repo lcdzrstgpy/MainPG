@@ -43,6 +43,7 @@ from ..billing import (
     settle_ai_usage_failure,
     settle_ai_usage_success,
     settle_batch_points,
+    topup_promotion_status,
     update_active_pricing,
     update_pricing_items,
     usage_history,
@@ -77,16 +78,14 @@ from .alipay_gateway import (
 REMOTE_SESSION_TTL = timedelta(hours=12)
 BILLING_POINT_RATIO = 100
 BILLING_TOPUP_PRODUCTS = {
-    "points_10": {"amount_cents": 1000, "points": 1000, "label": "10 元积分包"},
-    "points_30": {"amount_cents": 3000, "points": 3000, "label": "30 元积分包"},
-    "points_100": {"amount_cents": 10000, "points": 10000, "label": "100 元积分包"},
+    "points_50": {"amount_cents": 5000, "label": "50 元积分包"},
+    "points_99": {"amount_cents": 9900, "label": "99 元积分包"},
+    "points_199": {"amount_cents": 19900, "label": "199 元积分包"},
+    "points_499": {"amount_cents": 49900, "label": "499 元积分包"},
+    "points_999": {"amount_cents": 99900, "label": "999 元积分包"},
 }
 # Amounts are immutable product amounts.  Their point value is calculated
 # from the active server rule, never from this legacy display mapping.
-TOPUP_PACKAGE_CENTS = {
-    package_id: {"amount_cents": int(item["amount_cents"]), "label": str(item["label"])}
-    for package_id, item in BILLING_TOPUP_PRODUCTS.items()
-}
 # Monetary amount and label are stable package metadata. Point quantity is
 # calculated from the active server-side pricing rule at order creation time.
 TOPUP_PACKAGE_CENTS = {
@@ -958,6 +957,14 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
         return _create_topup_order(db_path, account, payload)
+
+    @app.post("/api/customer/billing/topup-quote")
+    def quote_billing_topup(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _required_account(db_path, authorization)
+        return _topup_quote(db_path, payload)
 
     @app.post("/api/customer/billing/usage/reserve")
     def reserve_billing_usage(
@@ -2591,11 +2598,14 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
     account_id = str(account["account_id"])
     workspace_id = str(account.get("workspace_id") or "default")
     # 展示型余额/流水缓存（短 TTL）；冻结/结算/充值等写路径会主动失效。
-    cache_key = f"wallet:{account_id}"
+    pricing = active_pricing(database_path)
+    promotion = topup_promotion_status(database_path)
+    # The mutable campaign state is part of the cache key, so an enable/disable
+    # command is visible to all clients immediately without a process restart.
+    cache_key = f"wallet:{account_id}:topup:{promotion['updated_at']}"
     cached = _cache.cache_get(cache_key)
     if cached is not None:
         return cached
-    pricing = active_pricing(database_path)
     with transaction(database_path) as conn:
         _ensure_wallet(conn, account_id, workspace_id)
         wallet = conn.execute(
@@ -2619,7 +2629,8 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         orders = conn.execute(
             """
             SELECT order_id, out_trade_no, provider, package_id, amount_cents, currency,
-                   points, status, created_at, paid_at, expires_at
+                   points, base_points, promotion_bonus_points, total_points,
+                   promotion_id, promotion_name, status, created_at, paid_at, expires_at
             FROM billing_payment_orders
             WHERE account_id = ?
             ORDER BY created_at DESC
@@ -2646,10 +2657,15 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             "updated_at": wallet["updated_at"] if wallet else "",
         },
         "pricing": pricing,
-        "topup_products": _topup_products(pricing),
+        "topup_promotion": {
+            "active": promotion["active"],
+            "name": promotion["name"],
+            "multiplier": promotion["multiplier"],
+        },
+        "topup_products": _topup_products(pricing, promotion),
         "recent_ledger": [_display_ledger_row(dict(row), pricing) for row in ledgers],
         "recent_orders": [
-            {**dict(row), "points": _display_billing_points(int(row["points"]), pricing)}
+            _display_topup_order(dict(row), pricing)
             for row in orders
         ],
         "security": {
@@ -2669,27 +2685,96 @@ def _display_billing_points(units: int, pricing: dict[str, Any]) -> int | float:
     return int(value) if value.is_integer() else value
 
 
-def _topup_products(pricing: dict[str, Any]) -> list[dict[str, Any]]:
-    points_per_cny = int(pricing["points_per_cny"])
-    scale = int(pricing["point_unit_scale"])
+def _topup_product(
+    *,
+    package_id: str,
+    label: str,
+    amount_cents: int,
+    pricing: dict[str, Any],
+    promotion: dict[str, Any],
+) -> dict[str, Any]:
+    base_points = (
+        (int(amount_cents) // 100)
+        * int(pricing["points_per_cny"])
+        * int(pricing["point_unit_scale"])
+    )
+    promotion_bonus_points = base_points if bool(promotion["active"]) else 0
+    total_points = base_points + promotion_bonus_points
+    return {
+        "package_id": package_id,
+        "label": label,
+        "amount_cents": int(amount_cents),
+        # points is retained for older desktop clients and is the base amount.
+        "points": _display_billing_points(base_points, pricing),
+        "base_points": _display_billing_points(base_points, pricing),
+        "promotion_bonus_points": _display_billing_points(promotion_bonus_points, pricing),
+        "total_points": _display_billing_points(total_points, pricing),
+        "promotion_id": "topup_double" if promotion_bonus_points else "",
+        "promotion_name": str(promotion["name"]) if promotion_bonus_points else "",
+    }
+
+
+def _topup_products(pricing: dict[str, Any], promotion: dict[str, Any]) -> list[dict[str, Any]]:
     return [
-        {
-            "package_id": package_id,
-            "label": item["label"],
-            "amount_cents": item["amount_cents"],
-            "points": _display_billing_points(
-                (int(item["amount_cents"]) // 100) * points_per_cny * scale,
-                pricing,
-            ),
-        }
+        _topup_product(
+            package_id=package_id,
+            label=str(item["label"]),
+            amount_cents=int(item["amount_cents"]),
+            pricing=pricing,
+            promotion=promotion,
+        )
         for package_id, item in TOPUP_PACKAGE_CENTS.items()
     ]
+
+
+def _display_topup_order(order: dict[str, Any], pricing: dict[str, Any]) -> dict[str, Any]:
+    base_points = int(order.get("base_points") or order.get("points") or 0)
+    promotion_bonus_points = int(order.get("promotion_bonus_points") or 0)
+    total_points = int(order.get("total_points") or (base_points + promotion_bonus_points))
+    order["points"] = _display_billing_points(base_points, pricing)
+    order["base_points"] = _display_billing_points(base_points, pricing)
+    order["promotion_bonus_points"] = _display_billing_points(promotion_bonus_points, pricing)
+    order["total_points"] = _display_billing_points(total_points, pricing)
+    return order
 
 
 def _display_ledger_row(row: dict[str, Any], pricing: dict[str, Any]) -> dict[str, Any]:
     row["points_delta"] = _display_billing_points(int(row.get("points_delta") or 0), pricing)
     row["balance_after"] = _display_billing_points(int(row.get("balance_after") or 0), pricing)
     return row
+
+
+def _custom_topup_amount(payload: dict[str, Any]) -> int:
+    raw_amount_cents = payload.get("amount_cents")
+    if isinstance(raw_amount_cents, bool):
+        raise HTTPException(status_code=400, detail="custom amount is invalid")
+    try:
+        amount_cents = int(raw_amount_cents)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="custom amount is required") from exc
+    if (
+        amount_cents < CUSTOM_TOPUP_MIN_CENTS
+        or amount_cents > CUSTOM_TOPUP_MAX_CENTS
+        or amount_cents % 100 != 0
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="custom amount must be a whole amount from 1 to 3000 CNY",
+        )
+    return amount_cents
+
+
+def _topup_quote(database_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    pricing = active_pricing(database_path)
+    promotion = topup_promotion_status(database_path)
+    product = _topup_product(
+        package_id="custom",
+        label="自定义积分充值",
+        amount_cents=_custom_topup_amount(payload),
+        pricing=pricing,
+        promotion=promotion,
+    )
+    return {"ok": True, "product": product}
 
 
 def _create_topup_order(database_path: Path, account: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -2705,34 +2790,11 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
     if not 16 <= len(idempotency_key) <= 128:
         raise HTTPException(status_code=400, detail="idempotency_key is required")
 
-    pricing = active_pricing(database_path)
     if package_id == "custom":
-        raw_amount_cents = payload.get("amount_cents")
-        if isinstance(raw_amount_cents, bool):
-            raise HTTPException(status_code=400, detail="custom amount is invalid")
-        try:
-            amount_cents = int(raw_amount_cents)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail="custom amount is required") from exc
-        if (
-            amount_cents < CUSTOM_TOPUP_MIN_CENTS
-            or amount_cents > CUSTOM_TOPUP_MAX_CENTS
-            or amount_cents % 100 != 0
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="custom amount must be a whole amount from 1 to 3000 CNY",
-            )
-        product = {"amount_cents": amount_cents, "label": "自定义积分充值"}
+        product = {"amount_cents": _custom_topup_amount(payload), "label": "自定义积分充值"}
     else:
         product = TOPUP_PACKAGE_CENTS[package_id]
-    # Payment orders store raw 0.1-point units; user-facing responses always
-    # convert through the active pricing rule.
-    product_points = (
-        (int(product["amount_cents"]) // 100)
-        * int(pricing["points_per_cny"])
-        * int(pricing["point_unit_scale"])
-    )
+    pricing = active_pricing(database_path)
     now = _utc_now()
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(timespec="seconds")
     request_hash = _stable_json_hash(
@@ -2742,16 +2804,38 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
             "provider": provider,
             "package_id": package_id,
             "amount_cents": product["amount_cents"],
-            "points": product_points,
             "idempotency_key": idempotency_key,
         }
     )
     with transaction(database_path) as conn:
         _ensure_wallet(conn, account_id, workspace_id)
+        promotion_row = conn.execute(
+            """
+            SELECT promotion_id, name, multiplier, is_active, updated_at
+            FROM billing_topup_promotions WHERE promotion_id = 'topup_double'
+            """
+        ).fetchone()
+        promotion = (
+            {
+                "active": bool(int(promotion_row["is_active"])),
+                "name": str(promotion_row["name"]),
+                "multiplier": int(promotion_row["multiplier"]),
+            }
+            if promotion_row is not None
+            else {"active": False, "name": "充值积分翻倍活动", "multiplier": 2}
+        )
+        base_points = (
+            (int(product["amount_cents"]) // 100)
+            * int(pricing["points_per_cny"])
+            * int(pricing["point_unit_scale"])
+        )
+        promotion_bonus_points = base_points if bool(promotion["active"]) else 0
+        total_points = base_points + promotion_bonus_points
         existing = conn.execute(
             """
             SELECT order_id, out_trade_no, provider, package_id, amount_cents, currency,
-                   points, status, created_at, paid_at, expires_at
+                   points, base_points, promotion_bonus_points, total_points,
+                   promotion_id, promotion_name, status, created_at, paid_at, expires_at
             FROM billing_payment_orders
             WHERE account_id = ? AND idempotency_key = ?
             """,
@@ -2765,10 +2849,11 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
             """
             INSERT INTO billing_payment_orders (
                 order_id, out_trade_no, account_id, workspace_id, provider, package_id,
-                amount_cents, currency, points, status, idempotency_key, request_hash,
+                amount_cents, currency, points, base_points, promotion_bonus_points,
+                total_points, promotion_id, promotion_name, status, idempotency_key, request_hash,
                 expires_at, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'CNY', ?, 'pending', ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'CNY', ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
             """,
             (
                 order_id,
@@ -2778,7 +2863,12 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
                 provider,
                 package_id,
                 product["amount_cents"],
-                product_points,
+                base_points,
+                base_points,
+                promotion_bonus_points,
+                total_points,
+                "topup_double" if promotion_bonus_points else "",
+                str(promotion["name"]) if promotion_bonus_points else "",
                 idempotency_key,
                 request_hash,
                 expires_at,
@@ -2789,7 +2879,8 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
         order = conn.execute(
             """
             SELECT order_id, out_trade_no, provider, package_id, amount_cents, currency,
-                   points, status, created_at, paid_at, expires_at
+                   points, base_points, promotion_bonus_points, total_points,
+                   promotion_id, promotion_name, status, created_at, paid_at, expires_at
             FROM billing_payment_orders
             WHERE order_id = ?
             """,
@@ -2804,8 +2895,7 @@ def _topup_order_response(
     reused: bool,
     pricing: dict[str, Any],
 ) -> dict[str, Any]:
-    order = dict(order)
-    order["points"] = _display_billing_points(int(order.get("points") or 0), pricing)
+    order = _display_topup_order(dict(order), pricing)
     payment = {
         "provider": order["provider"],
         "mode": "gateway_not_configured",

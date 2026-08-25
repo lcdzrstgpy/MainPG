@@ -199,6 +199,18 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.post("/billing/topup-quote")
+    def quote_topup(payload: dict[str, Any], authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "quote_topup"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.quote_topup(
+                remote_token_from_local_session(authorization),
+                payload,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.post("/logout")
     def logout(authorization: str | None = Header(default=None)) -> dict[str, bool]:
         try:

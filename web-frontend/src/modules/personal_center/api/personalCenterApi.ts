@@ -4,7 +4,11 @@ export type BillingPackage = {
   package_id: string;
   label: string;
   amount_cents: number;
-  points: number;
+  /** 旧服务端字段；只用于兼容历史订单。 */
+  points?: number;
+  base_points?: number;
+  promotion_bonus_points?: number;
+  total_points?: number;
 };
 
 export type BillingOrder = {
@@ -14,7 +18,11 @@ export type BillingOrder = {
   package_id: string;
   amount_cents: number;
   currency: string;
-  points: number;
+  /** 旧服务端字段；只用于兼容历史订单。 */
+  points?: number;
+  base_points?: number;
+  promotion_bonus_points?: number;
+  total_points?: number;
   status: "pending" | "paid" | "closed" | "failed" | "refunded";
   created_at: string;
   paid_at: string;
@@ -65,6 +73,11 @@ export type BillingSummary = {
     effective_at: string;
   };
   topup_products: BillingPackage[];
+  topup_promotion?: {
+    active: boolean;
+    name: string;
+    multiplier: number;
+  };
   recent_ledger: BillingLedgerEntry[];
   recent_orders: BillingOrder[];
   security: {
@@ -116,6 +129,11 @@ export type TopupOrderResponse = {
   };
 };
 
+export type TopupQuoteResponse = {
+  ok: boolean;
+  product: BillingPackage;
+};
+
 export function loadBillingSummary() {
   return httpJson<BillingSummary>("/api/customer/billing/summary");
 }
@@ -153,6 +171,16 @@ export function createTopupOrder(input: {
       ...input,
       idempotency_key: `idem_${crypto.randomUUID().replace(/-/g, "")}`,
     },
+  });
+}
+
+/**
+ * 自定义金额的到账积分必须由服务端报价，避免活动切换期间由客户端自行推算。
+ */
+export function quoteCustomTopup(amountCents: number) {
+  return httpJson<TopupQuoteResponse>("/api/customer/billing/topup-quote", {
+    method: "POST",
+    body: { amount_cents: amountCents },
   });
 }
 

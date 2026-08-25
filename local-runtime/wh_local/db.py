@@ -436,6 +436,22 @@ CREATE TABLE IF NOT EXISTS billing_payment_orders (
 CREATE INDEX IF NOT EXISTS idx_billing_payment_orders_account_status
     ON billing_payment_orders (account_id, status, created_at);
 
+-- 充值活动由开发运维命令维护，默认关闭。订单在创建时复制活动快照，
+-- 因此启停不会改变已经生成的待支付订单。
+CREATE TABLE IF NOT EXISTS billing_topup_promotions (
+    promotion_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    multiplier INTEGER NOT NULL DEFAULT 2 CHECK (multiplier = 2),
+    is_active INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1)),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by TEXT NOT NULL DEFAULT 'system'
+);
+
+INSERT OR IGNORE INTO billing_topup_promotions (
+    promotion_id, name, multiplier, is_active, updated_by
+)
+VALUES ('topup_double', '充值积分翻倍活动', 2, 0, 'system');
+
 -- 积分账本：后续扣费/充值均追加写入，并用 previous_hash + row_hash 做篡改检测。
 CREATE TABLE IF NOT EXISTS billing_point_ledger (
     entry_id TEXT PRIMARY KEY,
@@ -1006,6 +1022,13 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_batch_freezes", "link_prices_json", "TEXT NOT NULL DEFAULT '[]'")
     # 消费流水与处理任务的关联键：客户端冻结时携带任务号，后台可按任务排查滞留冻结。
     _ensure_column(conn, "billing_batch_freezes", "task_id", "TEXT NOT NULL DEFAULT ''")
+    # 支付订单的积分明细均为原始积分单位（当前为 0.1 积分）。旧订单保留
+    # points 兼容字段，并在首次启动时把它作为基础积分快照。
+    _ensure_column(conn, "billing_payment_orders", "base_points", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "billing_payment_orders", "promotion_bonus_points", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "billing_payment_orders", "total_points", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "billing_payment_orders", "promotion_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "billing_payment_orders", "promotion_name", "TEXT NOT NULL DEFAULT ''")
     _migrate_billing_points_to_tenths(conn)
 
 
@@ -1040,6 +1063,17 @@ def _migrate_billing_points_to_tenths(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT INTO billing_runtime_meta (meta_key, meta_value) VALUES ('point_unit_scale', '10')"
         )
+    # Legacy orders were created before the activity snapshot columns existed.
+    # They were all ordinary recharges, so derive their immutable base/total
+    # snapshot from the already-scaled legacy points field exactly once.
+    conn.execute(
+        """
+        UPDATE billing_payment_orders
+        SET base_points = points,
+            total_points = points
+        WHERE base_points = 0 AND total_points = 0 AND points > 0
+        """
+    )
     conn.execute(
         """
         INSERT INTO billing_pricing_rules (

@@ -24,6 +24,9 @@ BATCH_BILLING_PROFILE_POD = "pod_random_v1"
 # POD 每条款式定价：服务器随机取 40..50 整数积分。
 POD_LINK_PRICE_MIN_POINTS = 40
 POD_LINK_PRICE_VARIANTS = 11
+TOPUP_PROMOTION_ID = "topup_double"
+TOPUP_PROMOTION_NAME = "充值积分翻倍活动"
+TOPUP_PROMOTION_MULTIPLIER = 2
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,77 @@ def active_pricing(database_path: Path) -> dict[str, Any]:
             return _pricing_payload(_active_pricing(conn))
 
     return cache.get_or_set("pricing:active", 60, load)
+
+
+def topup_promotion_status(database_path: Path) -> dict[str, Any]:
+    """Return the current manually managed recharge activity state."""
+    with transaction(database_path) as conn:
+        return _topup_promotion_payload(_topup_promotion(conn))
+
+
+def set_topup_promotion_active(
+    database_path: Path,
+    *,
+    active: bool,
+    updated_by: str,
+) -> dict[str, Any]:
+    """Enable or disable the fixed double-points campaign without a restart."""
+    now = _utc_now()
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO billing_topup_promotions (
+                promotion_id, name, multiplier, is_active, updated_at, updated_by
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(promotion_id) DO UPDATE SET
+                name = excluded.name,
+                multiplier = excluded.multiplier,
+                is_active = excluded.is_active,
+                updated_at = excluded.updated_at,
+                updated_by = excluded.updated_by
+            """,
+            (
+                TOPUP_PROMOTION_ID,
+                TOPUP_PROMOTION_NAME,
+                TOPUP_PROMOTION_MULTIPLIER,
+                1 if active else 0,
+                now,
+                str(updated_by or "operator")[:160],
+            ),
+        )
+        return _topup_promotion_payload(_topup_promotion(conn))
+
+
+def _topup_promotion(conn: Any) -> Any:
+    row = conn.execute(
+        """
+        SELECT promotion_id, name, multiplier, is_active, updated_at
+        FROM billing_topup_promotions
+        WHERE promotion_id = ?
+        """,
+        (TOPUP_PROMOTION_ID,),
+    ).fetchone()
+    if row is not None:
+        return row
+    # Defensive fallback for databases opened before init_db completed. The
+    # next normal initialization seeds the durable disabled configuration.
+    return {
+        "promotion_id": TOPUP_PROMOTION_ID,
+        "name": TOPUP_PROMOTION_NAME,
+        "multiplier": TOPUP_PROMOTION_MULTIPLIER,
+        "is_active": 0,
+        "updated_at": "",
+    }
+
+
+def _topup_promotion_payload(row: Any) -> dict[str, Any]:
+    return {
+        "active": bool(int(row["is_active"])),
+        "name": str(row["name"]),
+        "multiplier": int(row["multiplier"]),
+        "updated_at": str(row["updated_at"] or ""),
+    }
 
 
 def update_active_pricing(
@@ -1032,7 +1106,14 @@ def settle_payment_order(
 
         account_id = str(order["account_id"])
         workspace_id = str(order["workspace_id"] or "default")
-        points = int(order["points"])
+        # Orders created before campaign snapshots use their legacy points
+        # value as a plain base recharge. New orders always carry all three
+        # immutable snapshot fields.
+        base_points = int(order["base_points"] or order["points"])
+        promotion_bonus_points = int(order["promotion_bonus_points"] or 0)
+        total_points = int(order["total_points"] or (base_points + promotion_bonus_points))
+        if total_points != base_points + promotion_bonus_points:
+            raise HTTPException(status_code=409, detail="payment order points snapshot is invalid")
         _ensure_wallet(conn, account_id, workspace_id)
         conn.execute(
             """
@@ -1040,7 +1121,7 @@ def settle_payment_order(
             SET points_balance = points_balance + ?, version = version + 1, updated_at = ?
             WHERE account_id = ?
             """,
-            (points, now, account_id),
+            (base_points, now, account_id),
         )
         conn.execute(
             """
@@ -1061,16 +1142,46 @@ def settle_payment_order(
             account_id=account_id,
             workspace_id=workspace_id,
             direction="credit",
-            points_delta=points,
+            points_delta=base_points,
             source_type=f"payment_{normalized_provider}",
             source_id=str(order["order_id"]),
             idempotency_key=f"payment:{normalized_provider}:{normalized_order_no}:credit",
             metadata=ledger_metadata,
         )
+        if promotion_bonus_points:
+            conn.execute(
+                """
+                UPDATE billing_wallets
+                SET points_balance = points_balance + ?, version = version + 1, updated_at = ?
+                WHERE account_id = ?
+                """,
+                (promotion_bonus_points, now, account_id),
+            )
+            _append_ledger(
+                conn,
+                account_id=account_id,
+                workspace_id=workspace_id,
+                direction="credit",
+                points_delta=promotion_bonus_points,
+                source_type="topup_promotion_bonus",
+                source_id=str(order["order_id"]),
+                idempotency_key=(
+                    f"payment:{normalized_provider}:{normalized_order_no}:promotion_bonus"
+                ),
+                metadata={
+                    **ledger_metadata,
+                    "promotion_id": str(order["promotion_id"] or TOPUP_PROMOTION_ID),
+                    "promotion_name": str(order["promotion_name"] or TOPUP_PROMOTION_NAME),
+                    "base_points": base_points,
+                    "promotion_bonus_points": promotion_bonus_points,
+                    "total_points": total_points,
+                },
+            )
         settled = conn.execute(
             "SELECT * FROM billing_payment_orders WHERE order_id = ?",
             (str(order["order_id"]),),
         ).fetchone()
+    cache.invalidate_wallet(account_id)
     return {"already_paid": False, "order": dict(settled)}
 
 
