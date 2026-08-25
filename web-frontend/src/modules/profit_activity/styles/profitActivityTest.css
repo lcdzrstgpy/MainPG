@@ -276,6 +276,7 @@
 }
 
 .profit-single-store-field,
+.profit-single-site-field,
 .profit-import-store-field {
   display: grid;
   gap: 6px;
@@ -289,7 +290,81 @@
   margin-left: auto;
 }
 
+.profit-single-site-field {
+  min-width: 180px;
+}
+
+.profit-single-select-control {
+  position: relative;
+  display: grid;
+}
+
+.profit-single-select-control input {
+  padding-right: 38px;
+}
+
+.profit-test-page .profit-single-select-control > button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  min-width: 34px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  color: #355b78;
+  background: transparent;
+  box-shadow: none;
+}
+
+.profit-single-select-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  display: grid;
+  min-width: 100%;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid #d7e8f4;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 14px 30px rgba(24, 72, 108, .16);
+}
+
+.profit-test-page .profit-single-select-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  color: #173a55;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+
+.profit-test-page .profit-single-select-menu button:hover,
+.profit-test-page .profit-single-select-menu button.is-active {
+  color: #0878c1;
+  background: #eaf7ff;
+}
+
+.profit-single-select-menu small {
+  color: #7d97aa;
+  font-size: .7rem;
+}
+
 .profit-single-store-field input,
+.profit-single-site-field input,
 .profit-import-store-field input {
   width: 100%;
   min-height: 36px;

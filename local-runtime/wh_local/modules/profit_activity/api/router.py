@@ -166,6 +166,18 @@ def create_profit_activity_router(
         _enrich_product_source_images(products, database_path, actor.workspace_id)
         return {"products": products, "scope": scope, "owner_user_id": owner_user_id}
 
+    @router.post("/products/recalculate")
+    async def recalculate_products(request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+        require_permission(actor, "profit_activity.settings_manage", database_path)
+        payload = await request.json()
+        sites = [item.strip().upper() for item in re.split(r"[,，\s]+", str(payload.get("sites") or "")) if item.strip()]
+        scope = str(payload.get("scope") or "default")
+        return service.recalculate_products(
+            site_codes=sites,
+            actor=actor,
+            include_workspace_shared=_include_company(scope, actor, database_path),
+        )
+
     @router.get("/products/{skc}/sources")
     def product_sources(skc: str, site: str = "US", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         """Return the active 1688 source links associated with one product.

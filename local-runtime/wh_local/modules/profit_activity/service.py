@@ -93,11 +93,14 @@ class ProfitActivityService:
             {"site_code": "US", "display_name": "美区", "builtin": True},
             {"site_code": "CO", "display_name": "哥伦比亚", "builtin": True},
             {"site_code": "EC", "display_name": "厄瓜多尔", "builtin": True},
+            {"site_code": "PE", "display_name": "秘鲁", "builtin": True},
         ]
-        return [*builtin, *[{**asdict(profile), "builtin": False} for profile in self._repository.list_sites(context.workspace_id)]]
+        builtin_codes = {item["site_code"] for item in builtin}
+        custom = [profile for profile in self._repository.list_sites(context.workspace_id) if profile.site_code not in builtin_codes]
+        return [*builtin, *[{**asdict(profile), "builtin": False} for profile in custom]]
 
     def create_site(self, profile: ProfitSiteProfile, actor: Any | None = None) -> dict[str, Any]:
-        if profile.site_code in {"US", "CO", "EC"}:
+        if profile.site_code in {"US", "CO", "EC", "PE"}:
             raise ValueError("site_code_already_exists")
         context = _actor_context(actor)
         return {**asdict(self._repository.create_site(context.workspace_id, profile)), "builtin": False}
@@ -108,7 +111,7 @@ class ProfitActivityService:
 
     def _resolve_site(self, value: Any, actor: Any | None = None) -> tuple[SiteCode, ProfitSiteProfile | None]:
         site = _site(value)
-        if site in {"US", "CO", "EC"}:
+        if site in {"US", "CO", "EC", "PE"}:
             return site, None
         profile = self._repository.get_site(_actor_context(actor).workspace_id, site)
         if profile is None:
@@ -188,6 +191,40 @@ class ProfitActivityService:
             records = [record for record in records if record.skc in requested]
         return [_product_payload(record, context) for record in records]
 
+    def recalculate_products(self, *, site_codes: list[SiteCode] | None = None, actor: Any | None = None, include_workspace_shared: bool = False) -> dict[str, Any]:
+        context = _actor_context(actor)
+        snapshot = self.get_settings(actor)
+        selected_sites = [_site(site) for site in (site_codes or []) if str(site or "").strip()]
+        records = self.list_records(None, 0, 100_000, actor, include_workspace_shared=include_workspace_shared or context.is_admin)
+        if selected_sites:
+            selected = set(selected_sites)
+            records = [record for record in records if record.site_code in selected]
+        updated = 0
+        failed: list[dict[str, Any]] = []
+        for record in records:
+            try:
+                site, custom_site = self._resolve_site(record.site_code, actor)
+                preview = calculate_profit(
+                    site_code=site,
+                    selling_price=record.selling_price,
+                    cost_price=record.cost_price,
+                    weight_kg=record.weight_kg,
+                    settings=snapshot.settings,
+                    custom_site=custom_site,
+                )
+                self._repository.update_record_calculation(
+                    record.id,
+                    preview=preview,
+                    calculation_hash=_calculation_hash(preview, snapshot.revision),
+                    settings_revision=snapshot.revision,
+                    refund_rate=_refund_rate_for_site(site, snapshot.settings, custom_site),
+                )
+                updated += 1
+            except Exception as exc:
+                logger.warning("recalculate_products failed for %s/%s: %s", record.site_code, record.skc, exc)
+                failed.append({"site": record.site_code, "product_id": record.skc, "error": str(exc)})
+        return {"updated": updated, "failed": len(failed), "failures": failed[:20]}
+
     def upsert_product(self, payload: dict[str, Any], *, actor: Any | None = None, allow_company_write: bool = False, require_complete_profile: bool = False, image: tuple[str, bytes] | None = None, attachment_image: tuple[str, bytes] | None = None, source_image: tuple[str, bytes] | None = None, source_group_images: dict[int, list[tuple[str, bytes]]] | None = None) -> dict[str, Any]:
         context = _actor_context(actor)
         site, custom_site = self._resolve_site(payload.get("site", payload.get("site_code", "US")), actor)
@@ -259,7 +296,7 @@ class ProfitActivityService:
             workspace_id=context.workspace_id, created_by=context.actor_id, created_by_username=context.username,
             skc=skc, note=note, preview=preview,
             calculation_hash=_calculation_hash(preview, settings.revision), settings_revision=settings.revision,
-            refund_rate=custom_site.refund_rate if custom_site else settings.settings.ec_refund_rate if site == "EC" else settings.settings.refund_rate,
+            refund_rate=_refund_rate_for_site(site, settings.settings, custom_site),
             visibility=str(payload.get("visibility") or (current.visibility if current else "shared")),
             source_type=source_type,
             store_name=store_name,
@@ -870,6 +907,20 @@ def _ensure_group(groups: list[dict[str, Any]], index: int) -> dict[str, Any]:
     while len(groups) <= index:
         groups.append({"source_url": "", "image_paths": [], "cost": None})
     return groups[index]
+
+
+def _refund_rate_for_site(site: SiteCode, settings: ProfitSettings, custom_site: ProfitSiteProfile | None) -> Decimal:
+    if custom_site is not None:
+        return custom_site.refund_rate
+    if site == "US":
+        return settings.us_refund_rate
+    if site == "CO":
+        return settings.co_refund_rate
+    if site == "EC":
+        return settings.ec_refund_rate
+    if site == "PE":
+        return settings.pe_refund_rate
+    return settings.refund_rate
 
 
 def _actor_context(actor: Any | None = None) -> ProfitActivityActorContext:

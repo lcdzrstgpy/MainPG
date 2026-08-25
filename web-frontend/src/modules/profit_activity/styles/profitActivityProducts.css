@@ -13,6 +13,10 @@
 }
 
 .profit-products-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
   min-height: 142px;
   padding: clamp(24px, 3vw, 34px);
   border-color: #1b91bd;
@@ -29,13 +33,32 @@
   margin: 7px 0;
   color: #fff;
   font-size: clamp(1.9rem, 3vw, 2.65rem);
-  letter-spacing: -.035em;
+  letter-spacing: 0;
 }
 
 .profit-products-head p:not(.eyebrow) {
   margin: 0;
   color: #d9f1fb;
   line-height: 1.7;
+}
+
+.profit-products-hero-actions {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.profit-products-settings-toggle {
+  border-color: rgba(255, 255, 255, .4);
+  color: #fff;
+  background: rgba(255, 255, 255, .14);
+  box-shadow: 0 8px 18px rgba(7, 48, 83, .16);
+}
+
+.profit-products-settings-toggle:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, .7);
+  background: rgba(255, 255, 255, .23);
+  box-shadow: 0 10px 22px rgba(7, 48, 83, .22);
 }
 
 .profit-products-workspace {
@@ -1484,4 +1507,242 @@
   color: var(--theme-on-primary, #fff);
   background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
   box-shadow: 0 12px 24px var(--theme-primary-button-shadow, rgba(11, 147, 220, .2));
+}
+
+.profit-products-settings-backdrop {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(14, 35, 57, .34);
+  backdrop-filter: blur(3px);
+}
+
+.profit-products-settings-dialog {
+  display: grid;
+  gap: 18px;
+  width: min(780px, 100%);
+  max-height: min(760px, calc(100dvh - 48px));
+  overflow: auto;
+  padding: 26px;
+  border: 1px solid var(--theme-module-border, #d8e7f2);
+  border-radius: 18px;
+  color: var(--theme-text, #20364d);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .96), rgba(248, 252, 255, .98)),
+    var(--theme-surface, #fbfdff);
+  box-shadow: 0 20px 60px rgba(14, 49, 81, .28);
+}
+
+.profit-products-settings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.profit-products-settings-head h2 {
+  margin: 0;
+  color: var(--theme-text-strong, #172b44);
+  font-size: 1.22rem;
+  letter-spacing: 0;
+}
+
+.profit-products-settings-head p,
+.profit-products-formula-note {
+  margin: 4px 0 0;
+  color: var(--theme-muted-text, #71879d);
+  font-size: .82rem;
+  line-height: 1.5;
+}
+
+.profit-products-settings-dialog input,
+.profit-products-settings-dialog button {
+  box-sizing: border-box;
+  min-height: 42px;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  border-radius: 11px;
+  font: inherit;
+}
+
+.profit-products-settings-dialog input {
+  width: 100%;
+  padding: 10px 12px;
+  color: var(--theme-text-strong, #18334d);
+  background: var(--theme-module-surface, #fff);
+  outline: none;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+
+.profit-products-settings-dialog input:focus {
+  border-color: var(--theme-primary, #12aeea);
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(18, 174, 234, .14);
+}
+
+.profit-products-settings-dialog button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 15px;
+  color: var(--theme-button-text, #2f5878);
+  background: var(--theme-module-surface, #fff);
+  cursor: pointer;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease, color .16s ease;
+}
+
+.profit-products-settings-dialog button:hover:not(:disabled) {
+  border-color: var(--theme-primary, #82c9ef);
+  box-shadow: 0 8px 18px rgba(24, 139, 214, .12);
+}
+
+.profit-products-settings-dialog button:disabled {
+  cursor: not-allowed;
+  color: #9caaba;
+  background: #f5f8fb;
+}
+
+.profit-products-settings-close {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  flex: 0 0 32px;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-color: #cfe0eb;
+  border-radius: 9px;
+  color: #4a6983;
+  font-size: 0;
+  background: #fff;
+}
+
+.profit-products-settings-close span {
+  display: block;
+  width: 16px;
+  height: 16px;
+  font-size: 1.45rem;
+  line-height: 16px;
+  text-align: center;
+  transform: translateY(-1px);
+}
+
+.profit-products-save-root,
+.profit-products-settings-fields label,
+.profit-products-new-site-form label {
+  display: grid;
+  gap: 7px;
+  color: #526a82;
+  font-size: .82rem;
+  font-weight: 800;
+}
+
+.profit-products-save-root input {
+  font-size: .86rem;
+}
+
+.profit-products-settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profit-products-settings-tabs button {
+  min-width: 92px;
+  min-height: 38px;
+  padding: 8px 16px;
+  border-color: #cfe0eb;
+  color: #466984;
+  background: rgba(255, 255, 255, .86);
+  font-weight: 800;
+}
+
+.profit-products-settings-tabs button.is-active {
+  border-color: var(--theme-primary, #168dd2);
+  color: var(--theme-primary, #0878c1);
+  background: var(--theme-primary-soft, #e7f6ff);
+  box-shadow: 0 8px 18px rgba(18, 174, 234, .13);
+}
+
+.profit-products-settings-tabs .profit-products-add-site-button {
+  border-style: dashed;
+  color: #49718f;
+  background: #f8fbfd;
+}
+
+.profit-products-new-site-form {
+  display: grid;
+  grid-template-columns: minmax(130px, .7fr) minmax(180px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  border: 1px dashed #a9cbe0;
+  border-radius: 14px;
+  background: rgba(246, 251, 254, .92);
+}
+
+.profit-products-new-site-form input.is-invalid {
+  border-color: #d95a5a;
+  box-shadow: 0 0 0 3px rgba(217, 90, 90, .12);
+}
+
+.profit-products-settings-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(207, 224, 235, .72);
+  border-radius: 14px;
+  background: rgba(248, 251, 253, .82);
+}
+
+.profit-products-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.profit-products-settings-actions .primary-button {
+  border: 0;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+  box-shadow: 0 12px 24px var(--theme-primary-button-shadow, rgba(11, 147, 220, .2));
+}
+
+.profit-products-settings-actions .primary-button:hover:not(:disabled) {
+  box-shadow: 0 14px 28px var(--theme-primary-button-shadow, rgba(11, 147, 220, .25));
+}
+
+@media (max-width: 700px) {
+  .profit-products-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .profit-products-hero-actions,
+  .profit-products-settings-toggle {
+    width: 100%;
+  }
+
+  .profit-products-settings-backdrop {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .profit-products-settings-dialog {
+    max-height: calc(100dvh - 24px);
+    padding: 18px;
+    border-radius: 16px;
+  }
+
+  .profit-products-settings-fields,
+  .profit-products-new-site-form {
+    grid-template-columns: 1fr;
+  }
 }

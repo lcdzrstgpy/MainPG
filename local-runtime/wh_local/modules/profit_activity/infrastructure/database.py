@@ -70,6 +70,11 @@ def _migrate_legacy_tables(engine: Engine) -> None:
             "co_domestic_fee": "NUMERIC NOT NULL DEFAULT 2.5",
             "co_shipping_subsidy": "NUMERIC NOT NULL DEFAULT 21",
             "co_refund_rate": "NUMERIC NOT NULL DEFAULT 0.05",
+            "pe_first_mile_rate": "NUMERIC NOT NULL DEFAULT 80",
+            "pe_first_mile_fixed": "NUMERIC NOT NULL DEFAULT 0",
+            "pe_domestic_fee": "NUMERIC NOT NULL DEFAULT 2.5",
+            "pe_shipping_subsidy": "NUMERIC NOT NULL DEFAULT 21",
+            "pe_refund_rate": "NUMERIC NOT NULL DEFAULT 0.05",
         },
         "profit_activity_records": {
             "workspace_id": "TEXT NOT NULL DEFAULT 'default'",
@@ -107,6 +112,8 @@ def _migrate_legacy_tables(engine: Engine) -> None:
                     if table == "profit_activity_settings" and name in {
                         "us_domestic_fee", "us_shipping_subsidy", "us_refund_rate",
                         "co_domestic_fee", "co_shipping_subsidy", "co_refund_rate",
+                        "pe_first_mile_rate", "pe_first_mile_fixed", "pe_domestic_fee",
+                        "pe_shipping_subsidy", "pe_refund_rate",
                     }:
                         site_fee_columns_added = True
         connection.exec_driver_sql(
@@ -140,7 +147,7 @@ def _migrate_legacy_tables(engine: Engine) -> None:
                 UPDATE profit_activity_settings
                 SET us_first_mile_rate = CASE WHEN CAST(us_first_mile_rate AS REAL) = 0 THEN 72 ELSE us_first_mile_rate END,
                     us_first_mile_fixed = CASE WHEN CAST(us_first_mile_fixed AS REAL) = 0 THEN 5 ELSE us_first_mile_fixed END,
-                    co_first_mile_rate = CASE WHEN CAST(co_first_mile_rate AS REAL) = 0 THEN 80 ELSE co_first_mile_rate END,
+                    co_first_mile_rate = CASE WHEN CAST(co_first_mile_rate AS REAL) IN (0, 80) THEN 70 ELSE co_first_mile_rate END,
                     ec_first_mile_rate = CASE WHEN CAST(ec_first_mile_rate AS REAL) = 0 THEN 108 ELSE ec_first_mile_rate END,
                     ec_domestic_fee = CASE WHEN CAST(ec_domestic_fee AS REAL) = 0 THEN 2.5 ELSE ec_domestic_fee END,
                     ec_shipping_subsidy = CASE WHEN CAST(ec_shipping_subsidy AS REAL) = 0 THEN 15 ELSE ec_shipping_subsidy END,
@@ -152,6 +159,10 @@ def _migrate_legacy_tables(engine: Engine) -> None:
                     us_refund_rate = CASE WHEN CAST(refund_rate AS REAL) = 0 THEN 0.05 ELSE refund_rate END,
                     co_domestic_fee = CASE WHEN CAST(domestic_fee AS REAL) = 0 THEN 2.5 ELSE domestic_fee END,
                     co_shipping_subsidy = CASE WHEN CAST(shipping_subsidy AS REAL) = 0 THEN 21 ELSE shipping_subsidy END,
-                    co_refund_rate = CASE WHEN CAST(refund_rate AS REAL) = 0 THEN 0.05 ELSE refund_rate END
+                    co_refund_rate = CASE WHEN CAST(refund_rate AS REAL) = 0 THEN 0.05 ELSE refund_rate END,
+                    pe_first_mile_rate = CASE WHEN CAST(pe_first_mile_rate AS REAL) = 0 THEN 80 ELSE pe_first_mile_rate END,
+                    pe_domestic_fee = CASE WHEN CAST(pe_domestic_fee AS REAL) = 0 THEN 2.5 ELSE pe_domestic_fee END,
+                    pe_shipping_subsidy = CASE WHEN CAST(pe_shipping_subsidy AS REAL) = 0 THEN 21 ELSE pe_shipping_subsidy END,
+                    pe_refund_rate = CASE WHEN CAST(pe_refund_rate AS REAL) = 0 THEN 0.05 ELSE pe_refund_rate END
                 """
             )
