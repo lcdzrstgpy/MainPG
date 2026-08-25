@@ -20,6 +20,7 @@ import {
   centimetersToUnit,
   changeDisplayUnit,
   changeDimensionValue,
+  dimensionUnitLabel,
   invalidateRenderOnEdit,
   nextQueueItem,
   removeAnnotation,
@@ -31,7 +32,6 @@ import type {
   DimensionCanvasBatch,
   DimensionCanvasItem,
   DimensionKey,
-  DimensionUnit,
   EditorState,
   NormalizedPoint,
   SaveDimensionItemRequest,
@@ -51,12 +51,6 @@ type HistoryState = {
 };
 
 const DIMENSION_LABELS = { length: "长", width: "宽", height: "高" } as const;
-const UNIT_OPTIONS: Array<{ value: DimensionUnit; label: string }> = [
-  { value: "cm", label: "厘米 (cm)" },
-  { value: "mm", label: "毫米 (mm)" },
-  { value: "in", label: "英寸 (in)" },
-  { value: "ft", label: "英尺 (ft)" },
-];
 
 function CanvasAssetThumb({ asset }: { asset: DimensionAsset }) {
   const [failed, setFailed] = useState(false);
@@ -493,11 +487,6 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
             <div className="dimension-values">
               <div className="dimension-value-heading">
                 <span className="dimension-meta-label">商品本体尺寸</span>
-                <label>显示单位
-                  <select value={editor.displayUnit} onChange={(event) => updateEditor(changeDisplayUnit(editor, event.target.value as DimensionUnit))}>
-                    {UNIT_OPTIONS.map((unit) => <option key={unit.value} value={unit.value}>{unit.label}</option>)}
-                  </select>
-                </label>
               </div>
               <div className="dimension-value-list">
                 {(["length", "width", "height"] as const).map((key) => {
@@ -514,7 +503,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
                         }
                       }} />
                       <button type="button" onClick={() => selectDimensionTool(key)} disabled={value.valueCm == null || value.valueCm <= 0}>绘制</button>
-                      <em>{editor.displayUnit} · {value.provenance === "package_estimate" ? "处理表估值（绘制前确认）" : value.provenance}</em>
+                      <em>{dimensionUnitLabel(editor.displayUnit)} · {value.provenance === "package_estimate" ? "处理表估值（绘制前确认）" : value.provenance}</em>
                     </label>
                   );
                 })}
@@ -553,6 +542,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
                 }, changesSelected, changesSelected);
               }}
               onCustomValueChange={(customValueCm) => updateEditor({ ...editor, customValueCm })}
+              onDisplayUnitChange={(displayUnit) => updateEditor(changeDisplayUnit(editor, displayUnit))}
             />
             <main className="dimension-stage-panel">
               <DimensionCanvasStage

@@ -309,7 +309,7 @@ def test_renderer_rejects_unapproved_source_format() -> None:
 def test_renderer_formats_supported_display_units_from_canonical_centimeters() -> None:
     assert _format_dimension(30.48, "cm") == "30.48 cm"
     assert _format_dimension(30.48, "mm") == "304.8 mm"
-    assert _format_dimension(30.48, "in") == "12 in"
+    assert _format_dimension(30.48, "in") == "12 inch"
     assert _format_dimension(30.48, "ft") == "1 ft"
 
 

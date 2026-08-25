@@ -106,11 +106,11 @@ test("semantic edits invalidate an old render before another submit", () => {
 
 test("display-unit changes preserve canonical centimeters and relabel annotations", () => {
   const state = fixtureState({ annotations: [annotation("a", "length", 30.48)] });
-  const next = changeDisplayUnit(state, "ft");
+  const next = changeDisplayUnit(state, "in");
   assert.equal(next.dimensions.length.valueCm, 10);
   assert.equal(next.annotations[0].valueCm, 30.48);
-  assert.equal(next.annotations[0].unit, "ft");
-  assert.equal(formatDimension(next.annotations[0].valueCm, "ft"), "1 ft");
+  assert.equal(next.annotations[0].unit, "in");
+  assert.equal(formatDimension(next.annotations[0].valueCm, "in"), "12 inch");
 });
 
 test("custom annotation requires a positive value before completion", () => {

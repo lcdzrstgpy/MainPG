@@ -1,5 +1,5 @@
-import type { DimensionEndpointStyle, DimensionKey, DimensionLineWidth, EditorState } from "../types/dimensionCanvas";
-import { centimetersToUnit, unitToCentimeters } from "../data/dimensionCanvasModel";
+import type { DimensionEndpointStyle, DimensionKey, DimensionLineWidth, DimensionUnit, EditorState } from "../types/dimensionCanvas";
+import { centimetersToUnit, dimensionUnitLabel, unitToCentimeters } from "../data/dimensionCanvasModel";
 
 type Props = {
   editor: EditorState;
@@ -17,6 +17,7 @@ type Props = {
   onLineWidth: (lineWidth: DimensionLineWidth) => void;
   onEndpointStyle: (endpointStyle: DimensionEndpointStyle) => void;
   onCustomValueChange: (valueCm: number | null) => void;
+  onDisplayUnitChange: (unit: DimensionUnit) => void;
 };
 
 const DIMENSION_TOOLS: Array<{ key: Exclude<DimensionKey, "custom">; label: string }> = [
@@ -36,6 +37,11 @@ const ENDPOINT_STYLES: Array<{ key: DimensionEndpointStyle; label: string; title
   { key: "arrow", label: "三角", title: "两端三角箭头" },
   { key: "bar", label: "横杠", title: "两端横杠端点" },
   { key: "none", label: "无", title: "无端点直线" },
+];
+
+const DISPLAY_UNITS: Array<{ key: Extract<DimensionUnit, "cm" | "in">; label: string }> = [
+  { key: "cm", label: "cm" },
+  { key: "in", label: "inch" },
 ];
 
 function EndpointStyleIcon({ style }: { style: DimensionEndpointStyle }) {
@@ -70,6 +76,7 @@ export function DimensionCanvasToolbar({
   onLineWidth,
   onEndpointStyle,
   onCustomValueChange,
+  onDisplayUnitChange,
 }: Props) {
   const selectedAnnotation = editor.annotations.find((annotation) => annotation.id === editor.selectedAnnotationId);
   const activeEndpointStyle = selectedAnnotation?.endpointStyle ?? editor.endpointStyle;
@@ -88,6 +95,23 @@ export function DimensionCanvasToolbar({
 
   return (
     <aside className="dimension-toolbar" aria-label="尺寸画布工具栏">
+      <div className="dimension-tool-group dimension-unit-tools">
+        <span className="dimension-tool-label">显示单位</span>
+        <div className="dimension-unit-row" role="group" aria-label="尺寸显示单位">
+          {DISPLAY_UNITS.map(({ key, label }) => (
+            <button
+              type="button"
+              key={key}
+              className={editor.displayUnit === key ? "is-active" : ""}
+              onClick={() => onDisplayUnitChange(key)}
+              aria-pressed={editor.displayUnit === key}
+              title={`以 ${label} 显示尺寸`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="dimension-tool-group dimension-tool-main">
         <span className="dimension-tool-label">绘制工具</span>
         <button className={`dimension-tool-primary${editor.activeTool === "select" ? " is-active" : ""}`} onClick={() => onTool("select")}>
@@ -150,7 +174,7 @@ export function DimensionCanvasToolbar({
                 );
               }}
             />
-            <em>{editor.displayUnit}</em>
+            <em>{dimensionUnitLabel(editor.displayUnit)}</em>
           </label>
         </div>
       </div>
