@@ -1,5 +1,5 @@
 export type DimensionKey = "length" | "width" | "height" | "custom";
-export type DimensionUnit = "cm" | "mm" | "in" | "ft";
+export type DimensionUnit = "cm" | "mm" | "in" | "ft" | "both";
 export type DimensionLineWidth = "thin" | "normal" | "thick";
 export type DimensionEndpointStyle = "arrow" | "bar" | "none";
 

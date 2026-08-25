@@ -9,6 +9,7 @@ import {
   formatDimension,
   invalidateRenderOnEdit,
   nextQueueItem,
+  toggleDisplayUnit,
 } from "./dimensionCanvasModel.ts";
 import type {
   DimensionAnnotation,
@@ -111,6 +112,17 @@ test("display-unit changes preserve canonical centimeters and relabel annotation
   assert.equal(next.annotations[0].valueCm, 30.48);
   assert.equal(next.annotations[0].unit, "in");
   assert.equal(formatDimension(next.annotations[0].valueCm, "in"), "12 inch");
+});
+
+test("cm and inch toggles can be active together and keep one unit selected", () => {
+  const state = fixtureState({ annotations: [annotation("a", "length", 30.48)] });
+  const both = toggleDisplayUnit(state, "in");
+  assert.equal(both.displayUnit, "both");
+  assert.equal(both.annotations[0].unit, "both");
+  assert.equal(formatDimension(both.annotations[0].valueCm, "both"), "30.48 cm / 12 inch");
+  const inchOnly = toggleDisplayUnit(both, "cm");
+  assert.equal(inchOnly.displayUnit, "in");
+  assert.equal(toggleDisplayUnit(inchOnly, "in").displayUnit, "in");
 });
 
 test("custom annotation requires a positive value before completion", () => {

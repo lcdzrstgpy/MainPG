@@ -311,6 +311,7 @@ def test_renderer_formats_supported_display_units_from_canonical_centimeters() -
     assert _format_dimension(30.48, "mm") == "304.8 mm"
     assert _format_dimension(30.48, "in") == "12 inch"
     assert _format_dimension(30.48, "ft") == "1 ft"
+    assert _format_dimension(30.48, "both") == "30.48 cm / 12 inch"
 
 
 def test_source_inspection_accepts_webp_and_reports_real_dimensions() -> None:

@@ -36,7 +36,7 @@ class DimensionAnnotation(BaseModel):
     style: Literal["auto", "dark", "light", "gray_dashed"] = "auto"
     line_width: Literal["thin", "normal", "thick"] = "normal"
     endpoint_style: Literal["arrow", "bar", "none"] = "arrow"
-    unit: Literal["cm", "mm", "in", "ft"] = "cm"
+    unit: Literal["cm", "mm", "in", "ft", "both"] = "cm"
 
 
 class DimensionRenderRequest(BaseModel):
@@ -322,7 +322,11 @@ def _load_font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default(size=size)
 
 
-def _format_dimension(value_cm: float, unit: Literal["cm", "mm", "in", "ft"]) -> str:
+def _format_dimension(value_cm: float, unit: Literal["cm", "mm", "in", "ft", "both"]) -> str:
+    if unit == "both":
+        cm_label = _format_dimension(value_cm, "cm")
+        inch_label = _format_dimension(value_cm, "in")
+        return f"{cm_label} / {inch_label}"
     converted = {
         "cm": value_cm,
         "mm": value_cm * 10,
