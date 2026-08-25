@@ -671,7 +671,7 @@ def test_reference_download_cache_is_bounded_and_does_not_cache_failures(monkeyp
     assert calls[second] == 1
 
 
-def test_reference_loading_fails_closed_when_first_image_is_unavailable(monkeypatch) -> None:
+def test_reference_loading_uses_next_candidate_when_first_image_is_unavailable(monkeypatch) -> None:
     calls: list[str] = []
 
     def download(url: str) -> tuple[bytes, str]:
@@ -683,16 +683,97 @@ def test_reference_loading_fails_closed_when_first_image_is_unavailable(monkeypa
     monkeypatch.setattr(media_module, "_download_reference_image", download)
     processor = ProductImageProcessor(lambda: {})
 
-    with pytest.raises(MediaProcessingError, match="required first reference"):
-        processor._load_references(
-            [
-                "https://example.com/original-main.jpg",
-                "https://example.com/detail.jpg",
-            ],
-            limit=2,
-        )
+    loaded = processor._load_references(
+        [
+            "https://example.com/original-main.jpg",
+            "https://example.com/detail.jpg",
+        ],
+        limit=1,
+    )
 
-    assert calls == ["https://example.com/original-main.jpg"]
+    assert loaded[0][0] == b"fallback-image"
+    assert calls == [
+        "https://example.com/original-main.jpg",
+        "https://example.com/detail.jpg",
+    ]
+
+
+def test_reference_download_retries_transient_connection_and_logs_stage(monkeypatch, capsys) -> None:
+    calls = 0
+
+    def pinned(_url: str, **_kwargs) -> tuple[bytes, str]:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            try:
+                raise ConnectionResetError("connection reset by peer")
+            except ConnectionResetError as root:
+                raise MediaProcessingError(
+                    "provider result download is temporarily unavailable"
+                ) from root
+        return b"recovered-image", "image/jpeg"
+
+    monkeypatch.setattr(media_module, "_download_pinned_public_image", pinned)
+    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+
+    content, content_type = media_module._download_reference_image(
+        "https://reference.example.test/source.jpg"
+    )
+
+    assert (content, content_type) == (b"recovered-image", "image/jpeg")
+    assert calls == 3
+    output = capsys.readouterr().out
+    assert "stage=reference_input" in output
+    assert "host=reference.example.test" in output
+    assert "error_type=ConnectionResetError" in output
+
+
+def test_provider_result_download_exhaustion_never_retries_paid_generation(
+    monkeypatch,
+) -> None:
+    calls = 0
+
+    def pinned(_url: str, **_kwargs) -> tuple[bytes, str]:
+        nonlocal calls
+        calls += 1
+        try:
+            raise ConnectionResetError("connection reset by peer")
+        except ConnectionResetError as root:
+            raise MediaProcessingError(
+                "provider result download is temporarily unavailable"
+            ) from root
+
+    monkeypatch.setattr(media_module, "_download_pinned_public_image", pinned)
+    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+
+    with pytest.raises(MediaProcessingError) as captured:
+        media_module._download_provider_result_image("https://result.example.test/image.png")
+
+    assert calls == 3
+    assert captured.value.status_class == "provider_result_download_failed"
+    assert media_module._retry_class(captured.value) == "non_retryable_local"
+
+
+def test_reference_loading_skips_unreadable_local_cache_and_uses_next_file(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    unreadable = tmp_path / "broken.jpg"
+    fallback = tmp_path / "fallback.jpg"
+    unreadable.write_bytes(b"broken")
+    fallback.write_bytes(b"fallback")
+
+    def read_local(path: Path) -> tuple[bytes, str]:
+        if path == unreadable:
+            raise MediaProcessingError("local reference image is unreadable")
+        return b"valid-fallback", "image/jpeg"
+
+    monkeypatch.setattr(media_module, "_read_local_reference", read_local)
+    processor = ProductImageProcessor(lambda: {})
+
+    loaded = processor._load_references([str(unreadable), str(fallback)], limit=1)
+
+    assert loaded[0][:3] == (b"valid-fallback", "fallback.jpg", "image/jpeg")
 
 
 def test_provider_config_uses_image_gpt_with_explicit_1k_reference_profile(monkeypatch) -> None:

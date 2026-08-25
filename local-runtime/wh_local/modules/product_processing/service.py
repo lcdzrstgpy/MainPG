@@ -1377,6 +1377,70 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     def retry_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
         return self.sync_draft_source_images(draft_id, workspace_id)
 
+    def _generation_reference_values(
+        self,
+        draft_id: int,
+        remote_values: list[str],
+        workspace_id: str,
+    ) -> tuple[list[str], int]:
+        """Prefer ready managed source files while retaining remote fallbacks.
+
+        Collection already materializes source images under the product-processing
+        storage root. Reusing those bytes avoids a second network trip immediately
+        before image generation. Every remote value is kept after the local
+        candidates so server-managed providers (which require public URLs) and
+        missing/corrupt local files still have a safe fallback.
+        """
+
+        requested = list(
+            dict.fromkeys(
+                str(value or "").strip()
+                for value in remote_values
+                if str(value or "").strip()
+            )
+        )
+        if not requested:
+            return [], 0
+        try:
+            source_images = self.repository.list_source_images(
+                product_draft_id=int(draft_id),
+                workspace_id=workspace_id,
+            )
+        except Exception:
+            # The source library is an optimization, not a prerequisite for the
+            # existing remote-reference path.
+            return requested, 0
+
+        ready_by_url: dict[str, list[str]] = {}
+        all_ready_paths: list[str] = []
+        for image in source_images:
+            if str(image.get("sync_status") or "") != "ready":
+                continue
+            raw_path = str(image.get("local_path") or "").strip()
+            if not raw_path:
+                continue
+            try:
+                managed_path = str(self.assets.require_managed_file(raw_path))
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+            if managed_path not in all_ready_paths:
+                all_ready_paths.append(managed_path)
+            source_url = str(image.get("url") or "").strip()
+            if source_url:
+                ready_by_url.setdefault(source_url, []).append(managed_path)
+
+        local_candidates: list[str] = []
+        for value in requested:
+            for path in ready_by_url.get(value, []):
+                if path not in local_candidates:
+                    local_candidates.append(path)
+        # A failed/corrupt primary cache entry can fall through to another ready
+        # image belonging to the same product before any remote download is tried.
+        for path in all_ready_paths:
+            if path not in local_candidates:
+                local_candidates.append(path)
+        return [*local_candidates, *requested], len(local_candidates)
+
     def _seed_draft_source_images(self, draft: dict[str, Any], raw: dict[str, Any]) -> None:
         source_urls = [self._text(draft.get("image_url"))]
         source_urls.extend(self._url_list(raw.get("source_image_urls")))
@@ -4138,10 +4202,27 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 ]
             )
         )
+        vision_reference_urls = detail_reference_urls[:6]
+        source_reference_values, source_local_reference_count = self._generation_reference_values(
+            int(draft["id"]),
+            source_image_urls,
+            workspace_id,
+        )
+        detail_reference_values, detail_local_reference_count = self._generation_reference_values(
+            int(draft["id"]),
+            detail_reference_urls,
+            workspace_id,
+        )
         source_attributes = self._source_attributes_text(raw)
 
         ai_notes: list[str] = []
         provider_attempts: dict[str, int] = {}
+        if source_local_reference_count:
+            ai_notes.append(f"image_references:local-cache:{source_local_reference_count}")
+        elif source_image_urls:
+            ai_notes.append("image_references:remote-fallback")
+        if detail_local_reference_count and detail_reference_values != source_reference_values:
+            ai_notes.append(f"detail_references:local-cache:{detail_local_reference_count}")
         provider_status_classes: dict[str, str] = {}
         optimized_title = title
         description = self._text(draft.get("description") or raw.get("description"))
@@ -4191,7 +4272,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     "vision_identity",
                     {
                         "draft_id": int(draft["id"]),
-                        "main_image_url": source_image_urls[0],
+                        "image_urls": vision_reference_urls,
                         "source_title": source_title,
                         "model": DOUBAO_VISION_MODEL_ID,
                         "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
@@ -4237,7 +4318,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 attempt_state.doubao_vision = None
                 try:
                     analysis = self._recognize_doubao_subject(
-                        source_image_urls[0], source_title
+                        vision_reference_urls, source_title
                     )
                 except DoubaoVisionError as exc:
                     record_stage("doubao_subject", stage_started)
@@ -4481,7 +4562,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     raw,
                     title,
                     category,
-                    source_image_urls,
+                    source_reference_values,
                     target_language,
                     target_site,
                     media_ai_notes,
@@ -4497,7 +4578,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     raw,
                     title,
                     category,
-                    detail_reference_urls,
+                    detail_reference_values,
                     target_language,
                     target_site,
                     media_ai_notes,
@@ -4565,6 +4646,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             deterministic_dimensions = (
                 self._extract_deterministic_size(raw) if needs_dimensions else None
             )
+            known_dimensions = dict(deterministic_dimensions or {})
+            image_measurements = vision_identity.get("explicit_measurements")
+            if needs_dimensions and isinstance(image_measurements, dict):
+                explicit_image_dimensions = {
+                    key: float(number)
+                    for key in ("length_cm", "width_cm", "height_cm", "weight_g")
+                    if (number := self._number(image_measurements.get(key))) is not None
+                    and float(number) > 0
+                }
+                if explicit_image_dimensions:
+                    # Structured table/SKU evidence remains authoritative; image
+                    # measurements only fill fields that source text did not provide.
+                    explicit_image_dimensions.update(known_dimensions)
+                    known_dimensions = explicit_image_dimensions
             variant_values = self._unique_variant_values(raw)
             receipt_output = structured_receipt.get("output") if structured_receipt else None
             if isinstance(receipt_output, dict):
@@ -4589,14 +4684,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         needs_title=bool(needs_title),
                         needs_description=bool(needs_desc),
                         needs_dimensions=bool(needs_dimensions),
-                        known_dimensions=deterministic_dimensions,
+                        known_dimensions=known_dimensions,
                     )
                 except DoubaoTextError as exc:
                     text_failure = exc
                     combined = None
                     needs_title = False
                     needs_desc = False
-                    product_dimensions = dict(deterministic_dimensions or {})
+                    product_dimensions = dict(known_dimensions)
                     provider_attempts["doubao_text"] = max(
                         0, int(exc.attempt_count)
                     )
@@ -4637,6 +4732,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     translations = combined["variant_translations"]
                 if needs_dimensions:
                     product_dimensions = dict(combined.get("product_dimensions") or {})
+                    # Never let the text model replace measurements explicitly
+                    # captured from the source table, selected SKU, or image.
+                    product_dimensions.update(known_dimensions)
                 ai_notes.append("text:managed-service-combined")
             if (needs_title or needs_desc) and text_failure is None:
                 text_failure = DoubaoTextError(
@@ -4718,7 +4816,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         raw,
                         title,
                         category,
-                        source_image_urls,
+                        source_reference_values,
                         target_language,
                         target_site,
                         media_ai_notes,
@@ -4735,7 +4833,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         raw,
                         title,
                         category,
-                        source_image_urls,
+                        source_reference_values,
                         target_language,
                         target_site,
                         media_ai_notes,
@@ -4754,7 +4852,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     raw,
                     title,
                     category,
-                    detail_reference_urls,
+                    detail_reference_values,
                     target_language,
                     target_site,
                     media_ai_notes,
@@ -4822,7 +4920,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     raw,
                     title,
                     category,
-                    source_image_urls,
+                    source_reference_values,
                     target_language,
                     target_site,
                     ai_notes,
@@ -4850,17 +4948,24 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 # generation failure into a misleading completed result, even when
                 # an older task payload contains force-import compatibility flags.
                 mode_label = "精品4K" if premium_mode else "普通智能生图"
+                image_failure_detail = self._latest_ai_failure_detail(ai_notes)
                 return {
                     **item,
                     "title": optimized_title,
                     "image_url": image_url,
-                    "status": "failed",
-                    "reason": "商品图片生成失败",
+                    "status": "attention_required",
+                    "reason": "商品图片待补充",
                     "result": {
                         "error_type": "image_grid_incomplete",
                         "failure_class": "technical_retryable",
+                        "partial_result": True,
+                        "pending_stage": "carousel_images",
                         "operator_hint": "图片未达质量标准，可重试生成；或直接入库后人工替换图片",
-                        "debug_hint": f"{mode_label}未生成4张可用轮播图；生成图未通过本地质量门；可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警",
+                        "debug_hint": (
+                            f"{mode_label}未生成4张可用轮播图；生成图未通过本地质量门；"
+                            "可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警"
+                            + (f"；底层原因：{image_failure_detail}" if image_failure_detail else "")
+                        ),
                         "retryable": True,
                         "rejected_image_paths": list(grid_output.rejected_image_paths),
                         "optimized_title": optimized_title,
@@ -4907,7 +5012,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         raw,
                         title,
                         category,
-                        detail_reference_urls,
+                        detail_reference_values,
                         target_language,
                         target_site,
                         ai_notes,
@@ -4925,17 +5030,23 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if detail_image_paths:
             ai_notes.append("detail_images:ai")
         if need_detail and not detail_image_paths:
+            detail_failure_detail = self._latest_ai_failure_detail(ai_notes)
             return {
                 **item,
                 "title": optimized_title,
                 "image_url": image_url,
-                "status": "failed",
-                "reason": "详情图生成失败",
+                "status": "attention_required",
+                "reason": "详情图待补充",
                 "result": {
                     "error_type": "detail_images_incomplete",
                     "failure_class": "technical_retryable",
+                    "partial_result": True,
+                    "pending_stage": "detail_images",
                     "operator_hint": "可重试生成详情图",
-                    "debug_hint": "详情图未生成可用结果；文本结果已保留；请重试图片分支或检查图片服务配置",
+                    "debug_hint": "详情图未生成可用结果；文本结果已保留；请重试图片分支或检查图片服务配置"
+                    + (
+                        f"；底层原因：{detail_failure_detail}" if detail_failure_detail else ""
+                    ),
                     "retryable": True,
                     "optimized_title": optimized_title,
                     "description": description,
@@ -5120,6 +5231,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """向 ai_notes 追加带真实原因的失败标记，便于操作员判断重试/换配置。"""
         if ai_notes is not None:
             ai_notes.append(f"{stage}:ai-failed: {reason}")
+
+    @staticmethod
+    def _latest_ai_failure_detail(ai_notes: list[str] | None) -> str:
+        marker = ":ai-failed:"
+        for note in reversed(ai_notes or []):
+            _stage, separator, detail = str(note).partition(marker)
+            if separator and detail.strip():
+                return detail.strip()
+        return ""
+
 
     @staticmethod
     def _note_media_unconfigured(ai_notes: list[str] | None, stage: str) -> None:
@@ -6530,6 +6651,29 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         attributes = raw.get("source_attributes") or {}
         axis_values: dict[str, float] = {}
         weight_values: list[float] = []
+        preferred_weight_values: list[float] = []
+
+        def weight_in_grams(value: Any, *, assume_kg: bool = False) -> float | None:
+            text = str(value or "").strip()
+            parsed = _WEIGHT_VALUE.search(text)
+            if parsed and float(parsed.group(1)) > 0:
+                number = float(parsed.group(1))
+                unit = parsed.group(2).casefold()
+                return number * 1000 if unit in {"kg", "千克", "公斤"} else number
+            if re.fullmatch(r"\d+(?:\.\d+)?", text):
+                number = float(text)
+                if 0 < number < (1000 if assume_kg else 100000):
+                    return number * 1000 if assume_kg else number
+            return None
+        if isinstance(attributes, list):
+            canonical: dict[str, Any] = {}
+            for item in attributes:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or item.get("key") or item.get("attribute_name_en") or "").strip()
+                if name:
+                    canonical[name] = item.get("value", item.get("value_name_en"))
+            attributes = canonical
         if isinstance(attributes, dict):
             for key, value in attributes.items():
                 key_text = str(key or "").strip()
@@ -6552,13 +6696,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         weight = float(parsed.group(1))
                         unit = parsed.group(2).casefold()
                         if weight > 0:
-                            weight_values.append(weight * 1000 if unit in {"kg", "千克", "公斤"} else weight)
+                            preferred_weight_values.append(weight * 1000 if unit in {"kg", "千克", "公斤"} else weight)
         for variant in raw.get("source_variant_records") or []:
             if not isinstance(variant, dict):
                 continue
             variant_attrs = variant.get("attributes")
             if isinstance(variant_attrs, dict):
                 texts.extend(str(value) for value in variant_attrs.values() if value not in (None, ""))
+            variant_weight_values = preferred_weight_values if variant.get("selected") else weight_values
             # 插件/整店采集的 SKU 记录可能直接携带重量字段。
             variant_weight_text = str(variant.get("weight_text") or "").strip()
             variant_weight_kg = variant.get("weight_kg")
@@ -6567,23 +6712,34 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 parsed = _WEIGHT_VALUE.search(variant_weight_text)
                 if parsed and float(parsed.group(1)) > 0:
                     unit = (parsed.group(2) or "").casefold()
-                    weight_values.append(
+                    variant_weight_values.append(
                         float(parsed.group(1)) * (1000 if unit in {"kg", "千克", "公斤"} else 1)
                     )
                 elif re.fullmatch(r"\d+(?:\.\d+)?", variant_weight_text):
                     number = float(variant_weight_text)
                     if 0 < number < 100000:
-                        weight_values.append(number)
+                        variant_weight_values.append(number)
             elif variant_weight_kg not in (None, ""):
                 variant_kg_text = str(variant_weight_kg).strip()
                 texts.append(variant_kg_text)
                 parsed = _WEIGHT_VALUE.search(variant_kg_text)
                 if parsed and float(parsed.group(1)) > 0:
-                    weight_values.append(float(parsed.group(1)) * 1000)
+                    variant_weight_values.append(float(parsed.group(1)) * 1000)
                 elif re.fullmatch(r"\d+(?:\.\d+)?", variant_kg_text):
                     number = float(variant_kg_text)
                     if 0 < number < 1000:
-                        weight_values.append(number * 1000)
+                        variant_weight_values.append(number * 1000)
+        employee_action = raw.get("employee_action_validation")
+        employee_action = employee_action if isinstance(employee_action, dict) else {}
+        employee_weight_text = raw.get("employee_action_weight_text") or employee_action.get("weight_text")
+        employee_weight_kg = raw.get("employee_action_weight_kg")
+        if employee_weight_kg in (None, ""):
+            employee_weight_kg = employee_action.get("weight_kg")
+        employee_weight = weight_in_grams(employee_weight_text)
+        if employee_weight is None:
+            employee_weight = weight_in_grams(employee_weight_kg, assume_kg=True)
+        if employee_weight is not None:
+            preferred_weight_values.append(employee_weight)
         weight_text_value = str(raw.get("weight_text") or "").strip()
         if not weight_text_value:
             # 其他采集方式可能只回传 weight_kg / item_weight 等直系键。
@@ -6655,8 +6811,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     for axis, value in zip(("length", "width", "height"), values, strict=True):
                         put(axis, value * scale)
         # 4) 重量：属性键优先（毛重/净重/重量…），再回退全文模式。
-        if weight_values and not dimensions.get("weight_g"):
-            dimensions["weight_g"] = round(max(weight_values), 2)
+        resolved_weights = preferred_weight_values or weight_values
+        if resolved_weights and not dimensions.get("weight_g"):
+            dimensions["weight_g"] = round(max(resolved_weights), 2)
         if not dimensions.get("weight_g"):
             weight_match = _WEIGHT_PATTERN.search(joined)
             if weight_match:
@@ -6924,13 +7081,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         return state
 
     def _recognize_doubao_subject(
-        self, image_url: str, source_title: str
+        self, image_url: str | list[str], source_title: str
     ) -> SubjectAnalysis:
+        image_urls = [image_url] if isinstance(image_url, str) else list(image_url)
+        image_urls = [str(value or "").strip() for value in image_urls if str(value or "").strip()][:6]
         normalized_title = " ".join(str(source_title or "").split()).strip()[:1000]
         cache_payload = json.dumps(
             {
                 "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
-                "image_url": str(image_url or "").strip(),
+                "image_urls": image_urls,
                 "source_title": normalized_title,
             },
             ensure_ascii=False,
@@ -6950,16 +7109,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if cached is not None:
             self._attempt_state().doubao_vision = 0
             return cached
-        data_url = self._image_to_data_url(image_url)
-        if not data_url:
+        data_urls = [
+            data_url
+            for value in image_urls
+            if (data_url := self._image_to_data_url(value))
+        ]
+        if not data_urls:
             raise DoubaoVisionError(
-                "The original 1688 image could not be prepared for Doubao vision",
+                "The original product images could not be prepared for Doubao vision",
                 error_kind="transient",
                 retryable=True,
             )
         client = self._doubao_vision_client()
         try:
-            analysis = client.recognize_subject(data_url, normalized_title)
+            analysis = client.recognize_subject(data_urls, normalized_title)
         finally:
             self._attempt_state().doubao_vision = client.last_attempt_count
         with lock:
