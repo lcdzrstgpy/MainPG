@@ -238,8 +238,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             legacy_pod_enabled=False,
         )
     )
-    pod_ai_runtime = PodCustomizationAiRuntime()
-    pod_title_runtime = PodTitleRuntime()
+    pod_ai_runtime = PodCustomizationAiRuntime(image_workers=8, batch_workers=2)
+    pod_title_runtime = PodTitleRuntime(executor_workers=8, provider_concurrency=8)
     pod_billing = RemotePodBillingCoordinator(
         remote_customer_auth,
         session_remote_token_resolver(customer_sessions),

@@ -75,6 +75,7 @@ def _migrate_legacy_tables(engine: Engine) -> None:
             "workspace_id": "TEXT NOT NULL DEFAULT 'default'",
             "visibility": "TEXT NOT NULL DEFAULT 'shared'",
             "source_type": "TEXT NOT NULL DEFAULT 'manual'",
+            "store_name": "TEXT NOT NULL DEFAULT ''",
             "created_by": "TEXT NOT NULL DEFAULT ''",
             "created_by_username": "TEXT NOT NULL DEFAULT 'local'",
             "image_path": "TEXT NOT NULL DEFAULT ''",
@@ -108,6 +109,10 @@ def _migrate_legacy_tables(engine: Engine) -> None:
                         "co_domestic_fee", "co_shipping_subsidy", "co_refund_rate",
                     }:
                         site_fee_columns_added = True
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_profit_activity_records_workspace_store "
+            "ON profit_activity_records (workspace_id, store_name)"
+        )
         if threshold_state_added:
             connection.exec_driver_sql(
                 """

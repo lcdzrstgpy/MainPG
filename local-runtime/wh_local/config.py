@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 # Release automation updates this single value when producing a desktop build.
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.3.0"
 # Replace this host only when the official MainPG release origin moves. Keep the
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
@@ -19,7 +19,8 @@ UPDATE_PATCH_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/patch
 UPDATE_MANIFEST_ALLOWED_HOSTS = frozenset({UPDATE_RELEASE_HOST})
 # Public verification key only. The matching private key belongs in the release
 # signing system and must never be distributed with the application.
-UPDATE_ED25519_PUBLIC_KEY_B64 = "ld1p0SpDI2e//hmBihZ4Y7Ih/8VU299R6md/soa4r5Q="
+# 2026-08-23 regenerated keypair; private key: C:\secure\mainpg-release-ed25519.pem
+UPDATE_ED25519_PUBLIC_KEY_B64 = "qxQ5zE+euDRvWKgT+VcWeCoKcNrOxv6skEBVoCE1MIc="
 
 
 @dataclass(frozen=True)
@@ -147,4 +148,3 @@ def _local_onebound_config_paths() -> list[Path]:
         if meipass:
             candidates.append(Path(meipass) / "onebound.local.json")
     return candidates
-

@@ -107,7 +107,7 @@ def test_execution_grant_repr_never_exposes_keys_or_remote_token() -> None:
     grant = PodExecutionGrant(
         freeze_id="freeze-1",
         rule_version=7,
-        expires_at="2026-08-21T12:00:00Z",
+        expires_at="2026-12-31T12:00:00Z",
         provider_keys={"ark": "ARK-SECRET", "wuyin": "WUYIN-SECRET"},
         remote_token="REMOTE-SECRET",
     )

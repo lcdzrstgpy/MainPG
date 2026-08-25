@@ -17,7 +17,7 @@ const SUBITEM_LABELS: Record<string, string> = {
   title: "标题",
   description: "描述",
   product_dimensions: "尺寸",
-  four_grid: "四宫格",
+  four_grid: "智能生图",
   detail_images: "详情图",
 };
 
@@ -26,7 +26,7 @@ const SUBITEM_ORDER = ["title", "description", "product_dimensions", "four_grid"
 const FEATURE_KEYS = SUBITEM_ORDER;
 
 const POD_FEATURE_LABELS: Record<string, string> = {
-  "pod.title": "豆包标题",
+  "pod.title": "AI 标题",
   "pod.image": "POD 图片",
 };
 
@@ -221,7 +221,6 @@ export function SystemAdminPage() {
       <section className="settings-hero">
         <span className="settings-hero-icon iconfont icon-key" aria-hidden="true" />
         <div>
-          <p className="eyebrow">SYSTEM ADMIN</p>
           <h1>系统管理</h1>
           <p>定价规则引擎、密钥发放记录与变更审计日志。所有定价调整均由服务端计算并以版本+日志完整留痕。</p>
         </div>
@@ -446,7 +445,7 @@ export function SystemAdminPage() {
               <input
                 type="text"
                 maxLength={500}
-                placeholder="例如：图片上游涨价，四宫格单价上调 2 积分"
+                placeholder="例如：图片上游涨价，智能生图单价上调 2 积分"
                 value={changeReason}
                 onChange={(event) => setChangeReason(event.target.value)}
                 disabled={busy}

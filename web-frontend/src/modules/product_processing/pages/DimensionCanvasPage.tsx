@@ -430,7 +430,6 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
     <div className="dimension-page" ref={rootRef} tabIndex={-1}>
       <header className="dimension-commandbar">
         <div className="dimension-command-copy">
-          <span className="dimension-eyebrow">PRODUCT PROCESSING · DETERMINISTIC CANVAS</span>
           <div className="dimension-title-row">
             <span className="dimension-title-icon iconfont icon-column-width" aria-hidden="true" />
             <h1>尺寸画布</h1>

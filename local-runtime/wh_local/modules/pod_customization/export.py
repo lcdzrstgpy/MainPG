@@ -92,6 +92,7 @@ def build_pod_dianxiaomi_export(
     analysis = analyze_dianxiaomi_export(batch, style_copies)
     if analysis.block_reason is not None:
         raise ValueError(analysis.block_reason)
+    sku_names = _export_sku_names(batch["listing_fields"])
     rows = [
         _build_row(
             style_index,
@@ -99,12 +100,14 @@ def build_pod_dianxiaomi_export(
             style_copies[style_index],
             batch["business_fields"],
             batch["listing_fields"],
+            sku_name,
         )
         for style_index in sorted(analysis.exportable_styles)
+        for sku_name in sku_names
     ]
     return DianxiaomiExport(
         content=build_dianxiaomi_workbook(rows),
-        exported_style_count=len(rows),
+        exported_style_count=len(analysis.exportable_styles),
         skipped_style_count=analysis.skipped_style_count,
         filename=f'pod_dxm_{batch["batch_id"][:8]}.xlsx',
     )
@@ -211,6 +214,15 @@ def _is_complete_style_copy(value: Any) -> bool:
     )
 
 
+def _export_sku_names(listing_fields: dict[str, Any]) -> tuple[str, ...]:
+    """Keep legacy batches as one blank-SKU row while expanding saved SKU names."""
+    saved_names = listing_fields.get("sku_names")
+    if not isinstance(saved_names, list):
+        return ("",)
+    names = tuple(name.strip() for name in saved_names if isinstance(name, str) and name.strip())
+    return names or ("",)
+
+
 def _is_unsafe_attribute_character(value: str) -> bool:
     return (
         value in {'"', "'", "<", ">"}
@@ -225,6 +237,7 @@ def _build_row(
     copy: dict[str, str],
     business_fields: dict[str, Any],
     listing_fields: dict[str, Any],
+    sku_name: str = "",
 ) -> list[Any]:
     safe_title = validate_listing_copy_text("title", copy.get("title"), max_length=200)
     safe_english_title = validate_listing_copy_text(
@@ -247,9 +260,10 @@ def _build_row(
         0: selected_title,
         1: selected_title,
         2: description,
+        3: sku_name or None,
         4: "Style",
         5: f"Style {suffix}",
-        8: images["hero"],
+        8: images["lifestyle"],
         9: listing_fields["declared_price"],
         11: listing_fields["length_cm"],
         12: listing_fields["width_cm"],

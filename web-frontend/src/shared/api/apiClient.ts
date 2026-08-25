@@ -1,3 +1,5 @@
+import { toUserMessage } from "../../transport/http/client";
+
 const TOKEN_KEY = "wh_demo_token";
 
 export function getApiToken(): string {
@@ -24,7 +26,7 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     } catch {
       // Keep the status-based fallback when the response is not JSON.
     }
-    throw new Error(message);
+    throw new Error(toUserMessage(message));
   }
 
   return response.json() as Promise<T>;

@@ -20,6 +20,25 @@ _META_COMMENTARY = re.compile(
     r"|展示图|参考图|图片中|图中",
     re.IGNORECASE,
 )
+# 单行描述里「新要点」的边界：前一句以 .!? 结尾，随后是 1-6 词的标题 + 分隔符。
+# 模型偶尔把 5 条卖点写成一整段（'LABEL: body. LABEL: body. ...'），而不是换行分点。
+_POINT_BOUNDARY = re.compile(
+    r"(?<=[.!?])\s+(?=[A-Z][A-Za-z0-9'&]*(?: [A-Za-z0-9'&]+){0,5}\s*[-:：—])"
+)
+
+
+def _split_inline_points(raw: str) -> str:
+    """把单行内句号分隔的多个「LABEL: body」要点拆成多行再校验。
+
+    仅当整段不含换行且能识别出多个要点边界时才拆分；单要点段落、
+    普通段落或已换行的输入保持原样，避免误拆分正文中的普通句子。
+    """
+    if "\n" in raw:
+        return raw
+    parts = _POINT_BOUNDARY.split(raw.strip())
+    if len(parts) <= 1:
+        return raw
+    return "\n".join(part.strip() for part in parts)
 
 
 class DescriptionContractError(ValueError):
@@ -34,6 +53,9 @@ def normalize_five_point_description(value: str) -> str:
     词数（40-180）与标题「heading: body」格式不再强制。
     """
     raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    # 单行多要点（'LABEL: body. LABEL: body. ...'）先拆行，再走五点校验，
+    # 避免模型把 5 条卖点写成一整段时被「必须恰好 5 条」误判为失败。
+    raw = _split_inline_points(raw)
     if _INTERNAL_FALLBACK.search(raw):
         raise DescriptionContractError("description contains an internal fallback message")
     if _META_COMMENTARY.search(raw):

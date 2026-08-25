@@ -107,7 +107,6 @@ export function SkuBatchManager({ drafts, baseDeletes, onSaveDeletes, onBatchSav
       <section className="sku-batch-panel" role="dialog" aria-modal="true" aria-label="批量管理 SKU">
         <header className="sku-batch-head">
           <div>
-            <p className="verify-eyebrow">SKU BATCH MANAGER</p>
             <h2>批量管理 SKU</h2>
             <p>对 {drafts.length} 个商品 · 共 {totalVariants} 个 SKU 按条件筛选后批量删除或保留。</p>
           </div>

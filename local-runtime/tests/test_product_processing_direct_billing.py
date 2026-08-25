@@ -159,6 +159,38 @@ def test_derive_batch_item_respects_disabled_features() -> None:
     assert features == ["title"]
 
 
+def test_derive_batch_item_marks_retried_links_for_retry_premium() -> None:
+    """重试溢价的链接，每个上报子项都带 retried 标记供服务端按重试单价结算。"""
+    from wh_local.modules.product_processing.service import _item_had_retry
+
+    assert _item_had_retry({"ai_notes": ["four_grid:slot_1k_repair:3"], "provider_attempts": {}}) is True
+    assert _item_had_retry({"ai_notes": ["detail_images:chinese_repaired"], "provider_attempts": {}}) is True
+    assert _item_had_retry({"ai_notes": [], "provider_attempts": {"four_grid": 4}}) is True
+    assert _item_had_retry({"ai_notes": [], "provider_attempts": {"doubao_text": 3}}) is True
+    assert _item_had_retry({"ai_notes": [], "provider_attempts": {"four_grid": 1, "doubao_text": 1}}) is False
+    assert _item_had_retry({"ai_notes": ["images:receipt-hit"], "provider_attempts": {}}) is False
+
+    settings = {
+        "processing_scope": [],
+        "title_optimize": True,
+        "description": True,
+        "size": True,
+        "grid_image": True,
+        "detail_image": True,
+    }
+    derived = batch_billing_module.derive_item_results(
+        [
+            {"status": "completed", "billing_retried": True},
+            {"status": "completed", "billing_retried": False},
+            {"status": "failed", "billing_retried": True},
+        ],
+        settings,
+    )
+    assert all(sub.get("retried") for sub in derived[0]["subitems"])
+    assert all(not sub.get("retried") for sub in derived[1]["subitems"])
+    assert all(sub.get("retried") for sub in derived[2]["subitems"])
+
+
 def test_freeze_scope_items_filters_to_recorded_item_ids() -> None:
     """重试/混合状态任务：结算只上报冻结时刻记录的 pending 条目（条数==link_count）。"""
     from wh_local.modules.product_processing.service import _freeze_scope_items

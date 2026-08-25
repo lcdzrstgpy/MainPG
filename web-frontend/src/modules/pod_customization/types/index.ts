@@ -64,6 +64,7 @@ export type PodListingFieldsDraft = {
   height_cm: string;
   weight_g: string;
   category_name: string;
+  sku_names: string[];
 };
 
 export type PodListingFields = {
@@ -75,6 +76,7 @@ export type PodListingFields = {
   height_cm: number;
   weight_g: number;
   category_name: string;
+  sku_names: string[];
 };
 
 export type PodDianxiaomiExportStatus = {

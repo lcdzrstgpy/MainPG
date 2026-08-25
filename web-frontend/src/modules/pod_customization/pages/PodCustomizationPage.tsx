@@ -6,8 +6,6 @@ import { PodBatchHistory } from "../components/PodBatchHistory";
 import { PodResultLightbox } from "../components/PodResultLightbox";
 import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
 import {
-  EMPTY_POD_BUSINESS_FIELDS,
-  EMPTY_POD_LISTING_FIELDS,
   POD_BATCH_COUNTS,
   buildPromptV1,
   businessFieldsForApi,
@@ -19,7 +17,17 @@ import {
   listingFieldsForApi,
   shouldPollPodBatch,
 } from "../data/podCustomizationModel";
+import {
+  createPodSystemTemplate,
+  createEmptyPodCustomizationDraft,
+  loadPodCustomizationDraft,
+  removePodSystemTemplate,
+  resolvePodSystemTemplate,
+  savePodCustomizationDraft,
+  type PodSystemTemplate,
+} from "../data/podCustomizationDraft";
 import { usePodAssetUrl } from "../data/usePodAssetUrl";
+import { getAuthAccount } from "../../../transport/http/client";
 import type {
   PodBatch,
   PodBatchCount,
@@ -34,6 +42,13 @@ import "../styles/podCustomization.css";
 
 type Props = {
   isActive?: boolean;
+};
+
+type PodDraftAccount = {
+  account_id?: string;
+  customer_id?: string;
+  workspace_id?: string;
+  workspace_code?: string;
 };
 
 const BUSINESS_FIELDS: Array<{
@@ -60,7 +75,7 @@ function autoGrowBusinessTextarea(textarea: HTMLTextAreaElement): void {
 }
 
 const LISTING_FIELDS: Array<{
-  key: keyof PodListingFieldsDraft;
+  key: Exclude<keyof PodListingFieldsDraft, "sku_names">;
   label: string;
   placeholder: string;
   inputMode?: "decimal" | "numeric";
@@ -90,30 +105,42 @@ function replaceTemplate(templates: PodTemplate[], updated: PodTemplate): PodTem
 }
 
 export function PodCustomizationPage({ isActive = true }: Props) {
+  const draftScope = useMemo(() => {
+    const account = getAuthAccount<PodDraftAccount>();
+    const accountId = (account?.account_id || account?.customer_id)?.trim() ?? "";
+    const workspaceId = (account?.workspace_id || account?.workspace_code)?.trim() ?? "";
+    return accountId && workspaceId ? { accountId, workspaceId } : null;
+  }, []);
+  const [initialDraft] = useState(() => draftScope
+    ? loadPodCustomizationDraft(draftScope.accountId, draftScope.workspaceId)
+    : { state: createEmptyPodCustomizationDraft(), error: "登录账号信息不可用，暂不读取或保存 POD 本地草稿。" });
   const [templates, setTemplates] = useState<PodTemplate[]>([]);
   const [batches, setBatches] = useState<PodBatchSummary[]>([]);
   const [pendingBillingRuns, setPendingBillingRuns] = useState<PodBillingRun[]>([]);
   const [activeBatch, setActiveBatch] = useState<PodBatch | null>(null);
-  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [selectedTemplateId, setSelectedTemplateId] = useState(initialDraft.state.selected_template_id);
+  const [selectedTemplateSnapshot, setSelectedTemplateSnapshot] = useState<PodTemplate | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string>();
-  const [businessFields, setBusinessFields] = useState<PodBusinessFieldsDraft>({ ...EMPTY_POD_BUSINESS_FIELDS });
-  const [listingFields, setListingFields] = useState<PodListingFieldsDraft>({ ...EMPTY_POD_LISTING_FIELDS });
-  const [batchCount, setBatchCount] = useState<PodBatchCount>(20);
-  const [customCountMode, setCustomCountMode] = useState(false);
-  const [customCountInput, setCustomCountInput] = useState("20");
+  const [businessFields, setBusinessFields] = useState<PodBusinessFieldsDraft>(initialDraft.state.business_fields);
+  const [listingFields, setListingFields] = useState<PodListingFieldsDraft>(initialDraft.state.listing_fields);
+  const [batchCount, setBatchCount] = useState<PodBatchCount>(initialDraft.state.batch_count);
+  const [customCountMode, setCustomCountMode] = useState(initialDraft.state.custom_count_mode);
+  const [customCountInput, setCustomCountInput] = useState(initialDraft.state.custom_count_input);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [currentBatchEdit, setCurrentBatchEdit] = useState<string | null>(null);
+  const [currentBatchEdit, setCurrentBatchEdit] = useState<string | null>(initialDraft.state.current_batch_edit);
+  const [systemTemplates, setSystemTemplates] = useState<PodSystemTemplate[]>(initialDraft.state.system_templates);
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState("");
   const [notice, setNotice] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(initialDraft.error ?? "");
   const [visibility, setVisibility] = useState<DocumentVisibilityState>(() => document.visibilityState);
   const requestGenerationRef = useRef(0);
+  const lastDraftSaveErrorRef = useRef("");
 
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId);
-  const summaryTemplate = selectedTemplate;
+  const summaryTemplate = selectedTemplateSnapshot ?? selectedTemplate;
   const summaryTemplatePreview = usePodAssetUrl(summaryTemplate?.preview_url || summaryTemplate?.original_url);
   const summaryFields = businessFieldsForApi(businessFields);
   const selectedItem = activeBatch?.items.find((item) => item.id === selectedItemId);
@@ -132,7 +159,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     const generation = ++requestGenerationRef.current;
     const bootstrap = async () => {
       setLoading(true);
-      setError("");
       const [templateResult, historyResult, billingResult] = await Promise.allSettled([
         podCustomizationApi.listTemplates(),
         podCustomizationApi.listBatches(),
@@ -142,7 +168,12 @@ export function PodCustomizationPage({ isActive = true }: Props) {
 
       if (templateResult.status === "fulfilled") {
         setTemplates(templateResult.value.templates);
-        setSelectedTemplateId((current) => current || templateResult.value.templates.find((template) => template.calibration_status === "ready")?.id || templateResult.value.templates[0]?.id || "");
+        setSelectedTemplateId((current) => {
+          const fallback = templateResult.value.templates.find((template) => template.calibration_status === "ready")?.id
+            || templateResult.value.templates[0]?.id
+            || "";
+          return current && templateResult.value.templates.some((template) => template.id === current) ? current : fallback;
+        });
       }
       if (historyResult.status === "fulfilled") {
         const history = sortBatches(historyResult.value.batches);
@@ -221,6 +252,25 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     };
   }, [activeBatch?.id, activeBatch?.status, activeItemStatuses, activeTitleStatuses, isActive, visibility]);
 
+  useEffect(() => {
+    if (!draftScope) return;
+    const result = savePodCustomizationDraft(draftScope.accountId, draftScope.workspaceId, {
+      version: 1,
+      business_fields: businessFields,
+      listing_fields: listingFields,
+      batch_count: batchCount,
+      custom_count_mode: customCountMode,
+      custom_count_input: customCountInput,
+      selected_template_id: selectedTemplateId,
+      current_batch_edit: currentBatchEdit,
+      system_templates: systemTemplates,
+    });
+    if (!result.ok && lastDraftSaveErrorRef.current !== result.error) {
+      lastDraftSaveErrorRef.current = result.error;
+      setError(result.error);
+    }
+  }, [batchCount, businessFields, currentBatchEdit, customCountInput, customCountMode, draftScope?.accountId, draftScope?.workspaceId, listingFields, selectedTemplateId, systemTemplates]);
+
   const clearMessages = () => {
     setNotice("");
     setError("");
@@ -230,8 +280,64 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setBusinessFields((current) => ({ ...current, [key]: value }));
   };
 
-  const updateListingField = (key: keyof PodListingFieldsDraft, value: string) => {
+  const updateListingField = (key: Exclude<keyof PodListingFieldsDraft, "sku_names">, value: string) => {
     setListingFields((current) => ({ ...current, [key]: value }));
+  };
+
+  const addSkuName = () => {
+    setListingFields((current) => ({ ...current, sku_names: [...current.sku_names, ""] }));
+  };
+
+  const updateSkuName = (index: number, value: string) => {
+    setListingFields((current) => ({
+      ...current,
+      sku_names: current.sku_names.map((name, currentIndex) => currentIndex === index ? value : name),
+    }));
+  };
+
+  const removeSkuName = (index: number) => {
+    setListingFields((current) => ({ ...current, sku_names: current.sku_names.filter((_, currentIndex) => currentIndex !== index) }));
+  };
+
+  const selectTemplate = (templateId: string) => {
+    setSelectedTemplateId(templateId);
+    setSelectedTemplateSnapshot(null);
+  };
+
+  const saveCurrentAsSystemTemplate = () => {
+    clearMessages();
+    const templateSnapshot = selectedTemplateSnapshot ?? selectedTemplate;
+    if (!templateSnapshot) {
+      setError("请先从模板库选择一个产品模板。");
+      return;
+    }
+    const name = window.prompt("系统模板名称", businessFields.product_name.trim() || templateSnapshot.name);
+    if (name === null) return;
+    const created = createPodSystemTemplate({ name, creativePrompt: resolvedPrompt, template: templateSnapshot });
+    if (!created.ok) {
+      setError(created.error);
+      return;
+    }
+    setSystemTemplates((current) => [created.template, ...current]);
+    setNotice("系统模板已保存，仅当前账号可见。");
+  };
+
+  const applySystemTemplate = (systemTemplate: PodSystemTemplate) => {
+    clearMessages();
+    const resolved = resolvePodSystemTemplate(systemTemplate, templates);
+    if (!resolved.valid) {
+      setError(resolved.reason);
+      return;
+    }
+    setSelectedTemplateId(resolved.template.id);
+    setSelectedTemplateSnapshot(resolved.template);
+    setCurrentBatchEdit(systemTemplate.creativePrompt);
+    setNotice(`已套用系统模板“${systemTemplate.name}”。`);
+  };
+
+  const deleteSystemTemplate = (templateId: string) => {
+    setSystemTemplates((current) => removePodSystemTemplate(current, templateId));
+    setNotice("系统模板已删除。");
   };
 
   const refreshHistory = async () => {
@@ -301,7 +407,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       setActiveBatch(created);
       setSelectedItemId(undefined);
       setBatches((current) => sortBatches([toSummary(created), ...current.filter((batch) => batch.id !== created.id)]));
-      setCurrentBatchEdit(null);
       setNotice(`已提交 ${requestedCount} 款创作，失败时最多重试一次。`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -316,7 +421,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     try {
       const created = await podCustomizationApi.uploadTemplate(file, name);
       setTemplates((current) => replaceTemplate(current, created));
-      setSelectedTemplateId(created.id);
+      selectTemplate(created.id);
       setNotice("模板上传成功，正在启动 AI 蒙版与锚点标定。");
       return created;
     } catch (cause) {
@@ -487,6 +592,12 @@ export function PodCustomizationPage({ isActive = true }: Props) {
               <div className="pod-business-fields">
                 {LISTING_FIELDS.map((field) => <label key={field.key}><span>{field.label}<em>*</em></span><input value={listingFields[field.key]} inputMode={field.inputMode} onChange={(event) => updateListingField(field.key, event.target.value)} placeholder={field.placeholder} /></label>)}
               </div>
+              <div className="pod-sku-editor" aria-label="SKU 预设">
+                <div className="pod-sku-editor-heading"><span>SKU 预设</span><button type="button" onClick={addSkuName}><span className="iconfont icon-plus" aria-hidden="true" />新增 SKU</button></div>
+                {listingFields.sku_names.length > 0 && <div className="pod-sku-inputs">
+                  {listingFields.sku_names.map((skuName, index) => <label key={`${index}-${skuName}`}><span>SKU 名称 {index + 1}</span><input value={skuName} onChange={(event) => updateSkuName(index, event.target.value)} placeholder="例如：米白款" aria-label="SKU 名称" /><button type="button" onClick={() => removeSkuName(index)} aria-label="删除 SKU">×</button></label>)}
+                </div>}
+              </div>
             </section>
             <div className="pod-advanced-prompt">
               <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级：本批次创意编辑</b><small>内置 POD Direct Listing Prompt v1</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
@@ -498,6 +609,11 @@ export function PodCustomizationPage({ isActive = true }: Props) {
               <button type="button" role="radio" aria-checked={customCountMode} className={customCountMode ? "is-active" : ""} onClick={() => { setCustomCountMode(true); setCustomCountInput(String(batchCount)); }}><b>自定义</b></button>
             </div>
             {customCountMode && <label className="pod-custom-count"><span>自定义数量</span><input type="number" min={1} max={200} step={1} value={customCountInput} aria-label="自定义生成数量" onChange={(event) => setCustomCountInput(event.target.value)} /><small>1–200 款</small></label>}
+            <button type="button" className="pod-save-system-template-button" disabled={!selectedTemplate} onClick={saveCurrentAsSystemTemplate}>
+              <span className="iconfont icon-save" aria-hidden="true" />
+              <span className="pod-save-system-template-copy"><b>保存为系统模板</b><small>保存当前提示词与模板图</small></span>
+              <span className="iconfont icon-arrowright" aria-hidden="true" />
+            </button>
             <button type="button" className="pod-start-button" disabled={busyAction === "create-batch" || !selectedTemplate} onClick={() => void startBatch()}>{busyAction === "create-batch" ? <><span className="iconfont icon-loading" />正在提交</> : <><span className="iconfont icon-rocket" />开始生成 {customCountMode ? customCountInput || "自定义" : batchCount} 款</>}</button>
           </section>
           <button type="button" className={`pod-history-trigger ${historyOpen ? "is-open" : ""}`} onClick={() => setHistoryOpen((open) => !open)}>定制记录<span>{historyOpen ? "收起" : `${batches.length} 个批次`}</span></button>
@@ -540,10 +656,13 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       <TemplateLibraryDrawer
         open={templateDrawerOpen}
         templates={templates}
+        systemTemplates={systemTemplates}
         selectedTemplateId={selectedTemplateId}
         busyAction={busyAction}
         onClose={() => setTemplateDrawerOpen(false)}
-        onSelect={setSelectedTemplateId}
+        onSelect={selectTemplate}
+        onApplySystemTemplate={applySystemTemplate}
+        onDeleteSystemTemplate={deleteSystemTemplate}
         onUpload={uploadTemplate}
         onCalibrate={calibrateTemplate}
         onSaveCalibration={saveTemplateCalibration}

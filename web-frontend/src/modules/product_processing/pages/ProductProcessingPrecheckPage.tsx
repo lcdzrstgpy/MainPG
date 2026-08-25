@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
@@ -77,6 +77,25 @@ function taskStatusLabel(status: string): string {
     partial_failure: '部分完成',
     failed: '任务失败',
   })[status] || status;
+}
+
+const PROVENANCE_META: Record<string, { label: string; tone: string }> = {
+  source: { label: '采集值', tone: 'ok' },
+  manual: { label: '手动', tone: 'attn' },
+  ai: { label: 'AI 预估，建议核对', tone: 'risk' },
+};
+
+function provenanceBadge(
+  provenance: PreviewItem['dimension_provenance'],
+  field: 'length_cm' | 'width_cm' | 'height_cm' | 'weight_g',
+): ReactNode {
+  const value = provenance?.[field];
+  const meta = (value && PROVENANCE_META[value]) || PROVENANCE_META.ai;
+  return (
+    <span className={`precheck-provenance-badge tone-${meta.tone}`} title={`该字段来源：${meta.label}`}>
+      {meta.label}
+    </span>
+  );
 }
 
 function cloneManifest(manifest: PreviewImageManifest): PreviewImageManifest {
@@ -359,7 +378,6 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       <div className="verify-page">
         <header className="verify-commandbar">
           <div className="verify-command-title">
-            <span className="verify-eyebrow">PRODUCT PROCESSING · 预检</span>
             <h1>预检</h1>
           </div>
         </header>
@@ -689,7 +707,6 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     <div className="verify-page">
       <header className="verify-commandbar">
         <div className="verify-command-title">
-          <span className="verify-eyebrow">PRODUCT PROCESSING · 预检环节</span>
           <h1>预检与最终发布</h1>
           <p>图片先以稳定素材 ID 在本地清单中增删排序；点击完成后，仅发布最终保留图片并生成店小秘表格。</p>
         </div>
@@ -854,16 +871,16 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                   <label>类目ID
                     <input disabled={mutationsLocked} value={coreFields.category_id ?? ''} onChange={(event) => setField(draftId, 'category_id', event.target.value)} />
                   </label>
-                  <label>物流包裹长(cm)
+                  <label><span className="precheck-dim-label">物流包裹长(cm) {provenanceBadge(item.dimension_provenance, 'length_cm')}</span>
                     <input disabled={mutationsLocked} value={coreFields.length_cm ?? ''} onChange={(event) => setField(draftId, 'length_cm', event.target.value)} />
                   </label>
-                  <label>物流包裹宽(cm)
+                  <label><span className="precheck-dim-label">物流包裹宽(cm) {provenanceBadge(item.dimension_provenance, 'width_cm')}</span>
                     <input disabled={mutationsLocked} value={coreFields.width_cm ?? ''} onChange={(event) => setField(draftId, 'width_cm', event.target.value)} />
                   </label>
-                  <label>物流包裹高(cm)
+                  <label><span className="precheck-dim-label">物流包裹高(cm) {provenanceBadge(item.dimension_provenance, 'height_cm')}</span>
                     <input disabled={mutationsLocked} value={coreFields.height_cm ?? ''} onChange={(event) => setField(draftId, 'height_cm', event.target.value)} />
                   </label>
-                  <label>重量(g)
+                  <label><span className="precheck-dim-label">重量(g) {provenanceBadge(item.dimension_provenance, 'weight_g')}</span>
                     <input disabled={mutationsLocked} value={coreFields.weight_g ?? ''} onChange={(event) => setField(draftId, 'weight_g', event.target.value)} />
                   </label>
                 </div>

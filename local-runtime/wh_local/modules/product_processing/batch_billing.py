@@ -126,6 +126,9 @@ def _enabled_features(settings: dict[str, Any]) -> list[str]:
 def derive_item_results(
     task_items: list[dict[str, Any]],
     settings: dict[str, Any],
+    *,
+    paid_retry: bool = False,
+    retry_premium: bool = True,
 ) -> list[dict[str, Any]]:
     """按任务结果把每条链接折算成子项状态上报。
 
@@ -135,6 +138,10 @@ def derive_item_results(
     - no_return  上游无返回/整条失败，全退
     一期保守策略：completed 链接全部 success；失败链接全部 no_return
     （拦截退半的细分留到 ai_notes 里带 quality-gate 标记时再细化）。
+
+    ``paid_retry=True``：手动付费重试，无论成功失败都按全价扣（服务器按 paid_retry
+    结算，不再按子项退款）。``retry_premium=False``：系统自动重试轮，不加重试溢价
+    （两轮系统重试不向用户计费）。
     """
     features = _enabled_features(settings)
     results: list[dict[str, Any]] = []
@@ -144,7 +151,19 @@ def derive_item_results(
             subitems = [{"feature": feature, "status": "success"} for feature in features]
         else:
             subitems = [{"feature": feature, "status": "no_return"} for feature in features]
-        results.append({"link_idx": index, "subitems": subitems})
+        # 手动付费重试：无论成败都按全价计费（服务器依据 paid_retry 强制全价）。
+        if paid_retry:
+            subitems = [{"feature": feature, "status": "success"} for feature in features]
+        # 重试溢价：链接发生过 AI 重试/重绘/修复时给每个子项打 retried 标记，
+        # 服务端按重试单价结算（老服务端忽略该字段，保持固定价兼容）。
+        # 系统自动重试轮关闭该溢价，确保两轮自动重试不消耗积分。
+        if retry_premium and bool(item.get("billing_retried")):
+            for subitem in subitems:
+                subitem["retried"] = True
+        entry: dict[str, Any] = {"link_idx": index, "subitems": subitems}
+        if paid_retry:
+            entry["paid_retry"] = True
+        results.append(entry)
     return results
 
 

@@ -158,6 +158,20 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def submit_pp_failure_log(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Upload product-processing failure diagnostics for server-side storage.
+
+        Best-effort reporting only: the desktop never blocks task completion on
+        this call, and failures to report are intentionally swallowed by callers.
+        """
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._post(
+            "/api/customer/product-processing/failure-log",
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def freeze_pod_points(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Freeze a POD plan and decrypt its scoped grants only in memory."""
         encrypted_session_key, session_key = _new_pod_grant_session()

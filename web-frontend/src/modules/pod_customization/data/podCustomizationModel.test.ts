@@ -6,6 +6,7 @@ import {
   businessFieldsForApi,
   canRegeneratePodStyle,
   canRegeneratePodStyleTitle,
+  formatPodBatchWaitingTime,
   isActiveBatchStatus,
   isPodBatchCount,
   listingFieldsForApi,
@@ -26,6 +27,16 @@ test("billing recovery statuses are visible and only settlement keeps polling", 
   assert.equal(isActiveBatchStatus("billing_auth_required"), false);
   assert.equal(podBatchStatusLabel("settlement_pending"), "等待计费结算");
   assert.equal(podBatchStatusLabel("billing_auth_required"), "需要重新授权");
+});
+
+test("active POD batches show the elapsed time since creation", () => {
+  const createdAt = "2026-08-24T00:00:00.000Z";
+  const now = Date.parse("2026-08-24T00:02:35.000Z");
+
+  assert.equal(formatPodBatchWaitingTime(createdAt, now), "2分35秒");
+  assert.equal(formatPodBatchWaitingTime(createdAt, Date.parse("2026-08-24T00:00:35.000Z")), "35秒");
+  assert.equal(formatPodBatchWaitingTime(createdAt, Date.parse("2026-08-23T23:59:59.000Z")), "0秒");
+  assert.equal(formatPodBatchWaitingTime("not-a-date", now), "0秒");
 });
 
 test("business list fields are normalized at the API boundary", () => {
@@ -54,6 +65,7 @@ test("listing fields accept a Chinese Dianxiaomi category without code prefixes"
     height_cm: "10",
     weight_g: "450",
     category_name: " 家居收纳 > 洗衣篮 ",
+    sku_names: ["  米白 ", "", "深蓝  "],
   });
 
   assert.deepEqual(result, {
@@ -66,6 +78,7 @@ test("listing fields accept a Chinese Dianxiaomi category without code prefixes"
       height_cm: 10,
       weight_g: 450,
       category_name: "家居收纳 > 洗衣篮",
+      sku_names: ["米白", "深蓝"],
     },
   });
 });

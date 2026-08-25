@@ -123,6 +123,51 @@ def test_settle_with_intercept_refunds_half_and_no_return_full(tmp_path: Path) -
     assert settled["refunded_points"] == 24
 
 
+def test_retry_premium_batch_settle_charges_extra_per_link(tmp_path: Path) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    freeze = freeze_batch_points(database_path, actor, link_count=1, idempotency_key="freeze:retry-1")
+
+    retried_subitems = [
+        {"feature": "title", "status": "success", "retried": True},
+        {"feature": "description", "status": "success", "retried": True},
+        {"feature": "product_dimensions", "status": "success", "retried": True},
+        {"feature": "four_grid", "status": "success", "retried": True},
+        {"feature": "detail_images", "status": "success", "retried": True},
+    ]
+    settled = settle_batch_points(
+        database_path,
+        freeze["freeze_id"],
+        item_results=[{"subitems": retried_subitems}],
+        expected_account_id=actor.id,
+    )
+    # 基础 45 积分（450 单位）+ 重试溢价 10 积分（100 单位）= 55 积分。
+    assert settled["charged_points"] == 55
+    assert settled["retry_premium_points"] == 10
+    assert settled["refunded_points"] == 0
+    with transaction(database_path) as conn:
+        wallet = conn.execute(
+            "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
+            (actor.id,),
+        ).fetchone()
+    # 冻结 450 全扣（无退款），额外 100 单位从余额扣：1000 - 450 - 100 = 450。
+    assert dict(wallet) == {"points_balance": 450, "locked_points": 0}
+
+
+def test_retry_premium_not_charged_when_no_retry_marker(tmp_path: Path) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    freeze = freeze_batch_points(database_path, actor, link_count=1, idempotency_key="freeze:noretry-1")
+    settled = settle_batch_points(
+        database_path,
+        freeze["freeze_id"],
+        item_results=_full_success_subitems(),
+        expected_account_id=actor.id,
+    )
+    assert settled["charged_points"] == 45
+    assert settled["retry_premium_points"] == 0
+
+
 def test_freeze_rejects_insufficient_balance(tmp_path: Path) -> None:
     database_path = tmp_path / "billing.sqlite3"
     actor = _service_account(database_path, balance=40)
@@ -230,7 +275,7 @@ def test_pod_random_profile_persists_prices_and_settles_whole_styles(
 ) -> None:
     database_path = tmp_path / "billing.sqlite3"
     actor = _service_account(database_path, balance=2000)
-    picks = iter((0, 5))
+    picks = iter((0, 10))
     monkeypatch.setattr(billing_module.secrets, "randbelow", lambda upper: next(picks))
 
     first = freeze_batch_points(
@@ -251,10 +296,10 @@ def test_pod_random_profile_persists_prices_and_settles_whole_styles(
     )
 
     assert first["billing_profile"] == "pod_random_v1"
-    assert first["link_prices"] == [40, 45]
-    assert first["frozen_points"] == 85
-    assert repeated["link_prices"] == [40, 45]
-    assert repeated["frozen_points"] == 85
+    assert first["link_prices"] == [40, 50]
+    assert first["frozen_points"] == 90
+    assert repeated["link_prices"] == [40, 50]
+    assert repeated["frozen_points"] == 90
 
     settled = settle_batch_points(
         database_path,
@@ -279,20 +324,21 @@ def test_pod_random_profile_persists_prices_and_settles_whole_styles(
     )
 
     assert settled["charged_points"] == 40
-    assert settled["refunded_points"] == 45
+    assert settled["refunded_points"] == 50
     status = batch_freeze_status(
         database_path,
         first["freeze_id"],
         expected_account_id=actor.id,
     )
     assert status["billing_profile"] == "pod_random_v1"
-    assert status["link_prices"] == [40, 45]
+    assert status["link_prices"] == [40, 50]
 
     with transaction(database_path) as conn:
         wallet = conn.execute(
             "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
             (actor.id,),
         ).fetchone()
+    # 冻结 90 积分（900 单位）全释放，成功款扣 40 积分（400 单位）：2000 - 400 = 1600。
     assert dict(wallet) == {"points_balance": 1600, "locked_points": 0}
 
 
@@ -397,8 +443,8 @@ def test_pod_random_settlement_rejects_reordered_link_indexes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = tmp_path / "billing.sqlite3"
-    actor = _service_account(database_path, balance=1000)
-    picks = iter((0, 5))
+    actor = _service_account(database_path, balance=2000)
+    picks = iter((0, 10))
     monkeypatch.setattr(billing_module.secrets, "randbelow", lambda upper: next(picks))
     freeze = freeze_batch_points(
         database_path,

@@ -1,4 +1,5 @@
 import { type ClipboardEvent, type DragEvent, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { toUserMessage } from "../../../transport/http/client";
 import "../styles/profitActivityTest.css";
 
 type Site = string;
@@ -84,6 +85,7 @@ type FilterTask = {
 
 type ProductForm = {
   skc: string;
+  store_name: string;
   selling_price: string;
   cost_price: string;
   weight_kg: string;
@@ -109,6 +111,7 @@ type SiteSettingField = {
 const defaultToken = localStorage.getItem("whLocalApiToken") || "dev-admin-token";
 const emptyProduct: ProductForm = {
   skc: "",
+  store_name: "",
   selling_price: "",
   cost_price: "",
   weight_kg: "",
@@ -254,8 +257,10 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [importFiles, setImportFiles] = useState<File[]>([]);
+  const [importStoreName, setImportStoreName] = useState("");
   const [importPreviews, setImportPreviews] = useState<ImportPreview[]>([]);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importGuidelinesOpen, setImportGuidelinesOpen] = useState(false);
   const [lastImportFiles, setLastImportFiles] = useState<string[]>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("profitActivityImportFileNames") || "[]");
@@ -304,6 +309,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     setSettingsDialogOpen(false);
     setNewSiteOpen(false);
     setImportDialogOpen(false);
+    setImportGuidelinesOpen(false);
     setNoEligibleOpen(false);
   }, [isActive]);
 
@@ -360,7 +366,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
       // file download/text error
     }
     setLog((items) => [`${options.method || "GET"} ${url} -> ${response.status}`, ...items].slice(0, 10));
-    if (!response.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+    if (!response.ok) throw new Error(toUserMessage(typeof data === "string" ? data : JSON.stringify(data)));
     return data as T;
   };
 
@@ -370,7 +376,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     if (token) headers.set("Authorization", `Bearer ${token}`);
     const response = await fetch(url, { headers });
     setLog((items) => [`GET ${url} -> ${response.status}`, ...items].slice(0, 10));
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new Error(toUserMessage(await response.text()));
     const blob = await response.blob();
     const objectUrl = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -640,7 +646,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
       .map((source_url) => ({ source_url, image_paths: [] }));
     const form = new FormData();
     form.append("site", site);
-    for (const [key, value] of Object.entries({ ...numericProductPayload(productForm), note: productForm.note, source_url: productForm.source_url })) {
+    for (const [key, value] of Object.entries({ ...numericProductPayload(productForm), store_name: productForm.store_name.trim(), note: productForm.note, source_url: productForm.source_url })) {
       form.append(key, String(value));
     }
     if (sourceGroups.length) {
@@ -665,6 +671,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     localStorage.setItem("profitActivityRecentSaved", JSON.stringify(nextRecent.map((item) => ({ skc: item.skc, site: item.site, form: item.form }))));
     setQuerySkcs(savedSkc);
     await queryProducts(savedSkc);
+    window.dispatchEvent(new Event("profit-activity-products-changed"));
     clearProductForm();
   }, `${productForm.skc} 入库成功`);
 
@@ -721,6 +728,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     for (const file of importFiles) {
       const form = new FormData();
       form.append("site", site);
+      form.append("store_name", importStoreName.trim());
       form.append("file", file);
       results.push(await request<ImportPreview>("/api/profit-activity/products/import/preview", { method: "POST", body: form }));
     }
@@ -747,6 +755,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     }
     setMessage(`确认导入完成：新增 ${imported}，替换 ${replaced}，跳过 ${skipped}。`);
     await queryProducts();
+    window.dispatchEvent(new Event("profit-activity-products-changed"));
   });
 
   const filterTaskId = (task: FilterTask | null | undefined): number | null => {
@@ -949,7 +958,6 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
       <section className="profit-activity-hero">
         <div className="profit-hero-main">
           <div>
-            <p className="eyebrow">PROFIT ACTIVITY</p>
             <h1>利润活动</h1>
             <p>核算单品利润、保存产品资料，并生成活动申报与剔除结果。</p>
           </div>
@@ -1009,12 +1017,60 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
               <button className="profit-settings-dialog-close" type="button" aria-label="关闭产品资料导入" onClick={() => setImportDialogOpen(false)} disabled={!!busy}><span aria-hidden="true">×</span></button>
             </div>
             <div className="profit-upload-row">
-              <label>产品资料 Excel（可多选）<input type="file" accept=".xlsx,.xlsm" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setImportFiles(files); persistImportFileNames(files); }} /></label>
-              <button onClick={previewImport} disabled={!!busy}>预览入档</button>
-              <button onClick={confirmImport} disabled={!!busy || !importPreviews.length}>确认导入</button>
+              <div className="profit-import-input-stack">
+                <label>产品资料 Excel（可多选）<input type="file" accept=".xlsx,.xlsm" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setImportFiles(files); persistImportFileNames(files); }} /></label>
+                <label className="profit-import-store-field">店铺（可选）<input value={importStoreName} maxLength={120} onChange={(event) => setImportStoreName(event.target.value)} placeholder="例如：美区一店" /></label>
+              </div>
+              <div className="profit-import-actions">
+                <button className="profit-import-guidelines-trigger" type="button" aria-haspopup="dialog" onClick={() => setImportGuidelinesOpen(true)}>导入规范</button>
+                <div className="profit-import-actions-bottom">
+                  <button onClick={previewImport} disabled={!!busy}>预览入档</button>
+                  <button onClick={confirmImport} disabled={!!busy || !importPreviews.length}>确认导入</button>
+                </div>
+              </div>
             </div>
             {importFiles.length ? <p className="profit-warn">已选择 {importFiles.length} 个文件：{importFiles.map((item) => item.name).join("、")}</p> : lastImportFiles.length ? <p className="muted">上次选择的文件：{lastImportFiles.join("、")}（浏览器出于安全原因不保留本地完整路径，切换页面后需重新选择文件）</p> : null}
             {importPreviews.length > 0 && <ImportPreviewSummary previews={importPreviews} />}
+          </section>
+        </div>
+      )}
+
+      {importGuidelinesOpen && (
+        <div className="profit-settings-dialog-backdrop profit-import-guidelines-backdrop" role="presentation" onMouseDown={() => setImportGuidelinesOpen(false)}>
+          <section className="profit-settings-dialog profit-import-guidelines-dialog" role="dialog" aria-modal="true" aria-labelledby="profit-import-guidelines-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="profit-settings-dialog-head">
+              <div className="profit-settings-heading">
+                <h2 id="profit-import-guidelines-title">产品资料导入规范</h2>
+                <p>请按以下要求整理文件，先预览确认后再导入。</p>
+              </div>
+              <button className="profit-settings-dialog-close" type="button" aria-label="关闭导入规范" onClick={() => setImportGuidelinesOpen(false)}><span aria-hidden="true">×</span></button>
+            </div>
+            <div className="profit-import-guidelines-content">
+              <section>
+                <h3>必填信息</h3>
+                <ul>
+                  <li>每行至少应能识别出：商品 ID、售价、国内成本、重量（kg）。</li>
+                  <li>商品 ID 可来自 SKU、SKC 或 SPU 列；同一份表中请保持使用同一种商品标识。</li>
+                  <li>售价、国内成本和重量必须是大于 0 的数字；重量统一按 kg 填写。</li>
+                </ul>
+              </section>
+              <section>
+                <h3>成本与站点</h3>
+                <ul>
+                  <li>审核表的国内成本应填写商品维度成本，例如单价、损耗、包材和国内运输之和；不要填写含国际头程、尾程等的总成本。</li>
+                  <li>若文件含站点列，系统按每行站点导入；没有站点列时，按当前选择的站点导入。</li>
+                  <li>头程、尾程、操作费、运费补贴和退款率由“利润活动设置”的当前站点费率统一计算。</li>
+                </ul>
+              </section>
+              <section>
+                <h3>重复数据与确认</h3>
+                <ul>
+                  <li>同一站点、同一商品 ID 出现多次时，系统保守合并：售价取最低值，国内成本和重量取最高有效值。</li>
+                  <li>建议每个 Excel 保留一行表头和连续数据行，避免合并单元格、空白分段或非数据说明行。</li>
+                  <li>请先点击“预览入档”核对识别结果和异常提示，确认无误后再点击“确认导入”。</li>
+                </ul>
+              </section>
+            </div>
           </section>
         </div>
       )}
@@ -1028,6 +1084,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
               <span className="profit-title-icon iconfont icon-calculator-fill" aria-hidden="true" />
               <h2>单品利润<span className="profit-help-tooltip" tabIndex={0} aria-label="单品利润填写说明"><span className="profit-help-tooltip-mark" aria-hidden="true">!</span><span className="profit-help-tooltip-content" role="tooltip">输入商品ID（支持 SKU、SKC、SPU）、售价、成本、重量后会自动预览利润。</span></span></h2>
             </div>
+            <label className="profit-single-store-field">店铺（可选）<input value={productForm.store_name} maxLength={120} onChange={(event) => setProductForm({ ...productForm, store_name: event.target.value })} placeholder="例如：美区一店" /></label>
             <SiteTabs site={site} profiles={siteProfiles} onSite={setSite} />
           </div>
           <div className="profit-form-grid">
@@ -1264,7 +1321,7 @@ function FilterRunSummary({ task }: { task: FilterTask }) {
       </div>
       {task.status && task.status !== "completed" && (
         <p className="profit-warn">
-          {task.status === "paused" ? "过滤已暂停，未生成可申报/剔除文件。" : task.status === "failed" ? `过滤失败：${typeof task.error === "string" ? task.error : "未知错误"}` : "过滤正在进行中，请稍候…"}
+          {task.status === "paused" ? "过滤已暂停，未生成可申报/剔除文件。" : task.status === "failed" ? `过滤失败：${typeof task.error === "string" ? toUserMessage(task.error) : "未知错误"}` : "过滤正在进行中，请稍候…"}
         </p>
       )}
       <p className="profit-formula-note">

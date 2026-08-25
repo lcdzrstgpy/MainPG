@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 from datetime import datetime, timedelta, timezone
+import html
 import hashlib
 import hmac
 import ipaddress
@@ -15,7 +16,7 @@ import socket
 import threading
 import time
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 import requests
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padd
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ..billing import (
     BATCH_BILLING_PROFILE_POD,
@@ -37,6 +39,7 @@ from ..billing import (
     pricing_items,
     release_expired_batch_freezes,
     reserve_ai_usage,
+    settle_payment_order,
     settle_ai_usage_failure,
     settle_ai_usage_success,
     settle_batch_points,
@@ -45,6 +48,7 @@ from ..billing import (
     usage_history,
 )
 from ..config import default_config
+from .. import cache as _cache
 from ..db import init_db, transaction
 from ..modules.product_processing.domain.policy import is_safe_external_url
 from ..pod_billing import (
@@ -61,6 +65,13 @@ from .auth_service import SQLiteCustomerAuthService
 from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
+from .alipay_gateway import (
+    AlipayGatewayConfigurationError,
+    AlipaySignatureError,
+    build_page_payment_url,
+    is_configured as alipay_is_configured,
+    verify_callback as verify_alipay_callback,
+)
 
 
 REMOTE_SESSION_TTL = timedelta(hours=12)
@@ -85,6 +96,8 @@ TOPUP_PACKAGE_CENTS = {
     }
     for package_id, product in BILLING_TOPUP_PRODUCTS.items()
 }
+CUSTOM_TOPUP_MIN_CENTS = 100
+CUSTOM_TOPUP_MAX_CENTS = 300_000
 PAYMENT_PROVIDERS = {"wechat", "alipay"}
 # Text generation is server managed.  A desktop client can neither select an
 # upstream model nor see the provider credential.
@@ -117,6 +130,20 @@ GATEWAY_LEASE_SECONDS = {
     "product_processing.text": 600,
     "product_processing.image_grid_2k": 900,
 }
+DEFAULT_ALIPAY_LOCAL_RETURN_URL = "http://127.0.0.1:8010/?module=personal_center&payment=success"
+
+
+def _alipay_local_return_url() -> str:
+    """Return only a local desktop-workbench URL after browser payment."""
+
+    value = os.environ.get("ALIPAY_LOCAL_RETURN_URL", DEFAULT_ALIPAY_LOCAL_RETURN_URL).strip()
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return DEFAULT_ALIPAY_LOCAL_RETURN_URL
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return DEFAULT_ALIPAY_LOCAL_RETURN_URL
+    return value
 
 
 @dataclass(frozen=True)
@@ -895,6 +922,16 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             ),
         }
 
+    @app.post("/api/customer/product-processing/failure-log")
+    def product_processing_failure_log(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Store a client-reported product-processing failure diagnostic."""
+        account = _required_account(db_path, authorization)
+        _store_pp_failure_log(db_path, account, payload)
+        return {"ok": True}
+
     @app.get("/api/customer/billing/usage")
     def billing_usage_history(
         cursor: str = "",
@@ -1086,6 +1123,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         limit: int = 50,
         feature_key: str = "",
         usage_status: str = "",
+        date_from: str = "",
+        date_to: str = "",
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_billing_admin(db_path, authorization)
@@ -1098,6 +1137,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             limit=limit,
             feature_key=feature_key,
             usage_status=usage_status,
+            date_from=date_from,
+            date_to=date_to,
         )
 
     @app.post("/api/customer/billing/usage/{usage_id}/succeed")
@@ -1308,14 +1349,48 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             raise
 
     @app.post("/api/customer/billing/payment-callback/{provider}")
-    def billing_payment_callback(provider: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
-        # 真正接入微信/支付宝时，这里必须按 provider 官方规则完成：
-        # 1) 平台证书/公钥验签；2) 解密资源；3) 金额、商户订单号、商户号、币种逐项比对；
-        # 4) 同一 out_trade_no 幂等入账；5) 追加 hash 链账本。
-        # 当前先 fail closed，避免任何未验签回调导致入账。
-        raise HTTPException(
-            status_code=503,
-            detail=f"{provider} payment callback verification is not configured",
+    async def billing_payment_callback(provider: str, request: Request) -> PlainTextResponse:
+        """Accept a provider callback only after its official signature checks."""
+
+        if provider.strip().lower() != "alipay":
+            raise HTTPException(status_code=503, detail="payment callback provider is not configured")
+        try:
+            # Alipay sends an application/x-www-form-urlencoded callback.
+            # Parsing its body directly avoids an extra multipart dependency.
+            raw_payload = (await request.body()).decode("utf-8")
+            payload = {
+                str(key): str(value)
+                for key, value in parse_qsl(raw_payload, keep_blank_values=True)
+            }
+            verified = verify_alipay_callback(payload)
+            settle_payment_order(
+                db_path,
+                provider="alipay",
+                out_trade_no=verified["out_trade_no"],
+                gateway_transaction_id=verified["trade_no"],
+                amount_cents=int(verified["amount_cents"]),
+                provider_status=verified["trade_status"],
+                metadata={"buyer_id": verified["buyer_id"]},
+            )
+        except AlipayGatewayConfigurationError as exc:
+            raise HTTPException(status_code=503, detail="Alipay payment is not configured") from exc
+        except AlipaySignatureError as exc:
+            raise HTTPException(status_code=400, detail="Alipay callback verification failed") from exc
+        return PlainTextResponse(content="success")
+
+    @app.get("/api/customer/billing/payment-return")
+    def billing_payment_return() -> HTMLResponse:
+        """Bring the payer back to the installed workbench after payment."""
+
+        target = _alipay_local_return_url()
+        escaped_target = html.escape(target, quote=True)
+        script_target = json.dumps(target)
+        return HTMLResponse(
+            "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
+            f"<meta http-equiv='refresh' content='0;url={escaped_target}'><title>支付完成</title></head>"
+            "<body><p>支付结果已返回工作台，正在跳转...</p>"
+            f"<script>window.location.replace({script_target});</script>"
+            f"<p><a href='{escaped_target}'>无法跳转时，点击返回工作台</a></p></body></html>"
         )
 
     @app.post("/api/customer/logout")
@@ -1358,6 +1433,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                         """,
                         (_utc_now(), session_row["account_id"]),
                     )
+        # 登出后立即失效会话缓存，避免残留 token 在 TTL 内继续通过鉴权。
+        _cache.invalidate_session(_hash_token(token))
         return {"ok": True}
 
     @app.post("/api/customer/activate")
@@ -1594,8 +1671,17 @@ def _issue_platform_session(
 
 
 def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
+    """按 token 查账户；命中 Redis 会话缓存直接返回，DB miss 时回填。
+
+    缓存命中时不再写 last_used_at（由 DB 命中路径节流更新），
+    降低高并发下每次请求的无效写放大。被强制下线/登出会主动失效缓存。
+    """
     now = _utc_now()
     token_hash = _hash_token(token)
+    cache_key = f"sess:{token_hash}"
+    cached = _cache.cache_get(cache_key)
+    if cached is not None:
+        return cached
     with transaction(database_path) as conn:
         row = conn.execute(
             """
@@ -1625,7 +1711,7 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
             "UPDATE auth_platform_sessions SET last_used_at = ? WHERE token_hash = ?",
             (now, token_hash),
         )
-    return {
+    account = {
         "account_id": row["account_id"],
         "customer_id": row["account_id"],
         "username": row["username"],
@@ -1639,6 +1725,8 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
         "workspace_name": row["workspace_name"] or "",
         "workspace": {"code": row["workspace_code"] or "", "name": row["workspace_name"] or ""},
     }
+    _cache.cache_set(cache_key, account, ttl=120)
+    return account
 
 
 def _required_account(database_path: Path, authorization: str | None) -> dict[str, Any]:
@@ -2501,6 +2589,11 @@ def _safe_billing_metadata(value: dict[str, Any]) -> dict[str, Any]:
 def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, Any]:
     account_id = str(account["account_id"])
     workspace_id = str(account.get("workspace_id") or "default")
+    # 展示型余额/流水缓存（短 TTL）；冻结/结算/充值等写路径会主动失效。
+    cache_key = f"wallet:{account_id}"
+    cached = _cache.cache_get(cache_key)
+    if cached is not None:
+        return cached
     pricing = active_pricing(database_path)
     with transaction(database_path) as conn:
         _ensure_wallet(conn, account_id, workspace_id)
@@ -2533,7 +2626,7 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             """,
             (account_id,),
         ).fetchall()
-    return {
+    payload = {
         "ok": True,
         "account": {
             "account_id": account_id,
@@ -2565,6 +2658,8 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             "settlement_requires_signed_provider_callback": True,
         },
     }
+    _cache.cache_set(cache_key, payload, ttl=30)
+    return payload
 
 
 def _display_billing_points(units: int, pricing: dict[str, Any]) -> int | float:
@@ -2604,13 +2699,32 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
     idempotency_key = str(payload.get("idempotency_key") or "").strip()
     if provider not in PAYMENT_PROVIDERS:
         raise HTTPException(status_code=400, detail="provider must be wechat or alipay")
-    if package_id not in TOPUP_PACKAGE_CENTS:
+    if package_id != "custom" and package_id not in TOPUP_PACKAGE_CENTS:
         raise HTTPException(status_code=400, detail="unknown topup package")
     if not 16 <= len(idempotency_key) <= 128:
         raise HTTPException(status_code=400, detail="idempotency_key is required")
 
     pricing = active_pricing(database_path)
-    product = TOPUP_PACKAGE_CENTS[package_id]
+    if package_id == "custom":
+        raw_amount_cents = payload.get("amount_cents")
+        if isinstance(raw_amount_cents, bool):
+            raise HTTPException(status_code=400, detail="custom amount is invalid")
+        try:
+            amount_cents = int(raw_amount_cents)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="custom amount is required") from exc
+        if (
+            amount_cents < CUSTOM_TOPUP_MIN_CENTS
+            or amount_cents > CUSTOM_TOPUP_MAX_CENTS
+            or amount_cents % 100 != 0
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="custom amount must be a whole amount from 1 to 3000 CNY",
+            )
+        product = {"amount_cents": amount_cents, "label": "自定义积分充值"}
+    else:
+        product = TOPUP_PACKAGE_CENTS[package_id]
     # Payment orders store raw 0.1-point units; user-facing responses always
     # convert through the active pricing rule.
     product_points = (
@@ -2691,17 +2805,31 @@ def _topup_order_response(
 ) -> dict[str, Any]:
     order = dict(order)
     order["points"] = _display_billing_points(int(order.get("points") or 0), pricing)
+    payment = {
+        "provider": order["provider"],
+        "mode": "gateway_not_configured",
+        "qr_code_url": "",
+        "pay_url": "",
+        "message": "支付网关尚未配置。订单已在服务器生成 pending 记录，待商户参数和回调验签接入后才可收款入账。",
+    }
+    if order["provider"] == "alipay" and alipay_is_configured():
+        payment = {
+            "provider": "alipay",
+            "mode": "page_pay",
+            "qr_code_url": "",
+            "pay_url": build_page_payment_url(
+                out_trade_no=str(order["out_trade_no"]),
+                amount_cents=int(order["amount_cents"]),
+                subject=f"界野电商平台 {order['package_id']} 积分充值",
+                expires_at=str(order["expires_at"]),
+            ),
+            "message": "请在浏览器中完成支付宝付款。付款成功后积分会自动到账。",
+        }
     return {
         "ok": True,
         "reused": reused,
         "order": order,
-        "payment": {
-            "provider": order["provider"],
-            "mode": "gateway_not_configured",
-            "qr_code_url": "",
-            "pay_url": "",
-            "message": "支付网关尚未配置。订单已在服务器生成 pending 记录，待微信/支付宝商户参数和回调验签接入后才可收款入账。",
-        },
+        "payment": payment,
     }
 
 
@@ -2734,6 +2862,57 @@ def _bearer_token(authorization: str | None) -> str:
     if not token:
         raise HTTPException(status_code=401, detail="missing bearer token")
     return token
+
+
+def _store_pp_failure_log(
+    database_path: Path,
+    account: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    """Store a client-reported product-processing failure diagnostic (best-effort).
+
+    客户端任务终态静默上报；按 (account_id, report_key) 幂等去重，重复上报忽略。
+    """
+    report_key = str(payload.get("report_key") or "").strip()[:200]
+    if not report_key:
+        raise HTTPException(status_code=400, detail="report_key is required")
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="items must be a list")
+    items = items[:200]
+    scope = payload.get("processing_scope")
+    account_id = str(account["account_id"])
+    username = str(account.get("username") or "")
+    with transaction(database_path) as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO product_processing_failure_logs (
+                account_id, username, app_version, report_key, task_id, task_status,
+                total_count, success_count, failed_count, skipped_count,
+                attention_required_count, auto_repull_rounds, auto_repull_message,
+                target_site, target_language, processing_scope, items_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_id,
+                username,
+                str(payload.get("app_version") or "")[:40],
+                report_key,
+                _safe_int(payload.get("task_id")),
+                str(payload.get("task_status") or "")[:40],
+                _safe_int(payload.get("total_count")),
+                _safe_int(payload.get("success_count")),
+                _safe_int(payload.get("failed_count")),
+                _safe_int(payload.get("skipped_count")),
+                _safe_int(payload.get("attention_required_count")),
+                _safe_int(payload.get("auto_repull_rounds")),
+                str(payload.get("auto_repull_message") or "")[:500],
+                str(payload.get("target_site") or "")[:40],
+                str(payload.get("target_language") or "")[:40],
+                json.dumps(scope if isinstance(scope, list) else [], ensure_ascii=False),
+                json.dumps(items, ensure_ascii=False),
+            ),
+        )
 
 
 def _hash_token(token: str) -> str:

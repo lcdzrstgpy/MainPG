@@ -89,7 +89,6 @@ export function ProductProcessingPage() {
   return <div className="product-processing-page">
     <section className="product-processing-hero">
       <div>
-        <p className="eyebrow">PRODUCT PROCESSING · DRAFT INTAKE</p>
         <h1>产品处理</h1>
         <p>按采集来源查看待处理商品，并及时补齐未同步的来源图片。</p>
       </div>

@@ -38,6 +38,7 @@ from .schemas import (
     DraftUpdateRequest,
     PreviewFinalizeRequest,
     PreviewSaveRequest,
+    PromptTemplateRequest,
     PromptUpdateRequest,
     RetryTaskRequest,
     extras,
@@ -117,6 +118,22 @@ def create_product_processing_router(
     @router.post("/engine/prompts/reset")
     def reset_prompts() -> dict[str, Any]:
         return service.reset_prompts()
+
+    @router.get("/engine/prompt-templates")
+    def get_prompt_templates() -> dict[str, Any]:
+        return service.prompt_templates()
+
+    @router.post("/engine/prompt-templates")
+    def save_prompt_template(body: PromptTemplateRequest) -> dict[str, Any]:
+        return _call(service.save_prompt_template, body.model_dump())
+
+    @router.post("/engine/prompt-templates/{template_id}/activate")
+    def activate_prompt_template(template_id: int) -> dict[str, Any]:
+        return _call(service.activate_prompt_template, template_id)
+
+    @router.post("/engine/prompt-templates/{template_id}/delete")
+    def delete_prompt_template(template_id: int) -> dict[str, Any]:
+        return _call(service.delete_prompt_template, template_id)
 
     @router.post("/demo-draft")
     async def create_demo_draft(

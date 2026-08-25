@@ -31,6 +31,21 @@ function money(amountCents: number) {
   return `¥${(amountCents / 100).toFixed(2)}`;
 }
 
+/** 服务端返回的计费流水时间为 UTC（如 2026-08-21T14:17:12+00:00），
+ *  这里转换为浏览器本地时区显示，避免直接截断显示成 UTC 时间。 */
+function formatUsageTime(iso: string): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso.replace("T", " ").slice(0, 19);
+  }
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  );
+}
+
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
     pending: "待支付",
@@ -42,32 +57,130 @@ function statusLabel(status: string) {
   return labels[status] ?? status;
 }
 
-function formatUsageDateTime(value: string) {
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime())
-    ? value
-    : new Date(value).toLocaleString("zh-CN", { hour12: false });
-}
+const pricingFeatures: Array<{ key: string; label: string; note: string }> = [
+  { key: "product_processing.image_grid_2k", label: "智能生图", note: "商品图片生成" },
+  { key: "product_processing.text", label: "商品文本", note: "标题 / 卖点 / 详情文案" },
+  { key: "product_processing.batch", label: "批量链接处理", note: "整批商品处理任务" },
+];
 
 function usageServiceLabel(featureKey: string) {
   if (featureKey === "pod_customization.batch") return "POD 定制";
-  if (featureKey === "product_processing.image_grid_2k") return "四宫格生图";
+  if (featureKey === "product_processing.image_grid_2k") return "智能生图";
   if (featureKey === "product_processing.batch") return "批量链接处理";
   return "商品文本";
 }
 
+// 用量明细的调用信息：内部模型名（doubao-* 等供应商标识）不对外展示。
+function usageDetailText(entry: BillingUsageEntry): string | null {
+  const raw = entry.model || entry.provider || "";
+  if (!raw) return "等待上游";
+  if (/doubao/i.test(raw)) return null;
+  return raw;
+}
+
+/** 积分/钱包概要本地缓存：冷却窗口内页面刷新直接复用缓存，避免每次进入都请求服务器。 */
+const BALANCE_CACHE_PREFIX = "mainpg.billing.summary.cache.v1";
+
+type BalanceCachePayload = { summary: BillingSummary; fetchedAt: number };
+
+function balanceCacheKey(accountId?: string) {
+  return `${BALANCE_CACHE_PREFIX}.${accountId || "anonymous"}`;
+}
+
+function readBalanceCache(key: string): BalanceCachePayload | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) ?? "null") as BalanceCachePayload | null;
+    if (!parsed || typeof parsed.fetchedAt !== "number" || !parsed.summary) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeBalanceCache(key: string, summary: BillingSummary) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify({ summary, fetchedAt: Date.now() }));
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默忽略，退化为每次请求
+  }
+}
+
+/** 消费流水本地缓存：与积分概要同理，按账号隔离，冷却窗口内同条件复用。 */
+const USAGE_CACHE_PREFIX = "mainpg.billing.usage.cache.v1";
+
+type UsageCachePayload = { items: BillingUsageEntry[]; filterKey: string; fetchedAt: number };
+
+function usageCacheKey(accountId?: string) {
+  return `${USAGE_CACHE_PREFIX}.${accountId || "anonymous"}`;
+}
+
+function buildUsageFilterKey(feature: string, status: string, from: string, to: string) {
+  return `${feature}|${status}|${from}|${to}`;
+}
+
+function readUsageCache(key: string): UsageCachePayload | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) ?? "null") as UsageCachePayload | null;
+    if (!parsed || typeof parsed.fetchedAt !== "number" || !Array.isArray(parsed.items)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeUsageCache(key: string, payload: UsageCachePayload) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默忽略，退化为每次请求
+  }
+}
+
+/** 待支付订单号本地持久化：支付在新标签页完成后，即使本页刷新仍能恢复轮询识别到账。 */
+const PENDING_ORDER_STORAGE_KEY = "mainpg.billing.pending-order.v1";
+
+function readPendingOrderId(): string {
+  try {
+    return (window.localStorage.getItem(PENDING_ORDER_STORAGE_KEY) ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function writePendingOrderId(orderId: string) {
+  try {
+    if (orderId) window.localStorage.setItem(PENDING_ORDER_STORAGE_KEY, orderId);
+    else window.localStorage.removeItem(PENDING_ORDER_STORAGE_KEY);
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默忽略
+  }
+}
+
 export function PersonalCenterPage() {
-  const [summary, setSummary] = useState<BillingSummary | null>(null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage">("wallet");
-  const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>([]);
+  const account = getAuthAccount<AccountSnapshot>();
+  // 积分/钱包概要本地缓存：冷却窗口内页面刷新直接复用缓存，先展示、不阻塞。
+  const balanceCacheKeyValue = balanceCacheKey(account?.account_id);
+  const cachedBalance = readBalanceCache(balanceCacheKeyValue);
+  // 消费流水本地缓存：与概要缓存同理，按账号隔离、跨页面刷新复用。
+  const usageCacheKeyValue = usageCacheKey(account?.account_id);
+  const cachedUsage = readUsageCache(usageCacheKeyValue);
+  const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
+
+  const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing">("wallet");
+  const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>(
+    cachedUsage && cachedUsage.filterKey === defaultUsageFilterKey ? cachedUsage.items : [],
+  );
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageError, setUsageError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedBalance?.summary);
   const [error, setError] = useState("");
   const [selectedPackage, setSelectedPackage] = useState("");
-  const [provider, setProvider] = useState<"wechat" | "alipay">("wechat");
+  const [customAmount, setCustomAmount] = useState("");
   const [creating, setCreating] = useState(false);
   const [createdOrder, setCreatedOrder] = useState<TopupOrderResponse | null>(null);
+  const [paymentNotice, setPaymentNotice] = useState("");
+  const [pendingPaymentOrderId, setPendingPaymentOrderId] = useState(readPendingOrderId);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -75,49 +188,155 @@ export function PersonalCenterPage() {
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [passwordSuccess, setPasswordSuccess] = useState("");
   const [passwordError, setPasswordError] = useState("");
-  const account = getAuthAccount<AccountSnapshot>();
-  // 消费流水刷新保护时间：切换「消费流水」页签时，距上次请求小于该时长则直接复用已加载数据，不重复请求。
+  // 消费流水刷新保护：30 秒内（含页面刷新，随缓存持久化）相同筛选条件不重复请求；筛选变更因缓存键变化自动重新拉取。
   const USAGE_REFRESH_COOLDOWN_MS = 30_000;
-  const lastUsageFetchAt = useRef(0);
+  // 消费流水筛选条件（服务/状态/日期）。
+  const [filterFeature, setFilterFeature] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
 
   const loadUsage = useCallback((force = false) => {
-    if (!force && Date.now() - lastUsageFetchAt.current < USAGE_REFRESH_COOLDOWN_MS) {
+    const filterKey = buildUsageFilterKey(filterFeature, filterStatus, filterDateFrom, filterDateTo);
+    const cached = readUsageCache(usageCacheKeyValue);
+    // 冷却窗口内同条件已有缓存：直接复用，不再请求服务器（页面刷新后依然有效）。
+    if (!force && cached && cached.filterKey === filterKey && Date.now() - cached.fetchedAt < USAGE_REFRESH_COOLDOWN_MS) {
+      setUsageEntries(cached.items);
+      setUsageError("");
       return;
     }
-    lastUsageFetchAt.current = Date.now();
     setUsageLoading(true);
     setUsageError("");
-    loadBillingUsageHistory()
-      .then((payload) => setUsageEntries(payload.items))
+    loadBillingUsageHistory({
+      featureKey: filterFeature || undefined,
+      usageStatus: filterStatus || undefined,
+      dateFrom: filterDateFrom || undefined,
+      dateTo: filterDateTo || undefined,
+    })
+      .then((payload) => {
+        setUsageEntries(payload.items);
+        writeUsageCache(usageCacheKeyValue, { items: payload.items, filterKey, fetchedAt: Date.now() });
+      })
       .catch((exc) => setUsageError(exc instanceof Error ? exc.message : "读取消费流水失败"))
       .finally(() => setUsageLoading(false));
-  }, []);
+  }, [filterFeature, filterStatus, filterDateFrom, filterDateTo, usageCacheKeyValue]);
 
-  const activePackage = useMemo(
-    () => summary?.topup_products.find((item) => item.package_id === selectedPackage) ?? summary?.topup_products[0],
-    [selectedPackage, summary],
-  );
+  const hasUsageFilter = Boolean(filterFeature || filterStatus || filterDateFrom || filterDateTo);
+  const resetUsageFilters = () => {
+    setFilterFeature("");
+    setFilterStatus("");
+    setFilterDateFrom("");
+    setFilterDateTo("");
+    // 筛选变更后由下方 effect 依据新的筛选键自动重新拉取。
+  };
 
-  const refresh = () => {
+  const customAmountCents = useMemo(() => {
+    if (!/^\d+$/.test(customAmount)) return 0;
+    const yuan = Number(customAmount);
+    return Number.isSafeInteger(yuan) && yuan >= 1 && yuan <= 3000 ? yuan * 100 : 0;
+  }, [customAmount]);
+
+  const activePackage = useMemo(() => {
+    if (selectedPackage === "custom" && customAmountCents) {
+      const pointsPerCny = summary?.pricing.points_per_cny ?? 100;
+      return {
+        package_id: "custom",
+        label: "自定义积分充值",
+        amount_cents: customAmountCents,
+        points: (customAmountCents / 100) * pointsPerCny,
+      } satisfies BillingPackage;
+    }
+    return summary?.topup_products.find((item) => item.package_id === selectedPackage) ?? summary?.topup_products[0];
+  }, [customAmountCents, selectedPackage, summary]);
+
+  const refresh = useCallback(() => {
     setLoading(true);
     setError("");
     loadBillingSummary()
       .then((payload) => {
         setSummary(payload);
+        writeBalanceCache(balanceCacheKeyValue, payload);
+        lastBalanceRefreshAt.current = Date.now();
         setSelectedPackage((current) => current || payload.topup_products[0]?.package_id || "");
       })
       .catch((exc) => setError(exc instanceof Error ? exc.message : "读取个人中心失败"))
       .finally(() => setLoading(false));
-  };
+  }, [balanceCacheKeyValue]);
+
+  // 可用积分刷新冷却：30 秒内（含页面刷新，时间戳随缓存持久化到本地）不重复请求；
+  // 已读取的概要缓存到 localStorage，刷新页面时先展示缓存，新鲜则不再请求服务器。
+  const BALANCE_REFRESH_COOLDOWN_MS = 30_000;
+  const lastBalanceRefreshAt = useRef(cachedBalance?.fetchedAt ?? 0);
+  const [balanceCooldownSeconds, setBalanceCooldownSeconds] = useState(0);
+  const balanceCooldownActive = balanceCooldownSeconds > 0;
+
+  const refreshBalance = useCallback((force = false) => {
+    if (!force && Date.now() - lastBalanceRefreshAt.current < BALANCE_REFRESH_COOLDOWN_MS) {
+      return;
+    }
+    lastBalanceRefreshAt.current = Date.now();
+    setBalanceCooldownSeconds(BALANCE_REFRESH_COOLDOWN_MS / 1000);
+    refresh();
+  }, [refresh]);
 
   useEffect(() => {
-    refresh();
-  }, []);
+    if (!balanceCooldownActive) return;
+    const timer = window.setInterval(
+      () => setBalanceCooldownSeconds((seconds) => Math.max(0, seconds - 1)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [balanceCooldownActive]);
+
+  useEffect(() => {
+    // 冷却窗口内已有新鲜缓存：直接复用，不再请求服务器。
+    if (Date.now() - lastBalanceRefreshAt.current < BALANCE_REFRESH_COOLDOWN_MS) {
+      setLoading(false);
+      return;
+    }
+    refreshBalance(true);
+  }, [refreshBalance]);
 
   useEffect(() => {
     if (activePanel !== "usage") return;
     loadUsage(false);
   }, [activePanel, loadUsage]);
+
+  useEffect(() => {
+    if (!pendingPaymentOrderId) return;
+
+    let disposed = false;
+    const refreshPaymentStatus = () => {
+      void loadBillingSummary()
+        .then((payload) => {
+          if (disposed) return;
+          setSummary(payload);
+          const order = payload.recent_orders.find((item) => item.order_id === pendingPaymentOrderId);
+          if (order?.status === "paid") {
+            setPendingPaymentOrderId("");
+            writePendingOrderId("");
+            setPaymentNotice(`充值成功，${order.points.toLocaleString()} 积分已到账。`);
+          }
+        })
+        .catch(() => {
+          // The regular refresh action remains available if the network is briefly unavailable.
+        });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshPaymentStatus();
+    };
+
+    refreshPaymentStatus();
+    const timer = window.setInterval(refreshPaymentStatus, 4000);
+    window.addEventListener("focus", refreshPaymentStatus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshPaymentStatus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [pendingPaymentOrderId]);
 
   useEffect(() => {
     if (!passwordOpen) return;
@@ -187,11 +406,32 @@ export function PersonalCenterPage() {
     if (!product) return;
     setCreating(true);
     setError("");
+    setPaymentNotice("");
     setCreatedOrder(null);
     try {
-      const response = await createTopupOrder({ provider, package_id: product.package_id });
+      const response = await createTopupOrder({
+        provider: "alipay",
+        package_id: product.package_id,
+        ...(product.package_id === "custom" ? { amount_cents: product.amount_cents } : {}),
+      });
       setCreatedOrder(response);
-      await loadBillingSummary().then(setSummary);
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      writeBalanceCache(balanceCacheKeyValue, payload);
+      lastBalanceRefreshAt.current = Date.now();
+      setPendingPaymentOrderId(response.order.order_id);
+      writePendingOrderId(response.order.order_id);
+
+      if (response.payment.mode === "page_pay" && response.payment.pay_url) {
+        setPaymentNotice("正在新窗口打开支付宝付款页面，付款完成后回到本页会自动刷新积分。");
+        const popup = window.open(response.payment.pay_url, "_blank");
+        if (!popup) {
+          // 弹窗被浏览器拦截时，回退为当前页跳转（付款完成后需手动返回本工作台）。
+          window.location.assign(response.payment.pay_url);
+        }
+        return;
+      }
+      setPaymentNotice(response.payment.message || "支付宝付款暂不可用，请稍后重试。");
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "创建充值订单失败");
     } finally {
@@ -299,6 +539,20 @@ export function PersonalCenterPage() {
         <div className="personal-stat is-balance">
           <span>可用积分</span>
           <b>{summary?.wallet.available_points.toLocaleString() ?? "--"}</b>
+          {loading && <span className="personal-stat-spinner" aria-label="积分刷新中" />}
+          <button
+            type="button"
+            className="personal-stats-refresh is-on-dark"
+            onClick={() => refreshBalance()}
+            disabled={balanceCooldownActive || loading}
+            aria-label="刷新可用积分"
+          >
+            {balanceCooldownActive
+              ? `${balanceCooldownSeconds} 秒后可刷新`
+              : loading
+                ? <><span className="personal-spinner" aria-hidden="true" />刷新中…</>
+                : "↻ 刷新"}
+          </button>
         </div>
         <div className="personal-stat">
           <span>总积分</span>
@@ -311,7 +565,9 @@ export function PersonalCenterPage() {
         <div className="personal-stat">
           <span>换算比例</span>
           <b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b>
-          <button type="button" className="personal-stats-refresh" onClick={refresh} aria-label="刷新余额">↻ 刷新</button>
+          <button type="button" className="personal-stats-refresh" onClick={() => refreshBalance()} disabled={balanceCooldownActive || loading} aria-label="刷新余额">
+            {balanceCooldownActive ? `${balanceCooldownSeconds} 秒后` : loading ? <><span className="personal-spinner" aria-hidden="true" />刷新中…</> : "↻ 刷新"}
+          </button>
         </div>
       </div>
 
@@ -322,6 +578,9 @@ export function PersonalCenterPage() {
           </button>
           <button type="button" className={activePanel === "usage" ? "is-active" : ""} onClick={() => setActivePanel("usage")}>
             <span className="iconfont icon-accountbook-fill" aria-hidden="true" /> 消费流水
+          </button>
+          <button type="button" className={activePanel === "pricing" ? "is-active" : ""} onClick={() => setActivePanel("pricing")}>
+            <span className="iconfont icon-calculator" aria-hidden="true" /> 计费规则
           </button>
           <p>余额、费率与消费记录均由服务器账本实时校验。</p>
         </aside>
@@ -334,20 +593,15 @@ export function PersonalCenterPage() {
             <h2>充值积分</h2>
           </div>
           <div className="provider-switch">
-            {(Object.keys(providerMeta) as Array<keyof typeof providerMeta>).map((key) => {
-              const meta = providerMeta[key];
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  className={`${meta.className} ${provider === key ? "is-active" : ""}`}
-                  onClick={() => setProvider(key)}
-                >
-                  <span className={meta.icon} aria-hidden="true" />
-                  {meta.label}
-                </button>
-              );
-            })}
+            <button type="button" className="is-wechat is-unavailable" disabled title="微信支付暂未开放">
+              <span className={providerMeta.wechat.icon} aria-hidden="true" />
+              微信支付
+              <small>暂未开放</small>
+            </button>
+            <button type="button" className="is-alipay is-active" aria-pressed="true">
+              <span className={providerMeta.alipay.icon} aria-hidden="true" />
+              支付宝
+            </button>
           </div>
           <div className="topup-products">
             {summary?.topup_products.map((item) => (
@@ -362,6 +616,29 @@ export function PersonalCenterPage() {
               </button>
             ))}
           </div>
+          <label className={`custom-topup ${selectedPackage === "custom" ? "is-active" : ""}`}>
+            <span>自定义金额</span>
+            <div>
+              <b>¥</b>
+              <input
+                type="number"
+                min="1"
+                max="3000"
+                step="1"
+                inputMode="numeric"
+                value={customAmount}
+                onFocus={() => setSelectedPackage("custom")}
+                onChange={(event) => {
+                  setCustomAmount(event.target.value);
+                  setSelectedPackage("custom");
+                }}
+                placeholder="1 - 3000"
+                aria-label="自定义充值金额，单位元"
+              />
+              <em>元</em>
+            </div>
+            <small>{customAmount ? (customAmountCents ? `预计到账 ${activePackage?.points.toLocaleString()} 积分` : "请输入 1 到 3000 的整数金额") : "支持 1 - 3000 元整数充值"}</small>
+          </label>
           <button className="primary-topup" type="button" disabled={!activePackage || creating} onClick={() => void submitTopup(activePackage)}>
             {creating ? "正在创建服务器订单..." : "创建充值订单"}
           </button>
@@ -371,6 +648,7 @@ export function PersonalCenterPage() {
               <span>{createdOrder.payment.message}</span>
             </div>
           )}
+          {paymentNotice && <p className="payment-notice">{paymentNotice}</p>}
         </article>
 
         <div className="personal-stack">
@@ -408,12 +686,111 @@ export function PersonalCenterPage() {
           </ul>
         </article>
         </div>
-        </div> : (
+        </div> : activePanel === "pricing" ? (
+          <article className="personal-card pricing-card">
+            <div className="personal-card-title">
+              <span className="iconfont icon-calculator" aria-hidden="true" />
+              <div><h2>计费规则</h2><small>服务端权威定价，按规则版本生效，客户端不参与报价。</small></div>
+              <button type="button" onClick={() => refreshBalance()} disabled={balanceCooldownActive || loading}>
+                {balanceCooldownActive ? `${balanceCooldownSeconds} 秒后` : "刷新"}
+              </button>
+            </div>
+
+            <div className="pricing-hero">
+              <span className="pricing-hero-kicker">单条处理链接 · 消费定价</span>
+              <div className="pricing-hero-range">
+                <b>{summary?.pricing.product_link.actual_charge_min_points.toLocaleString() ?? "--"}</b>
+                <em>~</em>
+                <b>{summary?.pricing.product_link.actual_charge_max_points.toLocaleString() ?? "--"}</b>
+                <i>积分 / 条</i>
+              </div>
+              <p className="pricing-hero-note">
+                受服务商模型波动影响，单条链接定价在{" "}
+                {summary?.pricing.product_link.actual_charge_min_points ?? "--"} 积分到{" "}
+                {summary?.pricing.product_link.actual_charge_max_points ?? "--"} 积分区间波动哦~
+              </p>
+            </div>
+
+            <div className="pricing-feature-grid">
+              {pricingFeatures.map(({ key, label, note }) => {
+                const feature = summary?.pricing.features[key];
+                if (!feature) return null;
+                return (
+                  <div key={key} className="pricing-feature">
+                    <span className="pricing-feature-name">
+                      <b>{label}</b>
+                      <small>{note}</small>
+                    </span>
+                    <span className="pricing-feature-points">
+                      <b>{feature.charge_points.toLocaleString()}</b>
+                      <i>积分 / 条</i>
+                      <small>预冻结 {feature.reserve_points.toLocaleString()}</small>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="pricing-foot">
+              <span>充值换算：{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</span>
+              <span>规则版本 v{summary?.pricing.rule_version ?? "--"}{summary?.pricing.effective_at ? ` · 生效于 ${summary.pricing.effective_at.replace("T", " ").slice(0, 16)}` : ""}</span>
+            </div>
+          </article>
+        ) : (
           <article className="personal-card usage-card">
             <div className="personal-card-title">
               <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
               <div><h2>消费流水</h2><small>每条记录包含冻结、实际扣费、释放、模型与结算状态。</small></div>
               <button type="button" onClick={() => loadUsage(true)}>刷新</button>
+            </div>
+            <div className="usage-filters">
+              <label>
+                <span>开始日期</span>
+                <input
+                  type="date"
+                  value={filterDateFrom}
+                  max={filterDateTo || undefined}
+                  onChange={(event) => setFilterDateFrom(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>结束日期</span>
+                <input
+                  type="date"
+                  value={filterDateTo}
+                  min={filterDateFrom || undefined}
+                  onChange={(event) => setFilterDateTo(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>服务</span>
+                <select
+                  value={filterFeature}
+                  onChange={(event) => setFilterFeature(event.target.value)}
+                >
+                  <option value="">全部服务</option>
+                  <option value="product_processing.image_grid_2k">智能生图</option>
+                  <option value="product_processing.text">商品文本</option>
+                  <option value="product_processing.batch">批量链接处理</option>
+                </select>
+              </label>
+              <label>
+                <span>状态</span>
+                <select
+                  value={filterStatus}
+                  onChange={(event) => setFilterStatus(event.target.value)}
+                >
+                  <option value="">全部状态</option>
+                  <option value="succeeded">已结算</option>
+                  <option value="reserved,frozen">处理中</option>
+                  <option value="failed">已释放</option>
+                </select>
+              </label>
+              {hasUsageFilter && (
+                <button type="button" className="usage-filter-reset" onClick={resetUsageFilters}>
+                  重置筛选
+                </button>
+              )}
             </div>
             {usageLoading && <p className="usage-state">正在读取服务器消费账本…</p>}
             {usageError && <p className="usage-state is-error">{usageError}</p>}
@@ -423,13 +800,13 @@ export function PersonalCenterPage() {
                   <thead><tr><th>时间</th><th>服务</th><th>状态</th><th>冻结</th><th>实际扣费</th><th>释放</th><th>规则</th><th>调用信息</th></tr></thead>
                   <tbody>{usageEntries.length ? usageEntries.map((entry) => (
                     <tr key={entry.usage_id}>
-                      <td><b>{formatUsageDateTime(entry.created_at)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
-                      <td>{usageServiceLabel(entry.feature_key)}<small>{entry.model || entry.provider || "等待上游"}</small></td>
+                      <td><b>{formatUsageTime(entry.created_at)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
+                      <td>{usageServiceLabel(entry.feature_key)}{usageDetailText(entry) && <small>{usageDetailText(entry)}</small>}</td>
                       <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" || entry.status === "frozen" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
                       <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
                       <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.usage_id.slice(0, 14)}…</small></td>
                     </tr>
-                  )) : <tr><td colSpan={8} className="usage-empty">暂无消费流水</td></tr>}</tbody>
+                  )) : <tr><td colSpan={8} className="usage-empty">{hasUsageFilter ? "没有匹配的消费流水，试试调整筛选条件" : "暂无消费流水"}</td></tr>}</tbody>
                 </table>
               </div>
             )}

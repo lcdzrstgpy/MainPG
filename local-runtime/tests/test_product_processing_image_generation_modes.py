@@ -22,6 +22,10 @@ class _Repository:
     def prompts() -> dict[str, str]:
         return {}
 
+    @staticmethod
+    def active_prompt_template() -> None:
+        return None
+
 
 class _Processor:
     def __init__(self) -> None:
@@ -171,8 +175,8 @@ def test_four_grid_repairs_only_failed_slot_with_one_1k_call(monkeypatch) -> Non
     assert processor.calls[0]["layout_scaffold"] is True
     assert processor.calls[0]["image_size"] == "2048x2048"
     assert processor.calls[1]["stage"] == "grid_image_3"
-    assert processor.calls[1]["image_size"] == "1024x1024"
-    assert processor.calls[1]["model_override"] == "gpt-image-2-1k"
+    assert processor.calls[1]["image_size"] == "2048x2048"
+    assert "model_override" not in processor.calls[1]
     assert output.attempt_count == 2
     assert output.provider_status_class == "recovered_slot_retry"
     assert len(output.carousel_urls) == 4
@@ -384,6 +388,6 @@ def test_four_grid_source_without_chinese_still_repairs_chinese_slots(monkeypatc
 
     assert len(processor.calls) == 2
     assert processor.calls[1]["stage"] == "grid_image_3"
-    assert processor.calls[1]["image_size"] == "1024x1024"
+    assert processor.calls[1]["image_size"] == "2048x2048"
     assert output.provider_status_class == "recovered_slot_retry"
     assert len(output.carousel_urls) == 4

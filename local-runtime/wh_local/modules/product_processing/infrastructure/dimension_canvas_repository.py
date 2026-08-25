@@ -328,6 +328,31 @@ class DimensionCanvasRepository:
             )
             return self._asset(row) if row else None
 
+    def find_preview_asset(
+        self, asset_id: str, workspace_id: str
+    ) -> dict[str, Any] | None:
+        """Resolve a preview asset identity referenced by a canvas material URL."""
+        with self.database.sessions() as session:
+            row = session.scalar(
+                select(PreviewImageAssetRow).where(
+                    PreviewImageAssetRow.id == asset_id,
+                    PreviewImageAssetRow.workspace_id == workspace_id,
+                )
+            )
+            if row is None:
+                return None
+            return {
+                "id": str(row.id),
+                "origin": str(row.origin),
+                "managed_path": str(row.managed_path),
+                "source_url": str(row.source_url),
+                "content_type": str(row.content_type),
+                "availability": str(row.availability),
+                "content_hash": str(row.content_hash),
+                "width": int(row.width or 0),
+                "height": int(row.height or 0),
+            }
+
     def materialize_asset(
         self,
         asset_id: str,

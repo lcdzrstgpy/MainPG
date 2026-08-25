@@ -236,6 +236,9 @@ VARIANT OPTION TRANSLATION RULES:
 - Do not use placeholder labels like Pattern A, Style B, Default, Option, Unknown, Other, or Variant.
 - Each mapping must keep raw_value copied exactly; do not merge or drop any option.
 
+Operator-configured variant translation instructions (apply their factual and style rules; keep the JSON schema below):
+{variant_instructions}
+
 Captured variant options:
 {variant_options}
 

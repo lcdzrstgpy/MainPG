@@ -1,4 +1,4 @@
-import { getAuthToken, httpBlob, httpJson } from "../../../transport/http/client";
+import { getAuthToken, httpBlob, httpJson, toUserMessage } from "../../../transport/http/client";
 
 export type ApiAsset = { asset_id: string; filename: string; content_type: string };
 export type ApiConversation = { conversation_id: string; title: string; mode: "chat" | "generate" | "edit"; is_pinned: boolean; updated_at: string };
@@ -26,7 +26,7 @@ export const aiServiceApi = {
     form.append("file", file);
     const response = await fetch(apiUrl("/api/ai-service/assets"), { method: "POST", headers, body: form });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(typeof payload.detail === "string" ? payload.detail : "图片上传失败");
+    if (!response.ok) throw new Error(toUserMessage(typeof payload.detail === "string" ? payload.detail : "图片上传失败"));
     return payload as ApiAsset;
   },
   loadAssetUrl: async (assetId: string) => URL.createObjectURL(await httpBlob(`/api/ai-service/assets/${encodeURIComponent(assetId)}`)),
@@ -36,7 +36,7 @@ export const aiServiceApi = {
     const token = getAuthToken();
     if (token) headers.authorization = `Bearer ${token}`;
     const response = await fetch(apiUrl("/api/ai-service/messages/stream"), { method: "POST", headers, body: JSON.stringify(body) });
-    if (!response.ok || !response.body) throw new Error((await response.text()) || "对话请求失败");
+    if (!response.ok || !response.body) throw new Error(toUserMessage((await response.text()) || "对话请求失败"));
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let raw = "";
@@ -54,7 +54,7 @@ export const aiServiceApi = {
           if (!value || value === "[DONE]") continue;
           try {
             const payload = JSON.parse(value);
-            if (typeof payload.error === "string") throw new Error(payload.error);
+            if (typeof payload.error === "string") throw new Error(toUserMessage(payload.error));
             const delta = payload.choices?.[0]?.delta?.content;
             if (typeof delta === "string") content += delta;
           } catch (error) {

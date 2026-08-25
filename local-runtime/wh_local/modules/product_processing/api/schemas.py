@@ -10,7 +10,7 @@ PROCESSING_SCOPE_OPTIONS = {
     "title": "标题",
     "details": "详情",
     "product_dimensions": "产品尺寸",
-    "four_grid": "四宫格",
+    "four_grid": "智能生图",
     "detail_images": "详情图",
     "sku_images": "SKU 图",
     "qualification": "资质",
@@ -103,7 +103,7 @@ class DraftProcessRequest(BaseModel):
     max_parallel_drafts: int = Field(default=1, ge=1, le=20, description="最大并行处理数，1=串行，上限20")
     image_generation_count: int = Field(
         default=4,
-        description="旧客户端兼容字段；当前固定为 4，普通与精品均一次生成四宫格后本地拆分",
+        description="旧客户端兼容字段；当前固定为 4，普通与精品均一次生成智能生图后本地拆分",
     )
 
     @field_validator("draft_ids")
@@ -202,6 +202,15 @@ class PreviewFinalizeRequest(PreviewSaveRequest):
 
 class PromptUpdateRequest(BaseModel):
     prompts: dict[str, str] = Field(default_factory=dict)
+
+
+class PromptTemplateRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    template_id: int | None = None
+    name: str = ""
+    prompts: dict[str, str] = Field(default_factory=dict)
+    activate: bool = True
 
 
 class DailySelectionIntakeRequest(DailySelectionRun):

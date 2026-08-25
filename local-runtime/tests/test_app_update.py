@@ -15,7 +15,7 @@ from wh_local.config import default_config
 
 
 def test_runtime_version_is_release_owned() -> None:
-    assert default_config().app_version == "1.2.0"  # APP_VERSION in wh_local/config.py
+    assert default_config().app_version == "1.3.0"  # APP_VERSION in wh_local/config.py
 
 
 def test_default_update_manifest_uses_the_official_https_release_host() -> None:
@@ -242,7 +242,7 @@ def test_check_reports_idle_for_the_same_or_older_version(tmp_path: Path, versio
 
 def test_snoozed_optional_release_stays_hidden_until_a_newer_version(tmp_path: Path) -> None:
     manager, private_key = _manager(tmp_path)
-    current_release = _signed_manifest(private_key, version="1.2.0")
+    current_release = _signed_manifest(private_key, version="1.3.0")
     manager.with_manifest_fetcher(lambda _url: current_release)
 
     assert manager.check()["state"] == "available"
@@ -255,11 +255,11 @@ def test_snoozed_optional_release_stays_hidden_until_a_newer_version(tmp_path: P
     restarted.with_manifest_fetcher(lambda _url: current_release)
     assert restarted.check()["state"] == "unavailable"
 
-    newer_release = _signed_manifest(private_key, version="1.3.0")
+    newer_release = _signed_manifest(private_key, version="1.4.0")
     restarted.with_manifest_fetcher(lambda _url: newer_release)
     status = restarted.check()
     assert status["state"] == "available"
-    assert status["release"]["version"] == "1.3.0"
+    assert status["release"]["version"] == "1.4.0"
 
 
 def test_check_does_not_fetch_updates_on_unsupported_platform(tmp_path: Path) -> None:
@@ -455,7 +455,7 @@ def test_runtime_registers_update_status_and_action_routes(tmp_path: Path) -> No
         install = client.post("/api/app-update/install")
 
     assert status.status_code == 200
-    assert status.json()["current_version"] == "1.2.0"
+    assert status.json()["current_version"] == "1.3.0"
     assert check.status_code == 200
     assert install.status_code == 200
 

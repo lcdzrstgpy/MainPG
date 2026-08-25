@@ -397,7 +397,13 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             // 空采集：后台已按同一条件自动重采，同步一次状态并让轮询接管展示
             void syncCollectionRetry(run.run_id);
           } else {
-            setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选`);
+            const deduplicated = (run.metadata as { deduplicated?: { count?: number } })
+              ?.deduplicated;
+            const dedupeText =
+              deduplicated && deduplicated.count
+                ? `，已剔除 ${deduplicated.count} 条已存在/已处理商品`
+                : "";
+            setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选${dedupeText}`);
           }
           return;
         }

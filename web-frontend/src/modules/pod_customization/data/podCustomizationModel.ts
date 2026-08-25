@@ -45,6 +45,7 @@ export const EMPTY_POD_LISTING_FIELDS: PodListingFieldsDraft = {
   height_cm: "",
   weight_g: "",
   category_name: "",
+  sku_names: [],
 };
 
 const ACTIVE_BATCH_STATUSES = new Set<PodBatchStatus>([
@@ -148,6 +149,7 @@ export function listingFieldsForApi(fields: PodListingFieldsDraft): PodListingFi
       height_cm: heightCm,
       weight_g: weightG,
       category_name: categoryName,
+      sku_names: fields.sku_names.map((name) => name.trim()).filter(Boolean),
     },
   };
 }
@@ -195,6 +197,14 @@ export function groupPodStyleRows(
 export function batchProgress(batch: { count: number; processed_count: number }): number {
   if (batch.count <= 0) return 0;
   return Math.min(100, Math.max(0, Math.round((batch.processed_count / batch.count) * 100)));
+}
+
+export function formatPodBatchWaitingTime(createdAt: string, now = Date.now()): string {
+  const startedAt = Date.parse(createdAt);
+  const elapsedSeconds = Number.isFinite(startedAt) ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  return minutes ? `${minutes}分${seconds}秒` : `${seconds}秒`;
 }
 
 export function isActiveBatchStatus(status: PodBatchStatus): boolean {

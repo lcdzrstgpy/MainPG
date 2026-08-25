@@ -125,7 +125,6 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
     <section className="dashboard-stats-section">
       <div className="section-heading">
         <div>
-          <p className="eyebrow">WORKSPACE OVERVIEW</p>
           <h2>数据概览</h2>
         </div>
         <span className="muted">实时统计</span>

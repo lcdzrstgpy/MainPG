@@ -253,6 +253,33 @@ class DailySelectionRepository:
             updated_at=row["updated_at"],
         )
 
+    def confirmed_offer_ids(self, *, workspace_id: str) -> frozenset[str]:
+        """Return offer IDs ever confirmed into the downstream pool.
+
+        采集完成后的剔除依据之一：同一商品（offer_id）只要在历史任意批次中
+        被确认入池过（status='confirmed'），再次采集到就不再展示，避免重复。
+        """
+        workspace_id = _required_text(workspace_id, "workspace_id")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN")
+            rows = connection.execute(
+                """
+                SELECT DISTINCT offer_id
+                FROM daily_selection_candidates
+                WHERE workspace_id = ? AND status = 'confirmed'
+                  AND offer_id <> ''
+                """,
+                (workspace_id,),
+            ).fetchall()
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return frozenset(str(row["offer_id"]) for row in rows)
+
     def record_feedback(
         self,
         *,

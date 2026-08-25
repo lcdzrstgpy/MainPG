@@ -60,6 +60,10 @@ HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "source_url": ("链接", "来源", "商品链接", "source_url", "product_link"),
     "price": ("价格", "售价", "最低价格", "建议售价", "price", "price_cny"),
     "description": ("描述", "商品描述", "description"),
+    "weight_text": ("*重量（g）", "重量（g）", "*重量(g)", "重量(g)", "重量", "净重"),
+    "length_cm": ("*长（cm）", "长（cm）", "*长(cm)", "长(cm)", "长度（cm）", "长"),
+    "width_cm": ("*宽（cm）", "宽（cm）", "*宽(cm)", "宽(cm)", "宽度（cm）", "宽"),
+    "height_cm": ("*高（cm）", "高（cm）", "*高(cm)", "高(cm)", "高度（cm）", "高"),
 }
 
 
@@ -603,6 +607,15 @@ def _normalize_row(raw: dict[str, Any], row_number: int) -> dict[str, Any]:
     normalized["title"] = title
     normalized["product_name"] = title
     normalized["source_ref"] = str(normalized.get("source_url") or f"workbook-row:{row_number}")
+    # 店小秘模板的长/宽/高/重量列：归一为下游可确定性解析的物流原始文本。
+    weight = str(normalized.get("weight_text") or "").strip()
+    if weight:
+        normalized["weight_text"] = weight
+    length = str(normalized.get("length_cm") or "").strip()
+    width = str(normalized.get("width_cm") or "").strip()
+    height = str(normalized.get("height_cm") or "").strip()
+    if length and width and height:
+        normalized["package_info_text"] = f"{length}x{width}x{height}cm"
     return normalized
 
 

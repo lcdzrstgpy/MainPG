@@ -352,7 +352,7 @@ class PreviewImageService:
         }
         by_id = {str(asset.get("id") or ""): asset for asset in existing}
 
-        def register(value: Any, origin: str) -> dict[str, Any] | None:
+        def register(value: Any, origin: str, source_kind: str = "") -> dict[str, Any] | None:
             normalized = str(value or "").strip()
             if not normalized:
                 return None
@@ -379,6 +379,7 @@ class PreviewImageService:
                     byte_size=0,
                     width=0,
                     height=0,
+                    source_kind=source_kind,
                 )
             else:
                 if normalized not in result_storage_values:
@@ -416,14 +417,15 @@ class PreviewImageService:
             by_preview[self._preview_url(row)] = row
             return row
 
+        source_url_list = [
+            str(value or "").strip()
+            for value in result.get("source_image_urls") or []
+            if str(value or "").strip()
+        ]
+        source_values = set(source_url_list)
         if MANIFEST_KEY in saved:
             manifest = PreviewImageManifest.from_value(saved.get(MANIFEST_KEY))
         else:
-            source_values = {
-                str(value or "").strip()
-                for value in result.get("source_image_urls") or []
-                if str(value or "").strip()
-            }
             carousel_values: list[str] = []
             semantic_values: dict[str, str] = {}
             if "carousel_images" in saved:
@@ -487,6 +489,12 @@ class PreviewImageService:
                 detail_asset_ids=tuple(detail_ids),
                 semantic_asset_ids=semantic_ids,
             )
+
+        # v1 草稿（手动采集等）没有 media contract v2 的远程源图绑定，原始来源图
+        # 只存在 result.source_image_urls 里；即使未进轮播/详情，也要注册为 source
+        # 预览资产，否则预检「处理前图片池」永远为空。
+        for index, source_value in enumerate(source_url_list):
+            register(source_value, "source", "main" if index == 0 else "gallery")
 
         owned = {
             asset["id"]: asset
@@ -1034,6 +1042,29 @@ class PreviewImageService:
             if hashlib.sha256(content).hexdigest() != str(asset["content_hash"]):
                 raise ValueError("managed preview asset hash mismatch")
             return asset
+        if managed:
+            # Compatibility for a former canvas acceptance path which stored this
+            # API display URL in ``managed_path``.  Resolve only an asset from the
+            # same task/draft/workspace; a browser URL never becomes a storage
+            # authority.  Keeps finalization able to publish these proxy assets.
+            referenced_id = self._preview_asset_id(managed)
+            referenced = (
+                self.repository.get_asset(referenced_id, workspace_id)
+                if referenced_id
+                else None
+            )
+            if (
+                referenced is not None
+                and str(referenced.get("id") or "") != str(asset.get("id") or "")
+                and int(referenced.get("task_id") or 0) == int(asset.get("task_id") or 0)
+                and int(referenced.get("product_draft_id") or 0)
+                == int(asset.get("product_draft_id") or 0)
+            ):
+                materialized = self._materialize(referenced, workspace_id)
+                return {
+                    **materialized,
+                    "id": str(asset.get("id") or materialized.get("id") or ""),
+                }
         source_url = str(asset.get("source_url") or "")
         if not source_url or not is_safe_external_url(source_url):
             raise ValueError("preview asset source is unavailable")
@@ -1135,7 +1166,7 @@ class PreviewImageService:
             content = path.read_bytes()
             if hashlib.sha256(content).hexdigest() != digest:
                 raise ValueError("preview publication bytes do not match content hash")
-            suffix = {"image/png": ".png", "image/webp": ".webp"}.get(
+            suffix = {"image/png": ".png", "image/webp": ".webp", "image/avif": ".avif"}.get(
                 str(asset.get("content_type") or "").casefold(),
                 ".jpg",
             )

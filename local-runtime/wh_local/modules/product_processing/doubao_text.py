@@ -81,8 +81,10 @@ class DoubaoTextClient:
                 if not exc.retryable or attempt >= MAX_ATTEMPTS:
                     raise
             except ValueError as exc:
+                # 校验失败（如语言契约拒绝中文输出）的真实原因不能丢，
+                # 拼进 message 供前端/错误报告直接展示，避免只看到通用文案。
                 error = DoubaoTextError(
-                    "Doubao text output failed the listing contract",
+                    f"Doubao text output failed the listing contract: {exc}",
                     error_kind="invalid_response",
                     retryable=True,
                     attempt_count=attempt,

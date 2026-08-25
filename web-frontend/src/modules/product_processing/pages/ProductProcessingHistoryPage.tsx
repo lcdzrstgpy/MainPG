@@ -108,7 +108,6 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
     <div className="verify-page processing-history-page">
       <header className="verify-commandbar">
         <div className="verify-command-title">
-          <span className="verify-eyebrow">AI PROCESSING · HISTORY</span>
           <h1>历史记录</h1>
           <p>所有 AI 处理批次都会保存在这里；关闭任务页不会中断后台处理，可随时重新打开查看进度、结果和输出文件。</p>
         </div>

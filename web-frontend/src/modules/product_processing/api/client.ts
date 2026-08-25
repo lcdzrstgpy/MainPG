@@ -1,3 +1,5 @@
+import { toUserMessage } from "../../../transport/http/client";
+
 type ApiContext = {
   baseUrl: string;
   token: string;
@@ -68,7 +70,7 @@ export async function ppRequest<T>(
         : typeof payload === "string"
         ? payload
         : JSON.stringify(payload);
-    throw new PpRequestError(detail || `请求失败: ${response.status}`, response.status);
+    throw new PpRequestError(toUserMessage(detail || `请求失败: ${response.status}`), response.status);
   }
   return payload as T;
 }
@@ -93,7 +95,7 @@ export async function ppUpload<T>(
         : typeof payload === "string"
         ? payload
         : JSON.stringify(payload);
-    throw new PpRequestError(detail || `上传失败: ${response.status}`, response.status);
+    throw new PpRequestError(toUserMessage(detail || `上传失败: ${response.status}`), response.status);
   }
   return payload as T;
 }
@@ -108,7 +110,7 @@ export async function ppDownload(
   const response = await fetch(url, { headers });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(text || `下载失败: ${response.status}`);
+    throw new Error(toUserMessage(text || `下载失败: ${response.status}`));
   }
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);

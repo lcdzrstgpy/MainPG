@@ -674,6 +674,37 @@ CREATE TABLE IF NOT EXISTS billing_batch_items (
 
 CREATE INDEX IF NOT EXISTS idx_billing_batch_items_freeze
     ON billing_batch_items (freeze_id);
+
+-- 产品处理失败诊断上报：客户端任务终态静默上报失败明细，供运营定位失败根因。
+-- 用户无感知；report_key 由客户端生成，按 (account_id, report_key) 幂等去重。
+CREATE TABLE IF NOT EXISTS product_processing_failure_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    username TEXT NOT NULL DEFAULT '',
+    app_version TEXT NOT NULL DEFAULT '',
+    report_key TEXT NOT NULL,
+    task_id INTEGER NOT NULL DEFAULT 0,
+    task_status TEXT NOT NULL DEFAULT '',
+    total_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    attention_required_count INTEGER NOT NULL DEFAULT 0,
+    auto_repull_rounds INTEGER NOT NULL DEFAULT 0,
+    auto_repull_message TEXT NOT NULL DEFAULT '',
+    target_site TEXT NOT NULL DEFAULT '',
+    target_language TEXT NOT NULL DEFAULT '',
+    processing_scope TEXT NOT NULL DEFAULT '[]',
+    items_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (account_id, report_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pp_failure_logs_account_time
+    ON product_processing_failure_logs (account_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_pp_failure_logs_created
+    ON product_processing_failure_logs (created_at);
 """
 
 

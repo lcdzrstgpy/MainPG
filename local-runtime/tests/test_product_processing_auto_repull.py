@@ -118,7 +118,36 @@ def test_auto_repull_marks_repull_round_completed(monkeypatch: pytest.MonkeyPatc
     assert "自动补跑完成" in state["message"]
 
 
+def test_auto_repull_all_succeeded_still_marks_round_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """补跑轮全部成功（failures 为空）也必须写 completed 终态。
+
+    回归：修复前 `if not failures: return` 会让补跑轮结束时即使全部成功也
+    提前返回，_auto_repull 永远停在 running，前端一直显示「正在重试波动链接」。
+    """
+    task = _task_with_failures()
+    task["settings"] = {"_auto_repull": {"status": "running", "round": 1, "total": 1}}
+    # 补跑后全部成功：没有任何 failed / attention_required 剩余
+    for item in task["items"]:
+        if item["status"] in {"failed", "attention_required"}:
+            item["status"] = "completed"
+    repository = FakeRepository(task)
+    service = _make_service(repository)
+    launched: list = []
+    monkeypatch.setattr(service, "_launch_auto_repull", lambda *args: launched.append(args))
+
+    service._maybe_launch_auto_repull(1, "local", [])
+
+    assert launched == []
+    assert repository.settings_updates, "补跑轮结束时必须写入终态"
+    state = repository.settings_updates[-1]["_auto_repull"]
+    assert state["status"] == "completed"
+    assert "全部成功" in state["message"]
+
+
 def test_auto_repull_respects_max_rounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WH_PP_AUTO_REPULL_ROUNDS", "1")
     task = _task_with_failures()
     task["settings"] = {"_auto_repull": {"status": "completed", "round": 1, "total": 1}}
     repository = FakeRepository(task)

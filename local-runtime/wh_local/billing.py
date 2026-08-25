@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from . import cache
 from .db import transaction
 from .session import Actor
 
@@ -20,8 +21,9 @@ TEST_GRANT_POINTS = int(os.environ.get("WH_BILLING_TEST_GRANT_POINTS", "10000") 
 GATEWAY_LEGACY_LEASE_SECONDS = 900
 BATCH_BILLING_PROFILE_PRODUCT = "product_processing"
 BATCH_BILLING_PROFILE_POD = "pod_random_v1"
+# POD 每条款式定价：服务器随机取 40..50 整数积分。
 POD_LINK_PRICE_MIN_POINTS = 40
-POD_LINK_PRICE_VARIANTS = 6
+POD_LINK_PRICE_VARIANTS = 11
 
 
 @dataclass(frozen=True)
@@ -56,8 +58,11 @@ def feature_reserve_points(feature_key: str) -> int:
 
 def active_pricing(database_path: Path) -> dict[str, Any]:
     """Return the active server rule; callers must never accept a client price."""
-    with transaction(database_path) as conn:
-        return _pricing_payload(_active_pricing(conn))
+    def load() -> dict[str, Any]:
+        with transaction(database_path) as conn:
+            return _pricing_payload(_active_pricing(conn))
+
+    return cache.get_or_set("pricing:active", 60, load)
 
 
 def update_active_pricing(
@@ -120,7 +125,9 @@ def update_active_pricing(
                 next_rule["min_client_version"], now, now, updated_by[:160],
             ),
         )
-        return _pricing_payload(_active_pricing(conn))
+        updated = _pricing_payload(_active_pricing(conn))
+    cache.invalidate_pricing()
+    return updated
 
 
 def usage_history(
@@ -368,6 +375,7 @@ def reserve_ai_usage(
             idempotency_key=f"{idempotency_key}:lock",
             metadata={"feature_key": feature_key},
         )
+    cache.invalidate_wallet(actor.id)
     return {
         "usage_id": usage_id,
         "account_id": actor.id,
@@ -410,9 +418,20 @@ def settle_ai_usage_success(
         # The upstream providers do not expose a reliable per-request cost.
         # Charge the versioned server rule snapshot, never an unverifiable
         # number posted by a desktop client.
-        charge_points = max(min_points, fallback_points)
-        charge_points = min(charge_points, int(row["reserved_points"]))
-        refund_points = int(row["reserved_points"]) - charge_points
+        base_charge_points = max(min_points, fallback_points)
+        base_charge_points = min(base_charge_points, int(row["reserved_points"]))
+        # 重试溢价：链接发生过 AI 重试/重绘/修复时加收一次（只认图像子项，
+        # 避免同链接 text/image 两个 usage 各加一遍）。溢价不在冻结范围内，
+        # 直接从余额扣除，不参与 reserved 封顶。
+        event_metadata = _merge_metadata(row["metadata_json"], metadata or {}, provider_task_id)
+        premium_units = 0
+        if (
+            str(row["feature_key"]) == RETRY_PREMIUM_FEATURE
+            and bool(event_metadata.get("billing_retried"))
+        ):
+            premium_units = RETRY_PREMIUM_UNITS
+        charge_points = base_charge_points + premium_units
+        refund_points = int(row["reserved_points"]) - base_charge_points
         wallet = conn.execute(
             "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
             (row["account_id"],),
@@ -431,6 +450,8 @@ def settle_ai_usage_success(
             (charge_points, int(row["reserved_points"]), now, row["account_id"]),
         )
         event_metadata = _merge_metadata(row["metadata_json"], metadata or {}, provider_task_id)
+        if premium_units:
+            event_metadata["retry_premium_units"] = premium_units
         conn.execute(
             """
             UPDATE billing_ai_usage_events
@@ -473,6 +494,7 @@ def settle_ai_usage_success(
                 "actual_cost_cny": actual_cost_cny,
                 "provider_task_id": provider_task_id,
                 "model": model,
+                "retry_premium_units": premium_units,
             },
         )
         if refund_points:
@@ -953,6 +975,105 @@ def _append_ledger(
     )
 
 
+def settle_payment_order(
+    database_path: Path,
+    *,
+    provider: str,
+    out_trade_no: str,
+    gateway_transaction_id: str,
+    amount_cents: int,
+    provider_status: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Credit one verified payment order through the shared wallet ledger.
+
+    The provider callback must be signature-verified before reaching this
+    function. This transaction independently rechecks provider, amount and
+    state, making duplicate callbacks and mismatched orders harmless.
+    """
+
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider not in {"alipay", "wechat"}:
+        raise HTTPException(status_code=400, detail="unsupported payment provider")
+    transaction_id = str(gateway_transaction_id or "").strip()
+    if not transaction_id:
+        raise HTTPException(status_code=400, detail="payment transaction id is required")
+    normalized_order_no = str(out_trade_no or "").strip()
+    now = _utc_now()
+
+    with transaction(database_path) as conn:
+        order = conn.execute(
+            "SELECT * FROM billing_payment_orders WHERE out_trade_no = ?",
+            (normalized_order_no,),
+        ).fetchone()
+        if order is None:
+            raise HTTPException(status_code=404, detail="payment order not found")
+        if str(order["provider"]) != normalized_provider:
+            raise HTTPException(status_code=409, detail="payment provider does not match order")
+        if int(order["amount_cents"]) != int(amount_cents):
+            raise HTTPException(status_code=409, detail="payment amount does not match order")
+
+        transaction_owner = conn.execute(
+            """
+            SELECT order_id FROM billing_payment_orders
+            WHERE gateway_transaction_id = ? AND gateway_transaction_id <> '' AND order_id <> ?
+            """,
+            (transaction_id, str(order["order_id"])),
+        ).fetchone()
+        if transaction_owner is not None:
+            raise HTTPException(status_code=409, detail="payment transaction already belongs to another order")
+
+        if str(order["status"]) == "paid":
+            if str(order["gateway_transaction_id"] or "") != transaction_id:
+                raise HTTPException(status_code=409, detail="payment order transaction does not match")
+            return {"already_paid": True, "order": dict(order)}
+        if str(order["status"]) != "pending":
+            raise HTTPException(status_code=409, detail="payment order is no longer payable")
+
+        account_id = str(order["account_id"])
+        workspace_id = str(order["workspace_id"] or "default")
+        points = int(order["points"])
+        _ensure_wallet(conn, account_id, workspace_id)
+        conn.execute(
+            """
+            UPDATE billing_wallets
+            SET points_balance = points_balance + ?, version = version + 1, updated_at = ?
+            WHERE account_id = ?
+            """,
+            (points, now, account_id),
+        )
+        conn.execute(
+            """
+            UPDATE billing_payment_orders
+            SET status = 'paid', gateway_transaction_id = ?, paid_at = ?, updated_at = ?
+            WHERE order_id = ? AND status = 'pending'
+            """,
+            (transaction_id, now, now, str(order["order_id"])),
+        )
+        ledger_metadata = {
+            "out_trade_no": normalized_order_no,
+            "gateway_transaction_id": transaction_id,
+            "provider_status": str(provider_status or "")[:64],
+            **dict(metadata or {}),
+        }
+        _append_ledger(
+            conn,
+            account_id=account_id,
+            workspace_id=workspace_id,
+            direction="credit",
+            points_delta=points,
+            source_type=f"payment_{normalized_provider}",
+            source_id=str(order["order_id"]),
+            idempotency_key=f"payment:{normalized_provider}:{normalized_order_no}:credit",
+            metadata=ledger_metadata,
+        )
+        settled = conn.execute(
+            "SELECT * FROM billing_payment_orders WHERE order_id = ?",
+            (str(order["order_id"]),),
+        ).fetchone()
+    return {"already_paid": False, "order": dict(settled)}
+
+
 def _ledger_hash(payload: dict[str, Any]) -> str:
     secret = os.environ.get("WH_BILLING_LEDGER_SECRET", "local-dev-ledger-secret").encode("utf-8")
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -995,6 +1116,11 @@ SUBITEM_FEATURE_KEYS = (
 # 冻结按最大范围预扣：默认每子项 charge 之和封顶 45 积分。
 DEFAULT_BATCH_FREEZE_PER_LINK = 400  # 固定 40 积分/链接（400 单位）；与子项定价总和联动见 pricing_items
 BATCH_FREEZE_TTL_DAYS = 7
+# 重试溢价：链接发生过 AI 重试/重绘/修复时，该链接加收 10 积分（100 单位）。
+# 语义是「单条链接计一次重试溢价」，不按重试次数累加，也不跨链接共享。
+RETRY_PREMIUM_UNITS = 100
+# 服务端托管结算只认图像子项携带重试标记，避免 text/image 两个 usage 重复计费。
+RETRY_PREMIUM_FEATURE = "product_processing.image_grid_2k"
 
 
 def pricing_items(database_path: Path, *, rule_version: int | None = None) -> dict[str, Any]:
@@ -1233,6 +1359,9 @@ def compute_batch_charge(
     charge_units = 0
     refund_units = 0
     details: list[dict[str, Any]] = []
+    # 重试溢价：该链接任一子项带 retried 标记即整条链接加收一次（不按子项重复累加）。
+    retried = any(str(result.get("retried") or "").lower() in {"true", "1", "yes"} for result in item_results)
+    premium_units = RETRY_PREMIUM_UNITS if retried else 0
     for result in item_results:
         key = str(result.get("feature") or "").strip()
         status = str(result.get("status") or "").strip()
@@ -1269,6 +1398,8 @@ def compute_batch_charge(
         "refund_units": refund_units,
         "charge_points": _display_points(charge_units),
         "refund_points": _display_points(refund_units),
+        "premium_units": premium_units,
+        "premium_points": _display_points(premium_units),
         "details": details,
     }
 
@@ -1741,6 +1872,7 @@ def settle_batch_points(
             )
         total_charge_units = 0
         total_refund_units = 0
+        total_premium_units = 0
         stored_items: list[dict[str, Any]] = []
         for index, entry in enumerate(item_results, start=1):
             if not isinstance(entry, dict):
@@ -1768,7 +1900,10 @@ def settle_batch_points(
                 if set(statuses) != set(pod_scope):
                     raise HTTPException(status_code=400, detail="POD subitems must match frozen scope")
                 link_units = pod_link_price_units[index - 1]
-                if all(statuses[feature] == "success" for feature in pod_scope):
+                # 付费重试（超过免费额度后用户确认）：该链接无论成功与否都按款式价
+                # 扣费，不再按成败退款；只有未确认的普通重试才按成功/失败结算。
+                paid_retry = bool(entry.get("paid_retry") or False)
+                if paid_retry or all(statuses[feature] == "success" for feature in pod_scope):
                     total_charge_units += link_units
                 else:
                     total_refund_units += link_units
@@ -1780,16 +1915,33 @@ def settle_batch_points(
                     rule_version=freeze_rule_version,
                     item_results=[dict(result) for result in link_results if isinstance(result, dict)],
                 )
+                # 手动付费重试（paid_retry=true）：该链接无论子项成败都按整条链接
+                # 全价计费（35-45 积分区间），不退任何子项；审计明细仍保留实际状态。
+                if bool(entry.get("paid_retry") or False):
+                    full_units = sum(
+                        int(detail["charge_units"]) for detail in computed["details"]
+                    )
+                    computed = {
+                        **computed,
+                        "charge_units": full_units,
+                        "refund_units": 0,
+                        "charge_points": _display_points(full_units),
+                        "refund_points": 0,
+                    }
                 total_charge_units += int(computed["charge_units"])
                 total_refund_units += int(computed["refund_units"])
+                total_premium_units += int(computed.get("premium_units") or 0)
                 for detail in computed["details"]:
                     stored_items.append((freeze_id, index, detail["feature"], detail["status"]))
         frozen_units = int(freeze["frozen_points"])
+        # 冻结按正常链接封顶（base charge + refund <= frozen）；重试溢价不在冻结范围，
+        # 属于额外扣费，直接从余额扣除，避免 500 单位超出 400 单位冻结上限被误拦截。
         if total_charge_units + total_refund_units > frozen_units:
             raise HTTPException(
                 status_code=400,
                 detail="settle totals exceed the frozen points",
             )
+        total_charged_units = total_charge_units + total_premium_units
         # release the unused lock (refund) and debit the charge; wallet stores units.
         conn.execute(
             """
@@ -1800,7 +1952,7 @@ def settle_batch_points(
                 updated_at = ?
             WHERE account_id = ?
             """,
-            (total_charge_units, frozen_units, _utc_now(), expected_account_id),
+            (total_charged_units, frozen_units, _utc_now(), expected_account_id),
         )
         now = _utc_now()
         conn.execute(
@@ -1809,7 +1961,7 @@ def settle_batch_points(
             SET charged_points = ?, refunded_points = ?, status = 'settled', settled_at = ?
             WHERE freeze_id = ?
             """,
-            (total_charge_units, total_refund_units, now, freeze_id),
+            (total_charged_units, total_refund_units, now, freeze_id),
         )
         for freeze_key, link_idx, feature_key, status_value in stored_items:
             conn.execute(
@@ -1826,7 +1978,7 @@ def settle_batch_points(
             account_id=expected_account_id,
             workspace_id=str(freeze["workspace_id"] or "default"),
             direction="debit",
-            points_delta=total_charge_units,
+            points_delta=total_charged_units,
             source_type="batch_settle",
             source_id=freeze_id,
             idempotency_key=f"batch_settle:{freeze_id}:debit",
@@ -1834,6 +1986,7 @@ def settle_batch_points(
                 "rule_version": freeze_rule_version,
                 "link_count": int(freeze["link_count"]),
                 "billing_profile": profile,
+                "retry_premium_units": total_premium_units,
             },
         )
         if total_refund_units:
@@ -1851,8 +2004,9 @@ def settle_batch_points(
     return {
         "freeze_id": freeze_id,
         "status": "settled",
-        "charged_points": _display_points(total_charge_units),
+        "charged_points": _display_points(total_charged_units),
         "refunded_points": _display_points(total_refund_units),
+        "retry_premium_points": _display_points(total_premium_units),
         "already_settled": False,
     }
 

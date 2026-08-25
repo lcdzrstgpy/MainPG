@@ -207,6 +207,10 @@ class _PromptRepository:
     def prompts() -> dict[str, str]:
         return {}
 
+    @staticmethod
+    def active_prompt_template() -> None:
+        return None
+
 
 class _CapturingTextClient:
     def __init__(self) -> None:

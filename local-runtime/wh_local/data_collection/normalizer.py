@@ -28,6 +28,18 @@ MAX_DETAIL_IMAGES = 12
 _NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
 _DESCRIPTION_IMAGE = re.compile(r"\bsrc\s*=\s*['\"]((?:https?:)?//[^'\"\s>]+)", re.IGNORECASE)
 _RAW_DESCRIPTION_FIELDS = frozenset({"desc", "description", "desc_html", "description_html"})
+_WEIGHT_KEY_RE = re.compile(r"(重量|毛重|净重|单重|克重|weight|gross|net)", re.IGNORECASE)
+_PHYSICAL_KEY_RE = re.compile(r"(尺寸|规格|大小|dimension|size)", re.IGNORECASE)
+_LABELED_WEIGHT_RE = re.compile(
+    r"(?:重量|毛重|净重|单重|克重|item\s*weight|gross\s*weight|net\s*weight)"
+    r"[^0-9]{0,16}?(\d+(?:\.\d+)?)\s*(g|克|kg|千克|公斤)",
+    re.IGNORECASE,
+)
+_LABELED_SIZE_RE = re.compile(
+    r"(?:尺寸|规格|大小|product\s*size|dimension)[^0-9]{0,16}?"
+    r"(\d+(?:\.\d+)?)\s*[xX*×]\s*(\d+(?:\.\d+)?)\s*[xX*×]\s*(\d+(?:\.\d+)?)\s*(cm|mm|厘米|毫米)?",
+    re.IGNORECASE,
+)
 
 
 def sanitize_raw_payload(value: Any) -> Any:
@@ -96,8 +108,9 @@ def enrich_candidate_with_detail(
         detail, ("cat_id", "category_id", "leaf_category_id", "cid")
     ) or candidate.category_id
     variants = _variants_from(detail)
-    package_info = _text_value(detail, ("package_info", "package_info_text", "package", "packing"))
-    weight = _text_value(detail, ("weight", "weight_text", "item_weight"))
+    mined_weight, mined_size = _physical_evidence(detail, attributes)
+    package_info = mined_size or _text_value(detail, ("package_info", "package_info_text", "package", "packing"))
+    weight = mined_weight
     freight = _number_value(detail, ("freight", "freight_cny", "post_fee", "shipping_fee"))
     detail_price = _number_value(detail, ("price", "price_cny", "promotion_price"))
     price = detail_price if detail_price is not None else candidate.price_cny
@@ -204,6 +217,7 @@ def normalize_detail_response(
     )
     attributes = _mapping_value(detail, ("props", "item_props", "attributes", "properties"))
     variants = _variants_from(detail)
+    mined_weight, mined_size = _physical_evidence(detail, attributes)
     price = _number_value(detail, ("price", "price_cny", "promotion_price"))
     moq = _integer_value(detail, ("moq", "min_order_quantity", "begin_num", "start_quantity", "min_num", "begin_amount", "beginAmount"))
     stock = _integer_value(detail, ("quantity", "stock", "inventory", "num"))
@@ -240,8 +254,8 @@ def normalize_detail_response(
         shop_name=_shop_name_from_detail(detail),
         location=_text_value(detail, ("location", "area", "province")),
         sales_text=sales,
-        weight_text=_text_value(detail, ("weight", "weight_text", "item_weight")),
-        package_info_text=_text_value(detail, ("package_info", "package_info_text", "package", "packing")),
+        weight_text=mined_weight,
+        package_info_text=mined_size or _text_value(detail, ("package_info", "package_info_text", "package", "packing")),
         freight_cny=_number_value(detail, ("freight", "freight_cny", "post_fee", "shipping_fee")),
         original_price_cny=_number_value(detail, ("original_price", "original_price_cny", "market_price")),
         stock_quantity=stock,
@@ -446,6 +460,68 @@ def _mapping_value(source: Mapping[str, Any], names: Sequence[str]) -> Mapping[s
             if converted:
                 return converted
     return {}
+
+
+def _description_plain_text(detail: Mapping[str, Any]) -> str:
+    """Strip HTML from the raw description fields, returning searchable plain text."""
+    html = _text_value(detail, ("desc", "description", "detail", "item_desc"))
+    if not html:
+        return ""
+    text = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>", " ", html, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"&[a-zA-Z]+;", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _physical_evidence(
+    detail: Mapping[str, Any], attributes: Mapping[str, Any]
+) -> tuple[str | None, str | None]:
+    """Mine weight and size evidence from item_weight, labelled props and description text.
+
+    OneBound 1688 responses frequently leave ``item_weight`` empty while the seller
+    states the weight/size inside the description or a labelled property, so the
+    extraction falls back to those sources before downstream estimation runs.
+    """
+    weight = _text_value(
+        detail,
+        (
+            "weight", "weight_text", "item_weight", "gross_weight", "net_weight",
+            "package_weight", "single_weight", "unit_weight",
+        ),
+    )
+    size_parts: list[str] = []
+    if isinstance(attributes, dict):
+        for key, value in attributes.items():
+            key_text = str(key or "").strip()
+            value_text = str(value or "").strip()
+            if not value_text:
+                continue
+            if not weight and _WEIGHT_KEY_RE.search(key_text):
+                weight = value_text
+            elif _PHYSICAL_KEY_RE.search(key_text):
+                size_parts.append(f"{key}: {value_text}")
+    description = _description_plain_text(detail)
+    if description:
+        if not weight:
+            match = _LABELED_WEIGHT_RE.search(description)
+            if match:
+                unit = (match.group(2) or "g").casefold()
+                weight = (
+                    f"{match.group(1)} kg"
+                    if unit in {"kg", "千克", "公斤"}
+                    else f"{match.group(1)} g"
+                )
+        if not size_parts:
+            match = _LABELED_SIZE_RE.search(description)
+            if match:
+                unit = (match.group(4) or "cm").casefold()
+                scale = 0.1 if unit in {"mm", "毫米"} else 1.0
+                size_parts.append(
+                    "尺寸: "
+                    f"{float(match.group(1)) * scale:g}*{float(match.group(2)) * scale:g}"
+                    f"*{float(match.group(3)) * scale:g}cm"
+                )
+    return weight or None, ("; ".join(size_parts) if size_parts else None)
 
 
 def _variants_from(source: Mapping[str, Any]) -> tuple[SourceVariantRecord, ...]:

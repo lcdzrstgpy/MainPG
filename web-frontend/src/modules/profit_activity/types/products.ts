@@ -11,6 +11,7 @@ export type ProfitActivityProduct = {
   site?: ProfitActivitySite;
   site_code?: ProfitActivitySite;
   source_type?: "manual" | "price_verification" | string;
+  store_name?: string;
   workspace_name?: string;
   created_by?: string;
   created_by_username?: string;

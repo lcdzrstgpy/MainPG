@@ -184,6 +184,23 @@ class EnginePromptRow(Base):
     updated_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)
 
 
+class EnginePromptTemplateRow(Base):
+    """用户预设提示词模板：按账户（本机全局）保存，支持多个命名模板，可激活一个用于处理任务。
+
+    用户提示词为「追加指令」模式，不覆盖系统默认提示词；生图板块仅允许附加宫内规划，
+    四宫格结构、分界线、拆分逻辑与产品保真约束由系统固定（见 service._apply_user_image_additions）。
+    """
+
+    __tablename__ = "product_processing_prompt_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), default="未命名模板")
+    prompts_json: Mapped[str] = mapped_column(Text, default="{}")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)
+
+
 class SourceImageAssetRow(Base):
     __tablename__ = "product_processing_source_images"
     __table_args__ = (UniqueConstraint("product_draft_id", "url", name="uq_product_processing_source_image"),)

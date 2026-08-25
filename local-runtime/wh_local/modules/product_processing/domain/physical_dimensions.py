@@ -31,6 +31,8 @@ _AXIS_TOKEN = re.compile(
 )
 _PRODUCT_MARKERS = ("产品", "商品", "成品", "product", "item")
 _PACKAGE_MARKERS = ("包装", "包裹", "外箱", "package", "carton", "shipping")
+# 无产品/商品前缀但明确是尺寸的键（TEMU/1688 属性常直接写「尺寸」「长」「宽」「高」）。
+_DIMENSION_KEY_MARKERS = ("尺寸", "规格", "大小", "长", "宽", "高", "dimension", "size")
 
 
 class DimensionValue(BaseModel):
@@ -201,6 +203,9 @@ def _key_provenance(key_text: str) -> DimensionProvenance | None:
     if any(marker in key_text for marker in _PACKAGE_MARKERS):
         return "package_estimate"
     if any(marker in key_text for marker in _PRODUCT_MARKERS):
+        return "source_confirmed"
+    # 无产品/商品前缀但明确是尺寸的键：当作来源证据，仍需带轴与单位才能上画布。
+    if any(marker in key_text for marker in _DIMENSION_KEY_MARKERS):
         return "source_confirmed"
     return None
 

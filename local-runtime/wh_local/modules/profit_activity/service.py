@@ -219,6 +219,7 @@ class ProfitActivityService:
         image_path = "" if str(payload.get("clear_product_image") or "").lower() in {"1", "true", "yes"} else (current.image_path if current else "")
         attachment_image_path = "" if str(payload.get("clear_attachment_image") or "").lower() in {"1", "true", "yes"} else (current.attachment_image_path if current else "")
         source_type = str(payload.get("source_type") or (current.source_type if current else "manual"))
+        store_name = str(payload.get("store_name", current.store_name if current else "") or "").strip()[:120]
         source_main_image_url = (
             str(payload.get("source_main_image_url") or (current.source_main_image_url if current else "")).strip()
             if source_type == "price_verification" else ""
@@ -261,6 +262,7 @@ class ProfitActivityService:
             refund_rate=custom_site.refund_rate if custom_site else settings.settings.ec_refund_rate if site == "EC" else settings.settings.refund_rate,
             visibility=str(payload.get("visibility") or (current.visibility if current else "shared")),
             source_type=source_type,
+            store_name=store_name,
             source_url=source_url,
             image_path=image_path, attachment_image_path=attachment_image_path, source_main_image_url=source_main_image_url,
             source_image_path=source_image_path, source_groups=source_groups,
@@ -279,6 +281,7 @@ class ProfitActivityService:
             "site": site, "skc": skc, "selling_price": payload.get("selling_price", current.selling_price),
             "cost_price": payload.get("cost_price", current.cost_price), "weight_kg": payload.get("weight_kg", current.weight_kg),
             "note": payload.get("note", current.note), "visibility": payload.get("visibility", current.visibility),
+            "store_name": payload.get("store_name", current.store_name),
             "source_url": payload.get("source_url", current.source_url), "source_groups_json": payload.get("source_groups_json", current.source_groups_json),
             "source_type": current.source_type, "source_main_image_url": current.source_main_image_url,
         }
@@ -293,14 +296,24 @@ class ProfitActivityService:
             raise ProfitActivityConflict("profit_activity_company_delete_required")
         return {"status": "deleted" if self._repository.delete_product(skc, site, context.workspace_id, include_price_verification=True) else "not_found", "skc": skc, "site": site}
 
-    def preview_import(self, workbook: bytes, original_filename: str, site: SiteCode, actor: Any | None = None) -> dict[str, Any]:
+    def preview_import(
+        self,
+        workbook: bytes,
+        original_filename: str,
+        site: SiteCode,
+        actor: Any | None = None,
+        *,
+        store_name: str = "",
+    ) -> dict[str, Any]:
         context = _actor_context(actor)
         site, _ = self._resolve_site(site, actor)
         rows = parse_product_workbook(workbook, site, self._repository.product_keys(context.workspace_id))
+        normalized_store_name = str(store_name or "").strip()[:120]
         import_id = uuid.uuid4().hex
         image_rows = extract_product_workbook_images(workbook)
         root = self._asset_root(self.get_settings(actor).settings)
         for row in rows:
+            row["store_name"] = normalized_store_name
             extracted = image_rows.get(row["row_id"], {})
             product_images = extracted.get("product", [])
             source_images = extracted.get("source", [])
@@ -879,6 +892,7 @@ def _product_payload(record, actor: ProfitActivityActorContext) -> dict[str, Any
         "id": record.id, "site": record.site_code, "site_code": record.site_code,
         "skc": record.skc, "product_id": record.skc, "product_id_label": "商品ID",
         "visibility": record.visibility, "source_type": record.source_type,
+        "store_name": record.store_name,
         "created_by": record.created_by, "created_by_username": record.created_by_username,
         "workspace_id": record.workspace_id, "workspace_code": actor.workspace_code, "workspace_name": actor.workspace_name,
         "is_owner": is_owner, "can_edit": is_owner or actor.is_admin,

@@ -31,7 +31,6 @@ export function BasicSettingsPage() {
       <section className="settings-hero">
         <span className="settings-hero-icon iconfont icon-key" aria-hidden="true" />
         <div>
-          <p className="eyebrow">BASIC SETTINGS</p>
           <h1>系统配置</h1>
           <p>AI 文本模型、生图模型和上游密钥由服务端统一托管，用户侧不需要也不应该填写模型 API Key。</p>
         </div>

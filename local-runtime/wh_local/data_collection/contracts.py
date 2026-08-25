@@ -181,6 +181,8 @@ class SourceVariantRecord(_ContractModel):
     min_order_quantity: int | None = None
     quantity: int | None = None
     sales: int | None = None
+    weight_text: str | None = None
+    weight_kg: Decimal | None = None
 
     @field_validator("sku_id", mode="before")
     @classmethod
@@ -204,7 +206,7 @@ class SourceVariantRecord(_ContractModel):
             raise DailySelectionContractError("attributes must be a mapping")
         return _safe_value(value)
 
-    @field_validator("spec_text", mode="before")
+    @field_validator("spec_text", "weight_text", mode="before")
     @classmethod
     def _optional_spec_text(cls, value: object) -> str | None:
         if value is None:
@@ -222,6 +224,11 @@ class SourceVariantRecord(_ContractModel):
     @classmethod
     def _decimal_price(cls, value: object) -> Decimal | None:
         return _decimal(value, "price_cny")
+
+    @field_validator("weight_kg", mode="before")
+    @classmethod
+    def _decimal_weight(cls, value: object) -> Decimal | None:
+        return _decimal(value, "weight_kg")
 
     @field_validator("min_order_quantity", mode="before")
     @classmethod
