@@ -170,7 +170,7 @@ def usage_history(
         # 这里把批量结算合并进客户端「消费流水」，与调用级流水统一按时间倒序展示。
         batch_rows = conn.execute(
             """
-            SELECT freeze_id, link_count, frozen_points, charged_points,
+            SELECT freeze_id, task_id, link_count, frozen_points, charged_points,
                    refunded_points, status, billing_profile, rule_version,
                    created_at, settled_at
             FROM billing_batch_freezes
@@ -241,7 +241,7 @@ def usage_history(
                 "created_at": str(row["created_at"]),
                 "settled_at": str(row["settled_at"] or ""),
                 "rule_version": int(row["rule_version"] or 0),
-                "task": "",
+                "task": str(row["task_id"] or ""),
             }
         )
     # 合并后按时间倒序统一排序；批量记录数量有限，分页游标不再精确推进。
@@ -1108,7 +1108,9 @@ SUBITEM_FEATURE_KEYS = (
 )
 # 冻结按最大范围预扣：默认每子项 charge 之和封顶 45 积分。
 DEFAULT_BATCH_FREEZE_PER_LINK = 400  # 固定 40 积分/链接（400 单位）；与子项定价总和联动见 pricing_items
-BATCH_FREEZE_TTL_DAYS = 7
+# TTL 兜底：客户端正常结算失败后，超过该天数仍未结算的冻结批次由服务端自动全额释放。
+# 主路径已改为客户端任务终态即时结算，此值仅兜底客户端崩溃/永久失联场景（2 天兼顾成本与体验）。
+BATCH_FREEZE_TTL_DAYS = 2
 # 重试溢价：链接发生过 AI 重试/重绘/修复时，该链接加收 10 积分（100 单位）。
 # 语义是「单条链接计一次重试溢价」，不按重试次数累加，也不跨链接共享。
 RETRY_PREMIUM_UNITS = 100
@@ -1405,11 +1407,15 @@ def freeze_batch_points(
     scope: list[str] | None = None,
     idempotency_key: str = "",
     billing_profile: str = BATCH_BILLING_PROFILE_PRODUCT,
+    task_id: str = "",
 ) -> dict[str, Any]:
     """Reserve batch points (N x freeze_per_link) before the client starts work.
 
     Returns the freeze record; keys are issued separately by the auth server so
     the billing layer stays free of any credential handling.
+
+    ``task_id`` links the freeze to the client-side processing task so the
+    consumption ledger can be reconciled against task history.
     """
     link_count = max(1, int(link_count))
     profile = str(billing_profile or BATCH_BILLING_PROFILE_PRODUCT).strip()
@@ -1417,6 +1423,7 @@ def freeze_batch_points(
         raise HTTPException(status_code=400, detail="invalid batch billing profile")
     pricing = pricing_items(database_path)
     idem = str(idempotency_key or "").strip()
+    normalized_task_id = str(task_id or "").strip()[:64]
     normalized_scope = [str(item) for item in (scope or []) if str(item).strip()]
     with transaction(database_path) as conn:
         _ensure_billing_account(conn, actor)
@@ -1488,16 +1495,17 @@ def freeze_batch_points(
         conn.execute(
             """
             INSERT INTO billing_batch_freezes (
-                freeze_id, account_id, workspace_id, link_count, scope_json,
+                freeze_id, account_id, workspace_id, task_id, link_count, scope_json,
                 frozen_points, status, created_at, expires_at,
                 billing_profile, rule_version, link_prices_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'frozen', ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'frozen', ?, ?, ?, ?, ?)
             """,
             (
                 freeze_id,
                 actor.id,
                 actor.workspace_id or "default",
+                normalized_task_id,
                 link_count,
                 scope_json,
                 frozen_units,

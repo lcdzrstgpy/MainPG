@@ -37,6 +37,7 @@ from .batch_billing import (
     derive_item_results as _derive_batch_item_results,
     direct_ai_enabled as _direct_ai_enabled,
     forget_freeze as _forget_batch_freeze,
+    mark_freeze_settle_failure as _mark_freeze_settle_failure,
     open_freeze_record as _open_batch_freeze_record,
     open_freezes_for_account as _open_freezes_for_account,
     remember_freeze as _remember_batch_freeze,
@@ -2761,6 +2762,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             {
                 "link_count": link_count,
                 "scope": [str(feature) for feature in (settings.get("processing_scope") or [])],
+                # 冻结批次与处理任务唯一关联：消费流水/后台可据此对账滞留冻结。
+                "task_id": str(task_id),
             },
         )
         freeze_payload = (
@@ -2791,7 +2794,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 with self._task_execution_gate:
                     result = self._execute_task_impl(task_id, workspace_id)
         finally:
+            # 先结算本任务批次；结算失败不会抛出（内部记录失败并保留 open 记录）。
             self._settle_open_batch(task_id, workspace_id, token, freeze_id)
+            # 顺带对账本账号其他 open 批次（仅终态任务），避免历史批次结算失败后
+            # 积分滞留到 TTL；新任务提交时也会对账（reconcile_open_batches 内已
+            # 跳过仍在执行的任务，防止对未完成批次提前退款）。
+            if account_id:
+                try:
+                    self.reconcile_open_batches(token, account_id=account_id)
+                except Exception:
+                    pass
         return result
 
     def _settle_open_batch(
@@ -2801,7 +2813,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         token: str,
         freeze_id: str,
     ) -> None:
-        """结算一个已冻结批次；结算失败静默保留，由启动对账或服务端 TTL 兜底。"""
+        """结算一个已冻结批次。
+
+        结算失败不抛出（避免任务收尾崩溃），但会在侧车文件记录失败原因与次数，
+        保留 open 记录供后续对账/服务端 TTL 兜底，避免「结算失败被静默吞掉、
+        消费流水永远处理中」。
+        """
         try:
             task = self._require_task(task_id, workspace_id)
             record = _open_batch_freeze_record(freeze_id) or {}
@@ -2824,12 +2841,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             _forget_batch_freeze(freeze_id)
             if retry_mode:
                 self.repository.merge_task_settings(task_id, workspace_id, _retry_mode="")
-        except Exception:
-            # 保留 open 记录：下次有 token 的对账会补结算；服务端 7 天 TTL 兜底。
-            pass
+        except Exception as exc:
+            # 保留 open 记录：任务结束后的对账、下次提交任务的对账、服务端 TTL
+            # 会继续结算/释放；失败详情写入侧车便于定位（不落任何密钥）。
+            _mark_freeze_settle_failure(
+                freeze_id, self._task_safe_error_reason(task_id, exc)
+            )
 
     def reconcile_open_batches(self, token: str, *, account_id: str) -> int:
-        """启动/提交任务时对账：把本账号仍 open 的冻结批次补结算（全退兜底）。
+        """对账：把本账号仍 open 的冻结批次补结算（按任务真实结果折算）。
 
         返回补结算的批次数量。旧批次可能没有下发密钥但已冻结，服务端幂等
         保证重复结算安全；失败静默，等待服务端 TTL。
@@ -2846,14 +2866,28 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     task = self.repository.get_task(task_id, workspace_id=str(record.get("workspace_id") or "local"))
                 else:
                     task = None
+                task_status = str((task or {}).get("status") or "")
+                if task_status in {"queued", "running", "paused"}:
+                    # 任务仍在执行/暂停中：按当前状态折算会把未完成链接误判为
+                    # 失败全退，提前释放积分（用户后续成功仍无法再次结算，服务端
+                    # 幂等会拒绝）。等任务到达终态再对账。
+                    continue
                 task_items = (task or {}).get("items") or []
                 settings = (task or {}).get("settings") or {}
                 task_items = _freeze_scope_items(task_items, record)
+                # 与 _settle_open_batch 一致：paid=手动付费重试全价、free=系统自动
+                # 重试轮不加溢价、空=首次正常处理保留溢价，避免对账结算改价。
+                retry_mode = str(settings.get("_retry_mode") or "")
                 _billing_call_with_retry(
                     client.settle_batch_points,
                     token,
                     freeze_id,
-                    {"items": _derive_batch_item_results(task_items, settings)},
+                    {"items": _derive_batch_item_results(
+                        task_items,
+                        settings,
+                        paid_retry=retry_mode == "paid",
+                        retry_premium=retry_mode == "",
+                    )},
                 )
                 _forget_batch_freeze(freeze_id)
                 settled_count += 1
@@ -3385,7 +3419,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     self._task_workers[(workspace_id, task_id)] = threading.current_thread()
                 # 暂停中不启动本轮重试：reset_failed_items 会把任务状态强制改回
                 # queued，覆盖用户的暂停操作；暂停交由 resume 后的常规流程继续补跑。
+                # 必须写终态标记，否则 _auto_repull 永远停在 running，前端一直显示
+                # 「正在重试波动链接」（任务已终态却显示处理中）。
                 if self._require_task(task_id, workspace_id)["status"] == "paused":
+                    try:
+                        state = dict((task["settings"] or {}).get("_auto_repull") or {})
+                        state["status"] = "paused"
+                        state["message"] = "自动重试已暂停，恢复任务后可继续补跑"
+                        state["updated_at"] = _iso_utc_now()
+                        self.repository.merge_task_settings(
+                            task_id, workspace_id, _auto_repull=state
+                        )
+                    except Exception:
+                        pass
                     return
                 self.repository.reset_failed_items(task_id, workspace_id, draft_ids=draft_ids)
                 # 清除视觉识别缓存，避免「多主体/遮挡」低置信度结论被缓存后重跑
@@ -7114,7 +7160,48 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             end = datetime.now(timezone.utc)
         return max(0, int((end - started).total_seconds()))
 
+    def _normalize_stale_auto_repull(self, task: dict[str, Any]) -> None:
+        """崩溃兜底：进程重启后 settings._auto_repull 可能永久停在 running。
+
+        前端把 running 视为「正在重试波动链接」，任务已终态却仍显示处理中。
+        仅当任务到终态、补跑线程已不在运行、且状态超过 60 秒未刷新时才归一化，
+        避开补跑线程启动窗口（线程先睡 1 秒再注册，注册期 1~16 秒）。
+        """
+        settings = task.get("settings")
+        state = settings.get("_auto_repull") if isinstance(settings, dict) else None
+        if not isinstance(state, dict) or str(state.get("status") or "") != "running":
+            return
+        if str(task.get("status") or "") not in {"completed", "failed", "partial_failure"}:
+            return
+        workspace_id = str(task.get("workspace_id") or "local")
+        task_id = int(task.get("id") or 0)
+        with self._task_worker_lock:
+            worker = self._task_workers.get((workspace_id, task_id))
+            if worker is not None and worker.is_alive():
+                return
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        updated_at = str(state.get("updated_at") or "")
+        try:
+            parsed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age_seconds = (datetime.now(timezone.utc) - parsed).total_seconds()
+        except (ValueError, TypeError):
+            age_seconds = float("inf")
+        if age_seconds < 60:
+            return
+        done_state = dict(state)
+        done_state["status"] = "completed"
+        done_state["message"] = "自动重试已结束（进程重启后恢复）"
+        done_state["updated_at"] = _iso_utc_now()
+        try:
+            self.repository.merge_task_settings(task_id, workspace_id, _auto_repull=done_state)
+        except Exception:
+            pass
+
     def _task_response(self, task: dict[str, Any], message: str = "") -> dict[str, Any]:
+        self._normalize_stale_auto_repull(task)
         items = task["items"]
         attention = sum(item["status"] == "attention_required" for item in items)
         failed = sum(item["status"] == "failed" for item in items)

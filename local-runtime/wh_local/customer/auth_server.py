@@ -883,6 +883,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             scope=[str(item) for item in (scope or [])] if scope is not None else None,
             idempotency_key=idempotency_key,
             billing_profile=billing_profile,
+            task_id=str(payload.get("task_id") or ""),
         )
         keys = _issue_batch_keys(db_path, account, freeze["freeze_id"])
         return {"ok": True, "freeze": {**freeze, "keys": keys}}

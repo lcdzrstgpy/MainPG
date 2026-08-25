@@ -632,6 +632,7 @@ CREATE TABLE IF NOT EXISTS billing_batch_freezes (
     freeze_id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL,
     workspace_id TEXT NOT NULL DEFAULT 'default',
+    task_id TEXT NOT NULL DEFAULT '',
     link_count INTEGER NOT NULL,
     scope_json TEXT NOT NULL DEFAULT '[]',
     frozen_points INTEGER NOT NULL,
@@ -641,7 +642,7 @@ CREATE TABLE IF NOT EXISTS billing_batch_freezes (
         CHECK (status IN ('frozen', 'settled', 'released')),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     settled_at TEXT NOT NULL DEFAULT '',
-    expires_at TEXT NOT NULL DEFAULT (datetime('now', '+7 days')),
+    expires_at TEXT NOT NULL DEFAULT (datetime('now', '+2 days')),
     billing_profile TEXT NOT NULL DEFAULT 'product_processing',
     rule_version INTEGER NOT NULL DEFAULT 0,
     link_prices_json TEXT NOT NULL DEFAULT '[]',
@@ -1003,6 +1004,8 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     )
     _ensure_column(conn, "billing_batch_freezes", "rule_version", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "billing_batch_freezes", "link_prices_json", "TEXT NOT NULL DEFAULT '[]'")
+    # 消费流水与处理任务的关联键：客户端冻结时携带任务号，后台可按任务排查滞留冻结。
+    _ensure_column(conn, "billing_batch_freezes", "task_id", "TEXT NOT NULL DEFAULT ''")
     _migrate_billing_points_to_tenths(conn)
 
 

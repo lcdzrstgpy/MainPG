@@ -817,7 +817,6 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-<<<<<<< HEAD
 _PLUGIN_WEIGHT_VALUE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(g|克|kg|千克|公斤)?", re.IGNORECASE
 )
@@ -1024,7 +1023,13 @@ def _plugin_variant_records(
     groups = product.get("variant_groups") or product.get("raw_variant_groups") or []
     groups = [item for item in groups if isinstance(item, Mapping)] if isinstance(groups, (list, tuple)) else []
 
-    combo_records = _plugin_records_from_combos(combos, product_id, platform=platform)
+    combo_records = _plugin_records_from_combos(
+        combos,
+        product_id,
+        platform=platform,
+        fallback_currency=str(product.get("currency") or ""),
+        fallback_image_url=fallback_image_url,
+    )
     group_records = _plugin_records_from_groups(groups, combos, product_id)
     if not group_records:
         return combo_records
@@ -1051,6 +1056,8 @@ def _plugin_records_from_combos(
     product_id: str,
     *,
     platform: str = "",
+    fallback_currency: str = "",
+    fallback_image_url: str = "",
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1074,7 +1081,7 @@ def _plugin_records_from_combos(
         used_sku_ids[sku_id] = attribute_identity
         source_price = _plugin_decimal(combo.get("price"))
         source_currency = _plugin_currency(
-            combo.get("currency") or product.get("currency"),
+            combo.get("currency") or fallback_currency,
             combo.get("price"),
             platform,
         )
@@ -1098,8 +1105,6 @@ def _plugin_records_from_combos(
                 "source_price": source_price,
                 "source_currency": source_currency,
                 "quantity": _plugin_int(combo.get("stock") or combo.get("quantity") or combo.get("inventory")),
-                "weight_text": str(combo.get("weight_text") or "").strip() or None,
-                "weight_kg": combo.get("weight_kg"),
             }
         )
     return records
@@ -1176,8 +1181,6 @@ def _plugin_records_from_groups(
                 "image_url": image_url,
                 "price_cny": price_cny,
                 "quantity": quantity,
-                "weight_text": str(matched.get("weight_text") or "").strip() or None if matched is not None else None,
-                "weight_kg": matched.get("weight_kg") if matched is not None else None,
             }
         )
         index += 1
