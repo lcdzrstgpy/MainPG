@@ -337,7 +337,8 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     length = _export_number(core_fields.get("length_cm") if "length_cm" in core_fields else dimensions.get("length_cm"))
     width = _export_number(core_fields.get("width_cm") if "width_cm" in core_fields else dimensions.get("width_cm"))
     height = _export_number(core_fields.get("height_cm") if "height_cm" in core_fields else dimensions.get("height_cm"))
-    weight = _export_number(core_fields.get("weight_g") if "weight_g" in core_fields else dimensions.get("weight_g"))
+    manual_weight_override = "weight_g" in core_fields
+    weight = _export_number(core_fields.get("weight_g") if manual_weight_override else dimensions.get("weight_g"))
     package_shape, package_type = _package_export_values(dimensions)
 
     # 店小秘体积重校验兜底：变种属性里的尺寸（如 30*20*10cm，店小秘以此算体积重）
@@ -360,7 +361,11 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     if isinstance(source_attributes, dict):
         dimensions_texts.extend(source_attributes.values())
     dimensions_texts.extend(value for _, value in variant_values)
-    weight = _weight_meeting_volumetric(weight, dimensions_texts)
+    # The precheck value is an operator-confirmed actual weight. Export it
+    # exactly as entered instead of silently replacing it with volumetric
+    # weight. The import-safety fallback remains for system-generated values.
+    if not manual_weight_override:
+        weight = _weight_meeting_volumetric(weight, dimensions_texts)
 
     # 长宽高列兜底：AI 未产出 product_dimensions（长宽高缺失）时，从变种/规格表文本
     # 解析首个三维尺寸填列，保证店小秘 *长/宽/高（cm） 必填列非空。

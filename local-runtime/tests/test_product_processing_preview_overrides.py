@@ -349,8 +349,8 @@ def test_export_final_workbook_applies_overrides(tmp_path: Path) -> None:
     assert row["*轮播图"] == "https://user.example.com/c1.jpg\nhttps://user.example.com/c2.jpg"
     assert row["*申报价格\n(店铺币种)"] == 999
     assert row["*长（cm）"] == 30
-    # 覆盖 length_cm=30 后体积重=30×15×10÷6=750，重量 500 被 _weight_meeting_volumetric 提升为 751
-    assert row["*重量（g）"] == 751
+    # 人工确认的实际重量必须原样导出，不能被体积重兜底静默改写。
+    assert row["*重量（g）"] == 500
 
 
 def test_dxm_single_export_row_defaults_without_overrides() -> None:
@@ -367,4 +367,6 @@ def test_dxm_single_export_row_defaults_without_overrides() -> None:
             "https://cos.example.com/summary.jpg",
         ]
     )
+    # 系统生成值仍应用体积重兜底：20×15×10÷6=500，需严格大于 500。
+    assert values[14] == 501
     assert values[19] == "https://cos.example.com/c1.jpg"

@@ -858,7 +858,7 @@ class DimensionCanvasService:
                 raise ValueError("canvas fit is invalid")
             if str(settings.get("style") or "auto") not in {"auto", "dark", "light"}:
                 raise ValueError("canvas style is invalid")
-            if str(settings.get("display_unit") or "cm") not in {"cm", "mm", "in", "ft"}:
+            if str(settings.get("display_unit") or "cm") not in {"cm", "mm", "in", "ft", "both"}:
                 raise ValueError("canvas display unit is invalid")
             if str(settings.get("endpoint_style") or "arrow") not in {"arrow", "bar", "none"}:
                 raise ValueError("canvas endpoint style is invalid")

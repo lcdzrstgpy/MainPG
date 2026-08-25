@@ -18,12 +18,13 @@ import {
   addAnnotation,
   canComplete,
   centimetersToUnit,
-  changeDisplayUnit,
   changeDimensionValue,
+  dimensionInputUnit,
   dimensionUnitLabel,
   invalidateRenderOnEdit,
   nextQueueItem,
   removeAnnotation,
+  toggleDisplayUnit,
   unitToCentimeters,
 } from "../data/dimensionCanvasModel";
 import { useDimensionCanvasAutosave } from "../hooks/useDimensionCanvasAutosave";
@@ -491,15 +492,16 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               <div className="dimension-value-list">
                 {(["length", "width", "height"] as const).map((key) => {
                   const value = editor.dimensions[key];
+                  const inputUnit = dimensionInputUnit(editor.displayUnit);
                   return (
                     <label key={key} className={`provenance-${value.provenance}`}>
                       <span>{DIMENSION_LABELS[key]}</span>
-                      <input type="number" min="0" step={editor.displayUnit === "mm" ? "1" : "0.01"} value={value.valueCm == null ? "" : Number(centimetersToUnit(value.valueCm, editor.displayUnit).toFixed(editor.displayUnit === "mm" ? 1 : 2))} onChange={(event) => {
+                      <input type="number" min="0" step="0.01" value={value.valueCm == null ? "" : Number(centimetersToUnit(value.valueCm, inputUnit).toFixed(2))} onChange={(event) => {
                         const parsed = Number(event.target.value);
                         if (event.target.value === "") {
                           updateEditor({ ...editor, dimensions: { ...editor.dimensions, [key]: { valueCm: null, provenance: "unconfirmed", evidenceRef: "manual" } } });
                         } else if (Number.isFinite(parsed) && parsed > 0) {
-                          updateEditor(changeDimensionValue(editor, key, unitToCentimeters(parsed, editor.displayUnit)));
+                          updateEditor(changeDimensionValue(editor, key, unitToCentimeters(parsed, inputUnit)));
                         }
                       }} />
                       <button type="button" onClick={() => selectDimensionTool(key)} disabled={value.valueCm == null || value.valueCm <= 0}>绘制</button>
@@ -542,7 +544,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
                 }, changesSelected, changesSelected);
               }}
               onCustomValueChange={(customValueCm) => updateEditor({ ...editor, customValueCm })}
-              onDisplayUnitChange={(displayUnit) => updateEditor(changeDisplayUnit(editor, displayUnit))}
+              onDisplayUnitChange={(displayUnit) => updateEditor(toggleDisplayUnit(editor, displayUnit))}
             />
             <main className="dimension-stage-panel">
               <DimensionCanvasStage

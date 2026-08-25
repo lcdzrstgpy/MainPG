@@ -1180,7 +1180,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               <div className="daily-work-grid">
         <form className="daily-panel collection-panel" onSubmit={submitCollection}>
           <div className="daily-panel-title">
-            <div><span className="title-icon">⌕</span><strong>OneBound API 采集</strong></div>
+            <div><span className="title-icon">⌕</span><strong>API 采集</strong></div>
             <span>当前方向：{selectedDirection.name}</span>
           </div>
 

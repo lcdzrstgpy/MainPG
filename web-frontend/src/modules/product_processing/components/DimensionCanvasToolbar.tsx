@@ -1,5 +1,5 @@
 import type { DimensionEndpointStyle, DimensionKey, DimensionLineWidth, DimensionUnit, EditorState } from "../types/dimensionCanvas";
-import { centimetersToUnit, dimensionUnitLabel, unitToCentimeters } from "../data/dimensionCanvasModel";
+import { centimetersToUnit, dimensionInputUnit, dimensionUnitLabel, unitToCentimeters } from "../data/dimensionCanvasModel";
 
 type Props = {
   editor: EditorState;
@@ -17,7 +17,7 @@ type Props = {
   onLineWidth: (lineWidth: DimensionLineWidth) => void;
   onEndpointStyle: (endpointStyle: DimensionEndpointStyle) => void;
   onCustomValueChange: (valueCm: number | null) => void;
-  onDisplayUnitChange: (unit: DimensionUnit) => void;
+  onDisplayUnitChange: (unit: Extract<DimensionUnit, "cm" | "in">) => void;
 };
 
 const DIMENSION_TOOLS: Array<{ key: Exclude<DimensionKey, "custom">; label: string }> = [
@@ -80,6 +80,7 @@ export function DimensionCanvasToolbar({
 }: Props) {
   const selectedAnnotation = editor.annotations.find((annotation) => annotation.id === editor.selectedAnnotationId);
   const activeEndpointStyle = selectedAnnotation?.endpointStyle ?? editor.endpointStyle;
+  const inputUnit = dimensionInputUnit(editor.displayUnit);
   const toolReason = (key: Exclude<DimensionKey, "custom">): string => {
     const dimension = editor.dimensions[key];
     if (dimension.valueCm == null || dimension.valueCm <= 0) return "缺少商品本体尺寸";
@@ -102,9 +103,9 @@ export function DimensionCanvasToolbar({
             <button
               type="button"
               key={key}
-              className={editor.displayUnit === key ? "is-active" : ""}
+              className={editor.displayUnit === "both" || editor.displayUnit === key ? "is-active" : ""}
               onClick={() => onDisplayUnitChange(key)}
-              aria-pressed={editor.displayUnit === key}
+              aria-pressed={editor.displayUnit === "both" || editor.displayUnit === key}
               title={`以 ${label} 显示尺寸`}
             >
               {label}
@@ -161,20 +162,20 @@ export function DimensionCanvasToolbar({
             <input
               type="number"
               min="0"
-              step={editor.displayUnit === "mm" ? "1" : "0.01"}
+              step="0.01"
               placeholder="输入数值"
               aria-label="自定义尺寸数值"
-              value={editor.customValueCm == null ? "" : Number(centimetersToUnit(editor.customValueCm, editor.displayUnit).toFixed(editor.displayUnit === "mm" ? 1 : 2))}
+              value={editor.customValueCm == null ? "" : Number(centimetersToUnit(editor.customValueCm, inputUnit).toFixed(2))}
               onChange={(event) => {
                 const parsed = Number(event.target.value);
                 onCustomValueChange(
                   event.target.value === "" || !Number.isFinite(parsed) || parsed <= 0
                     ? null
-                    : unitToCentimeters(parsed, editor.displayUnit),
+                    : unitToCentimeters(parsed, inputUnit),
                 );
               }}
             />
-            <em>{dimensionUnitLabel(editor.displayUnit)}</em>
+            <em>{dimensionUnitLabel(inputUnit)}</em>
           </label>
         </div>
       </div>

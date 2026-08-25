@@ -125,13 +125,36 @@ export function unitToCentimeters(value: number, unit: DimensionUnit): number {
 }
 
 export function formatDimension(valueCm: number, unit: DimensionUnit): string {
+  if (unit === "both") {
+    return `${formatDimension(valueCm, "cm")} / ${formatDimension(valueCm, "in")}`;
+  }
   const converted = centimetersToUnit(valueCm, unit);
   const precision = unit === "mm" ? 1 : 2;
   return `${Number(converted.toFixed(precision))} ${dimensionUnitLabel(unit)}`;
 }
 
 export function dimensionUnitLabel(unit: DimensionUnit): string {
+  if (unit === "both") return "cm + inch";
   return unit === "in" ? "inch" : unit;
+}
+
+export function dimensionInputUnit(unit: DimensionUnit): Extract<DimensionUnit, "cm" | "in"> {
+  return unit === "in" ? "in" : "cm";
+}
+
+export function toggleDisplayUnit(
+  state: EditorState,
+  unit: Extract<DimensionUnit, "cm" | "in">,
+): EditorState {
+  const current = state.displayUnit;
+  const next = current === "both"
+    ? (unit === "cm" ? "in" : "cm")
+    : current === unit
+      ? current
+      : current === "cm" || current === "in"
+        ? "both"
+        : unit;
+  return changeDisplayUnit(state, next);
 }
 
 export function changeDisplayUnit(state: EditorState, unit: DimensionUnit): EditorState {
