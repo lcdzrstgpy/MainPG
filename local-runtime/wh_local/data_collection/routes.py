@@ -1187,6 +1187,8 @@ def _plugin_records_from_combos(
                 "source_price": source_price,
                 "source_currency": source_currency,
                 "quantity": _plugin_int(combo.get("stock") or combo.get("quantity") or combo.get("inventory")),
+                "weight_text": str(combo.get("weight_text") or "").strip() or None,
+                "weight_kg": combo.get("weight_kg"),
             }
         )
     return records

@@ -147,6 +147,7 @@ def test_auto_repull_all_succeeded_still_marks_round_completed(
 
 
 def test_auto_repull_respects_max_rounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WH_PP_AUTO_REPULL_ROUNDS", "1")
     task = _task_with_failures()
     task["settings"] = {"_auto_repull": {"status": "completed", "round": 1, "total": 1}}
     repository = FakeRepository(task)

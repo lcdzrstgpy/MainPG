@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from . import cache
 from .db import transaction
 from .session import Actor
 
@@ -57,8 +58,11 @@ def feature_reserve_points(feature_key: str) -> int:
 
 def active_pricing(database_path: Path) -> dict[str, Any]:
     """Return the active server rule; callers must never accept a client price."""
-    with transaction(database_path) as conn:
-        return _pricing_payload(_active_pricing(conn))
+    def load() -> dict[str, Any]:
+        with transaction(database_path) as conn:
+            return _pricing_payload(_active_pricing(conn))
+
+    return cache.get_or_set("pricing:active", 60, load)
 
 
 def update_active_pricing(
@@ -121,7 +125,9 @@ def update_active_pricing(
                 next_rule["min_client_version"], now, now, updated_by[:160],
             ),
         )
-        return _pricing_payload(_active_pricing(conn))
+        updated = _pricing_payload(_active_pricing(conn))
+    cache.invalidate_pricing()
+    return updated
 
 
 def usage_history(
@@ -369,6 +375,7 @@ def reserve_ai_usage(
             idempotency_key=f"{idempotency_key}:lock",
             metadata={"feature_key": feature_key},
         )
+    cache.invalidate_wallet(actor.id)
     return {
         "usage_id": usage_id,
         "account_id": actor.id,

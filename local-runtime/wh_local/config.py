@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 # Release automation updates this single value when producing a desktop build.
-APP_VERSION = "1.2.10"
+APP_VERSION = "1.3.0"
 # Replace this host only when the official MainPG release origin moves. Keep the
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
@@ -148,4 +148,3 @@ def _local_onebound_config_paths() -> list[Path]:
         if meipass:
             candidates.append(Path(meipass) / "onebound.local.json")
     return candidates
-

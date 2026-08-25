@@ -3501,6 +3501,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 item
                 for item in task["items"]
                 if item["status"] in {"failed", "attention_required"}
+                and bool((item.get("result") or {}).get("retryable"))
             ]
             remaining = len(remaining_items)
             total = int(previous_state.get("total") or 0)
@@ -3549,7 +3550,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     f"{max(0, total - remaining)} · 剩余 {remaining}"
                 )
             else:
-                message = f"波动链接重试（第 {round_no} 轮）完成：全部成功"
+                message = f"自动补跑完成（第 {round_no} 轮）：全部成功"
             done_state = {
                 "round": round_no,
                 "total": total,
@@ -3637,7 +3638,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 # queued，覆盖用户的暂停/取消操作；暂停交由 resume 后的常规流程继续补跑，
                 # 取消则保持终态。必须写终态标记，否则 _auto_repull 永远停在 running，
                 # 前端一直显示「正在重试波动链接」（任务已终态却显示处理中）。
-                task_status = self._require_task(task_id, workspace_id)["status"]
+                task_status = self._require_task(task_id, workspace_id).get("status")
                 if task_status in {"paused", "cancelled"}:
                     try:
                         state = dict((task["settings"] or {}).get("_auto_repull") or {})
@@ -6466,13 +6467,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 return Path(value).read_bytes()
             except OSError:
                 return None
-        if is_safe_external_url(value):
-            try:
-                image = fetch_public_image(value, max_bytes=8 * 1024 * 1024, timeout_seconds=30)
-            except Exception:
-                return None
-            return getattr(image, "content", None) or b""
-        return None
+        try:
+            image = fetch_public_image(value, max_bytes=8 * 1024 * 1024, timeout_seconds=30)
+        except Exception:
+            return None
+        return getattr(image, "content", None) or b""
 
     @staticmethod
     def _compose_local_detail_image(
@@ -7224,8 +7223,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
     def _image_to_data_url(self, image_url: str) -> str:
         """安全下载图片并转 base64 data URL（供多模态视觉识别，隔离下载/限字节）。"""
-        if not is_safe_external_url(image_url):
-            return ""
         with self._source_data_url_lock:
             cached = self._source_data_url_cache.get(image_url)
         if cached:

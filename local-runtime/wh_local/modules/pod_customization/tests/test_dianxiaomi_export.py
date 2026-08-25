@@ -64,7 +64,7 @@ def _service(tmp_path: Path) -> PodCustomizationService:
     )
 
 
-def _listing(*, title_mode: str = "long") -> ListingFields:
+def _listing(*, title_mode: str = "long", sku_names: list[str] | None = None) -> ListingFields:
     return ListingFields(
         declared_price=18.5,
         suggested_price_usd=29.99,
@@ -72,10 +72,9 @@ def _listing(*, title_mode: str = "long") -> ListingFields:
         width_cm=20,
         height_cm=10,
         weight_g=450,
-        category_id="123456",
-        product_code_prefix="POD-PROD",
-        sku_prefix="POD-SKU",
+        category_name="家居收纳 > 包袋",
         title_mode=title_mode,
+        sku_names=sku_names or [],
     )
 
 
@@ -85,6 +84,7 @@ def _batch(
     *,
     count: int = 2,
     title_mode: str = "long",
+    sku_names: list[str] | None = None,
 ) -> dict:
     template = service.upload_template(actor, name="Scene", filename="scene.png", content=_png())
     service.update_template_calibration(
@@ -101,7 +101,7 @@ def _batch(
             template_id=template["id"],
             count=count,
             business_fields=BusinessFields(product_name="Canvas tote", product_category="Home > Bags"),
-            listing_fields=_listing(title_mode=title_mode),
+            listing_fields=_listing(title_mode=title_mode, sku_names=sku_names),
         ),
         enqueue=False,
     )
@@ -181,10 +181,10 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
     assert row[:6] == [
         "Coastal Tote", "Coastal Tote",
         'Carry calm everywhere.\n<img src="https://images.example.com/pod/1/hero.png" />\n<img src="https://images.example.com/pod/1/detail_a.png" />\n<img src="https://images.example.com/pod/1/detail_b.png" />\n<img src="https://images.example.com/pod/1/lifestyle.png" />',
-        "POD-PROD-001", "Style", "Style 001",
+        None, "Style", "Style 001",
     ]
-    assert row[6:9] == [None, None, "https://images.example.com/pod/1/hero.png"]
-    assert row[9:15] == [18.5, "POD-SKU-001", 30, 20, 10, 450]
+    assert row[6:9] == [None, None, "https://images.example.com/pod/1/lifestyle.png"]
+    assert row[9:15] == [18.5, None, 30, 20, 10, 450]
     assert row[15:18] == [None, None, None]
     assert row[18] == "\n".join(
         [
@@ -195,9 +195,47 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
         ]
     )
     assert row[19:24] == ["https://images.example.com/pod/1/hero.png", None, None, None, 29.99]
-    assert row[24:30] == [None, None, "Home > Bags", "Home > Bags", "Home > Bags", "123456"]
+    assert row[24:30] == [None, None, "家居收纳 > 包袋", "家居收纳 > 包袋", "家居收纳 > 包袋", None]
     assert row[30:33] == ["单品", 1, "件"]
     assert row[33:] == [None] * 9
+
+
+def test_service_export_repeats_each_style_for_saved_sku_names_and_uses_last_scene_as_preview(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    batch = _batch(service, actor, count=1, sku_names=["CT-BLACK", "CT-SAND"])
+    _complete_style(
+        service,
+        batch["id"],
+        1,
+        urls=(
+            "https://images.example.com/pod/1/hero.png",
+            "https://images.example.com/pod/1/detail-a.png",
+            "https://images.example.com/pod/1/detail-b.png",
+            "https://images.example.com/pod/1/final-scene.png",
+        ),
+    )
+    _settle(service, batch["id"])
+    service.repository.upsert_style_copy(
+        batch["id"], actor.workspace_id, actor.id, 1,
+        title="Coastal Tote", english_title="Coastal Canvas Tote", description="Carry calm everywhere.",
+    )
+    exported = service.export_dianxiaomi(actor, batch["id"])
+    workbook = load_workbook(io.BytesIO(exported.content), data_only=True)
+    try:
+        rows = list(workbook.active.iter_rows(min_row=2, values_only=True))
+    finally:
+        workbook.close()
+
+    assert exported.exported_style_count == 1
+    assert service.get_batch(actor, batch["id"])["listing_fields"]["sku_names"] == ["CT-BLACK", "CT-SAND"]
+    assert [row[3] for row in rows] == ["CT-BLACK", "CT-SAND"]
+    assert [row[8] for row in rows] == [
+        "https://images.example.com/pod/1/final-scene.png",
+        "https://images.example.com/pod/1/final-scene.png",
+    ]
 
 
 def test_service_export_uses_selected_short_title_for_both_title_columns(tmp_path: Path) -> None:
@@ -579,14 +617,12 @@ def test_short_title_export_rejects_noncompliant_copy_instead_of_using_it() -> N
             {"product_category": "tote bag"},
             {
                 "title_mode": "short",
-                "product_code_prefix": "POD",
-                "sku_prefix": "SKU",
                 "declared_price": 20,
                 "suggested_price_usd": 30,
                 "length_cm": 20,
                 "width_cm": 10,
                 "height_cm": 5,
                 "weight_g": 300,
-                "category_id": "123",
+                "category_name": "家居收纳 > 包袋",
             },
         )

@@ -6,8 +6,10 @@ import {
   businessFieldsForApi,
   canRegeneratePodStyle,
   canRegeneratePodStyleTitle,
+  formatPodBatchWaitingTime,
   isActiveBatchStatus,
   isPodBatchCount,
+  listingFieldsForApi,
   podBatchStatusLabel,
 } from "./podCustomizationModel.ts";
 
@@ -27,6 +29,16 @@ test("billing recovery statuses are visible and only settlement keeps polling", 
   assert.equal(podBatchStatusLabel("billing_auth_required"), "需要重新授权");
 });
 
+test("active POD batches show the elapsed time since creation", () => {
+  const createdAt = "2026-08-24T00:00:00.000Z";
+  const now = Date.parse("2026-08-24T00:02:35.000Z");
+
+  assert.equal(formatPodBatchWaitingTime(createdAt, now), "2分35秒");
+  assert.equal(formatPodBatchWaitingTime(createdAt, Date.parse("2026-08-24T00:00:35.000Z")), "35秒");
+  assert.equal(formatPodBatchWaitingTime(createdAt, Date.parse("2026-08-23T23:59:59.000Z")), "0秒");
+  assert.equal(formatPodBatchWaitingTime("not-a-date", now), "0秒");
+});
+
 test("business list fields are normalized at the API boundary", () => {
   const payload = businessFieldsForApi({
     product_name: "旅行杯",
@@ -41,6 +53,34 @@ test("business list fields are normalized at the API boundary", () => {
   });
   assert.deepEqual(payload.core_selling_points, ["轻量", "防漏"]);
   assert.deepEqual(payload.style_keywords, ["复古", "粗线条"]);
+});
+
+test("listing fields accept a Chinese Dianxiaomi category without code prefixes", () => {
+  const result = listingFieldsForApi({
+    title_mode: "long",
+    declared_price: "18.5",
+    suggested_price_usd: "29.99",
+    length_cm: "30",
+    width_cm: "20",
+    height_cm: "10",
+    weight_g: "450",
+    category_name: " 家居收纳 > 洗衣篮 ",
+    sku_names: ["  米白 ", "", "深蓝  "],
+  });
+
+  assert.deepEqual(result, {
+    value: {
+      title_mode: "long",
+      declared_price: 18.5,
+      suggested_price_usd: 29.99,
+      length_cm: 30,
+      width_cm: 20,
+      height_cm: 10,
+      weight_g: 450,
+      category_name: "家居收纳 > 洗衣篮",
+      sku_names: ["米白", "深蓝"],
+    },
+  });
 });
 
 test("successful POD results do not expose retry actions", () => {

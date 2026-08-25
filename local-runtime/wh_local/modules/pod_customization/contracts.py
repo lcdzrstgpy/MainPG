@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -79,12 +79,10 @@ class ListingFields(BaseModel):
     width_cm: float = Field(strict=True, gt=0)
     height_cm: float = Field(strict=True, gt=0)
     weight_g: float = Field(strict=True, gt=0)
-    category_id: str = Field(min_length=1, max_length=64, pattern=r"^[0-9]+$")
-    product_code_prefix: str = Field(
-        min_length=1, max_length=64, pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$"
-    )
-    sku_prefix: str = Field(
-        min_length=1, max_length=64, pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$"
+    category_name: str = Field(min_length=1, max_length=120)
+    sku_names: list[Annotated[str, Field(strict=True, min_length=1, max_length=120)]] = Field(
+        default_factory=list,
+        max_length=100,
     )
 
 
