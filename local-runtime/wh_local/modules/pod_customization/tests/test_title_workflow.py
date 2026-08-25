@@ -24,7 +24,7 @@ from wh_local.modules.pod_customization.contracts import (
     NormalizedRect,
 )
 from wh_local.modules.pod_customization.billing_contract import PodCallOutcome, PodExecutionGrant
-from wh_local.modules.pod_customization.images import PatternQualityGate, split_grid_2x2
+from wh_local.modules.pod_customization.images import split_grid_2x2
 from wh_local.modules.pod_customization.repository import PodRepositoryError
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.pod_customization.router import create_router
@@ -226,7 +226,6 @@ def _service(
         images,
         title_runtime=titles,
         billing_coordinator=billing or BillingCoordinator(),
-        quality_gate=PatternQualityGate(text_inspector=lambda _content: []),
         start_workers=True,
     )
 
