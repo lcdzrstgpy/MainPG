@@ -46,9 +46,8 @@ export const EMPTY_POD_LISTING_FIELDS: PodListingFieldsDraft = {
   width_cm: "",
   height_cm: "",
   weight_g: "",
-  category_id: "",
-  product_code_prefix: "",
-  sku_prefix: "",
+  category_name: "",
+  sku_names: [],
 };
 
 const ACTIVE_BATCH_STATUSES = new Set<PodBatchStatus>([
@@ -85,7 +84,7 @@ export function buildPromptV1(fields: PodBusinessFieldsDraft): string {
     `偏好配色：${valueOrFallback(fields.color_preferences)}`,
     `禁用元素：${valueOrFallback(fields.excluded_elements)}`,
     "硬性规则：",
-    "1. 每款正常只生成一次四张商品图（一张 2x2 拼图）；生成、拆分或去重失败时最多重试一次。",
+    "1. 每款正常只生成一次 2×2 成组图片；生成、拆分或去重失败时最多重试一次。",
     "2. 四格顺序固定为主图、细节图 A、细节图 B、场景图。",
     "3. 同一款四张图必须保持产品、结构、底色、图案内容、图案尺寸与位置完全一致。",
     "4. 不同款式必须使用不同图案、构图和创意配方，禁止复用上一款图案。",
@@ -139,16 +138,8 @@ export function listingFieldsForApi(fields: PodListingFieldsDraft): PodListingFi
   const weightG = positiveListingNumber(fields.weight_g, "重量");
   if (typeof weightG !== "number") return weightG;
 
-  const categoryId = fields.category_id.trim();
-  if (!/^\d+$/.test(categoryId)) return { error: "店小秘类目 ID 只能填写数字。" };
-  const productCodePrefix = fields.product_code_prefix.trim();
-  if (!productCodePrefix) return { error: "商品编码前缀不能为空。" };
-  if (!/^[A-Za-z0-9_-]+$/.test(productCodePrefix)) return { error: "商品编码前缀只能包含字母、数字、下划线或连字符。" };
-  if (/[-_]$/.test(productCodePrefix)) return { error: "商品编码前缀不能以连字符或下划线结尾。" };
-  const skuPrefix = fields.sku_prefix.trim();
-  if (!skuPrefix) return { error: "SKU 前缀不能为空。" };
-  if (!/^[A-Za-z0-9_-]+$/.test(skuPrefix)) return { error: "SKU 前缀只能包含字母、数字、下划线或连字符。" };
-  if (/[-_]$/.test(skuPrefix)) return { error: "SKU 前缀不能以连字符或下划线结尾。" };
+  const categoryName = fields.category_name.trim();
+  if (!categoryName) return { error: "请填写店小秘类目。" };
 
   return {
     value: {
@@ -159,9 +150,8 @@ export function listingFieldsForApi(fields: PodListingFieldsDraft): PodListingFi
       width_cm: widthCm,
       height_cm: heightCm,
       weight_g: weightG,
-      category_id: categoryId,
-      product_code_prefix: productCodePrefix,
-      sku_prefix: skuPrefix,
+      category_name: categoryName,
+      sku_names: fields.sku_names.map((name) => name.trim()).filter(Boolean),
     },
   };
 }
@@ -211,6 +201,14 @@ export function groupPodStyleRows(
 export function batchProgress(batch: { count: number; processed_count: number }): number {
   if (batch.count <= 0) return 0;
   return Math.min(100, Math.max(0, Math.round((batch.processed_count / batch.count) * 100)));
+}
+
+export function formatPodBatchWaitingTime(createdAt: string, now = Date.now()): string {
+  const startedAt = Date.parse(createdAt);
+  const elapsedSeconds = Number.isFinite(startedAt) ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  return minutes ? `${minutes}分${seconds}秒` : `${seconds}秒`;
 }
 
 export function isActiveBatchStatus(status: PodBatchStatus): boolean {
@@ -297,7 +295,7 @@ export function defaultTemplateCalibration(): PodTemplateCalibration {
 export function podBatchStatusLabel(status: PodBatchStatus): string {
   return {
     queued: "等待启动",
-    generating_patterns: "生成商品图",
+    generating_patterns: "生成图片",
     compositing: "拆分并发布",
     generating_titles: "生成标题",
     completed: "已完成",
@@ -311,7 +309,7 @@ export function podBatchStatusLabel(status: PodBatchStatus): string {
 export function podItemStatusLabel(status: string): string {
   return ({
     queued: "等待中",
-    generating_pattern: "生成商品图",
+    generating_pattern: "生成图片",
     compositing: "拆分并发布",
     completed: "已完成",
     failed: "失败",

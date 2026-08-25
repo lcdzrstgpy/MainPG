@@ -318,11 +318,14 @@ def _register_frontend_shell(app: FastAPI) -> None:
     frontend_dist = _frontend_dist_dir()
     assets = frontend_dist / "assets"
     brand = frontend_dist / "brand"
+    theme = frontend_dist / "theme"
     index = frontend_dist / "index.html"
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=assets), name="workbench-assets")
     if brand.is_dir():
         app.mount("/brand", StaticFiles(directory=brand), name="workbench-brand")
+    if theme.is_dir():
+        app.mount("/theme", StaticFiles(directory=theme), name="workbench-theme")
 
     @app.get("/", include_in_schema=False, response_class=HTMLResponse)
     def workbench_root():

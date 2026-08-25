@@ -1265,8 +1265,6 @@ def _plugin_records_from_groups(
                 "image_url": image_url,
                 "price_cny": price_cny,
                 "quantity": quantity,
-                "weight_text": str(matched.get("weight_text") or "").strip() or None if matched is not None else None,
-                "weight_kg": matched.get("weight_kg") if matched is not None else None,
             }
         )
         index += 1

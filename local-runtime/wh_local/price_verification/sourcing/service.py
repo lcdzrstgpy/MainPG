@@ -408,28 +408,34 @@ class SourcingService:
         return self.get_batch_sourcing_state(actor, batch_id=batch_id)
 
     def _product_library_products(
-        self, actor: PriceVerificationActor, *, batch_id: str, skc_ids: Sequence[str]
+        self, actor: PriceVerificationActor, skc_ids: Sequence[str], *, batch_id: str = ""
     ) -> tuple[Mapping[str, Any], ...]:
         if self._product_library_service is None or not skc_ids:
             return ()
         try:
-            batch = self._repository.get_quote_capture_batch(
-                workspace_id=actor.workspace_id, batch_id=batch_id
-            )
-            selections = {
-                selection.skc_id: selection
-                for selection in self._repository.list_batch_selections(
+            selected_skc_ids = tuple(str(skc_id) for skc_id in skc_ids)
+            if batch_id:
+                batch = self._repository.get_quote_capture_batch(
                     workspace_id=actor.workspace_id, batch_id=batch_id
                 )
-                if selection.skc_id in skc_ids
-            }
-            archive_id_to_selection = {
-                archive_id: selection.skc_id
-                for selection in selections.values()
-                for archive_id, _selling_price in self._archive_product_targets(
-                    selection, batch.archive_product_id_type
-                )
-            }
+                selections = {
+                    selection.skc_id: selection
+                    for selection in self._repository.list_batch_selections(
+                        workspace_id=actor.workspace_id, batch_id=batch_id
+                    )
+                    if selection.skc_id in selected_skc_ids
+                }
+                archive_id_to_selection = {
+                    archive_id: selection.skc_id
+                    for selection in selections.values()
+                    for archive_id, _selling_price in self._archive_product_targets(
+                        selection, batch.archive_product_id_type
+                    )
+                }
+            else:
+                archive_id_to_selection = {
+                    skc_id: skc_id for skc_id in selected_skc_ids
+                }
             if not archive_id_to_selection:
                 return ()
             products = self._product_library_service.list_products(
@@ -437,7 +443,7 @@ class SourcingService:
             )
             links_by_skc: dict[str, list[SkcSourceLinkRecord]] = {}
             for link in self._repository.list_active_skc_source_links_for_skcs(
-                workspace_id=actor.workspace_id, skc_ids=skc_ids
+                workspace_id=actor.workspace_id, skc_ids=selected_skc_ids
             ):
                 links_by_skc.setdefault(link.skc_id, []).append(link)
             enriched: list[Mapping[str, Any]] = []

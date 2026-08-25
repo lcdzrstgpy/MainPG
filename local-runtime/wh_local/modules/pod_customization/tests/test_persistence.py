@@ -51,9 +51,7 @@ def _listing_fields() -> ListingFields:
         width_cm=20,
         height_cm=10,
         weight_g=450,
-        category_id="123456",
-        product_code_prefix="POD-PROD",
-        sku_prefix="POD-SKU",
+        category_name="家居收纳 > 杯具",
     )
 
 

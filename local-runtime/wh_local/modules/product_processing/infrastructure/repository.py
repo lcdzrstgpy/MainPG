@@ -957,6 +957,53 @@ class ProductProcessingRepository:
             row.updated_at = utc_now()
         return self.get_task(task_id, workspace_id)
 
+    def mark_task_cancelled(self, task_id: int, workspace_id: str = "local") -> dict[str, Any] | None:
+        """取消任务：置为终态 cancelled，并把未处理（pending/running）链接标记为失败。
+
+        取消与暂停不同：暂停保留未处理项（pending/running）供 resume 断点续跑；
+        取消是不可恢复的终态，未处理项立即标记失败（原因=用户已取消任务），
+        直连计费下这些链接按 no_return 全额退款。
+        """
+        with self.database.sessions.begin() as session:
+            task = session.scalar(
+                select(ProcessingTaskRow)
+                .options(selectinload(ProcessingTaskRow.items))
+                .where(
+                    ProcessingTaskRow.id == task_id,
+                    ProcessingTaskRow.workspace_id == workspace_id,
+                )
+            )
+            if task is None:
+                return None
+            now = utc_now()
+            for item in task.items:
+                if item.status not in {"pending", "running"}:
+                    continue
+                item.status = "failed"
+                item.reason = "用户已取消任务"
+                item.result_json = dumps(
+                    {
+                        "failure_class": "task_control",
+                        "retryable": False,
+                        "operator_hint": "任务已被取消，未处理链接已释放（不会继续产生 AI 费用）",
+                        "error_type": "task_cancelled",
+                        "debug_hint": "用户主动取消任务；该链接未进入/未完成 AI 处理，直连计费按全额退款",
+                    }
+                )
+                item.updated_at = now
+                if item.product_draft_id is not None:
+                    draft = session.get(ProductDraftRow, item.product_draft_id)
+                    if draft is not None and draft.workspace_id == workspace_id and draft.status == "processing":
+                        draft.status = "draft"
+                        draft.updated_at = now
+            statuses = [item.status for item in task.items]
+            task.success_count = sum(value == "completed" for value in statuses)
+            task.skipped_count = sum(value == "skipped" for value in statuses)
+            task.failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
+            task.status = "cancelled"
+            task.updated_at = now
+        return self.get_task(task_id, workspace_id)
+
     def merge_task_settings(
         self,
         task_id: int,

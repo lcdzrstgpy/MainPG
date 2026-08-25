@@ -303,7 +303,7 @@ class PodBatchWorker:
                     batch, template_content, template_asset["content_type"], billing_run
                 )
                 self._process_style_grids(batch, initial, billing_run)
-                self.repository.fail_remaining_items(batch_id, "本款四宫格生成未返回完整结果")
+                self.repository.fail_remaining_items(batch_id, "本款图片生成未返回完整结果")
                 self.repository.fail_unready_titles(batch_id, "本款四张公开图片未完整生成，暂不能生成标题")
                 if self.title_runtime is None:
                     settled = self.repository.get_batch_internal(batch_id)
@@ -717,7 +717,7 @@ class PodBatchWorker:
                 self.repository.fail_style_grid(
                     batch,
                     style_index,
-                    retry_reasons.get(style_index, "本款两次四宫格生成均失败"),
+                    retry_reasons.get(style_index, "本款两次图片生成均失败"),
                 )
         return [prepared[index] for index in sorted(prepared)]
 

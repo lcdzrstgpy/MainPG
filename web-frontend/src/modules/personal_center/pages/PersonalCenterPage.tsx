@@ -804,7 +804,7 @@ export function PersonalCenterPage() {
                       <td>{usageServiceLabel(entry.feature_key)}{usageDetailText(entry) && <small>{usageDetailText(entry)}</small>}</td>
                       <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" || entry.status === "frozen" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
                       <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
-                      <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.usage_id.slice(0, 14)}…</small></td>
+                      <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.task ? `任务 #${entry.task} · ` : ""}{entry.usage_id.slice(0, 14)}…</small></td>
                     </tr>
                   )) : <tr><td colSpan={8} className="usage-empty">{hasUsageFilter ? "没有匹配的消费流水，试试调整筛选条件" : "暂无消费流水"}</td></tr>}</tbody>
                 </table>

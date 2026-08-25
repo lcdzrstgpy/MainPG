@@ -252,7 +252,7 @@ def test_direct_listing_trial_bills_provider_success_when_local_result_download_
         content=_png("#ffffff"),
     )
 
-    with pytest.raises(RuntimeError, match="POD 四宫格生成失败"):
+    with pytest.raises(RuntimeError, match="POD 图片生成失败"):
         service.run_direct_listing_trial(actor, _request(template["id"]))
 
     outcomes = {outcome.call_id: outcome.status for outcome in coordinator.settlements[0][1]}

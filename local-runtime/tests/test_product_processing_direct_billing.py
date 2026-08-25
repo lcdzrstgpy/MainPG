@@ -249,6 +249,15 @@ class RecordingBatchClient:
         return {"ok": True, "freeze": {"freeze_id": freeze_id, "status": "frozen"}}
 
 
+def _isolate_batch_freezes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """每个用例使用独立侧车文件，避免跨用例残留的 open 冻结互相污染。"""
+    monkeypatch.setattr(
+        batch_billing_module,
+        "_open_freezes_path",
+        lambda: tmp_path / "batch_freezes.json",
+    )
+
+
 def _make_service(tmp_path: Path) -> tuple[ProductProcessingService, int]:
     database = create_database(f"sqlite:///{(tmp_path / 'direct.sqlite3').as_posix()}")
     service = ProductProcessingService(
@@ -296,6 +305,7 @@ def test_execute_task_direct_freezes_grants_and_settles(
     monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "1")
     service, task_id = _make_service(tmp_path)
     service._task_remote_tokens[task_id] = "remote-token"
+    _isolate_batch_freezes(monkeypatch, tmp_path)
     client = RecordingBatchClient()
     monkeypatch.setattr("wh_local.modules.product_processing.service._batch_billing_client", lambda: client)
 
@@ -318,6 +328,8 @@ def test_execute_task_direct_freezes_grants_and_settles(
     assert len(client.freeze_calls) == 1
     assert client.freeze_calls[0][0] == "remote-token"
     assert client.freeze_calls[0][1]["link_count"] == 1
+    # 冻结批次携带任务号：服务端据此在消费流水/后台对账中关联处理任务
+    assert client.freeze_calls[0][1]["task_id"] == str(task_id)
     # 直连密钥在任务执行上下文内可见（线程继承）
     assert captured == {"wuyin": "W-KEY", "ark": "A-KEY", "freeze": "fz-direct-1"}
     # 任务结束自动结算并携带子项明细
@@ -358,8 +370,20 @@ def test_reconcile_open_batches_settles_pending_freezes(
 ) -> None:
     monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "1")
     service, task_id = _make_service(tmp_path)
+    _isolate_batch_freezes(monkeypatch, tmp_path)
     client = RecordingBatchClient()
     monkeypatch.setattr("wh_local.modules.product_processing.service._batch_billing_client", lambda: client)
+    # 任务必须到达终态后对账才会按其真实结果结算（未完成批次禁止提前退款）。
+    task = service.repository.get_task(task_id, workspace_id="local")
+    item_id = int(task["items"][0]["item_id"])
+    service.repository.finish_task(
+        task_id,
+        [{"item_id": item_id, "status": "completed"}],
+        output_file="",
+        error_report_file="",
+        video_manifest_file="",
+        workspace_id="local",
+    )
     batch_billing_module.remember_freeze(
         "fz-open-1",
         account_id="acct-direct",
@@ -375,3 +399,76 @@ def test_reconcile_open_batches_settles_pending_freezes(
     assert count == 1
     assert client.settle_calls and client.settle_calls[0][1] == "fz-open-1"
     assert batch_billing_module.open_freezes_for_account("acct-direct") == []
+
+
+def test_reconcile_open_batches_skips_still_running_tasks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """对账不得对仍在执行/暂停中的任务批次提前按全失败退款：
+    任务后续成功会导致用户白拿退款且服务端幂等拒绝再次结算。"""
+    monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "1")
+    service, task_id = _make_service(tmp_path)
+    _isolate_batch_freezes(monkeypatch, tmp_path)
+    client = RecordingBatchClient()
+    monkeypatch.setattr("wh_local.modules.product_processing.service._batch_billing_client", lambda: client)
+    # 新建任务 status=queued（尚未执行），冻结批次不允许被对账提前释放
+    batch_billing_module.remember_freeze(
+        "fz-running-1",
+        account_id="acct-direct",
+        workspace_id="local",
+        task_id=task_id,
+        link_count=1,
+        scope=[],
+        item_ids=[1],
+    )
+    # 无任务关联的历史孤儿批次：按全失败折算退款结算
+    batch_billing_module.remember_freeze(
+        "fz-orphan-1",
+        account_id="acct-direct",
+        workspace_id="local",
+        task_id=0,
+        link_count=1,
+        scope=[],
+    )
+    try:
+        count = service.reconcile_open_batches("remote-token", account_id="acct-direct")
+    finally:
+        service.repository.database.dispose()
+    assert count == 1
+    assert [call[1] for call in client.settle_calls] == ["fz-orphan-1"]
+    remaining = batch_billing_module.open_freezes_for_account("acct-direct")
+    assert [record["freeze_id"] for record in remaining] == ["fz-running-1"]
+
+
+class FailingSettleClient(RecordingBatchClient):
+    """结算接口抛网络不可达，模拟任务结束后结算失败。"""
+
+    def settle_batch_points(self, remote_token: str, freeze_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        from wh_local.customer.remote_client import CustomerAuthUnavailable
+
+        raise CustomerAuthUnavailable("unavailable")
+
+
+def test_settle_open_batch_failure_is_recorded_not_silent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """结算失败不再被静默吞掉：侧车记录失败原因/次数，供对账与后台定位。"""
+    monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "1")
+    service, task_id = _make_service(tmp_path)
+    _isolate_batch_freezes(monkeypatch, tmp_path)
+    client = FailingSettleClient()
+    monkeypatch.setattr("wh_local.modules.product_processing.service._batch_billing_client", lambda: client)
+    batch_billing_module.remember_freeze(
+        "fz-fail-1",
+        account_id="acct-direct",
+        workspace_id="local",
+        task_id=task_id,
+        link_count=1,
+        scope=[],
+        item_ids=[1],
+    )
+    try:
+        service._settle_open_batch(task_id, "local", "remote-token", "fz-fail-1")
+    finally:
+        service.repository.database.dispose()
+    record = batch_billing_module.open_freeze_record("fz-fail-1")
+    assert record is not None
+    assert record["settle_status"] == "failed"
+    assert record["settle_attempts"] == 1
+    assert "unavailable" in str(record.get("settle_error") or "")

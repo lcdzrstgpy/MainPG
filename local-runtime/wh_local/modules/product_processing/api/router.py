@@ -671,6 +671,14 @@ def create_product_processing_router(
     ) -> dict[str, Any]:
         return _call(service.pause_task, task_id, _workspace(workspace_id))
 
+    @router.post("/tasks/{task_id}/cancel")
+    def cancel_task(
+        task_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """取消任务：终态操作，未处理链接立即标记失败并释放（不再产生 AI 费用）。"""
+        return _call(service.cancel_task, task_id, _workspace(workspace_id))
+
     @router.post("/tasks/{task_id}/resume")
     def resume_task(
         request: Request,

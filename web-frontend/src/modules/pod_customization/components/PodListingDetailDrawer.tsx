@@ -32,9 +32,7 @@ export function PodListingDetailDrawer({ batch, style, onClose }: Props) {
     ["宽（cm）", String(listingFields.width_cm)],
     ["高（cm）", String(listingFields.height_cm)],
     ["重量（g）", String(listingFields.weight_g)],
-    ["店小秘类目 ID", listingFields.category_id],
-    ["商品编码前缀", listingFields.product_code_prefix],
-    ["SKU 前缀", listingFields.sku_prefix],
+    ["店小秘类目", listingFields.category_name],
   ] as const : [];
 
   return <div className="pod-listing-detail-layer">

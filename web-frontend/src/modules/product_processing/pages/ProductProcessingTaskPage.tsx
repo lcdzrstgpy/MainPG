@@ -159,6 +159,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     ? (processingStatuses.includes(batch.task.status) || autoRepullRunning)
     : false;
   const taskPaused = batch?.task.status === 'paused';
+  const taskCancelled = batch?.task.status === 'cancelled';
   const taskActive = batchProcessing || taskPaused;
   const batchTotal = batch?.total_count || 0;
   const batchProcessed = batch?.processed_count ?? 0;
@@ -310,6 +311,19 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     finally { setControlBusy(false); }
   };
 
+  // 取消：终态操作，立即停止后续 AI 调用，未处理链接标记失败并释放（不再产生 AI 费用）。
+  const cancelTask = async () => {
+    if (!batch || controlBusy) return;
+    if (!window.confirm('确定取消该任务？未处理的链接将标记为失败并立即释放积分，任务不可恢复（可重新提交草稿处理）。')) return;
+    setControlBusy(true);
+    try {
+      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/cancel`, { body: {} });
+      setBatch(data);
+      notify((data as { message?: string }).message || '任务已取消，未处理链接已释放');
+    } catch (err) { fail(err); }
+    finally { setControlBusy(false); }
+  };
+
   // 重新处理失败/待确认项：以这些草稿为新的批次重新走处理流水线（async_mode 后台执行）。
   // 手动重试 = 付费重试：无论最终成功或失败都按 35-45 积分/条计费，提交前需确认。
   const retryFailed = async (draftIds: number[]) => {
@@ -343,7 +357,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>{initialTaskId != null ? '历史任务详情' : '处理设置与进度'}</h1>
-          <p>{initialTaskId != null ? '继续处理中的历史任务；关闭本页不会停止后台任务，可从左侧“历史记录”再次打开。' : '配置处理参数后开始，结果实时轮询。'}</p>
+          <p>{initialTaskId != null ? '继续处理中的历史任务；关闭本页约 90 秒后任务将自动暂停，避免后台继续消耗 AI 额度，可从左侧“历史记录”继续。' : '配置处理参数后开始，结果实时轮询。暂停/取消都会立即停止后续 AI 调用。'}</p>
         </div>
       </header>
 
@@ -451,10 +465,16 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <div className="verify-count">配置阻断 <b>{batch.configuration_blocked_count}</b></div>
                 </div>
                 )}
+                {taskCancelled && (
+                  <div className="verify-repull-banner paused" role="status">
+                    <i className="iconfont icon-infomation" aria-hidden="true" />
+                    <span>任务已取消：未处理的链接已标记失败并释放积分，不再产生 AI 费用；可重新提交草稿处理。</span>
+                  </div>
+                )}
                 {(taskPaused || autoRepullRunning || autoRepullDone || autoRepullFailed) && (taskPaused || autoRepull) && (
                   <div className={`verify-repull-banner ${taskPaused ? 'paused' : (autoRepull?.status ?? '')}`} role="status">
                     <i className={`iconfont ${taskPaused ? 'icon-infomation' : autoRepullRunning ? 'icon-loading' : autoRepullDone ? 'icon-check-circle' : 'icon-infomation'}`} aria-hidden="true" />
-                    <span>{taskPaused ? '任务已暂停：当前商品完成后将停止，可从断点继续（含自动重试轮）' : (autoRepull?.message ?? '')}</span>
+                    <span>{taskPaused ? '任务已暂停：停止后续 AI 调用，可从断点继续（含自动重试轮）；关闭本页约 90 秒后也会自动暂停' : (autoRepull?.message ?? '')}</span>
                     {!taskPaused && autoRepullRunning && <em>无需手动操作，完成后自动刷新</em>}
                   </div>
                 )}
@@ -464,8 +484,16 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       className={batch.task.status === 'paused' ? 'primary' : ''}
                       disabled={controlBusy || loading}
                       onClick={() => void (batch.task.status === 'paused' ? resumeTask() : pauseTask())}
-                      title={batch.task.status === 'paused' ? '继续处理剩余商品' : '暂停处理：当前商品完成后停止，不再启动新商品'}
+                      title={batch.task.status === 'paused' ? '继续处理剩余商品' : '暂停处理：停止后续 AI 调用，可随时从断点继续'}
                     >{batch.task.status === 'paused' ? '继续处理' : '暂停处理'}</button>
+                  )}
+                  {(batchProcessing || taskPaused) && (
+                    <button
+                      className="danger"
+                      disabled={controlBusy || loading}
+                      onClick={() => void cancelTask()}
+                      title="取消任务：立即停止后续 AI 调用，未处理链接标记失败并释放积分（不可恢复）"
+                    >取消任务</button>
                   )}
                   <button
                     className="primary"

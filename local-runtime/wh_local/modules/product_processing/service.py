@@ -37,6 +37,7 @@ from .batch_billing import (
     derive_item_results as _derive_batch_item_results,
     direct_ai_enabled as _direct_ai_enabled,
     forget_freeze as _forget_batch_freeze,
+    mark_freeze_settle_failure as _mark_freeze_settle_failure,
     open_freeze_record as _open_batch_freeze_record,
     open_freezes_for_account as _open_freezes_for_account,
     remember_freeze as _remember_batch_freeze,
@@ -172,6 +173,10 @@ _CACHE_VOLATILE_RAW_KEYS = frozenset(
 
 _STAGE_CACHE_VERSION = 3
 _TASK_HEARTBEAT_SECONDS = 10.0
+# 前端任务页轮询 /tasks/{id}/outputs 即为心跳；超过该时长没有心跳（页面关闭/
+# 切走/浏览器标签被回收）自动把任务置为暂停，避免用户已不在看却继续烧 AI 成本。
+_TASK_AUTO_PAUSE_TIMEOUT_SECONDS = 90.0
+_TASK_AUTO_PAUSE_SWEEP_SECONDS = 15.0
 _DROP_SHOP_CANDIDATE_VALUE = object()
 _SHOP_SENSITIVE_FIELD_NAMES = frozenset(
     {
@@ -359,6 +364,18 @@ class MediaUnavailableError(RuntimeError):
     """Image processing dependencies are missing."""
 
 
+class _TaskControlStopped(Exception):
+    """内部信号：任务被暂停/取消，立即中止当前商品的处理链路。
+
+    由各 AI 阶段检查点抛出，_process 捕获后跳过本条目（不持久化失败），
+    使暂停可断点续跑、取消时未处理项由 cancel_task 统一标记失败。
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class GridImageOutput:
     carousel_urls: tuple[str, ...] = ()
@@ -492,6 +509,12 @@ class ProductProcessingService:
         self._settling_usage_keys: set[tuple[int, int, str]] = set()
         self._media_materialization_lock = threading.Lock()
         self._media_materialization_workers: dict[str, threading.Thread] = {}
+        # 前端任务页轮询心跳：(workspace_id, task_id) -> time.monotonic() 最近一次
+        # /outputs 轮询时间。超时未收到心跳自动暂停（页面关闭/切走），避免用户已
+        # 不在看却继续调用 AI 烧成本。
+        self._task_last_seen: dict[tuple[str, int], float] = {}
+        self._task_last_seen_lock = threading.Lock()
+        self._auto_pause_sweeper_started = False
         # 任务级串行闸门：限制同时执行的任务数，避免旧任务与新任务并发叠加打爆 AI 供应商。
         self._task_execution_gate = threading.BoundedSemaphore(_max_concurrent_tasks())
         self.media_assets = MediaAssetService(
@@ -1964,6 +1987,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     def task_outputs(
         self, task_id: int, *, summary_only: bool = False, workspace_id: str = "local"
     ) -> dict[str, Any]:
+        # 前端任务页轮询该接口即为心跳：页面在（轮询在）任务保持运行；页面关闭/
+        # 切走后心跳超时由清扫器自动暂停，避免用户已不在看仍继续调用 AI 烧成本。
+        self._touch_task_heartbeat(task_id, workspace_id)
         task = self._require_task(task_id, workspace_id)
         response = self._task_response(task)
         if summary_only and len(response["items"]) > 20:
@@ -2019,9 +2045,112 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             )
         return {"tasks": history, "limit": limit, "offset": offset, "total": total}
 
+    def _task_control_reason(self, task_id: int, workspace_id: str) -> str:
+        """返回任务控制状态原因：'用户已暂停任务' / '用户已取消任务'，正常继续返回空串。
+
+        各 AI 阶段检查点据此决定是否中止当前商品处理；读取失败按正常继续（fail-open），
+        不因状态查询的瞬时错误而打断在途调用。
+        """
+        try:
+            status = str(self._require_task(task_id, workspace_id).get("status") or "")
+        except Exception:
+            return ""
+        if status == "paused":
+            return "用户已暂停任务"
+        if status == "cancelled":
+            return "用户已取消任务"
+        return ""
+
+    def _raise_if_task_stopped(self, task_id: int, workspace_id: str) -> None:
+        """AI 阶段前的细粒度暂停/取消检查点：已暂停/取消则抛出内部信号中止当前商品。"""
+        reason = self._task_control_reason(task_id, workspace_id)
+        if reason:
+            raise _TaskControlStopped(reason)
+
+    def _touch_task_heartbeat(self, task_id: int, workspace_id: str) -> None:
+        """记录前端任务页轮询心跳，并懒启动自动暂停清扫器。
+
+        只在确有前端在看任务时跟踪；从未被 /outputs 轮询过的任务（API 提交等）
+        不进入自动暂停名单，避免误伤非页面驱动的任务。
+        """
+        key = (workspace_id, int(task_id))
+        with self._task_last_seen_lock:
+            self._task_last_seen[key] = time.monotonic()
+            started = self._auto_pause_sweeper_started
+            self._auto_pause_sweeper_started = True
+        if not started:
+            threading.Thread(
+                target=self._auto_pause_stale_tasks_loop,
+                daemon=True,
+                name="pp-auto-pause-sweeper",
+            ).start()
+
+    def _auto_pause_stale_tasks_loop(self) -> None:
+        """后台清扫循环：每 _TASK_AUTO_PAUSE_SWEEP_SECONDS 秒执行一次心跳检查。"""
+        while True:
+            time.sleep(_TASK_AUTO_PAUSE_SWEEP_SECONDS)
+            try:
+                self._sweep_stale_heartbeats_once()
+            except Exception:
+                # 清扫是尽力而为的后台维护，任何异常都不允许终止循环。
+                pass
+
+    def _sweep_stale_heartbeats_once(self) -> None:
+        """单次清扫：心跳超时的 running/queued 任务自动置为暂停。
+
+        桌面端整个退出时进程随之终止、AI 调用自然停止，无需此机制；这里覆盖
+        「浏览器关页面/切走后本地服务仍在运行、AI 调用继续烧成本」的场景。
+        自动暂停与手动暂停语义一致：已完成项保留，未处理项由结算链路按真实
+        结果退款（已完成扣费、未完成全退），用户可从历史记录继续处理。
+        """
+        now = time.monotonic()
+        with self._task_last_seen_lock:
+            stale_keys = [
+                key
+                for key, seen_at in self._task_last_seen.items()
+                if now - seen_at > _TASK_AUTO_PAUSE_TIMEOUT_SECONDS
+            ]
+        for workspace_id, task_id in stale_keys:
+            try:
+                task = self._require_task(task_id, workspace_id)
+            except Exception:
+                with self._task_last_seen_lock:
+                    self._task_last_seen.pop((workspace_id, task_id), None)
+                continue
+            status = str(task.get("status") or "")
+            if status in {"queued", "running"}:
+                try:
+                    self.repository.set_task_status(task_id, "paused", workspace_id)
+                except Exception:
+                    pass
+                # 移除心跳记录：resume 后由前端重新轮询重建，避免用陈旧时间戳
+                # 在 resume 的首个轮询窗口再次误暂停。
+                with self._task_last_seen_lock:
+                    self._task_last_seen.pop((workspace_id, task_id), None)
+            elif status not in {"paused", "cancelled"}:
+                # 已进入终态的任务不再需要跟踪心跳。
+                with self._task_last_seen_lock:
+                    self._task_last_seen.pop((workspace_id, task_id), None)
+
+    def cancel_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
+        """取消任务：终态操作，立即停止后续 AI 调用，未处理链接标记失败（用户取消）。
+
+        与 pause 的区别：
+        - pause 可恢复：resume 后从剩余链接断点续跑（已暂停时批次已按真实结果退款）；
+        - cancel 不可恢复：未完成链接标记为「用户已取消任务」，只能对失败项手动重试
+          或新建任务重新处理；直连计费下这些链接按 no_return 全额退款。
+        """
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] in {"completed", "failed", "partial_failure", "cancelled"}:
+            return {**self._task_response(task), "message": "任务已结束，无需取消"}
+        with self._task_last_seen_lock:
+            self._task_last_seen.pop((workspace_id, int(task_id)), None)
+        task = self.repository.mark_task_cancelled(task_id, workspace_id) or task
+        return {**self._task_response(task), "message": "产品处理任务已取消，未处理链接已释放"}
+
     def pause_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
         task = self._require_task(task_id, workspace_id)
-        if task["status"] in {"completed", "failed", "partial_failure"}:
+        if task["status"] in {"completed", "failed", "partial_failure", "cancelled"}:
             return {**self._task_response(task), "message": "任务已结束，无需暂停"}
         task = self.repository.set_task_status(task_id, "paused", workspace_id) or task
         return {**self._task_response(task), "message": "产品处理任务已暂停"}
@@ -2041,7 +2170,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         )
         if billed and pending_billing:
             self.reconcile_product_billing(task_id, remote_token)
-        if task["status"] in {"completed", "failed", "partial_failure"}:
+        if task["status"] in {"completed", "failed", "partial_failure", "cancelled"}:
             return {**self._task_response(task), "message": "任务已结束，返回现有结果"}
         if task["status"] != "paused":
             return {**self._task_response(task), "message": "任务已在执行，未重复启动"}
@@ -2813,6 +2942,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if task.get("preflight_only"):
             with self._task_execution_gate:
                 return self._execute_task_impl(task_id, workspace_id)
+        if task["status"] in {"paused", "cancelled"}:
+            # 暂停/取消后不再重新冻结批次，直接按状态返回（避免冻结-立即退款空转）。
+            with self._task_execution_gate:
+                return self._execute_task_impl(task_id, workspace_id)
         settings = task["settings"]
         billing = settings.get("_billing") if isinstance(settings.get("_billing"), dict) else {}
         account_id = self._text(billing.get("account_id"))
@@ -2825,6 +2958,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             {
                 "link_count": link_count,
                 "scope": [str(feature) for feature in (settings.get("processing_scope") or [])],
+                # 冻结批次与处理任务唯一关联：消费流水/后台可据此对账滞留冻结。
+                "task_id": str(task_id),
             },
         )
         freeze_payload = (
@@ -2855,7 +2990,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 with self._task_execution_gate:
                     result = self._execute_task_impl(task_id, workspace_id)
         finally:
+            # 先结算本任务批次；结算失败不会抛出（内部记录失败并保留 open 记录）。
             self._settle_open_batch(task_id, workspace_id, token, freeze_id)
+            # 顺带对账本账号其他 open 批次（仅终态任务），避免历史批次结算失败后
+            # 积分滞留到 TTL；新任务提交时也会对账（reconcile_open_batches 内已
+            # 跳过仍在执行的任务，防止对未完成批次提前退款）。
+            if account_id:
+                try:
+                    self.reconcile_open_batches(token, account_id=account_id)
+                except Exception:
+                    pass
         return result
 
     def _settle_open_batch(
@@ -2865,7 +3009,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         token: str,
         freeze_id: str,
     ) -> None:
-        """结算一个已冻结批次；结算失败静默保留，由启动对账或服务端 TTL 兜底。"""
+        """结算一个已冻结批次。
+
+        结算失败不抛出（避免任务收尾崩溃），但会在侧车文件记录失败原因与次数，
+        保留 open 记录供后续对账/服务端 TTL 兜底，避免「结算失败被静默吞掉、
+        消费流水永远处理中」。
+        """
         try:
             task = self._require_task(task_id, workspace_id)
             record = _open_batch_freeze_record(freeze_id) or {}
@@ -2888,12 +3037,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             _forget_batch_freeze(freeze_id)
             if retry_mode:
                 self.repository.merge_task_settings(task_id, workspace_id, _retry_mode="")
-        except Exception:
-            # 保留 open 记录：下次有 token 的对账会补结算；服务端 7 天 TTL 兜底。
-            pass
+        except Exception as exc:
+            # 保留 open 记录：任务结束后的对账、下次提交任务的对账、服务端 TTL
+            # 会继续结算/释放；失败详情写入侧车便于定位（不落任何密钥）。
+            _mark_freeze_settle_failure(
+                freeze_id, self._task_safe_error_reason(task_id, exc)
+            )
 
     def reconcile_open_batches(self, token: str, *, account_id: str) -> int:
-        """启动/提交任务时对账：把本账号仍 open 的冻结批次补结算（全退兜底）。
+        """对账：把本账号仍 open 的冻结批次补结算（按任务真实结果折算）。
 
         返回补结算的批次数量。旧批次可能没有下发密钥但已冻结，服务端幂等
         保证重复结算安全；失败静默，等待服务端 TTL。
@@ -2910,14 +3062,28 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     task = self.repository.get_task(task_id, workspace_id=str(record.get("workspace_id") or "local"))
                 else:
                     task = None
+                task_status = str((task or {}).get("status") or "")
+                if task_status in {"queued", "running", "paused"}:
+                    # 任务仍在执行/暂停中：按当前状态折算会把未完成链接误判为
+                    # 失败全退，提前释放积分（用户后续成功仍无法再次结算，服务端
+                    # 幂等会拒绝）。等任务到达终态再对账。
+                    continue
                 task_items = (task or {}).get("items") or []
                 settings = (task or {}).get("settings") or {}
                 task_items = _freeze_scope_items(task_items, record)
+                # 与 _settle_open_batch 一致：paid=手动付费重试全价、free=系统自动
+                # 重试轮不加溢价、空=首次正常处理保留溢价，避免对账结算改价。
+                retry_mode = str(settings.get("_retry_mode") or "")
                 _billing_call_with_retry(
                     client.settle_batch_points,
                     token,
                     freeze_id,
-                    {"items": _derive_batch_item_results(task_items, settings)},
+                    {"items": _derive_batch_item_results(
+                        task_items,
+                        settings,
+                        paid_retry=retry_mode == "paid",
+                        retry_premium=retry_mode == "",
+                    )},
                 )
                 _forget_batch_freeze(freeze_id)
                 settled_count += 1
@@ -2927,7 +3093,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
     def _execute_task_impl(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
         task = self._require_task(task_id, workspace_id)
-        if task["status"] == "paused":
+        if task["status"] in {"paused", "cancelled"}:
             return task
         if not self.repository.claim_task_execution(task_id, workspace_id):
             return self._require_task(task_id, workspace_id)
@@ -2969,7 +3135,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         def _process(item: dict[str, Any]) -> dict[str, Any] | None:
-            if self._require_task(task_id, workspace_id)["status"] == "paused":
+            if self._require_task(task_id, workspace_id)["status"] in {"paused", "cancelled"}:
                 return None
             draft = drafts.get(item["product_draft_id"])
             item_id = int(item["item_id"])
@@ -3010,6 +3176,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             workspace_id=workspace_id,
                         ),
                     )
+            except _TaskControlStopped:
+                # 暂停/取消：本条目保持原状态（pending/running），等待恢复后断点续跑；
+                # 取消的未处理项由 cancel_task 统一标记失败并释放。
+                return None
             except Exception as exc:
                 self._settle_product_processing_item_failure_for_item(
                     task_id,
@@ -3115,7 +3285,23 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
                                 self._mark_draft_failed(draft, workspace_id)
 
-        if self._require_task(task_id, workspace_id)["status"] == "paused":
+        final_status = self._require_task(task_id, workspace_id)["status"]
+        if final_status in {"paused", "cancelled"}:
+            if final_status == "cancelled":
+                # 取消发生在自动补跑轮中段：执行被检查点中止且不会走到收尾的
+                # _maybe_launch_auto_repull，这里补写终态标记，避免前端永远显示
+                # 「正在重试波动链接」。
+                try:
+                    state = dict(settings.get("_auto_repull") or {})
+                    if state.get("status") == "running":
+                        state["status"] = "cancelled"
+                        state["message"] = "自动重试已取消"
+                        state["updated_at"] = _iso_utc_now()
+                        self.repository.merge_task_settings(
+                            task_id, workspace_id, _auto_repull=state
+                        )
+                except Exception:
+                    pass
             return self._require_task(task_id, workspace_id)
 
         preserve = settings.get("source_image_to_library")
@@ -3315,6 +3501,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 item
                 for item in task["items"]
                 if item["status"] in {"failed", "attention_required"}
+                and bool((item.get("result") or {}).get("retryable"))
             ]
             remaining = len(remaining_items)
             total = int(previous_state.get("total") or 0)
@@ -3363,7 +3550,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     f"{max(0, total - remaining)} · 剩余 {remaining}"
                 )
             else:
-                message = f"波动链接重试（第 {round_no} 轮）完成：全部成功"
+                message = f"自动补跑完成（第 {round_no} 轮）：全部成功"
             done_state = {
                 "round": round_no,
                 "total": total,
@@ -3447,9 +3634,26 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     time.sleep(0.5)
                 with self._task_worker_lock:
                     self._task_workers[(workspace_id, task_id)] = threading.current_thread()
-                # 暂停中不启动本轮重试：reset_failed_items 会把任务状态强制改回
-                # queued，覆盖用户的暂停操作；暂停交由 resume 后的常规流程继续补跑。
-                if self._require_task(task_id, workspace_id)["status"] == "paused":
+                # 暂停/取消中不启动本轮重试：reset_failed_items 会把任务状态强制改回
+                # queued，覆盖用户的暂停/取消操作；暂停交由 resume 后的常规流程继续补跑，
+                # 取消则保持终态。必须写终态标记，否则 _auto_repull 永远停在 running，
+                # 前端一直显示「正在重试波动链接」（任务已终态却显示处理中）。
+                task_status = self._require_task(task_id, workspace_id).get("status")
+                if task_status in {"paused", "cancelled"}:
+                    try:
+                        state = dict((task["settings"] or {}).get("_auto_repull") or {})
+                        state["status"] = task_status
+                        state["message"] = (
+                            "自动重试已取消"
+                            if task_status == "cancelled"
+                            else "自动重试已暂停，恢复任务后可继续补跑"
+                        )
+                        state["updated_at"] = _iso_utc_now()
+                        self.repository.merge_task_settings(
+                            task_id, workspace_id, _auto_repull=state
+                        )
+                    except Exception:
+                        pass
                     return
                 self.repository.reset_failed_items(task_id, workspace_id, draft_ids=draft_ids)
                 # 清除视觉识别缓存，避免「多主体/遮挡」低置信度结论被缓存后重跑
@@ -4268,6 +4472,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 provider_attempts["doubao_vision"] = 0
                 provider_status_classes["doubao_vision"] = "receipt_hit"
             else:
+                # 检查点：任务被暂停/取消时不再发起主体识别（避免白烧识别成本）。
+                self._raise_if_task_stopped(task_id, workspace_id)
                 attempt_state = self._attempt_state()
                 attempt_state.doubao_vision = None
                 try:
@@ -4481,6 +4687,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         media_stage_started = 0.0
         media_ai_notes: list[str] = []
         if (need_grid or need_detail) and images_receipt_output is None:
+            # 检查点：任务被暂停/取消时不再启动图片生成（含 4K/普通四宫格/详情图）。
+            self._raise_if_task_stopped(task_id, workspace_id)
             from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
 
             media_executor = ThreadPoolExecutor(max_workers=1)
@@ -4623,6 +4831,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 provider_status_classes["doubao_text"] = "receipt_hit"
                 text_generation["status"] = "receipt_hit"
             elif needs_title or needs_desc or needs_dimensions or variant_values:
+                # 检查点：任务被暂停/取消时不再发起豆包文案生成。
+                self._raise_if_task_stopped(task_id, workspace_id)
                 stage_started = time.perf_counter()
                 attempt_state = self._attempt_state()
                 attempt_state.doubao_text = None
@@ -4858,6 +5068,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         # 详情图优先由轮播图本地合成，只有本地合成不可用时才回退 AI 详情图生成。
         if need_grid and not images_receipt_hit:
             if grid_future is not None:
+                # 图片生成在独立线程中推进；取结果前先看任务是否已被暂停/取消，
+                # 被中止的 future 会抛出 _TaskControlStopped 自然在此处冒泡。
+                self._raise_if_task_stopped(task_id, workspace_id)
                 try:
                     grid_output = grid_future.result()
                 finally:
@@ -4867,6 +5080,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 ai_notes.extend(media_ai_notes)
                 record_stage("grid_pipeline", media_stage_started)
             else:
+                # 检查点：任务被暂停/取消时不再发起图片生成。
+                self._raise_if_task_stopped(task_id, workspace_id)
                 stage_started = time.perf_counter()
                 grid_output = self._generate_grid_images(
                     task_id,
@@ -4935,6 +5150,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     },
                 }
         if need_detail and not images_receipt_hit:
+            # 检查点：任务被暂停/取消时不再合成或发起详情图生成。
+            self._raise_if_task_stopped(task_id, workspace_id)
             if grid_image_paths:
                 stage_started = time.perf_counter()
                 detail_image_paths = self._generate_detail_images_local(
@@ -4950,6 +5167,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 record_stage("local_detail", stage_started)
             if not detail_image_paths:
                 if direct_detail_future is not None:
+                    # 详情图生成在独立线程中推进；被中止的 future 抛出的
+                    # _TaskControlStopped 在此自然冒泡。
+                    self._raise_if_task_stopped(task_id, workspace_id)
                     try:
                         detail_image_paths = direct_detail_future.result()
                     finally:
@@ -4959,6 +5179,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     ai_notes.extend(media_ai_notes)
                     record_stage("detail_generation", media_stage_started)
                 else:
+                    # 检查点：任务被暂停/取消时不再发起 AI 详情图生成。
+                    self._raise_if_task_stopped(task_id, workspace_id)
                     stage_started = time.perf_counter()
                     detail_image_paths = self._generate_detail_images(
                         task_id,
@@ -5523,6 +5745,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 image_size: str | None = None,
                 layout_scaffold: bool = False,
             ) -> Any:
+                # 检查点：每张付费生图前确认任务未暂停/取消（页面关闭自动暂停后
+                # 不再继续烧钱）。
+                self._raise_if_task_stopped(task_id, workspace_id)
                 kwargs: dict[str, Any] = {
                     "stage": "grid_image",
                     "prompt": image_prompt,
@@ -5665,6 +5890,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             # 槽位重绘与主图同为 2048x2048（2K），避免 1K 重绘
                             # 导致轮播图分辨率降到 1024 而"糊"。与主图同模型同尺寸，
                             # 不指定 model_override，跟随主图模型配置。
+                            # 检查点：重绘也是付费调用，暂停/取消时立即中止。
+                            self._raise_if_task_stopped(task_id, workspace_id)
                             replacement = processor.generate(
                                 stage=f"grid_image_{slot}",
                                 prompt=single_prompt(role),
@@ -5953,6 +6180,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         # four panels and discard a valid first result.
         for whole_attempt in range(1):
             try:
+                # 检查点：精品 4K 单次付费调用前确认任务未暂停/取消。
+                self._raise_if_task_stopped(task_id, workspace_id)
                 media = processor.generate(
                     stage="premium_image",
                     prompt=base_prompt,
@@ -6150,6 +6379,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             prompt = append_content_reference(prompt, reference, kind="image")
             prompt = append_subject_analysis(prompt, vision_identity)
             self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
+            # 检查点：详情图付费生成前确认任务未暂停/取消。
+            self._raise_if_task_stopped(task_id, workspace_id)
             media = processor.generate(stage="detail_image", prompt=prompt, reference_values=reference_urls)
             # OCR 质量门：检出中文 → 定向重绘为英文（本地 OCR 后置验证器，对齐原型）
             media = self._repair_until_clean(
@@ -6160,6 +6391,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 reference_urls,
                 ai_notes,
                 vision_identity=vision_identity,
+                task_id=task_id,
+                workspace_id=workspace_id,
             )
         except (media_config_error, media_error, ValueError, OSError) as exc:
             self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
@@ -6234,13 +6467,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 return Path(value).read_bytes()
             except OSError:
                 return None
-        if is_safe_external_url(value):
-            try:
-                image = fetch_public_image(value, max_bytes=8 * 1024 * 1024, timeout_seconds=30)
-            except Exception:
-                return None
-            return getattr(image, "content", None) or b""
-        return None
+        try:
+            image = fetch_public_image(value, max_bytes=8 * 1024 * 1024, timeout_seconds=30)
+        except Exception:
+            return None
+        return getattr(image, "content", None) or b""
 
     @staticmethod
     def _compose_local_detail_image(
@@ -6417,6 +6648,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         *,
         allow_paid_repair: bool = True,
         vision_identity: dict[str, Any] | None = None,
+        task_id: int = 0,
+        workspace_id: str = "",
     ) -> Any:
         """Run deterministic text/structure gates, repair once on failure, then revalidate.
 
@@ -6458,6 +6691,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             return media
         rounds = 0
         while reparables and rounds < max_repair_rounds():
+            # 检查点：重绘也是付费调用，暂停/取消时不再继续重绘。
+            if task_id and workspace_id:
+                self._raise_if_task_stopped(task_id, workspace_id)
             rounds += 1
             try:
                 repair_prompt = append_subject_analysis(
@@ -6987,8 +7223,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
     def _image_to_data_url(self, image_url: str) -> str:
         """安全下载图片并转 base64 data URL（供多模态视觉识别，隔离下载/限字节）。"""
-        if not is_safe_external_url(image_url):
-            return ""
         with self._source_data_url_lock:
             cached = self._source_data_url_cache.get(image_url)
         if cached:
@@ -7277,7 +7511,48 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             end = datetime.now(timezone.utc)
         return max(0, int((end - started).total_seconds()))
 
+    def _normalize_stale_auto_repull(self, task: dict[str, Any]) -> None:
+        """崩溃兜底：进程重启后 settings._auto_repull 可能永久停在 running。
+
+        前端把 running 视为「正在重试波动链接」，任务已终态却仍显示处理中。
+        仅当任务到终态、补跑线程已不在运行、且状态超过 60 秒未刷新时才归一化，
+        避开补跑线程启动窗口（线程先睡 1 秒再注册，注册期 1~16 秒）。
+        """
+        settings = task.get("settings")
+        state = settings.get("_auto_repull") if isinstance(settings, dict) else None
+        if not isinstance(state, dict) or str(state.get("status") or "") != "running":
+            return
+        if str(task.get("status") or "") not in {"completed", "failed", "partial_failure"}:
+            return
+        workspace_id = str(task.get("workspace_id") or "local")
+        task_id = int(task.get("id") or 0)
+        with self._task_worker_lock:
+            worker = self._task_workers.get((workspace_id, task_id))
+            if worker is not None and worker.is_alive():
+                return
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        updated_at = str(state.get("updated_at") or "")
+        try:
+            parsed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age_seconds = (datetime.now(timezone.utc) - parsed).total_seconds()
+        except (ValueError, TypeError):
+            age_seconds = float("inf")
+        if age_seconds < 60:
+            return
+        done_state = dict(state)
+        done_state["status"] = "completed"
+        done_state["message"] = "自动重试已结束（进程重启后恢复）"
+        done_state["updated_at"] = _iso_utc_now()
+        try:
+            self.repository.merge_task_settings(task_id, workspace_id, _auto_repull=done_state)
+        except Exception:
+            pass
+
     def _task_response(self, task: dict[str, Any], message: str = "") -> dict[str, Any]:
+        self._normalize_stale_auto_repull(task)
         items = task["items"]
         attention = sum(item["status"] == "attention_required" for item in items)
         failed = sum(item["status"] == "failed" for item in items)
