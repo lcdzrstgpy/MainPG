@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ClipboardEvent as ReactClipboardEvent } from "react";
 
 import { listProductSources, loadProductImage, updateProductSourceGroup } from "../api/profitActivityApi";
 import type { ProfitActivityProduct, ProductSourceLink, ProductSources } from "../types/products";
@@ -255,7 +256,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     }
   };
 
-  // 非核价产品：进入“修改货源链接”编辑态，载入全部货源组
+  // 进入“修改货源链接”编辑态，载入全部货源组
   const startEditSources = () => {
     const groups = (productData ?? product).source_groups ?? [];
     const rows: EditSourceRow[] = groups.length
@@ -308,6 +309,13 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
       if (row.imagePreview) URL.revokeObjectURL(row.imagePreview);
       return { ...row, image: file, imagePreview: URL.createObjectURL(file) };
     }));
+  };
+
+  const onEditRowImagePaste = (key: number, event: ReactClipboardEvent<HTMLDivElement>) => {
+    const file = [...event.clipboardData.files].find((item) => item.type.startsWith("image/"));
+    if (!file) return;
+    event.preventDefault();
+    onEditRowImageSelected(key, file);
   };
 
   const saveEditSources = async () => {
@@ -387,7 +395,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
             </p>
           </div>
           <div className="profit-source-drawer-head-actions">
-            {!isPriceVerification && !editingSources ? (
+            {!editingSources ? (
               <button className="profit-source-edit-button" onClick={startEditSources}>
                 修改货源
               </button>
@@ -400,17 +408,13 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
           {loading ? <p className="profit-source-drawer-status">加载货源明细中…</p> : null}
           {!loading && error ? <p className="profit-source-drawer-status is-error">{error}</p> : null}
           {!loading && !error && !editingSources && (sources?.links.length ?? 0) === 0 ? (
-            isPriceVerification ? (
-              <p className="profit-source-drawer-status">该 SKC 暂无已关联的 1688 货源。</p>
-            ) : (
-              <div className="profit-source-drawer-empty">
-                <p className="profit-source-drawer-status">该 SKC 暂无货源链接，点击下方按钮新增。</p>
-                <button className="profit-source-add-row" onClick={startEditSources}>新增货源链接</button>
-              </div>
-            )
+            <div className="profit-source-drawer-empty">
+              <p className="profit-source-drawer-status">该 SKC 暂无货源链接，点击下方按钮新增。</p>
+              <button className="profit-source-add-row" onClick={startEditSources}>新增货源链接</button>
+            </div>
           ) : null}
 
-          {!isPriceVerification && editingSources ? null : (sources?.links ?? []).map((link) => {
+          {editingSources ? null : (sources?.links ?? []).map((link) => {
             const profit = profits[link.id] ?? null;
             const priceText = prices[link.id] !== undefined ? prices[link.id] : String(link.price_cny ?? "");
             const weightText = weights[link.id] ?? "0.5";
@@ -496,7 +500,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
               </div>
             );
           })}
-          {!isPriceVerification && editingSources ? (
+          {editingSources ? (
             <div className="profit-source-edit-panel">
               <div className="profit-source-edit-rows">
                 {editRows.map((row, index) => {
@@ -504,7 +508,12 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                   return (
                     <div className="profit-source-edit-row" key={row.key}>
                       <div className="profit-source-edit-main">
-                        <div className="profit-source-edit-image">
+                        <div
+                          className="profit-source-edit-image"
+                          tabIndex={0}
+                          title="点击后可 Ctrl+V 粘贴图片"
+                          onPaste={(event) => onEditRowImagePaste(row.key, event)}
+                        >
                           {row.imagePreview ? (
                             <img className="profit-source-card-shot" src={row.imagePreview} alt="新货源截图" />
                           ) : (

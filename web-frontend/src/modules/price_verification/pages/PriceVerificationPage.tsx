@@ -175,6 +175,19 @@ export function PriceVerificationPage({ isActive = true }: { isActive?: boolean 
     } catch (error) { setNotice(`删除选中报价失败：${errorMessage(error)}`); }
   };
 
+  const copySelectedSkcIds = async (skcIds: string[]) => {
+    if (!skcIds.length) {
+      setNotice("请先勾选需要复制的 SKC。");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(skcIds.join("\n"));
+      setNotice(`已复制 ${skcIds.length} 个 SKC ID。`);
+    } catch (error) {
+      setNotice(`复制 SKC ID 失败：${errorMessage(error)}`);
+    }
+  };
+
   const startBatchSourcing = async () => {
     if (!currentBatchId || !sourcingState.unresolved_skc_ids.length) return;
     setBusyKey("source");
@@ -270,7 +283,7 @@ export function PriceVerificationPage({ isActive = true }: { isActive?: boolean 
     <div className="price-verification-content-grid"><div className="price-verification-main-column">
       {activeStage !== "prescreen" && <div className="price-verification-stage-tools"><button type="button" className="price-verification-back-button" onClick={() => openStage(activeStage === "batchReview" ? "prescreen" : "batchReview")}>← 返回上一步</button>{batchSummary ? <span>{batchSummary}</span> : null}</div>}
         {activeStage === "prescreen" && <PrescreenPanel isChecking={loading} totalItems={currentBatch?.quote_count ?? 0} totalSkc={currentBatch?.skc_count ?? 0} passedItems={batchItems.length} prescreen={prescreen} storeName={currentBatch?.store_name ?? ""} archiveProductIdType={currentBatch?.archive_product_id_type ?? "SKC"} onPrescreenChange={savePrescreen} onStoreNameChange={saveCaptureBatchStoreName} onArchiveProductIdTypeChange={saveCaptureBatchArchiveProductIdType} onRefresh={() => void refresh()} onContinue={() => openStage("batchReview")} />}
-      {activeStage === "batchReview" && <BatchReviewPanel batchId={currentBatchId} items={batchItems} busy={Boolean(busyKey) || loading} onConfirm={(batchId, skcIds, maxCandidates) => stageBatchAndStartSourcing(batchId, skcIds, maxCandidates)} onDelete={(batchId, skcId) => deleteBatchItem(batchId, skcId)} onDeleteSelected={(batchId, skcIds) => deleteBatchItems(batchId, skcIds)} />}
+      {activeStage === "batchReview" && <BatchReviewPanel batchId={currentBatchId} items={batchItems} busy={Boolean(busyKey) || loading} onConfirm={(batchId, skcIds, maxCandidates) => stageBatchAndStartSourcing(batchId, skcIds, maxCandidates)} onDelete={(batchId, skcId) => deleteBatchItem(batchId, skcId)} onDeleteSelected={(batchId, skcIds) => deleteBatchItems(batchId, skcIds)} onCopySelectedSkcIds={copySelectedSkcIds} />}
       {activeStage === "sourcing" && <><SourcingPanel isActive={isActive} preview={sourcingState.preview} batchId={currentBatchId} busy={Boolean(busyKey) || loading} sourceCount={sourceCount} links={sourceLinks} selectedCandidates={sourcingState.selected_candidates} onLink={(skcId, _offerId, candidate, priceOverride, weightOverride) => selectSourceCandidate(skcId, candidate, priceOverride, weightOverride)} onManualLookup={addManualSourceCandidate} onUnlink={(linkId) => removeSourceLink(linkId)} onUnselectCandidate={(skcId, offerId) => unselectSourceCandidate(skcId, offerId)} onComplete={() => void completeSourcing()} onStart={() => void startBatchSourcing()} onError={setNotice} matchingCompleted={sourceCount === 0 && sourcingState.preview === null} /><LinkedSourcePanel products={sourcedProducts} /></>}
     </div></div>
   </div>;
