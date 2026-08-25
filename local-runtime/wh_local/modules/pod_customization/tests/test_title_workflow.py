@@ -24,7 +24,7 @@ from wh_local.modules.pod_customization.contracts import (
     NormalizedRect,
 )
 from wh_local.modules.pod_customization.billing_contract import PodCallOutcome, PodExecutionGrant
-from wh_local.modules.pod_customization.images import PatternQualityGate, split_grid_2x2
+from wh_local.modules.pod_customization.images import split_grid_2x2
 from wh_local.modules.pod_customization.repository import PodRepositoryError
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.pod_customization.router import create_router
@@ -226,7 +226,6 @@ def _service(
         images,
         title_runtime=titles,
         billing_coordinator=billing or BillingCoordinator(),
-        quality_gate=PatternQualityGate(text_inspector=lambda _content: []),
         start_workers=True,
     )
 
@@ -256,11 +255,8 @@ def _batch_request(template_id: str, *, count: int = 1) -> BatchCreate:
         listing_fields=ListingFields(
             declared_price=18.5,
             suggested_price_usd=29.99,
-            length_cm=30,
-            width_cm=20,
-            height_cm=10,
-            weight_g=450,
             category_name="家居收纳 > 包袋",
+            skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
         ),
         creative_prompt="coastal botanical ink",
     )

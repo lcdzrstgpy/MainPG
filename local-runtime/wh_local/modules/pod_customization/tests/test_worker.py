@@ -21,7 +21,6 @@ from wh_local.modules.pod_customization.contracts import (
     NormalizedRect,
 )
 from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
-from wh_local.modules.pod_customization.images import PatternQualityGate
 from wh_local.modules.pod_customization.repository import PodRepositoryError
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia
@@ -219,16 +218,11 @@ class ExpiringCoordinator(BillingCoordinator):
 
 
 def _service(tmp_path: Path, runtime: FakePodRuntime, billing=None) -> PodCustomizationService:
-    def inspect_text(content: bytes) -> list[str]:
-        image = Image.open(io.BytesIO(content)).convert("RGB")
-        return ["SALE"] if image.getpixel((2, 2)) == (0, 0, 0) else []
-
     return PodCustomizationService(
         tmp_path / "workbench.sqlite3",
         tmp_path / "pod-assets",
         runtime,
         billing_coordinator=billing or BillingCoordinator(),
-        quality_gate=PatternQualityGate(text_inspector=inspect_text),
         start_workers=True,
     )
 
@@ -239,7 +233,6 @@ def test_worker_without_in_memory_grant_pauses_for_billing_auth(tmp_path: Path) 
         tmp_path / "workbench.sqlite3",
         tmp_path / "pod-assets",
         runtime,
-        quality_gate=PatternQualityGate(text_inspector=lambda _content: []),
         start_workers=True,
     )
     actor = _actor()
@@ -293,7 +286,6 @@ def test_pending_billing_run_survives_restart_and_resume_never_replays_provider(
         tmp_path / "pod-assets",
         replacement_runtime,
         billing_coordinator=coordinator,
-        quality_gate=PatternQualityGate(text_inspector=lambda _content: []),
         start_workers=True,
     )
     result = recovered.resume_billing_run(actor, run_id)
@@ -753,11 +745,8 @@ def _batch_request_for_test(template_id: str) -> BatchCreate:
         listing_fields=ListingFields(
             declared_price=18.5,
             suggested_price_usd=29.99,
-            length_cm=30,
-            width_cm=20,
-            height_cm=10,
-            weight_g=450,
             category_name="家居收纳 > 包袋",
+            skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
         ),
     )
 
@@ -794,11 +783,8 @@ def _create_batch(
             listing_fields=ListingFields(
                 declared_price=18.5,
                 suggested_price_usd=29.99,
-                length_cm=30,
-                width_cm=20,
-                height_cm=10,
-                weight_g=450,
                 category_name="家居收纳 > 包袋",
+                skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
             ),
             creative_prompt="bold but uncluttered",
         ),
@@ -868,7 +854,7 @@ def test_style_grid_retries_one_generation_failure_only_once(tmp_path: Path) -> 
     runtime.close()
 
 
-def test_style_grid_retries_a_duplicate_detail_panel_with_a_new_design(tmp_path: Path) -> None:
+def test_style_grid_accepts_similar_detail_panels_without_retry(tmp_path: Path) -> None:
     shared_detail = _pattern(70)
     near_duplicate_detail = shared_detail.copy()
     near_duplicate_detail.putpixel((95, 95), (1, 2, 3))
@@ -884,8 +870,8 @@ def test_style_grid_retries_a_duplicate_detail_panel_with_a_new_design(tmp_path:
     service.worker.process_batch(batch["id"])
     stored = service.get_batch(actor, batch["id"])
 
-    assert len(runtime.requests) == 3
-    assert sorted(request.attempt for request in runtime.requests) == [1, 1, 2]
+    assert len(runtime.requests) == 2
+    assert sorted(request.attempt for request in runtime.requests) == [1, 1]
     assert stored["status"] == "completed"
     fingerprints = [
         item["pattern_fingerprint"]
@@ -897,14 +883,10 @@ def test_style_grid_retries_a_duplicate_detail_panel_with_a_new_design(tmp_path:
     runtime.close()
 
 
-@pytest.mark.parametrize("bad_panel_index", range(4))
-def test_style_grid_quality_gate_checks_every_panel(
-    tmp_path: Path, bad_panel_index: int
-) -> None:
+def test_style_grid_accepts_text_like_panel_without_retry(tmp_path: Path) -> None:
     first_panels = [_pattern(index + 1) for index in range(4)]
-    first_panels[bad_panel_index] = _pattern(90 + bad_panel_index, text_error=True)
-    retry_panels = [_pattern(120 + index) for index in range(4)]
-    runtime = ListingOnlyRuntime([_grid(first_panels), _grid(retry_panels)])
+    first_panels[0] = _pattern(90, text_error=True)
+    runtime = ListingOnlyRuntime([_grid(first_panels)])
     service = _service(tmp_path, runtime)
     actor = _actor()
     template = _ready_template(service, actor)
@@ -913,15 +895,15 @@ def test_style_grid_quality_gate_checks_every_panel(
     service.worker.process_batch(batch["id"])
     stored = service.get_batch(actor, batch["id"])
 
-    assert len(runtime.requests) == 2
-    assert [request.attempt for request in runtime.requests] == [1, 2]
+    assert len(runtime.requests) == 1
+    assert [request.attempt for request in runtime.requests] == [1]
     assert stored["status"] == "completed"
     assert all(item["status"] == "completed" for item in stored["items"])
     service.close()
     runtime.close()
 
 
-def test_style_grid_rejects_duplicate_panels_within_the_same_grid(tmp_path: Path) -> None:
+def test_style_grid_accepts_duplicate_panels_without_retry(tmp_path: Path) -> None:
     duplicate = _pattern(201)
     runtime = ListingOnlyRuntime([
         _grid([duplicate, duplicate, duplicate, duplicate]),
@@ -935,14 +917,14 @@ def test_style_grid_rejects_duplicate_panels_within_the_same_grid(tmp_path: Path
     service.worker.process_batch(batch["id"])
     stored = service.get_batch(actor, batch["id"])
 
-    assert len(runtime.requests) == 2
+    assert len(runtime.requests) == 1
     assert stored["status"] == "completed"
     fingerprints = [
         item["pattern_fingerprint"]
         for item in service.repository.get_batch_internal(batch["id"])["items"]
     ]
     assert len(fingerprints) == 4
-    assert len(set(fingerprints)) == 4
+    assert len(set(fingerprints)) == 1
     service.close()
     runtime.close()
 

@@ -55,17 +55,16 @@ test("business list fields are normalized at the API boundary", () => {
   assert.deepEqual(payload.style_keywords, ["复古", "粗线条"]);
 });
 
-test("listing fields accept a Chinese Dianxiaomi category without code prefixes", () => {
+test("listing fields normalize every SKU together with its own dimensions and weight", () => {
   const result = listingFieldsForApi({
     title_mode: "long",
     declared_price: "18.5",
     suggested_price_usd: "29.99",
-    length_cm: "30",
-    width_cm: "20",
-    height_cm: "10",
-    weight_g: "450",
     category_name: " 家居收纳 > 洗衣篮 ",
-    sku_names: ["  米白 ", "", "深蓝  "],
+    skus: [
+      { name: "  米白 ", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" },
+      { name: "深蓝  ", length_cm: "31", width_cm: "21", height_cm: "11", weight_g: "470" },
+    ],
   });
 
   assert.deepEqual(result, {
@@ -73,14 +72,66 @@ test("listing fields accept a Chinese Dianxiaomi category without code prefixes"
       title_mode: "long",
       declared_price: 18.5,
       suggested_price_usd: 29.99,
-      length_cm: 30,
-      width_cm: 20,
-      height_cm: 10,
-      weight_g: 450,
       category_name: "家居收纳 > 洗衣篮",
-      sku_names: ["米白", "深蓝"],
+      skus: [
+        { name: "米白", length_cm: 30, width_cm: 20, height_cm: 10, weight_g: 450 },
+        { name: "深蓝", length_cm: 31, width_cm: 21, height_cm: 11, weight_g: 470 },
+      ],
     },
   });
+});
+
+test("listing fields require at least one complete SKU", () => {
+  const base = {
+    title_mode: "long" as const,
+    declared_price: "18.5",
+    suggested_price_usd: "29.99",
+    category_name: "家居收纳",
+  };
+
+  assert.deepEqual(listingFieldsForApi({ ...base, skus: [] }), { error: "请至少填写一个 SKU。" });
+  assert.deepEqual(listingFieldsForApi({
+    ...base,
+    skus: [{ name: " ", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" }],
+  }), { error: "SKU 名称不能为空。" });
+  assert.deepEqual(listingFieldsForApi({
+    ...base,
+    skus: [{ name: "默认款", length_cm: "0", width_cm: "20", height_cm: "10", weight_g: "450" }],
+  }), { error: "SKU「默认款」的长度必须是大于 0 的有效数字。" });
+  assert.deepEqual(listingFieldsForApi({
+    ...base,
+    skus: [{ name: "默认款", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "0" }],
+  }), { error: "SKU「默认款」的重量必须是大于 0 的有效数字。" });
+});
+
+test("listing fields reject more than 100 SKUs", () => {
+  const result = listingFieldsForApi({
+    title_mode: "long",
+    declared_price: "18.5",
+    suggested_price_usd: "29.99",
+    category_name: "家居收纳",
+    skus: Array.from({ length: 101 }, (_, index) => ({
+      name: `SKU ${index + 1}`,
+      length_cm: "30",
+      width_cm: "20",
+      height_cm: "10",
+      weight_g: "450",
+    })),
+  });
+
+  assert.deepEqual(result, { error: "SKU 最多可添加 100 个。" });
+});
+
+test("listing fields reject SKU names longer than 120 characters", () => {
+  const result = listingFieldsForApi({
+    title_mode: "long",
+    declared_price: "18.5",
+    suggested_price_usd: "29.99",
+    category_name: "家居收纳",
+    skus: [{ name: "款".repeat(121), length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" }],
+  });
+
+  assert.deepEqual(result, { error: "SKU 名称不能超过 120 个字符。" });
 });
 
 test("successful POD results do not expose retry actions", () => {

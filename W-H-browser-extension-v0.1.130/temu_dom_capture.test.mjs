@@ -262,6 +262,10 @@ test("extension injects the semantic helper before product extraction and keeps 
   assert.match(background, /mergeComboEvidence\(groupCombos, jsonVariantData\.combos\)/);
   assert.match(background, /combo\.price\s*\|\|\s*capturedPrice/);
   assert.match(background, /const productImageLimit = platform === "temu" \? 24 : 6/);
+  assert.match(background, /const hasTemuSemanticGallery = \/\(\^\|\\\.\)temu\\\.com\$\/i\.test\(host\) && temuSemanticCapture\.gallery_images\.length > 0/);
+  assert.match(background, /if \(!hasTemuSemanticGallery\)\s*\{[\s\S]*document\.querySelectorAll\("img"\)\.forEach[\s\S]*document\.querySelectorAll\("\[style\*='background-image'\]"\)/);
+  assert.match(background, /const productImageUrls = platform === "temu" && temuSemanticCapture\.gallery_images\.length\s*\?\s*semanticGalleryImageUrls/);
+  assert.match(background, /const semanticGalleryImageUrls = temuSemanticCapture\.gallery_images[\s\S]*normalizeImageUrl\(item\?\.url\)/);
 });
 
 test("extension upgrades repair stale controls on open Temu pages and returns capture exceptions", async () => {

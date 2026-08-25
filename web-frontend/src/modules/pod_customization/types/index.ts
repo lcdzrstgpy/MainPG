@@ -55,28 +55,36 @@ export type PodBusinessFields = Omit<PodBusinessFieldsDraft,
 
 export type PodTitleMode = "long" | "short";
 
-export type PodListingFieldsDraft = {
-  title_mode: PodTitleMode;
-  declared_price: string;
-  suggested_price_usd: string;
+export type PodSkuDraft = {
+  name: string;
   length_cm: string;
   width_cm: string;
   height_cm: string;
   weight_g: string;
+};
+
+export type PodSku = {
+  name: string;
+  length_cm: number;
+  width_cm: number;
+  height_cm: number;
+  weight_g: number;
+};
+
+export type PodListingFieldsDraft = {
+  title_mode: PodTitleMode;
+  declared_price: string;
+  suggested_price_usd: string;
   category_name: string;
-  sku_names: string[];
+  skus: PodSkuDraft[];
 };
 
 export type PodListingFields = {
   title_mode: PodTitleMode;
   declared_price: number;
   suggested_price_usd: number;
-  length_cm: number;
-  width_cm: number;
-  height_cm: number;
-  weight_g: number;
   category_name: string;
-  sku_names: string[];
+  skus: PodSku[];
 };
 
 export type PodDianxiaomiExportStatus = {

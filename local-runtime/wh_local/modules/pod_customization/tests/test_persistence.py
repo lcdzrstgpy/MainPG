@@ -47,11 +47,8 @@ def _listing_fields() -> ListingFields:
     return ListingFields(
         declared_price=18.5,
         suggested_price_usd=29.99,
-        length_cm=30,
-        width_cm=20,
-        height_cm=10,
-        weight_g=450,
         category_name="家居收纳 > 杯具",
+        skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
     )
 
 

@@ -25,8 +25,6 @@ from .export import (
 )
 from .export_records import PodExportRecordStore
 from .errors import image_provider_outcome_for_exception, safe_error_message
-from .images import PatternQualityGate
-from .ocr import PodTextInspector
 from .repository import PodCustomizationRepository, PodRepositoryError
 from .prompts import LISTING_IMAGE_ROLES, build_direct_listing_prompt
 from .runtime_contracts import (
@@ -46,7 +44,6 @@ class PodCustomizationService:
         ai_runtime: PodAiRuntime,
         *,
         title_runtime: Any | None = None,
-        quality_gate: PatternQualityGate | None = None,
         billing_coordinator: PodBillingCoordinator | None = None,
         start_workers: bool = True,
     ) -> None:
@@ -57,7 +54,6 @@ class PodCustomizationService:
         self.billing_coordinator = billing_coordinator
         self.repository = PodCustomizationRepository(self.database_path)
         self.export_records = PodExportRecordStore(self.database_path)
-        self.quality_gate = quality_gate or PatternQualityGate(text_inspector=PodTextInspector())
         if start_workers:
             self.repository.recover_interrupted_batches()
             self.repository.recover_billing_runs()
@@ -66,7 +62,6 @@ class PodCustomizationService:
                 self.repository,
                 self.assets,
                 ai_runtime,
-                self.quality_gate,
                 title_runtime=title_runtime,
                 coordinator_workers=getattr(ai_runtime, "batch_workers", 1),
             )
@@ -258,16 +253,6 @@ class PodCustomizationService:
                 panels = self.ai_runtime.split_listing_grid(grid)
                 if len(panels) != 4:
                     raise RuntimeError("generated four-grid image did not yield exactly four panels")
-                panel_fingerprints: list[str] = []
-                for panel_index, panel in enumerate(panels, start=1):
-                    assessment = self.quality_gate.assess(
-                        panel.content,
-                        accepted_fingerprints=panel_fingerprints,
-                    )
-                    if not assessment.accepted:
-                        reason = assessment.rejection_reason or "invalid"
-                        raise RuntimeError(f"style_panel_{panel_index}_{reason}")
-                    panel_fingerprints.append(assessment.fingerprint)
             except Exception as exc:
                 split_error = safe_error_message(exc)
                 if attempt == 1:

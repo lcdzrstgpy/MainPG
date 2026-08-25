@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from PIL import Image
+from pydantic import ValidationError
 
 from wh_local.modules.pod_customization.contracts import (
     BatchCreate,
@@ -64,18 +65,172 @@ def _service(tmp_path: Path) -> PodCustomizationService:
     )
 
 
-def _listing(*, title_mode: str = "long", sku_names: list[str] | None = None) -> ListingFields:
+def _listing(
+    *, title_mode: str = "long", skus: list[dict[str, object]] | None = None
+) -> ListingFields:
     return ListingFields(
         declared_price=18.5,
         suggested_price_usd=29.99,
-        length_cm=30,
-        width_cm=20,
-        height_cm=10,
-        weight_g=450,
         category_name="家居收纳 > 包袋",
         title_mode=title_mode,
-        sku_names=sku_names or [],
+        skus=skus
+        or [
+            {
+                "name": "Default SKU",
+                "length_cm": 30,
+                "width_cm": 20,
+                "height_cm": 10,
+                "weight_g": 450,
+            }
+        ],
     )
+
+
+def test_listing_fields_requires_sku_specific_positive_dimensions_and_weight() -> None:
+    fields = ListingFields(
+        declared_price=18.5,
+        suggested_price_usd=29.99,
+        category_name="家居收纳 > 包袋",
+        skus=[
+            {
+                "name": "CT-BLACK",
+                "length_cm": 30,
+                "width_cm": 20,
+                "height_cm": 10,
+                "weight_g": 450,
+            }
+        ],
+    )
+
+    assert fields.model_dump()["skus"] == [
+        {
+            "name": "CT-BLACK",
+            "length_cm": 30.0,
+            "width_cm": 20.0,
+            "height_cm": 10.0,
+            "weight_g": 450.0,
+        }
+    ]
+    assert "weight_g" not in fields.model_dump()
+    with pytest.raises(ValidationError):
+        ListingFields(
+            declared_price=18.5,
+            suggested_price_usd=29.99,
+            category_name="家居收纳 > 包袋",
+            skus=[],
+        )
+    with pytest.raises(ValidationError):
+        ListingFields(
+            declared_price=18.5,
+            suggested_price_usd=29.99,
+            category_name="家居收纳 > 包袋",
+            skus=[
+                {
+                    "name": " ",
+                    "length_cm": 30,
+                    "width_cm": 20,
+                    "height_cm": 10,
+                    "weight_g": 0,
+                }
+            ],
+        )
+
+
+def test_export_expands_new_skus_with_their_own_dimensions_and_last_scene_preview() -> None:
+    image_urls = {
+        "hero": "https://images.example.com/pod/1/hero.png",
+        "detail_a": "https://images.example.com/pod/1/detail-a.png",
+        "detail_b": "https://images.example.com/pod/1/detail-b.png",
+        "lifestyle": "https://images.example.com/pod/1/final-scene.png",
+    }
+    batch = {
+        "batch_id": "new-sku-batch",
+        "requested_count": 1,
+        "status": "completed",
+        "business_fields": {"product_category": "Home > Bags"},
+        "listing_fields": {
+            "declared_price": 18.5,
+            "suggested_price_usd": 29.99,
+            "category_name": "家居收纳 > 包袋",
+            "skus": [
+                {
+                    "name": "CT-BLACK",
+                    "length_cm": 30,
+                    "width_cm": 20,
+                    "height_cm": 10,
+                    "weight_g": 450,
+                },
+                {
+                    "name": "CT-SAND",
+                    "length_cm": 40,
+                    "width_cm": 25,
+                    "height_cm": 15,
+                    "weight_g": 650,
+                },
+            ],
+        },
+        "items": [
+            {"style_index": 1, "role": role, "status": "completed", "public_url": url}
+            for role, url in image_urls.items()
+        ],
+    }
+
+    exported = build_pod_dianxiaomi_export(
+        batch,
+        {1: {"title": "Coastal Tote", "english_title": "Coastal Tote", "description": "Description"}},
+    )
+    workbook = load_workbook(io.BytesIO(exported.content), data_only=True)
+    try:
+        rows = list(workbook.active.iter_rows(min_row=2, values_only=True))
+    finally:
+        workbook.close()
+
+    assert [row[3] for row in rows] == ["CT-BLACK", "CT-SAND"]
+    assert [row[11:14] for row in rows] == [(30, 20, 10), (40, 25, 15)]
+    assert [row[14] for row in rows] == [450, 650]
+    assert [row[8] for row in rows] == [image_urls["lifestyle"], image_urls["lifestyle"]]
+
+
+def test_export_legacy_snapshot_without_skus_uses_global_dimensions_and_sku_names() -> None:
+    image_urls = {
+        "hero": "https://images.example.com/pod/1/hero.png",
+        "detail_a": "https://images.example.com/pod/1/detail-a.png",
+        "detail_b": "https://images.example.com/pod/1/detail-b.png",
+        "lifestyle": "https://images.example.com/pod/1/final-scene.png",
+    }
+    batch = {
+        "batch_id": "legacy-sku-batch",
+        "requested_count": 1,
+        "status": "completed",
+        "business_fields": {"product_category": "Home > Bags"},
+        "listing_fields": {
+            "declared_price": 18.5,
+            "suggested_price_usd": 29.99,
+            "length_cm": 30,
+            "width_cm": 20,
+            "height_cm": 10,
+            "weight_g": 450,
+            "category_name": "家居收纳 > 包袋",
+            "sku_names": ["CT-BLACK", "CT-SAND"],
+        },
+        "items": [
+            {"style_index": 1, "role": role, "status": "completed", "public_url": url}
+            for role, url in image_urls.items()
+        ],
+    }
+
+    exported = build_pod_dianxiaomi_export(
+        batch,
+        {1: {"title": "Coastal Tote", "english_title": "Coastal Tote", "description": "Description"}},
+    )
+    workbook = load_workbook(io.BytesIO(exported.content), data_only=True)
+    try:
+        rows = list(workbook.active.iter_rows(min_row=2, values_only=True))
+    finally:
+        workbook.close()
+
+    assert [row[3] for row in rows] == ["CT-BLACK", "CT-SAND"]
+    assert [row[11:14] for row in rows] == [(30, 20, 10), (30, 20, 10)]
 
 
 def _batch(
@@ -84,7 +239,7 @@ def _batch(
     *,
     count: int = 2,
     title_mode: str = "long",
-    sku_names: list[str] | None = None,
+    skus: list[dict[str, object]] | None = None,
 ) -> dict:
     template = service.upload_template(actor, name="Scene", filename="scene.png", content=_png())
     service.update_template_calibration(
@@ -101,7 +256,7 @@ def _batch(
             template_id=template["id"],
             count=count,
             business_fields=BusinessFields(product_name="Canvas tote", product_category="Home > Bags"),
-            listing_fields=_listing(title_mode=title_mode, sku_names=sku_names),
+            listing_fields=_listing(title_mode=title_mode, skus=skus),
         ),
         enqueue=False,
     )
@@ -181,7 +336,7 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
     assert row[:6] == [
         "Coastal Tote", "Coastal Tote",
         'Carry calm everywhere.\n<img src="https://images.example.com/pod/1/hero.png" />\n<img src="https://images.example.com/pod/1/detail_a.png" />\n<img src="https://images.example.com/pod/1/detail_b.png" />\n<img src="https://images.example.com/pod/1/lifestyle.png" />',
-        None, "Style", "Style 001",
+        "Default SKU", "Style", "Style 001",
     ]
     assert row[6:9] == [None, None, "https://images.example.com/pod/1/lifestyle.png"]
     assert row[9:15] == [18.5, None, 30, 20, 10, 450]
@@ -200,12 +355,20 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
     assert row[33:] == [None] * 9
 
 
-def test_service_export_repeats_each_style_for_saved_sku_names_and_uses_last_scene_as_preview(
+def test_service_export_repeats_each_style_for_saved_skus_and_uses_last_scene_as_preview(
     tmp_path: Path,
 ) -> None:
     service = _service(tmp_path)
     actor = _actor()
-    batch = _batch(service, actor, count=1, sku_names=["CT-BLACK", "CT-SAND"])
+    batch = _batch(
+        service,
+        actor,
+        count=1,
+        skus=[
+            {"name": "CT-BLACK", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450},
+            {"name": "CT-SAND", "length_cm": 40, "width_cm": 25, "height_cm": 15, "weight_g": 650},
+        ],
+    )
     _complete_style(
         service,
         batch["id"],
@@ -230,8 +393,13 @@ def test_service_export_repeats_each_style_for_saved_sku_names_and_uses_last_sce
         workbook.close()
 
     assert exported.exported_style_count == 1
-    assert service.get_batch(actor, batch["id"])["listing_fields"]["sku_names"] == ["CT-BLACK", "CT-SAND"]
+    assert service.get_batch(actor, batch["id"])["listing_fields"]["skus"] == [
+        {"name": "CT-BLACK", "length_cm": 30.0, "width_cm": 20.0, "height_cm": 10.0, "weight_g": 450.0},
+        {"name": "CT-SAND", "length_cm": 40.0, "width_cm": 25.0, "height_cm": 15.0, "weight_g": 650.0},
+    ]
     assert [row[3] for row in rows] == ["CT-BLACK", "CT-SAND"]
+    assert [row[11:14] for row in rows] == [(30, 20, 10), (40, 25, 15)]
+    assert [row[14] for row in rows] == [450, 650]
     assert [row[8] for row in rows] == [
         "https://images.example.com/pod/1/final-scene.png",
         "https://images.example.com/pod/1/final-scene.png",
