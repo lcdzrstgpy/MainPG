@@ -393,7 +393,16 @@ class ProductImageProcessor:
                 raise MediaProcessingError("a confirmed source image URL is required for image processing")
             references = url_references
         else:
-            references = self._load_references(reference_values, limit=reference_limit)
+            # 直连提供方只能接收可公网访问的参考图 URL（它需要自己下载图片），
+            # 本地缓存文件路径无法传递给提供方。采集链路保存的本地文件不带 URL，
+            # 若直接取本地路径会导致提交给提供方的 urls=[]，图生图任务静默失败
+            # （提供方返回 status=3 且无图无原因）。因此直连模式把远端 URL 排到
+            # 前面，保证 _load_references 取到的前 N 个参考都带 URL（元组第 4 项）。
+            direct_values = [
+                *[value for value in reference_values if _plausible_public_http_url(value)],
+                *[value for value in reference_values if not _plausible_public_http_url(value)],
+            ]
+            references = self._load_references(direct_values, limit=reference_limit)
             if not references:
                 raise MediaProcessingError("a confirmed source image is required for image processing")
         ordinary_reference_count = len(references)

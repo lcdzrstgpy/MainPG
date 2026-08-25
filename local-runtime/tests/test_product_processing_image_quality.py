@@ -148,6 +148,89 @@ def test_wuyin_result_download_never_downgrades_https_to_http(monkeypatch) -> No
     assert download_urls == ["https://scapi.net/result.png"]
 
 
+def test_direct_mode_prefers_remote_reference_urls_over_local_cache_paths(tmp_path, monkeypatch) -> None:
+    """直连提供方必须收到公网参考图 URL，本地缓存路径不能顶替 URL。
+
+    回归保护：b7fa457 引入的本地缓存替换会让参考值变成 [本地路径, 远端 URL]，
+    直连分支若只取到本地路径，提交给提供方的 urls=[]，图生图任务会以
+    status=3 静默失败（无图无原因）。直连模式必须把远端 URL 排在前面。
+    """
+    local_file = tmp_path / "local-cache-source.jpg"
+    local_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-bytes")
+    remote_url = "https://img.kwcdn.com/product/open/source-goods.jpeg"
+
+    captured: dict[str, object] = {}
+
+    def fake_load(values, *, limit):
+        captured["values"] = list(values)
+        captured["limit"] = limit
+        return [(b"reference", "source.png", "image/jpeg", remote_url)]
+
+    def fake_request_edit(*_args, **_kwargs):
+        return b"generated-image", "image/png"
+
+    processor = ProductImageProcessor(lambda: {})
+    monkeypatch.setattr(processor, "_load_references", fake_load)
+    monkeypatch.setattr(processor, "_request_edit", fake_request_edit)
+
+    output = processor._generate_with_limits(
+        stage="grid_image",
+        prompt="prompt",
+        reference_values=[str(local_file), remote_url],
+        providers=[
+            {
+                "base_url": "https://api.wuyinkeji.com",
+                "api_key": "secret",
+                "name": "image_gpt",
+                "model": "image_gpt",
+                "reference_model": "",
+            }
+        ],
+        config={},
+    )
+
+    # 直连模式：远端 URL 必须排在本地路径前面，提供方才能拿到可下载的参考图。
+    assert captured["limit"] == 1
+    assert captured["values"][0] == remote_url
+    assert output.provider == "image_gpt"
+
+
+def test_direct_mode_falls_back_to_local_paths_when_no_remote_url(tmp_path, monkeypatch) -> None:
+    """全部参考都是本地路径（无远端 URL）时仍按原逻辑加载本地文件，不报错。"""
+    local_file = tmp_path / "local-only.jpg"
+    local_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-bytes")
+
+    captured: dict[str, object] = {}
+
+    def fake_load(values, *, limit):
+        captured["values"] = list(values)
+        return [(b"reference", "source.png", "image/jpeg")]
+
+    def fake_request_edit(*_args, **_kwargs):
+        return b"generated-image", "image/png"
+
+    processor = ProductImageProcessor(lambda: {})
+    monkeypatch.setattr(processor, "_load_references", fake_load)
+    monkeypatch.setattr(processor, "_request_edit", fake_request_edit)
+
+    processor._generate_with_limits(
+        stage="grid_image",
+        prompt="prompt",
+        reference_values=[str(local_file)],
+        providers=[
+            {
+                "base_url": "https://api.wuyinkeji.com",
+                "api_key": "secret",
+                "name": "image_gpt",
+                "model": "image_gpt",
+                "reference_model": "",
+            }
+        ],
+        config={},
+    )
+    assert captured["values"] == [str(local_file)]
+
+
 def test_four_grid_prompt_forbids_all_typography_and_requires_validated_dividers() -> None:
     assert "zero AI-added visible text" in GRID_IMAGE_PROMPT
     assert "No AI-generated copy" in GRID_IMAGE_PROMPT
