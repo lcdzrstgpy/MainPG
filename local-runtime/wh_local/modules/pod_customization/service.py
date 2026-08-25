@@ -36,11 +36,6 @@ from .title_runtime import PodTitleRequest, visual_signature
 from .worker import PodBatchWorker, PodBillingRun
 
 
-# 每条链接（款式）的手动重试免费额度：整款重生成与标题重生成共享。
-# 超过该次数后必须用户确认「无论失败与成功均会扣费」才允许继续重试。
-POD_FREE_RETRY_LIMIT = 2
-
-
 class PodCustomizationService:
     def __init__(
         self,
@@ -462,14 +457,11 @@ class PodCustomizationService:
         *,
         creative_prompt: str = "",
         enqueue: bool = True,
-        ack_paid_retry: bool = False,
     ) -> dict[str, Any]:
-        paid_retry = self._preflight_style_retry(
-            actor, batch_id, style_index, ack_paid_retry=ack_paid_retry
-        )
+        self._preflight_style_retry(actor, batch_id, style_index)
         action_id = f"{batch_id}:style:{style_index}:retry:{uuid.uuid4().hex}"
         billing_run = self._freeze_style_retry(
-            actor, action_id, batch_id, style_index, creative_prompt, paid_retry=paid_retry
+            actor, action_id, batch_id, style_index, creative_prompt
         )
         try:
             results = self.repository.claim_style_regeneration(
@@ -478,7 +470,6 @@ class PodCustomizationService:
         except Exception:
             self._settle_unclaimed_retry(billing_run)
             raise
-        self.repository.increment_style_retry(batch_id, style_index)
         if self.worker is not None:
             self.worker.register_action_billing_run(f"style:{batch_id}:{style_index}", billing_run)
         if enqueue:
@@ -500,12 +491,9 @@ class PodCustomizationService:
         style_index: int,
         *,
         enqueue: bool = True,
-        ack_paid_retry: bool = False,
     ) -> dict[str, Any]:
         self._require_title_runtime_configured(require_present=True)
-        paid_retry = self._preflight_title_retry(
-            actor, batch_id, style_index, ack_paid_retry=ack_paid_retry
-        )
+        self._preflight_title_retry(actor, batch_id, style_index)
         action_id = f"{batch_id}:style:{style_index}:title-retry:{uuid.uuid4().hex}"
         billing_run = self._freeze_retry(
             actor,
@@ -514,7 +502,6 @@ class PodCustomizationService:
             action_type="title_retry",
             target_id=str(style_index),
             batch_id=batch_id,
-            paid_retry=paid_retry,
         )
         try:
             title = self.repository.claim_title_regeneration(
@@ -523,7 +510,6 @@ class PodCustomizationService:
         except Exception:
             self._settle_unclaimed_retry(billing_run)
             raise
-        self.repository.increment_style_retry(batch_id, style_index)
         if self.worker is not None:
             self.worker.register_action_billing_run(f"title:{batch_id}:{style_index}", billing_run)
         if enqueue:
@@ -532,10 +518,7 @@ class PodCustomizationService:
             self.worker.submit_title_regeneration(batch_id, style_index, billing_run)
         return self._title_payload(title)
 
-    def _preflight_style_retry(
-        self, actor: Actor, batch_id: str, style_index: int, *, ack_paid_retry: bool
-    ) -> bool:
-        """Validate a whole-style retry; returns whether this retry is paid (over free quota)."""
+    def _preflight_style_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         if batch["status"] not in {"completed", "partial_failure", "failed"}:
             raise PodRepositoryError("POD batch must settle before regenerating one style", 409)
@@ -545,12 +528,8 @@ class PodCustomizationService:
         ]
         if len(results) != 4 or any(item.get("status") != "failed" for item in results):
             raise PodRepositoryError("only a failed POD style can be regenerated", 409)
-        return self._check_retry_quota(batch_id, style_index, ack_paid_retry)
 
-    def _preflight_title_retry(
-        self, actor: Actor, batch_id: str, style_index: int, *, ack_paid_retry: bool
-    ) -> bool:
-        """Validate a title retry; returns whether this retry is paid (over free quota)."""
+    def _preflight_title_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         if batch["status"] not in {"completed", "partial_failure", "failed"}:
             raise PodRepositoryError("POD batch must settle before regenerating its title", 409)
@@ -568,19 +547,6 @@ class PodCustomizationService:
             item.get("status") != "completed" or not item.get("public_url") for item in results
         ):
             raise PodRepositoryError("all four public POD images are required before regenerating a title", 409)
-        return self._check_retry_quota(batch_id, style_index, ack_paid_retry)
-
-    def _check_retry_quota(self, batch_id: str, style_index: int, ack_paid_retry: bool) -> bool:
-        """Free quota gate: over the limit requires an explicit paid-retry acknowledgement."""
-        retry_count = self.repository.style_retry_counts(batch_id).get(int(style_index), 0)
-        paid_retry = retry_count >= POD_FREE_RETRY_LIMIT
-        if paid_retry and not ack_paid_retry:
-            raise PodRepositoryError(
-                f"该链接免费重试额度（{POD_FREE_RETRY_LIMIT} 次）已用完，"
-                "继续重试无论失败与成功均会扣费，确认后方可继续",
-                409,
-            )
-        return paid_retry
 
     @staticmethod
     def _settle_unclaimed_retry(billing_run: PodBillingRun) -> None:
@@ -846,13 +812,10 @@ class PodCustomizationService:
         batch_id: str,
         style_index: int,
         creative_prompt: str,
-        paid_retry: bool = False,
     ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
-        plan = PodCallPlan.for_style_retry(
-            action_id, include_title=self.title_runtime is not None, paid_retry=paid_retry
-        )
+        plan = PodCallPlan.for_style_retry(action_id, include_title=self.title_runtime is not None)
         return self._freeze_action(
             actor,
             plan,
@@ -872,15 +835,13 @@ class PodCustomizationService:
         target_id: str,
         batch_id: str,
         action_payload: dict[str, Any] | None = None,
-        paid_retry: bool = False,
     ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
         plan = PodCallPlan.for_retry(
             action_id,
             feature=feature,  # type: ignore[arg-type]
-            max_attempts=5 if feature == "pod.title" else 1,
-            paid_retry=paid_retry,
+            max_attempts=3 if feature == "pod.title" else 1,
         )
         return self._freeze_action(
             actor,
@@ -944,7 +905,6 @@ class PodCustomizationService:
                 PodPlannedCall(str(call["call_id"]), str(call["feature"]))  # type: ignore[arg-type]
                 for call in payload["calls"]
             ),
-            paid_retry=bool(payload.get("paid_retry", False)),
         )
 
     @staticmethod
@@ -1092,11 +1052,6 @@ class PodCustomizationService:
             "title_failed_count": batch.get("title_failed_count", 0),
             "listing_ready_count": batch.get("listing_ready_count", 0),
             "style_grid": bool(batch.get("style_grid")),
-            "free_retry_limit": POD_FREE_RETRY_LIMIT,
-            "style_retries": [
-                {"style_index": int(row["style_index"]), "retry_count": int(row["retry_count"])}
-                for row in batch.get("style_retries", [])
-            ],
             "initial_call_count": batch["initial_call_count"],
             "refill_call_count": batch["refill_call_count"],
             "prompt_version": batch["prompt_version"],

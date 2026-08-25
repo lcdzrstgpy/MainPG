@@ -13016,35 +13016,38 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     addImage(srcsetLast(element.getAttribute("srcset")), score, source, element, nearbyText);
     addImage(bgUrl(element), score, source, element, nearbyText);
   };
-  [
-    ".detail-gallery-turn-wrapper img",
-    ".detail-gallery-img img",
-    ".offer-image img",
-    ".mod-detail-gallery img",
-    ".detail-gallery img",
-    "[class*='main'] img",
-    "[class*='preview'] img",
-    "[class*='gallery'] img",
-    "[class*='image-view'] img",
-    "[class*='imageView'] img",
-    "[class*='slider'] img",
-    "[class*='carousel'] img"
-  ].forEach((selector) => {
-    document.querySelectorAll(selector).forEach((img) => {
-      if (visible(img)) addImageElement(img, is1688 ? 34 : 24);
+  const hasTemuSemanticGallery = /(^|\.)temu\.com$/i.test(host) && temuSemanticCapture.gallery_images.length > 0;
+  if (!hasTemuSemanticGallery) {
+    [
+      ".detail-gallery-turn-wrapper img",
+      ".detail-gallery-img img",
+      ".offer-image img",
+      ".mod-detail-gallery img",
+      ".detail-gallery img",
+      "[class*='main'] img",
+      "[class*='preview'] img",
+      "[class*='gallery'] img",
+      "[class*='image-view'] img",
+      "[class*='imageView'] img",
+      "[class*='slider'] img",
+      "[class*='carousel'] img"
+    ].forEach((selector) => {
+      document.querySelectorAll(selector).forEach((img) => {
+        if (visible(img)) addImageElement(img, is1688 ? 34 : 24);
+      });
     });
-  });
-  addImage(attr("meta[property='og:image']", "content"), 12, "og:image");
-  addImage(attr("meta[property='og:image:secure_url']", "content"), 12, "og:image:secure_url");
-  addImage(attr("meta[name='twitter:image']", "content"), 8, "twitter:image");
-  document.querySelectorAll("img").forEach((img) => {
-    const rect = img.getBoundingClientRect();
-    const area = Math.max(rect.width || img.naturalWidth || 0, 0) * Math.max(rect.height || img.naturalHeight || 0, 0);
-    if (area >= 8000 || visible(img)) addImageElement(img, Math.min(12, 2 + area / 40000));
-  });
-  document.querySelectorAll("[style*='background-image']").forEach((element) => {
-    if (visible(element)) addImage(bgUrl(element), 4, "background-image", element);
-  });
+    addImage(attr("meta[property='og:image']", "content"), 12, "og:image");
+    addImage(attr("meta[property='og:image:secure_url']", "content"), 12, "og:image:secure_url");
+    addImage(attr("meta[name='twitter:image']", "content"), 8, "twitter:image");
+    document.querySelectorAll("img").forEach((img) => {
+      const rect = img.getBoundingClientRect();
+      const area = Math.max(rect.width || img.naturalWidth || 0, 0) * Math.max(rect.height || img.naturalHeight || 0, 0);
+      if (area >= 8000 || visible(img)) addImageElement(img, Math.min(12, 2 + area / 40000));
+    });
+    document.querySelectorAll("[style*='background-image']").forEach((element) => {
+      if (visible(element)) addImage(bgUrl(element), 4, "background-image", element);
+    });
+  }
   for (const item of temuSemanticCapture.gallery_images || []) {
     addImage(item?.url, 38, "temu-semantic-gallery", null, "TEMU product gallery");
   }
@@ -14618,11 +14621,18 @@ function extractProductFromCurrentPage(expectedProductId = "") {
   const title = titleCandidates[0]?.value || "";
   const image = imageCandidates[0] || {};
   const productImageLimit = platform === "temu" ? 24 : 6;
-  const productImageUrls = imageCandidates
-    .filter((item) => item && item.url && item.score >= 20 && item.media_type !== "video_cover" && !item.video_cover && imageUrlLooksUsableForProduct(item.url))
-    .map((item) => item.url)
+  const semanticGalleryImageUrls = temuSemanticCapture.gallery_images
+    .map((item) => normalizeImageUrl(item?.url))
+    .filter((url) => url && imageUrlLooksUsableForProduct(url))
     .filter((url, index, list) => list.indexOf(url) === index)
     .slice(0, productImageLimit);
+  const productImageUrls = platform === "temu" && temuSemanticCapture.gallery_images.length
+    ? semanticGalleryImageUrls
+    : imageCandidates
+      .filter((item) => item && item.url && item.score >= 20 && item.media_type !== "video_cover" && !item.video_cover && imageUrlLooksUsableForProduct(item.url))
+      .map((item) => item.url)
+      .filter((url, index, list) => list.indexOf(url) === index)
+      .slice(0, productImageLimit);
   const imageQualityFlags = imageQualityFlagsForCandidate(image, title);
   const productId = pageProductId;
 

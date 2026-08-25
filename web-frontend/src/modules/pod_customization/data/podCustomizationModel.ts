@@ -9,7 +9,6 @@ import type {
   PodListingFields,
   PodListingFieldsDraft,
   PodTemplateCalibration,
-  PodStyleTitle,
   PodStyleTitleStatus,
 } from "../types";
 
@@ -21,10 +20,11 @@ export type PodStyleRow = {
   title_error_message?: string;
   results: Array<PodBatchItem | undefined>;
   status: "queued" | "generating" | "completed" | "partial_failure" | "failed";
-  retry_count: number;
 };
 
 export const POD_BATCH_COUNTS = [2, 10, 20, 40, 60, 100] as const satisfies readonly PodBatchCount[];
+export const MAX_POD_SKU_COUNT = 100;
+export const MAX_POD_SKU_NAME_LENGTH = 120;
 
 export const EMPTY_POD_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   product_name: "",
@@ -42,12 +42,8 @@ export const EMPTY_POD_LISTING_FIELDS: PodListingFieldsDraft = {
   title_mode: "long",
   declared_price: "",
   suggested_price_usd: "",
-  length_cm: "",
-  width_cm: "",
-  height_cm: "",
-  weight_g: "",
   category_name: "",
-  sku_names: [],
+  skus: [{ name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
 };
 
 const ACTIVE_BATCH_STATUSES = new Set<PodBatchStatus>([
@@ -129,29 +125,34 @@ export function listingFieldsForApi(fields: PodListingFieldsDraft): PodListingFi
   if (typeof declaredPrice !== "number") return declaredPrice;
   const suggestedPriceUsd = positiveListingNumber(fields.suggested_price_usd, "建议美元售价");
   if (typeof suggestedPriceUsd !== "number") return suggestedPriceUsd;
-  const lengthCm = positiveListingNumber(fields.length_cm, "长度");
-  if (typeof lengthCm !== "number") return lengthCm;
-  const widthCm = positiveListingNumber(fields.width_cm, "宽度");
-  if (typeof widthCm !== "number") return widthCm;
-  const heightCm = positiveListingNumber(fields.height_cm, "高度");
-  if (typeof heightCm !== "number") return heightCm;
-  const weightG = positiveListingNumber(fields.weight_g, "重量");
-  if (typeof weightG !== "number") return weightG;
-
   const categoryName = fields.category_name.trim();
   if (!categoryName) return { error: "请填写店小秘类目。" };
+
+  if (!fields.skus.length) return { error: "请至少填写一个 SKU。" };
+  if (fields.skus.length > MAX_POD_SKU_COUNT) return { error: `SKU 最多可添加 ${MAX_POD_SKU_COUNT} 个。` };
+  const skus = [] as PodListingFields["skus"];
+  for (const sku of fields.skus) {
+    const name = sku.name.trim();
+    if (!name) return { error: "SKU 名称不能为空。" };
+    if (name.length > MAX_POD_SKU_NAME_LENGTH) return { error: `SKU 名称不能超过 ${MAX_POD_SKU_NAME_LENGTH} 个字符。` };
+    const lengthCm = positiveListingNumber(sku.length_cm, `SKU「${name}」的长度`);
+    if (typeof lengthCm !== "number") return lengthCm;
+    const widthCm = positiveListingNumber(sku.width_cm, `SKU「${name}」的宽度`);
+    if (typeof widthCm !== "number") return widthCm;
+    const heightCm = positiveListingNumber(sku.height_cm, `SKU「${name}」的高度`);
+    if (typeof heightCm !== "number") return heightCm;
+    const weightG = positiveListingNumber(sku.weight_g, `SKU「${name}」的重量`);
+    if (typeof weightG !== "number") return weightG;
+    skus.push({ name, length_cm: lengthCm, width_cm: widthCm, height_cm: heightCm, weight_g: weightG });
+  }
 
   return {
     value: {
       title_mode: fields.title_mode,
       declared_price: declaredPrice,
       suggested_price_usd: suggestedPriceUsd,
-      length_cm: lengthCm,
-      width_cm: widthCm,
-      height_cm: heightCm,
-      weight_g: weightG,
       category_name: categoryName,
-      sku_names: fields.sku_names.map((name) => name.trim()).filter(Boolean),
+      skus,
     },
   };
 }
@@ -161,12 +162,11 @@ export function isPodBatchCount(value: number): value is PodBatchCount {
 }
 
 export function groupPodStyleRows(
-  batch: Pick<PodBatch, "items" | "style_grid" | "business_fields" | "style_titles" | "style_retries">,
+  batch: Pick<PodBatch, "items" | "style_grid" | "business_fields" | "style_titles">,
 ): PodStyleRow[] {
   const productName = batch.business_fields?.product_name?.trim() || "未命名商品";
   const grouped = new Map<number, Array<PodBatchItem | undefined>>();
   const titlesByStyle = new Map((batch.style_titles ?? []).map((title) => [title.style_index, title]));
-  const retriesByStyle = new Map((batch.style_retries ?? []).map((retry) => [retry.style_index, retry.retry_count]));
   for (const styleIndex of titlesByStyle.keys()) grouped.set(styleIndex, [undefined, undefined, undefined, undefined]);
   for (const item of batch.items) {
     const styleIndex = batch.style_grid ? item.style_index ?? item.index : item.index;
@@ -193,7 +193,6 @@ export function groupPodStyleRows(
       title_error_message: styleTitle?.error_message,
       results,
       status,
-      retry_count: retriesByStyle.get(index) ?? 0,
     };
   });
 }
@@ -315,53 +314,4 @@ export function podItemStatusLabel(status: string): string {
     failed: "失败",
     optimizing_scene: "优化场景",
   } as Record<string, string>)[status] ?? status;
-}
-
-/** 统计本批被跳过导出的款式及原因分类（以后端记录的标题失败原因为依据）。 */
-export type SkippedPodStylesBreakdown = {
-  total: number;
-  titleContract: number;
-  imagesIncomplete: number;
-  other: number;
-};
-
-export function summarizeSkippedPodStyles(
-  batch: { style_titles?: Array<Pick<PodStyleTitle, "status" | "error_message">> },
-): SkippedPodStylesBreakdown {
-  const failedTitles = (batch.style_titles ?? []).filter(
-    (title) => title.status === "failed" && Boolean(title.error_message),
-  );
-  const imagesIncomplete = failedTitles.filter((title) =>
-    /公开图片|图片未完整|四张/.test(title.error_message ?? ""),
-  ).length;
-  const titleContract = failedTitles.filter((title) =>
-    /listing contract/i.test(title.error_message ?? ""),
-  ).length;
-  return {
-    total: failedTitles.length,
-    titleContract,
-    imagesIncomplete,
-    other: failedTitles.length - imagesIncomplete - titleContract,
-  };
-}
-
-/** 生成「为什么剔除」的全局提示文案；无失败款时返回空串。 */
-export function skippedPodStylesToastMessage(
-  skippedCount: number,
-  breakdown: SkippedPodStylesBreakdown,
-): string {
-  const parts: string[] = [];
-  if (breakdown.titleContract > 0) {
-    parts.push(`${breakdown.titleContract} 款标题未通过上架校验（与已生成款式重复或不合规）`);
-  }
-  if (breakdown.imagesIncomplete > 0) {
-    parts.push(`${breakdown.imagesIncomplete} 款商品图未完整生成`);
-  }
-  if (breakdown.other > 0) {
-    parts.push(`${breakdown.other} 款未满足导出条件`);
-  }
-  if (!parts.length) {
-    return `本次导出跳过 ${skippedCount} 款：商品图或标题未完整生成，未满足上架条件。`;
-  }
-  return `本次导出跳过 ${skippedCount} 款：${parts.join("，")}。可在款式列表点击「只重生标题 / 整款重生成」重试。`;
 }

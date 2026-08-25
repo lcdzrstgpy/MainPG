@@ -20,7 +20,7 @@ from .runtime import AiRuntime, AiRuntimeConfig
 
 
 PROMPT_VERSION = "pod-title-v1"
-MAX_ATTEMPTS = 5
+MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.5
 TITLE_MIN_LENGTH = 80
 TITLE_MAX_LENGTH = 200
@@ -163,7 +163,7 @@ def validate_title_result(
     normalized_accepted = tuple(_normalize_title(value) for value in accepted_titles if _normalized_text(value))
     if any(title.casefold() == prior.casefold() for prior in normalized_accepted):
         raise ValueError("title is an exact duplicate")
-    if any(_token_jaccard(title, prior) >= 0.9 for prior in normalized_accepted):
+    if any(_token_jaccard(title, prior) >= 0.75 for prior in normalized_accepted):
         raise ValueError("title is too similar to an accepted title")
 
     candidate_signature = visual_signature(result)

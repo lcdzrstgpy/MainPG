@@ -12,7 +12,6 @@ type Props = {
   onOpenResult: (item: PodBatchItem, styleIndex: number) => void;
   onRegenerateStyle: (styleIndex: number) => void;
   onRegenerateTitle: (styleIndex: number) => void;
-  onRetryFailed: () => void;
   onExportDianxiaomi: () => void;
 };
 
@@ -37,7 +36,7 @@ async function copyTitle(title: string): Promise<void> {
   }
 }
 
-export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateStyle, onRegenerateTitle, onRetryFailed, onExportDianxiaomi }: Props) {
+export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateStyle, onRegenerateTitle, onExportDianxiaomi }: Props) {
   const [selectedStyleIndex, setSelectedStyleIndex] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
   const showWaitingTime = Boolean(batch && isActiveBatchStatus(batch.status));
@@ -53,12 +52,6 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
 
   const progress = batchProgress(batch);
   const styles = groupPodStyleRows(batch);
-  const retryableStyles = styles.filter(
-    (style) =>
-      canRegeneratePodStyle(batch.status, style.status)
-      || canRegeneratePodStyleTitle(batch.status, style.title_status, style.results),
-  );
-  const retryingFailed = busyAction === "batch-retry-failed";
   const exportStatus = batch.dianxiaomi_export;
   const exporting = busyAction === "export-dianxiaomi";
   const exportBlockReason = busyAction
@@ -72,9 +65,6 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
       <div className="pod-gallery-header-actions">
         <div className={`pod-batch-status status-${batch.status}`}><strong>{podBatchStatusLabel(batch.status)}</strong><span>{batch.processed_count} / {batch.count} 款</span><span>可上架 {batch.listing_ready_count ?? 0} / 总款数 {batch.count}</span></div>
         <div className="pod-dianxiaomi-export">
-          {retryableStyles.length > 0 && (
-            <button type="button" className="pod-batch-retry-failed" disabled={Boolean(busyAction)} onClick={onRetryFailed}>{retryingFailed ? "批量重试中…" : `重试失败款式 (${retryableStyles.length})`}</button>
-          )}
           <button type="button" disabled={!canExport} title={canExport ? `可导出 ${exportStatus.exportable_style_count} 款` : exportBlockReason} onClick={onExportDianxiaomi}>{exporting ? "正在导出店小秘表格" : "导出店小秘表格"}</button>
           {!canExport && <small>{exportBlockReason}</small>}
         </div>

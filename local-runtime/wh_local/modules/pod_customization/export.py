@@ -92,7 +92,7 @@ def build_pod_dianxiaomi_export(
     analysis = analyze_dianxiaomi_export(batch, style_copies)
     if analysis.block_reason is not None:
         raise ValueError(analysis.block_reason)
-    sku_names = _export_sku_names(batch["listing_fields"])
+    skus = _export_skus(batch["listing_fields"])
     rows = [
         _build_row(
             style_index,
@@ -100,10 +100,10 @@ def build_pod_dianxiaomi_export(
             style_copies[style_index],
             batch["business_fields"],
             batch["listing_fields"],
-            sku_name,
+            sku,
         )
         for style_index in sorted(analysis.exportable_styles)
-        for sku_name in sku_names
+        for sku in skus
     ]
     return DianxiaomiExport(
         content=build_dianxiaomi_workbook(rows),
@@ -214,13 +214,28 @@ def _is_complete_style_copy(value: Any) -> bool:
     )
 
 
-def _export_sku_names(listing_fields: dict[str, Any]) -> tuple[str, ...]:
-    """Keep legacy batches as one blank-SKU row while expanding saved SKU names."""
+def _export_skus(listing_fields: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Expand current SKU snapshots and retain global fields for legacy snapshots."""
+    saved_skus = listing_fields.get("skus")
+    if isinstance(saved_skus, list):
+        return tuple(sku for sku in saved_skus if isinstance(sku, dict))
+
     saved_names = listing_fields.get("sku_names")
-    if not isinstance(saved_names, list):
-        return ("",)
-    names = tuple(name.strip() for name in saved_names if isinstance(name, str) and name.strip())
-    return names or ("",)
+    names = (
+        tuple(name.strip() for name in saved_names if isinstance(name, str) and name.strip())
+        if isinstance(saved_names, list)
+        else ()
+    )
+    return tuple(
+        {
+            "name": name,
+            "length_cm": listing_fields["length_cm"],
+            "width_cm": listing_fields["width_cm"],
+            "height_cm": listing_fields["height_cm"],
+            "weight_g": listing_fields["weight_g"],
+        }
+        for name in (names or ("",))
+    )
 
 
 def _is_unsafe_attribute_character(value: str) -> bool:
@@ -237,7 +252,7 @@ def _build_row(
     copy: dict[str, str],
     business_fields: dict[str, Any],
     listing_fields: dict[str, Any],
-    sku_name: str = "",
+    sku: dict[str, Any] | None = None,
 ) -> list[Any]:
     safe_title = validate_listing_copy_text("title", copy.get("title"), max_length=200)
     safe_english_title = validate_listing_copy_text(
@@ -255,20 +270,21 @@ def _build_row(
         safe_english_title if listing_fields.get("title_mode") == "short" else safe_title
     )
     category = listing_fields.get("category_name") or business_fields["product_category"]
+    sku = sku or listing_fields
     row: list[Any] = ["" for _ in DXM_COLUMNS]
     values = {
         0: selected_title,
         1: selected_title,
         2: description,
-        3: sku_name or None,
+        3: sku.get("name") or None,
         4: "Style",
         5: f"Style {suffix}",
         8: images["lifestyle"],
         9: listing_fields["declared_price"],
-        11: listing_fields["length_cm"],
-        12: listing_fields["width_cm"],
-        13: listing_fields["height_cm"],
-        14: listing_fields["weight_g"],
+        11: sku["length_cm"],
+        12: sku["width_cm"],
+        13: sku["height_cm"],
+        14: sku["weight_g"],
         18: "\n".join(image_urls),
         19: images["hero"],
         23: listing_fields["suggested_price_usd"],

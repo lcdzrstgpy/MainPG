@@ -9,9 +9,6 @@ import {
   POD_BATCH_COUNTS,
   buildPromptV1,
   businessFieldsForApi,
-  canRegeneratePodStyle,
-  canRegeneratePodStyleTitle,
-  groupPodStyleRows,
   isPodBatchCount,
   isActiveBatchStatus,
   isActivePodItemStatus,
@@ -19,8 +16,6 @@ import {
   resolveCreativePrompt,
   listingFieldsForApi,
   shouldPollPodBatch,
-  summarizeSkippedPodStyles,
-  skippedPodStylesToastMessage,
 } from "../data/podCustomizationModel";
 import {
   createPodSystemTemplate,
@@ -32,7 +27,6 @@ import {
   type PodSystemTemplate,
 } from "../data/podCustomizationDraft";
 import { usePodAssetUrl } from "../data/usePodAssetUrl";
-import { showToast } from "../../../shared/components/toastStore";
 import { getAuthAccount } from "../../../transport/http/client";
 import type {
   PodBatch,
@@ -50,24 +44,42 @@ type Props = {
   isActive?: boolean;
 };
 
-// 每条链接（款式）免费手动重试次数，与后端 service.POD_FREE_RETRY_LIMIT 保持一致；
-// 超过后需用户确认「无论失败与成功均会扣费」才允许继续重试。
-const DEFAULT_FREE_RETRY_LIMIT = 2;
-
-function paidRetryConfirmationMessage(limit: number): string {
-  return `该链接免费重试额度（${limit} 次）已用完，继续重试无论失败与成功均会扣费（按款式价格，约 40-50 积分），确认后方可继续。`;
-}
-
-function isPaidRetryExhaustedError(cause: unknown): boolean {
-  return /免费重试额度|免费.*用完/.test(cause instanceof Error ? cause.message : String(cause));
-}
-
 type PodDraftAccount = {
   account_id?: string;
   customer_id?: string;
   workspace_id?: string;
   workspace_code?: string;
 };
+
+type SkuField = "name" | "length_cm" | "width_cm" | "height_cm" | "weight_g";
+type SkuFieldErrors = Record<string, string>;
+
+const SKU_FIELD_LABELS: Record<SkuField, string> = {
+  name: "名称",
+  length_cm: "长度",
+  width_cm: "宽度",
+  height_cm: "高度",
+  weight_g: "重量",
+};
+
+function skuErrorKey(index: number, key: SkuField): string {
+  return `${index}:${key}`;
+}
+
+function validateSkuFields(skus: PodListingFieldsDraft["skus"]): SkuFieldErrors {
+  return skus.reduce<SkuFieldErrors>((errors, sku, index) => {
+    const skuLabel = sku.name.trim() || `第 ${index + 1} 个 SKU`;
+    (Object.keys(SKU_FIELD_LABELS) as SkuField[]).forEach((key) => {
+      const value = sku[key].trim();
+      if (!value) {
+        errors[skuErrorKey(index, key)] = `SKU「${skuLabel}」的${SKU_FIELD_LABELS[key]}不能为空。`;
+      } else if (key !== "name" && (!Number.isFinite(Number(value)) || Number(value) <= 0)) {
+        errors[skuErrorKey(index, key)] = `SKU「${skuLabel}」的${SKU_FIELD_LABELS[key]}必须是大于 0 的有效数字。`;
+      }
+    });
+    return errors;
+  }, {});
+}
 
 const BUSINESS_FIELDS: Array<{
   key: keyof PodBusinessFieldsDraft;
@@ -93,17 +105,13 @@ function autoGrowBusinessTextarea(textarea: HTMLTextAreaElement): void {
 }
 
 const LISTING_FIELDS: Array<{
-  key: Exclude<keyof PodListingFieldsDraft, "sku_names">;
+  key: "declared_price" | "suggested_price_usd" | "category_name";
   label: string;
   placeholder: string;
   inputMode?: "decimal" | "numeric";
 }> = [
   { key: "declared_price", label: "申报价", placeholder: "例如：19.95", inputMode: "decimal" },
   { key: "suggested_price_usd", label: "建议售价（USD）", placeholder: "例如：24.50", inputMode: "decimal" },
-  { key: "length_cm", label: "长（cm）", placeholder: "例如：31", inputMode: "decimal" },
-  { key: "width_cm", label: "宽（cm）", placeholder: "例如：20", inputMode: "decimal" },
-  { key: "height_cm", label: "高（cm）", placeholder: "例如：7.5", inputMode: "decimal" },
-  { key: "weight_g", label: "重量（g）", placeholder: "例如：840", inputMode: "decimal" },
   { key: "category_name", label: "店小秘类目", placeholder: "例如：家居收纳 > 洗衣篮" },
 ];
 
@@ -153,6 +161,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [busyAction, setBusyAction] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState(initialDraft.error ?? "");
+  const [skuFieldErrors, setSkuFieldErrors] = useState<SkuFieldErrors>({});
   const [visibility, setVisibility] = useState<DocumentVisibilityState>(() => document.visibilityState);
   const requestGenerationRef = useRef(0);
   const lastDraftSaveErrorRef = useRef("");
@@ -171,6 +180,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       || activeBatch.items.some((item) => isActivePodItemStatus(item.status))
       || activeBatch.style_titles?.some((title) => isActivePodStyleTitleStatus(title.status))
     : false;
+  const skuLimitReached = listingFields.skus.length >= 100;
 
   useEffect(() => {
     let stopped = false;
@@ -273,7 +283,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   useEffect(() => {
     if (!draftScope) return;
     const result = savePodCustomizationDraft(draftScope.accountId, draftScope.workspaceId, {
-      version: 1,
+      version: 3,
       business_fields: businessFields,
       listing_fields: listingFields,
       batch_count: batchCount,
@@ -298,23 +308,32 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setBusinessFields((current) => ({ ...current, [key]: value }));
   };
 
-  const updateListingField = (key: Exclude<keyof PodListingFieldsDraft, "sku_names">, value: string) => {
+  const updateListingField = (key: "title_mode" | "declared_price" | "suggested_price_usd" | "category_name", value: string) => {
     setListingFields((current) => ({ ...current, [key]: value }));
   };
 
-  const addSkuName = () => {
-    setListingFields((current) => ({ ...current, sku_names: [...current.sku_names, ""] }));
-  };
-
-  const updateSkuName = (index: number, value: string) => {
+  const addSku = () => {
+    if (skuLimitReached) return;
     setListingFields((current) => ({
       ...current,
-      sku_names: current.sku_names.map((name, currentIndex) => currentIndex === index ? value : name),
+      skus: [...current.skus, { name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
     }));
   };
 
-  const removeSkuName = (index: number) => {
-    setListingFields((current) => ({ ...current, sku_names: current.sku_names.filter((_, currentIndex) => currentIndex !== index) }));
+  const updateSku = (index: number, key: SkuField, value: string) => {
+    setSkuFieldErrors((current) => {
+      const { [skuErrorKey(index, key)]: _cleared, ...remaining } = current;
+      return remaining;
+    });
+    setListingFields((current) => ({
+      ...current,
+      skus: current.skus.map((sku, currentIndex) => currentIndex === index ? { ...sku, [key]: value } : sku),
+    }));
+  };
+
+  const removeSku = (index: number) => {
+    setSkuFieldErrors({});
+    setListingFields((current) => ({ ...current, skus: current.skus.filter((_, currentIndex) => currentIndex !== index) }));
   };
 
   const selectTemplate = (templateId: string) => {
@@ -397,7 +416,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       return;
     }
     if (selectedTemplate.calibration_status !== "ready") {
-      setError("当前模板尚未完成 AI 标定。");
+      setError("当前模板尚未完成蒙版与锚点标定。");
       setTemplateDrawerOpen(true);
       return;
     }
@@ -407,6 +426,12 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       return;
     }
     const listingFieldsResult = listingFieldsForApi(listingFields);
+    const nextSkuFieldErrors = validateSkuFields(listingFields.skus);
+    setSkuFieldErrors(nextSkuFieldErrors);
+    if (Object.keys(nextSkuFieldErrors).length) {
+      setError("请检查 SKU 预设中标红的字段。");
+      return;
+    }
     if (!listingFieldsResult.value) {
       setError(listingFieldsResult.error ?? "请完整填写店小秘上架信息。" );
       return;
@@ -425,8 +450,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       setActiveBatch(created);
       setSelectedItemId(undefined);
       setBatches((current) => sortBatches([toSummary(created), ...current.filter((batch) => batch.id !== created.id)]));
-      setCurrentBatchEdit(null);
-      setNotice(`已提交 ${requestedCount} 款创作，正在后台生成，失败时最多重试一次。`);
+      setNotice(`已提交 ${requestedCount} 款创作，失败时最多重试一次。`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -493,59 +517,12 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
-  const freeRetryLimit = activeBatch?.free_retry_limit ?? DEFAULT_FREE_RETRY_LIMIT;
-
-  const styleNeedsPaidRetry = (batch: PodBatch, styleIndex: number): boolean => {
-    const retryCount = batch.style_retries?.find((retry) => retry.style_index === styleIndex)?.retry_count ?? 0;
-    return retryCount >= (batch.free_retry_limit ?? DEFAULT_FREE_RETRY_LIMIT);
-  };
-
-  const confirmPaidRetryIfNeeded = (styleIndex: number): boolean => {
-    if (!activeBatch) return false;
-    if (!styleNeedsPaidRetry(activeBatch, styleIndex)) return true;
-    return window.confirm(paidRetryConfirmationMessage(freeRetryLimit));
-  };
-
-  const retryAfterPaidRetryConfirmation = async (styleIndex: number, cause: unknown, kind: "style" | "title"): Promise<boolean> => {
-    if (!activeBatch || !isPaidRetryExhaustedError(cause)) return false;
-    // 前端重试计数未及时刷新时的兜底：再次确认后按付费重试提交。
-    if (!window.confirm(paidRetryConfirmationMessage(freeRetryLimit))) return false;
-    try {
-      if (kind === "style") {
-        const updated = await podCustomizationApi.regenerateStyle(activeBatch.id, styleIndex, activeBatch.creative_prompt, true);
-        setActiveBatch((current) => current ? {
-          ...current,
-          items: current.items.map((item) => updated.results.find((result) => result.id === item.id) ?? item),
-        } : current);
-        setNotice(`款式 #${styleIndex} 已重新提交生成（付费重试）。`);
-      } else {
-        const updated = await podCustomizationApi.regenerateStyleTitle(activeBatch.id, styleIndex, true);
-        setActiveBatch((current) => current ? {
-          ...current,
-          style_titles: [...(current.style_titles ?? []).filter((title) => title.style_index !== updated.style_index), updated],
-        } : current);
-        setNotice(`款式 #${styleIndex} 已提交标题生成（付费重试）。`);
-      }
-      await refreshActiveBatch(activeBatch.id);
-      return true;
-    } catch (retryCause) {
-      setError(retryCause instanceof Error ? retryCause.message : String(retryCause));
-      return true;
-    }
-  };
-
   const regenerateStyle = async (styleIndex: number) => {
     if (!activeBatch) return;
-    if (!confirmPaidRetryIfNeeded(styleIndex)) return;
     setBusyAction(`regenerate-style:${styleIndex}`);
     clearMessages();
     try {
-      const updated = await podCustomizationApi.regenerateStyle(
-        activeBatch.id,
-        styleIndex,
-        activeBatch.creative_prompt,
-        styleNeedsPaidRetry(activeBatch, styleIndex),
-      );
+      const updated = await podCustomizationApi.regenerateStyle(activeBatch.id, styleIndex, activeBatch.creative_prompt);
       setActiveBatch((current) => current ? {
         ...current,
         items: current.items.map((item) => updated.results.find((result) => result.id === item.id) ?? item),
@@ -553,7 +530,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       setNotice(`款式 #${styleIndex} 已重新提交图片生成。`);
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
-      if (await retryAfterPaidRetryConfirmation(styleIndex, cause, "style")) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusyAction("");
@@ -562,69 +538,15 @@ export function PodCustomizationPage({ isActive = true }: Props) {
 
   const regenerateStyleTitle = async (styleIndex: number) => {
     if (!activeBatch) return;
-    if (!confirmPaidRetryIfNeeded(styleIndex)) return;
     setBusyAction(`regenerate-title:${styleIndex}`);
     clearMessages();
     try {
-      const updated = await podCustomizationApi.regenerateStyleTitle(
-        activeBatch.id,
-        styleIndex,
-        styleNeedsPaidRetry(activeBatch, styleIndex),
-      );
+      const updated = await podCustomizationApi.regenerateStyleTitle(activeBatch.id, styleIndex);
       setActiveBatch((current) => current ? {
         ...current,
         style_titles: [...(current.style_titles ?? []).filter((title) => title.style_index !== updated.style_index), updated],
       } : current);
       setNotice(`款式 #${styleIndex} 已提交标题生成。`);
-      await refreshActiveBatch(activeBatch.id);
-    } catch (cause) {
-      if (await retryAfterPaidRetryConfirmation(styleIndex, cause, "title")) return;
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusyAction("");
-    }
-  };
-
-  const retryFailedStyles = async () => {
-    if (!activeBatch) return;
-    const failed = groupPodStyleRows(activeBatch).filter(
-      (style) =>
-        canRegeneratePodStyle(activeBatch.status, style.status)
-        || canRegeneratePodStyleTitle(activeBatch.status, style.title_status, style.results),
-    );
-    if (!failed.length) return;
-    const overQuota = failed.filter((style) => style.retry_count >= freeRetryLimit);
-    if (
-      overQuota.length > 0
-      && !window.confirm(
-        `${overQuota.length} 款已超过免费重试额度（${freeRetryLimit} 次），继续重试无论失败与成功均会扣费（按款式价格，约 40-50 积分/款），确认继续？`,
-      )
-    ) return;
-    const overQuotaIndices = new Set(overQuota.map((style) => style.index));
-    setBusyAction("batch-retry-failed");
-    clearMessages();
-    let submitted = 0;
-    let failedCount = 0;
-    try {
-      // 并行重试所有失败款式：全部一次性提交，互不阻塞；超过免费额度的款式按付费重试
-      // （无论成败均扣费），失败项只计入 failedCount 不影响其余款式。
-      const settled = await Promise.allSettled(
-        failed.map(async (style) => {
-          const ackPaidRetry = overQuotaIndices.has(style.index);
-          if (canRegeneratePodStyleTitle(activeBatch.status, style.title_status, style.results)) {
-            await podCustomizationApi.regenerateStyleTitle(activeBatch.id, style.index, ackPaidRetry);
-          } else {
-            await podCustomizationApi.regenerateStyle(activeBatch.id, style.index, activeBatch.creative_prompt, ackPaidRetry);
-          }
-        }),
-      );
-      submitted = settled.filter((result) => result.status === "fulfilled").length;
-      failedCount = settled.filter((result) => result.status === "rejected").length;
-      setNotice(
-        submitted > 0
-          ? `已批量重试 ${submitted} 款${failedCount ? `，${failedCount} 款提交失败` : ""}。`
-          : "没有可重试的款式。",
-      );
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -669,10 +591,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     try {
       const exported = await podCustomizationApi.exportDianxiaomi(activeBatch.id);
       setNotice(`导出 ${exported.exportedStyles} 款、跳过 ${exported.skippedStyles} 款。`);
-      if (exported.skippedStyles > 0) {
-        const breakdown = summarizeSkippedPodStyles(activeBatch);
-        showToast(skippedPodStylesToastMessage(exported.skippedStyles, breakdown), "error");
-      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -683,7 +601,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   return (
     <section className="pod-customization-page" aria-label="POD 定制">
       <header className="pod-page-header">
-        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION · DIRECT LISTING</span><h1>POD 定制</h1><p>一个产品模板贯穿整批，自动为每款生成商品图。</p></div></div>
+        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION · DIRECT LISTING</span><h1>POD 定制</h1></div></div>
         <div className="pod-page-header-actions">
           {batchRunning && <span className="pod-live-badge"><i />批次后台运行中</span>}
           <button type="button" onClick={() => setTemplateDrawerOpen(true)}><span className="iconfont icon-upload" />上传当前批次模板</button>
@@ -696,7 +614,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       <div className="pod-workbench-grid">
         <aside className="pod-setup-column pod-brief-sidebar">
           <section className="pod-setup-card pod-business-editor">
-            <div className="pod-section-title"><h2>业务信息编辑</h2></div>
+            <div className="pod-section-title"><span>BRIEF EDITOR</span><h2>业务信息编辑</h2><small>用于直出 Prompt</small></div>
             <div className="pod-business-fields">
               {BUSINESS_FIELDS.map((field) => <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}</span>{field.multiline
                 ? <textarea rows={1} value={businessFields[field.key]} onChange={(event) => {
@@ -706,7 +624,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 : <input value={businessFields[field.key]} onChange={(event) => updateBusinessField(field.key, event.target.value)} placeholder={field.placeholder} />}</label>)}
             </div>
             <section className="pod-listing-fields" aria-labelledby="pod-dianxiaomi-listing-title">
-              <div className="pod-listing-fields-heading"><h3 id="pod-dianxiaomi-listing-title">店小秘上架信息</h3></div>
+              <div className="pod-listing-fields-heading"><span>DIANXIAOMI LISTING</span><h3 id="pod-dianxiaomi-listing-title">店小秘上架信息</h3><small>创建批次时保存为不可缺失的上架快照</small></div>
               <div className="pod-title-mode" role="radiogroup" aria-label="标题模式">
                 <span>标题模式<em>*</em></span>
                 <div>
@@ -718,17 +636,25 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 {LISTING_FIELDS.map((field) => <label key={field.key}><span>{field.label}<em>*</em></span><input value={listingFields[field.key]} inputMode={field.inputMode} onChange={(event) => updateListingField(field.key, event.target.value)} placeholder={field.placeholder} /></label>)}
               </div>
               <div className="pod-sku-editor" aria-label="SKU 预设">
-                <div className="pod-sku-editor-heading"><span>SKU 预设</span><button type="button" onClick={addSkuName}><span className="iconfont icon-plus" aria-hidden="true" />新增 SKU</button></div>
-                {listingFields.sku_names.length > 0 && <div className="pod-sku-inputs">
-                  {listingFields.sku_names.map((skuName, index) => <label key={`${index}-${skuName}`}><span>SKU 名称 {index + 1}</span><input value={skuName} onChange={(event) => updateSkuName(index, event.target.value)} placeholder="例如：米白款" aria-label="SKU 名称" /><button type="button" onClick={() => removeSkuName(index)} aria-label="删除 SKU">×</button></label>)}
-                </div>}
+                <div className="pod-sku-editor-heading"><span>SKU 预设<small>每个 SKU 需填写名称、长、宽、高与重量</small></span><button type="button" onClick={addSku} disabled={skuLimitReached} aria-describedby={skuLimitReached ? "pod-sku-limit-notice" : undefined} title={skuLimitReached ? "最多可添加 100 个 SKU" : undefined}><span className="iconfont icon-plus" aria-hidden="true" />新增 SKU</button></div>
+                {skuLimitReached && <p id="pod-sku-limit-notice" className="pod-sku-limit-notice" role="status">已达到 100 个 SKU 上限。</p>}
+                <div className="pod-sku-inputs">
+                  {listingFields.skus.map((sku, index) => <div key={index} className="pod-sku-input-row">
+                    <label><span>SKU 名称 {index + 1}</span><input value={sku.name} onChange={(event) => updateSku(index, "name", event.target.value)} placeholder="例如：米白款" aria-label="SKU 名称" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "name")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "name")] ? `pod-sku-error-${index}-name` : undefined} />{skuFieldErrors[skuErrorKey(index, "name")] && <small id={`pod-sku-error-${index}-name`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "name")]}</small>}</label>
+                    <label><span>长（cm）</span><input value={sku.length_cm} inputMode="decimal" onChange={(event) => updateSku(index, "length_cm", event.target.value)} placeholder="例如：31" aria-label="SKU 长（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "length_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "length_cm")] ? `pod-sku-error-${index}-length_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "length_cm")] && <small id={`pod-sku-error-${index}-length_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "length_cm")]}</small>}</label>
+                    <label><span>宽（cm）</span><input value={sku.width_cm} inputMode="decimal" onChange={(event) => updateSku(index, "width_cm", event.target.value)} placeholder="例如：20" aria-label="SKU 宽（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "width_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "width_cm")] ? `pod-sku-error-${index}-width_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "width_cm")] && <small id={`pod-sku-error-${index}-width_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "width_cm")]}</small>}</label>
+                    <label><span>高（cm）</span><input value={sku.height_cm} inputMode="decimal" onChange={(event) => updateSku(index, "height_cm", event.target.value)} placeholder="例如：7.5" aria-label="SKU 高（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "height_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "height_cm")] ? `pod-sku-error-${index}-height_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "height_cm")] && <small id={`pod-sku-error-${index}-height_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "height_cm")]}</small>}</label>
+                    <label><span>重量（g）</span><input value={sku.weight_g} inputMode="decimal" onChange={(event) => updateSku(index, "weight_g", event.target.value)} placeholder="例如：840" aria-label="SKU 重量（g）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "weight_g")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "weight_g")] ? `pod-sku-error-${index}-weight_g` : undefined} />{skuFieldErrors[skuErrorKey(index, "weight_g")] && <small id={`pod-sku-error-${index}-weight_g`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "weight_g")]}</small>}</label>
+                    <button type="button" onClick={() => removeSku(index)} aria-label="删除 SKU">×</button>
+                  </div>)}
+                </div>
               </div>
             </section>
             <div className="pod-advanced-prompt">
-              <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级：本批次创意编辑</b><small>使用内置创意模板</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
-              {advancedOpen && <div className="pod-advanced-prompt-editor"><textarea value={currentBatchEdit ?? builtInPrompt} onChange={(event) => setCurrentBatchEdit(event.target.value)} aria-label="本批次创意提示词" /><div><span>{currentBatchEdit === null ? "正在使用内置模板" : "已为本批次自定义"}</span><button type="button" onClick={() => setCurrentBatchEdit(null)}>重置为内置模板</button></div></div>}
+              <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级：本批次创意编辑</b><small>内置 POD Direct Listing Prompt v1</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
+              {advancedOpen && <div className="pod-advanced-prompt-editor"><textarea value={currentBatchEdit ?? builtInPrompt} onChange={(event) => setCurrentBatchEdit(event.target.value)} aria-label="本批次创意提示词" /><div><span>{currentBatchEdit === null ? "正在使用内置 v1" : "已为本批次自定义"}</span><button type="button" onClick={() => setCurrentBatchEdit(null)}>重置为 v1</button></div></div>}
             </div>
-            <div className="pod-volume-inline"><b>生成数量</b><small>每款 1 次 AI 生图</small></div>
+            <div className="pod-volume-inline"><b>生成数量</b></div>
             <div className="pod-count-options" role="radiogroup" aria-label="生成数量">
               {POD_BATCH_COUNTS.map((count) => <button key={count} type="button" role="radio" aria-checked={!customCountMode && batchCount === count} className={!customCountMode && batchCount === count ? "is-active" : ""} onClick={() => { setCustomCountMode(false); setBatchCount(count); }}><b>{count}</b><span>款</span></button>)}
               <button type="button" role="radio" aria-checked={customCountMode} className={customCountMode ? "is-active" : ""} onClick={() => { setCustomCountMode(true); setCustomCountInput(String(batchCount)); }}><b>自定义</b></button>
@@ -740,14 +666,13 @@ export function PodCustomizationPage({ isActive = true }: Props) {
               <span className="iconfont icon-arrowright" aria-hidden="true" />
             </button>
             <button type="button" className="pod-start-button" disabled={busyAction === "create-batch" || !selectedTemplate} onClick={() => void startBatch()}>{busyAction === "create-batch" ? <><span className="iconfont icon-loading" />正在提交</> : <><span className="iconfont icon-rocket" />开始生成 {customCountMode ? customCountInput || "自定义" : batchCount} 款</>}</button>
-            <p className="pod-direct-note"><span className="iconfont icon-thunderbolt" />生成后自动拆分并发布，无需中途操作。</p>
           </section>
           <button type="button" className={`pod-history-trigger ${historyOpen ? "is-open" : ""}`} onClick={() => setHistoryOpen((open) => !open)}>定制记录<span>{historyOpen ? "收起" : `${batches.length} 个批次`}</span></button>
           {historyOpen && <PodBatchHistory batches={batches} activeBatchId={activeBatch?.id} loading={loading || busyAction.startsWith("batch:")} onOpen={(batchId) => void openBatch(batchId)} onRefresh={() => void refreshHistory()} />}
         </aside>
         <main className="pod-results-column">
           <section className="pod-current-template-summary">
-            <header><div><h2>当前批次模板图</h2></div><button type="button" onClick={() => setTemplateDrawerOpen(true)}>更换模板</button></header>
+            <header><div><span>CURRENT TEMPLATE</span><h2>当前批次模板图</h2></div><button type="button" onClick={() => setTemplateDrawerOpen(true)}>更换模板</button></header>
             <div className="pod-current-template-body">
               <button type="button" className="pod-current-template-image" onClick={() => setTemplateDrawerOpen(true)}>
                 {summaryTemplatePreview ? <img src={summaryTemplatePreview} alt={summaryTemplate?.name || "当前模板"} /> : <span>选择模板</span>}
@@ -766,7 +691,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             onOpenResult={(item) => setSelectedItemId(item.id)}
             onRegenerateStyle={(styleIndex) => void regenerateStyle(styleIndex)}
             onRegenerateTitle={(styleIndex) => void regenerateStyleTitle(styleIndex)}
-            onRetryFailed={() => void retryFailedStyles()}
             onExportDianxiaomi={() => void exportDianxiaomi()}
           />
         </main>

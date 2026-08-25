@@ -22,3 +22,7 @@
 - Browser plugin contracts: 6 passed; packaged `SHA256SUMS.txt`: 12/12 passed.
 - Python compileall, migration crash/legacy-schema recovery, app route registration, focused secret scan, and `git diff --check`: passed.
 - Independent final review: no Critical or Important findings; one non-blocking follow-up remains for a bounded shutdown timeout on the shop collection worker.
+
+## Temu gallery-only capture
+
+- Task 1: complete (uncommitted scoped diff, independent review clean)

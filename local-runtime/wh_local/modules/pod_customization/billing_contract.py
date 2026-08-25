@@ -48,9 +48,6 @@ class PodCallOutcome:
 class PodCallPlan:
     idempotency_key: str
     calls: tuple[PodPlannedCall, ...]
-    # 付费重试标记：超过免费额度后用户确认的重试。结算时该链接无论成败都按
-    # 款式价扣费（服务器端 settle 依据此标记），不再按成败退款。
-    paid_retry: bool = False
 
     @classmethod
     def for_batch(cls, batch_id: str, *, style_count: int) -> "PodCallPlan":
@@ -65,15 +62,13 @@ class PodCallPlan:
                 PodPlannedCall(f"{batch_id}:style:{style_index}:title:1", "pod.title"),
                 PodPlannedCall(f"{batch_id}:style:{style_index}:title:2", "pod.title"),
                 PodPlannedCall(f"{batch_id}:style:{style_index}:title:3", "pod.title"),
-                PodPlannedCall(f"{batch_id}:style:{style_index}:title:4", "pod.title"),
-                PodPlannedCall(f"{batch_id}:style:{style_index}:title:5", "pod.title"),
             )
         )
         return cls(idempotency_key=f"pod:batch:{batch_id}:initial", calls=calls)
 
     @classmethod
     def for_retry(
-        cls, action_id: str, *, feature: PodFeature, max_attempts: int = 1, paid_retry: bool = False
+        cls, action_id: str, *, feature: PodFeature, max_attempts: int = 1
     ) -> "PodCallPlan":
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
@@ -83,7 +78,6 @@ class PodCallPlan:
                 PodPlannedCall(f"{action_id}:attempt:{attempt}", feature)
                 for attempt in range(1, max_attempts + 1)
             ),
-            paid_retry=paid_retry,
         )
 
     @classmethod
@@ -100,7 +94,7 @@ class PodCallPlan:
         return cls(idempotency_key=f"pod:trial:{trial_id}", calls=tuple(calls))
 
     @classmethod
-    def for_style_retry(cls, action_id: str, *, include_title: bool, paid_retry: bool = False) -> "PodCallPlan":
+    def for_style_retry(cls, action_id: str, *, include_title: bool) -> "PodCallPlan":
         calls = [
             PodPlannedCall(f"{action_id}:image:1", "pod.image"),
             PodPlannedCall(f"{action_id}:image:2", "pod.image"),
@@ -108,9 +102,9 @@ class PodCallPlan:
         if include_title:
             calls.extend(
                 PodPlannedCall(f"{action_id}:title:{attempt}", "pod.title")
-                for attempt in range(1, 6)
+                for attempt in range(1, 4)
             )
-        return cls(idempotency_key=f"pod:retry:{action_id}", calls=tuple(calls), paid_retry=paid_retry)
+        return cls(idempotency_key=f"pod:retry:{action_id}", calls=tuple(calls))
 
     def freeze_payload(self, *, encrypted_session_key: str) -> dict[str, object]:
         return {
@@ -159,7 +153,7 @@ class PodCallPlan:
                         "status": "success" if succeeded else "no_return",
                     }
                 )
-            items.append({"link_idx": link_idx, "subitems": subitems, "paid_retry": self.paid_retry})
+            items.append({"link_idx": link_idx, "subitems": subitems})
         return {"items": items}
 
     def settlement_payload(

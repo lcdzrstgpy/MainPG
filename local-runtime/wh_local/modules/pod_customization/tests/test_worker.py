@@ -745,11 +745,8 @@ def _batch_request_for_test(template_id: str) -> BatchCreate:
         listing_fields=ListingFields(
             declared_price=18.5,
             suggested_price_usd=29.99,
-            length_cm=30,
-            width_cm=20,
-            height_cm=10,
-            weight_g=450,
             category_name="家居收纳 > 包袋",
+            skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
         ),
     )
 
@@ -786,11 +783,8 @@ def _create_batch(
             listing_fields=ListingFields(
                 declared_price=18.5,
                 suggested_price_usd=29.99,
-                length_cm=30,
-                width_cm=20,
-                height_cm=10,
-                weight_g=450,
                 category_name="家居收纳 > 包袋",
+                skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
             ),
             creative_prompt="bold but uncluttered",
         ),

@@ -8,7 +8,7 @@ async function loadPodAsset(path: string): Promise<Blob> {
   const response = await fetch(path, {
     headers: token ? { authorization: `Bearer ${token}` } : undefined,
   });
-  if (!response.ok) throw new Error(`素材加载失败（状态码 ${response.status}），请稍后重试`);
+  if (!response.ok) throw new Error(`素材加载失败 (HTTP ${response.status})`);
   return response.blob();
 }
 

@@ -50,14 +50,108 @@ test("POD drafts are isolated by account and workspace", () => {
   const storage = new MemoryStorage();
   const first = createEmptyPodCustomizationDraft();
   first.business_fields.product_name = "旅行杯";
-  first.listing_fields.sku_names = ["默认款", "礼盒款"];
+  first.listing_fields.skus = [
+    { name: "默认款", length_cm: "20", width_cm: "10", height_cm: "8", weight_g: "400" },
+    { name: "礼盒款", length_cm: "22", width_cm: "12", height_cm: "9", weight_g: "450" },
+  ];
   assert.deepEqual(savePodCustomizationDraft("account-a", "workspace-a", first, storage), { ok: true });
 
-  assert.equal(podCustomizationDraftStorageKey("account-a", "workspace-a"), "mainpg:pod-customization:v1:account-a:workspace-a");
+  assert.equal(podCustomizationDraftStorageKey("account-a", "workspace-a"), "mainpg:pod-customization:v3:account-a:workspace-a");
   assert.equal(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.business_fields.product_name, "旅行杯");
-  assert.deepEqual(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.listing_fields.sku_names, ["默认款", "礼盒款"]);
+  assert.deepEqual(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.listing_fields.skus, first.listing_fields.skus);
   assert.equal(loadPodCustomizationDraft("account-b", "workspace-a", storage).state.business_fields.product_name, "");
   assert.equal(loadPodCustomizationDraft("account-a", "workspace-b", storage).state.business_fields.product_name, "");
+});
+
+test("new POD drafts start with one blank SKU including weight", () => {
+  assert.deepEqual(createEmptyPodCustomizationDraft().listing_fields.skus, [
+    { name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" },
+  ]);
+});
+
+test("v2 POD drafts move their global weight into each SKU", () => {
+  const storage = new MemoryStorage();
+  const legacyKey = "mainpg:pod-customization:v2:account-a:workspace-a";
+  storage.setItem(legacyKey, JSON.stringify({
+    ...createEmptyPodCustomizationDraft(),
+    version: 2,
+    listing_fields: {
+      title_mode: "long",
+      declared_price: "18.5",
+      suggested_price_usd: "29.99",
+      weight_g: "450",
+      category_name: "收纳",
+      skus: [{ name: "默认款", length_cm: "30", width_cm: "20", height_cm: "10" }],
+    },
+  }));
+
+  assert.deepEqual(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.listing_fields.skus, [
+    { name: "默认款", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" },
+  ]);
+});
+
+test("v1 POD drafts migrate SKU names and product dimensions into per-SKU rows", () => {
+  const storage = new MemoryStorage();
+  const legacyKey = "mainpg:pod-customization:v1:account-a:workspace-a";
+  const legacy = {
+    ...createEmptyPodCustomizationDraft(),
+    version: 1,
+    listing_fields: {
+      title_mode: "long",
+      declared_price: "18.5",
+      suggested_price_usd: "29.99",
+      length_cm: "30",
+      width_cm: "20",
+      height_cm: "10",
+      weight_g: "450",
+      category_name: "收纳",
+      sku_names: ["  米白 ", "深蓝"],
+    },
+  };
+  storage.setItem(legacyKey, JSON.stringify(legacy));
+
+  const result = loadPodCustomizationDraft("account-a", "workspace-a", storage);
+
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.state.listing_fields.skus, [
+    { name: "  米白 ", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" },
+    { name: "深蓝", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" },
+  ]);
+});
+
+test("v1 POD drafts without SKU names migrate to the default SKU", () => {
+  const storage = new MemoryStorage();
+  const legacyKey = "mainpg:pod-customization:v1:account-a:workspace-a";
+  storage.setItem(legacyKey, JSON.stringify({
+    ...createEmptyPodCustomizationDraft(),
+    version: 1,
+    listing_fields: {
+      title_mode: "long",
+      declared_price: "",
+      suggested_price_usd: "",
+      length_cm: "30",
+      width_cm: "20",
+      height_cm: "10",
+      weight_g: "",
+      category_name: "",
+      sku_names: [],
+    },
+  }));
+
+  assert.deepEqual(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.listing_fields.skus, [
+    { name: "默认款", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "" },
+  ]);
+});
+
+test("malformed v1 POD drafts are safely removed from the legacy key", () => {
+  const storage = new MemoryStorage();
+  const legacyKey = "mainpg:pod-customization:v1:account-a:workspace-a";
+  storage.setItem(legacyKey, "not-json");
+
+  const result = loadPodCustomizationDraft("account-a", "workspace-a", storage);
+
+  assert.equal(result.error, "POD 草稿数据已损坏，已清除当前账号的本地草稿。");
+  assert.equal(storage.getItem(legacyKey), null);
 });
 
 test("malformed POD draft payload is removed only from its own scope", () => {

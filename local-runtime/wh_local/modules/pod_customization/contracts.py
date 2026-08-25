@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -69,19 +69,25 @@ class BusinessFields(BaseModel):
     excluded_elements: list[str] = Field(default_factory=list)
 
 
+class ListingSku(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
+
+    name: str = Field(strict=True, min_length=1, max_length=120)
+    length_cm: float = Field(strict=True, gt=0)
+    width_cm: float = Field(strict=True, gt=0)
+    height_cm: float = Field(strict=True, gt=0)
+    weight_g: float = Field(strict=True, gt=0)
+
+
 class ListingFields(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 
     title_mode: Literal["long", "short"] = "long"
     declared_price: float = Field(strict=True, gt=0)
     suggested_price_usd: float = Field(strict=True, gt=0)
-    length_cm: float = Field(strict=True, gt=0)
-    width_cm: float = Field(strict=True, gt=0)
-    height_cm: float = Field(strict=True, gt=0)
-    weight_g: float = Field(strict=True, gt=0)
     category_name: str = Field(min_length=1, max_length=120)
-    sku_names: list[Annotated[str, Field(strict=True, min_length=1, max_length=120)]] = Field(
-        default_factory=list,
+    skus: list[ListingSku] = Field(
+        min_length=1,
         max_length=100,
     )
 
@@ -130,5 +136,3 @@ class RegenerateItemCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     creative_prompt: str = Field(default="", max_length=4000)
-    # 超过免费重试额度后用户确认付费重试（无论失败与成功均会扣费）。
-    ack_paid_retry: bool = False
