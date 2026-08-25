@@ -89,6 +89,7 @@ export type TaskStatus =
   | "queued"
   | "running"
   | "paused"
+  | "cancelled"
   | "completed"
   | "failed"
   | "partial_failure";
