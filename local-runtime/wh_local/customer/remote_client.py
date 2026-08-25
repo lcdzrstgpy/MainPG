@@ -128,6 +128,15 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def quote_topup(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._post(
+            "/api/customer/billing/topup-quote",
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def reserve_ai_usage(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._billing_post("/api/customer/billing/usage/reserve", remote_token, payload)
 

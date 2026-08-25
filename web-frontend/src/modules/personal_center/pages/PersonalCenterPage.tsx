@@ -6,6 +6,7 @@ import {
   createTopupOrder,
   loadBillingSummary,
   loadBillingUsageHistory,
+  quoteCustomTopup,
   type BillingPackage,
   type BillingSummary,
   type BillingUsageEntry,
@@ -29,6 +30,20 @@ const providerMeta = {
 
 function money(amountCents: number) {
   return `¥${(amountCents / 100).toFixed(2)}`;
+}
+
+type PointsSnapshot = Pick<BillingPackage, "points" | "base_points" | "promotion_bonus_points" | "total_points">;
+
+function basePoints(product: PointsSnapshot) {
+  return product.base_points ?? product.points ?? 0;
+}
+
+function promotionBonusPoints(product: PointsSnapshot) {
+  return product.promotion_bonus_points ?? 0;
+}
+
+function totalPoints(product: PointsSnapshot) {
+  return product.total_points ?? basePoints(product) + promotionBonusPoints(product);
 }
 
 /** 服务端返回的计费流水时间为 UTC（如 2026-08-21T14:17:12+00:00），
@@ -177,6 +192,9 @@ export function PersonalCenterPage() {
   const [error, setError] = useState("");
   const [selectedPackage, setSelectedPackage] = useState("");
   const [customAmount, setCustomAmount] = useState("");
+  const [customQuote, setCustomQuote] = useState<BillingPackage | null>(null);
+  const [customQuoteLoading, setCustomQuoteLoading] = useState(false);
+  const [customQuoteError, setCustomQuoteError] = useState("");
   const [creating, setCreating] = useState(false);
   const [createdOrder, setCreatedOrder] = useState<TopupOrderResponse | null>(null);
   const [paymentNotice, setPaymentNotice] = useState("");
@@ -237,17 +255,35 @@ export function PersonalCenterPage() {
   }, [customAmount]);
 
   const activePackage = useMemo(() => {
-    if (selectedPackage === "custom" && customAmountCents) {
-      const pointsPerCny = summary?.pricing.points_per_cny ?? 100;
-      return {
-        package_id: "custom",
-        label: "自定义积分充值",
-        amount_cents: customAmountCents,
-        points: (customAmountCents / 100) * pointsPerCny,
-      } satisfies BillingPackage;
-    }
+    if (selectedPackage === "custom") return customQuote;
     return summary?.topup_products.find((item) => item.package_id === selectedPackage) ?? summary?.topup_products[0];
-  }, [customAmountCents, selectedPackage, summary]);
+  }, [customQuote, selectedPackage, summary]);
+
+  useEffect(() => {
+    setCustomQuote(null);
+    setCustomQuoteError("");
+    if (!customAmountCents) return;
+
+    let disposed = false;
+    const timer = window.setTimeout(() => {
+      setCustomQuoteLoading(true);
+      quoteCustomTopup(customAmountCents)
+        .then((payload) => {
+          if (!disposed) setCustomQuote(payload.product);
+        })
+        .catch((exc) => {
+          if (!disposed) setCustomQuoteError(exc instanceof Error ? exc.message : "获取充值报价失败");
+        })
+        .finally(() => {
+          if (!disposed) setCustomQuoteLoading(false);
+        });
+    }, 250);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [customAmountCents]);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -315,7 +351,10 @@ export function PersonalCenterPage() {
           if (order?.status === "paid") {
             setPendingPaymentOrderId("");
             writePendingOrderId("");
-            setPaymentNotice(`充值成功，${order.points.toLocaleString()} 积分已到账。`);
+            const promotionBonus = promotionBonusPoints(order);
+            setPaymentNotice(
+              `充值成功，${totalPoints(order).toLocaleString()} 积分已到账。${promotionBonus ? `含活动赠送 ${promotionBonus.toLocaleString()} 积分。` : ""}`,
+            );
           }
         })
         .catch(() => {
@@ -402,7 +441,7 @@ export function PersonalCenterPage() {
     }
   };
 
-  const submitTopup = async (product?: BillingPackage) => {
+  const submitTopup = async (product?: BillingPackage | null) => {
     if (!product) return;
     setCreating(true);
     setError("");
@@ -603,6 +642,11 @@ export function PersonalCenterPage() {
               支付宝
             </button>
           </div>
+          {summary?.topup_promotion?.active && (
+            <p className="topup-promotion-banner">
+              {summary.topup_promotion.name || "充值积分翻倍活动"}：充值任意金额，基础积分翻倍到账。
+            </p>
+          )}
           <div className="topup-products">
             {summary?.topup_products.map((item) => (
               <button
@@ -611,8 +655,13 @@ export function PersonalCenterPage() {
                 className={activePackage?.package_id === item.package_id ? "is-active" : ""}
                 onClick={() => setSelectedPackage(item.package_id)}
               >
-                <strong>{item.points.toLocaleString()} 积分</strong>
+                <strong>{totalPoints(item).toLocaleString()} 积分</strong>
                 <span>{money(item.amount_cents)}</span>
+                <small>
+                  基础 {basePoints(item).toLocaleString()}
+                  {promotionBonusPoints(item) ? ` + 活动赠送 ${promotionBonusPoints(item).toLocaleString()}` : ""}
+                  {promotionBonusPoints(item) ? ` = 合计 ${totalPoints(item).toLocaleString()}` : ""}
+                </small>
               </button>
             ))}
           </div>
@@ -637,14 +686,31 @@ export function PersonalCenterPage() {
               />
               <em>元</em>
             </div>
-            <small>{customAmount ? (customAmountCents ? `预计到账 ${activePackage?.points.toLocaleString()} 积分` : "请输入 1 到 3000 的整数金额") : "支持 1 - 3000 元整数充值"}</small>
+            <small>
+              {!customAmount
+                ? "支持 1 - 3000 元整数充值"
+                : !customAmountCents
+                  ? "请输入 1 到 3000 的整数金额"
+                  : customQuoteLoading
+                    ? "正在获取服务器报价..."
+                    : customQuoteError
+                      ? customQuoteError
+                      : customQuote
+                        ? `预计基础 ${basePoints(customQuote).toLocaleString()} + 活动赠送 ${promotionBonusPoints(customQuote).toLocaleString()} = 合计 ${totalPoints(customQuote).toLocaleString()} 积分`
+                        : "正在获取服务器报价..."}
+            </small>
           </label>
-          <button className="primary-topup" type="button" disabled={!activePackage || creating} onClick={() => void submitTopup(activePackage)}>
+          <button className="primary-topup" type="button" disabled={!activePackage || creating || customQuoteLoading} onClick={() => void submitTopup(activePackage)}>
             {creating ? "正在创建服务器订单..." : "创建充值订单"}
           </button>
           {createdOrder && (
             <div className="payment-result">
               <strong>订单已创建：{createdOrder.order.out_trade_no}</strong>
+              <span>
+                本订单到账：基础 {basePoints(createdOrder.order).toLocaleString()}
+                {promotionBonusPoints(createdOrder.order) ? ` + 活动赠送 ${promotionBonusPoints(createdOrder.order).toLocaleString()}` : ""}
+                {` = 合计 ${totalPoints(createdOrder.order).toLocaleString()} 积分`}
+              </span>
               <span>{createdOrder.payment.message}</span>
             </div>
           )}
@@ -666,7 +732,8 @@ export function PersonalCenterPage() {
                 </div>
                 <div>
                   <b>{money(order.amount_cents)}</b>
-                  <span>+{order.points.toLocaleString()} 积分</span>
+                  <span>+{totalPoints(order).toLocaleString()} 积分</span>
+                  {promotionBonusPoints(order) > 0 && <small>含活动赠送 {promotionBonusPoints(order).toLocaleString()} 积分</small>}
                 </div>
               </div>
             )) : <p className="empty-orders">暂无充值订单</p>}
