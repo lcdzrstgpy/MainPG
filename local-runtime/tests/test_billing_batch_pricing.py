@@ -198,6 +198,33 @@ def test_ttl_release_frees_locked_points(tmp_path: Path) -> None:
     assert dict(wallet) == {"points_balance": 1000, "locked_points": 0}
 
 
+def test_usage_history_links_batch_to_task_id(tmp_path: Path) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    freeze = freeze_batch_points(
+        database_path,
+        actor,
+        link_count=1,
+        idempotency_key="batch:task-link-0001",
+        task_id="task-42",
+    )
+    item = usage_history(database_path, account_id=actor.id)["items"][0]
+    assert item["usage_id"] == f"batch:{freeze['freeze_id']}"
+    assert item["status"] == "frozen"
+    # 消费流水携带任务号：用户/客服可据此对应到处理历史，避免「处理中但历史无记录」。
+    assert item["task"] == "task-42"
+
+    settle_batch_points(
+        database_path,
+        freeze["freeze_id"],
+        item_results=_full_success_subitems(),
+        expected_account_id=actor.id,
+    )
+    settled = usage_history(database_path, account_id=actor.id)["items"][0]
+    assert settled["status"] == "succeeded"
+    assert settled["task"] == "task-42"
+
+
 def test_update_pricing_items_bumps_version_and_writes_changelog(tmp_path: Path) -> None:
     database_path = tmp_path / "billing.sqlite3"
     init_db(database_path)

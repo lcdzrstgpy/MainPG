@@ -82,6 +82,9 @@ WUYIN_IMAGE_DETAIL_PATH = "/api/async/detail"
 WUYIN_IMAGE_POLL_INTERVAL_SECONDS = 3.0
 MAX_PROVIDER_RESULT_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_JSON_BYTES = 8 * 1024 * 1024
+REFERENCE_DOWNLOAD_ATTEMPTS = 3
+PROVIDER_RESULT_DOWNLOAD_ATTEMPTS = 3
+DOWNLOAD_RETRY_BACKOFF_SECONDS = (0.2, 0.6)
 
 # 图片 provider 轮巡游标（对齐原项目 native_product_engine._PROVIDER_CURSORS）：
 # 进程内全局共享、线程锁保护，按"每次图片请求"取模轮转起始 provider，实现负载均衡。
@@ -1128,33 +1131,26 @@ class ProductImageProcessor:
                     content = base64.b64decode(payload)
                 except Exception as exc:
                     detail = f"data image invalid: {_safe_error(exc)}"
-                    if not references:
-                        raise MediaProcessingError(
-                            f"required first reference image failed ({detail})"
-                        ) from exc
                     errors.append(detail)
                     continue
                 references.append((content, "reference.png", _data_url_content_type(header)))
             elif Path(value).is_file():
                 path = Path(value)
-                references.append((path.read_bytes(), path.name, mimetypes.guess_type(path.name)[0] or "image/jpeg"))
+                try:
+                    content, content_type = _read_local_reference(path)
+                except (MediaProcessingError, OSError) as exc:
+                    errors.append(f"local image failed: {_safe_error(exc)}")
+                    continue
+                references.append((content, path.name, content_type))
             else:
                 try:
                     content, content_type = self._download_reference_image_cached(value)
                 except (requests.RequestException, MediaProcessingError) as exc:
                     detail = f"download failed: {_safe_error(exc)}"
-                    if not references:
-                        raise MediaProcessingError(
-                            f"required first reference image failed ({detail})"
-                        ) from exc
                     errors.append(detail)
                     continue
                 if not content or not content_type.startswith("image/"):
                     detail = "reference URL did not return an image"
-                    if not references:
-                        raise MediaProcessingError(
-                            f"required first reference image failed ({detail})"
-                        )
                     errors.append(detail)
                     continue
                 references.append((content, _filename_for_url(value), content_type, value))
@@ -1265,7 +1261,7 @@ class ProductImageProcessor:
         url = str(item.get("url") or "").strip()
         if not url or not is_safe_external_url(url):
             raise MediaProcessingError("provider response does not contain a safe image result")
-        return _download_pinned_public_image(url, timeout_seconds=360)
+        return _download_provider_result_image(url)
 
     def _request_server_managed_wuyin_image(
         self,
@@ -1328,7 +1324,7 @@ class ProductImageProcessor:
         result_url = str(payload.get("result_url") or "").strip()
         if not result_url or not is_safe_external_url(result_url):
             raise MediaProcessingError("server image gateway returned no safe image result")
-        return _download_pinned_public_image(result_url, timeout_seconds=360)
+        return _download_provider_result_image(result_url)
 
     def _request_wuyin_image(
         self,
@@ -1376,7 +1372,7 @@ class ProductImageProcessor:
         if not task_id:
             raise MediaProcessingError("provider response does not contain image task id")
         result_url = self._poll_wuyin_image_result(provider, task_id, timeout_seconds=timeout_seconds)
-        return _download_pinned_public_image(result_url, timeout_seconds=360)
+        return _download_provider_result_image(result_url)
 
     def _poll_wuyin_image_result(
         self,
@@ -1580,6 +1576,11 @@ def _retry_class(error: BaseException) -> str:
     explicit_class = str(getattr(error, "status_class", "") or "")
     if explicit_class in {"billing_payment_required", "billing_forbidden", "non_retryable_4xx"}:
         return "non_retryable_4xx"
+    if explicit_class in {
+        "reference_input_download_failed",
+        "provider_result_download_failed",
+    }:
+        return "non_retryable_local"
     if explicit_class in {"gateway_in_progress", "gateway_bad_response", "gateway_unavailable", "server_error"}:
         return "server_error"
     if status in {400, 401, 402, 403, 404}:
@@ -1689,7 +1690,108 @@ def _filename_for_url(value: str) -> str:
     return name or "reference.jpg"
 
 
+def _read_local_reference(path: Path) -> tuple[bytes, str]:
+    content = path.read_bytes()
+    if not content:
+        raise MediaProcessingError("local reference image is empty")
+    content_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    try:
+        from PIL import Image  # type: ignore
+
+        with Image.open(BytesIO(content)) as opened:
+            detected_type = str(Image.MIME.get(str(opened.format or "").upper()) or "")
+            opened.verify()
+    except ImportError:
+        return content, content_type
+    except Exception as exc:
+        raise MediaProcessingError("local reference image is unreadable") from exc
+    if detected_type.startswith("image/"):
+        content_type = detected_type
+    return content, content_type
+
+
+def _root_download_error(error: BaseException) -> BaseException:
+    current = error
+    seen: set[int] = set()
+    while current.__cause__ is not None and id(current) not in seen:
+        seen.add(id(current))
+        current = current.__cause__
+    return current
+
+
+def _download_failure_reason(error: BaseException) -> str:
+    root = _root_download_error(error)
+    detail = _safe_error(root).casefold()
+    if (
+        isinstance(root, socket.gaierror)
+        or "cannot be resolved" in detail
+        or "name resolution" in detail
+    ):
+        return "DNS lookup failed"
+    if isinstance(root, ssl.SSLError) or "ssl" in detail or "tls" in detail or "certificate" in detail:
+        return "TLS handshake failed"
+    if isinstance(root, (TimeoutError, socket.timeout)) or "timed out" in detail or "timeout" in detail:
+        return "connection timed out"
+    if isinstance(root, ConnectionResetError) or "connection reset" in detail or "forcibly closed" in detail:
+        return "connection was reset"
+    return "connection failed"
+
+
+def _download_image_with_retries(
+    url: str,
+    *,
+    timeout_seconds: float,
+    stage: str,
+    attempts: int,
+) -> tuple[bytes, str]:
+    total_attempts = max(1, int(attempts))
+    last_error: MediaProcessingError | None = None
+    host = str(urlsplit(str(url or "")).hostname or "unknown")
+    for attempt in range(1, total_attempts + 1):
+        try:
+            return _download_pinned_public_image(url, timeout_seconds=timeout_seconds)
+        except MediaProcessingError as exc:
+            last_error = exc
+            root = _root_download_error(exc)
+            print(
+                "[image-download-diag] "
+                f"stage={stage} host={host} attempt={attempt}/{total_attempts} "
+                f"error_type={type(root).__name__} detail={_safe_error(root)}",
+                flush=True,
+            )
+            retryable = "temporarily unavailable" in str(exc).casefold()
+            if not retryable:
+                raise
+            if attempt < total_attempts:
+                delay_index = min(attempt - 1, len(DOWNLOAD_RETRY_BACKOFF_SECONDS) - 1)
+                time.sleep(DOWNLOAD_RETRY_BACKOFF_SECONDS[delay_index])
+    assert last_error is not None
+    label = (
+        "reference image download failed"
+        if stage == "reference_input"
+        else "generated image download failed"
+    )
+    raise MediaProcessingError(
+        f"{label}: {_download_failure_reason(last_error)}",
+        status_class=f"{stage}_download_failed",
+    ) from last_error
+
+
+def _download_provider_result_image(url: str) -> tuple[bytes, str]:
+    return _download_image_with_retries(
+        url,
+        timeout_seconds=360,
+        stage="provider_result",
+        attempts=PROVIDER_RESULT_DOWNLOAD_ATTEMPTS,
+    )
+
+
 def _download_reference_image(url: str) -> tuple[bytes, str]:
     """Download one reference through the shared DNS-pinned bounded transport."""
 
-    return _download_pinned_public_image(url, timeout_seconds=30)
+    return _download_image_with_retries(
+        url,
+        timeout_seconds=30,
+        stage="reference_input",
+        attempts=REFERENCE_DOWNLOAD_ATTEMPTS,
+    )

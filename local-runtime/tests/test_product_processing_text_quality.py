@@ -1059,6 +1059,60 @@ def _settings() -> dict:
     }
 
 
+def test_explicit_image_weight_reaches_final_dimensions_and_beats_ai_estimate(
+    monkeypatch,
+) -> None:
+    service = _process_service(monkeypatch)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(
+        service,
+        "_recognize_doubao_subject",
+        lambda *_args, **_kwargs: SubjectAnalysis(
+            sellable_subject="resin pumpkin figurine",
+            subject_explanation="The figurine is the complete sellable product.",
+            visible_attributes=("orange resin pumpkin",),
+            excluded_elements=("background",),
+            confidence="high",
+            uncertainty_reason="",
+            explicit_measurements={"weight_g": 320.0},
+        ),
+    )
+
+    def combined(*_args, **kwargs):
+        captured["known_dimensions"] = kwargs["known_dimensions"]
+        return {
+            "title": "",
+            "description": "",
+            "variant_translations": {},
+            "product_dimensions": {
+                "length_cm": 10,
+                "width_cm": 8,
+                "height_cm": 12,
+                "weight_g": 50,
+            },
+        }
+
+    monkeypatch.setattr(service, "_generate_doubao_text", combined)
+    settings = {
+        **_settings(),
+        "processing_scope": ["product_dimensions"],
+        "ai_media_opt_in": False,
+    }
+
+    result = service._process_one(
+        {"id": 1},
+        _draft(),
+        settings,
+        False,
+        task_id=12,
+    )
+
+    assert result["status"] == "completed"
+    assert captured["known_dimensions"] == {"weight_g": 320.0}
+    assert result["result"]["product_dimensions"]["weight_g"] == 320.0
+
+
 def test_process_success_exposes_five_points_grid_attempts_and_stage_timings(monkeypatch) -> None:
     service = _process_service(monkeypatch)
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
@@ -1145,6 +1199,25 @@ def test_deterministic_dimensions_remain_instance_callable() -> None:
     assert result["weight_g"] == 180
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected_weight_g"),
+    [
+        ({"source_attributes": [{"attribute_name_en": "Weight", "value_name_en": "275g"}], "weight_text": "50g"}, 275),
+        ({"employee_action_weight_kg": 0.32, "weight_text": "50g"}, 320),
+        ({"source_variant_records": [{"selected": False, "weight_text": "800g"}, {"selected": True, "weight_text": "300g"}], "weight_text": "50g"}, 300),
+    ],
+)
+def test_explicit_table_or_selected_sku_weight_beats_generic_weight(
+    raw: dict, expected_weight_g: float
+) -> None:
+    service = object.__new__(ProductProcessingService)
+
+    result = service._extract_deterministic_size(raw)
+
+    assert result is not None
+    assert result["weight_g"] == expected_weight_g
+
+
 def test_detail_generation_keeps_original_main_before_1688_detail_images(
     monkeypatch,
 ) -> None:
@@ -1194,9 +1267,11 @@ def test_empty_detail_image_result_is_retryable_failure(monkeypatch) -> None:
 
     result = service._process_one({"id": 1}, _draft(), settings, False, task_id=12)
 
-    assert result["status"] == "failed"
+    assert result["status"] == "attention_required"
     assert result["result"]["error_type"] == "detail_images_incomplete"
     assert result["result"]["retryable"] is True
+    assert result["result"]["partial_result"] is True
+    assert result["result"]["pending_stage"] == "detail_images"
 
 
 def test_images_receipt_hash_changes_with_real_image_prompt_key() -> None:
@@ -1281,9 +1356,11 @@ def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(mon
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
-    assert result["status"] == "failed"
+    assert result["status"] == "attention_required"
     assert result["result"]["error_type"] == "image_grid_incomplete"
     assert result["result"]["failure_class"] == "technical_retryable"
+    assert result["result"]["partial_result"] is True
+    assert result["result"]["pending_stage"] == "carousel_images"
     assert result["result"]["retryable"] is True
     assert result["result"]["optimized_title"].startswith(
         "Insulated Stainless Steel Travel Mug"
@@ -1297,24 +1374,29 @@ def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(mon
 def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> None:
     service = _process_service(monkeypatch)
     service.repository = _ReceiptRepository()
-    monkeypatch.setattr(
-        service,
-        "_generate_grid_images",
-        lambda *args, **kwargs: GridImageOutput(
+    def fail_grid(*args, **_kwargs):
+        args[8].append(
+            "image_set:ai-failed: reference image download failed: DNS lookup failed"
+        )
+        return GridImageOutput(
             carousel_urls=(),
             attempt_count=1,
             provider_status_class="gateway_unavailable",
-        ),
-    )
+        )
+
+    monkeypatch.setattr(service, "_generate_grid_images", fail_grid)
 
     result = service._process_one(
         {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
     )
 
-    assert result["status"] == "failed"
-    assert result["reason"] == "商品图片生成失败"
+    assert result["status"] == "attention_required"
+    assert result["reason"] == "商品图片待补充"
     assert result["result"]["error_type"] == "image_grid_incomplete"
     assert "本地质量门" in result["result"]["debug_hint"]
+    assert (
+        "底层原因：reference image download failed: DNS lookup failed" in result["result"]["debug_hint"]
+    )
     assert "doubao_text" in service.repository.receipts
     assert service.repository.receipts["doubao_text"]["output"]["title"].startswith(
         "Insulated Stainless Steel Travel Mug"

@@ -162,6 +162,18 @@
   color: #fff;
 }
 
+.verify-actions button.danger {
+  background: #fff;
+  border-color: #f0b4b8;
+  color: #cf6068;
+}
+
+.verify-actions button.danger:hover:not(:disabled) {
+  border-color: #cf6068;
+  background: #fff0f0;
+  box-shadow: 0 6px 14px rgba(207, 96, 104, 0.15);
+}
+
 .verify-download-hint {
   margin: 8px 0 0;
   color: #7d94aa;

@@ -91,6 +91,26 @@ def forget_freeze(freeze_id: str) -> None:
         _save_open_freezes(data)
 
 
+def mark_freeze_settle_failure(freeze_id: str, error: str) -> None:
+    """Record a failed settlement attempt on the open-freeze sidecar.
+
+    The record stays open (``settled=False``) so later reconciliation or the
+    server TTL can still settle/release it; the failure fields feed diagnostics
+    and avoid silently hiding why points remain locked.
+    """
+    data = _load_open_freezes()
+    record = data.get(str(freeze_id))
+    if record is None:
+        return
+    previous_attempts = int(record.get("settle_attempts") or 0)
+    record["settle_attempts"] = previous_attempts + 1
+    record["settle_status"] = "failed"
+    record["settle_error"] = str(error or "")[:300]
+    record["settle_last_error_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    data[str(freeze_id)] = record
+    _save_open_freezes(data)
+
+
 def open_freezes_for_account(account_id: str) -> list[dict[str, Any]]:
     return [
         {**record, "freeze_id": freeze_id}

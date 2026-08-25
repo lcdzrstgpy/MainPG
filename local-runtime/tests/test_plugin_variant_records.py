@@ -1,5 +1,9 @@
 from wh_local.data_collection.contracts import SourceVariantRecord
-from wh_local.data_collection.routes import _plugin_variant_records
+from wh_local.data_collection.routes import (
+    _plugin_physical_evidence,
+    _plugin_product_to_draft,
+    _plugin_variant_records,
+)
 
 
 def test_plugin_variant_records_keep_distinct_attribute_combinations_with_reused_sku_id() -> None:
@@ -54,3 +58,43 @@ def test_plugin_variant_records_use_the_product_main_image_when_a_text_only_sku_
     )
 
     assert record["image_url"] == "https://img.kwcdn.com/product/fancy/sofa-main.jpg"
+
+
+def test_plugin_selected_sku_weight_beats_generic_page_weight() -> None:
+    weight_text, _package = _plugin_physical_evidence(
+        {
+            "weight_text": "重量 50g",
+            "employee_action_weight_kg": 0.32,
+        }
+    )
+
+    assert weight_text == "重量 0.32kg"
+
+
+def test_plugin_draft_preserves_visible_parameter_table_for_processing() -> None:
+    draft = _plugin_product_to_draft(
+        {
+            "platform": "1688",
+            "product_id": "offer-1",
+            "product_link": "https://detail.1688.com/offer/1.html",
+            "title": "Pumpkin decoration",
+            "source_attributes": {"商品重量": "275g", "产品尺寸": "12*8*10cm"},
+            "source_attribute_table": [{"key": "商品重量", "value": "275g"}],
+        }
+    )
+
+    assert draft["source_attributes"]["商品重量"] == "275g"
+    assert draft["weight_text"] == "重量 275g"
+
+
+def test_plugin_selected_canonical_variant_weight_beats_other_variants() -> None:
+    weight_text, _package = _plugin_physical_evidence(
+        {
+            "source_variant_records": [
+                {"selected": False, "weight_text": "重量 800g"},
+                {"selected": True, "weight_text": "重量 300g"},
+            ]
+        }
+    )
+
+    assert weight_text == "重量 300g"

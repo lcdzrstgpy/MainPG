@@ -127,7 +127,11 @@ export function unitToCentimeters(value: number, unit: DimensionUnit): number {
 export function formatDimension(valueCm: number, unit: DimensionUnit): string {
   const converted = centimetersToUnit(valueCm, unit);
   const precision = unit === "mm" ? 1 : 2;
-  return `${Number(converted.toFixed(precision))} ${unit}`;
+  return `${Number(converted.toFixed(precision))} ${dimensionUnitLabel(unit)}`;
+}
+
+export function dimensionUnitLabel(unit: DimensionUnit): string {
+  return unit === "in" ? "inch" : unit;
 }
 
 export function changeDisplayUnit(state: EditorState, unit: DimensionUnit): EditorState {

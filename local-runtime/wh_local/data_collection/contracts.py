@@ -178,6 +178,8 @@ class SourceVariantRecord(_ContractModel):
     price_cny: Decimal | None = None
     source_price: Decimal | None = None
     source_currency: str | None = None
+    weight_text: str | None = None
+    weight_kg: Decimal | None = None
     min_order_quantity: int | None = None
     quantity: int | None = None
     sales: int | None = None
@@ -220,7 +222,7 @@ class SourceVariantRecord(_ContractModel):
     def _valid_image_url(cls, value: object) -> str | None:
         return None if value is None else _url(value, "image_url")
 
-    @field_validator("price_cny", "source_price", mode="before")
+    @field_validator("price_cny", "source_price", "weight_kg", mode="before")
     @classmethod
     def _decimal_price(cls, value: object) -> Decimal | None:
         return _decimal(value, "price_cny")
