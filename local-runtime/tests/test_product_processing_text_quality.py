@@ -1059,6 +1059,60 @@ def _settings() -> dict:
     }
 
 
+def test_explicit_image_weight_reaches_final_dimensions_and_beats_ai_estimate(
+    monkeypatch,
+) -> None:
+    service = _process_service(monkeypatch)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(
+        service,
+        "_recognize_doubao_subject",
+        lambda *_args, **_kwargs: SubjectAnalysis(
+            sellable_subject="resin pumpkin figurine",
+            subject_explanation="The figurine is the complete sellable product.",
+            visible_attributes=("orange resin pumpkin",),
+            excluded_elements=("background",),
+            confidence="high",
+            uncertainty_reason="",
+            explicit_measurements={"weight_g": 320.0},
+        ),
+    )
+
+    def combined(*_args, **kwargs):
+        captured["known_dimensions"] = kwargs["known_dimensions"]
+        return {
+            "title": "",
+            "description": "",
+            "variant_translations": {},
+            "product_dimensions": {
+                "length_cm": 10,
+                "width_cm": 8,
+                "height_cm": 12,
+                "weight_g": 50,
+            },
+        }
+
+    monkeypatch.setattr(service, "_generate_doubao_text", combined)
+    settings = {
+        **_settings(),
+        "processing_scope": ["product_dimensions"],
+        "ai_media_opt_in": False,
+    }
+
+    result = service._process_one(
+        {"id": 1},
+        _draft(),
+        settings,
+        False,
+        task_id=12,
+    )
+
+    assert result["status"] == "completed"
+    assert captured["known_dimensions"] == {"weight_g": 320.0}
+    assert result["result"]["product_dimensions"]["weight_g"] == 320.0
+
+
 def test_process_success_exposes_five_points_grid_attempts_and_stage_timings(monkeypatch) -> None:
     service = _process_service(monkeypatch)
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
@@ -1143,6 +1197,25 @@ def test_deterministic_dimensions_remain_instance_callable() -> None:
     assert result["width_cm"] == 10
     assert result["height_cm"] == 4
     assert result["weight_g"] == 180
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_weight_g"),
+    [
+        ({"source_attributes": [{"attribute_name_en": "Weight", "value_name_en": "275g"}], "weight_text": "50g"}, 275),
+        ({"employee_action_weight_kg": 0.32, "weight_text": "50g"}, 320),
+        ({"source_variant_records": [{"selected": False, "weight_text": "800g"}, {"selected": True, "weight_text": "300g"}], "weight_text": "50g"}, 300),
+    ],
+)
+def test_explicit_table_or_selected_sku_weight_beats_generic_weight(
+    raw: dict, expected_weight_g: float
+) -> None:
+    service = object.__new__(ProductProcessingService)
+
+    result = service._extract_deterministic_size(raw)
+
+    assert result is not None
+    assert result["weight_g"] == expected_weight_g
 
 
 def test_detail_generation_keeps_original_main_before_1688_detail_images(

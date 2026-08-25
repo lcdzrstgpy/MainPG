@@ -797,6 +797,7 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
     ).strip()
     candidate_id = f"plugin:{platform}:{product_id or source_ref}"
     weight_text, package_info_text = _plugin_physical_evidence(product)
+    source_attributes = _plugin_source_attributes(product)
     return {
         **sanitized_product,
         "source_type": "web_manual_capture",
@@ -811,6 +812,9 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
         "sku": str(product.get("sku") or "").strip() or None,
         "weight_text": weight_text,
         "package_info_text": package_info_text,
+        # Preserve the visible source parameter table under the canonical key
+        # consumed by product processing. Explicit table values must beat AI.
+        "source_attributes": source_attributes,
         # 插件只回传 variant_combinations；这里把它换算成草稿池/导出使用的
         # 标准 SKU 记录（source_variant_records），保证草稿池能看到完整规格。
         "source_variant_records": _plugin_variant_records(product, fallback_image_url=image_url),
@@ -830,11 +834,49 @@ _PLUGIN_SIZE_AXISED = re.compile(
     re.IGNORECASE,
 )
 # 插件回传商品顶层的重量系字段（Temu/1688 详情数据里字段名不稳定）。
+_PLUGIN_WEIGHT_KEY_RE = re.compile(r"(重量|毛重|净重|单重|克重|weight|gross|net)", re.IGNORECASE)
 _PLUGIN_WEIGHT_TOP_KEYS = (
+    # Selected-SKU evidence must win over generic page-level weight fields.
+    "employee_action_weight_text", "employee_action_weight_kg",
     "weight_text", "weight_kg", "weight", "item_weight", "itemWeight",
     "gross_weight", "net_weight", "packaging_weight", "package_weight",
     "重量", "毛重", "净重", "克重",
 )
+_PLUGIN_WEIGHT_KG_KEYS = frozenset({"employee_action_weight_kg", "weight_kg"})
+
+
+def _plugin_source_attributes(product: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the extension's visible parameter table as canonical attributes."""
+
+    candidates: list[Any] = [product.get("source_attributes")]
+    for container_key in ("employee_action_validation", "captured_fields", "raw_payload"):
+        container = product.get(container_key)
+        if isinstance(container, Mapping):
+            candidates.extend(
+                (
+                    container.get("source_attributes"),
+                    container.get("source_attribute_pairs"),
+                    container.get("source_attribute_table"),
+                )
+            )
+    candidates.extend((product.get("source_attribute_pairs"), product.get("source_attribute_table")))
+
+    attributes: dict[str, Any] = {}
+    for candidate in candidates:
+        if isinstance(candidate, Mapping):
+            for key, value in candidate.items():
+                name = str(key or "").strip()
+                if name and value not in (None, ""):
+                    attributes.setdefault(name, value)
+        elif isinstance(candidate, (list, tuple)):
+            for item in candidate:
+                if not isinstance(item, Mapping):
+                    continue
+                name = str(item.get("name") or item.get("key") or item.get("label") or "").strip()
+                value = item.get("value")
+                if name and value not in (None, ""):
+                    attributes.setdefault(name, value)
+    return attributes
 
 
 def _plugin_combos(product: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -858,7 +900,20 @@ def _plugin_physical_evidence(
     ``_extract_deterministic_size`` 能确定性解析而非走 AI 估值。
     """
     weight_text: str | None = None
+    # Older extension versions nested the selected-SKU evidence here.
+    employee_action = product.get("employee_action_validation")
+    if isinstance(employee_action, Mapping):
+        employee_text = str(employee_action.get("weight_text") or "").strip()
+        employee_kg = employee_action.get("weight_kg")
+        if employee_text:
+            weight_text = employee_text[:80]
+        elif employee_kg not in (None, ""):
+            match = _PLUGIN_WEIGHT_VALUE.search(str(employee_kg).strip())
+            if match and float(match.group(1)) > 0:
+                weight_text = f"重量 {match.group(1)}kg"
     for key in _PLUGIN_WEIGHT_TOP_KEYS:
+        if weight_text is not None:
+            break
         value = product.get(key)
         if value in (None, ""):
             continue
@@ -868,7 +923,7 @@ def _plugin_physical_evidence(
         if key == "weight_text":
             weight_text = text[:80]
             break
-        if key == "weight_kg":
+        if key in _PLUGIN_WEIGHT_KG_KEYS:
             match = _PLUGIN_WEIGHT_VALUE.search(text)
             if match and float(match.group(1)) > 0:
                 weight_text = f"重量 {match.group(1)}kg"
@@ -878,6 +933,33 @@ def _plugin_physical_evidence(
             # 保留原始数字文本（25 而非 25.0），单位缺失时按克约定。
             weight_text = f"重量 {match.group(1)}{(match.group(2) or '').casefold() or 'g'}"
         break
+    if weight_text is None:
+        # A labelled parameter-table value is authoritative structured evidence.
+        for key, value in _plugin_source_attributes(product).items():
+            if not _PLUGIN_WEIGHT_KEY_RE.search(str(key)):
+                continue
+            match = _PLUGIN_WEIGHT_VALUE.search(str(value).strip())
+            if match and float(match.group(1)) > 0:
+                unit = (match.group(2) or "g").casefold()
+                weight_text = f"重量 {match.group(1)}{unit}"
+                break
+    if weight_text is None:
+        # Newer extensions already send weighted canonical variant records.
+        records = product.get("source_variant_records") or []
+        if isinstance(records, (list, tuple)):
+            ordered = [item for item in records if isinstance(item, Mapping) and item.get("selected")]
+            ordered.extend(item for item in records if isinstance(item, Mapping) and not item.get("selected"))
+            for record in ordered:
+                record_text = str(record.get("weight_text") or "").strip()
+                record_kg = record.get("weight_kg")
+                if record_text:
+                    weight_text = record_text[:80]
+                    break
+                if record_kg not in (None, ""):
+                    match = _PLUGIN_WEIGHT_VALUE.search(str(record_kg).strip())
+                    if match and float(match.group(1)) > 0:
+                        weight_text = f"重量 {match.group(1)}kg"
+                        break
     if weight_text is None:
         # SKU 组合兜底：插件详情数据把件重放在 skuInfoMap 的每个 SKU 里。
         for combo in _plugin_combos(product):
@@ -1023,7 +1105,13 @@ def _plugin_variant_records(
     groups = product.get("variant_groups") or product.get("raw_variant_groups") or []
     groups = [item for item in groups if isinstance(item, Mapping)] if isinstance(groups, (list, tuple)) else []
 
-    combo_records = _plugin_records_from_combos(combos, product_id, platform=platform)
+    combo_records = _plugin_records_from_combos(
+        combos,
+        product_id,
+        platform=platform,
+        product_currency=product.get("currency"),
+        fallback_image_url=fallback_image_url,
+    )
     group_records = _plugin_records_from_groups(groups, combos, product_id)
     if not group_records:
         return combo_records
@@ -1050,6 +1138,8 @@ def _plugin_records_from_combos(
     product_id: str,
     *,
     platform: str = "",
+    product_currency: Any = None,
+    fallback_image_url: str = "",
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1073,7 +1163,7 @@ def _plugin_records_from_combos(
         used_sku_ids[sku_id] = attribute_identity
         source_price = _plugin_decimal(combo.get("price"))
         source_currency = _plugin_currency(
-            combo.get("currency") or product.get("currency"),
+            combo.get("currency") or product_currency,
             combo.get("price"),
             platform,
         )

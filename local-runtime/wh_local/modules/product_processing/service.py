@@ -4156,6 +4156,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 ]
             )
         )
+        vision_reference_urls = detail_reference_urls[:6]
         source_reference_values, source_local_reference_count = self._generation_reference_values(
             int(draft["id"]),
             source_image_urls,
@@ -4225,7 +4226,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     "vision_identity",
                     {
                         "draft_id": int(draft["id"]),
-                        "main_image_url": source_image_urls[0],
+                        "image_urls": vision_reference_urls,
                         "source_title": source_title,
                         "model": DOUBAO_VISION_MODEL_ID,
                         "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
@@ -4271,7 +4272,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 attempt_state.doubao_vision = None
                 try:
                     analysis = self._recognize_doubao_subject(
-                        source_image_urls[0], source_title
+                        vision_reference_urls, source_title
                     )
                 except DoubaoVisionError as exc:
                     record_stage("doubao_subject", stage_started)
@@ -4599,6 +4600,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             deterministic_dimensions = (
                 self._extract_deterministic_size(raw) if needs_dimensions else None
             )
+            known_dimensions = dict(deterministic_dimensions or {})
+            image_measurements = vision_identity.get("explicit_measurements")
+            if needs_dimensions and isinstance(image_measurements, dict):
+                explicit_image_dimensions = {
+                    key: float(number)
+                    for key in ("length_cm", "width_cm", "height_cm", "weight_g")
+                    if (number := self._number(image_measurements.get(key))) is not None
+                    and float(number) > 0
+                }
+                if explicit_image_dimensions:
+                    # Structured table/SKU evidence remains authoritative; image
+                    # measurements only fill fields that source text did not provide.
+                    explicit_image_dimensions.update(known_dimensions)
+                    known_dimensions = explicit_image_dimensions
             variant_values = self._unique_variant_values(raw)
             receipt_output = structured_receipt.get("output") if structured_receipt else None
             if isinstance(receipt_output, dict):
@@ -4623,14 +4638,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         needs_title=bool(needs_title),
                         needs_description=bool(needs_desc),
                         needs_dimensions=bool(needs_dimensions),
-                        known_dimensions=deterministic_dimensions,
+                        known_dimensions=known_dimensions,
                     )
                 except DoubaoTextError as exc:
                     text_failure = exc
                     combined = None
                     needs_title = False
                     needs_desc = False
-                    product_dimensions = dict(deterministic_dimensions or {})
+                    product_dimensions = dict(known_dimensions)
                     provider_attempts["doubao_text"] = max(
                         0, int(exc.attempt_count)
                     )
@@ -4671,6 +4686,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     translations = combined["variant_translations"]
                 if needs_dimensions:
                     product_dimensions = dict(combined.get("product_dimensions") or {})
+                    # Never let the text model replace measurements explicitly
+                    # captured from the source table, selected SKU, or image.
+                    product_dimensions.update(known_dimensions)
                 ai_notes.append("text:managed-service-combined")
             if (needs_title or needs_desc) and text_failure is None:
                 text_failure = DoubaoTextError(
@@ -6587,6 +6605,29 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         attributes = raw.get("source_attributes") or {}
         axis_values: dict[str, float] = {}
         weight_values: list[float] = []
+        preferred_weight_values: list[float] = []
+
+        def weight_in_grams(value: Any, *, assume_kg: bool = False) -> float | None:
+            text = str(value or "").strip()
+            parsed = _WEIGHT_VALUE.search(text)
+            if parsed and float(parsed.group(1)) > 0:
+                number = float(parsed.group(1))
+                unit = parsed.group(2).casefold()
+                return number * 1000 if unit in {"kg", "千克", "公斤"} else number
+            if re.fullmatch(r"\d+(?:\.\d+)?", text):
+                number = float(text)
+                if 0 < number < (1000 if assume_kg else 100000):
+                    return number * 1000 if assume_kg else number
+            return None
+        if isinstance(attributes, list):
+            canonical: dict[str, Any] = {}
+            for item in attributes:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or item.get("key") or item.get("attribute_name_en") or "").strip()
+                if name:
+                    canonical[name] = item.get("value", item.get("value_name_en"))
+            attributes = canonical
         if isinstance(attributes, dict):
             for key, value in attributes.items():
                 key_text = str(key or "").strip()
@@ -6609,13 +6650,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         weight = float(parsed.group(1))
                         unit = parsed.group(2).casefold()
                         if weight > 0:
-                            weight_values.append(weight * 1000 if unit in {"kg", "千克", "公斤"} else weight)
+                            preferred_weight_values.append(weight * 1000 if unit in {"kg", "千克", "公斤"} else weight)
         for variant in raw.get("source_variant_records") or []:
             if not isinstance(variant, dict):
                 continue
             variant_attrs = variant.get("attributes")
             if isinstance(variant_attrs, dict):
                 texts.extend(str(value) for value in variant_attrs.values() if value not in (None, ""))
+            variant_weight_values = preferred_weight_values if variant.get("selected") else weight_values
             # 插件/整店采集的 SKU 记录可能直接携带重量字段。
             variant_weight_text = str(variant.get("weight_text") or "").strip()
             variant_weight_kg = variant.get("weight_kg")
@@ -6624,23 +6666,34 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 parsed = _WEIGHT_VALUE.search(variant_weight_text)
                 if parsed and float(parsed.group(1)) > 0:
                     unit = (parsed.group(2) or "").casefold()
-                    weight_values.append(
+                    variant_weight_values.append(
                         float(parsed.group(1)) * (1000 if unit in {"kg", "千克", "公斤"} else 1)
                     )
                 elif re.fullmatch(r"\d+(?:\.\d+)?", variant_weight_text):
                     number = float(variant_weight_text)
                     if 0 < number < 100000:
-                        weight_values.append(number)
+                        variant_weight_values.append(number)
             elif variant_weight_kg not in (None, ""):
                 variant_kg_text = str(variant_weight_kg).strip()
                 texts.append(variant_kg_text)
                 parsed = _WEIGHT_VALUE.search(variant_kg_text)
                 if parsed and float(parsed.group(1)) > 0:
-                    weight_values.append(float(parsed.group(1)) * 1000)
+                    variant_weight_values.append(float(parsed.group(1)) * 1000)
                 elif re.fullmatch(r"\d+(?:\.\d+)?", variant_kg_text):
                     number = float(variant_kg_text)
                     if 0 < number < 1000:
-                        weight_values.append(number * 1000)
+                        variant_weight_values.append(number * 1000)
+        employee_action = raw.get("employee_action_validation")
+        employee_action = employee_action if isinstance(employee_action, dict) else {}
+        employee_weight_text = raw.get("employee_action_weight_text") or employee_action.get("weight_text")
+        employee_weight_kg = raw.get("employee_action_weight_kg")
+        if employee_weight_kg in (None, ""):
+            employee_weight_kg = employee_action.get("weight_kg")
+        employee_weight = weight_in_grams(employee_weight_text)
+        if employee_weight is None:
+            employee_weight = weight_in_grams(employee_weight_kg, assume_kg=True)
+        if employee_weight is not None:
+            preferred_weight_values.append(employee_weight)
         weight_text_value = str(raw.get("weight_text") or "").strip()
         if not weight_text_value:
             # 其他采集方式可能只回传 weight_kg / item_weight 等直系键。
@@ -6712,8 +6765,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     for axis, value in zip(("length", "width", "height"), values, strict=True):
                         put(axis, value * scale)
         # 4) 重量：属性键优先（毛重/净重/重量…），再回退全文模式。
-        if weight_values and not dimensions.get("weight_g"):
-            dimensions["weight_g"] = round(max(weight_values), 2)
+        resolved_weights = preferred_weight_values or weight_values
+        if resolved_weights and not dimensions.get("weight_g"):
+            dimensions["weight_g"] = round(max(resolved_weights), 2)
         if not dimensions.get("weight_g"):
             weight_match = _WEIGHT_PATTERN.search(joined)
             if weight_match:
@@ -6981,13 +7035,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         return state
 
     def _recognize_doubao_subject(
-        self, image_url: str, source_title: str
+        self, image_url: str | list[str], source_title: str
     ) -> SubjectAnalysis:
+        image_urls = [image_url] if isinstance(image_url, str) else list(image_url)
+        image_urls = [str(value or "").strip() for value in image_urls if str(value or "").strip()][:6]
         normalized_title = " ".join(str(source_title or "").split()).strip()[:1000]
         cache_payload = json.dumps(
             {
                 "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
-                "image_url": str(image_url or "").strip(),
+                "image_urls": image_urls,
                 "source_title": normalized_title,
             },
             ensure_ascii=False,
@@ -7007,16 +7063,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if cached is not None:
             self._attempt_state().doubao_vision = 0
             return cached
-        data_url = self._image_to_data_url(image_url)
-        if not data_url:
+        data_urls = [
+            data_url
+            for value in image_urls
+            if (data_url := self._image_to_data_url(value))
+        ]
+        if not data_urls:
             raise DoubaoVisionError(
-                "The original 1688 image could not be prepared for Doubao vision",
+                "The original product images could not be prepared for Doubao vision",
                 error_kind="transient",
                 retryable=True,
             )
         client = self._doubao_vision_client()
         try:
-            analysis = client.recognize_subject(data_url, normalized_title)
+            analysis = client.recognize_subject(data_urls, normalized_title)
         finally:
             self._attempt_state().doubao_vision = client.last_attempt_count
         with lock:

@@ -15,6 +15,7 @@ VALID_ANALYSIS = {
         "The woven rectangular mat in the foreground is the complete sellable product."
     ),
     "visible_attributes": ["rectangular shape", "woven bamboo surface", "beige color"],
+    "explicit_measurements": {},
     "excluded_elements": ["bed", "pillows", "room background"],
     "confidence": "high",
     "uncertainty_reason": "",
@@ -99,6 +100,27 @@ def test_recognize_subject_sends_fixed_model_image_and_prompt(monkeypatch) -> No
     assert request["allow_redirects"] is False
     assert response.closed is True
 
+def test_recognize_subject_reads_multiple_source_images_in_one_call(monkeypatch) -> None:
+    session = _Session([_success_response({**VALID_ANALYSIS, "explicit_measurements": {"weight_g": 320}})])
+    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+
+    result = doubao_vision.DoubaoVisionClient().recognize_subject(
+        [
+            "data:image/jpeg;base64,bWFpbg==",
+            "data:image/jpeg;base64,c3BlYw==",
+        ],
+        SOURCE_TITLE,
+    )
+
+    assert result.explicit_measurements == {"weight_g": 320.0}
+    content = session.requests[0]["json"]["messages"][0]["content"]
+    assert [item["type"] for item in content] == ["image_url", "image_url", "text"]
+    assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,c3BlYw=="
+    assert "explicit_measurements" in content[2]["text"]
+
+
+
 
 def test_transient_failure_retries_once_then_succeeds(monkeypatch) -> None:
     busy = _Response({"error": {"message": "busy-secret-detail"}}, status_code=429)
@@ -137,6 +159,7 @@ def test_recognize_subject_rejects_missing_original_title(monkeypatch) -> None:
         json.dumps({**VALID_ANALYSIS, "confidence": "certain"}),
         json.dumps({**VALID_ANALYSIS, "sellable_subject": ""}),
         json.dumps({**VALID_ANALYSIS, "visible_attributes": "bamboo"}),
+        json.dumps({**VALID_ANALYSIS, "explicit_measurements": {"weight_g": "heavy"}}),
     ],
 )
 def test_invalid_contract_is_rejected_without_retry(monkeypatch, content: str) -> None:
