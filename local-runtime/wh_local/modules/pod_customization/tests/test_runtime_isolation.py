@@ -169,6 +169,58 @@ def test_direct_listing_grid_uses_suchuang_async_protocol_and_explicit_grant() -
         runtime.close()
 
 
+def test_suchuang_status_five_with_success_message_keeps_polling_for_result_url() -> None:
+    class Response:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        @property
+        def ok(self):
+            return True
+
+        def json(self):
+            return self._payload
+
+        def close(self):
+            return None
+
+    class SuchuangSession:
+        def __init__(self):
+            self.responses = [
+                Response({"code": 200, "msg": "成功", "data": {"status": "5"}}),
+                Response(
+                    {
+                        "code": 200,
+                        "data": {
+                            "status": "5",
+                            "url": "https://1.1.1.1/result.png",
+                        },
+                    }
+                ),
+            ]
+
+        def get(self, _url, **_kwargs):
+            return self.responses.pop(0)
+
+        def close(self):
+            return None
+
+    runtime = PodCustomizationAiRuntime(
+        image_workers=1,
+        requests_per_minute=0,
+        session=SuchuangSession(),
+        poll_interval_seconds=0,
+    )
+    try:
+        assert runtime._poll_suchuang_grid(
+            _grant(wuyin="fresh-image-key"), "suchuang-task-1"
+        ) == "https://1.1.1.1/result.png"
+    finally:
+        runtime.close()
+
+
 def test_direct_listing_grid_fails_closed_without_wuyin_grant() -> None:
     runtime = PodCustomizationAiRuntime(image_workers=1, requests_per_minute=0)
     try:

@@ -277,6 +277,12 @@ class PodCustomizationAiRuntime(AiRuntime):
                     attempt_count=1,
                     status_class="transient",
                 )
+            if status_value == "5" and (
+                "成功" in message or "success" in message.lower()
+            ):
+                # 速创会先返回「5 / 成功」，再异步补上图片 URL；这不是失败终态。
+                last_message = message or "status=5"
+                continue
             if status_value in {"3", "4", "5", "fail", "failed", "error", "cancelled", "canceled"}:
                 raise MediaProcessingError(
                     f"速创图片任务失败：{message}",
