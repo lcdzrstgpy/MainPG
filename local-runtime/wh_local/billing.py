@@ -1911,7 +1911,11 @@ def settle_batch_points(
                 # 付费重试（超过免费额度后用户确认）：该链接无论成功与否都按款式价
                 # 扣费，不再按成败退款；只有未确认的普通重试才按成功/失败结算。
                 paid_retry = bool(entry.get("paid_retry") or False)
-                if paid_retry or all(statuses[feature] == "success" for feature in pod_scope):
+                # POD sells a completed four-image listing.  Title generation is
+                # auxiliary: a title failure never refunds a successful image
+                # set, while a title-only retry is always free after settlement.
+                image_succeeded = statuses.get("four_grid") == "success"
+                if paid_retry or image_succeeded:
                     total_charge_units += link_units
                 else:
                     total_refund_units += link_units

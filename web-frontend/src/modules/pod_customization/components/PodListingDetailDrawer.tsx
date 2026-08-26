@@ -10,7 +10,7 @@ type Props = {
   onClose: () => void;
 };
 
-const ROLE_LABELS = ["主图", "细节图 A", "细节图 B", "场景图"] as const;
+const ROLE_LABELS = ["主图", "细节图 A", "细节图 B", "素材图"] as const;
 
 type LegacyListingDimensions = {
   length_cm?: number;

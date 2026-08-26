@@ -307,6 +307,7 @@ def test_batch_title_uses_generation_call_id_and_listing_ready_statistics(tmp_pa
         ).fetchone()[0]
 
     assert titles.requests[0].style_task_id == call_id
+    assert titles.requests[0].hero_image == split_grid_2x2(_grid(1))[3]
     assert stored["style_titles"][0]["style_task_id"] == call_id
     assert stored["style_titles"][0]["listing_ready"] is True
     assert service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id) == {
@@ -460,6 +461,10 @@ def test_title_only_regeneration_preserves_task_id_and_does_not_call_image_runti
     assert claimed["style_task_id"] == failed["style_task_id"]
     assert len(images.requests) == image_call_count
     assert stored["style_titles"][0]["style_task_id"] == failed["style_task_id"]
+    assert [request.hero_image for request in titles.requests] == [
+        split_grid_2x2(_grid(20))[3],
+        split_grid_2x2(_grid(20))[3],
+    ]
     assert stored["style_titles"][0]["status"] == "completed"
     assert stored["listing_ready_count"] == 1
     assert stored["status"] == "completed"

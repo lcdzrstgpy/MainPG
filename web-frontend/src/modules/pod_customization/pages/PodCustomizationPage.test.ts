@@ -36,6 +36,12 @@ test("POD customer-facing copy does not mention four-grid generation", () => {
   assert.doesNotMatch(gallerySource, /每款一次.*请求/);
 });
 
+test("POD listing result labels identify the original scene as primary and the original hero as material", () => {
+  assert.match(gallerySource, /const ROLE_LABELS = \["主图", "细节图 A", "细节图 B", "素材图"\]/);
+  assert.match(listingDrawerSource, /const ROLE_LABELS = \["主图", "细节图 A", "细节图 B", "素材图"\]/);
+  assert.match(modelSource, /四格顺序固定为主图、细节图 A、细节图 B、素材图。/);
+});
+
 test("system-template save control is independent and immediately precedes generation", () => {
   const advancedStart = source.indexOf('<div className="pod-advanced-prompt">');
   const advancedEnd = source.indexOf('<div className="pod-volume-inline">', advancedStart);
@@ -120,4 +126,19 @@ test("POD local state fails closed when the signed-in account scope is incomplet
   assert.match(source, /const workspaceId = \(account\?\.workspace_id \|\| account\?\.workspace_code\)\?\.trim\(\) \?\? "";/);
   assert.match(source, /return accountId && workspaceId \? \{ accountId, workspaceId \} : null;/);
   assert.doesNotMatch(source, /account\?\.account_id \|\| "default"/);
+});
+
+test("POD page opens a batch failed-retry dialog and refreshes the batch after submitting selections", () => {
+  assert.match(source, /import \{ PodFailedRetryDialog \} from "\.\.\/components\/PodFailedRetryDialog"/);
+  assert.match(source, /const \[failedRetryOpen, setFailedRetryOpen\] = useState\(false\);/);
+  assert.match(source, /podCustomizationApi\.retryFailed\(activeBatch\.id, request\)/);
+  assert.match(source, /setNotice\(`已提交图片重试 \$\{request\.image_style_indices\.length\} 款、标题重试 \$\{request\.title_style_indices\.length\} 款。`\)/);
+  assert.match(source, /onOpenFailedRetry=\{\(\) => setFailedRetryOpen\(true\)\}/);
+  assert.match(source, /<PodFailedRetryDialog[\s\S]*?open=\{failedRetryOpen\}/);
+});
+
+test("result header exposes a batch failed-retry entry beside the export action", () => {
+  assert.match(gallerySource, /onOpenFailedRetry: \(\) => void;/);
+  assert.match(gallerySource, /onClick=\{onOpenFailedRetry\}>批量重试失败项<\/button>/);
+  assert.match(gallerySource, /disabled=\{Boolean\(busyAction\)\}/);
 });

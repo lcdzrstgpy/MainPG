@@ -217,11 +217,12 @@ class ExpiringCoordinator(BillingCoordinator):
         )
 
 
-def _service(tmp_path: Path, runtime: FakePodRuntime, billing=None) -> PodCustomizationService:
+def _service(tmp_path: Path, runtime: FakePodRuntime, billing=None, *, title_runtime=None) -> PodCustomizationService:
     return PodCustomizationService(
         tmp_path / "workbench.sqlite3",
         tmp_path / "pod-assets",
         runtime,
+        title_runtime=title_runtime,
         billing_coordinator=billing or BillingCoordinator(),
         start_workers=True,
     )
@@ -591,6 +592,30 @@ def test_manual_title_retry_queues_on_batch_coordinator(tmp_path: Path) -> None:
     runtime.close()
 
 
+def test_batch_failed_retry_queues_one_serial_worker_action(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, BillingCoordinator())
+    started = threading.Event()
+    release = threading.Event()
+    received: list[tuple[object, ...]] = []
+
+    def process_batch_retry(*args) -> None:
+        received.append(args)
+        started.set()
+        release.wait(timeout=2)
+
+    service.worker.process_batch_retry = process_batch_retry
+    run = SimpleNamespace(action_key="batch-retry-run", settle=lambda: None)
+    future = service.worker.submit_batch_retry("batch-1", (1,), (2,), run)
+    assert started.wait(timeout=1)
+    release.set()
+    future.result(timeout=1)
+
+    assert received == [("batch-1", (1,), (2,), run)]
+    service.close()
+    runtime.close()
+
+
 def test_completed_future_callback_is_registered_outside_the_future_lock(tmp_path: Path) -> None:
     runtime = ListingOnlyRuntime([])
     service = _service(tmp_path, runtime, BillingCoordinator())
@@ -790,6 +815,151 @@ def _create_batch(
         ),
         enqueue=False,
     )
+
+
+def _prepare_batch_retry_candidates(service: PodCustomizationService, batch_id: str) -> None:
+    """Make style 1 an image failure and style 2 a title-only failure."""
+    with service.repository._connect() as connection:
+        connection.execute(
+            """UPDATE pod_customization_style_grid_results
+               SET status = 'failed', error_message = 'image provider failed'
+               WHERE batch_id = ? AND style_index = 1""",
+            (batch_id,),
+        )
+        connection.execute(
+            """UPDATE pod_customization_style_grid_results
+               SET status = 'completed', pattern_asset_id = 'pattern', composite_asset_id = 'composite'
+               WHERE batch_id = ? AND style_index = 2""",
+            (batch_id,),
+        )
+        rows = connection.execute(
+            """SELECT result_id, variant_index FROM pod_customization_style_grid_results
+               WHERE batch_id = ? AND style_index = 2""",
+            (batch_id,),
+        ).fetchall()
+        connection.executemany(
+            """INSERT INTO pod_customization_style_grid_publications
+               (result_id, role, public_url, updated_at)
+               VALUES (?, ?, ?, datetime('now'))""",
+            [
+                (row["result_id"], f"role-{row['variant_index']}", f"https://example.test/{row['variant_index']}")
+                for row in rows
+            ],
+        )
+        connection.execute(
+            """UPDATE pod_customization_style_titles
+               SET status = 'failed', style_task_id = 'failed-style-task', error_message = 'title provider failed'
+               WHERE batch_id = ? AND style_index IN (1, 2)""",
+            (batch_id,),
+        )
+        connection.execute(
+            """UPDATE pod_customization_batches
+               SET status = 'partial_failure' WHERE batch_id = ?""",
+            (batch_id,),
+        )
+
+
+def test_batch_retry_claims_mixed_image_and_title_failures_in_one_durable_action(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing, title_runtime=object())
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"])
+    _prepare_batch_retry_candidates(service, batch["id"])
+    submitted: list[tuple[object, ...]] = []
+    service.worker.submit_batch_retry = lambda *args: submitted.append(args)
+
+    result = service.retry_failed(
+        actor,
+        batch["id"],
+        image_style_indices=[1],
+        title_style_indices=[2],
+    )
+    refreshed = service.get_batch(actor, batch["id"])
+    billing_run = next(
+        row
+        for row in service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
+        if row["target_id"] == "batch_retry"
+    )
+
+    assert result == {
+        "image_style_indices": [1],
+        "title_style_indices": [2],
+        "submitted_image_style_count": 1,
+        "submitted_title_style_count": 1,
+    }
+    assert [item["status"] for item in refreshed["items"][:4]] == ["generating_pattern"] * 4
+    assert refreshed["style_titles"][0]["status"] == "queued"
+    assert refreshed["style_titles"][1]["status"] == "generating"
+    assert billing_run["action_type"] == "style_retry"
+    assert billing_run["target_id"] == "batch_retry"
+    assert billing_run["action_payload"] == {
+        "retry_mode": "batch",
+        "image_style_indices": [1],
+        "title_style_indices": [2],
+    }
+    assert submitted and submitted[0][1:3] == ((1,), (2,))
+    service.close()
+    runtime.close()
+
+
+def test_batch_retry_billing_resume_reuses_the_persisted_selection(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    billing = RecoveringSettlementCoordinator()
+    service = _service(tmp_path, runtime, billing, title_runtime=object())
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"])
+    _prepare_batch_retry_candidates(service, batch["id"])
+    service.worker.submit_batch_retry = lambda *_args: None
+    service.retry_failed(
+        actor,
+        batch["id"],
+        image_style_indices=[1],
+        title_style_indices=[2],
+    )
+    stored = next(
+        row
+        for row in service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
+        if row["target_id"] == "batch_retry"
+    )
+    service.repository.mark_billing_auth_required(stored["action_key"], "restart")
+    resumed: list[tuple[object, ...]] = []
+    service.worker.process_batch_retry = lambda *args: resumed.append(args)
+
+    result = service.resume_billing_run(actor, stored["run_id"], enqueue=False)
+
+    assert result["id"] == stored["run_id"]
+    assert resumed and resumed[0][1:3] == ((1,), (2,))
+    service.close()
+    runtime.close()
+
+
+def test_batch_retry_rejects_a_style_without_four_failed_images_before_freezing(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"])
+    _prepare_batch_retry_candidates(service, batch["id"])
+    freezes_before = len(billing.freezes)
+    before = service.get_batch(actor, batch["id"])
+
+    with pytest.raises(PodRepositoryError, match="all four images failed") as captured:
+        service.retry_failed(
+            actor,
+            batch["id"],
+            image_style_indices=[2],
+            title_style_indices=[],
+        )
+
+    assert captured.value.status_code == 409
+    assert len(billing.freezes) == freezes_before
+    assert service.get_batch(actor, batch["id"])["items"] == before["items"]
+    service.close()
+    runtime.close()
 
 
 def test_worker_makes_one_initial_grid_call_per_style_and_keeps_four_results_together(tmp_path: Path) -> None:

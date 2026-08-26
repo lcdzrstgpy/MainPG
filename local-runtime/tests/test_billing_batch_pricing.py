@@ -369,6 +369,69 @@ def test_pod_random_profile_persists_prices_and_settles_whole_styles(
     assert dict(wallet) == {"points_balance": 1600, "locked_points": 0}
 
 
+def test_pod_random_profile_charges_when_images_succeed_even_if_title_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    monkeypatch.setattr(billing_module.secrets, "randbelow", lambda upper: 0)
+    freeze = freeze_batch_points(
+        database_path,
+        actor,
+        link_count=1,
+        scope=["title", "four_grid"],
+        idempotency_key="pod:batch:image-success-title-failed-0001",
+        billing_profile="pod_random_v1",
+    )
+
+    settled = settle_batch_points(
+        database_path,
+        freeze["freeze_id"],
+        item_results=[{
+            "link_idx": 1,
+            "subitems": [
+                {"feature": "title", "status": "no_return"},
+                {"feature": "four_grid", "status": "success"},
+            ],
+        }],
+        expected_account_id=actor.id,
+    )
+
+    assert settled["charged_points"] == 40
+    assert settled["refunded_points"] == 0
+
+
+def test_pod_random_profile_refunds_title_only_retry_even_when_title_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    monkeypatch.setattr(billing_module.secrets, "randbelow", lambda upper: 0)
+    freeze = freeze_batch_points(
+        database_path,
+        actor,
+        link_count=1,
+        scope=["title"],
+        idempotency_key="pod:retry:title-only-refund-0001",
+        billing_profile="pod_random_v1",
+    )
+
+    settled = settle_batch_points(
+        database_path,
+        freeze["freeze_id"],
+        item_results=[{
+            "link_idx": 1,
+            "subitems": [{"feature": "title", "status": "success"}],
+        }],
+        expected_account_id=actor.id,
+    )
+
+    assert settled["charged_points"] == 0
+    assert settled["refunded_points"] == 40
+
+
 def test_usage_history_identifies_pod_batch_charge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

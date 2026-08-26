@@ -17,7 +17,14 @@ from .billing_contract import (
     PodExecutionGrant,
     PodPlannedCall,
 )
-from .contracts import BatchCreate, Calibration, DirectListingTrialCreate, NormalizedPoint, NormalizedRect
+from .contracts import (
+    BatchCreate,
+    BatchRetryFailedCreate,
+    Calibration,
+    DirectListingTrialCreate,
+    NormalizedPoint,
+    NormalizedRect,
+)
 from .export import (
     DianxiaomiExport,
     analyze_dianxiaomi_export,
@@ -518,6 +525,52 @@ class PodCustomizationService:
             self.worker.submit_title_regeneration(batch_id, style_index, billing_run)
         return self._title_payload(title)
 
+    def retry_failed(
+        self,
+        actor: Actor,
+        batch_id: str,
+        *,
+        image_style_indices: list[int],
+        title_style_indices: list[int],
+        enqueue: bool = True,
+    ) -> dict[str, Any]:
+        request = BatchRetryFailedCreate(
+            image_style_indices=image_style_indices,
+            title_style_indices=title_style_indices,
+        )
+        image_indices = tuple(sorted(request.image_style_indices))
+        title_indices = tuple(sorted(request.title_style_indices))
+        if title_indices:
+            self._require_title_runtime_configured(require_present=True)
+        self._preflight_batch_retry(actor, batch_id, image_indices, title_indices)
+        action_id = f"{batch_id}:batch-retry:{uuid.uuid4().hex}"
+        billing_run = self._freeze_batch_retry(
+            actor, action_id, batch_id, image_indices, title_indices
+        )
+        try:
+            self.repository.claim_batch_retry(
+                batch_id,
+                actor.workspace_id,
+                actor.id,
+                image_style_indices=image_indices,
+                title_style_indices=title_indices,
+            )
+        except Exception:
+            self._settle_unclaimed_retry(billing_run)
+            raise
+        if self.worker is not None:
+            self.worker.register_action_billing_run(f"batch-retry:{batch_id}", billing_run)
+        if enqueue:
+            if self.worker is None:
+                raise RuntimeError("POD worker is disabled")
+            self.worker.submit_batch_retry(batch_id, image_indices, title_indices, billing_run)
+        return {
+            "image_style_indices": list(image_indices),
+            "title_style_indices": list(title_indices),
+            "submitted_image_style_count": len(image_indices),
+            "submitted_title_style_count": len(title_indices),
+        }
+
     def _preflight_style_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         if batch["status"] not in {"completed", "partial_failure", "failed"}:
@@ -547,6 +600,39 @@ class PodCustomizationService:
             item.get("status") != "completed" or not item.get("public_url") for item in results
         ):
             raise PodRepositoryError("all four public POD images are required before regenerating a title", 409)
+
+    def _preflight_batch_retry(
+        self,
+        actor: Actor,
+        batch_id: str,
+        image_style_indices: tuple[int, ...],
+        title_style_indices: tuple[int, ...],
+    ) -> None:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch["status"] not in {"completed", "partial_failure", "failed"}:
+            raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
+        if any(index > int(batch["requested_count"]) for index in (*image_style_indices, *title_style_indices)):
+            raise PodRepositoryError("POD style index is outside the batch range", 422)
+        for style_index in image_style_indices:
+            results = [item for item in batch["items"] if int(item.get("style_index") or 0) == style_index]
+            if len(results) != 4 or any(item.get("status") != "failed" for item in results):
+                raise PodRepositoryError("only styles with all four images failed can be retried", 409)
+        for style_index in title_style_indices:
+            title = next(
+                (row for row in batch["style_titles"] if int(row["style_index"]) == style_index),
+                None,
+            )
+            results = [item for item in batch["items"] if int(item.get("style_index") or 0) == style_index]
+            if (
+                title is None
+                or title.get("status") != "failed"
+                or not title.get("style_task_id")
+                or len(results) != 4
+                or any(item.get("status") != "completed" or not item.get("public_url") for item in results)
+            ):
+                raise PodRepositoryError(
+                    "only a failed POD title with four public images can be retried", 409
+                )
 
     @staticmethod
     def _settle_unclaimed_retry(billing_run: PodBillingRun) -> None:
@@ -694,7 +780,16 @@ class PodCustomizationService:
             if self.worker is None:
                 raise RuntimeError("POD worker is disabled")
             payload = stored["action_payload"]
-            if stored["action_type"] == "scene_optimization":
+            if stored["action_type"] == "style_retry" and payload.get("retry_mode") == "batch":
+                image_style_indices = tuple(int(index) for index in payload.get("image_style_indices", []))
+                title_style_indices = tuple(int(index) for index in payload.get("title_style_indices", []))
+                function = (
+                    self.worker.submit_batch_retry
+                    if enqueue
+                    else self.worker.process_batch_retry
+                )
+                function(stored["batch_id"], image_style_indices, title_style_indices, run)
+            elif stored["action_type"] == "scene_optimization":
                 function = (
                     self.worker.submit_scene_optimization
                     if enqueue
@@ -823,6 +918,37 @@ class PodCustomizationService:
             target_id=str(style_index),
             batch_id=batch_id,
             action_payload={"creative_prompt": creative_prompt},
+        )
+
+    def _freeze_batch_retry(
+        self,
+        actor: Actor,
+        action_id: str,
+        batch_id: str,
+        image_style_indices: tuple[int, ...],
+        title_style_indices: tuple[int, ...],
+    ) -> PodBillingRun:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_batch_retry(
+            action_id,
+            image_style_indices=image_style_indices,
+            title_style_indices=title_style_indices,
+            include_title=self.title_runtime is not None,
+        )
+        # The existing durable schema restricts action_type values. The payload
+        # distinguishes this single-run batch retry without a table migration.
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="style_retry",
+            target_id="batch_retry",
+            batch_id=batch_id,
+            action_payload={
+                "retry_mode": "batch",
+                "image_style_indices": list(image_style_indices),
+                "title_style_indices": list(title_style_indices),
+            },
         )
 
     def _freeze_retry(

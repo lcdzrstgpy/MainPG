@@ -334,6 +334,26 @@ def test_batch_create_list_detail_and_scene_optimization_contract(tmp_path) -> N
     assert item_retry.json()["detail"] == "POD single-image regeneration is not available in this release"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"image_style_indices": [], "title_style_indices": []},
+        {"image_style_indices": [1, 1], "title_style_indices": []},
+        {"image_style_indices": [1], "title_style_indices": [1]},
+        {"image_style_indices": [True], "title_style_indices": []},
+    ),
+)
+def test_batch_retry_failed_contract_rejects_invalid_selection_before_queueing(tmp_path, payload) -> None:
+    client = _client(tmp_path)
+    response = client.post(
+        "/api/pod-customization/batches/missing/retry-failed",
+        headers={"Authorization": "Bearer dev-admin-token"},
+        json=payload,
+    )
+
+    assert response.status_code == 422
+
+
 def test_direct_listing_trial_api_returns_one_grid_and_four_public_listing_images(tmp_path) -> None:
     client = _client(tmp_path)
     headers = {"Authorization": "Bearer dev-admin-token"}

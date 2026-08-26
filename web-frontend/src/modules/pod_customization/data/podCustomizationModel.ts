@@ -25,6 +25,7 @@ export type PodStyleRow = {
 export const POD_BATCH_COUNTS = [2, 10, 20, 40, 60, 100] as const satisfies readonly PodBatchCount[];
 export const MAX_POD_SKU_COUNT = 100;
 export const MAX_POD_SKU_NAME_LENGTH = 120;
+const POD_STYLE_PRESENTATION_ROLES = ["lifestyle", "detail_a", "detail_b", "hero"] as const;
 
 export const EMPTY_POD_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   product_name: "",
@@ -81,7 +82,7 @@ export function buildPromptV1(fields: PodBusinessFieldsDraft): string {
     `禁用元素：${valueOrFallback(fields.excluded_elements)}`,
     "硬性规则：",
     "1. 每款正常只生成一次 2×2 成组图片；生成、拆分或去重失败时最多重试一次。",
-    "2. 四格顺序固定为主图、细节图 A、细节图 B、场景图。",
+    "2. 四格顺序固定为主图、细节图 A、细节图 B、素材图。",
     "3. 同一款四张图必须保持产品、结构、底色、图案内容、图案尺寸与位置完全一致。",
     "4. 不同款式必须使用不同图案、构图和创意配方，禁止复用上一款图案。",
     "5. 禁止复制模板原有图案、产品颜色、背景或场景；必须重新设计产品表面与展示环境。",
@@ -176,8 +177,14 @@ export function groupPodStyleRows(
     grouped.set(styleIndex, results);
   }
   return [...grouped.entries()].sort(([left], [right]) => left - right).map(([index, results]) => {
+    const resultByRole = new Map(
+      results.filter((item): item is PodBatchItem => Boolean(item)).map((item) => [item.role, item]),
+    );
+    const presentationResults = POD_STYLE_PRESENTATION_ROLES.every((role) => resultByRole.has(role))
+      ? POD_STYLE_PRESENTATION_ROLES.map((role) => resultByRole.get(role))
+      : results;
     const styleTitle = titlesByStyle.get(index);
-    const settled = results.filter(Boolean);
+    const settled = presentationResults.filter(Boolean);
     const completed = settled.filter((item) => item?.status === "completed").length;
     const failed = settled.filter((item) => item?.status === "failed").length;
     const status = completed === 4 ? "completed"
@@ -191,7 +198,7 @@ export function groupPodStyleRows(
       title_status: styleTitle?.status,
       listing_ready: styleTitle?.listing_ready,
       title_error_message: styleTitle?.error_message,
-      results,
+      results: presentationResults,
       status,
     };
   });

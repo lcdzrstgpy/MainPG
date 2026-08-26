@@ -106,6 +106,45 @@ class PodCallPlan:
             )
         return cls(idempotency_key=f"pod:retry:{action_id}", calls=tuple(calls))
 
+    @classmethod
+    def for_batch_retry(
+        cls,
+        action_id: str,
+        *,
+        image_style_indices: Sequence[int],
+        title_style_indices: Sequence[int],
+        include_title: bool,
+    ) -> "PodCallPlan":
+        """Build one durable plan for selected failed POD styles.
+
+        Image retries keep the existing two-attempt grid allowance and then
+        regenerate their listing title.  Title-only retries reserve title calls
+        without re-running image generation.
+        """
+        image_indices = tuple(image_style_indices)
+        title_indices = tuple(title_style_indices)
+        if not image_indices and not title_indices:
+            raise ValueError("at least one failed style is required")
+        calls: list[PodPlannedCall] = []
+        for style_index in image_indices:
+            calls.extend(
+                (
+                    PodPlannedCall(f"{action_id}:style:{style_index}:image:1", "pod.image"),
+                    PodPlannedCall(f"{action_id}:style:{style_index}:image:2", "pod.image"),
+                )
+            )
+            if include_title:
+                calls.extend(
+                    PodPlannedCall(f"{action_id}:style:{style_index}:title:{attempt}", "pod.title")
+                    for attempt in range(1, 4)
+                )
+        for style_index in title_indices:
+            calls.extend(
+                PodPlannedCall(f"{action_id}:style:{style_index}:title:{attempt}", "pod.title")
+                for attempt in range(1, 4)
+            )
+        return cls(idempotency_key=f"pod:retry:{action_id}", calls=tuple(calls))
+
     def freeze_payload(self, *, encrypted_session_key: str) -> dict[str, object]:
         return {
             "idempotency_key": self.idempotency_key,
