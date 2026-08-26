@@ -83,6 +83,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    icon=str(ROOT / "app-icon.ico"),
     # 正式交付使用 windowed（无黑色控制台窗口），日志不影响功能
     console=False,
     disable_windowed_traceback=False,
