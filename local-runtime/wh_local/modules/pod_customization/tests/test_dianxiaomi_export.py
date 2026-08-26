@@ -185,7 +185,7 @@ def test_export_expands_new_skus_with_their_own_dimensions_and_last_scene_previe
     finally:
         workbook.close()
 
-    assert [row[3] for row in rows] == ["POD-001-01", "POD-001-02"]
+    assert [row[3] for row in rows] == ["POD-001", "POD-001"]
     assert [row[10] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[11:14] for row in rows] == [(30, 20, 10), (40, 25, 15)]
     assert [row[14] for row in rows] == [450, 650]
@@ -268,7 +268,7 @@ def test_export_legacy_snapshot_without_skus_uses_global_dimensions_and_sku_name
     finally:
         workbook.close()
 
-    assert [row[3] for row in rows] == ["POD-001-01", "POD-001-02"]
+    assert [row[3] for row in rows] == ["POD-001", "POD-001"]
     assert [row[10] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[11:14] for row in rows] == [(30, 20, 10), (30, 20, 10)]
 
@@ -438,7 +438,7 @@ def test_service_export_repeats_each_style_for_saved_skus_and_uses_last_scene_as
         {"name": "CT-BLACK", "length_cm": 30.0, "width_cm": 20.0, "height_cm": 10.0, "weight_g": 450.0},
         {"name": "CT-SAND", "length_cm": 40.0, "width_cm": 25.0, "height_cm": 15.0, "weight_g": 650.0},
     ]
-    assert [row[3] for row in rows] == ["POD-001-01", "POD-001-02"]
+    assert [row[3] for row in rows] == ["POD-001", "POD-001"]
     assert [row[10] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[11:14] for row in rows] == [(30, 20, 10), (40, 25, 15)]
     assert [row[14] for row in rows] == [450, 650]

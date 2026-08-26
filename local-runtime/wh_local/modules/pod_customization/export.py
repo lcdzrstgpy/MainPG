@@ -103,7 +103,6 @@ def build_pod_dianxiaomi_export(
             batch["listing_fields"],
             sku,
             sku_index=sku_index,
-            sku_count=len(skus),
         )
         for style_index in sorted(analysis.exportable_styles)
         for sku_index, sku in enumerate(skus, start=1)
@@ -258,7 +257,6 @@ def _build_row(
     sku: dict[str, Any] | None = None,
     *,
     sku_index: int = 1,
-    sku_count: int = 1,
 ) -> list[Any]:
     safe_title = validate_listing_copy_text("title", copy.get("title"), max_length=200)
     safe_english_title = validate_listing_copy_text(
@@ -277,7 +275,7 @@ def _build_row(
     )
     category = listing_fields.get("category_name") or business_fields["product_category"]
     sku = sku or listing_fields
-    product_code = _product_code(listing_fields, style_index, sku_index, sku_count)
+    product_code = _product_code(listing_fields, style_index)
     sku_code = _sku_code(sku, style_index, sku_index)
     row: list[Any] = ["" for _ in DXM_COLUMNS]
     values = {
@@ -316,13 +314,10 @@ def _safe_dxm_code(value: object) -> str:
     return candidate if _DXM_CODE.fullmatch(candidate) else ""
 
 
-def _product_code(
-    listing_fields: dict[str, Any], style_index: int, sku_index: int, sku_count: int
-) -> str:
+def _product_code(listing_fields: dict[str, Any], style_index: int) -> str:
     suffix = f"{style_index:03d}"
     prefix = _safe_dxm_code(listing_fields.get("product_code_prefix")) or "POD"
-    product_code = f"{prefix}-{suffix}"
-    return f"{product_code}-{sku_index:02d}" if sku_count > 1 else product_code
+    return f"{prefix}-{suffix}"
 
 
 def _sku_code(sku: dict[str, Any], style_index: int, sku_index: int) -> str:
