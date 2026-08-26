@@ -35,6 +35,7 @@ _DYNAMIC_ADDRESS_DNS_SUFFIXES = (
     "sslip.io",
     "xip.io",
 )
+_DXM_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 @dataclass(frozen=True)
@@ -101,9 +102,11 @@ def build_pod_dianxiaomi_export(
             batch["business_fields"],
             batch["listing_fields"],
             sku,
+            sku_index=sku_index,
+            sku_count=len(skus),
         )
         for style_index in sorted(analysis.exportable_styles)
-        for sku in skus
+        for sku_index, sku in enumerate(skus, start=1)
     ]
     return DianxiaomiExport(
         content=build_dianxiaomi_workbook(rows),
@@ -253,6 +256,9 @@ def _build_row(
     business_fields: dict[str, Any],
     listing_fields: dict[str, Any],
     sku: dict[str, Any] | None = None,
+    *,
+    sku_index: int = 1,
+    sku_count: int = 1,
 ) -> list[Any]:
     safe_title = validate_listing_copy_text("title", copy.get("title"), max_length=200)
     safe_english_title = validate_listing_copy_text(
@@ -271,16 +277,19 @@ def _build_row(
     )
     category = listing_fields.get("category_name") or business_fields["product_category"]
     sku = sku or listing_fields
+    product_code = _product_code(listing_fields, style_index, sku_index, sku_count)
+    sku_code = _sku_code(sku, style_index, sku_index)
     row: list[Any] = ["" for _ in DXM_COLUMNS]
     values = {
         0: selected_title,
         1: selected_title,
         2: description,
-        3: sku.get("name") or None,
+        3: product_code,
         4: "Style",
         5: f"Style {suffix}",
         8: images["lifestyle"],
         9: listing_fields["declared_price"],
+        10: sku_code,
         11: sku["length_cm"],
         12: sku["width_cm"],
         13: sku["height_cm"],
@@ -300,3 +309,21 @@ def _build_row(
     if len(row) != 42:
         raise AssertionError("POD Dianxiaomi row must contain exactly 42 cells")
     return row
+
+
+def _safe_dxm_code(value: object) -> str:
+    candidate = str(value or "").strip()
+    return candidate if _DXM_CODE.fullmatch(candidate) else ""
+
+
+def _product_code(
+    listing_fields: dict[str, Any], style_index: int, sku_index: int, sku_count: int
+) -> str:
+    suffix = f"{style_index:03d}"
+    prefix = _safe_dxm_code(listing_fields.get("product_code_prefix")) or "POD"
+    product_code = f"{prefix}-{suffix}"
+    return f"{product_code}-{sku_index:02d}" if sku_count > 1 else product_code
+
+
+def _sku_code(sku: dict[str, Any], style_index: int, sku_index: int) -> str:
+    return _safe_dxm_code(sku.get("name")) or f"SKU-{style_index:03d}-{sku_index:02d}"
