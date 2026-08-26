@@ -10,14 +10,14 @@ import {
 const VIEWS = [
   { key: "all", label: "全部草稿", sourceType: undefined },
   { key: "manual", label: "网页手动采集", sourceType: "web_manual_capture" },
-  { key: "api", label: "万邦 API 采集", sourceType: "onebound_api" },
+  { key: "api", label: "API 采集", sourceType: "onebound_api" },
 ] as const;
 
 type ViewKey = (typeof VIEWS)[number]["key"];
 
 const sourceLabels: Record<DraftSourceType, string> = {
   web_manual_capture: "网页手动采集",
-  onebound_api: "万邦 API 采集",
+  onebound_api: "API 采集",
 };
 
 function imageSource(draft: ProductDraft, version: number) {
@@ -132,7 +132,7 @@ export function ProductProcessingPage() {
             </div>
           </article>;
         })}
-      </div> : <div className="product-processing-empty"><span>▣</span><strong>暂无草稿</strong><p>可从网页手动采集或万邦 API 采集商品，采集后的草稿会显示在这里。</p></div>}
+      </div> : <div className="product-processing-empty"><span>▣</span><strong>暂无草稿</strong><p>可从网页手动采集或 API 采集商品，采集后的草稿会显示在这里。</p></div>}
     </section>
   </div>;
 }

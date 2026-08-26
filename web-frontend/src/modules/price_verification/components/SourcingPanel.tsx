@@ -132,7 +132,7 @@ function auditText(item?: SourcePreviewItem) {
   if (!audit) return "本次图搜未提供上传审计";
   if (audit.downloaded && audit.uploaded && audit.searched) {
     const size = audit.image_size_bytes ? ` · ${Math.ceil(audit.image_size_bytes / 1024)} KB` : "";
-    return `主图已下载、已上传万邦、已图搜${size}`;
+    return `主图已下载、已上传、已图搜${size}`;
   }
   const failed = [audit.downloaded ? "" : "下载", audit.uploaded ? "" : "上传", audit.searched ? "" : "图搜"].filter(Boolean);
   return `图搜链路未完成：${failed.join("、")}`;
@@ -397,7 +397,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       <div className="pv-source-head">
         <div>
           {matchingCompleted ? <p className="pv-source-collapsed-note">图搜结果已收起，已关联货源见下方第四板块；点击「重新图搜」可恢复候选列表。</p> : null}
-          <h2>货源关联<SectionHelp title="每次搜索均以万邦图片图搜结果为候选依据；商品标题翻译后的中文关键词仅用于辅助确认同一货源，不能单独成为候选。结果按 SKC 分组，每个 SKC 默认展示前 5 条；每条候选均按 Temu 调整后申报价核算利润，源价与重量可调。" /></h2>
+          <h2>货源关联<SectionHelp title="每次搜索均以图片图搜结果为候选依据；商品标题翻译后的中文关键词仅用于辅助确认同一货源，不能单独成为候选。结果按 SKC 分组，每个 SKC 默认展示前 5 条；每条候选均按 Temu 调整后申报价核算利润，源价与重量可调。" /></h2>
         </div>
         <div className="pv-source-head-actions">
           <div className="pv-source-inline-stats" aria-label="图搜统计">
@@ -454,9 +454,9 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                       const priceText = priceOverrides[candKey] !== undefined ? priceOverrides[candKey] : String(selected?.price_cny ?? candidate.promotion_price ?? candidate.price ?? "");
                       const weightText = weights[candKey] ?? String(selected?.weight_kg ?? "0.5");
                       const metaParts = [
-                        candidate.image_search_rank ? `万邦图搜第 ${candidate.image_search_rank} 位` : "",
+                        candidate.image_search_rank ? `图搜第 ${candidate.image_search_rank} 位` : "",
                         candidate.image_similarity_score != null ? `本地相似度 ${Math.round(candidate.image_similarity_score * 100)}%` : "",
-                        candidate.image_similarity_fallback ? (candidate.image_similarity_score == null ? "万邦顺序兜底" : "低于阈值补位") : "",
+                        candidate.image_similarity_fallback ? (candidate.image_similarity_score == null ? "图搜顺序兜底" : "低于阈值补位") : "",
                         candidate.sales !== undefined ? `销量 ${candidate.sales}` : "",
                       ].filter(Boolean);
                       return (
