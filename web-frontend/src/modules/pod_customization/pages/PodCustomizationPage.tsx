@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { podCustomizationApi } from "../api/podCustomizationApi";
 import { PodBatchGallery } from "../components/PodBatchGallery";
 import { PodBatchHistory } from "../components/PodBatchHistory";
+import { PodFailedRetryDialog } from "../components/PodFailedRetryDialog";
 import { PodResultLightbox } from "../components/PodResultLightbox";
 import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
 import {
@@ -13,10 +14,12 @@ import {
   isActiveBatchStatus,
   isActivePodItemStatus,
   isActivePodStyleTitleStatus,
+  groupPodStyleRows,
   resolveCreativePrompt,
   listingFieldsForApi,
   shouldPollPodBatch,
 } from "../data/podCustomizationModel";
+import { batchRetryCandidates, type PodBatchRetryRequest } from "../data/podBatchRetry";
 import {
   createPodSystemTemplate,
   createEmptyPodCustomizationDraft,
@@ -157,6 +160,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [systemTemplates, setSystemTemplates] = useState<PodSystemTemplate[]>(initialDraft.state.system_templates);
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [failedRetryOpen, setFailedRetryOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState("");
   const [notice, setNotice] = useState("");
@@ -171,6 +175,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const summaryTemplatePreview = usePodAssetUrl(summaryTemplate?.preview_url || summaryTemplate?.original_url);
   const summaryFields = businessFieldsForApi(businessFields);
   const selectedItem = activeBatch?.items.find((item) => item.id === selectedItemId);
+  const failedRetryCandidates = activeBatch ? batchRetryCandidates(groupPodStyleRows(activeBatch)) : { image: [], title: [] };
   const builtInPrompt = useMemo(() => buildPromptV1(businessFields), [businessFields]);
   const resolvedPrompt = resolveCreativePrompt(businessFields, currentBatchEdit ?? "");
   const activeItemStatuses = activeBatch?.items.map((item) => item.status).join("|") ?? "";
@@ -598,6 +603,22 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  const retryFailed = async (request: PodBatchRetryRequest) => {
+    if (!activeBatch) return;
+    setBusyAction("retry-failed");
+    clearMessages();
+    try {
+      await podCustomizationApi.retryFailed(activeBatch.id, request);
+      setFailedRetryOpen(false);
+      setNotice(`已提交图片重试 ${request.image_style_indices.length} 款、标题重试 ${request.title_style_indices.length} 款。`);
+      await refreshActiveBatch(activeBatch.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   return (
     <section className="pod-customization-page" aria-label="POD 定制">
       <header className="pod-page-header">
@@ -692,6 +713,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             onRegenerateStyle={(styleIndex) => void regenerateStyle(styleIndex)}
             onRegenerateTitle={(styleIndex) => void regenerateStyleTitle(styleIndex)}
             onExportDianxiaomi={() => void exportDianxiaomi()}
+            onOpenFailedRetry={() => setFailedRetryOpen(true)}
           />
         </main>
       </div>
@@ -702,6 +724,15 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         busyAction={busyAction}
         onClose={() => setSelectedItemId(undefined)}
         onDownload={downloadAsset}
+      />
+
+      <PodFailedRetryDialog
+        open={failedRetryOpen}
+        imageCandidates={failedRetryCandidates.image}
+        titleCandidates={failedRetryCandidates.title}
+        busy={busyAction === "retry-failed"}
+        onClose={() => setFailedRetryOpen(false)}
+        onSubmit={(request) => void retryFailed(request)}
       />
 
       <TemplateLibraryDrawer

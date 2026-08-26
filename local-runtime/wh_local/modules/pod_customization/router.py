@@ -15,6 +15,7 @@ from ...customer.contracts import (
 from ...session import Actor, actor_from_authorization, require_permission
 from .contracts import (
     BatchCreate,
+    BatchRetryFailedCreate,
     CalibrationUpdate,
     DirectListingTrialCreate,
     RegenerateItemCreate,
@@ -208,6 +209,22 @@ def create_router(
             batch_id,
             style_index,
             creative_prompt=body.creative_prompt,
+            enqueue=start_workers,
+        )
+
+    @router.post("/batches/{batch_id}/retry-failed")
+    def retry_failed(
+        batch_id: str,
+        body: BatchRetryFailedCreate,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(
+            service.retry_failed,
+            actor,
+            batch_id,
+            image_style_indices=body.image_style_indices,
+            title_style_indices=body.title_style_indices,
             enqueue=start_workers,
         )
 

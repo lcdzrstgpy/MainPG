@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { podStyleTitleRegenerateRequest } from "../data/styleTitleRequest.ts";
@@ -30,4 +31,11 @@ test("billing recovery uses the authenticated list and asynchronous resume endpo
   } satisfies PodBillingRunListResponse;
   assert.equal(backendPayload.runs[0].status, "auth_required");
   assert.equal(backendPayload.runs[0].rule_version, 7);
+});
+
+test("batch retry posts separated image and title style selections", () => {
+  const source = readFileSync(new URL("./podCustomizationApi.ts", import.meta.url), "utf8");
+  assert.match(source, /retryFailed: \(batchId: string, body: PodBatchRetryRequest\) => httpJson<PodBatchRetryResult>\(/);
+  assert.match(source, /batches\/\$\{encodeURIComponent\(batchId\)\}\/retry-failed/);
+  assert.match(source, /\{ method: "POST", body \}/);
 });

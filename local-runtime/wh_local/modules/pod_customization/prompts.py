@@ -105,10 +105,10 @@ def build_direct_listing_prompt(fields: BusinessFields, creative_prompt: str) ->
         "Keep the same exact product across all four panels: identical structure, material, proportions, base color, newly invented artwork, artwork scale, and artwork placement.",
         "Do not invent another product, extra accessories, text, captions, logos, labels, watermarks, collages, or borders. Keep the four-panel divider clean and centered.",
         "Panel order is fixed and every panel must show the same exact product with the same unchanged newly invented artwork.",
-        "Panel 1 — HERO IMAGE (top-left): show one complete product as the marketplace primary image. Use a newly generated clean neutral ecommerce background, keep the whole product clearly visible, make it fill most of the panel, and show the full design sharply.",
+        "Panel 1 — MATERIAL IMAGE (top-left): show one complete product against a newly generated clean neutral ecommerce background. Keep the whole product clearly visible, make it fill most of the panel, and show the full design sharply. This is supporting material imagery, not the marketplace primary image.",
         "Panel 2 — DETAIL IMAGE A (top-right): show a tight high-resolution close-up of the newly invented surface artwork on this same product. Make color, edges, print or material texture, and manufacturing detail easy to inspect; do not alter the artwork or its placement.",
         "Panel 3 — DETAIL IMAGE B (bottom-left): show a different close product detail or three-quarter product view. Choose a product-appropriate structural or material detail, while keeping the artwork visibly identical to Panel 1 and Panel 2.",
-        "Panel 4 — LIFESTYLE IMAGE (bottom-right): show the same complete product in one newly generated, natural, commercially useful lifestyle setting. Keep the full product and unchanged artwork visible; do not reuse the template background or add another product.",
+        "Panel 4 — PRIMARY IMAGE (bottom-right): show the same complete product in one newly generated, natural, commercially useful lifestyle setting. Keep the full product and unchanged artwork visible; this is the marketplace primary image and title reference. Do not reuse the template background or add another product.",
         f"Product name: {fields.product_name or 'POD product'}.",
     ]
     for label, value in (

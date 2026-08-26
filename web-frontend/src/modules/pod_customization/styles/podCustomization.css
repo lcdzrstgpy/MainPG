@@ -477,6 +477,34 @@
 .pod-dianxiaomi-export button { min-height: 34px; padding: 7px 10px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: #fff; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); font-size: .63rem; font-weight: 850; white-space: nowrap; }
 .pod-dianxiaomi-export button:disabled { cursor: not-allowed; color: var(--pod-text-muted); background: var(--pod-surface-soft); border-color: var(--pod-border); opacity: .82; }
 .pod-dianxiaomi-export small { color: #aa6351; font-size: .53rem; line-height: 1.35; text-align: right; }
+.pod-open-failed-retry { color: var(--pod-primary) !important; background: var(--pod-surface) !important; }
+.pod-open-failed-retry:hover:not(:disabled) { border-color: var(--pod-primary); background: var(--pod-surface-tint) !important; }
+
+.pod-failed-retry-backdrop { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(16, 33, 54, .38); }
+.pod-failed-retry-dialog { display: grid; width: min(680px, 100%); max-height: min(720px, calc(100dvh - 40px)); overflow: hidden; border: 1px solid var(--pod-border-strong); border-radius: 18px; background: var(--pod-surface); box-shadow: 0 24px 72px rgba(16, 33, 54, .28); }
+.pod-failed-retry-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 18px 20px 14px; border-bottom: 1px solid var(--pod-border); }
+.pod-failed-retry-dialog > header span { color: var(--pod-primary); font-size: .6rem; font-weight: 900; letter-spacing: .12em; }
+.pod-failed-retry-dialog > header h2 { margin: 3px 0 5px; color: var(--pod-text); font-size: 1.05rem; }
+.pod-failed-retry-dialog > header p { max-width: 500px; margin: 0; color: var(--pod-text-secondary); font-size: .67rem; line-height: 1.55; }
+.pod-failed-retry-dialog > header > button { width: 30px; height: 30px; flex: 0 0 auto; padding: 0; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-muted); background: var(--pod-surface); font-size: 1rem; }
+.pod-failed-retry-groups { display: grid; gap: 12px; max-height: 430px; padding: 16px 20px; overflow: auto; }
+.pod-failed-retry-group { overflow: hidden; border: 1px solid var(--pod-border); border-radius: 11px; }
+.pod-failed-retry-group h3 { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; padding: 9px 11px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .7rem; }
+.pod-failed-retry-group h3 small { color: var(--pod-text-muted); font-size: .58rem; }
+.pod-failed-retry-group > p { margin: 0; padding: 12px; color: var(--pod-text-muted); font-size: .63rem; }
+.pod-failed-retry-group ul { display: grid; margin: 0; padding: 0; list-style: none; }
+.pod-failed-retry-group li + li { border-top: 1px solid var(--pod-border); }
+.pod-failed-retry-group label { display: flex; align-items: flex-start; gap: 9px; padding: 10px 11px; cursor: pointer; }
+.pod-failed-retry-group input { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--pod-primary); }
+.pod-failed-retry-group label > span { display: grid; min-width: 0; gap: 3px; }
+.pod-failed-retry-group b { overflow: hidden; color: var(--pod-text); font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
+.pod-failed-retry-group label small { overflow: hidden; color: #b15b52; font-size: .59rem; text-overflow: ellipsis; white-space: nowrap; }
+.pod-failed-retry-empty { margin: 0; padding: 28px 20px; color: var(--pod-text-muted); font-size: .7rem; text-align: center; }
+.pod-failed-retry-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 20px; border-top: 1px solid var(--pod-border); background: var(--pod-surface-soft); }
+.pod-failed-retry-dialog > footer button { min-height: 32px; padding: 7px 10px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .62rem; font-weight: 850; }
+.pod-failed-retry-dialog > footer button:disabled { cursor: not-allowed; opacity: .55; }
+.pod-failed-retry-dialog > footer .pod-failed-retry-select-all { color: var(--pod-primary); border-color: var(--pod-border-strong); }
+.pod-failed-retry-dialog > footer .pod-failed-retry-confirm { color: #fff; border-color: transparent; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); }
 
 @keyframes pod-pulse { 50% { opacity: .55; transform: scale(.88); } }
 @keyframes pod-dot { to { opacity: .35; transform: translateY(-3px); } }
@@ -527,6 +555,11 @@
   .pod-dianxiaomi-export { max-width: 145px; }
   .pod-dianxiaomi-export button { width: 100%; padding-inline: 8px; }
   .pod-dianxiaomi-export small { font-size: .5rem; }
+  .pod-failed-retry-backdrop { padding: 12px; }
+  .pod-failed-retry-dialog > header,
+  .pod-failed-retry-groups,
+  .pod-failed-retry-dialog > footer { padding-inline: 14px; }
+  .pod-failed-retry-dialog > footer { flex-wrap: wrap; }
   .pod-gallery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
   .pod-style-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pod-style-row > header { align-items: start; }

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 
 SUPPORTED_PATTERN_COUNTS = (20, 40, 100)
@@ -136,3 +136,28 @@ class RegenerateItemCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     creative_prompt: str = Field(default="", max_length=4000)
+
+
+class BatchRetryFailedCreate(BaseModel):
+    """Selected failed POD styles for one all-or-nothing retry submission."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    image_style_indices: list[StrictInt] = Field(default_factory=list, max_length=200)
+    title_style_indices: list[StrictInt] = Field(default_factory=list, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "BatchRetryFailedCreate":
+        image_indices = self.image_style_indices
+        title_indices = self.title_style_indices
+        if not image_indices and not title_indices:
+            raise ValueError("at least one failed style must be selected")
+        if any(isinstance(index, bool) or not 1 <= index <= MAX_STYLE_COUNT for index in (*image_indices, *title_indices)):
+            raise ValueError("style index must be between 1 and 200")
+        if len(set(image_indices)) != len(image_indices):
+            raise ValueError("image_style_indices must not contain duplicates")
+        if len(set(title_indices)) != len(title_indices):
+            raise ValueError("title_style_indices must not contain duplicates")
+        if set(image_indices).intersection(title_indices):
+            raise ValueError("a style cannot be retried as both image and title")
+        return self

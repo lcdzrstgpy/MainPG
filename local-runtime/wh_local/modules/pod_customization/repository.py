@@ -1302,19 +1302,19 @@ class PodCustomizationRepository:
     def get_style_title_context(self, batch_id: str, style_index: int) -> dict[str, Any]:
         batch = self.get_batch_internal(batch_id)
         title = next((row for row in batch["style_titles"] if row["style_index"] == style_index), None)
-        hero = next(
+        lifestyle = next(
             (
                 row for row in batch["items"]
-                if row.get("style_index") == style_index and row.get("role") == "hero"
+                if row.get("style_index") == style_index and row.get("role") == "lifestyle"
                 and row.get("status") == "completed" and row.get("public_url")
             ),
             None,
         )
         if title is None:
             raise PodRepositoryError("POD style title not found", 404)
-        if hero is None or not hero.get("pattern_asset_id"):
-            raise PodRepositoryError("POD style hero image is unavailable", 409)
-        return {"batch": batch, "title": title, "hero": hero}
+        if lifestyle is None or not lifestyle.get("pattern_asset_id"):
+            raise PodRepositoryError("POD style lifestyle image is unavailable", 409)
+        return {"batch": batch, "title": title, "lifestyle": lifestyle}
 
     def settle_batch_by_listing_readiness(self, batch_id: str, error_message: str = "") -> str:
         """Set a new title-aware batch terminal status while retaining legacy semantics."""
@@ -1772,6 +1772,130 @@ class PodCustomizationRepository:
                    ORDER BY results.variant_index""", (batch_id, style_index)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def claim_batch_retry(
+        self,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        *,
+        image_style_indices: tuple[int, ...],
+        title_style_indices: tuple[int, ...],
+    ) -> None:
+        """Atomically reserve selected terminal failures for one batch retry."""
+        if not image_style_indices and not title_style_indices:
+            raise PodRepositoryError("at least one failed POD style must be selected", 422)
+        if (
+            len(set(image_style_indices)) != len(image_style_indices)
+            or len(set(title_style_indices)) != len(title_style_indices)
+        ):
+            raise PodRepositoryError("POD retry styles must not contain duplicates", 422)
+        if set(image_style_indices).intersection(title_style_indices):
+            raise PodRepositoryError("a POD style cannot be retried as both image and title", 422)
+        now = _now()
+        with self._connect() as connection:
+            if not self._is_style_grid_batch(connection, batch_id):
+                raise PodRepositoryError("batch retry is only available for new POD batches", 409)
+            batch = connection.execute(
+                """SELECT status, requested_count FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None:
+                raise PodRepositoryError("POD batch not found", 404)
+            if batch["status"] not in {"completed", "partial_failure", "failed"}:
+                raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
+            requested_count = int(batch["requested_count"])
+            if any(not 1 <= index <= requested_count for index in (*image_style_indices, *title_style_indices)):
+                raise PodRepositoryError("POD style index is outside the batch range", 422)
+
+            for style_index in image_style_indices:
+                rows = connection.execute(
+                    """SELECT status FROM pod_customization_style_grid_results
+                       WHERE batch_id = ? AND style_index = ? ORDER BY variant_index""",
+                    (batch_id, style_index),
+                ).fetchall()
+                if len(rows) != 4 or any(row["status"] != "failed" for row in rows):
+                    raise PodRepositoryError("only styles with all four images failed can be retried", 409)
+
+            for style_index in title_style_indices:
+                title = connection.execute(
+                    """SELECT status, style_task_id FROM pod_customization_style_titles
+                       WHERE batch_id = ? AND style_index = ?""",
+                    (batch_id, style_index),
+                ).fetchone()
+                ready_images = int(connection.execute(
+                    """SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
+                       INNER JOIN pod_customization_style_grid_publications AS publications
+                         ON publications.result_id = results.result_id
+                       WHERE results.batch_id = ? AND results.style_index = ?
+                         AND results.status = 'completed' AND publications.public_url <> ''""",
+                    (batch_id, style_index),
+                ).fetchone()[0])
+                if (
+                    title is None
+                    or title["status"] != "failed"
+                    or not title["style_task_id"]
+                    or ready_images != 4
+                ):
+                    raise PodRepositoryError(
+                        "only a failed POD title with four public images can be retried", 409
+                    )
+
+            next_status = "generating_patterns" if image_style_indices else "generating_titles"
+            claimed = connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = ?, error_message = '', updated_at = ?, finished_at = ''
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
+                     AND status IN ('completed', 'partial_failure', 'failed')""",
+                (next_status, now, batch_id, workspace_id, owner_user_id),
+            )
+            if claimed.rowcount != 1:
+                raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
+
+            for style_index in image_style_indices:
+                updated = connection.execute(
+                    """UPDATE pod_customization_style_grid_results
+                       SET status = 'generating_pattern', error_message = '', updated_at = ?
+                       WHERE batch_id = ? AND style_index = ? AND status = 'failed'""",
+                    (now, batch_id, style_index),
+                )
+                if updated.rowcount != 4:
+                    raise PodRepositoryError("only styles with all four images failed can be retried", 409)
+                title_reset = connection.execute(
+                    """UPDATE pod_customization_style_titles
+                       SET style_task_id = '', status = 'queued', title = '', normalized_title = NULL,
+                           visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
+                           error_message = '', started_at = '', finished_at = '', updated_at = ?
+                       WHERE batch_id = ? AND style_index = ?""",
+                    (now, batch_id, style_index),
+                )
+                if title_reset.rowcount != 1:
+                    raise PodRepositoryError("POD style title reset failed", 409)
+                connection.execute(
+                    "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
+                    (batch_id, style_index),
+                )
+
+            for style_index in title_style_indices:
+                updated = connection.execute(
+                    """UPDATE pod_customization_style_titles
+                       SET status = 'generating', title = '', normalized_title = NULL,
+                           visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
+                           error_message = '', started_at = ?, finished_at = '', updated_at = ?
+                       WHERE batch_id = ? AND style_index = ? AND style_task_id <> ''
+                         AND status = 'failed'""",
+                    (now, now, batch_id, style_index),
+                )
+                if updated.rowcount != 1:
+                    raise PodRepositoryError(
+                        "only a failed POD title with four public images can be retried", 409
+                    )
+                connection.execute(
+                    "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
+                    (batch_id, style_index),
+                )
+            self._refresh_counts(connection, batch_id, now)
 
     def finish_item_regeneration(
         self,

@@ -123,7 +123,7 @@ class PodBatchWorker:
         self.assets = assets
         self.ai_runtime = ai_runtime
         self.title_runtime = title_runtime
-        self._batch_action_lock = threading.Lock()
+        self._batch_action_lock = threading.RLock()
         self._coordinator = ThreadPoolExecutor(
             max_workers=max(1, min(coordinator_workers, 4)),
             thread_name_prefix="pod-customization-batch",
@@ -220,6 +220,31 @@ class PodBatchWorker:
             if existing is not None and not existing.done():
                 return existing
             future = self._coordinator.submit(self.regenerate_title, batch_id, style_index, billing_run)
+            self._futures[key] = future
+        self._attach_forget_callback(key, future)
+        return future
+
+    def submit_batch_retry(
+        self,
+        batch_id: str,
+        image_style_indices: tuple[int, ...],
+        title_style_indices: tuple[int, ...],
+        billing_run: PodBillingRun | None = None,
+    ) -> Future[Any]:
+        """Queue one serialized operation for selected failed styles."""
+        self._require_open()
+        key = ("batch-retry", batch_id)
+        with self._futures_lock:
+            existing = self._futures.get(key)
+            if existing is not None and not existing.done():
+                return existing
+            future = self._coordinator.submit(
+                self.process_batch_retry,
+                batch_id,
+                image_style_indices,
+                title_style_indices,
+                billing_run,
+            )
             self._futures[key] = future
         self._attach_forget_callback(key, future)
         return future
@@ -453,6 +478,8 @@ class PodBatchWorker:
         style_index: int,
         creative_prompt: str,
         billing_run: PodBillingRun | None = None,
+        *,
+        finalize: bool = True,
     ) -> None:
         run = billing_run or self._billing_runs.get(f"style:{batch_id}:{style_index}")
         if run is None:
@@ -488,7 +515,7 @@ class PodBatchWorker:
                     attempt=attempt,
                 )
                 try:
-                    provider_call_id = f"{run.plan.calls[0].call_id.rsplit(':image:', 1)[0]}:image:{attempt}"
+                    provider_call_id = self._image_call_id(run, style_index, attempt)
                     grid = self.ai_runtime.submit(
                         self._generate_listing_grid, batch, call, request, run, provider_call_id
                     ).result()
@@ -510,8 +537,9 @@ class PodBatchWorker:
                     )
             else:
                 self._process_style_grids(batch, prepared, run)
-            self.repository.fail_remaining_items(batch_id, "整款重新生成未返回完整结果")
-            self.repository.fail_unready_titles(batch_id, "整款重新生成未返回完整结果")
+            if finalize:
+                self.repository.fail_remaining_items(batch_id, "整款重新生成未返回完整结果")
+                self.repository.fail_unready_titles(batch_id, "整款重新生成未返回完整结果")
             if self.title_runtime is None:
                 settled = self.repository.get_batch_internal(batch_id)
                 status = "completed" if settled["failed_count"] == 0 else (
@@ -521,6 +549,8 @@ class PodBatchWorker:
             else:
                 self.repository.settle_batch_by_listing_readiness(batch_id)
         except PodBillingAuthorizationRequired as exc:
+            if not finalize:
+                raise
             billing_paused = True
             self.repository.mark_billing_auth_required(run.action_key, str(exc))
             self.repository.set_batch_status(batch_id, "billing_auth_required", str(exc))
@@ -534,16 +564,22 @@ class PodBatchWorker:
             else:
                 self.repository.settle_batch_by_listing_readiness(batch_id, str(exc))
         finally:
-            if not billing_paused:
+            if finalize and not billing_paused:
                 try:
                     run.settle()
                 except Exception as exc:
                     self.repository.set_batch_status(batch_id, "settlement_pending", str(exc))
-            self._discard_billing_run(f"style:{batch_id}:{style_index}", run)
+            if finalize:
+                self._discard_billing_run(f"style:{batch_id}:{style_index}", run)
 
     @_serial_batch_action
     def regenerate_title(
-        self, batch_id: str, style_index: int, billing_run: PodBillingRun | None = None
+        self,
+        batch_id: str,
+        style_index: int,
+        billing_run: PodBillingRun | None = None,
+        *,
+        finalize: bool = True,
     ) -> None:
         if self.title_runtime is None:
             raise RuntimeError("POD title runtime is disabled")
@@ -560,24 +596,64 @@ class PodBatchWorker:
                 context["batch"],
                 style_index,
                 title["style_task_id"],
-                self._hero_media(context),
+                self._lifestyle_media(context),
                 run,
                 self._title_call_ids(run, batch_id, style_index),
             )
         except PodBillingAuthorizationRequired as exc:
+            if not finalize:
+                raise
             billing_paused = True
             self.repository.mark_billing_auth_required(run.action_key, str(exc))
             self.repository.set_batch_status(batch_id, "billing_auth_required", str(exc))
         except Exception as exc:
             self.repository.fail_style_title(batch_id, style_index, str(exc))
         finally:
-            if not billing_paused:
+            if finalize and not billing_paused:
                 self.repository.settle_batch_by_listing_readiness(batch_id)
                 try:
                     run.settle()
                 except Exception as exc:
                     self.repository.set_batch_status(batch_id, "settlement_pending", str(exc))
-            self._discard_billing_run(f"title:{batch_id}:{style_index}", run)
+            if finalize:
+                self._discard_billing_run(f"title:{batch_id}:{style_index}", run)
+
+    @_serial_batch_action
+    def process_batch_retry(
+        self,
+        batch_id: str,
+        image_style_indices: tuple[int, ...],
+        title_style_indices: tuple[int, ...],
+        billing_run: PodBillingRun | None = None,
+    ) -> None:
+        """Process the selected retry actions serially and settle one billing run."""
+        run = billing_run or self._billing_runs.get(f"batch-retry:{batch_id}")
+        if run is None:
+            raise RuntimeError("POD batch retry requires a fresh short-lived billing grant")
+        billing_paused = False
+        try:
+            for style_index in image_style_indices:
+                self.regenerate_style(
+                    batch_id,
+                    style_index,
+                    "",
+                    run,
+                    finalize=False,
+                )
+            for style_index in title_style_indices:
+                self.regenerate_title(batch_id, style_index, run, finalize=False)
+            self.repository.settle_batch_by_listing_readiness(batch_id)
+        except PodBillingAuthorizationRequired as exc:
+            billing_paused = True
+            self.repository.mark_billing_auth_required(run.action_key, str(exc))
+            self.repository.set_batch_status(batch_id, "billing_auth_required", str(exc))
+        finally:
+            if not billing_paused:
+                try:
+                    run.settle()
+                except Exception as exc:
+                    self.repository.set_batch_status(batch_id, "settlement_pending", str(exc))
+            self._discard_billing_run(f"batch-retry:{batch_id}", run)
 
     def close(self) -> None:
         if self._closing.is_set():
@@ -915,7 +991,7 @@ class PodBatchWorker:
         title_futures: dict[Future[Any], int] = {}
         for call, _grid, panels, fingerprints in grids:
             style_index = call["style_index"]
-            hero_public_ready = False
+            lifestyle_public_ready = False
             for variant_index, (role, panel, fingerprint) in enumerate(
                 zip(roles, panels, fingerprints, strict=True), start=1
             ):
@@ -948,8 +1024,8 @@ class PodBatchWorker:
                     composite_asset_id=panel_asset["asset_id"], fingerprint=fingerprint,
                     role=role, public_url=public_url,
                 )
-                if variant_index == 1:
-                    hero_public_ready = True
+                if role == "lifestyle":
+                    lifestyle_public_ready = True
                     if self.title_runtime is not None:
                         try:
                             self.repository.claim_style_title(
@@ -980,9 +1056,9 @@ class PodBatchWorker:
                                 pass
             if self.title_runtime is None:
                 continue
-            if not hero_public_ready:
+            if not lifestyle_public_ready:
                 self.repository.fail_style_title(
-                    batch["batch_id"], style_index, "本款 hero 图片未成功发布，暂不能生成标题",
+                    batch["batch_id"], style_index, "本款主图未成功发布，暂不能生成标题",
                     style_task_id=call["call_id"],
                 )
                 continue
@@ -1075,11 +1151,11 @@ class PodBatchWorker:
     def _title_call_ids(
         billing_run: PodBillingRun, batch_id: str, style_index: int
     ) -> tuple[str, ...]:
-        prefix = f"{batch_id}:style:{style_index}:title:"
+        marker = f":style:{style_index}:"
         matching = tuple(
             call.call_id
             for call in billing_run.plan.calls
-            if call.feature == "pod.title" and call.call_id.startswith(prefix)
+            if call.feature == "pod.title" and marker in call.call_id
         )
         if matching:
             return tuple(
@@ -1091,14 +1167,35 @@ class PodBatchWorker:
             if call.feature == "pod.title" and billing_run.call_status(call.call_id) == "planned"
         )
 
+    @staticmethod
+    def _image_call_id(billing_run: PodBillingRun, style_index: int, attempt: int) -> str:
+        marker = f":style:{style_index}:"
+        suffix = f":image:{attempt}"
+        matching = [
+            call.call_id
+            for call in billing_run.plan.calls
+            if call.feature == "pod.image" and marker in call.call_id and call.call_id.endswith(suffix)
+        ]
+        if len(matching) == 1:
+            return matching[0]
+        # Legacy per-style retry plans have one image call for each attempt.
+        fallback = [
+            call.call_id
+            for call in billing_run.plan.calls
+            if call.feature == "pod.image" and call.call_id.endswith(suffix)
+        ]
+        if len(fallback) == 1:
+            return fallback[0]
+        raise RuntimeError(f"POD image call plan is missing style {style_index} attempt {attempt}")
+
     def _title_batch_lock(self, batch_id: str) -> threading.Lock:
         with self._futures_lock:
             return self._title_batch_locks.setdefault(batch_id, threading.Lock())
 
-    def _hero_media(self, context: dict[str, Any]) -> Any:
+    def _lifestyle_media(self, context: dict[str, Any]) -> Any:
         batch = context["batch"]
         asset = self.repository.get_asset(
-            context["hero"]["pattern_asset_id"], batch["workspace_id"], batch["owner_user_id"]
+            context["lifestyle"]["pattern_asset_id"], batch["workspace_id"], batch["owner_user_id"]
         )
         return SimpleNamespace(
             stage="grid_image_1",

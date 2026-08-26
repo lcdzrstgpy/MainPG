@@ -13,9 +13,10 @@ type Props = {
   onRegenerateStyle: (styleIndex: number) => void;
   onRegenerateTitle: (styleIndex: number) => void;
   onExportDianxiaomi: () => void;
+  onOpenFailedRetry: () => void;
 };
 
-const ROLE_LABELS = ["主图", "细节图 A", "细节图 B", "场景图"] as const;
+const ROLE_LABELS = ["主图", "细节图 A", "细节图 B", "素材图"] as const;
 
 async function copyTitle(title: string): Promise<void> {
   try {
@@ -36,7 +37,7 @@ async function copyTitle(title: string): Promise<void> {
   }
 }
 
-export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateStyle, onRegenerateTitle, onExportDianxiaomi }: Props) {
+export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateStyle, onRegenerateTitle, onExportDianxiaomi, onOpenFailedRetry }: Props) {
   const [selectedStyleIndex, setSelectedStyleIndex] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
   const showWaitingTime = Boolean(batch && isActiveBatchStatus(batch.status));
@@ -65,6 +66,7 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
       <div className="pod-gallery-header-actions">
         <div className={`pod-batch-status status-${batch.status}`}><strong>{podBatchStatusLabel(batch.status)}</strong><span>{batch.processed_count} / {batch.count} 款</span><span>可上架 {batch.listing_ready_count ?? 0} / 总款数 {batch.count}</span></div>
         <div className="pod-dianxiaomi-export">
+          <button type="button" className="pod-open-failed-retry" disabled={Boolean(busyAction)} onClick={onOpenFailedRetry}>批量重试失败项</button>
           <button type="button" disabled={!canExport} title={canExport ? `可导出 ${exportStatus.exportable_style_count} 款` : exportBlockReason} onClick={onExportDianxiaomi}>{exporting ? "正在导出店小秘表格" : "导出店小秘表格"}</button>
           {!canExport && <small>{exportBlockReason}</small>}
         </div>

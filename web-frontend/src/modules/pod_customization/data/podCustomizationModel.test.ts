@@ -7,11 +7,28 @@ import {
   canRegeneratePodStyle,
   canRegeneratePodStyleTitle,
   formatPodBatchWaitingTime,
+  groupPodStyleRows,
   isActiveBatchStatus,
   isPodBatchCount,
   listingFieldsForApi,
   podBatchStatusLabel,
 } from "./podCustomizationModel.ts";
+
+test("POD style results present the lifestyle panel as the primary image and hero as material", () => {
+  const rows = groupPodStyleRows({
+    style_grid: true,
+    business_fields: { product_name: "Laundry Hamper" },
+    style_titles: [],
+    items: [
+      { id: "hero", style_index: 1, variant_index: 1, role: "hero", status: "completed", public_url: "https://images.example.com/hero.png" },
+      { id: "detail-a", style_index: 1, variant_index: 2, role: "detail_a", status: "completed", public_url: "https://images.example.com/detail-a.png" },
+      { id: "detail-b", style_index: 1, variant_index: 3, role: "detail_b", status: "completed", public_url: "https://images.example.com/detail-b.png" },
+      { id: "lifestyle", style_index: 1, variant_index: 4, role: "lifestyle", status: "completed", public_url: "https://images.example.com/lifestyle.png" },
+    ],
+  });
+
+  assert.deepEqual(rows[0].results.map((item) => item?.id), ["lifestyle", "detail-a", "detail-b", "hero"]);
+});
 
 test("POD count accepts custom integers from 1 through 200", () => {
   assert.deepEqual(POD_BATCH_COUNTS, [2, 10, 20, 40, 60, 100]);

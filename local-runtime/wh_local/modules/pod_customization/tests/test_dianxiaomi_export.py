@@ -185,10 +185,49 @@ def test_export_expands_new_skus_with_their_own_dimensions_and_last_scene_previe
     finally:
         workbook.close()
 
-    assert [row[3] for row in rows] == ["CT-BLACK", "CT-SAND"]
+    assert [row[3] for row in rows] == ["POD-001", "POD-001"]
+    assert [row[10] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[11:14] for row in rows] == [(30, 20, 10), (40, 25, 15)]
     assert [row[14] for row in rows] == [450, 650]
     assert [row[8] for row in rows] == [image_urls["lifestyle"], image_urls["lifestyle"]]
+
+
+def test_export_never_uses_a_chinese_sku_name_as_a_product_or_sku_code() -> None:
+    image_urls = {
+        "hero": "https://images.example.com/pod/1/hero.png",
+        "detail_a": "https://images.example.com/pod/1/detail-a.png",
+        "detail_b": "https://images.example.com/pod/1/detail-b.png",
+        "lifestyle": "https://images.example.com/pod/1/final-scene.png",
+    }
+    batch = {
+        "batch_id": "chinese-sku-code-batch",
+        "requested_count": 1,
+        "status": "completed",
+        "business_fields": {"product_category": "Home > Bags"},
+        "listing_fields": {
+            "declared_price": 18.5,
+            "suggested_price_usd": 29.99,
+            "category_name": "家居收纳 > 包袋",
+            "skus": [{"name": "标题款", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
+        },
+        "items": [
+            {"style_index": 1, "role": role, "status": "completed", "public_url": url}
+            for role, url in image_urls.items()
+        ],
+    }
+
+    exported = build_pod_dianxiaomi_export(
+        batch,
+        {1: {"title": "Coastal Tote", "english_title": "Coastal Tote", "description": "Description"}},
+    )
+    workbook = load_workbook(io.BytesIO(exported.content), data_only=True)
+    try:
+        row = next(workbook.active.iter_rows(min_row=2, values_only=True))
+    finally:
+        workbook.close()
+
+    assert row[3] == "POD-001"
+    assert row[10] == "SKU-001-01"
 
 
 def test_export_legacy_snapshot_without_skus_uses_global_dimensions_and_sku_names() -> None:
@@ -229,7 +268,8 @@ def test_export_legacy_snapshot_without_skus_uses_global_dimensions_and_sku_name
     finally:
         workbook.close()
 
-    assert [row[3] for row in rows] == ["CT-BLACK", "CT-SAND"]
+    assert [row[3] for row in rows] == ["POD-001", "POD-001"]
+    assert [row[10] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[11:14] for row in rows] == [(30, 20, 10), (30, 20, 10)]
 
 
@@ -335,18 +375,19 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
     assert len(row) == 42
     assert row[:6] == [
         "Coastal Tote", "Coastal Tote",
-        'Carry calm everywhere.\n<img src="https://images.example.com/pod/1/hero.png" />\n<img src="https://images.example.com/pod/1/detail_a.png" />\n<img src="https://images.example.com/pod/1/detail_b.png" />\n<img src="https://images.example.com/pod/1/lifestyle.png" />',
-        "Default SKU", "Style", "Style 001",
+        'Carry calm everywhere.\n<img src="https://images.example.com/pod/1/lifestyle.png" />\n<img src="https://images.example.com/pod/1/detail_a.png" />\n<img src="https://images.example.com/pod/1/detail_b.png" />\n<img src="https://images.example.com/pod/1/hero.png" />',
+        "POD-001", "Style", "Style 001",
     ]
+    assert row[10] == "SKU-001-01"
     assert row[6:9] == [None, None, "https://images.example.com/pod/1/lifestyle.png"]
-    assert row[9:15] == [18.5, None, 30, 20, 10, 450]
+    assert row[9:15] == [18.5, "SKU-001-01", 30, 20, 10, 450]
     assert row[15:18] == [None, None, None]
     assert row[18] == "\n".join(
         [
-            "https://images.example.com/pod/1/hero.png",
+            "https://images.example.com/pod/1/lifestyle.png",
             "https://images.example.com/pod/1/detail_a.png",
             "https://images.example.com/pod/1/detail_b.png",
-            "https://images.example.com/pod/1/lifestyle.png",
+            "https://images.example.com/pod/1/hero.png",
         ]
     )
     assert row[19:24] == ["https://images.example.com/pod/1/hero.png", None, None, None, 29.99]
@@ -397,7 +438,8 @@ def test_service_export_repeats_each_style_for_saved_skus_and_uses_last_scene_as
         {"name": "CT-BLACK", "length_cm": 30.0, "width_cm": 20.0, "height_cm": 10.0, "weight_g": 450.0},
         {"name": "CT-SAND", "length_cm": 40.0, "width_cm": 25.0, "height_cm": 15.0, "weight_g": 650.0},
     ]
-    assert [row[3] for row in rows] == ["CT-BLACK", "CT-SAND"]
+    assert [row[3] for row in rows] == ["POD-001", "POD-001"]
+    assert [row[10] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[11:14] for row in rows] == [(30, 20, 10), (40, 25, 15)]
     assert [row[14] for row in rows] == [450, 650]
     assert [row[8] for row in rows] == [
