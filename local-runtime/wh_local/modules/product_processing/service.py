@@ -2760,11 +2760,40 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if not isinstance(dimensions, dict):
             dimensions = {}
         provenance_source = str(dimensions.get("source") or "").strip()
+        # 1688 件重尺（#productPackInfo）抓到的真实物流包裹数据。前端「物流包裹
+        # 长/宽/高/重量」框优先采用这些真实值，避免回退到商品本体尺寸的 AI 预估。
+        shipping_package_records = result.get("shipping_package_records") or []
+        if not isinstance(shipping_package_records, list):
+            shipping_package_records = []
+        if not shipping_package_records:
+            # Some task-result adapters retain variant records but omit the
+            # top-level list. Preserve matched source evidence from those rows.
+            shipping_package_records = [
+                record.get("shipping_package")
+                for record in (result.get("source_variant_records") or [])
+                if isinstance(record, dict) and isinstance(record.get("shipping_package"), dict)
+            ]
+        # 优先取当前选中 SKU 的件重尺；没有选中行时用第一条有效记录兜底。
+        selected_package_record = None
+        for record in shipping_package_records:
+            if not isinstance(record, dict):
+                continue
+            if record.get("selected") or record.get("match_status") == "matched":
+                selected_package_record = record
+                break
+        package_dimensions: dict[str, float] = {}
+        for key in ("length_cm", "width_cm", "height_cm", "volume_cm3", "weight_g"):
+            package_value = self._number((selected_package_record or {}).get(key))
+            if package_value is not None and package_value > 0:
+                package_dimensions[key] = float(package_value)
         dimension_provenance: dict[str, str] = {}
         for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
             if key in core_fields:
                 dimension_provenance[key] = "manual"
-            elif "source_evidence" in provenance_source:
+            elif key in package_dimensions:
+                # 该字段来自件重尺真实抓取值，而非 AI 预估。
+                dimension_provenance[key] = "source"
+            elif "source_evidence" in provenance_source or "source_evidence" in str(dimensions.get("reason") or ""):
                 dimension_provenance[key] = "source"
             else:
                 dimension_provenance[key] = "ai"
@@ -2799,6 +2828,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "dimension_provenance": dimension_provenance,
             "preview_revision": preview_revision,
             "result_version": task_item_result_version(result),
+            # Kept separate from product_dimensions: these are shipping package
+            # measurements and must never drive the product body/canvas size.
+            "shipping_package_records": shipping_package_records,
             "core_fields": {
                 "sku": str(core_fields.get("sku") or result.get("sku") or "").strip(),
                 "declared_price": core_fields.get("declared_price", result.get("declared_price")),
@@ -2806,10 +2838,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "stock": core_fields.get("stock", result.get("stock")),
                 "category_path": str(core_fields.get("category_path") or result.get("category_path") or "").strip(),
                 "category_id": str(core_fields.get("category_id") or result.get("category_id") or "").strip(),
-                "length_cm": core_fields.get("length_cm", dimensions.get("length_cm")),
-                "width_cm": core_fields.get("width_cm", dimensions.get("width_cm")),
-                "height_cm": core_fields.get("height_cm", dimensions.get("height_cm")),
-                "weight_g": core_fields.get("weight_g", dimensions.get("weight_g")),
+                "length_cm": core_fields.get("length_cm", package_dimensions.get("length_cm", dimensions.get("length_cm"))),
+                "width_cm": core_fields.get("width_cm", package_dimensions.get("width_cm", dimensions.get("width_cm"))),
+                "height_cm": core_fields.get("height_cm", package_dimensions.get("height_cm", dimensions.get("height_cm"))),
+                "weight_g": core_fields.get("weight_g", package_dimensions.get("weight_g", dimensions.get("weight_g"))),
             },
             "overrides": saved,
         }

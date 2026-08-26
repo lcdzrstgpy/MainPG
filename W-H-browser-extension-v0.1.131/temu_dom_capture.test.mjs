@@ -80,6 +80,262 @@ const fakeView = {
   }
 };
 
+function packageMeasurementDocument(headers, rows) {
+  const makeCell = (value) => ({ innerText: String(value), textContent: String(value) });
+  const makeRow = (values, tagName = "TD") => ({
+    querySelectorAll(selector) {
+      assert.equal(selector, "th, td");
+      return values.map(makeCell);
+    },
+    tagName: "TR",
+    cellTagName: tagName
+  });
+  const table = {
+    querySelectorAll(selector) {
+      assert.equal(selector, "tr");
+      return [makeRow(headers, "TH"), ...rows.map((row) => makeRow(row))];
+    }
+  };
+  const root = {
+    querySelectorAll(selector) {
+      assert.equal(selector, "table");
+      return [table];
+    }
+  };
+  return {
+    querySelector(selector) {
+      assert.equal(selector, "#productPackInfo");
+      return root;
+    }
+  };
+}
+
+async function load1688PackageMeasurementCapture(document) {
+  const background = await readFile(new URL("./background.js", import.meta.url), "utf8");
+  const start = background.indexOf("const capture1688ShippingPackageRecords =");
+  const end = background.indexOf("\n    const cleanFreightContext", start);
+  assert.notEqual(start, -1, "1688 package-measurement parser must exist");
+  assert.notEqual(end, -1, "1688 package-measurement parser must end before freight parsing");
+  const source = background.slice(start, end);
+  return Function("document", "text", `${source}; return capture1688ShippingPackageRecords;`)(
+    document,
+    (value) => String(value || "").replace(/\s+/g, " ").trim()
+  );
+}
+
+test("captures 1688 package rows by table headers and binds a unique normalized SKU", async () => {
+  const capture = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["重量(g)", "规格", "高(cm)", "体积(cm³)", "宽(cm)", "长(cm)"],
+    [["1100", "颜色：拉丝本色；尺码：L", "6", "7488", "24", "52"]]
+  ));
+  const result = capture([{ sku_id: "SKU-1", spec_text: "颜色:拉丝本色; 尺码:L" }]);
+
+  assert.deepEqual(result.shipping_package_records, [{
+    variant_key: "SKU-1",
+    specification: "颜色：拉丝本色；尺码：L",
+    length_cm: 52,
+    width_cm: 24,
+    height_cm: 6,
+    volume_cm3: 7488,
+    weight_g: 1100,
+    match_status: "matched",
+    source: "1688_product_pack_info"
+  }]);
+  assert.deepEqual(result.source_variant_records[0].shipping_package, result.shipping_package_records[0]);
+});
+
+test("keeps only valid 1688 package rows and leaves unmatched rows detached from SKUs", async () => {
+  const capture = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["规格", "长(cm)", "宽(cm)", "高(cm)", "体积(cm³)", "重量(g)"],
+    [
+      ["蓝色", "52", "24", "6", "7488", "1200"],
+      ["无效规格", "0", "24", "6", "0", "1200"]
+    ]
+  ));
+  const result = capture([{ sku_id: "SKU-1", spec_text: "颜色:红色" }]);
+
+  assert.deepEqual(result.shipping_package_records, [{
+    variant_key: "蓝色",
+    specification: "蓝色",
+    length_cm: 52,
+    width_cm: 24,
+    height_cm: 6,
+    volume_cm3: 7488,
+    weight_g: 1200,
+    match_status: "unmatched",
+    source: "1688_product_pack_info"
+  }]);
+  assert.equal(result.source_variant_records[0].shipping_package, undefined);
+});
+
+test("captures a spec-only 1688 package table without dimension columns", async () => {
+  // 真实商品级件重尺表常只含「规格 | 重量(g)」两列（如水龙头「【单档】…| 49」），
+  // 不应因为缺少长/宽/高列而整表跳过。
+  const capture = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["规格", "重量(g)"],
+    [["【单档】锌合金水龙头净水器", "49"], ["【双档】锌合金水龙头净水器", "49"]]
+  ));
+  const result = capture([{ sku_id: "SKU-1", spec_text: "型号：单档" }, { sku_id: "SKU-2", spec_text: "型号：双档" }]);
+  assert.equal(result.has_package_root, true);
+  assert.equal(result.package_info_status, "ok");
+  assert.equal(result.package_info_error, "");
+  assert.equal(result.shipping_package_records.length, 2);
+  // 无尺寸列时，长/宽/高应为 null 而非被丢弃
+  assert.equal(result.shipping_package_records[0].length_cm, null);
+  assert.equal(result.shipping_package_records[0].width_cm, null);
+  assert.equal(result.shipping_package_records[0].height_cm, null);
+  assert.equal(result.shipping_package_records[0].weight_g, 49);
+  assert.equal(result.shipping_package_records[1].weight_g, 49);
+});
+
+test("recognizes a 1688 package table whose spec column header is 颜色 instead of 规格", async () => {
+  // 帆布包商品件重尺表头为「颜色 | 重量(g)」，规格列名是「颜色」而非「规格」。
+  const capture = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["颜色", "重量(g)"],
+    [["【花漾迷你款】帆布包", "7g"], ["【柿柿如意】帆布包", "8g"], ["【粉红小】帆布包", "9g"]]
+  ));
+  const result = capture([{ sku_id: "SKU-1", spec_text: "花漾迷你款" }]);
+  assert.equal(result.has_package_root, true);
+  assert.equal(result.package_info_status, "ok");
+  assert.equal(result.shipping_package_records.length, 3);
+  assert.equal(result.shipping_package_records[0].weight_g, 7);
+  assert.equal(result.shipping_package_records[1].weight_g, 8);
+  assert.equal(result.shipping_package_records[2].weight_g, 9);
+  // 规格列名是「颜色」，规格文本应被保留为商品名描述
+  assert.equal(result.shipping_package_records[0].specification, "【花漾迷你款】帆布包");
+});
+
+test("captures 1688 package weight values carrying unit suffixes (e.g. 7g)", async () => {
+  const capture = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["规格", "重量(g)"],
+    [["【花漾迷你款】帆布包", "7g"], ["【柿柿如意】帆布包", "8g"]]
+  ));
+  const result = capture([{ sku_id: "SKU-1", spec_text: "帆布包" }]);
+  assert.equal(result.shipping_package_records.length, 2);
+  assert.equal(result.shipping_package_records[0].weight_g, 7);
+  assert.equal(result.shipping_package_records[1].weight_g, 8);
+});
+
+test("reports a clear package-info status when the 1688 module is present but empty", async () => {
+  // 表头缺列（只有规格、无重量）时不会匹配为件重尺表 → records 为空 → status=empty
+  const capture = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["规格", "长(cm)", "宽(cm)"],
+    [["蓝色", "52", "24"]]
+  ));
+  const result = capture([{ sku_id: "BLUE", spec_text: "颜色：蓝色" }]);
+  assert.equal(result.has_package_root, true);
+  assert.equal(result.package_info_status, "empty");
+  assert.match(result.package_info_error, /未解析到有效的件重尺数据/);
+});
+
+test("matches 1688 package specifications strictly instead of binding 深红色 to 红色", async () => {
+  const capture = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["规格", "长(cm)", "宽(cm)", "高(cm)", "体积(cm³)", "重量(g)"],
+    [["颜色：深红色", "52", "24", "6", "7488", "1200"]]
+  ));
+  const result = capture([
+    { sku_id: "RED", spec_text: "颜色：红色" },
+    { sku_id: "DARK-RED", spec_text: "颜色：深红色" }
+  ]);
+
+  assert.equal(result.shipping_package_records[0].match_status, "matched");
+  assert.equal(result.shipping_package_records[0].variant_key, "DARK-RED");
+  assert.equal(result.source_variant_records[0].shipping_package, undefined);
+  assert.equal(result.source_variant_records[1].shipping_package.variant_key, "DARK-RED");
+});
+
+test("matches a 1688 商品名（黑色） package row only by its complete trailing specification value", async () => {
+  const capture = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["规格", "长(cm)", "宽(cm)", "高(cm)", "体积(cm³)", "重量(g)"],
+    [
+      ["201不锈钢抽拉式水龙头（黑色）", "52", "24", "6", "7488", "1150"],
+      ["201不锈钢抽拉式水龙头（深红色）", "52", "24", "6", "7488", "1200"]
+    ]
+  ));
+  const result = capture([
+    { sku_id: "BLACK", attributes: { "颜色": "黑色" } },
+    { sku_id: "RED", attributes: { "颜色": "红色" } },
+    { sku_id: "DARK-RED", attributes: { "颜色": "深红色" } }
+  ]);
+
+  assert.equal(result.shipping_package_records[0].variant_key, "BLACK");
+  assert.equal(result.shipping_package_records[1].variant_key, "DARK-RED");
+  assert.equal(result.source_variant_records[1].shipping_package, undefined);
+});
+
+test("merges duplicate visible and structured SKU representations before matching 1688 package rows", async () => {
+  const capture = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["规格", "长(cm)", "宽(cm)", "高(cm)", "体积(cm³)", "重量(g)"],
+    [["水龙头（黑色）", "52", "24", "6", "7488", "1150"]]
+  ));
+  const result = capture([
+    { spec_text: "颜色/款式:黑色", source: "visible_sku_option" },
+    { sku_id: "sku-black", spec_text: "颜色:黑色", attributes: { "颜色": "黑色" }, source: "structured_sku_data" }
+  ]);
+
+  assert.equal(result.shipping_package_records[0].match_status, "matched");
+  assert.equal(result.shipping_package_records[0].variant_key, "sku-black");
+  assert.equal(result.source_variant_records.length, 1);
+  assert.equal(result.source_variant_records[0].sku_id, "sku-black");
+  assert.equal(result.source_variant_records[0].shipping_package.variant_key, "sku-black");
+});
+
+test("keeps a package row unmatched when multiple distinct real SKU ids share its strict specification", async () => {
+  const capture = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["规格", "长(cm)", "宽(cm)", "高(cm)", "体积(cm³)", "重量(g)"],
+    [["水龙头（黑色）", "52", "24", "6", "7488", "1150"]]
+  ));
+  const result = capture([
+    { sku_id: "sku-black-a", attributes: { "颜色": "黑色" }, source: "structured_sku_data" },
+    { sku_id: "sku-black-b", attributes: { "颜色": "黑色" }, source: "structured_sku_data" }
+  ]);
+
+  assert.equal(result.shipping_package_records[0].match_status, "unmatched");
+  assert.equal(result.source_variant_records.length, 2);
+  assert.equal(result.source_variant_records.some((record) => record.shipping_package), false);
+});
+
+test("converts explicit kilogram headers and rejects ambiguous 1688 package measurements", async () => {
+  const kilograms = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["规格", "长(cm)", "宽(cm)", "高(cm)", "体积(cm³)", "重量(kg)"],
+    [["蓝色", "52", "24", "6", "7488", "1.2"]]
+  ));
+  const kilogramResult = kilograms([{ sku_id: "BLUE", spec_text: "颜色：蓝色" }]);
+  assert.equal(kilogramResult.shipping_package_records[0].weight_g, 1200);
+
+  const ambiguous = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["规格", "长(cm)", "宽(cm)", "高(cm)", "体积(cm³)", "重量(g)"],
+    [["蓝色", "约52", "24", "6", "7488", "1200-1300"]]
+  ));
+  assert.deepEqual(ambiguous([{ sku_id: "BLUE", spec_text: "颜色：蓝色" }]).shipping_package_records, []);
+});
+
+test("returns a product-level package weight only for one selected matched SKU", async () => {
+  const capture = await load1688PackageMeasurementCapture(packageMeasurementDocument(
+    ["规格", "长(cm)", "宽(cm)", "高(cm)", "体积(cm³)", "重量(g)"],
+    [["蓝色", "52", "24", "6", "7488", "1200"]]
+  ));
+  const selected = capture([{ sku_id: "BLUE", spec_text: "颜色：蓝色", selected: true }]);
+  assert.equal(selected.selected_shipping_package.weight_g, 1200);
+
+  const notSelected = capture([{ sku_id: "BLUE", spec_text: "颜色：蓝色", selected: false }]);
+  assert.equal(notSelected.selected_shipping_package, null);
+});
+
+test("runs 1688 package matching against every captured variant and derives global weight only from its selected package row", async () => {
+  const background = await readFile(new URL("./background.js", import.meta.url), "utf8");
+  assert.match(background, /capture1688ShippingPackageRecords\(variantRecords\)/);
+  assert.doesNotMatch(background, /capture1688ShippingPackageRecords\(sourceVariantRecords\)/);
+  assert.match(background, /const selectedPackageRecord = packageMeasurementCapture\.selected_shipping_package;/);
+  assert.match(background, /weightText = selectedPackageRecord \? `重量 \$\{selectedPackageRecord\.weight_g\}g` : "";/);
+  assert.match(background, /weightKg = selectedPackageRecord \? selectedPackageRecord\.weight_g \/ 1000 : null;/);
+  assert.match(background, /weight_text_sample: packageMeasurementCapture\.has_package_root \? "" : contextOf\(/);
+  assert.match(background, /const has1688PackageInfoRoot = Boolean\(document\.querySelector\("#productPackInfo"\)\);/);
+  assert.match(background, /const capturePackageInfoText = \(\) => \{\s*if \(has1688PackageInfoRoot\) return "";/);
+  assert.match(background, /const refreshWeightEvidence = \(\) => \{\s*if \(has1688PackageInfoRoot\) return;/);
+  assert.match(background, /const initialCombinedWeight = has1688PackageInfoRoot \? \{ text: "", kg: null, source: "" \} : parseWeightFromText\(combinedText\);/);
+});
+
 test("collects every Temu gallery background image even when carousel items are offscreen", () => {
   const left = new FakeElement("div", { id: "leftContent" });
   left.append(
