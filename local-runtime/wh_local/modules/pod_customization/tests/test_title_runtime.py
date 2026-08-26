@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from threading import Event
 
 import pytest
@@ -500,8 +501,8 @@ def test_title_request_contract_requires_distinct_complete_listing_phrases() -> 
     assert isinstance(contract, str)
     lowered = contract.casefold()
     assert "complete" in lowered and "noun phrase" in lowered
-    assert "distinct" in lowered and "visual" in lowered
-    assert "accepted_titles" in lowered and "prefix" in lowered
+    assert "leading visual segment" in lowered
+    assert re.search(r"accepted_titles.{0,160}prefix|prefix.{0,160}accepted_titles", lowered)
 
 
 def test_title_validator_rejects_a_matching_meaningful_word_prefix() -> None:
