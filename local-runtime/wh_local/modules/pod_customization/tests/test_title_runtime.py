@@ -479,3 +479,94 @@ def test_ark_grant_is_rechecked_after_waiting_for_provider_slot() -> None:
     finally:
         gate.allow.set()
         runtime.close()
+
+
+def test_title_request_contract_requires_distinct_complete_listing_phrases() -> None:
+    from wh_local.modules.pod_customization.title_runtime import PodTitleRuntime
+
+    accepted = _title("coastal botanical", "ocean fern", "navy tote")
+    session = _Session([_Response(_payload(title=_title("desert blooms", "copper leaves")))])
+    runtime = PodTitleRuntime(session=session, requests_per_minute=0)
+    try:
+        runtime.generate_title(
+            _request(accepted_titles=(accepted,)),
+            grant=_grant(ark="ark-secret"),
+            call_id="style-task-72:title:1",
+        )
+    finally:
+        runtime.close()
+
+    contract = session.requests[0]["json"]["messages"][1]["content"][1]["text"]
+    assert isinstance(contract, str)
+    lowered = contract.casefold()
+    assert "complete" in lowered and "noun phrase" in lowered
+    assert "distinct" in lowered and "visual" in lowered
+    assert "accepted_titles" in lowered and "prefix" in lowered
+
+
+def test_title_validator_rejects_a_matching_meaningful_word_prefix() -> None:
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    accepted = _title("coastal botanical", "ocean fern", "navy tote")
+    candidate = _title("coastal botanical", "ocean fern", "sand tote")
+    with pytest.raises(ValueError, match="prefix"):
+        validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
+
+
+@pytest.mark.parametrize("ending", [" with", " and", " for", " or", " of", " in", " to", ",", "-", "(", "[", "{"])
+def test_title_validator_rejects_incomplete_title_endings(ending: str) -> None:
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    title = _title("desert blooms", "copper leaves").rstrip() + ending
+    with pytest.raises(ValueError, match="incomplete"):
+        validate_title_result(title_result_from_dict(_payload(title=title)))
+
+
+def test_title_validator_rejects_same_six_word_opening_with_one_motif_replacement() -> None:
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    suffix = "Canvas Tote for Everyday Carry with Durable Handles and Seasonal Gifting"
+    accepted = f"Coastal Botanical Navy Ocean Fern Canvas {suffix}"
+    candidate = f"Coastal Botanical Sand Ocean Fern Canvas {suffix}"
+    assert 80 <= len(accepted) <= 200
+    assert 80 <= len(candidate) <= 200
+    with pytest.raises(ValueError, match="prefix"):
+        validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
+
+
+def test_title_validator_allows_a_complete_title_ending() -> None:
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    title = _title("desert blooms", "copper leaves") + "."
+    validate_title_result(title_result_from_dict(_payload(title=title)))
+
+
+def test_display_title_fallback_uses_a_complete_boundary() -> None:
+    from wh_local.modules.pod_customization.title_runtime import title_result_from_dict
+
+    result = title_result_from_dict(
+        {
+            **_payload(title="中文标题"),
+            "english_title": "Coastal Botanical Canvas Tote with Ocean Fern Artwork",
+            "description": (
+                "A canvas tote with layered coastal botanical artwork for everyday carry. "
+                "It has durable handles."
+            ),
+        }
+    )
+    assert result.title.endswith(".")
+    assert 80 <= len(result.normalized_title) <= 200
+
+
+def test_display_title_fallback_rejects_when_no_complete_boundary_can_reach_minimum() -> None:
+    from wh_local.modules.pod_customization.title_runtime import title_result_from_dict, validate_title_result
+
+    result = title_result_from_dict(
+        {
+            **_payload(title="中文标题"),
+            "english_title": "Coastal tote",
+            "description": "A continuous fragment without a sentence boundary and without enough complete content",
+        }
+    )
+    with pytest.raises(ValueError, match="80-200 ASCII characters"):
+        validate_title_result(result)
