@@ -14,14 +14,14 @@ function resolveEndpoint() {
   };
 }
 
-// 候选令牌：dev-admin-token 优先（本地开发管理员，永不过期兜底）。
+// 候选令牌：优先当前登录用户；本地开发管理员令牌只作为未登录开发环境的兜底。
 function candidateTokens(): string[] {
   const tokens = new Set<string>();
-  tokens.add("dev-admin-token");  // 优先：本地开发管理员
   const manual = localStorage.getItem("whLocalApiToken");
   const customer = localStorage.getItem("wh_demo_token");
   if (manual) tokens.add(manual);
   if (customer) tokens.add(customer);
+  tokens.add("dev-admin-token");
   return [...tokens];
 }
 

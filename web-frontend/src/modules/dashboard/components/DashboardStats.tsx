@@ -98,6 +98,7 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
   }, []);
 
   const format = (value: number | null | undefined) => (value === null || value === undefined ? "--" : String(value));
+  const productSites = stats?.productSites.length ? stats.productSites.join(" / ") : "暂无产品站点";
 
   if (variant === "apple") {
     return (
@@ -134,7 +135,7 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
           <span className="stats-icon iconfont icon-folder"></span>
           <span className="stats-label">产品库产品总数</span>
           <strong className="stats-value">{format(stats?.productCount)}</strong>
-          <span className="stats-note">美区 / 哥伦比亚 / 厄瓜多尔</span>
+          <span className="stats-note">{productSites}</span>
         </button>
 
         <button className="stats-card" onClick={() => onOpenModule("profit_activity_products")} title="点击打开产品库">

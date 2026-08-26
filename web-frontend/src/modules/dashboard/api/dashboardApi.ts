@@ -1,9 +1,10 @@
 import { apiRequest } from "../../../shared/api/apiClient";
-import { listProfitActivityProducts } from "../../profit_activity/api/profitActivityApi";
+import { listProfitActivityProducts, listProfitActivitySites } from "../../profit_activity/api/profitActivityApi";
 import type { ProfitActivityProduct, ProfitActivitySite } from "../../profit_activity/types/products";
 
 export type DashboardStats = {
-  productCount: number | null;       // 产品库产品总数（US+CO+EC）
+  productCount: number | null;
+  productSites: string[];
   todayInboundCount: number | null;  // 今日入库数量（北京时间今日新增入库的产品数）
   todayProcessedCount: number | null; // 今日产品处理数量（北京时间今日创建的处理的批次数量）
   trend: DashboardTrendPoint[];
@@ -26,7 +27,12 @@ type ProcessingTaskItem = {
   skipped_count: number;
 };
 
-const PRODUCT_SITES: ProfitActivitySite[] = ["US", "CO", "EC"];
+const FALLBACK_PRODUCT_SITES: Array<{ site_code: ProfitActivitySite; display_name: string }> = [
+  { site_code: "US", display_name: "美区" },
+  { site_code: "CO", display_name: "哥伦比亚" },
+  { site_code: "EC", display_name: "厄瓜多尔" },
+  { site_code: "PE", display_name: "秘鲁" },
+];
 
 const CHINA_TIME_ZONE = "Asia/Shanghai";
 
@@ -84,6 +90,7 @@ function buildTrend(products: ProfitActivityProduct[], tasks: ProcessingTaskItem
 export async function getDashboardStats(): Promise<DashboardStats> {
   const stats: DashboardStats = {
     productCount: null,
+    productSites: [],
     todayInboundCount: null,
     todayProcessedCount: null,
     trend: buildTrend([], []),
@@ -92,11 +99,13 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   const results = await Promise.allSettled([loadProducts(), loadProcessingTasks()]);
 
   const [productsResult, tasksResult] = results;
-  const products = productsResult.status === "fulfilled" ? productsResult.value : [];
+  const productLibrary = productsResult.status === "fulfilled" ? productsResult.value : null;
+  const products = productLibrary?.products ?? [];
   const tasks = tasksResult.status === "fulfilled" ? tasksResult.value : [];
 
   if (productsResult.status === "fulfilled") {
     stats.productCount = products.length;
+    stats.productSites = productLibrary?.siteLabels ?? [];
     stats.todayInboundCount = products.filter((item) => isTodayInChina(item.library_created_at ?? item.created_at)).length;
   }
   if (tasksResult.status === "fulfilled") {
@@ -107,13 +116,18 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   return stats;
 }
 
-async function loadProducts(): Promise<ProfitActivityProduct[]> {
+async function loadProducts(): Promise<{ products: ProfitActivityProduct[]; siteLabels: string[] }> {
+  const siteOptions = await listProfitActivitySites().catch(() => FALLBACK_PRODUCT_SITES);
   const lists = await Promise.all(
-    PRODUCT_SITES.map((site) =>
-      listProfitActivityProducts({ site, scope: "default", skcs: "" }).catch(() => [] as ProfitActivityProduct[])
+    siteOptions.map((site) =>
+      listProfitActivityProducts({ site: site.site_code, scope: "default", skcs: "" }).catch(() => [] as ProfitActivityProduct[])
     )
   );
-  return lists.flat();
+  const products = lists.flat();
+  const siteNames = new Map(siteOptions.map((site) => [site.site_code, site.display_name]));
+  const siteLabels = [...new Set(products.map((product) => product.site ?? product.site_code).filter(Boolean))]
+    .map((site) => siteNames.get(site!) ?? site!);
+  return { products, siteLabels };
 }
 
 async function loadProcessingTasks(): Promise<ProcessingTaskItem[]> {
