@@ -227,6 +227,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [pageSize, setPageSize] = useState<number>(PRECHECK_DEFAULT_PAGE_SIZE);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [onlySuccess, setOnlySuccess] = useState(false);
   const [imageZoomed, setImageZoomed] = useState(false);
   const [expandedDraftIds, setExpandedDraftIds] = useState<Set<number>>(new Set());
 
@@ -353,8 +354,9 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const excludedItems = (preview?.items ?? []).filter((item) => item.excluded);
   const filteredItems = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    if (!keyword) return allItems;
-    return allItems.filter((item) => {
+    const successScoped = onlySuccess ? allItems.filter((item) => item.status === 'completed') : allItems;
+    if (!keyword) return successScoped;
+    return successScoped.filter((item) => {
       const candidates = [
         item.skc,
         item.core_fields?.sku,
@@ -363,7 +365,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       ];
       return candidates.some((value) => value && value.toLowerCase().includes(keyword));
     });
-  }, [allItems, search]);
+  }, [allItems, search, onlySuccess]);
 
   useEffect(() => {
     setPage(1);
@@ -559,8 +561,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setError('');
     setMessage('');
     try {
-      const exportableItems = allItems.filter((item) => item.exportable);
-      if (exportableItems.length === 0) throw new Error('任务没有可完成并导出的商品');
+      const exportableItems = allItems.filter((item) => item.exportable && (!onlySuccess || item.status === 'completed'));
+      if (exportableItems.length === 0) throw new Error(onlySuccess ? '没有可导出的成功链接' : '任务没有可完成并导出的商品');
       const missingDraft = exportableItems.find((item) => item.product_draft_id == null);
       if (missingDraft) throw new Error(`可导出商品 #${missingDraft.item_id} 缺少草稿 ID，已阻止不完整提交`);
       const missingMainItems = exportableItems.filter((item) => !effectiveManifest(item).main_asset_id);
@@ -753,6 +755,14 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
+          <label className="precheck-only-success">
+            <input
+              type="checkbox"
+              checked={onlySuccess}
+              onChange={(event) => setOnlySuccess(event.target.checked)}
+            />
+            只看成功链接
+          </label>
           <label className="precheck-page-size">
             每页
             <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
