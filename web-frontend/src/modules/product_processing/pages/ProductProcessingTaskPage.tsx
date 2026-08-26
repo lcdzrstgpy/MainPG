@@ -501,8 +501,6 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                     onClick={() => onOpenPrecheck?.(batch.task_id)}
                     title={taskActive ? '处理完成后可进入预检' : '打开预检页：核对标题/图片/字段，修改后导出最终版表格'}
                   >预检并导出最终版</button>
-                  {batch.outputs.dxm_import && <button onClick={() => void downloadOutput('dxm', `dxm_import_task_${batch.task_id}.xlsx`)}>下载导入表</button>}
-                  {batch.outputs.error_report && <button onClick={() => void downloadOutput('errors', `error_report_task_${batch.task_id}.csv`)}>下载错误报告</button>}
                   {batch.outputs.product_video_manifest && <button onClick={() => void downloadOutput('video_manifest', `product_video_manifest_task_${batch.task_id}.csv`)}>下载视频清单</button>}
                 </div>
               </>

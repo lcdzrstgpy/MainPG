@@ -1133,7 +1133,6 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
               {activityFile ? `已选择：${activityFile.name}` : "请选择用于过滤的活动 Excel 文件"}
             </p>
           </div>
-          <p className="muted">上传活动表后，后端会用数据库产品和当前站点利润设置生成可申报模板，并把可申报/剔除文件保存到“本地保存目录”。</p>
           <div className="profit-threshold-box">
             <h3>活动申报门槛</h3>
             <p className="profit-formula-note">以下两个条件满足其中之一即可申报。</p>

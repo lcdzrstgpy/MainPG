@@ -153,7 +153,7 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
   return (
     <section className="shop-collection-panel plugin-capture-panel" aria-label="插件采集">
       <header className="shop-collection-header">
-        <div><span>1688 插件 · 万邦 API</span><strong>插件采集批次</strong><p>插件登记 1688 链接后，在这里启动万邦采集并查看草稿写入结果。</p></div>
+        <div><strong>插件采集批次</strong><p>插件登记 1688 链接后，在这里采集并查看草稿写入结果。</p></div>
         <span className="shop-collection-persistent">自动同步进度</span>
       </header>
 

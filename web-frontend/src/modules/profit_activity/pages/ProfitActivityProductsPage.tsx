@@ -993,7 +993,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       <section className="profit-products-head">
         <div>
           <h1>产品库</h1>
-          <p>查询数据库产品，按站点管理当前账号权限可见的利润活动产品。</p>
+        <p>查询、管理产品库数据。</p>
         </div>
         <div className="profit-products-hero-actions">
           <button className="profit-products-settings-toggle" type="button" aria-haspopup="dialog" onClick={openSettingsDialog} disabled={!!busy}>
