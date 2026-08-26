@@ -13,6 +13,7 @@ from .title_runtime import validate_listing_copy_text
 
 
 LISTING_IMAGE_ROLES = ("hero", "detail_a", "detail_b", "lifestyle")
+LISTING_PRESENTATION_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
 SETTLED_BATCH_STATUSES = frozenset({"completed", "partial_failure", "failed"})
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _PRIVATE_DNS_SUFFIXES = (
@@ -266,7 +267,7 @@ def _build_row(
         "description", copy.get("description"), max_length=1000
     )
     suffix = f"{style_index:03d}"
-    image_urls = [images[role] for role in LISTING_IMAGE_ROLES]
+    image_urls = [images[role] for role in LISTING_PRESENTATION_ROLES]
     description = "\n".join(
         [safe_description, *(f'<img src="{url}" />' for url in image_urls)]
     )

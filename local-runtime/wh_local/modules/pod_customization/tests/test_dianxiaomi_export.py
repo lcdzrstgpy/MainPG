@@ -375,7 +375,7 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
     assert len(row) == 42
     assert row[:6] == [
         "Coastal Tote", "Coastal Tote",
-        'Carry calm everywhere.\n<img src="https://images.example.com/pod/1/hero.png" />\n<img src="https://images.example.com/pod/1/detail_a.png" />\n<img src="https://images.example.com/pod/1/detail_b.png" />\n<img src="https://images.example.com/pod/1/lifestyle.png" />',
+        'Carry calm everywhere.\n<img src="https://images.example.com/pod/1/lifestyle.png" />\n<img src="https://images.example.com/pod/1/detail_a.png" />\n<img src="https://images.example.com/pod/1/detail_b.png" />\n<img src="https://images.example.com/pod/1/hero.png" />',
         "POD-001", "Style", "Style 001",
     ]
     assert row[10] == "SKU-001-01"
@@ -384,10 +384,10 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
     assert row[15:18] == [None, None, None]
     assert row[18] == "\n".join(
         [
-            "https://images.example.com/pod/1/hero.png",
+            "https://images.example.com/pod/1/lifestyle.png",
             "https://images.example.com/pod/1/detail_a.png",
             "https://images.example.com/pod/1/detail_b.png",
-            "https://images.example.com/pod/1/lifestyle.png",
+            "https://images.example.com/pod/1/hero.png",
         ]
     )
     assert row[19:24] == ["https://images.example.com/pod/1/hero.png", None, None, None, 29.99]
