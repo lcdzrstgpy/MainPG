@@ -1146,7 +1146,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 <span>DAILY SELECTION</span>
                 <strong>采集与候选商品</strong>
               </div>
-              <span className="collection-workspace-context">来源：{collectionWorkspaceMode === "shop" ? "1688 整店" : collectionWorkspaceMode === "plugin" ? "1688 插件 · 万邦 API" : "每日选品"}</span>
+              <span className="collection-workspace-context">来源：{collectionWorkspaceMode === "shop" ? "1688 整店" : collectionWorkspaceMode === "plugin" ? "1688 插件" : "每日选品"}</span>
             </header>
             <div className="collection-workspace-tabs" role="tablist" aria-label="采集入口">
               <button
@@ -1180,7 +1180,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               <div className="daily-work-grid">
         <form className="daily-panel collection-panel" onSubmit={submitCollection}>
           <div className="daily-panel-title">
-            <div><span className="title-icon">⌕</span><strong>API 采集</strong></div>
+            <div><span className="title-icon">⌕</span><strong>关键词/参考图采集</strong></div>
             <span>当前方向：{selectedDirection.name}</span>
           </div>
 

@@ -61,6 +61,10 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const [expandedId, setExpandedId] = useState<number | null>(null);
   // SKU 管理抽屉：当前正在管理的草稿 id（null 表示关闭）
   const [skuDrawerDraftId, setSkuDrawerDraftId] = useState<number | null>(null);
+  // SKU 管理抽屉：按序号范围批量删除（从第几个到第几个结束）
+  const [skuRangeStart, setSkuRangeStart] = useState('');
+  const [skuRangeEnd, setSkuRangeEnd] = useState('');
+  const [skuRangeTip, setSkuRangeTip] = useState('');
   // 批量管理 SKU：跨商品按条件筛选后批量删除/保留
   const [skuBatchOpen, setSkuBatchOpen] = useState(false);
   const [edits, setEdits] = useState<Record<number, DraftEdit>>({});
@@ -819,7 +823,37 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
           const skuId = String(v.sku_id || v.source_sku_id || label || idx);
           return isDeleted(v, skuId, label);
         }).length;
-        const closeDrawer = () => setSkuDrawerDraftId(null);
+        const totalOrdered = orderedVariants.length;
+        const applyRangeDelete = () => {
+          const start = Number(skuRangeStart);
+          const end = Number(skuRangeEnd);
+          if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end > totalOrdered) {
+            setSkuRangeTip(`请输入有效范围（1-${totalOrdered}）`);
+            return;
+          }
+          setSkuRangeStart('');
+          setSkuRangeEnd('');
+          setSkuRangeTip('');
+          setEdits((prev) => {
+            const cur = prev[target.id] ?? { title: target.title || '', imageUrl: target.image_url || '', skuEdits: {}, skuDeletes: [] };
+            const s = new Set(cur.skuDeletes);
+            orderedVariants.forEach((variant, idx) => {
+              if (idx + 1 >= start && idx + 1 <= end) {
+                const attrs = variant.attributes || {};
+                const label = Object.values(attrs).join('/');
+                const key = String(variant.sku_id || variant.source_sku_id || label || idx);
+                s.add(key);
+              }
+            });
+            return { ...prev, [target.id]: { ...cur, skuDeletes: Array.from(s) } };
+          });
+        };
+        const closeDrawer = () => {
+          setSkuDrawerDraftId(null);
+          setSkuRangeStart('');
+          setSkuRangeEnd('');
+          setSkuRangeTip('');
+        };
         return (
           <div className="verify-drawer-root">
             <div className="verify-drawer-mask" onClick={closeDrawer} />
@@ -839,6 +873,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                   <i className="iconfont icon-infomation" aria-hidden="true" />
                   已删除的 SKU 会自动移动到列表末尾，便于连续批量删除；恢复后回到原位置。
                 </div>
+                <div className="verify-drawer-range">
+                  <span>批量删除</span>
+                  <span>从第</span>
+                  <input type="number" min="1" value={skuRangeStart} onChange={(e) => setSkuRangeStart(e.target.value)} placeholder="1" aria-label="起始序号" />
+                  <span>个到第</span>
+                  <input type="number" min="1" value={skuRangeEnd} onChange={(e) => setSkuRangeEnd(e.target.value)} placeholder={totalOrdered > 0 ? String(totalOrdered) : '1'} aria-label="结束序号" />
+                  <span>个</span>
+                  <button onClick={applyRangeDelete} disabled={totalOrdered === 0}>删除该范围</button>
+                </div>
+                {skuRangeTip && <p className="verify-drawer-range-tip">{skuRangeTip}</p>}
                 {variants.length === 0 && <p className="verify-drawer-status">该草稿没有 SKU（单规格）。</p>}
                 {orderedVariants.map((variant, idx) => {
                   const sourcePlatform = String(raw.platform || raw.source_platform || '').toLowerCase();

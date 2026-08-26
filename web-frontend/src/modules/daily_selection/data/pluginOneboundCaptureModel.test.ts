@@ -36,7 +36,7 @@ function batch(overrides: Partial<PluginOneboundCaptureBatch> = {}): PluginOnebo
 }
 
 test("maps the complete plugin capture lifecycle and polls only active batches", () => {
-  assert.equal(pluginCaptureStatusLabel("prepared"), "等待启动万邦");
+  assert.equal(pluginCaptureStatusLabel("prepared"), "等待启动");
   assert.equal(pluginCaptureStatusLabel("queued"), "排队中");
   assert.equal(pluginCaptureStatusLabel("running"), "采集中");
   assert.equal(pluginCaptureStatusLabel("completed"), "采集完成");

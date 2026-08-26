@@ -136,7 +136,7 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
     try {
       await pluginOneboundCaptureApi.startBatch(selectedBatch.batch_id);
       await Promise.all([refreshBatches(), refreshSelected(selectedBatch.batch_id)]);
-      setNotice("万邦采集已启动，进度会自动更新。");
+      setNotice("采集已启动，进度会自动更新。");
     } catch (requestError) {
       setError(formatShopCollectionError(requestError));
       await refreshSelected(selectedBatch.batch_id);
@@ -153,7 +153,7 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
   return (
     <section className="shop-collection-panel plugin-capture-panel" aria-label="插件采集">
       <header className="shop-collection-header">
-        <div><span>1688 插件 · 万邦 API</span><strong>插件采集批次</strong><p>插件登记 1688 链接后，在这里启动万邦采集并查看草稿写入结果。</p></div>
+        <div><strong>插件采集批次</strong><p>插件登记 1688 链接后，在这里采集并查看草稿写入结果。</p></div>
         <span className="shop-collection-persistent">自动同步进度</span>
       </header>
 
@@ -175,7 +175,7 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
         </aside>
 
         <div className="shop-batch-detail">
-          {!selectedBatch && batches.length > 0 && <div className="shop-empty"><strong>请选择一个插件采集批次</strong><p>这里仅展示插件已经发起的万邦采集任务。</p></div>}
+          {!selectedBatch && batches.length > 0 && <div className="shop-empty"><strong>请选择一个插件采集批次</strong><p>这里仅展示插件已经发起的采集任务。</p></div>}
           {selectedBatch && progress && (
             <>
               <div className="shop-batch-summary">
@@ -201,7 +201,7 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
                 <div className="shop-batch-actions">
                   {selectedBatch.status === "prepared" && (
                     <button type="button" disabled={starting} onClick={() => void startBatch()}>
-                      {starting ? "正在启动万邦…" : "启动万邦采集"}
+                      {starting ? "正在启动采集…" : "启动采集"}
                     </button>
                   )}
                   {canRetryPluginCaptureFailures(selectedBatch) && (

@@ -204,8 +204,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         <img className="brand-logo-large" src={BRAND_LOGO_URL} alt={BRAND_NAME} />
         <p className="eyebrow">JIEYE ECOMMERCE PLATFORM</p>
         <h1>界野电商平台</h1>
-        <p>面向跨境电商团队的本地运营中台。登录/注册已连接真实后端接口，账号数据由后端账号服务统一管理。</p>
-        <div className="auth-feature-list"><span>✓ 模块化工作流</span><span>✓ 本地运行时</span><span>✓ 团队协作预留</span></div>
+        <p>面向跨境电商团队的本地运营中台。</p>
+        <div className="auth-feature-list"><span>✓ 模块化工作流</span><span>✓ 本地运行时</span></div>
       </section>
       <section className="auth-form-card">
         <div className="auth-tabs"><button type="button" className={isLogin ? "is-selected" : ""} onClick={() => { setMode("login"); setError(""); setNotice(""); }}>登录</button><button type="button" className={mode === "register" ? "is-selected" : ""} onClick={() => { setMode("register"); setError(""); setNotice(""); }}>注册</button></div>
@@ -213,9 +213,9 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         <h2>{isLogin ? "登录工作台" : mode === "register" ? "注册账号" : "找回密码"}</h2>
         {mode === "forgot" ? (
           <form onSubmit={handleForgotSubmit}>
-            <label>邮箱<input type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} placeholder="name@example.com" autoComplete="email" required /></label>
-            <label>邮箱验证码<div className="auth-code-row"><input type="text" value={forgotCode} onChange={(e) => setForgotCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="输入 6 位验证码" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" required /><button type="button" onClick={handleSendForgotCode} disabled={forgotCodeBusy || forgotCodeCooldown > 0}>{forgotCodeBusy ? "发送中…" : forgotCodeCooldown > 0 ? `${forgotCodeCooldown}s 后重发` : "获取验证码"}</button></div></label>
-            <label>新密码<input type="password" value={forgotNewPassword} onChange={(e) => setForgotNewPassword(e.target.value)} placeholder="至少 8 位" autoComplete="new-password" required /></label>
+            <label>邮箱<input type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.typeMismatch ? "请输入有效的邮箱地址" : "请输入邮箱")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="email" required /></label>
+            <label>邮箱验证码<div className="auth-code-row"><input type="text" value={forgotCode} onChange={(e) => setForgotCode(e.target.value.replace(/\D/g, "").slice(0, 6))} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.patternMismatch ? "请输入 6 位数字验证码" : "请输入邮箱验证码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="输入 6 位验证码" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" required /><button type="button" onClick={handleSendForgotCode} disabled={forgotCodeBusy || forgotCodeCooldown > 0}>{forgotCodeBusy ? "发送中…" : forgotCodeCooldown > 0 ? `${forgotCodeCooldown}s 后重发` : "获取验证码"}</button></div></label>
+            <label>新密码<input type="password" value={forgotNewPassword} onChange={(e) => setForgotNewPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入新密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="至少 8 位" autoComplete="new-password" required /></label>
             {error && <p className="auth-error">{error}</p>}
             {notice && <p className="auth-notice">{notice}</p>}
             <button className="primary-button" type="submit" disabled={forgotBusy}>{forgotBusy ? "处理中…" : "重置密码"}</button>
@@ -225,21 +225,21 @@ export function AuthPage({ onEnter }: AuthPageProps) {
           <>
             <form onSubmit={handleSubmit}>
               {isLogin ? (
-                <label>账号（用户名或邮箱）<input type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="name@example.com" autoComplete="username" required /></label>
+                <label>账号（用户名或邮箱）<input type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入账号")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="username" required /></label>
               ) : (
                 <>
-                  <label>用户名<input type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="例如：ops-team-a" autoComplete="username" required /></label>
-                  <label>邮箱<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" autoComplete="email" required /></label>
-                  <label>邮箱验证码<div className="auth-code-row"><input type="text" value={emailCode} onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="输入 6 位验证码" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" required /><button type="button" onClick={handleSendEmailCode} disabled={codeBusy || codeCooldown > 0}>{codeBusy ? "发送中…" : codeCooldown > 0 ? `${codeCooldown}s 后重发` : "获取验证码"}</button></div></label>
-                  <label>邀请码<input type="text" value={invitationCode} onChange={(e) => setInvitationCode(e.target.value)} placeholder="请输入管理员提供的邀请码" autoComplete="off" required /></label>
+                  <label>用户名<input type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入用户名")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="例如：ops-team-a" autoComplete="username" required /></label>
+                  <label>邮箱<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.typeMismatch ? "请输入有效的邮箱地址" : "请输入邮箱")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="email" required /></label>
+                  <label>邮箱验证码<div className="auth-code-row"><input type="text" value={emailCode} onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, "").slice(0, 6))} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.patternMismatch ? "请输入 6 位数字验证码" : "请输入邮箱验证码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="输入 6 位验证码" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" required /><button type="button" onClick={handleSendEmailCode} disabled={codeBusy || codeCooldown > 0}>{codeBusy ? "发送中…" : codeCooldown > 0 ? `${codeCooldown}s 后重发` : "获取验证码"}</button></div></label>
+                  <label>邀请码<input type="text" value={invitationCode} onChange={(e) => setInvitationCode(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入邀请码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="请输入管理员提供的邀请码" autoComplete="off" required /></label>
                 </>
               )}
-              <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete={isLogin ? "current-password" : "new-password"} required /></label>
+              <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete={isLogin ? "current-password" : "new-password"} required /></label>
               {error && <p className="auth-error">{error}</p>}
               {notice && <p className="auth-notice">{notice}</p>}
               <button className="primary-button" type="submit" disabled={busy}>{busy ? "处理中…" : isLogin ? "登录并进入工作台 →" : "注册并进入工作台 →"}</button>
             </form>
-            {isLogin && <p className="form-hint">登录后 token 保存在本地浏览器，可自动恢复登录态。<button type="button" className="link-button" onClick={() => { setMode("forgot"); setError(""); setNotice(""); }}>忘记密码？</button></p>}
+            {isLogin && <p className="form-hint"><button type="button" className="link-button" onClick={() => { setMode("forgot"); setError(""); setNotice(""); }}>忘记密码？</button></p>}
             {mode === "register" && <p className="form-hint">注册成功后自动切换到登录页。</p>}
           </>
         )}

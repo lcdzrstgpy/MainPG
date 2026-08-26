@@ -5,13 +5,13 @@ import test from "node:test";
 const panel = readFileSync(new URL("./PluginOneboundCapturePanel.tsx", import.meta.url), "utf8");
 
 test("plugin capture panel starts prepared OneBound batches and retries terminal failures", () => {
-  assert.match(panel, /1688 插件 · 万邦 API/);
+  assert.match(panel, /1688 插件/);
   assert.match(panel, /请前往 1688 页面使用浏览器插件发起整页采集/);
   assert.match(panel, /canRetryPluginCaptureFailures/);
   assert.match(panel, /重试失败项/);
   assert.match(panel, /selectedBatch\.status === "prepared"/);
   assert.match(panel, /pluginOneboundCaptureApi\.startBatch/);
-  assert.match(panel, /启动万邦采集/);
+  assert.match(panel, /启动采集/);
   assert.doesNotMatch(panel, /pluginOneboundCaptureApi\.(createBatch|pause|resume|cancel)/);
   assert.doesNotMatch(panel, />\s*(创建批次|暂停|取消)\s*</);
 });

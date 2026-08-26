@@ -61,7 +61,7 @@ export type PluginOneboundCaptureItemsPage = {
 };
 
 const STATUS_LABELS: Record<PluginOneboundCaptureStatus, string> = {
-  prepared: "等待启动万邦",
+  prepared: "等待启动",
   queued: "排队中",
   running: "采集中",
   completed: "采集完成",

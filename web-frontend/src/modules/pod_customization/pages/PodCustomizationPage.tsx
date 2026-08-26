@@ -87,19 +87,18 @@ function validateSkuFields(skus: PodListingFieldsDraft["skus"]): SkuFieldErrors 
 const BUSINESS_FIELDS: Array<{
   key: keyof PodBusinessFieldsDraft;
   label: string;
-  placeholder: string;
   multiline?: boolean;
   required?: boolean;
 }> = [
-  { key: "product_name", label: "产品名称", placeholder: "例如：旅行保温杯", required: true },
-  { key: "product_category", label: "产品品类", placeholder: "例如：户外饮具", required: true },
-  { key: "target_market", label: "目标市场", placeholder: "例如：美国", required: true },
-  { key: "target_audience", label: "目标人群", placeholder: "例如：露营与通勤人群" },
-  { key: "core_selling_points", label: "核心卖点", placeholder: "轻量、防漏、保温 12 小时", multiline: true },
-  { key: "design_theme", label: "设计主题", placeholder: "例如：国家公园", required: true },
-  { key: "style_keywords", label: "风格关键词", placeholder: "复古丝网印刷、粗线条" },
-  { key: "color_preferences", label: "偏好配色", placeholder: "松绿、砂岩黄" },
-  { key: "excluded_elements", label: "禁用元素", placeholder: "品牌 Logo、人物肖像", multiline: true },
+  { key: "product_name", label: "产品名称", required: true },
+  { key: "product_category", label: "产品品类", required: true },
+  { key: "target_market", label: "目标市场", required: true },
+  { key: "target_audience", label: "目标人群" },
+  { key: "core_selling_points", label: "核心卖点", multiline: true },
+  { key: "design_theme", label: "设计主题", required: true },
+  { key: "style_keywords", label: "风格关键词" },
+  { key: "color_preferences", label: "偏好配色" },
+  { key: "excluded_elements", label: "禁用元素", multiline: true },
 ];
 
 function autoGrowBusinessTextarea(textarea: HTMLTextAreaElement): void {
@@ -110,12 +109,11 @@ function autoGrowBusinessTextarea(textarea: HTMLTextAreaElement): void {
 const LISTING_FIELDS: Array<{
   key: "declared_price" | "suggested_price_usd" | "category_name";
   label: string;
-  placeholder: string;
   inputMode?: "decimal" | "numeric";
 }> = [
-  { key: "declared_price", label: "申报价", placeholder: "例如：19.95", inputMode: "decimal" },
-  { key: "suggested_price_usd", label: "建议售价（USD）", placeholder: "例如：24.50", inputMode: "decimal" },
-  { key: "category_name", label: "店小秘类目", placeholder: "例如：家居收纳 > 洗衣篮" },
+  { key: "declared_price", label: "申报价", inputMode: "decimal" },
+  { key: "suggested_price_usd", label: "建议售价（USD）", inputMode: "decimal" },
+  { key: "category_name", label: "店小秘类目" },
 ];
 
 function toSummary(batch: PodBatch): PodBatchSummary {
@@ -641,31 +639,31 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 ? <textarea rows={1} value={businessFields[field.key]} onChange={(event) => {
                   updateBusinessField(field.key, event.currentTarget.value);
                   autoGrowBusinessTextarea(event.currentTarget);
-                }} placeholder={field.placeholder} />
-                : <input value={businessFields[field.key]} onChange={(event) => updateBusinessField(field.key, event.target.value)} placeholder={field.placeholder} />}</label>)}
+                }} />
+                : <input value={businessFields[field.key]} onChange={(event) => updateBusinessField(field.key, event.target.value)} />}</label>)}
             </div>
             <section className="pod-listing-fields" aria-labelledby="pod-dianxiaomi-listing-title">
               <div className="pod-listing-fields-heading"><span>DIANXIAOMI LISTING</span><h3 id="pod-dianxiaomi-listing-title">店小秘上架信息</h3><small>创建批次时保存为不可缺失的上架快照</small></div>
               <div className="pod-title-mode" role="radiogroup" aria-label="标题模式">
                 <span>标题模式<em>*</em></span>
                 <div>
-                  <button type="button" role="radio" aria-checked={listingFields.title_mode === "long"} className={listingFields.title_mode === "long" ? "is-active" : ""} onClick={() => updateListingField("title_mode", "long")}><b>长标题</b><small>默认，信息更完整</small></button>
-                  <button type="button" role="radio" aria-checked={listingFields.title_mode === "short"} className={listingFields.title_mode === "short" ? "is-active" : ""} onClick={() => updateListingField("title_mode", "short")}><b>短标题</b><small>更精简</small></button>
+                  <button type="button" role="radio" aria-checked={listingFields.title_mode === "long"} className={listingFields.title_mode === "long" ? "is-active" : ""} onClick={() => updateListingField("title_mode", "long")}><b>长标题</b></button>
+                  <button type="button" role="radio" aria-checked={listingFields.title_mode === "short"} className={listingFields.title_mode === "short" ? "is-active" : ""} onClick={() => updateListingField("title_mode", "short")}><b>短标题</b></button>
                 </div>
               </div>
               <div className="pod-business-fields">
-                {LISTING_FIELDS.map((field) => <label key={field.key}><span>{field.label}<em>*</em></span><input value={listingFields[field.key]} inputMode={field.inputMode} onChange={(event) => updateListingField(field.key, event.target.value)} placeholder={field.placeholder} /></label>)}
+                {LISTING_FIELDS.map((field) => <label key={field.key}><span>{field.label}<em>*</em></span><input value={listingFields[field.key]} inputMode={field.inputMode} onChange={(event) => updateListingField(field.key, event.target.value)} /></label>)}
               </div>
               <div className="pod-sku-editor" aria-label="SKU 预设">
                 <div className="pod-sku-editor-heading"><span>SKU 预设<small>每个 SKU 需填写名称、长、宽、高与重量</small></span><button type="button" onClick={addSku} disabled={skuLimitReached} aria-describedby={skuLimitReached ? "pod-sku-limit-notice" : undefined} title={skuLimitReached ? "最多可添加 100 个 SKU" : undefined}><span className="iconfont icon-plus" aria-hidden="true" />新增 SKU</button></div>
                 {skuLimitReached && <p id="pod-sku-limit-notice" className="pod-sku-limit-notice" role="status">已达到 100 个 SKU 上限。</p>}
                 <div className="pod-sku-inputs">
                   {listingFields.skus.map((sku, index) => <div key={index} className="pod-sku-input-row">
-                    <label><span>SKU 名称 {index + 1}</span><input value={sku.name} onChange={(event) => updateSku(index, "name", event.target.value)} placeholder="例如：米白款" aria-label="SKU 名称" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "name")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "name")] ? `pod-sku-error-${index}-name` : undefined} />{skuFieldErrors[skuErrorKey(index, "name")] && <small id={`pod-sku-error-${index}-name`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "name")]}</small>}</label>
-                    <label><span>长（cm）</span><input value={sku.length_cm} inputMode="decimal" onChange={(event) => updateSku(index, "length_cm", event.target.value)} placeholder="例如：31" aria-label="SKU 长（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "length_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "length_cm")] ? `pod-sku-error-${index}-length_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "length_cm")] && <small id={`pod-sku-error-${index}-length_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "length_cm")]}</small>}</label>
-                    <label><span>宽（cm）</span><input value={sku.width_cm} inputMode="decimal" onChange={(event) => updateSku(index, "width_cm", event.target.value)} placeholder="例如：20" aria-label="SKU 宽（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "width_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "width_cm")] ? `pod-sku-error-${index}-width_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "width_cm")] && <small id={`pod-sku-error-${index}-width_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "width_cm")]}</small>}</label>
-                    <label><span>高（cm）</span><input value={sku.height_cm} inputMode="decimal" onChange={(event) => updateSku(index, "height_cm", event.target.value)} placeholder="例如：7.5" aria-label="SKU 高（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "height_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "height_cm")] ? `pod-sku-error-${index}-height_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "height_cm")] && <small id={`pod-sku-error-${index}-height_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "height_cm")]}</small>}</label>
-                    <label><span>重量（g）</span><input value={sku.weight_g} inputMode="decimal" onChange={(event) => updateSku(index, "weight_g", event.target.value)} placeholder="例如：840" aria-label="SKU 重量（g）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "weight_g")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "weight_g")] ? `pod-sku-error-${index}-weight_g` : undefined} />{skuFieldErrors[skuErrorKey(index, "weight_g")] && <small id={`pod-sku-error-${index}-weight_g`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "weight_g")]}</small>}</label>
+                    <label><span>SKU 名称 {index + 1}</span><input value={sku.name} onChange={(event) => updateSku(index, "name", event.target.value)} aria-label="SKU 名称" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "name")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "name")] ? `pod-sku-error-${index}-name` : undefined} />{skuFieldErrors[skuErrorKey(index, "name")] && <small id={`pod-sku-error-${index}-name`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "name")]}</small>}</label>
+                    <label><span>长（cm）</span><input value={sku.length_cm} inputMode="decimal" onChange={(event) => updateSku(index, "length_cm", event.target.value)} aria-label="SKU 长（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "length_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "length_cm")] ? `pod-sku-error-${index}-length_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "length_cm")] && <small id={`pod-sku-error-${index}-length_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "length_cm")]}</small>}</label>
+                    <label><span>宽（cm）</span><input value={sku.width_cm} inputMode="decimal" onChange={(event) => updateSku(index, "width_cm", event.target.value)} aria-label="SKU 宽（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "width_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "width_cm")] ? `pod-sku-error-${index}-width_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "width_cm")] && <small id={`pod-sku-error-${index}-width_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "width_cm")]}</small>}</label>
+                    <label><span>高（cm）</span><input value={sku.height_cm} inputMode="decimal" onChange={(event) => updateSku(index, "height_cm", event.target.value)} aria-label="SKU 高（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "height_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "height_cm")] ? `pod-sku-error-${index}-height_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "height_cm")] && <small id={`pod-sku-error-${index}-height_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "height_cm")]}</small>}</label>
+                    <label><span>重量（g）</span><input value={sku.weight_g} inputMode="decimal" onChange={(event) => updateSku(index, "weight_g", event.target.value)} aria-label="SKU 重量（g）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "weight_g")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "weight_g")] ? `pod-sku-error-${index}-weight_g` : undefined} />{skuFieldErrors[skuErrorKey(index, "weight_g")] && <small id={`pod-sku-error-${index}-weight_g`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "weight_g")]}</small>}</label>
                     <button type="button" onClick={() => removeSku(index)} aria-label="删除 SKU">×</button>
                   </div>)}
                 </div>

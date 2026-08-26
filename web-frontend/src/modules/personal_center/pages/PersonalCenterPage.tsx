@@ -493,11 +493,6 @@ export function PersonalCenterPage() {
           </div>
         </div>
         <div className="personal-hero-actions">
-          <div className="personal-security-pill">
-            <span className="iconfont icon-lock-fill" aria-hidden="true" />
-            <strong>服务器账本校验</strong>
-            <span>本地数据不作为余额依据</span>
-          </div>
           <button className="personal-password-entry" type="button" onClick={openPasswordDialog}>
             <span className="iconfont icon-key" aria-hidden="true" />
             修改密码
@@ -744,18 +739,6 @@ export function PersonalCenterPage() {
           </div>
         </article>
 
-        <article className="personal-card security-card">
-          <div className="personal-card-title">
-            <span className="iconfont icon-safetycertificate" aria-hidden="true" />
-            <h2>安全策略</h2>
-          </div>
-          <ul>
-            <li>积分余额、充值订单、扣费记录全部存放在平台服务器。</li>
-            <li>微信/支付宝回调未完成验签前，订单不会入账。</li>
-            <li>账本按用户账号和工作区关联，后续扣费接口必须带幂等键。</li>
-            <li>本地数据库或浏览器缓存被改，不影响服务器余额。</li>
-          </ul>
-        </article>
         </div>
         </div> : activePanel === "pricing" ? (
           <article className="personal-card pricing-card">

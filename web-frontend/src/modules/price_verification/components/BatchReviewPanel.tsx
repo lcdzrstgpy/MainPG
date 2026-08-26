@@ -100,7 +100,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
     <section className="price-verification-batch-review-panel">
       <div className="price-verification-panel-heading">
         <div>
-          <h2>选择并图搜<SectionHelp title="插件采集的 Temu 本页报价经初筛后展示在此。勾选需要处理的 SKC 后，系统会直接保留商品、复用产品库已有货源，并对未命中的 SKC 执行万邦图片搜索。" /></h2>
+          <h2>选择并图搜<SectionHelp title="插件采集的 Temu 本页报价经初筛后展示在此。勾选需要处理的 SKC 后，系统会直接保留商品、复用产品库已有货源，并对未命中的 SKC 执行图片搜索。" /></h2>
         </div>
       </div>
       <div ref={spacerRef} className="price-verification-floating-action-spacer" aria-hidden="true" />
