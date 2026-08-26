@@ -12,6 +12,7 @@ import {
   type BillingUsageEntry,
   type TopupOrderResponse,
 } from "../api/personalCenterApi";
+import { SystemVersionPanel } from "../components/SystemVersionPanel";
 import "../styles/personalCenter.css";
 
 type AccountSnapshot = {
@@ -182,7 +183,7 @@ export function PersonalCenterPage() {
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "version">("wallet");
   const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>(
     cachedUsage && cachedUsage.filterKey === defaultUsageFilterKey ? cachedUsage.items : [],
   );
@@ -621,6 +622,9 @@ export function PersonalCenterPage() {
           <button type="button" className={activePanel === "pricing" ? "is-active" : ""} onClick={() => setActivePanel("pricing")}>
             <span className="iconfont icon-calculator" aria-hidden="true" /> 计费规则
           </button>
+          <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
+            <span className="iconfont icon-setting" aria-hidden="true" /> 系统版本
+          </button>
           <p>余额、费率与消费记录均由服务器账本实时校验。</p>
         </aside>
 
@@ -803,6 +807,8 @@ export function PersonalCenterPage() {
               <span>规则版本 v{summary?.pricing.rule_version ?? "--"}{summary?.pricing.effective_at ? ` · 生效于 ${summary.pricing.effective_at.replace("T", " ").slice(0, 16)}` : ""}</span>
             </div>
           </article>
+        ) : activePanel === "version" ? (
+          <SystemVersionPanel />
         ) : (
           <article className="personal-card usage-card">
             <div className="personal-card-title">

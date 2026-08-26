@@ -73,7 +73,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const [pageSize, setPageSize] = useState(10);
   const [viewMode, setViewMode] = useState<'all' | 'selected'>('all');
   const [searchTerm, setSearchTerm] = useState('');
-  // SKU 数量筛选：0 = 全部，否则为最少变种数
+  // SKU 数量筛选：0 = 全部，否则为最大变种数（少于 N）
   const [skuCountFilter, setSkuCountFilter] = useState(0);
   // 不看单规格：隐藏无变种 / 仅 1 个变种的草稿
   const [hideSingleSpec, setHideSingleSpec] = useState(false);
@@ -203,8 +203,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
       if (viewMode === 'selected' && !selectedIds.has(d.id)) return false;
       const raw = d.raw_payload || {};
       const variantCount = Array.isArray(raw.source_variant_records) ? raw.source_variant_records.length : 0;
-      // SKU 数量筛选：至少 N 个变种
-      if (skuCountFilter > 1 && variantCount < skuCountFilter) return false;
+      // SKU 数量筛选：少于 N 个变种
+      if (skuCountFilter > 1 && variantCount >= skuCountFilter) return false;
       // 不看单规格：隐藏无变种 / 仅 1 个变种的单规格草稿
       if (hideSingleSpec && variantCount <= 1) return false;
       if (!keyword) return true;
@@ -559,10 +559,10 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                 onChange={(e) => { setSkuCountFilter(Number(e.target.value)); setPage(1); }}
               >
                 <option value={0}>SKU 数量：全部</option>
-                <option value={2}>≥ 2 个</option>
-                <option value={3}>≥ 3 个</option>
-                <option value={5}>≥ 5 个</option>
-                <option value={10}>≥ 10 个</option>
+                <option value={2}>小于 2 个</option>
+                <option value={3}>小于 3 个</option>
+                <option value={5}>小于 5 个</option>
+                <option value={10}>小于 10 个</option>
               </select>
               <label className="verify-hide-single" title="隐藏无变种 / 仅 1 个变种的单规格草稿">
                 <input
