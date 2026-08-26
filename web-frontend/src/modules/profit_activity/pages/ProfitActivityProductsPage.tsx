@@ -3,11 +3,16 @@ import type { ClipboardEvent as ReactClipboardEvent, MouseEvent as ReactMouseEve
 import { createPortal } from "react-dom";
 
 import {
+  createProfitActivitySite,
   deleteProfitActivityProducts,
+  getProfitActivitySettings,
   listProfitActivitySites,
   listProfitActivityProducts,
   loadProductImage,
+  recalculateProfitActivityProducts,
+  saveProfitActivitySettings,
   updateProfitActivityProduct,
+  updateProfitActivitySite,
   saveProfitActivityProductEdit,
 } from "../api/profitActivityApi";
 import type { ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
@@ -37,6 +42,14 @@ type InlineEditState =
   | { key: string; field: "site"; value: ProfitActivitySite }
   | { key: string; field: "store_name" | "product_id" | "selling_price" | "cost_price" | "weight_kg" | "note"; value: string }
   | { key: string; field: "product_image" | "attachment_image"; file: File | null; clear: boolean };
+type SiteSettingField = { key: string; label: string; transform?: "percent" };
+type SiteSettingProfile = {
+  id: ProfitActivitySite;
+  label: string;
+  fields: SiteSettingField[];
+  builtin: boolean;
+  data?: Record<string, unknown>;
+};
 const productTableColumns: ProductTableColumn[] = [
   { key: "select", label: "选择", width: 56, minWidth: 48 },
   { key: "site", label: "站点", width: 128, minWidth: 96 },
@@ -58,6 +71,76 @@ const defaultColumnWidths = productTableColumns.reduce<Record<ProductTableColumn
   return acc;
 }, {} as Record<ProductTableColumnKey, number>);
 const productColumnWidthsStorageKey = "profitActivityProducts.columnWidths.v1";
+const genericSiteSettingFields: SiteSettingField[] = [
+  { key: "first_mile_rate", label: "当前站点头程每kg" },
+  { key: "first_mile_fixed", label: "当前站点头程固定费" },
+  { key: "domestic_fee", label: "国内操作费" },
+  { key: "shipping_subsidy", label: "运费补贴" },
+  { key: "end_fee", label: "尾程固定费" },
+  { key: "refund_rate", label: "退款率 %", transform: "percent" },
+];
+const builtinSiteSettingProfiles: SiteSettingProfile[] = [
+  {
+    id: "US",
+    label: "美区",
+    builtin: true,
+    fields: [
+      { key: "us_first_mile_rate", label: "当前站点头程每kg" },
+      { key: "us_first_mile_fixed", label: "当前站点头程固定费" },
+      { key: "us_domestic_fee", label: "国内操作费" },
+      { key: "us_shipping_subsidy", label: "运费补贴" },
+      { key: "us_refund_rate", label: "退款率 %", transform: "percent" },
+    ],
+  },
+  {
+    id: "CO",
+    label: "哥伦比亚",
+    builtin: true,
+    fields: [
+      { key: "co_first_mile_rate", label: "当前站点头程每kg" },
+      { key: "co_first_mile_fixed", label: "当前站点头程固定费" },
+      { key: "co_domestic_fee", label: "国内操作费" },
+      { key: "co_shipping_subsidy", label: "运费补贴" },
+      { key: "co_refund_rate", label: "退款率 %", transform: "percent" },
+    ],
+  },
+  {
+    id: "EC",
+    label: "厄瓜多尔",
+    builtin: true,
+    fields: [
+      { key: "ec_first_mile_rate", label: "当前站点头程每kg" },
+      { key: "ec_first_mile_fixed", label: "当前站点头程固定费" },
+      { key: "ec_domestic_fee", label: "国内操作费" },
+      { key: "ec_shipping_subsidy", label: "运费补贴" },
+      { key: "ec_shipping_subsidy_price_limit", label: "补贴售价上限（含）" },
+      { key: "ec_end_fee", label: "尾程固定费" },
+      { key: "ec_refund_rate", label: "退款率 %", transform: "percent" },
+    ],
+  },
+];
+const defaultProfitSettings: Record<string, number> = {
+  domestic_fee: 2.5,
+  shipping_subsidy: 21,
+  refund_rate: 0.05,
+  us_first_mile_rate: 72,
+  us_first_mile_fixed: 5,
+  us_domestic_fee: 2.5,
+  us_shipping_subsidy: 21,
+  us_refund_rate: 0.05,
+  co_first_mile_rate: 80,
+  co_first_mile_fixed: 0,
+  co_domestic_fee: 2.5,
+  co_shipping_subsidy: 21,
+  co_refund_rate: 0.05,
+  ec_domestic_fee: 2.5,
+  ec_shipping_subsidy: 15,
+  ec_shipping_subsidy_price_limit: 120,
+  ec_first_mile_rate: 108,
+  ec_first_mile_fixed: 0,
+  ec_end_fee: 27,
+  ec_refund_rate: 0.05,
+};
 
 function storedProductColumnWidths(): Record<ProductTableColumnKey, number> | null {
   try {
@@ -81,6 +164,32 @@ function saveProductColumnWidths(widths: Record<ProductTableColumnKey, number>) 
   } catch {
     // localStorage may be disabled; resizing should still work for the session.
   }
+}
+
+function fieldsForSiteSettings(site: ProfitActivitySite) {
+  return builtinSiteSettingProfiles.find((profile) => profile.id === site)?.fields ?? genericSiteSettingFields;
+}
+
+function toSiteSettingProfile(data: Record<string, unknown>): SiteSettingProfile {
+  const id = String(data.site_code || "").toUpperCase();
+  const builtin = builtinSiteSettingProfiles.find((profile) => profile.id === id);
+  return builtin || {
+    id,
+    label: String(data.display_name || id),
+    fields: genericSiteSettingFields,
+    builtin: false,
+    data,
+  };
+}
+
+function extractSiteSettings(settings: Record<string, unknown>, site: ProfitActivitySite) {
+  const result: Record<string, string> = {};
+  for (const field of fieldsForSiteSettings(site)) {
+    const raw = settings[field.key] == null ? (defaultProfitSettings[field.key] ?? 0) : settings[field.key];
+    const value = Number(raw);
+    result[field.key] = String(field.transform === "percent" ? value * 100 : value);
+  }
+  return result;
 }
 
 function adaptiveTextWidth(value: unknown, min: number, max: number, extra = 0) {
@@ -126,6 +235,16 @@ const productLibraryCache: {
 export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boolean }) {
   const [sites, setSites] = useState<Set<ProfitActivitySite>>(() => new Set(productLibraryCache.sites ?? allSites));
   const [siteOptions, setSiteOptions] = useState(() => allSites.map((site) => ({ site_code: site, display_name: siteLabels[site], builtin: true })));
+  const [siteProfiles, setSiteProfiles] = useState<SiteSettingProfile[]>(builtinSiteSettingProfiles);
+  const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [settingsSite, setSettingsSite] = useState<ProfitActivitySite>("US");
+  const [settingsDraft, setSettingsDraft] = useState<Record<string, string>>({});
+  const [saveRootDraft, setSaveRootDraft] = useState("");
+  const [newSiteOpen, setNewSiteOpen] = useState(false);
+  const [newSiteCode, setNewSiteCode] = useState("");
+  const [newSiteName, setNewSiteName] = useState("");
+  const [newSiteCodeInvalid, setNewSiteCodeInvalid] = useState(false);
   const [scope] = useState<ProfitActivityScope>(productLibraryCache.scope ?? "default");
   const [sourceFilter, setSourceFilter] = useState<ProductSourceFilter>("all");
   const [querySkcs, setQuerySkcs] = useState(productLibraryCache.querySkcs ?? "");
@@ -190,12 +309,18 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     setActiveProduct(null);
     setInlineEdit(null);
     setPreviewImage(null);
+    setSettingsDialogOpen(false);
+    setNewSiteOpen(false);
   }, [isActive]);
 
   useEffect(() => {
     void listProfitActivitySites().then((items) => {
-      if (items.length) setSiteOptions(items);
+      if (items.length) {
+        setSiteOptions(items);
+        setSiteProfiles(items.map((item) => toSiteSettingProfile(item as unknown as Record<string, unknown>)));
+      }
     }).catch(() => undefined);
+    void loadSettings().catch(() => undefined);
   }, []);
 
   const availableSites = siteOptions.map((item) => item.site_code);
@@ -217,6 +342,13 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   );
   const selectedCount = selectedProducts.length;
   const pageSelected = pageProducts.length > 0 && pageProducts.every((item) => selected.has(productKey(item)));
+
+  async function loadSettings() {
+    const data = await getProfitActivitySettings();
+    setSettings(data);
+    setSaveRootDraft(String(data.save_root || ""));
+    return data;
+  }
 
   useEffect(() => {
     if (columnWidthTouchedRef.current) return;
@@ -245,6 +377,136 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       setBusy("");
     }
   };
+
+  const putSettings = async (payload: Record<string, unknown>) => {
+    const save = () => saveProfitActivitySettings(payload);
+    try {
+      return await save();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("settings_revision_conflict")) {
+        const fresh = await loadSettings();
+        payload.expected_revision = Number(fresh?.revision || 0);
+        return await save();
+      }
+      throw error;
+    }
+  };
+
+  const openSettingsDialog = () => {
+    const firstSite = [...sites][0] || availableSites[0] || "US";
+    const profile = siteProfiles.find((item) => item.id === firstSite);
+    setSettingsSite(firstSite);
+    setSettingsDraft(extractSiteSettings(profile?.builtin ? settings || {} : profile?.data || {}, firstSite));
+    setSaveRootDraft(String(settings?.save_root || ""));
+    setSettingsDialogOpen(true);
+  };
+
+  const selectSettingsSite = (nextSite: ProfitActivitySite) => {
+    const profile = siteProfiles.find((item) => item.id === nextSite);
+    setSettingsSite(nextSite);
+    setSettingsDraft(extractSiteSettings(profile?.builtin ? settings || {} : profile?.data || {}, nextSite));
+  };
+
+  const createSite = () => withBusy("新增站点", async () => {
+    const siteCode = newSiteCode.trim().toUpperCase();
+    const displayName = newSiteName.trim();
+    if (!/^[A-Z0-9_]{2,12}$/.test(siteCode) || !displayName) {
+      setNewSiteCodeInvalid(true);
+      return;
+    }
+    const data = await createProfitActivitySite({ site_code: siteCode, display_name: displayName });
+    const created = toSiteSettingProfile(data.site);
+    setSiteProfiles((items) => [...items, created]);
+    setSiteOptions((items) => [...items, { site_code: created.id, display_name: created.label, builtin: false }]);
+    setSites((current) => new Set([...current, created.id]));
+    setNewSiteCode("");
+    setNewSiteName("");
+    setNewSiteCodeInvalid(false);
+    setNewSiteOpen(false);
+    setSettingsSite(created.id);
+    setSettingsDraft(extractSiteSettings(created.data || {}, created.id));
+    setMessage("新站点已创建并切换，可直接设置费率。");
+  });
+
+  const recalculateProductsForSettingsSite = async () => {
+    const result = await recalculateProfitActivityProducts({ sites: [settingsSite], scope });
+    await refreshProducts();
+    const updated = Number(result.updated || 0);
+    const failed = Number(result.failed || 0);
+    setMessage(failed ? `站点费率已保存，已重算 ${updated} 个产品，失败 ${failed} 个。` : `站点费率已保存，已重算 ${updated} 个产品。`);
+  };
+
+  const saveSiteSettings = () => withBusy("保存站点费率", async () => {
+    const profile = siteProfiles.find((item) => item.id === settingsSite);
+    if (!profile) throw new Error("站点不存在，请刷新后重试。");
+    if (!profile.builtin) {
+      const currentSettings = await putSettings({
+        expected_revision: Number(settings?.revision || 0),
+        save_root: saveRootDraft,
+      });
+      const body = {
+        site_code: profile.id,
+        display_name: profile.label,
+        ...Object.fromEntries(fieldsForSiteSettings(profile.id).map((field) => [field.key, field.transform === "percent" ? Number(settingsDraft[field.key] || 0) / 100 : Number(settingsDraft[field.key] || 0)])),
+      };
+      const result = await updateProfitActivitySite(profile.id, body);
+      const updated = toSiteSettingProfile(result.site);
+      setSettings(currentSettings);
+      setSaveRootDraft(String(currentSettings.save_root || ""));
+      setSiteProfiles((items) => items.map((item) => item.id === updated.id ? updated : item));
+      setSettingsDraft(extractSiteSettings(updated.data || {}, updated.id));
+      await recalculateProductsForSettingsSite();
+      return;
+    }
+    const payload: Record<string, unknown> = {
+      expected_revision: Number(settings?.revision || 0),
+      save_root: saveRootDraft,
+    };
+    for (const field of fieldsForSiteSettings(settingsSite)) {
+      payload[field.key] = field.transform === "percent" ? Number(settingsDraft[field.key] || 0) / 100 : Number(settingsDraft[field.key] || 0);
+    }
+    const data = await putSettings(payload);
+    setSettings(data);
+    setSettingsDraft(extractSiteSettings(data, settingsSite));
+    setSaveRootDraft(String(data.save_root || ""));
+    await recalculateProductsForSettingsSite();
+  });
+
+  const restoreDefaultSettings = () => withBusy("恢复默认费率", async () => {
+    const profile = siteProfiles.find((item) => item.id === settingsSite);
+    if (!profile) throw new Error("站点不存在，请刷新后重试。");
+    if (!profile.builtin) {
+      const currentSettings = await putSettings({
+        expected_revision: Number(settings?.revision || 0),
+        save_root: saveRootDraft,
+      });
+      const body = {
+        site_code: profile.id,
+        display_name: profile.label,
+        ...Object.fromEntries(fieldsForSiteSettings(profile.id).map((field) => [field.key, 0])),
+      };
+      const result = await updateProfitActivitySite(profile.id, body);
+      const updated = toSiteSettingProfile(result.site);
+      setSettings(currentSettings);
+      setSaveRootDraft(String(currentSettings.save_root || ""));
+      setSiteProfiles((items) => items.map((item) => item.id === updated.id ? updated : item));
+      setSettingsDraft(extractSiteSettings(updated.data || {}, updated.id));
+      await recalculateProductsForSettingsSite();
+      return;
+    }
+    const payload: Record<string, unknown> = {
+      expected_revision: Number(settings?.revision || 0),
+      save_root: saveRootDraft,
+    };
+    for (const field of fieldsForSiteSettings(settingsSite)) {
+      payload[field.key] = defaultProfitSettings[field.key] ?? 0;
+    }
+    const data = await putSettings(payload);
+    setSettings(data);
+    setSettingsDraft(extractSiteSettings(data, settingsSite));
+    setSaveRootDraft(String(data.save_root || ""));
+    await recalculateProductsForSettingsSite();
+  });
 
   const fetchProducts = async () => {
     if (!sites.size) return [];
@@ -733,6 +995,11 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
           <h1>产品库</h1>
           <p>查询数据库产品，按站点管理当前账号权限可见的利润活动产品。</p>
         </div>
+        <div className="profit-products-hero-actions">
+          <button className="profit-products-settings-toggle" type="button" aria-haspopup="dialog" onClick={openSettingsDialog} disabled={!!busy}>
+            站点费率设置
+          </button>
+        </div>
       </section>
 
       <section className="profit-products-workspace">
@@ -893,6 +1160,52 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
         onClose={() => setActiveProduct(null)}
         onChanged={refreshProducts}
       />
+      {settingsDialogOpen ? createPortal(
+        <div className="profit-products-settings-backdrop" role="presentation" onMouseDown={() => !busy && setSettingsDialogOpen(false)}>
+          <section className="profit-products-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="profit-products-settings-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="profit-products-settings-head">
+              <div>
+                <h2 id="profit-products-settings-title">站点费率设置</h2>
+                <p>保存后会按当前费率重算该站点产品库的利润和利润率。</p>
+              </div>
+              <button className="profit-products-settings-close" type="button" aria-label="关闭站点费率设置" onClick={() => setSettingsDialogOpen(false)} disabled={!!busy}><span aria-hidden="true">×</span></button>
+            </div>
+            <label className="profit-products-save-root">本地保存目录
+              <input value={saveRootDraft} onChange={(event) => setSaveRootDraft(event.target.value)} placeholder="例如 /Users/xxx/outputs/profit_activity" />
+            </label>
+            <div className="profit-products-settings-tabs" role="tablist" aria-label="站点费率">
+              {siteProfiles.map((profile) => (
+                <button key={profile.id} type="button" role="tab" aria-selected={settingsSite === profile.id} className={settingsSite === profile.id ? "is-active" : ""} onClick={() => selectSettingsSite(profile.id)}>{profile.label}</button>
+              ))}
+              <button className="profit-products-add-site-button" type="button" onClick={() => setNewSiteOpen((value) => !value)}>+ 新增站点</button>
+            </div>
+            {newSiteOpen ? (
+              <div className="profit-products-new-site-form">
+                <label>站点代码
+                  <input className={newSiteCodeInvalid ? "is-invalid" : undefined} aria-invalid={newSiteCodeInvalid} value={newSiteCode} maxLength={12} onChange={(event) => { setNewSiteCode(event.target.value.toUpperCase()); setNewSiteCodeInvalid(false); }} placeholder="例如 BR" />
+                </label>
+                <label>站点名称
+                  <input value={newSiteName} maxLength={80} onChange={(event) => setNewSiteName(event.target.value)} placeholder="例如 巴西" />
+                </label>
+                <button type="button" onClick={createSite} disabled={!!busy}>创建站点</button>
+              </div>
+            ) : null}
+            <p className="profit-products-formula-note">正在编辑 {siteProfiles.find((profile) => profile.id === settingsSite)?.label || siteLabel(settingsSite)} 的费率；未设置的费率默认按 0 计算。</p>
+            <div className="profit-products-settings-fields">
+              {fieldsForSiteSettings(settingsSite).map((field) => (
+                <label key={field.key}>{field.label}
+                  <input type="number" min="0" step={field.transform === "percent" ? "0.01" : "0.01"} value={settingsDraft[field.key] ?? ""} onChange={(event) => setSettingsDraft((current) => ({ ...current, [field.key]: event.target.value }))} />
+                </label>
+              ))}
+            </div>
+            <div className="profit-products-settings-actions">
+              <button type="button" className="primary-button" onClick={saveSiteSettings} disabled={!!busy}>保存并重算</button>
+              <button type="button" onClick={restoreDefaultSettings} disabled={!!busy}>恢复默认并重算</button>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      ) : null}
       {batchStoreOpen ? createPortal(
         <div className="profit-batch-store-mask" role="presentation" onClick={() => !busy && setBatchStoreOpen(false)}>
           <div className="profit-batch-store-dialog" role="dialog" aria-modal="true" aria-labelledby="profit-batch-store-title" onClick={(event) => event.stopPropagation()}>

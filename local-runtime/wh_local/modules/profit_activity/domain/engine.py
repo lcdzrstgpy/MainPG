@@ -19,6 +19,27 @@ _US_END_FEES: tuple[tuple[Decimal, Decimal, Decimal], ...] = (
     (Decimal("1.6"), Decimal("1.7"), Decimal("54")), (Decimal("1.7"), Decimal("1.8"), Decimal("57")),
     (Decimal("1.8"), Decimal("1.9"), Decimal("60")), (Decimal("1.9"), Decimal("2.0"), Decimal("63")),
 )
+_CO_END_FEES: tuple[tuple[Decimal, Decimal, Decimal], ...] = (
+    (Decimal("0"), Decimal("1"), Decimal("24")),
+    (Decimal("1"), Decimal("2"), Decimal("26")),
+    (Decimal("2"), Decimal("3"), Decimal("28")),
+    (Decimal("3"), Decimal("6"), Decimal("45")),
+    (Decimal("6"), Decimal("10"), Decimal("80")),
+    (Decimal("10"), Decimal("20"), Decimal("100")),
+)
+_EC_END_FEES: tuple[tuple[Decimal, Decimal, Decimal], ...] = (
+    (Decimal("0"), Decimal("1"), Decimal("28")),
+    (Decimal("1"), Decimal("1.8"), Decimal("30")),
+    (Decimal("1.8"), Decimal("5"), Decimal("32")),
+)
+_PE_END_FEES: tuple[tuple[Decimal, Decimal, Decimal], ...] = (
+    (Decimal("0"), Decimal("0.25"), Decimal("25")),
+    (Decimal("0.25"), Decimal("0.5"), Decimal("28")),
+    (Decimal("0.5"), Decimal("1"), Decimal("31")),
+    (Decimal("1"), Decimal("2"), Decimal("34")),
+    (Decimal("2"), Decimal("5"), Decimal("51")),
+    (Decimal("5"), Decimal("10"), Decimal("90")),
+)
 
 
 class ProfitValidationError(ValueError):
@@ -40,13 +61,18 @@ def calculate_profit(
     elif site_code == "CO":
         domestic, subsidy, shipping, end_fee, refund = (
             settings.co_domestic_fee, settings.co_shipping_subsidy if selling <= Decimal("171") else Decimal("0"),
-            weight * settings.co_first_mile_rate + settings.co_first_mile_fixed, Decimal("24"), settings.co_refund_rate,
+            weight * settings.co_first_mile_rate + settings.co_first_mile_fixed, _co_end_fee(weight), settings.co_refund_rate,
         )
     elif site_code == "EC":
         domestic, subsidy, shipping, end_fee, refund = (
             settings.ec_domestic_fee,
             settings.ec_shipping_subsidy if selling <= settings.ec_shipping_subsidy_price_limit else Decimal("0"),
-            weight * settings.ec_first_mile_rate + settings.ec_first_mile_fixed, settings.ec_end_fee, settings.ec_refund_rate,
+            weight * settings.ec_first_mile_rate + settings.ec_first_mile_fixed, _ec_end_fee(weight), settings.ec_refund_rate,
+        )
+    elif site_code == "PE":
+        domestic, subsidy, shipping, end_fee, refund = (
+            settings.pe_domestic_fee, settings.pe_shipping_subsidy if selling <= Decimal("171") else Decimal("0"),
+            weight * settings.pe_first_mile_rate + settings.pe_first_mile_fixed, _pe_end_fee(weight), settings.pe_refund_rate,
         )
     elif custom_site is not None and custom_site.site_code == site_code:
         domestic, subsidy, shipping, end_fee, refund = (
@@ -82,12 +108,12 @@ def activity_decision(preview: ProfitPreview, settings: ProfitSettings) -> tuple
 
 
 def validate_settings(settings: ProfitSettings) -> None:
-    for field in ("domestic_fee", "shipping_subsidy", "us_first_mile_rate", "us_first_mile_fixed", "us_domestic_fee", "us_shipping_subsidy", "co_first_mile_rate", "co_first_mile_fixed", "co_domestic_fee", "co_shipping_subsidy", "ec_domestic_fee", "ec_shipping_subsidy", "ec_first_mile_rate", "ec_first_mile_fixed", "ec_end_fee", "activity_min_net_profit"):
+    for field in ("domestic_fee", "shipping_subsidy", "us_first_mile_rate", "us_first_mile_fixed", "us_domestic_fee", "us_shipping_subsidy", "co_first_mile_rate", "co_first_mile_fixed", "co_domestic_fee", "co_shipping_subsidy", "ec_domestic_fee", "ec_shipping_subsidy", "ec_first_mile_rate", "ec_first_mile_fixed", "ec_end_fee", "pe_first_mile_rate", "pe_first_mile_fixed", "pe_domestic_fee", "pe_shipping_subsidy", "activity_min_net_profit"):
         if getattr(settings, field) < 0:
             raise ProfitValidationError(f"{field}_must_be_nonnegative")
     if settings.ec_shipping_subsidy_price_limit < 0:
         raise ProfitValidationError("ec_shipping_subsidy_price_limit_must_be_nonnegative")
-    for field in ("refund_rate", "us_refund_rate", "co_refund_rate", "ec_refund_rate", "activity_profit_rate_threshold"):
+    for field in ("refund_rate", "us_refund_rate", "co_refund_rate", "ec_refund_rate", "pe_refund_rate", "activity_profit_rate_threshold"):
         if not Decimal("0") <= getattr(settings, field) <= Decimal("1"):
             raise ProfitValidationError(f"{field}_must_be_between_zero_and_one")
     if settings.rule_version < 1:
@@ -104,6 +130,24 @@ def _us_end_fee(weight: Decimal) -> Decimal:
     if weight >= Decimal("2"):
         return Decimal("63")
     return next((fee for lower, upper, fee in _US_END_FEES if lower < weight <= upper), Decimal("24"))
+
+
+def _co_end_fee(weight: Decimal) -> Decimal:
+    if weight > Decimal("20"):
+        return Decimal("100")
+    return next((fee for lower, upper, fee in _CO_END_FEES if lower < weight <= upper), Decimal("24"))
+
+
+def _ec_end_fee(weight: Decimal) -> Decimal:
+    if weight > Decimal("5"):
+        return Decimal("35")
+    return next((fee for lower, upper, fee in _EC_END_FEES if lower < weight <= upper), Decimal("28"))
+
+
+def _pe_end_fee(weight: Decimal) -> Decimal:
+    if weight > Decimal("10"):
+        return Decimal("90")
+    return next((fee for lower, upper, fee in _PE_END_FEES if lower < weight <= upper), Decimal("25"))
 
 
 def _money(value: Decimal) -> Decimal:

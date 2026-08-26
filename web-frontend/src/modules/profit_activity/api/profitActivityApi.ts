@@ -64,6 +64,42 @@ export async function listProfitActivitySites() {
   return data.sites ?? [];
 }
 
+export async function getProfitActivitySettings() {
+  return request<Record<string, unknown>>("/api/profit-activity/settings");
+}
+
+export async function saveProfitActivitySettings(payload: Record<string, unknown>) {
+  return request<Record<string, unknown>>("/api/profit-activity/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateProfitActivitySite(siteCode: ProfitActivitySite, payload: Record<string, unknown>) {
+  return request<{ site: Record<string, unknown> }>(`/api/profit-activity/sites/${encodeURIComponent(siteCode)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createProfitActivitySite(payload: Record<string, unknown>) {
+  return request<{ site: Record<string, unknown> }>("/api/profit-activity/sites", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function recalculateProfitActivityProducts({ sites, scope }: { sites: ProfitActivitySite[]; scope: ProfitActivityScope }) {
+  return request<{ updated?: number; failed?: number; failures?: Array<Record<string, unknown>> }>("/api/profit-activity/products/recalculate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sites: sites.join(","), scope }),
+  });
+}
+
 export async function listProductSources({ skc, site }: { skc: string; site: ProfitActivitySite }) {
   return request<ProductSources>(
     `/api/profit-activity/products/${encodeURIComponent(skc)}/sources?site=${site}`,

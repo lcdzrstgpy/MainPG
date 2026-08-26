@@ -110,6 +110,20 @@ class ProfitActivityRepository:
             session.flush()
             return row
 
+    def update_record_calculation(self, record_id: int, *, preview: ProfitPreview, calculation_hash: str, settings_revision: int, refund_rate: Decimal) -> ProfitRecordRow | None:
+        with self._sessions.begin() as session:
+            row = session.get(ProfitRecordRow, record_id)
+            if row is None:
+                return None
+            for field, value in asdict(preview).items():
+                setattr(row, field, value)
+            row.calculation_hash = calculation_hash
+            row.settings_revision = settings_revision
+            row.refund_rate = refund_rate
+            row.revision += 1
+            session.flush()
+            return row
+
     def list_records(self, workspace_id: str, site_code: SiteCode | None, offset: int, limit: int, *, actor_id: str = "", include_workspace_shared: bool = False, source_type: str | None = None) -> list[ProfitRecordRow]:
         with self._sessions() as session:
             # 核价及货源自动入库的记录属于公司级产品库，跨工作区可见；
