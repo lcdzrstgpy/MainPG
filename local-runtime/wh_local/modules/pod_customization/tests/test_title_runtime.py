@@ -30,6 +30,17 @@ def _title(*parts: str) -> str:
     )
 
 
+def _distinct_title(*parts: str) -> str:
+    """Return a valid title whose visual words begin the meaningful prefix."""
+    return " ".join(
+        (
+            *parts,
+            "Handcrafted coastal botanical illustration brings calm sunlit texture to everyday spaces",
+            "with layered ink details for home office studio and seasonal gifting",
+        )
+    )
+
+
 def _payload(
     *,
     title: str | None = None,
@@ -359,17 +370,17 @@ def test_title_runtime_retries_when_persisted_visual_signature_is_accepted() -> 
 def test_duplicate_theme_and_motifs_retries_three_times_with_feedback() -> None:
     from wh_local.modules.pod_customization.title_runtime import PodTitleRuntime
 
-    accepted = _title("ocean fern", "sandstone leaves", "gift")
+    accepted = _distinct_title("ocean fern", "sandstone leaves", "gift")
     unusable_short = _payload(title="short")
     unusable_short["english_title"] = "short"
     unusable_short["description"] = "short"
     session = _Session(
         [
             _Response(unusable_short),
-            _Response(_payload(title=_title("ocean fern", "sandstone leaves", "gift"))),
+            _Response(_payload(title=accepted)),
             _Response(
                 _payload(
-                    title=_title("desert sun", "copper blooms"),
+                    title=_distinct_title("desert sun", "copper blooms"),
                     visual_theme="Desert blooms",
                     motif_keywords=["desert sun", "copper blooms"],
                 )
@@ -485,8 +496,8 @@ def test_ark_grant_is_rechecked_after_waiting_for_provider_slot() -> None:
 def test_title_request_contract_requires_distinct_complete_listing_phrases() -> None:
     from wh_local.modules.pod_customization.title_runtime import PodTitleRuntime
 
-    accepted = _title("coastal botanical", "ocean fern", "navy tote")
-    session = _Session([_Response(_payload(title=_title("desert blooms", "copper leaves")))])
+    accepted = _distinct_title("coastal botanical", "ocean fern", "navy tote")
+    session = _Session([_Response(_payload(title=_distinct_title("desert blooms", "copper leaves")))])
     runtime = PodTitleRuntime(session=session, requests_per_minute=0)
     try:
         runtime.generate_title(
@@ -510,6 +521,17 @@ def test_title_validator_rejects_a_matching_meaningful_word_prefix() -> None:
 
     accepted = _title("coastal botanical", "ocean fern", "navy tote")
     candidate = _title("coastal botanical", "ocean fern", "sand tote")
+    with pytest.raises(ValueError, match="prefix"):
+        validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
+
+
+def test_title_validator_counts_visual_words_in_a_five_of_six_prefix() -> None:
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    accepted = "Illustration Ink Texture Layered Sunlit Bloom Crystal Meadow Harbor Lantern Velvet Mosaic Quill Rhythm"
+    candidate = "Illustration Ink Texture Layered Sunlit Fern Copper Prairie Summit Compass Willow Ember Juniper Thistle"
+    assert 80 <= len(accepted) <= 200
+    assert 80 <= len(candidate) <= 200
     with pytest.raises(ValueError, match="prefix"):
         validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
 

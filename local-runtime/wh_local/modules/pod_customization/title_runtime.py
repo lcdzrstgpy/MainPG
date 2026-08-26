@@ -89,9 +89,6 @@ _COMMON_PRODUCT_TOKENS = frozenset(
         "item", "collection", "edition", "accessory", "bag", "tote", "shirt", "mug", "poster", "print", "canvas",
     }
 )
-_TITLE_PREFIX_COMMON_TOKENS = _COMMON_PRODUCT_TOKENS | frozenset(
-    {"handcrafted", "illustration", "brings", "calm", "sunlit", "texture", "spaces", "layered", "ink", "details"}
-)
 
 
 @dataclass(frozen=True)
@@ -433,8 +430,9 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
         "instructions": (
             "Use the cropped hero image as visual evidence. The title field is the canonical US English marketplace "
             "listing title and must be an ASCII 80-200-character complete natural noun phrase. Begin it with a "
-            "leading visual segment grounded in the image, and avoid matching an accepted title's six-word prefix. "
-            "Do not end it with a dangling connector or punctuation. Generate title, english_title, and description "
+            "leading visual segment grounded in the image. Avoid an accepted title when five or more of the first "
+            "six meaningful words match in the same positions. Do not end it with a dangling connector or punctuation. "
+            "Generate title, english_title, and description "
             "together in this single response. Return exactly one JSON object, "
             "no Markdown or extra keys."
         ),
@@ -538,7 +536,7 @@ def _meaningful_title_prefix(value: str) -> tuple[str, ...]:
     return tuple(
         token
         for token in re.findall(r"[a-z0-9]+", value.casefold())
-        if token not in _TITLE_PREFIX_COMMON_TOKENS
+        if token not in _COMMON_PRODUCT_TOKENS
     )[:_TITLE_PREFIX_WORD_COUNT]
 
 
