@@ -16,6 +16,7 @@ from sqlalchemy.pool import StaticPool
 from .database import ProductProcessingDatabase
 from .orm import (
     AiStageCacheRow,
+    ComboSourceRow,
     DailySelectionHandoffReceiptRow,
     DailySelectionIntakeRow,
     EnginePromptRow,
@@ -67,6 +68,54 @@ class ProductProcessingRepository:
             session.add(row)
             session.flush()
             return self._draft(row)
+
+    # ---- 商品自定义组合：来源图暂存区（服务端持久化）----
+
+    def list_combo_sources(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self.database.sessions.begin() as session:
+            rows = session.scalars(
+                select(ComboSourceRow)
+                .where(ComboSourceRow.workspace_id == workspace_id)
+                .order_by(ComboSourceRow.id.asc())
+            ).all()
+            return [self._combo_source(row) for row in rows]
+
+    def add_combo_source(self, values: dict[str, Any]) -> dict[str, Any]:
+        with self.database.sessions.begin() as session:
+            row = ComboSourceRow(**values)
+            session.add(row)
+            try:
+                session.flush()
+            except IntegrityError:
+                # 幂等：同 workspace + source_key 已存在时，重读胜者记录返回。
+                session.rollback()
+                existing = session.scalar(
+                    select(ComboSourceRow).where(
+                        ComboSourceRow.workspace_id == values["workspace_id"],
+                        ComboSourceRow.source_key == values["source_key"],
+                    )
+                )
+                if existing is None:
+                    raise
+                return self._combo_source(existing)
+            return self._combo_source(row)
+
+    def remove_combo_source(self, source_id: int, workspace_id: str) -> bool:
+        with self.database.sessions.begin() as session:
+            result = session.execute(
+                delete(ComboSourceRow).where(
+                    ComboSourceRow.id == source_id,
+                    ComboSourceRow.workspace_id == workspace_id,
+                )
+            )
+            return bool(result.rowcount) if result.rowcount is not None else False
+
+    def clear_combo_sources(self, workspace_id: str) -> int:
+        with self.database.sessions.begin() as session:
+            result = session.execute(
+                delete(ComboSourceRow).where(ComboSourceRow.workspace_id == workspace_id)
+            )
+            return int(result.rowcount or 0)
 
     def begin_product_billing_attempt(
         self,
@@ -1816,6 +1865,20 @@ class ProductProcessingRepository:
             "result": loads(row.result_json, {}),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    def _combo_source(row: ComboSourceRow) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "workspace_id": row.workspace_id,
+            "source_key": row.source_key,
+            "source_type": row.source_type,
+            "draft_id": row.draft_id,
+            "title": row.title,
+            "url": row.url,
+            "local_path": row.local_path,
+            "created_at": row.created_at,
         }
 
     @staticmethod

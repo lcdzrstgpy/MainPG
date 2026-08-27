@@ -581,6 +581,28 @@
 
 .btn-mini.danger { color: #cf6068; border-color: #f5dbdc; }
 .btn-mini.danger:hover { background: #fff0f0; box-shadow: 0 4px 10px rgba(207, 96, 104, 0.1); }
+.btn-mini.primary { color: #0a8fca; border-color: #a5d9f2; }
+.btn-mini.primary:hover { background: #eef8ff; box-shadow: 0 4px 10px rgba(10, 143, 202, 0.12); }
+
+/* 商品自定义组合：来源图上传按钮（作为可点击 label 呈按钮样式） */
+.verify-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid #cfe0eb;
+  border-radius: 9px;
+  background: #fff;
+  color: #2f5878;
+  font-weight: 700;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.verify-upload-btn:hover {
+  border-color: #82c9ef;
+  box-shadow: 0 6px 14px #188bd61a;
+}
 
 /* ── 展开编辑面板 ── */
 .pool-edit-panel {

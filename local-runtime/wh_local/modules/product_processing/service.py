@@ -397,6 +397,32 @@ _RETRY_MARKERS = re.compile(
     r"slot_1k_repair|chinese_repaired|chinese_unresolved|chinese_repair_failed|quality_override|ai-failed"
 )
 
+# 商品自定义组合：主图默认提示词（底层提示词防护之外的兜底视觉方向）
+MAIN_IMAGE_PROMPT_DEFAULT = (
+    "premium e-commerce hero composition, complete product visible, "
+    "grounded contact shadow, category-matched premium background, no added text"
+)
+
+# 四宫格 slot 阶段名 → 组合角色 key（与前端 role_prompts 键一致）
+_COMBO_ROLE_KEY_BY_STAGE: dict[str, str] = {
+    "grid_image_1": "main",
+    "grid_image_2": "detail",
+    "grid_image_3": "lifestyle",
+    "grid_image_4": "dimension",
+}
+
+
+def _validate_combo_text_result(value: Any, *, target_language: str) -> None:
+    """豆包组合文本合同校验：标题/描述非空且不含中文，标题不过长。"""
+    title = str(getattr(value, "optimized_title", "") or "").strip()
+    description = str(getattr(value, "description", "") or "").strip()
+    if not title:
+        raise ValueError("combo optimized_title is empty")
+    if re.search(r"[\u4e00-\u9fff]", title) or re.search(r"[\u4e00-\u9fff]", description):
+        raise ValueError("combo text must not contain Chinese characters")
+    if len(title) > 200:
+        raise ValueError("combo optimized_title exceeds 200 letters")
+
 
 def _item_had_retry(result: dict[str, Any]) -> bool:
     """链接是否发生过 AI 重试/重绘/修复（决定「重试溢价」计费）。
@@ -883,6 +909,488 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         draft = self.repository.create_draft(values)
         self._seed_draft_source_images(draft, raw)
         return draft, True
+
+    # ---- 商品自定义组合：来源图暂存区（服务端持久化）----
+
+    def list_combo_sources(self, workspace_id: str) -> dict[str, Any]:
+        sources = self.repository.list_combo_sources(workspace_id)
+        return {"sources": sources}
+
+    def add_combo_source(
+        self,
+        payload: dict[str, Any],
+        *,
+        image_content: bytes | None = None,
+        image_filename: str = "",
+        image_content_type: str = "",
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        source_type = self._text(payload.get("source_type")) or "draft_pool"
+        if source_type == "upload" or image_content:
+            if not image_content:
+                raise ProductProcessingValidationError("上传图片来源图不能为空")
+            path = self.assets.save_combo_source_image(
+                image_content,
+                image_filename,
+                image_content_type,
+                workspace_id=workspace_id,
+            )
+            return self.repository.add_combo_source(
+                {
+                    "workspace_id": workspace_id,
+                    "source_key": f"upload:{hashlib.sha256(image_content).hexdigest()}",
+                    "source_type": "upload",
+                    "draft_id": None,
+                    "title": self._text(payload.get("title")) or "手动上传来源图",
+                    "url": "",
+                    "local_path": str(path),
+                }
+            )
+        # draft_pool：复用草稿池某条草稿的图片
+        draft_id = int(payload.get("draft_id") or 0) or None
+        if draft_id is None:
+            raise ProductProcessingValidationError("加入组合定制的来源图缺少草稿")
+        draft = self.repository.get_draft(draft_id, workspace_id)
+        if draft is None:
+            raise ProductProcessingNotFound("product draft not found")
+        image_url = self._text(
+            payload.get("url")
+            or draft.get("image_url")
+            or (draft.get("raw_payload") or {}).get("main_image_url")
+        )
+        if not image_url:
+            raise ProductProcessingValidationError("该草稿没有可用的来源图")
+        source_key = f"draft:{draft_id}:{hashlib.sha256(image_url.encode('utf-8')).hexdigest()}"
+        return self.repository.add_combo_source(
+            {
+                "workspace_id": workspace_id,
+                "source_key": source_key,
+                "source_type": "draft_pool",
+                "draft_id": draft_id,
+                "title": self._text(payload.get("title")) or draft.get("title") or "草稿池来源图",
+                "url": image_url,
+                "local_path": "",
+            }
+        )
+
+    def remove_combo_source(self, source_id: int, workspace_id: str) -> dict[str, Any]:
+        removed = self.repository.remove_combo_source(source_id, workspace_id)
+        if not removed:
+            raise ProductProcessingNotFound("combo source not found")
+        return {"id": source_id, "status": "removed"}
+
+    def clear_combo_sources(self, workspace_id: str) -> dict[str, Any]:
+        removed = self.repository.clear_combo_sources(workspace_id)
+        return {"removed": removed}
+
+    def combo_source_image_path(self, source_id: int, workspace_id: str) -> Path:
+        rows = self.repository.list_combo_sources(workspace_id)
+        row = next((item for item in rows if int(item["id"]) == int(source_id)), None)
+        if row is None:
+            raise ProductProcessingNotFound("combo source not found")
+        if not row.get("local_path"):
+            raise ProductProcessingNotFound("combo source image is not local")
+        return self.assets.require_workspace_combo_source(
+            row["local_path"], workspace_id=workspace_id
+        )
+
+    # ---- 商品自定义组合：主图生成 + 三图并行处理（复用 AI 生图与预检导出）----
+
+    def _combo_reference_values(self, draft: dict[str, Any]) -> list[str]:
+        raw = draft.get("raw_payload") or {}
+        values: list[str] = []
+        for source in (raw.get("combo_sources") or []):
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("url") or "").strip()
+            if url:
+                values.append(url)
+                continue
+            # 本地上传来源图：以受管文件路径作为生图参考（媒体处理器支持读本地文件）。
+            local_path = str(source.get("local_path") or "").strip()
+            if local_path and Path(local_path).is_file():
+                values.append(local_path)
+        return list(dict.fromkeys(values))
+
+    def _combo_member_titles(self, raw: dict[str, Any]) -> list[str]:
+        titles: list[str] = []
+        for source in (raw.get("combo_sources") or []):
+            if not isinstance(source, dict):
+                continue
+            title = str(source.get("title") or "").strip()
+            if title:
+                titles.append(title)
+        return titles
+
+    def _generate_combo_text(
+        self,
+        raw: dict[str, Any],
+        *,
+        source_title: str,
+        category: str,
+        target_language: str = "en",
+        target_site: str = "US",
+    ) -> dict[str, str]:
+        """组合标题/描述（未录全时）：按组合来源图成员标题为上下文走豆包文本模型。
+
+        复用 COMBINED_TEXT 合同（标题 + 五点描述 + 变体翻译为空 + 尺寸采用手动录入的
+        占位空对象），输出严格为 {optimized_title, description}。失败时返回空串，由调用方
+        回退用户已填值。
+        """
+        if not _ai_enabled():
+            return {"optimized_title": "", "description": ""}
+        profile = language_profile(target_language)
+        context = listing_prompt_context(raw, title=source_title, category=category)
+        combined = apply_language_contract_to_prompt(
+            self._effective_prompt("combined_text"),
+            "combined_text",
+            target_language,
+            target_site,
+        )
+        member_titles = self._combo_member_titles(raw)
+        variant_options = json.dumps([], ensure_ascii=False)
+        prompt = format_prompt(
+            combined,
+            title=source_title,
+            category=str(category or ""),
+            image_derived_title=" | ".join(member_titles) or source_title,
+            required_attributes=str(context.get("required_attributes") or ""),
+            matched_terms=str(context.get("matched_terms") or ""),
+            value_evidence=str(context.get("value_evidence") or ""),
+            verified_material_evidence=str(context.get("verified_material_evidence") or ""),
+            description_instructions="",
+            variant_instructions="",
+            variant_options=variant_options,
+            target_language_name=str(profile.get("name") or target_language),
+            language_code=target_language,
+        )
+        # 组合尺寸由用户手动录入，末端要求模型输出空 product_dimensions 以符合 JSON 合同。
+        prompt = (
+            f"{prompt}\n\n"
+            f"PRODUCT DIMENSIONS: the operator already supplies manual package dimensions; "
+            'return an empty object "product_dimensions": {} only, never estimate.'
+        )
+        try:
+            client = self._doubao_text_client()
+            result = client.generate_listing_text(
+                prompt,
+                validator=lambda value: _validate_combo_text_result(
+                    value, target_language=target_language
+                ),
+            )
+            return {
+                "optimized_title": str((result.optimized_title or "").strip()),
+                "description": str((result.description or "").strip()),
+            }
+        except (DoubaoTextError, ValueError):
+            return {"optimized_title": "", "description": ""}
+
+    def _combo_single_prompt(
+        self,
+        *,
+        user_prompt: str,
+        panel_role: str,
+        title: str,
+        category: str,
+        raw: dict[str, Any],
+    ) -> str:
+        context = listing_prompt_context(raw, title=title, category=category)
+        fidelity = format_prompt(
+            SINGLE_IMAGE_RUNTIME_CONTRACT,
+            panel_role=panel_role,
+        )
+        return (
+            f"{str(user_prompt or '').strip()}\n\n{fidelity}\n\n"
+            f"Treat the uploaded reference image(s) as the ONLY source of truth for "
+            f"the sellable SKU. Preserve product identity, silhouette, proportions, "
+            f"color, material, structure and printed details; never add, remove, "
+            f"recolor, reshape, merge or invent products.\n"
+            f"Product title: {title}\nProduct category: {category}\n"
+            f"Product understanding: {context.get('product_visual_identity', '')}\n"
+            f"Scene plan: {context.get('scene_plan', '')}\n"
+            f"Color and background: {context.get('visual_style', '')} / {context.get('background_plan', '')}"
+        )
+
+    def _combo_generate_one(
+        self,
+        task_id: int,
+        draft_id: int,
+        *,
+        stage: str,
+        prompt: str,
+        reference_values: list[str],
+        workspace_id: str,
+    ) -> Any:
+        from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
+
+        processor = self._media_processor()
+        self._raise_if_task_stopped(task_id, workspace_id)
+        media = processor.generate(
+            stage=stage,
+            prompt=prompt,
+            reference_values=reference_values,
+            image_size="2048x2048",
+        )
+        normalized = processor.normalize_standalone_image(media, stage=stage)
+        inspection = inspect_visible_text(bytes(getattr(normalized, "content", b"")))
+        if inspection is not None and (inspection.get("prominent") or inspection.get("chinese")):
+            raise ValueError("组合图未通过文字质检，请调整提示词后重试")
+        return normalized
+
+    def reserve_combo_usage(
+        self,
+        remote_token: str,
+        *,
+        feature_key: str,
+        source_ref: str,
+        draft_id: int,
+    ) -> str:
+        """单次计费：先为该组合功能冻结积分，返回 usage_id 供成功后结算。"""
+        if not remote_token:
+            raise ProductProcessingValidationError("服务器计费会话不可用")
+        client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
+        payload = {
+            "feature_key": feature_key,
+            "idempotency_key": f"combo:{feature_key}:{int(draft_id)}",
+            "source_ref": str(source_ref or "")[:200],
+            "metadata": {"combo_draft_id": int(draft_id), "feature_key": feature_key},
+        }
+        response = _billing_call_with_retry(client.reserve_ai_usage, remote_token, payload)
+        usage = response.get("usage") if isinstance(response, dict) else {}
+        usage_id = str(usage.get("usage_id") or "") if isinstance(usage, dict) else ""
+        if not usage_id or str(usage.get("status") or "") != "reserved":
+            raise CustomerBillingProtocolError("组合计费冻结失败")
+        return usage_id
+
+    def settle_combo_usage(
+        self,
+        remote_token: str,
+        usage_id: str,
+        *,
+        success: bool,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if not remote_token or not usage_id:
+            return
+        client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
+        settle = client.settle_ai_usage_success if success else client.settle_ai_usage_failure
+        _billing_call_with_retry(
+            settle,
+            remote_token,
+            usage_id,
+            {"metadata": metadata or {}},
+        )
+
+    def generate_combo_main(
+        self,
+        draft_id: int,
+        *,
+        prompt: str = "",
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """生成组合主图（单人图合同，不切四宫格），保存为草稿主图供后续使用。"""
+        draft = self.repository.get_draft(draft_id, workspace_id=workspace_id)
+        if draft is None:
+            raise ProductProcessingNotFound("product draft not found")
+        if not _ai_enabled():
+            raise ProductProcessingValidationError("图片生成服务未就绪")
+        reference_values = self._combo_reference_values(draft)
+        if not reference_values:
+            raise ProductProcessingValidationError("组合至少需要 1 张可用的参考图")
+        raw = draft.get("raw_payload") or {}
+        title = str(draft.get("title") or draft.get("product_name") or "the product")
+        category = str(raw.get("category_path") or raw.get("category") or "")
+        user_prompt = str(prompt or "").strip() or MAIN_IMAGE_PROMPT_DEFAULT
+        full_prompt = self._combo_single_prompt(
+            user_prompt=user_prompt,
+            panel_role="Hero product image",
+            title=title,
+            category=category,
+            raw=raw,
+        )
+        media = self._combo_generate_one(
+            0,
+            draft_id,
+            stage="combo_main",
+            prompt=full_prompt,
+            reference_values=reference_values,
+            workspace_id=workspace_id,
+        )
+        path = self.assets.save_generated_image(
+            int(draft_id or 0),
+            int(draft_id or 0),
+            "combo_main",
+            bytes(getattr(media, "content", b"") or b""),
+            str(getattr(media, "suffix", ".jpg") or ".jpg"),
+        )
+        self.repository.update_draft(
+            draft_id,
+            {"image_path": str(path), "image_url": self._display_url(path)},
+            raw,
+            workspace_id=workspace_id,
+        )
+        return {
+            "draft_id": draft_id,
+            "main_image_path": self._display_url(path),
+            "message": "组合主图已生成，请确认后开始处理",
+        }
+
+    def process_combo(
+        self,
+        draft_id: int,
+        *,
+        prompt: str = "",
+        workspace_id: str = "local",
+        billing_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """主图已就绪：创建任务，并行生成 3 张角色图（详情/生活方式/尺寸），
+        并本地合成详情图；产出与 AI处理兼容的结果供预检与导出复用。"""
+        draft = self.repository.get_draft(draft_id, workspace_id=workspace_id)
+        if draft is None:
+            raise ProductProcessingNotFound("product draft not found")
+        if not _ai_enabled():
+            raise ProductProcessingValidationError("图片生成服务未就绪")
+        main_path = Path(str(draft.get("image_path") or "")).resolve()
+        if not main_path.is_file():
+            raise ProductProcessingValidationError("尚未生成组合主图，请先生成主图")
+        reference_values = self._combo_reference_values(draft)
+        raw = draft.get("raw_payload") or {}
+        title = str(draft.get("title") or draft.get("product_name") or "").strip()
+        description = str(draft.get("description") or "").strip()
+        category = str(raw.get("category_path") or raw.get("category") or "")
+        role_prompts = raw.get("role_prompts") or {}
+        # 标题/描述未录全：按组合图片集成员标题为上下文走豆包文本模型自动生成。
+        ai_text = {"optimized_title": "", "description": ""}
+        if not title or not description:
+            ai_text = self._generate_combo_text(
+                raw,
+                source_title=title or str(draft.get("product_name") or "商品组合"),
+                category=category,
+                target_language=self._text(raw.get("target_language")) or "en",
+                target_site=self._text(raw.get("target_site")) or "US",
+            )
+            if not title:
+                title = str(ai_text.get("optimized_title") or "").strip()
+            if not description:
+                description = str(ai_text.get("description") or "").strip()
+        title = title or "商品组合"
+        task = self.repository.create_task(
+            title="商品自定义组合处理",
+            preflight_only=False,
+            settings={
+                "combo": True,
+                "draft_ids": [draft_id],
+                "workspace_id": workspace_id,
+                "_billing": billing_context,
+            },
+            drafts=[draft],
+            idempotency_key=f"combo-{draft_id}-{draft.get('updated_at') or ''}",
+            workspace_id=workspace_id,
+        )
+        task_id = int(task["id"])
+        item = task["items"][0]
+        item_id = int(item.get("item_id") or item.get("id"))
+
+        roles = (
+            ("grid_image_1", "Hero product image"),
+            ("grid_image_2", "Alternate complete product angle with one real visible detail"),
+            ("grid_image_3", "Credible lifestyle product image"),
+            ("grid_image_4", "Clean dimension annotation background"),
+        )
+        parts: list[Any] = []
+        for stage, role in roles:
+            if stage == "grid_image_1":
+                # 主图复用已生成草稿主图
+                from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
+
+                parts.append(
+                    GeneratedMedia(
+                        stage="grid_image_1",
+                        content=main_path.read_bytes(),
+                        content_type="image/jpeg",
+                        suffix=".jpg",
+                        provider="combo-main",
+                        model="local",
+                        reference_count=min(4, len(reference_values)),
+                    )
+                )
+                continue
+            user_prompt = str((role_prompts or {}).get(_COMBO_ROLE_KEY_BY_STAGE.get(stage, ""), "") or "")
+            full_prompt = self._combo_single_prompt(
+                user_prompt=user_prompt,
+                panel_role=role,
+                title=title,
+                category=category,
+                raw=raw,
+            )
+            parts.append(
+                self._combo_generate_one(
+                    task_id,
+                    draft_id,
+                    stage=stage,
+                    prompt=full_prompt,
+                    reference_values=reference_values,
+                    workspace_id=workspace_id,
+                )
+            )
+
+        carousel_urls = self._persist_media_for_preview(parts, task_id, draft_id, workspace_id)
+        detail_image_paths = self._generate_detail_images_local(
+            task_id,
+            draft_id,
+            parts,
+            title,
+            category,
+            "en",
+            None,
+            workspace_id=workspace_id,
+        )
+        result = {
+            "carousel_image_paths": carousel_urls,
+            "detail_image_paths": detail_image_paths,
+            "source_image_urls": reference_values,
+            "optimized_title": title,
+            "description": description or str(draft.get("description") or ""),
+            "physical_dimensions": self._core_dimensions(raw),
+            "product_dimensions": self._core_dimensions(raw),
+            "sku": str(raw.get("sku") or draft.get("sku") or ""),
+            "declared_price": self._number(raw.get("declared_price")) if raw.get("declared_price") is not None else draft.get("declared_price"),
+            "suggested_price": self._number(raw.get("suggested_price")) if raw.get("suggested_price") is not None else None,
+            "stock": self._number(raw.get("stock")) if raw.get("stock") is not None else None,
+            "category_path": category,
+            "category_id": str(raw.get("category_id") or ""),
+            "ai_notes": ["combo_images:standalone-3", "combo_images:main-from-draft"],
+        }
+        self.repository.finish_task(
+            task_id,
+            [
+                {
+                    "item_id": item_id,
+                    "status": "completed",
+                    "title": title,
+                    "skc": str(draft.get("skc") or ""),
+                    "spu": str(draft.get("sku") or ""),
+                    "image_url": self._display_url(main_path),
+                    "result": result,
+                }
+            ],
+            output_file="",
+            error_report_file="",
+            video_manifest_file="",
+            workspace_id=workspace_id,
+        )
+        return {"task_id": task_id, "message": "组合处理完成，已生成 3 张轮播图"}
+
+    @staticmethod
+    def _core_dimensions(raw: dict[str, Any]) -> dict[str, Any]:
+        keys = ("length_cm", "width_cm", "height_cm", "weight_g")
+        values: dict[str, Any] = {}
+        for key in keys:
+            value = raw.get(key)
+            if value not in (None, ""):
+                values[key] = value
+        values["source"] = "manual"
+        return values
 
     def intake_shop_candidate(
         self,

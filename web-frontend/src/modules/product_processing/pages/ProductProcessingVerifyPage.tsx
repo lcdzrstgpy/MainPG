@@ -3,6 +3,7 @@ import { useChangePoller } from '../../../shared/hooks/useChangePoller';
 import { SkuBatchManager } from '../components/SkuBatchManager';
 import { ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
+import { addDraftComboSource } from '../api/comboApi';
 import { variantPresentation } from '../data/skuPresentation';
 import type {
   DraftSummary,
@@ -228,6 +229,15 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
 
   const notify = (ok: string) => { setMessage(ok); setError(''); };
   const fail = (err: unknown) => { setError(err instanceof Error ? err.message : String(err)); setMessage(''); };
+
+  // 加入组合定制：把该条草稿的图片存入「商品自定义组合」来源图暂存区（服务端持久化）
+  const addToCombo = async (draft: DraftSummary) => {
+    try {
+      const rawTitle = String(draft.raw_payload?.source_title || '').trim();
+      await addDraftComboSource(ctx, draft.id, draft.title || rawTitle || `草稿 #${draft.id}`);
+      notify(`已加入「商品自定义组合」来源图暂存区，可在组合页统一管理`);
+    } catch (err) { fail(err); }
+  };
 
   const refresh = async () => {
     const draftData = await ppRequest<{ drafts: DraftSummary[] }>(ctx, `${API_BASE}/drafts?view=summary&limit=500`);
@@ -670,6 +680,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                       <div className="pool-inline-acts">
                         <button className="btn-mini" onClick={() => copy(displayTitle)}><i className="iconfont icon-file-copy" aria-hidden="true" />复制</button>
                         <button className="btn-mini" onClick={() => beginEdit(draft)}><i className="iconfont icon-edit" aria-hidden="true" />{isExpanded ? '收起' : '编辑'}</button>
+                        <button className="btn-mini primary" onClick={() => void addToCombo(draft)} title="把该条草稿图片加入「商品自定义组合」来源图暂存区"><i className="iconfont icon-skin" aria-hidden="true" />加入组合定制</button>
                         <button className="btn-mini danger" onClick={() => { if (window.confirm('确认删除该草稿？')) deleteSelected([draft.id]); }}><i className="iconfont icon-delete" aria-hidden="true" />删除</button>
                       </div>
                     </div>

@@ -240,6 +240,37 @@ class DailySelectionHandoffReceiptRow(Base):
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
 
 
+class ComboSourceRow(Base):
+    """商品自定义组合的「来源图暂存区」（服务端持久化）。
+
+    每条记录对应一张将来可加入组合的来源图：来源可以是草稿池某条草稿的图片
+    （source_type=draft_pool，保留 draft_id），也可以是用户手动上传的本地图片
+    （source_type=upload，保存 local_path 用于本地取图）。同一 workspace 内按
+    source_key 唯一，保证重复「加入」操作幂等。
+    """
+
+    __tablename__ = "product_processing_combo_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "source_key",
+            name="uq_product_processing_combo_source_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(String(255), default="local", index=True)
+    source_key: Mapped[str] = mapped_column(String(255), index=True)
+    source_type: Mapped[str] = mapped_column(String(32), default="upload", index=True)
+    draft_id: Mapped[int | None] = mapped_column(
+        ForeignKey("product_processing_drafts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(Text, default="")
+    url: Mapped[str] = mapped_column(Text, default="")
+    local_path: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
+
+
 class AiStageCacheRow(Base):
     """阶段级 AI 调用结果缓存（对齐原项目 ai_stage_cache）。
 

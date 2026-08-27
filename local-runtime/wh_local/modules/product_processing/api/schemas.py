@@ -53,6 +53,22 @@ class DraftUpdateRequest(BaseModel):
     sku_name_deletes: list[str] | None = None
 
 
+class ComboSourceAddRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    source_type: str = "draft_pool"
+    draft_id: int | None = None
+    title: str = ""
+    url: str = ""
+
+
+class ComboProcessRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    draft_id: int
+    prompt: str = ""
+
+
 class DraftDeleteRequest(BaseModel):
     draft_ids: list[int] = Field(default_factory=list)
     delete_all: bool = False

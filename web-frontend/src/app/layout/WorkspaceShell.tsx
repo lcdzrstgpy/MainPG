@@ -21,6 +21,7 @@ import { ProductProcessingVerifyPage } from "../../modules/product_processing/pa
 import { ProductProcessingTaskPage } from "../../modules/product_processing/pages/ProductProcessingTaskPage";
 import { ProductProcessingHistoryPage } from "../../modules/product_processing/pages/ProductProcessingHistoryPage";
 import { ProductProcessingPrecheckPage } from "../../modules/product_processing/pages/ProductProcessingPrecheckPage";
+import { ProductComboPage } from "../../modules/product_processing/pages/ProductComboPage";
 import { DimensionCanvasPage } from "../../modules/product_processing/pages/DimensionCanvasPage";
 import { PodCustomizationPage } from "../../modules/pod_customization/pages/PodCustomizationPage";
 import {
@@ -426,6 +427,8 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
             onOpenPrecheck={openProcessingPrecheck}
           />
         );
+      case "product_combo":
+        return <ProductComboPage onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
       case "dimension_canvas":
         return <DimensionCanvasPage initialBatchId={tab.dimensionBatchId} initialItemId={tab.dimensionItemId} onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
       case "pod_customization":
