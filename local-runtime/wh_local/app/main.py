@@ -63,6 +63,11 @@ from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
 from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
+from ..messages import (
+    AnnouncementSyncService,
+    MessagesRepository,
+    create_messages_router,
+)
 from ..modules.basic_settings.service import SystemConfigService
 from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
 from ..modules.pod_customization import create_router as create_pod_customization_router
@@ -234,13 +239,18 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         pod_service = getattr(runtime_app.state, "pod_customization_service", None)
         pod_ai_runtime = getattr(runtime_app.state, "pod_customization_ai_runtime", None)
         pod_title_runtime = getattr(runtime_app.state, "pod_customization_title_runtime", None)
+        messages_sync = getattr(runtime_app.state, "messages_sync", None)
         if shop_worker is not None:
             shop_worker.start()
+        if messages_sync is not None:
+            messages_sync.start()
         try:
             yield
         finally:
             if shop_worker is not None:
                 shop_worker.close()
+            if messages_sync is not None:
+                messages_sync.stop()
             if pod_service is not None:
                 pod_service.close()
             if pod_title_runtime is not None:
@@ -372,6 +382,16 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         app, db_path, config.data_dir, plugin_queue, product_processing,
         product_library_service=profit_activity_service,
     )
+
+    # 公告消息：从公告发布后台定时同步，前端右上角站内信读取。
+    messages_repository = MessagesRepository(db_path)
+    messages_sync = AnnouncementSyncService(
+        messages_repository,
+        config.announce_base_url,
+        interval_seconds=300,
+    )
+    app.include_router(create_messages_router(messages_repository, messages_sync))
+    app.state.messages_sync = messages_sync
 
     return app
 

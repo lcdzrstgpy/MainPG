@@ -32,6 +32,7 @@ class LocalRuntimeConfig:
     database_path: Path
     dev_admin_token: str
     customer_auth_base_url: str
+    announce_base_url: str
     onebound_1688_api_key: str
     onebound_1688_api_secret: str
     onebound_1688_base_url: str
@@ -58,6 +59,10 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
         customer_auth_base_url=os.environ.get(
             "WH_LOCAL_CUSTOMER_AUTH_BASE_URL",
             "https://workbench.haocoming.top/auth-api",
+        ),
+        announce_base_url=os.environ.get(
+            "WH_LOCAL_ANNOUNCE_BASE_URL",
+            "https://workbench.haocoming.top/publish-api",
         ),
         onebound_1688_api_key=os.environ.get(
             "DAILY_SELECTION_ONEBOUND_API_KEY", local_secrets.get("api_key", "")
