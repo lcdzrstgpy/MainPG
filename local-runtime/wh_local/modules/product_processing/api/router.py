@@ -24,6 +24,8 @@ from ..infrastructure.dimension_canvas_repository import DimensionCanvasReposito
 from ..infrastructure.dimension_renderer import DimensionRenderer
 from ..infrastructure.repository import ProductProcessingRepository
 from ..service import (
+    COMBO_SCOPE_MAIN,
+    COMBO_SCOPE_PROCESS,
     ProductProcessingConflict,
     ProductProcessingNotFound,
     ProductProcessingService,
@@ -249,30 +251,22 @@ def create_product_processing_router(
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
-        remote_token = _remote_token(request, customer_sessions)
-        usage_id = _call(
-            service.reserve_combo_usage,
-            remote_token,
-            feature_key="combo_main",
+        # 组合生图直连：批次冻结领短期密钥，而不是服务端托管（server-managed-wuyin）。
+        # 未登录时 freeze_batch_points 会给出可读报错；成功后按 four_grid 子项结算。
+        return _call(
+            service.run_combo_direct,
+            _remote_token(request, customer_sessions),
             source_ref="product_processing:combo:generate-main",
             draft_id=body.draft_id,
-        )
-        try:
-            result = _call(
-                service.generate_combo_main,
+            scope=list(COMBO_SCOPE_MAIN),
+            workspace_id=_workspace(workspace_id),
+            account_id=actor.id,
+            run=lambda: service.generate_combo_main(
                 body.draft_id,
                 prompt=body.prompt or "",
                 workspace_id=_workspace(workspace_id),
-            )
-            service.settle_combo_usage(
-                remote_token, usage_id, success=True, metadata={"combo_draft_id": body.draft_id, "stage": "main"}
-            )
-            return result
-        except Exception as exc:
-            service.settle_combo_usage(
-                remote_token, usage_id, success=False, metadata={"combo_draft_id": body.draft_id, "stage": "main"}
-            )
-            raise
+            ),
+        )
 
     @router.post("/combo/process")
     def process_combo(
@@ -281,36 +275,22 @@ def create_product_processing_router(
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
-        remote_token = _remote_token(request, customer_sessions)
-        usage_id = _call(
-            service.reserve_combo_usage,
-            remote_token,
-            feature_key="combo_process",
+        # 组合处理直连：批次冻结领短期密钥（four_grid + detail_images），直连生成 3 张
+        # 轮播 + 详情合成，成功后按 scope 结算。
+        return _call(
+            service.run_combo_direct,
+            _remote_token(request, customer_sessions),
             source_ref="product_processing:combo:process",
             draft_id=body.draft_id,
-        )
-        try:
-            result = _call(
-                service.process_combo,
+            scope=list(COMBO_SCOPE_PROCESS),
+            workspace_id=_workspace(workspace_id),
+            account_id=actor.id,
+            run=lambda: service.process_combo(
                 body.draft_id,
                 prompt=body.prompt or "",
                 workspace_id=_workspace(workspace_id),
-            )
-            service.settle_combo_usage(
-                remote_token,
-                usage_id,
-                success=True,
-                metadata={"combo_draft_id": body.draft_id, "task_id": result.get("task_id"), "stage": "process"},
-            )
-            return result
-        except Exception as exc:
-            service.settle_combo_usage(
-                remote_token,
-                usage_id,
-                success=False,
-                metadata={"combo_draft_id": body.draft_id, "stage": "process"},
-            )
-            raise
+            ),
+        )
 
     @router.post("/drafts/import")
     async def import_drafts(

@@ -109,6 +109,29 @@ export async function createComboDraft(
   });
 }
 
+export async function updateComboDraft(
+  ctx: ApiContext,
+  draftId: number,
+  input: ComboDraftInput
+): Promise<{ draft: { id: number } }> {
+  const body: Record<string, unknown> = {
+    skc: input.skc,
+    sku: input.sku,
+    product_name: input.product_name,
+    description: input.description,
+    cost: input.cost,
+    declared_price: input.declared_price,
+    // 组合元数据写入 raw_payload；不要传 main_image_url，以免覆盖已生成主图。
+    combo_sources: input.combo_sources,
+    main_prompt: input.main_prompt,
+    role_prompts: input.role_prompts,
+    ...input.core_fields,
+  };
+  // 标题可留空走 AI 生成：为空时不传，避免后端更新校验“标题不能为空”，保留原值。
+  if (input.title) body.title = input.title;
+  return ppRequest(ctx, `${API_BASE}/drafts/${draftId}`, { method: 'PATCH', body });
+}
+
 export async function generateComboMain(
   ctx: ApiContext,
   draftId: number,

@@ -403,6 +403,13 @@ MAIN_IMAGE_PROMPT_DEFAULT = (
     "grounded contact shadow, category-matched premium background, no added text"
 )
 
+# 商品自定义组合直连计费的子项 scope（对齐 auth-api billing_pricing_items.feature_key）。
+# 组合本质是图片生成：主图为单张 hero，处理阶段生成 3 张轮播 + 详情合成。
+# 直接复用标准子项「four_grid」（图片）与「detail_images」（详情），
+# 结算上报与冻结 scope 严格一致，保证费用与冻结积分匹配。
+COMBO_SCOPE_MAIN = ("four_grid",)
+COMBO_SCOPE_PROCESS = ("four_grid", "detail_images")
+
 # 四宫格 slot 阶段名 → 组合角色 key（与前端 role_prompts 键一致）
 _COMBO_ROLE_KEY_BY_STAGE: dict[str, str] = {
     "grid_image_1": "main",
@@ -950,7 +957,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         draft_id = int(payload.get("draft_id") or 0) or None
         if draft_id is None:
             raise ProductProcessingValidationError("加入组合定制的来源图缺少草稿")
-        draft = self.repository.get_draft(draft_id, workspace_id)
+        draft = self.repository.get_draft(draft_id, workspace_id=workspace_id)
         if draft is None:
             raise ProductProcessingNotFound("product draft not found")
         image_url = self._text(
@@ -1137,49 +1144,101 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raise ValueError("组合图未通过文字质检，请调整提示词后重试")
         return normalized
 
-    def reserve_combo_usage(
+    def run_combo_direct(
         self,
         remote_token: str,
         *,
-        feature_key: str,
         source_ref: str,
         draft_id: int,
-    ) -> str:
-        """单次计费：先为该组合功能冻结积分，返回 usage_id 供成功后结算。"""
+        scope: list[str] | tuple[str, ...],
+        workspace_id: str = "local",
+        account_id: str = "",
+        run: Callable[[], Any],
+    ) -> Any:
+        """组合直连：批次冻结领短期密钥 → 直连上下文执行 → 按子项结算。
+
+        与服务端托管（server-managed-wuyin）不同，直连需要批次冻结拿到 wuyin/
+        ark 短期密钥，否则 provider 配置退化为托管模式、media 层会抛
+        "server-managed image usage is not reserved"。因此组合生图接入
+        与正常商品处理一致的「冻结 → server_ai_context(granted_keys) → 结算」链路。
+        """
         if not remote_token:
             raise ProductProcessingValidationError("服务器计费会话不可用")
-        client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
-        payload = {
-            "feature_key": feature_key,
-            "idempotency_key": f"combo:{feature_key}:{int(draft_id)}",
-            "source_ref": str(source_ref or "")[:200],
-            "metadata": {"combo_draft_id": int(draft_id), "feature_key": feature_key},
+        scope = [str(item) for item in (scope or [])]
+        if not scope:
+            raise ProductProcessingValidationError("组合直连冻结 scope 不能为空")
+        client = _batch_billing_client()
+        freeze = _billing_call_with_retry(
+            client.freeze_batch_points,
+            remote_token,
+            {
+                "link_count": 1,
+                "scope": scope,
+                # 冻结批次与组合来源唯一关联：单草稿即一条；task_id 由 process
+                # 阶段创建时已有，generate-main 阶段用 source_ref 兜底。
+                "task_id": str(source_ref or ""),
+            },
+        )
+        freeze_payload = (
+            freeze.get("freeze")
+            if isinstance(freeze, dict) and isinstance(freeze.get("freeze"), dict)
+            else (freeze if isinstance(freeze, dict) else {})
+        )
+        freeze_id = str(freeze_payload.get("freeze_id") or "")
+        if not freeze_id:
+            raise ProductProcessingValidationError("batch freeze failed: no freeze_id returned")
+        keys = freeze_payload.get("keys") if isinstance(freeze_payload, dict) else []
+        granted = {
+            str(key.get("provider") or ""): str(key.get("api_key") or "")
+            for key in keys
+            if isinstance(key, dict) and key.get("api_key")
         }
-        response = _billing_call_with_retry(client.reserve_ai_usage, remote_token, payload)
-        usage = response.get("usage") if isinstance(response, dict) else {}
-        usage_id = str(usage.get("usage_id") or "") if isinstance(usage, dict) else ""
-        if not usage_id or str(usage.get("status") or "") != "reserved":
-            raise CustomerBillingProtocolError("组合计费冻结失败")
-        return usage_id
+        _remember_batch_freeze(
+            freeze_id,
+            account_id=str(account_id or ""),
+            workspace_id=workspace_id,
+            task_id=0,
+            link_count=1,
+            scope=scope,
+            item_ids=[int(draft_id)],
+        )
+        try:
+            with server_ai_context(remote_token, {}, granted_keys=granted, freeze_id=freeze_id):
+                result = run()
+        except Exception:
+            self._settle_combo_freeze(remote_token, freeze_id, scope, success=False)
+            raise
+        self._settle_combo_freeze(remote_token, freeze_id, scope, success=True)
+        return result
 
-    def settle_combo_usage(
+    def _settle_combo_freeze(
         self,
         remote_token: str,
-        usage_id: str,
+        freeze_id: str,
+        scope: list[str],
         *,
         success: bool,
-        metadata: dict[str, Any] | None = None,
     ) -> None:
-        if not remote_token or not usage_id:
-            return
-        client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=20)
-        settle = client.settle_ai_usage_success if success else client.settle_ai_usage_failure
-        _billing_call_with_retry(
-            settle,
-            remote_token,
-            usage_id,
-            {"metadata": metadata or {}},
-        )
+        """结算一个组合冻结批次：成功全价、失败全退；失败不抛出，保留 open 记录。"""
+        try:
+            client = _batch_billing_client()
+            status = "success" if success else "no_return"
+            items = [
+                {
+                    "link_idx": 1,
+                    "subitems": [{"feature": feature, "status": status} for feature in scope],
+                }
+            ]
+            _billing_call_with_retry(
+                client.settle_batch_points,
+                remote_token,
+                freeze_id,
+                {"items": items},
+            )
+            _forget_batch_freeze(freeze_id)
+        except Exception as exc:
+            # 保留 open 记录供后续对账/服务端 TTL 兜底，避免「结算失败被静默吞掉」。
+            _mark_freeze_settle_failure(freeze_id, str(exc)[:200])
 
     def generate_combo_main(
         self,

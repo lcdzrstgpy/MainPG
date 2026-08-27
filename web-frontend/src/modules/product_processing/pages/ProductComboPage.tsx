@@ -10,7 +10,9 @@ import {
   listComboSources,
   processCombo,
   removeComboSource,
+  updateComboDraft,
   uploadComboSource,
+  type ComboDraftInput,
   type ComboSource,
 } from '../api/comboApi';
 import '../styles/ProductProcessingVerifyPage.css';
@@ -141,7 +143,7 @@ export function ProductComboPage({ onOpenPrecheck, isActive = true }: Props) {
     setMessage('');
     setError('');
     try {
-      const data = await createComboDraft(ctx, {
+      const input: ComboDraftInput = {
         title: form.title,
         product_name: form.product_name || form.title,
         description: form.description,
@@ -170,9 +172,15 @@ export function ProductComboPage({ onOpenPrecheck, isActive = true }: Props) {
         })),
         main_prompt: mainPrompt,
         role_prompts: rolePrompts,
-      });
-      setDraftId(data.draft.id);
-      notify('组合草稿已保存，可继续生成主图');
+      };
+      if (draftId != null) {
+        await updateComboDraft(ctx, draftId, input);
+        notify(`组合草稿 #${draftId} 已更新，可继续生成主图`);
+      } else {
+        const data = await createComboDraft(ctx, input);
+        setDraftId(data.draft.id);
+        notify('组合草稿已保存，可继续生成主图');
+      }
     } catch (err) {
       fail(err);
     } finally {
@@ -248,7 +256,7 @@ export function ProductComboPage({ onOpenPrecheck, isActive = true }: Props) {
       <section className="verify-section">
         <div className="verify-section-head">
           <h2>① 组合来源图与基本信息</h2>
-          <span className="verify-sub">来源图可来自草稿池「加入到组合定制」暂存区，也可本地上传；需 ≥ 2 张</span>
+          <span className="verify-sub">来源图可来自草稿池「加入到组合定制」暂存区，也可本地上传；需 ≥ 2 张。已保存后调整来源图须再次保存，草稿只记录保存时的来源图快照。</span>
         </div>
 
         <div className="verify-actions">
@@ -331,8 +339,8 @@ export function ProductComboPage({ onOpenPrecheck, isActive = true }: Props) {
           </label>
         </div>
         <div className="verify-actions">
-          <button className="primary" onClick={() => void generateMain()} disabled={generatingMain || !draftId}>
-            {generatingMain ? '生成中…' : '生成主图'}
+          <button className="primary" onClick={() => void generateMain()} disabled={generatingMain || !draftId || !!mainImageUrl}>
+            {generatingMain ? '生成中…' : mainImageUrl ? '主图已生成' : '生成主图'}
           </button>
           {mainImageUrl && (
             <div className="pool-thumb">
@@ -341,6 +349,8 @@ export function ProductComboPage({ onOpenPrecheck, isActive = true }: Props) {
             </div>
           )}
         </div>
+        {mainImageUrl && <p className="verify-empty">主图已就绪，可进入第 ③ 步开始处理生成 3 张轮播图。</p>}
+        {draftId == null && <p className="verify-empty">先保存组合草稿后才可生成主图。</p>}
       </section>
 
       {/* Step 3 并行生成 3 张轮播图 */}
