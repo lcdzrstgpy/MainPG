@@ -83,9 +83,9 @@ function taskStatusLabel(status: string): string {
 }
 
 const PROVENANCE_META: Record<string, { label: string; tone: string }> = {
-  source: { label: '采集值', tone: 'ok' },
+  source: { label: 'ai值', tone: 'ok' },
   manual: { label: '手动', tone: 'attn' },
-  ai: { label: 'AI 预估，建议核对', tone: 'risk' },
+  ai: { label: 'ai值', tone: 'ok' },
 };
 
 function provenanceBadge(
@@ -864,6 +864,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         const assets = effectiveAssets(item);
         const hasOverrides = itemIsDirty(item);
         const isExpanded = expandedDraftIds.has(draftId);
+        const sourceUrl = String(item.source_url ?? '').trim();
+        const safeSourceUrl = /^https?:\/\//i.test(sourceUrl) ? sourceUrl : '';
         return (
           <section key={item.item_id} className={`verify-section precheck-card${hasOverrides ? ' is-edited' : ''}`}>
             <div className="precheck-card-head">
@@ -1027,6 +1029,14 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                     disabled={mutationsLocked}
                     onClick={() => onOpenDimensionItem(taskId, item.item_id)}
                   >添加尺寸图</button>
+                </div>
+                <div className="precheck-source-address">
+                  <strong>处理前商品地址</strong>
+                  {safeSourceUrl ? (
+                    <a href={safeSourceUrl} target="_blank" rel="noreferrer" title={sourceUrl}>{sourceUrl}</a>
+                  ) : (
+                    <span>暂无商品地址</span>
+                  )}
                 </div>
                 <PrecheckImageManager
                   assets={assets}
