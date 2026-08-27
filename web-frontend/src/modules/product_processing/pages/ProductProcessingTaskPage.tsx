@@ -163,8 +163,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   const taskActive = batchProcessing || taskPaused;
   const batchTotal = batch?.total_count || 0;
   const batchProcessed = batch?.processed_count ?? 0;
+  // 只要任务到达终态（含整单失败/取消/完成待复核），进度都应计算为 100%，
+  // 否则前端会永远被 Math.min(99,…) 卡在 99%。自动补跑轮仍在运行时除外。
   const taskDone = batch
-    ? ['completed', 'partial_failure'].includes(batch.task.status) && !autoRepullRunning
+    ? ['completed', 'partial_failure', 'failed', 'cancelled'].includes(batch.task.status) && !autoRepullRunning
     : false;
   const progress = taskDone
     ? 100
@@ -404,6 +406,16 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <span className="verify-template-desc">{template.description}</span>
                 </label>
               ))}
+            </div>
+            <div className="verify-scope-row">
+              <label className="verify-scope-check" title="任务结束后自动重试失败/待确认的链接，默认开启；关闭后失败项需在结果页手动重新处理">
+                <input
+                  type="checkbox"
+                  checked={options.autoRepull !== false}
+                  onChange={(e) => setOptions((p) => ({ ...p, autoRepull: e.target.checked }))}
+                />
+                <span>自动重跑失败项</span>
+              </label>
             </div>
             <PromptCustomizePanel />
             <div className="verify-actions">
