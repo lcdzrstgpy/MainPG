@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { WorkspaceModuleId } from "../navigation/modules";
 import { useTheme, THEME_META, type ThemeId } from "../../shared/hooks/useTheme";
 import { UI_MODE_META, useUiMode, type UiModeId } from "../../shared/hooks/useUiMode";
+import { InboxBell } from "../../shared/components/InboxBell";
 
 export type WorkspaceTab = {
   key: string;
@@ -84,6 +85,7 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
         )}
         <div id="workspace-topbar-status" className="topbar-status-slot" />
         <div className="topbar-actions">
+          <InboxBell />
           <details className="user-menu">
             <summary><span className="avatar">{uiMode === "apple" ? "界" : "U"}</span><span>本地用户</span><span className="caret">⌄</span></summary>
             <div className="user-popover">
