@@ -267,6 +267,8 @@ class ComboSourceRow(Base):
     )
     title: Mapped[str] = mapped_column(Text, default="")
     url: Mapped[str] = mapped_column(Text, default="")
+    # 组合主图标记：同 workspace 内最多一张主图（"设为主图"时服务端取消其他）。
+    is_main: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     local_path: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
 

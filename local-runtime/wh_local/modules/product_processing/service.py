@@ -410,6 +410,9 @@ MAIN_IMAGE_PROMPT_DEFAULT = (
 COMBO_SCOPE_MAIN = ("four_grid",)
 COMBO_SCOPE_PROCESS = ("four_grid", "detail_images")
 
+# 含中文字符判定：组合图用户提示词常为中文，需先译为英文再送入生图模型。
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
 # 四宫格 slot 阶段名 → 组合角色 key（与前端 role_prompts 键一致）
 _COMBO_ROLE_KEY_BY_STAGE: dict[str, str] = {
     "grid_image_1": "main",
@@ -1092,6 +1095,56 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         except (DoubaoTextError, ValueError):
             return {"optimized_title": "", "description": ""}
 
+    def _translate_combo_prompt(self, text: str) -> str:
+        """组合图用户提示词中译英：仅当含中文时调用豆包翻译。
+
+        中文直接拼入英文生图提示词会被模型复写成中文或忽略，导致语言质检失败。
+        返回缓存的英文译文；无中文/英文原样返回；翻译失败回退空串（由调用方
+        落到英文保真契约），不阻断任务。译文若仍含中文视为未翻译，回退空串。
+        """
+        normalized = str(text or "").strip()
+        if not normalized or not _CJK_RE.search(normalized):
+            return normalized
+        cache = getattr(self, "_combo_prompt_cache", None)
+        if cache is None:
+            cache = self._combo_prompt_cache = {}
+        cached = cache.get(normalized)
+        if cached is not None:
+            return cached
+        try:
+            translated = (
+                DoubaoArkClient()
+                .complete(
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a professional e-commerce product-image prompt translator. "
+                                "Translate the seller's image-prompt instructions into English faithfully "
+                                "without adding, removing or rephrasing meaning."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "Translate the following e-commerce image prompt into English. "
+                                "Output only the English translation with no quotes, comments or extra words.\n\n"
+                                f"{normalized}"
+                            ),
+                        },
+                    ]
+                )
+                .strip()
+            )
+        except Exception:
+            return ""
+        if not translated or _CJK_RE.search(translated):
+            return ""
+        if len(cache) >= 128:
+            cache.pop(next(iter(cache)))
+        cache[normalized] = translated
+        return translated
+
     def _combo_single_prompt(
         self,
         *,
@@ -1259,7 +1312,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         raw = draft.get("raw_payload") or {}
         title = str(draft.get("title") or draft.get("product_name") or "the product")
         category = str(raw.get("category_path") or raw.get("category") or "")
-        user_prompt = str(prompt or "").strip() or MAIN_IMAGE_PROMPT_DEFAULT
+        user_prompt = self._translate_combo_prompt(prompt) or MAIN_IMAGE_PROMPT_DEFAULT
         full_prompt = self._combo_single_prompt(
             user_prompt=user_prompt,
             panel_role="Hero product image",
@@ -1374,7 +1427,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     )
                 )
                 continue
-            user_prompt = str((role_prompts or {}).get(_COMBO_ROLE_KEY_BY_STAGE.get(stage, ""), "") or "")
+            user_prompt = self._translate_combo_prompt(
+                str((role_prompts or {}).get(_COMBO_ROLE_KEY_BY_STAGE.get(stage, ""), "") or "")
+            )
             full_prompt = self._combo_single_prompt(
                 user_prompt=user_prompt,
                 panel_role=role,

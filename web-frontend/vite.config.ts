@@ -29,6 +29,9 @@ export default defineConfig({
       "/plugin": sameOriginProxy(),
       "/local": sameOriginProxy(),
       "/product-processing": sameOriginProxy(),
+      // 后端静态图床：生成图 / 组合主图以 /pp-media/ 相对 URL 返回，需代理到 8010
+      // 才能在前端 <img> 加载（生产同源由 MainPG.exe 直接托管）。
+      "/pp-media": sameOriginProxy(),
     },
   },
 });

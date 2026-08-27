@@ -1867,6 +1867,24 @@ class ProductProcessingRepository:
             "updated_at": row.updated_at,
         }
 
+    def set_combo_main(self, source_id: int, workspace_id: str) -> dict[str, Any]:
+        """把某张来源图设为组合主图：同 workspace 先取消其他主图标记，再设置该张。
+
+        ``source_id`` 不存在时抛 KeyError，由 service 层转成 404。
+        """
+        with self.database.sessions.begin() as session:
+            target = session.get(ComboSourceRow, source_id)
+            if target is None or target.workspace_id != workspace_id:
+                raise KeyError(source_id)
+            session.execute(
+                update(ComboSourceRow)
+                .where(ComboSourceRow.workspace_id == workspace_id)
+                .values(is_main=False)
+            )
+            target.is_main = True
+            session.flush()
+            return self._combo_source(target)
+
     @staticmethod
     def _combo_source(row: ComboSourceRow) -> dict[str, Any]:
         return {
@@ -1877,9 +1895,11 @@ class ProductProcessingRepository:
             "draft_id": row.draft_id,
             "title": row.title,
             "url": row.url,
+            "is_main": bool(row.is_main),
             "local_path": row.local_path,
             "created_at": row.created_at,
         }
+
 
     @staticmethod
     def _billing_attempt(row: ProductProcessingBillingAttemptRow) -> dict[str, Any]:

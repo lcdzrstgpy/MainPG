@@ -47,8 +47,9 @@ _OCR_INFERENCE_SEMAPHORE = threading.BoundedSemaphore(_ocr_worker_limit())
 
 
 def ocr_gate_enabled() -> bool:
-    # 默认关闭，与 POD 生图管线保持一致；仅在显式设 WH_PRODUCT_OCR_GATE=1 时重新开启。
-    return os.environ.get("WH_PRODUCT_OCR_GATE", "0").strip() not in {"0", "false", "no", "off"}
+    # 已按业务要求彻底关闭：生成图不再做 OCR 文字质检/中文重绘，避免「图可用但因文字被卡」。
+    # 忽略 WH_PRODUCT_OCR_GATE 环境变量；如需临时重新启用，请改回原判断逻辑。
+    return False
 
 
 def max_repair_rounds() -> int:
