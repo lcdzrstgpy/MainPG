@@ -2962,17 +2962,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
         用户可改（标题/图片/核心字段）也可不修改默认保存；导出最终版表格时合并应用。
         """
-        self._require_task(task_id, workspace_id)
-        normalized = [
-            {
-                **entry,
-                "overrides": self._clean_preview_overrides(
-                    dict(entry.get("overrides") or {})
-                ),
-            }
-            for entry in items
-            if isinstance(entry, dict)
-        ]
+        task = self._require_task(task_id, workspace_id)
+        normalized = self._normalized_preview_entries(task, items)
         try:
             saved_items = self.preview_images.save_preview(
                 task_id,
@@ -3089,7 +3080,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         workspace_id: str = "local",
         idempotency_key: str = "",
     ) -> dict[str, Any]:
-        self._require_task(task_id, workspace_id)
+        task = self._require_task(task_id, workspace_id)
         config = self.engine_status()["diagnostics"]["config"]
         media_publish_configured = config.get("media_publish_configured")
         if media_publish_configured is None:
@@ -3100,15 +3091,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raise ProductProcessingConflict(
                 "未配置可导出的图床：请配置 COS 或公共媒体地址（public_base_url）"
             )
-        normalized = [
-            {
-                **entry,
-                "overrides": self._clean_preview_overrides(
-                    dict(entry.get("overrides") or {})
-                ),
-            }
-            for entry in items
-        ]
+        normalized = self._normalized_preview_entries(task, items)
         try:
             return self.preview_images.begin_finalize(
                 task_id,
@@ -3122,6 +3105,81 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raise ProductProcessingValidationError(str(exc)) from exc
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
+
+    def _normalized_preview_entries(
+        self, task: dict[str, Any], items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Validate per-SKU package patches against this task's captured rows."""
+        matched_keys_by_draft: dict[int, set[str]] = {}
+        for task_item in task.get("items") or []:
+            draft_id = int(task_item.get("product_draft_id") or 0)
+            result = task_item.get("result") or {}
+            records = result.get("shipping_package_records") or []
+            if not isinstance(records, list):
+                records = []
+            if not records:
+                records = [
+                    variant.get("shipping_package")
+                    for variant in (result.get("source_variant_records") or [])
+                    if isinstance(variant, dict) and isinstance(variant.get("shipping_package"), dict)
+                ]
+            matched_keys_by_draft[draft_id] = {
+                str(record.get("variant_key") or record.get("variant_sku_id") or record.get("record_key") or "").strip()
+                for record in records
+                if isinstance(record, dict) and record.get("match_status") == "matched"
+            } - {""}
+
+        normalized: list[dict[str, Any]] = []
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            draft_id = int(entry.get("product_draft_id") or 0)
+            overrides = dict(entry.get("overrides") or {})
+            package_patches = overrides.get("shipping_package_records")
+            if isinstance(package_patches, dict):
+                # `model_dump()` emits all optional patch fields as None. Strip
+                # only those null package fields before validation; no other
+                # preview state gets implicit null-as-omitted behavior.
+                overrides["shipping_package_records"] = {
+                    key: (
+                        {field: number for field, number in patch.items() if number is not None}
+                        if isinstance(patch, dict)
+                        else patch
+                    )
+                    for key, patch in package_patches.items()
+                }
+            self._validate_shipping_package_override_keys(
+                overrides.get("shipping_package_records"),
+                matched_keys_by_draft.get(draft_id, set()),
+            )
+            normalized.append({**entry, "overrides": self._clean_preview_overrides(overrides)})
+        return normalized
+
+    @staticmethod
+    def _validate_shipping_package_override_keys(value: Any, matched_keys: set[str]) -> None:
+        if value in (None, {}):
+            return
+        if not isinstance(value, dict):
+            raise ProductProcessingValidationError("shipping_package_records must be a keyed object")
+        allowed_fields = {"length_cm", "width_cm", "height_cm", "volume_cm3", "weight_g"}
+        for raw_key, raw_patch in value.items():
+            variant_key = str(raw_key or "").strip()
+            if not variant_key or variant_key not in matched_keys:
+                raise ProductProcessingValidationError("只能编辑已匹配 SKU 的包装件重尺")
+            if not isinstance(raw_patch, dict) or not raw_patch:
+                raise ProductProcessingValidationError("包装件重尺覆盖必须包含有效字段")
+            unknown_fields = set(raw_patch) - allowed_fields
+            if unknown_fields:
+                raise ProductProcessingValidationError("包装件重尺覆盖包含不允许的字段")
+            for field, raw_number in raw_patch.items():
+                if isinstance(raw_number, bool):
+                    raise ProductProcessingValidationError("包装件重尺必须是有限正数")
+                try:
+                    number = float(raw_number)
+                except (TypeError, ValueError):
+                    raise ProductProcessingValidationError("包装件重尺必须是有限正数") from None
+                if not math.isfinite(number) or number <= 0:
+                    raise ProductProcessingValidationError("包装件重尺必须是有限正数")
 
     def preview_finalize_status(
         self,
@@ -3247,6 +3305,27 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 core[key] = value
             if core:
                 cleaned["core_fields"] = core
+        shipping_package_records = overrides.get("shipping_package_records") or {}
+        if isinstance(shipping_package_records, dict):
+            package_patches: dict[str, dict[str, int | float]] = {}
+            for raw_key, raw_patch in shipping_package_records.items():
+                variant_key = str(raw_key or "").strip()
+                if not variant_key or not isinstance(raw_patch, dict):
+                    continue
+                patch: dict[str, int | float] = {}
+                for field in ("length_cm", "width_cm", "height_cm", "volume_cm3", "weight_g"):
+                    value = raw_patch.get(field)
+                    try:
+                        number = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if number <= 0:
+                        continue
+                    patch[field] = int(number) if number.is_integer() else number
+                if patch:
+                    package_patches[variant_key] = patch
+            if package_patches:
+                cleaned["shipping_package_records"] = package_patches
         if MANIFEST_KEY in overrides:
             cleaned[MANIFEST_KEY] = PreviewImageManifest.from_value(
                 overrides.get(MANIFEST_KEY)
@@ -3268,11 +3347,40 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if not isinstance(dimensions, dict):
             dimensions = {}
         provenance_source = str(dimensions.get("source") or "").strip()
+        # 1688 件重尺（#productPackInfo）抓到的真实物流包裹数据。前端「物流包裹
+        # 长/宽/高/重量」框优先采用这些真实值，避免回退到商品本体尺寸的 AI 预估。
+        shipping_package_records = result.get("shipping_package_records") or []
+        if not isinstance(shipping_package_records, list):
+            shipping_package_records = []
+        if not shipping_package_records:
+            # Some task-result adapters retain variant records but omit the
+            # top-level list. Preserve matched source evidence from those rows.
+            shipping_package_records = [
+                record.get("shipping_package")
+                for record in (result.get("source_variant_records") or [])
+                if isinstance(record, dict) and isinstance(record.get("shipping_package"), dict)
+            ]
+        # 优先取当前选中 SKU 的件重尺；没有选中行时用第一条有效记录兜底。
+        selected_package_record = None
+        for record in shipping_package_records:
+            if not isinstance(record, dict):
+                continue
+            if record.get("selected") or record.get("match_status") == "matched":
+                selected_package_record = record
+                break
+        package_dimensions: dict[str, float] = {}
+        for key in ("length_cm", "width_cm", "height_cm", "volume_cm3", "weight_g"):
+            package_value = self._number((selected_package_record or {}).get(key))
+            if package_value is not None and package_value > 0:
+                package_dimensions[key] = float(package_value)
         dimension_provenance: dict[str, str] = {}
         for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
             if key in core_fields:
                 dimension_provenance[key] = "manual"
-            elif "source_evidence" in provenance_source:
+            elif key in package_dimensions:
+                # 该字段来自件重尺真实抓取值，而非 AI 预估。
+                dimension_provenance[key] = "source"
+            elif "source_evidence" in provenance_source or "source_evidence" in str(dimensions.get("reason") or ""):
                 dimension_provenance[key] = "source"
             else:
                 dimension_provenance[key] = "ai"
@@ -3304,9 +3412,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 for slot in slots
             ],
             "physical_dimensions": result.get("physical_dimensions") or {},
+            # Kept separate from product_dimensions: these are shipping package
+            # measurements and must never drive the product body/canvas size.
+            "shipping_package_records": shipping_package_records,
             "dimension_provenance": dimension_provenance,
             "preview_revision": preview_revision,
             "result_version": task_item_result_version(result),
+            # Kept separate from product_dimensions: these are shipping package
+            # measurements and must never drive the product body/canvas size.
+            "shipping_package_records": shipping_package_records,
             "core_fields": {
                 "sku": str(core_fields.get("sku") or result.get("sku") or "").strip(),
                 "declared_price": core_fields.get("declared_price", result.get("declared_price")),
@@ -3314,10 +3428,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "stock": core_fields.get("stock", result.get("stock")),
                 "category_path": str(core_fields.get("category_path") or result.get("category_path") or "").strip(),
                 "category_id": str(core_fields.get("category_id") or result.get("category_id") or "").strip(),
-                "length_cm": core_fields.get("length_cm", dimensions.get("length_cm")),
-                "width_cm": core_fields.get("width_cm", dimensions.get("width_cm")),
-                "height_cm": core_fields.get("height_cm", dimensions.get("height_cm")),
-                "weight_g": core_fields.get("weight_g", dimensions.get("weight_g")),
+                "length_cm": core_fields.get("length_cm", package_dimensions.get("length_cm", dimensions.get("length_cm"))),
+                "width_cm": core_fields.get("width_cm", package_dimensions.get("width_cm", dimensions.get("width_cm"))),
+                "height_cm": core_fields.get("height_cm", package_dimensions.get("height_cm", dimensions.get("height_cm"))),
+                "weight_g": core_fields.get("weight_g", package_dimensions.get("weight_g", dimensions.get("weight_g"))),
             },
             "overrides": saved,
         }
@@ -5824,6 +5938,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "source_detail_image_urls": source_detail_image_urls,
             "source_attributes": raw.get("source_attributes") or [],
             "source_variant_records": raw.get("source_variant_records") or [],
+            # Retain the separate 1688 package table for precheck/export. Do not
+            # fold it into product_dimensions: it describes shipping cartons,
+            # not the drawable product body.
+            "shipping_package_records": raw.get("shipping_package_records") or [],
             "variant_value_translations": variant_value_translations,
             "cost": draft.get("cost"),
             "declared_price": draft.get("declared_price"),
@@ -7345,6 +7463,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         （长度/宽度/高度/长/宽/高），再回退显式轴文本与通用三元组，避免把
         包装尺寸误当成品尺寸。
         """
+        # 1688 #productPackInfo 是每个 SKU 的包装件重尺；浏览器会明确
+        # 标记当前选中行。该重量只能保留在 shipping_package_records，不能
+        # 反向成为商品级 product_dimensions 的“来源证据”。
+        employee_action_raw = raw.get("employee_action_validation")
+        employee_action_raw = employee_action_raw if isinstance(employee_action_raw, dict) else {}
+        selected_package_weight = (
+            str(raw.get("weight_source") or "").strip() == "1688_product_pack_info_selected_sku"
+            or str(employee_action_raw.get("weight_source") or "").strip()
+            == "1688_product_pack_info_selected_sku"
+        )
         texts: list[str] = []
         attributes = raw.get("source_attributes") or {}
         axis_values: dict[str, float] = {}
@@ -7401,6 +7529,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             variant_attrs = variant.get("attributes")
             if isinstance(variant_attrs, dict):
                 texts.extend(str(value) for value in variant_attrs.values() if value not in (None, ""))
+            if selected_package_weight:
+                # Variant attributes remain useful for title/SKU processing, but
+                # their package-derived weight fields are intentionally ignored.
+                continue
             variant_weight_values = preferred_weight_values if variant.get("selected") else weight_values
             # 插件/整店采集的 SKU 记录可能直接携带重量字段。
             variant_weight_text = str(variant.get("weight_text") or "").strip()
@@ -7427,19 +7559,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     number = float(variant_kg_text)
                     if 0 < number < 1000:
                         variant_weight_values.append(number * 1000)
-        employee_action = raw.get("employee_action_validation")
-        employee_action = employee_action if isinstance(employee_action, dict) else {}
-        employee_weight_text = raw.get("employee_action_weight_text") or employee_action.get("weight_text")
-        employee_weight_kg = raw.get("employee_action_weight_kg")
-        if employee_weight_kg in (None, ""):
-            employee_weight_kg = employee_action.get("weight_kg")
-        employee_weight = weight_in_grams(employee_weight_text)
-        if employee_weight is None:
-            employee_weight = weight_in_grams(employee_weight_kg, assume_kg=True)
-        if employee_weight is not None:
-            preferred_weight_values.append(employee_weight)
-        weight_text_value = str(raw.get("weight_text") or "").strip()
-        if not weight_text_value:
+        if not selected_package_weight:
+            employee_weight_text = raw.get("employee_action_weight_text") or employee_action_raw.get("weight_text")
+            employee_weight_kg = raw.get("employee_action_weight_kg")
+            if employee_weight_kg in (None, ""):
+                employee_weight_kg = employee_action_raw.get("weight_kg")
+            employee_weight = weight_in_grams(employee_weight_text)
+            if employee_weight is None:
+                employee_weight = weight_in_grams(employee_weight_kg, assume_kg=True)
+            if employee_weight is not None:
+                preferred_weight_values.append(employee_weight)
+            weight_text_value = str(raw.get("weight_text") or "").strip()
+        else:
+            weight_text_value = ""
+        if not weight_text_value and not selected_package_weight:
             # 其他采集方式可能只回传 weight_kg / item_weight 等直系键。
             for direct_key in ("weight_kg", "weight", "item_weight", "gross_weight", "net_weight", "重量", "毛重", "净重"):
                 direct = raw.get(direct_key)

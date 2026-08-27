@@ -33,6 +33,8 @@ import type {
   PreviewImageManifest,
   PreviewItem,
   PreviewResponse,
+  ShippingPackageRecord,
+  ShippingPackageRecordOverride,
 } from '../types';
 import '../styles/ProductProcessingVerifyPage.css';
 
@@ -56,6 +58,7 @@ type ItemEdits = {
   imageManifest?: PreviewImageManifest;
   addedAssets?: PreviewImageAsset[];
   core_fields?: PreviewCoreFields;
+  shipping_package_records?: Record<string, ShippingPackageRecordOverride>;
 };
 
 type UndoSnackbar = {
@@ -406,6 +409,33 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     ...(editFor(item).core_fields ?? {}),
   });
 
+  const isEditableShippingPackageRecord = (record: ShippingPackageRecord): boolean => (
+    record.match_status === 'matched' && record.variant_key.trim().length > 0
+  );
+
+  const effectiveShippingPackageOverrides = (
+    item: PreviewItem,
+  ): Record<string, ShippingPackageRecordOverride> => {
+    const sourceRecords = item.shipping_package_records ?? [];
+    const combined = {
+      ...(item.overrides.shipping_package_records ?? {}),
+      ...(editFor(item).shipping_package_records ?? {}),
+    };
+    return Object.fromEntries(
+      Object.entries(combined).filter(([variantKey]) => sourceRecords.some(
+        (record) => isEditableShippingPackageRecord(record) && record.variant_key === variantKey,
+      )),
+    );
+  };
+
+  const effectiveShippingPackageRecords = (item: PreviewItem): ShippingPackageRecord[] => {
+    const overrides = effectiveShippingPackageOverrides(item);
+    return (item.shipping_package_records ?? []).map((record) => ({
+      ...record,
+      ...(overrides[record.variant_key] ?? {}),
+    }));
+  };
+
   const collectDesiredState = (item: PreviewItem): PreviewSavePayload => {
     if (item.product_draft_id == null) throw new Error(`商品 #${item.item_id} 缺少草稿 ID，无法保存预检`);
     const edit = editFor(item);
@@ -418,6 +448,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         description: edit.description ?? item.description,
         core_fields: effectiveCoreFields(item),
         image_manifest_v2: effectiveManifest(item),
+        shipping_package_records: effectiveShippingPackageOverrides(item),
       },
     };
   };
@@ -433,6 +464,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         description: item.description,
         core_fields: { ...item.core_fields },
         image_manifest_v2: cloneManifest(item.image_manifest),
+        shipping_package_records: effectiveShippingPackageOverrides(item),
       },
     };
   };
@@ -470,6 +502,29 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     if (parsed !== base) nextCore[key] = parsed as never;
     else delete nextCore[key];
     setEdit(draftId, { core_fields: nextCore });
+  };
+
+  const setShippingPackageField = (
+    draftId: number,
+    variantKey: string,
+    key: keyof ShippingPackageRecordOverride,
+    value: string,
+  ) => {
+    const item = allItems.find((candidate) => (candidate.product_draft_id ?? candidate.item_id) === draftId);
+    const source = item?.shipping_package_records?.find((record) => record.variant_key === variantKey);
+    if (!item || !source || !isEditableShippingPackageRecord(source)) return;
+    const numericValue = Number(value);
+    const parsed: number | string | null = value.trim() !== '' && Number.isFinite(numericValue)
+      ? numericValue
+      : value;
+    const current = editFor(item).shipping_package_records ?? {};
+    const inherited = item.overrides.shipping_package_records?.[variantKey] ?? {};
+    setEdit(draftId, {
+      shipping_package_records: {
+        ...current,
+        [variantKey]: { ...inherited, ...(current[variantKey] ?? {}), [key]: parsed },
+      },
+    });
   };
 
   const uploadAssets = async (draftId: number, target: PrecheckImageTarget, files: File[]) => {
@@ -895,6 +950,73 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                   </label>
                 </div>
               </div>
+
+              {effectiveShippingPackageRecords(item).length > 0 && (
+                <section className="precheck-shipping-package" aria-label="SKU 包装件重尺">
+                  <div className="precheck-shipping-package-head">
+                    <div>
+                      <h3>SKU 包装件重尺</h3>
+                      <p>1688 商品件重尺按规格匹配；未匹配行仅展示，不参与导出。</p>
+                    </div>
+                    <span>{effectiveShippingPackageRecords(item).length} 个规格</span>
+                  </div>
+                  <div className="precheck-shipping-package-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>规格</th>
+                          <th>长(cm)</th>
+                          <th>宽(cm)</th>
+                          <th>高(cm)</th>
+                          <th>体积(cm³)</th>
+                          <th>重量(g)</th>
+                          <th>匹配状态/来源</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {effectiveShippingPackageRecords(item).map((record) => {
+                          const editable = isEditableShippingPackageRecord(record);
+                          const recordDisabled = mutationsLocked || !editable;
+                          const sourceLabel = record.source_label ?? record.source ?? '1688采集';
+                          return (
+                            <tr key={record.variant_key} className={editable ? '' : 'is-unmatched'}>
+                              <td title={record.specification}>{record.specification || '—'}</td>
+                              {(['length_cm', 'width_cm', 'height_cm', 'volume_cm3'] as const).map((field) => (
+                                <td key={field}>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    disabled={recordDisabled}
+                                    value={record[field] ?? ''}
+                                    onChange={(event) => setShippingPackageField(draftId, record.variant_key, field, event.target.value)}
+                                  />
+                                </td>
+                              ))}
+                              <td>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  disabled={recordDisabled}
+                                  value={record.weight_g ?? ''}
+                                  onChange={(event) => setShippingPackageField(draftId, record.variant_key, 'weight_g', event.target.value)}
+                                />
+                              </td>
+                              <td>
+                                <span className={`precheck-package-status ${editable ? 'is-matched' : 'is-unmatched'}`}>
+                                  {editable ? '已匹配' : '未匹配'}
+                                </span>
+                                <small>{sourceLabel}</small>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
 
               <div className="precheck-images">
                 <div className="precheck-dimension-entry">

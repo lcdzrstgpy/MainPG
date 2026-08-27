@@ -189,6 +189,27 @@ export type PreviewCoreFields = {
   weight_g?: number | string | null;
 };
 
+/** 1688「商品件重尺」采集行；仅用于 SKU 物流与导出，不是商品本体尺寸。 */
+export type ShippingPackageRecord = {
+  /** Stable source SKU id, otherwise the normalized specification combination. */
+  variant_key: string;
+  specification: string;
+  length_cm?: number | string | null;
+  width_cm?: number | string | null;
+  height_cm?: number | string | null;
+  volume_cm3?: number | string | null;
+  weight_g?: number | string | null;
+  match_status?: "matched" | "unmatched" | "ambiguous";
+  source?: string;
+  source_label?: string;
+};
+
+/** 用户在预检中修改的 SKU 件重尺；按 variant_key 覆盖对应采集行。 */
+export type ShippingPackageRecordOverride = Pick<
+  ShippingPackageRecord,
+  "length_cm" | "width_cm" | "height_cm" | "volume_cm3" | "weight_g"
+>;
+
 export type PreviewImageOrigin = "source" | "generated" | "dimension" | "upload";
 
 export type PreviewImageBucket = "source" | "processed";
@@ -314,6 +335,7 @@ export type PreviewOverrides = {
   carousel_images?: string[];
   detail_images?: string[];
   core_fields?: PreviewCoreFields;
+  shipping_package_records?: Record<string, ShippingPackageRecordOverride>;
 };
 
 export type PreviewItem = {
@@ -337,6 +359,8 @@ export type PreviewItem = {
   overrides: PreviewOverrides;
   assets: PreviewImageAsset[];
   image_manifest: PreviewImageManifest;
+  /** 采集的 SKU 包装件重尺，未匹配行仅供预检核对，不参与导出。 */
+  shipping_package_records?: ShippingPackageRecord[];
   /** 重量/尺寸字段来源：manual=手动 / source=采集值 / ai=AI 预估 */
   dimension_provenance?: Record<string, string>;
 };

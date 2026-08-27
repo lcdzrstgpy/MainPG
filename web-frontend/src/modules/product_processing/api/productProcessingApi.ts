@@ -8,6 +8,7 @@ import type {
   PreviewImageAsset,
   PreviewImageManifest,
   PreviewResponse,
+  ShippingPackageRecordOverride,
 } from "../types";
 
 export type DraftSourceType = "web_manual_capture" | "onebound_api";
@@ -51,6 +52,7 @@ export type PreviewSavePayload = {
     description: string;
     core_fields: PreviewCoreFields;
     image_manifest_v2: PreviewImageManifest;
+    shipping_package_records?: Record<string, ShippingPackageRecordOverride>;
   };
 };
 

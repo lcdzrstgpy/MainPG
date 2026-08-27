@@ -24,6 +24,9 @@ MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.5
 TITLE_MIN_LENGTH = 80
 TITLE_MAX_LENGTH = 200
+_TITLE_PREFIX_WORD_COUNT = 6
+_TITLE_PREFIX_MAX_ALIGNED_MATCHES = 4
+_TITLE_TRAILING_CONNECTORS = frozenset({"and", "or", "with", "for", "of", "in", "to"})
 _RESULT_KEYS = frozenset(
     {"title", "english_title", "description", "visual_theme", "motif_keywords", "color_keywords"}
 )
@@ -154,6 +157,8 @@ def validate_title_result(
         raise ValueError(f"title must contain {TITLE_MIN_LENGTH}-{TITLE_MAX_LENGTH} ASCII characters")
     if not re.findall(r"[A-Za-z]+", title):
         raise ValueError("title must contain English alphabetic tokens")
+    if _incomplete_title_ending(title):
+        raise ValueError("title has an incomplete ending")
     prohibited = _prohibited_term(title)
     if prohibited:
         raise ValueError(f"title contains prohibited term: {prohibited}")
@@ -163,6 +168,13 @@ def validate_title_result(
     normalized_accepted = tuple(_normalize_title(value) for value in accepted_titles if _normalized_text(value))
     if any(title.casefold() == prior.casefold() for prior in normalized_accepted):
         raise ValueError("title is an exact duplicate")
+    candidate_prefix = _meaningful_title_prefix(title)
+    for prior in normalized_accepted:
+        prior_prefix = _meaningful_title_prefix(prior)
+        if len(candidate_prefix) == len(prior_prefix) == _TITLE_PREFIX_WORD_COUNT:
+            aligned_matches = sum(left == right for left, right in zip(candidate_prefix, prior_prefix))
+            if aligned_matches > _TITLE_PREFIX_MAX_ALIGNED_MATCHES:
+                raise ValueError("title is too similar to an accepted title: matching meaningful word prefix")
     if any(_token_jaccard(title, prior) >= 0.75 for prior in normalized_accepted):
         raise ValueError("title is too similar to an accepted title")
 
@@ -388,6 +400,12 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
             "market": "United States",
             "language": "English ASCII only",
             "title_length": "80-200 ASCII characters after normalized whitespace",
+            "title_composition": (
+                "Write a complete natural US-English noun phrase with a leading visual segment that names a "
+                "visible style-specific visual theme, motif, or color. Vary the first six meaningful words from "
+                "accepted_titles: do not use a six-word prefix with five or more aligned words matching an "
+                "accepted title. Avoid dangling connectors and dangling punctuation."
+            ),
             "output_json_keys": [
                 "title",
                 "english_title",
@@ -411,7 +429,10 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
         "rejection_feedback": rejection_feedback,
         "instructions": (
             "Use the cropped hero image as visual evidence. The title field is the canonical US English marketplace "
-            "listing title and must be ASCII with 80-200 characters. Generate title, english_title, and description "
+            "listing title and must be an ASCII 80-200-character complete natural noun phrase. Begin it with a "
+            "leading visual segment grounded in the image. Avoid an accepted title when five or more of the first "
+            "six meaningful words match in the same positions. Do not end it with a dangling connector or punctuation. "
+            "Generate title, english_title, and description "
             "together in this single response. Return exactly one JSON object, "
             "no Markdown or extra keys."
         ),
@@ -480,19 +501,19 @@ def _display_listing_title(title: str, english_title: str, description: str) -> 
     if title.isascii() and TITLE_MIN_LENGTH <= len(title) <= TITLE_MAX_LENGTH:
         return title
 
-    parts: list[str] = []
-    for source in (english_title, description):
-        if not source.isascii():
-            continue
-        for word in source.split():
-            candidate = " ".join((*parts, word))
-            if len(candidate) > TITLE_MAX_LENGTH:
-                break
-            parts.append(word)
-        candidate = " ".join(parts)
-        if len(candidate) >= TITLE_MIN_LENGTH:
-            return candidate
-    return title
+    if not english_title.isascii() or not description.isascii():
+        return title
+    prefix = f"{english_title} - "
+    candidates = (
+        f"{prefix}{description[:match.end()]}"
+        for match in re.finditer(r"[.!?;:]", description)
+    )
+    valid_candidates = (
+        candidate
+        for candidate in candidates
+        if TITLE_MIN_LENGTH <= len(candidate) <= TITLE_MAX_LENGTH
+    )
+    return max(valid_candidates, key=len, default=title)
 
 
 def _prohibited_term(title: str) -> str:
@@ -509,6 +530,28 @@ def _title_tokens(value: str) -> set[str]:
         for token in re.findall(r"[a-z0-9]+", value.casefold())
         if token not in _COMMON_PRODUCT_TOKENS
     }
+
+
+def _meaningful_title_prefix(value: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in re.findall(r"[a-z0-9]+", value.casefold())
+        if token not in _COMMON_PRODUCT_TOKENS
+    )[:_TITLE_PREFIX_WORD_COUNT]
+
+
+def _incomplete_title_ending(value: str) -> bool:
+    stripped = value.rstrip()
+    words = re.findall(r"[A-Za-z]+", stripped)
+    return (
+        not stripped
+        or stripped[-1] in {",", "-"}
+        or any(
+            stripped.count(left) != stripped.count(right)
+            for left, right in (("(", ")"), ("[", "]"), ("{", "}"))
+        )
+        or (bool(words) and words[-1].casefold() in _TITLE_TRAILING_CONNECTORS)
+    )
 
 
 def _token_jaccard(left: str, right: str) -> float:

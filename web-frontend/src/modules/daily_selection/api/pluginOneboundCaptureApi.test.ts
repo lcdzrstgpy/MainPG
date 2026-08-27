@@ -15,5 +15,19 @@ test("desktop plugin capture API exposes prepared-batch start and failed-item re
   assert.match(source, /retry-failed/);
   assert.match(source, /startPluginOneboundCaptureBatch/);
   assert.match(source, /\$\{PLUGIN_BATCHES_PATH\}\/\$\{encodeURIComponent\(batchId\)\}\/start/);
-  assert.doesNotMatch(source, /createBatch|pause|resume|cancel/);
+  assert.doesNotMatch(source, /\/shop-batches|shopCollectionApi/);
+});
+
+test("desktop plugin capture API exposes candidate review and SKU backfill endpoints", () => {
+  assert.match(source, /listPluginOneboundCandidates/);
+  assert.match(source, /\/candidates/);
+  assert.match(source, /getPluginSkuRepullState/);
+  assert.match(source, /sku-repull\/state/);
+  assert.match(source, /startPluginSkuRepull/);
+  assert.match(source, /sku-repull\/start/);
+  assert.match(source, /cancelPluginSkuRepull/);
+  assert.match(source, /sku-repull\/cancel/);
+  assert.match(source, /confirmPluginCandidates/);
+  assert.match(source, /\/confirm/);
+  assert.match(source, /offer_ids/);
 });

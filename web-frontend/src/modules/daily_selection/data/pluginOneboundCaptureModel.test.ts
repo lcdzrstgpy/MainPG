@@ -60,10 +60,21 @@ test("maps the complete plugin capture lifecycle and polls only active batches",
 
 test("uses authoritative total count for progress and clamps the percentage", () => {
   assert.deepEqual(pluginCaptureProgress(batch()), { completed: 5, total: 10, percent: 50 });
-  assert.deepEqual(pluginCaptureProgress(batch({ total_count: 20 })), { completed: 5, total: 20, percent: 25 });
+  assert.deepEqual(pluginCaptureProgress(batch({ total_count: 20 })), { completed: 15, total: 20, percent: 75 });
   assert.deepEqual(pluginCaptureProgress(batch({ total_count: 3 })), { completed: 5, total: 3, percent: 100 });
   assert.deepEqual(pluginCaptureProgress(batch({ total_count: Number.NaN })), { completed: 5, total: 10, percent: 50 });
   assert.deepEqual(pluginCaptureProgress(batch({ created_count: 0, refreshed_count: 0, skipped_count: 0, failed_count: 0, unprocessed_count: 0, total_count: 0 })), { completed: 0, total: 0, percent: 0 });
+});
+
+test("counts succeeded candidates as completed progress without created_count", () => {
+  assert.deepEqual(
+    pluginCaptureProgress(batch({ created_count: 0, refreshed_count: 0, skipped_count: 0, failed_count: 0, unprocessed_count: 0, total_count: 8 })),
+    { completed: 8, total: 8, percent: 100 },
+  );
+  assert.deepEqual(
+    pluginCaptureProgress(batch({ created_count: 0, refreshed_count: 0, skipped_count: 1, failed_count: 1, unprocessed_count: 2, total_count: 10 })),
+    { completed: 8, total: 10, percent: 80 },
+  );
 });
 
 test("models the complete persisted batch and item contract", () => {

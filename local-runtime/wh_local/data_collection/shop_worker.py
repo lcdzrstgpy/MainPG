@@ -29,6 +29,10 @@ class _WorkerStopping(RuntimeError):
     pass
 
 
+class _WorkerPaused(RuntimeError):
+    pass
+
+
 class _StaleItemLease(RuntimeError):
     pass
 
@@ -144,6 +148,9 @@ class ShopCollectionWorker:
                 self._enrich(provider, batch, active_lease)
         except (ShopLeaseLost, _WorkerStopping):
             return
+        except _WorkerPaused:
+            current = self.repository.get_batch_internal(batch_id)
+            self._apply_control_state(current, active_lease)
         except InvalidShopBatchTransition:
             current = self.repository.get_batch_internal(batch_id)
             self._apply_control_state(current, active_lease)
@@ -170,8 +177,10 @@ class ShopCollectionWorker:
     def _resolve_shop(self, provider: Any, batch: Any, lease: ShopBatchLease) -> Any:
         if not batch.seed_offer_id:
             return batch
+        self._raise_if_paused(batch.batch_id)
         result = self._call_detail(provider, batch.seed_offer_id)
         self._raise_if_stopping()
+        self._raise_if_paused(batch.batch_id)
         if not _result_ok(result):
             raise RuntimeError(_result_error_message(result))
         seller = _seller_info(_result_response(result))
@@ -204,8 +213,10 @@ class ShopCollectionWorker:
             current = self.repository.get_batch_internal(batch.batch_id)
             if self._apply_control_state(current, lease):
                 return self.repository.get_batch_internal(batch.batch_id)
+            self._raise_if_paused(batch.batch_id)
             result = provider.search_shop(current.shop_sid, page)
             self._raise_if_stopping()
+            self._raise_if_paused(batch.batch_id)
             if not _result_ok(result):
                 raise RuntimeError(_result_error_message(result))
             response = _result_response(result)
@@ -262,6 +273,11 @@ class ShopCollectionWorker:
                     item = futures[future]
                     try:
                         candidate, action = future.result()
+                    except _WorkerPaused:
+                        self.repository.release_item(
+                            batch_id=batch.batch_id, item_id=item.item_id,
+                            owner=item.lease_owner, lease_token=item.lease_token,
+                        )
                     except _WorkerStopping:
                         self.repository.release_item(
                             batch_id=batch.batch_id, item_id=item.item_id,
@@ -279,14 +295,20 @@ class ShopCollectionWorker:
                         except ShopLeaseLost:
                             pass
                     else:
-                        try:
-                            self.repository.complete_item(
+                        if self._is_paused(batch.batch_id):
+                            self.repository.release_item(
                                 batch_id=batch.batch_id, item_id=item.item_id,
                                 owner=item.lease_owner, lease_token=item.lease_token,
-                                intake_action=action, candidate=candidate,
                             )
-                        except ShopLeaseLost:
-                            pass
+                        else:
+                            try:
+                                self.repository.complete_item(
+                                    batch_id=batch.batch_id, item_id=item.item_id,
+                                    owner=item.lease_owner, lease_token=item.lease_token,
+                                    intake_action=action, candidate=candidate,
+                                )
+                            except ShopLeaseLost:
+                                pass
 
     def _enrich_one(
         self, provider: Any, batch: Any, item: Any, lease: ShopBatchLease | None = None
@@ -294,10 +316,12 @@ class ShopCollectionWorker:
         with self._seed_lock:
             result = self._seed_details.pop((batch.batch_id, item.offer_id), None)
         if result is None:
+            self._raise_if_paused(batch.batch_id)
             result = self._call_detail(provider, item.offer_id)
         if not _result_ok(result):
             raise RuntimeError(_result_error_message(result))
         self._raise_if_stopping()
+        self._raise_if_paused(batch.batch_id)
         normalized = self._detail_normalizer(item, result)
         if isinstance(normalized, DailySelectionCandidate):
             candidate = normalized.model_dump(mode="json")
@@ -306,6 +330,7 @@ class ShopCollectionWorker:
         else:
             raise TypeError("detail normalizer returned an invalid candidate")
         self._raise_if_stopping()
+        self._raise_if_paused(batch.batch_id)
         if not self.repository.renew_item_lease(
             batch_id=batch.batch_id, item_id=item.item_id, owner=item.lease_owner,
             lease_token=item.lease_token, lease_seconds=self.ITEM_LEASE_SECONDS,
@@ -409,6 +434,13 @@ class ShopCollectionWorker:
     def _raise_if_stopping(self) -> None:
         if self._stop.is_set():
             raise _WorkerStopping()
+
+    def _raise_if_paused(self, batch_id: str) -> None:
+        if self._is_paused(batch_id):
+            raise _WorkerPaused()
+
+    def _is_paused(self, batch_id: str) -> bool:
+        return self.repository.get_batch_internal(batch_id).status in {"pausing", "paused"}
 
     def _run(self) -> None:
         while not self._stop.is_set():

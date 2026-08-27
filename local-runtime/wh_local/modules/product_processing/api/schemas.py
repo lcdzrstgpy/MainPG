@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -194,10 +195,48 @@ class PreviewImageManifestInput(BaseModel):
     semantic_asset_ids: dict[str, str] = Field(default_factory=dict)
 
 
+class ShippingPackageRecordOverride(BaseModel):
+    """Manual patch for one already-matched SKU package row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    length_cm: float | None = None
+    width_cm: float | None = None
+    height_cm: float | None = None
+    volume_cm3: float | None = None
+    weight_g: float | None = None
+
+    @field_validator("length_cm", "width_cm", "height_cm", "volume_cm3", "weight_g", mode="before")
+    @classmethod
+    def _reject_boolean_measurement(cls, value: Any) -> Any:
+        # Pydantic would otherwise coerce JSON true/false to 1.0/0.0.
+        if isinstance(value, bool):
+            raise ValueError("shipping package measurements must not be boolean")
+        return value
+
+    @field_validator("length_cm", "width_cm", "height_cm", "volume_cm3", "weight_g")
+    @classmethod
+    def _positive_finite_measurement(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("shipping package measurements must be finite and greater than zero")
+        return value
+
+    @model_validator(mode="after")
+    def _requires_a_change(self) -> "ShippingPackageRecordOverride":
+        if all(getattr(self, key) is None for key in ("length_cm", "width_cm", "height_cm", "volume_cm3", "weight_g")):
+            raise ValueError("shipping package override must contain at least one measurement")
+        return self
+
+
 class PreviewDesiredState(BaseModel):
     title: str
     description: str
     core_fields: dict[str, Any] = Field(default_factory=dict)
+    # Keyed by source SKU/variant key. Patches contain only fields manually
+    # changed by the operator, while captured rows remain immutable evidence.
+    shipping_package_records: dict[str, ShippingPackageRecordOverride] = Field(default_factory=dict)
     image_manifest_v2: PreviewImageManifestInput
 
 

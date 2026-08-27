@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -798,6 +799,8 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
     candidate_id = f"plugin:{platform}:{product_id or source_ref}"
     weight_text, package_info_text = _plugin_physical_evidence(product)
     source_attributes = _plugin_source_attributes(product)
+    source_variant_records = _plugin_variant_records(product, fallback_image_url=image_url)
+    shipping_package_records = _plugin_shipping_package_records(product, source_variant_records)
     return {
         **sanitized_product,
         "source_type": "web_manual_capture",
@@ -817,7 +820,10 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
         "source_attributes": source_attributes,
         # 插件只回传 variant_combinations；这里把它换算成草稿池/导出使用的
         # 标准 SKU 记录（source_variant_records），保证草稿池能看到完整规格。
-        "source_variant_records": _plugin_variant_records(product, fallback_image_url=image_url),
+        "source_variant_records": source_variant_records,
+        # 1688 商品属性中的“商品件重尺”是 SKU 包装物流证据，不是商品本体尺寸。
+        # 它保留为逐 SKU 的结构化记录，供预检和导出消费，绝不写入 package_info_text。
+        "shipping_package_records": shipping_package_records,
     }
 
 
@@ -888,6 +894,190 @@ def _plugin_combos(product: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [item for item in combined if isinstance(item, Mapping)]
 
 
+_PACKAGE_RECORD_NUMBER_KEYS = ("length_cm", "width_cm", "height_cm", "weight_g")
+_PACKAGE_SPEC_NORMALIZE_RE = re.compile(r"[\s\-_，,;；:：/\\|（）()\[\]【】{}<>《》'\"`]+")
+_PACKAGE_TERMINAL_PARENS_RE = re.compile(r"(?:\(|（)([^()（）]+)(?:\)|）)\s*$")
+
+
+def _normalized_package_specification(value: Any) -> str:
+    """Generate a stable, punctuation-insensitive fallback key for a 1688 spec."""
+    return _PACKAGE_SPEC_NORMALIZE_RE.sub("", str(value or "").strip()).casefold()
+
+
+def _positive_package_number(value: Any) -> int | float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def _package_attribute_combination_from_text(value: Any) -> str:
+    pairs: list[str] = []
+    for part in re.split(r"[;；|｜、，,]", str(value or "")):
+        name, separator, raw_value = part.partition(":")
+        if not separator:
+            name, separator, raw_value = part.partition("：")
+        normalized_name = _normalized_package_specification(name)
+        normalized_value = _normalized_package_specification(raw_value)
+        if normalized_name and normalized_value:
+            pairs.append(f"{normalized_name}:{normalized_value}")
+    return "|".join(sorted(pairs)) if pairs else ""
+
+
+def _package_attribute_values_from_text(value: Any) -> str:
+    values: list[str] = []
+    for part in re.split(r"[;；|｜、，,]", str(value or "")):
+        _name, separator, raw_value = part.partition(":")
+        if not separator:
+            _name, separator, raw_value = part.partition("：")
+        normalized = _normalized_package_specification(raw_value)
+        if normalized:
+            values.append(normalized)
+    return "|".join(sorted(values)) if values else ""
+
+
+def _package_terminal_parenthesized_values(value: Any) -> str:
+    """Read only the final complete parenthesized SKU value(s), never substrings.
+
+    1688 often displays a full product name such as ``201...（黑色）`` rather
+    than ``颜色：黑色``. The final wrapper is an exact SKU-value candidate; a
+    different value such as ``深红色`` remains distinct from ``红色``.
+    """
+    match = _PACKAGE_TERMINAL_PARENS_RE.search(str(value or ""))
+    if not match:
+        return ""
+    values = [
+        _normalized_package_specification(part)
+        for part in re.split(r"[;；|｜、，,/]", match.group(1))
+    ]
+    return "|".join(sorted(value for value in values if value))
+
+
+def _strict_package_variant_keys(record: Mapping[str, Any]) -> set[str]:
+    """Mirror the plugin's exact spec/attribute keys; never use substrings."""
+    keys: set[str] = set()
+    specification = str(record.get("spec_text") or record.get("specification") or "")
+    normalized_specification = _normalized_package_specification(specification)
+    if normalized_specification:
+        keys.add(f"spec:{normalized_specification}")
+    text_attributes = _package_attribute_combination_from_text(specification)
+    if text_attributes:
+        keys.add(f"attributes:{text_attributes}")
+    text_values = _package_attribute_values_from_text(specification)
+    if text_values:
+        keys.add(f"attribute_values:{text_values}")
+    terminal_values = _package_terminal_parenthesized_values(specification)
+    if terminal_values:
+        keys.add(f"attribute_values:{terminal_values}")
+    attributes = record.get("attributes") or {}
+    if isinstance(attributes, Mapping):
+        entries = [
+            (_normalized_package_specification(name), _normalized_package_specification(value))
+            for name, value in attributes.items()
+        ]
+        entries = [(name, value) for name, value in entries if name and value]
+        if entries:
+            keys.add("attributes:" + "|".join(sorted(f"{name}:{value}" for name, value in entries)))
+            keys.add("attribute_values:" + "|".join(sorted(value for _name, value in entries)))
+    return keys
+
+
+def _package_variant_match(
+    package_record: Mapping[str, Any],
+    variants: list[dict[str, Any]],
+    used_variant_keys: set[str],
+) -> dict[str, Any] | None:
+    """Match one package row to one source SKU: stable ids first, visible spec second."""
+    # The plugin has already made a deliberately conservative no-match decision.
+    # Never reinterpret it on the server (for example 深红色 must not bind 红色).
+    if str(package_record.get("match_status") or "").strip().casefold() == "unmatched":
+        return None
+    explicit_ids = {
+        str(package_record.get(key) or "").strip()
+        for key in ("variant_key", "variant_sku_id", "source_sku_id", "sku_id")
+    }
+    explicit_ids.discard("")
+    if explicit_ids:
+        for variant in variants:
+            key = str(variant.get("sku_id") or "").strip()
+            source_key = str(variant.get("source_sku_id") or "").strip()
+            if key not in used_variant_keys and explicit_ids.intersection({key, source_key}):
+                return variant
+
+    package_keys = _strict_package_variant_keys(package_record)
+    if not package_keys:
+        return None
+    candidates: list[dict[str, Any]] = []
+    for variant in variants:
+        variant_key = str(variant.get("sku_id") or "").strip()
+        if not variant_key or variant_key in used_variant_keys:
+            continue
+        # Exact normalized spec or exact complete attribute combination only.
+        if _strict_package_variant_keys(variant).intersection(package_keys):
+            candidates.append(variant)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _plugin_shipping_package_records(
+    product: Mapping[str, Any], variants: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Validate 1688 商品件重尺 rows and bind them one-to-one to source variants.
+
+    Rows that cannot be matched remain visible to the operator, but deliberately
+    have no variant key and therefore cannot affect SKU export.
+    """
+    raw_records = product.get("shipping_package_records") or []
+    if not isinstance(raw_records, (list, tuple)):
+        return []
+    normalized: list[dict[str, Any]] = []
+    used_variant_keys: set[str] = set()
+    used_record_keys: set[str] = set()
+    for index, raw in enumerate(raw_records):
+        if not isinstance(raw, Mapping):
+            continue
+        values = {key: _positive_package_number(raw.get(key)) for key in _PACKAGE_RECORD_NUMBER_KEYS}
+        if any(value is None for value in values.values()):
+            continue
+        specification = str(raw.get("specification") or raw.get("spec_text") or "").strip()
+        if not specification:
+            continue
+        base_record_key = _normalized_package_specification(raw.get("variant_key")) or _normalized_package_specification(specification) or f"package-{index}"
+        record_key = base_record_key
+        suffix = 2
+        while record_key in used_record_keys:
+            record_key = f"{base_record_key}#{suffix}"
+            suffix += 1
+        record: dict[str, Any] = {
+            "record_key": record_key,
+            "specification": specification,
+            **values,
+            "source": "1688_product_pack_info",
+        }
+        record["variant_key"] = record["record_key"]
+        volume = _positive_package_number(raw.get("volume_cm3"))
+        if volume is not None:
+            record["volume_cm3"] = volume
+        variant = _package_variant_match(raw, variants, used_variant_keys)
+        if variant is None:
+            record["match_status"] = "unmatched"
+        else:
+            variant_sku_id = str(variant.get("sku_id") or "").strip()
+            record["record_key"] = variant_sku_id
+            record["variant_key"] = variant_sku_id
+            record["variant_sku_id"] = variant_sku_id
+            record["match_status"] = "matched"
+            used_variant_keys.add(variant_sku_id)
+            # Keep a source copy on the SKU so result transformations that only
+            # preserve source_variant_records still retain the package evidence.
+            variant["shipping_package"] = dict(record)
+        used_record_keys.add(str(record["record_key"]))
+        normalized.append(record)
+    return normalized
+
+
 def _plugin_physical_evidence(
     product: Mapping[str, Any],
 ) -> tuple[str | None, str | None]:
@@ -899,6 +1089,10 @@ def _plugin_physical_evidence(
     ``weight_text`` / ``package_info_text``，让下游
     ``_extract_deterministic_size`` 能确定性解析而非走 AI 估值。
     """
+    # #productPackInfo 的“选中 SKU 件重”只服务于物流包装表。它既不是
+    # 商品级重量，也不能参与商品本体尺寸推导。
+    if _is_1688_selected_package_weight(product):
+        return None, None
     weight_text: str | None = None
     # Older extension versions nested the selected-SKU evidence here.
     employee_action = product.get("employee_action_validation")
@@ -975,6 +1169,16 @@ def _plugin_physical_evidence(
                 weight_text = f"重量 {match.group(1)}kg"
                 break
     return weight_text, _plugin_size_evidence(product)
+
+
+def _is_1688_selected_package_weight(product: Mapping[str, Any]) -> bool:
+    source = str(product.get("weight_source") or "").strip()
+    if source == "1688_product_pack_info_selected_sku":
+        return True
+    employee_action = product.get("employee_action_validation")
+    return isinstance(employee_action, Mapping) and str(
+        employee_action.get("weight_source") or ""
+    ).strip() == "1688_product_pack_info_selected_sku"
 
 
 def _plugin_size_evidence(product: Mapping[str, Any]) -> str | None:

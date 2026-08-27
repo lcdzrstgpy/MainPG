@@ -60,6 +60,40 @@ export type PluginOneboundCaptureItemsPage = {
   offset: number;
 };
 
+export type PluginOneboundCandidateReviewStatus = "" | "pending" | "confirmed";
+
+export type PluginOneboundCandidate = {
+  offer_id: string;
+  source_url: string;
+  source_title: string;
+  review_status: PluginOneboundCandidateReviewStatus;
+  draft_id: number | null;
+  sku_count: number;
+  main_image_url: string;
+};
+
+export type PluginOneboundCandidatesPage = {
+  items: PluginOneboundCandidate[];
+  total: number;
+};
+
+export type PluginOneboundSkuRepullState = {
+  status: "idle" | "running" | "completed" | "cancelled" | "failed";
+  round: number;
+  total: number;
+  done: number;
+  succeeded: number;
+  failed: number;
+  message: string;
+  updated_at: string;
+};
+
+export type PluginOneboundConfirmResult = {
+  ok: boolean;
+  confirmed: Array<{ offer_id: string; action: string; draft_id: number | null }>;
+  confirmed_count: number;
+};
+
 const STATUS_LABELS: Record<PluginOneboundCaptureStatus, string> = {
   prepared: "等待启动",
   queued: "排队中",
@@ -95,13 +129,17 @@ export function canRetryPluginCaptureFailures(batch: PluginOneboundCaptureBatch)
 }
 
 export function pluginCaptureProgress(batch: PluginOneboundCaptureBatch): { completed: number; total: number; percent: number } {
-  const completed = finiteCount(batch.created_count)
+  const unprocessed = finiteCount(batch.unprocessed_count);
+  const settled = finiteCount(batch.created_count)
     + finiteCount(batch.refreshed_count)
     + finiteCount(batch.skipped_count)
     + finiteCount(batch.failed_count);
   const total = Number.isFinite(batch.total_count) && batch.total_count >= 0
     ? batch.total_count
-    : completed + finiteCount(batch.unprocessed_count);
+    : settled + unprocessed;
+  // 成功候选不再计入 created_count，进度用“非未处理数”表示：
+  // succeeded / failed / skipped / confirmed 都算已处理，仅 pending/running/unprocessed 未完成。
+  const completed = Math.max(settled, total - unprocessed);
   const percent = total
     ? Math.max(0, Math.min(100, Math.round((completed / total) * 100)))
     : 0;

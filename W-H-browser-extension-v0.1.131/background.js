@@ -6300,7 +6300,9 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
       if (kgField) return { text: `重量 ${kgField[1]}kg`.slice(0, 80), kg: weightKgFromNumberAndUnit(kgField[1], "kg"), source: "structured_weight_kg" };
       return { text: "", kg: null, source: "" };
     };
+    const has1688PackageInfoRoot = Boolean(document.querySelector("#productPackInfo"));
     const capturePackageInfoText = () => {
+      if (has1688PackageInfoRoot) return "";
       const snippets = [];
       const push = (value) => {
         const snippet = text(value);
@@ -6320,6 +6322,232 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
           }
         });
       return snippets.slice(0, 18).join("\n").slice(0, 6000);
+    };
+    // 1688 新版详情页的件重尺只在这个模块里解析；不要用页面级表格/图片扫描来猜测物流数据。
+    const capture1688ShippingPackageRecords = (sourceRecords = []) => {
+      const packageRoot = document.querySelector("#productPackInfo");
+      if (!packageRoot) return {
+        has_package_root: false,
+        // 页面上没有件重尺模块，调用方可按此提示「未找到商品件重尺信息」。
+        package_info_status: "missing",
+        package_info_error: "页面未找到商品件重尺（商品包装信息）模块",
+        shipping_package_records: [],
+        source_variant_records: Array.isArray(sourceRecords) ? sourceRecords.slice() : [],
+        selected_shipping_package: null
+      };
+      const normalizeSpec = (value) => text(value)
+        .toLowerCase()
+        .replace(/³/g, "3")
+        .replace(/[\u3000\s]+/g, "")
+        .replace(/[：:；;|｜、，,()（）\[\]【】{}<>《》"'`~!！?？@#$%^&*_+=\\/\\-]/g, "");
+      const numericValue = (value, max = 10000000) => {
+        const raw = text(value);
+        if (!/^(?:\d+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)$/.test(raw)) return null;
+        const parsed = Number(raw.replace(/,/g, ""));
+        return Number.isFinite(parsed) && parsed > 0 && parsed <= max ? parsed : null;
+      };
+      const headerKind = (value) => {
+        const normalized = normalizeSpec(value);
+        // 件重尺表的规格列名称并不固定：常见「规格」，也可能是「颜色」「商品」
+        // 「款式」「包装」「名称」等描述类表头（见 1688 详情页 #productPackInfo
+        // 里「颜色 | 重量(g)」的两列表）。只要不是尺寸/体积/重量等度量列，都当作
+        // 规格描述列对待，避免整张件重尺表因列名差异而被跳过。
+        if (/^(?:颜色|规格|商品|商品名称|名称|款式|尺寸|包装|描述|型号|品种|颜色分类)$/.test(normalized)
+          || normalized === "具体规格") return "specification";
+        if (/^(?:长|长度)cm?$/.test(normalized)) return "length_cm";
+        if (/^(?:宽|宽度)cm?$/.test(normalized)) return "width_cm";
+        if (/^(?:高|高度)cm?$/.test(normalized)) return "height_cm";
+        if (/^(?:体积|容积)(?:cm)?3?$/.test(normalized)) return "volume_cm3";
+        if (/^(?:重量|件重|商品件重|包装重量)(?:g|克)$/.test(normalized)) return "weight_g";
+        if (/^(?:重量|件重|商品件重|包装重量)(?:kg|公斤|千克)$/.test(normalized)) return "weight_kg";
+        return "";
+      };
+      const attributeCombinationFromText = (value) => {
+        const pairs = text(value)
+          .split(/[;；|｜、，,]/)
+          .map((part) => {
+            const [name, ...rawValue] = part.split(/[:：]/);
+            const normalizedName = normalizeSpec(name);
+            const normalizedValue = normalizeSpec(rawValue.join(":"));
+            return normalizedName && normalizedValue ? `${normalizedName}:${normalizedValue}` : "";
+          })
+          .filter(Boolean)
+          .sort();
+        return pairs.length ? pairs.join("|") : "";
+      };
+      const attributeValueCombinationFromText = (value) => {
+        const values = text(value)
+          .split(/[;；|｜、，,]/)
+          .map((part) => normalizeSpec(part.split(/[:：]/).slice(1).join(":")))
+          .filter(Boolean)
+          .sort();
+        return values.length ? values.join("|") : "";
+      };
+      const attributeValueCombinationFromTrailingParentheses = (value) => {
+        const trailing = text(value).match(/(?:\s*[（(][^（）()]+[）)])+\s*$/)?.[0] || "";
+        const values = Array.from(trailing.matchAll(/[（(]([^（）()]+)[）)]/g))
+          .flatMap((match) => match[1].split(/[;；|｜、，,]/))
+          .map((item) => normalizeSpec(item))
+          .filter(Boolean)
+          .sort();
+        return values.length ? values.join("|") : "";
+      };
+      const strictKeysForVariant = (record) => {
+        const keys = new Set();
+        const addSpecification = (value) => {
+          const normalized = normalizeSpec(value);
+          if (normalized) keys.add(`spec:${normalized}`);
+        };
+        addSpecification(record?.spec_text || record?.specification || "");
+        const attributes = record?.attributes && typeof record.attributes === "object" ? record.attributes : {};
+        const specText = text(record?.spec_text || record?.specification || "");
+        const textCombination = attributeCombinationFromText(specText);
+        if (textCombination) keys.add(`attributes:${textCombination}`);
+        const textValues = attributeValueCombinationFromText(specText);
+        if (textValues) keys.add(`attribute_values:${textValues}`);
+        if (!textCombination && !textValues) {
+          const simpleValue = normalizeSpec(specText);
+          if (simpleValue) keys.add(`attribute_values:${simpleValue}`);
+        }
+        const objectEntries = Object.entries(attributes)
+          .map(([name, value]) => {
+            const normalizedName = normalizeSpec(name);
+            const normalizedValue = normalizeSpec(value);
+            return normalizedName && normalizedValue ? [normalizedName, normalizedValue] : null;
+          })
+          .filter(Boolean);
+        const objectCombination = objectEntries.map(([name, value]) => `${name}:${value}`).sort().join("|");
+        if (objectCombination) keys.add(`attributes:${objectCombination}`);
+        const objectValues = objectEntries.map(([, value]) => value).sort().join("|");
+        if (objectValues) keys.add(`attribute_values:${objectValues}`);
+        return Array.from(keys).filter((value) => value.length >= 2);
+      };
+      const variantKeyFor = (record) => text(record?.sku_id || record?.variant_key || "") || normalizeSpec(record?.spec_text || record?.specification || "");
+      const variantIdentityFor = (record) => {
+        const keys = strictKeysForVariant(record);
+        return keys.find((key) => key.startsWith("attribute_values:"))
+          || keys.find((key) => key.startsWith("attributes:"))
+          || keys.find((key) => key.startsWith("spec:"))
+          || "";
+      };
+      const variantPriority = (record) => {
+        const source = text(record?.source).toLowerCase();
+        return (text(record?.sku_id || record?.variant_key) ? 100 : 0) + (source.includes("structured") ? 10 : 0);
+      };
+      const mergeVariantRepresentations = (source) => {
+        const merged = [];
+        (Array.isArray(source) ? source : []).forEach((rawRecord) => {
+          const record = { ...rawRecord };
+          const identity = variantIdentityFor(record);
+          const recordSkuId = text(record.sku_id || record.variant_key);
+          const existingIndex = identity ? merged.findIndex((item) => (
+            item.identity === identity
+            && !(item.sku_id && recordSkuId && item.sku_id !== recordSkuId)
+          )) : -1;
+          if (existingIndex < 0) {
+            merged.push({ identity, sku_id: recordSkuId, record });
+            return;
+          }
+          const existing = merged[existingIndex];
+          const preferIncoming = variantPriority(record) > variantPriority(existing.record);
+          const preferred = preferIncoming ? record : existing.record;
+          const secondary = preferIncoming ? existing.record : record;
+          const preferredAttributes = preferred.attributes && typeof preferred.attributes === "object" ? preferred.attributes : {};
+          const secondaryAttributes = secondary.attributes && typeof secondary.attributes === "object" ? secondary.attributes : {};
+          const preferredEvidence = Array.isArray(preferred.evidence) ? preferred.evidence : [];
+          const secondaryEvidence = Array.isArray(secondary.evidence) ? secondary.evidence : [];
+          existing.record = {
+            ...secondary,
+            ...preferred,
+            sku_id: text(preferred.sku_id || preferred.variant_key || secondary.sku_id || secondary.variant_key),
+            selected: Boolean(preferred.selected || secondary.selected),
+            attributes: { ...secondaryAttributes, ...preferredAttributes },
+            evidence: Array.from(new Set([...secondaryEvidence, ...preferredEvidence].filter(Boolean)))
+          };
+          existing.sku_id = text(existing.record.sku_id || existing.record.variant_key);
+        });
+        return merged.map((item) => item.record);
+      };
+      const variants = mergeVariantRepresentations(sourceRecords);
+      const usedVariantIndexes = new Set();
+      const records = [];
+      Array.from(packageRoot.querySelectorAll("table") || []).forEach((table) => {
+        const rows = Array.from(table.querySelectorAll("tr") || []);
+        // 1688 件重尺表的列数并不固定：商品级表可能只含「规格 | 重量(g)」两列
+        // （例如水龙头「【单档】锌合金水龙头净水器 | 49」），也可能含完整的
+        // 「规格 | 长 | 宽 | 高 | 体积 | 重量」。这里只要求规格 + 重量两列即可识别
+        // 为件重尺表；长/宽/高/体积列存在时再逐一解析，缺失时留空。
+        const headerRow = rows.find((row) => {
+          const kinds = Array.from(row.querySelectorAll("th, td") || []).map((cell) => headerKind(cell.innerText || cell.textContent || ""));
+          return kinds.includes("specification") && (kinds.includes("weight_g") || kinds.includes("weight_kg"));
+        });
+        if (!headerRow) return;
+        const headerCells = Array.from(headerRow.querySelectorAll("th, td") || []);
+        const columns = {};
+        headerCells.forEach((cell, index) => {
+          const kind = headerKind(cell.innerText || cell.textContent || "");
+          if (kind && columns[kind] === undefined) columns[kind] = index;
+        });
+        // 该表格是否声明了尺寸列。声明了则尺寸必须有效（数值>0）；没声明则忽略尺寸。
+        const hasDimensionColumns = columns.length_cm !== undefined || columns.width_cm !== undefined || columns.height_cm !== undefined;
+        rows.slice(rows.indexOf(headerRow) + 1).forEach((row) => {
+          const cells = Array.from(row.querySelectorAll("th, td") || []);
+          const at = (kind) => text(cells[columns[kind]]?.innerText || cells[columns[kind]]?.textContent || "");
+          const specification = at("specification");
+          const lengthCm = numericValue(at("length_cm"), 100000);
+          const widthCm = numericValue(at("width_cm"), 100000);
+          const heightCm = numericValue(at("height_cm"), 100000);
+          const weightColumn = columns.weight_g === undefined ? "weight_kg" : "weight_g";
+          // 重量列可能带单位后缀（如「7g」「1.2kg」），剥离单位后再做数值校验。
+          const weightValue = numericValue(at(weightColumn).replace(/(?:g|克|公斤|千克|kg|\/件|\/个|\s)/gi, ""), 10000000);
+          const weightG = weightValue === null ? null : (weightColumn === "weight_kg" ? weightValue * 1000 : weightValue);
+          const volumeCm3 = columns.volume_cm3 === undefined ? null : numericValue(at("volume_cm3"), 1000000000000);
+          if (!specification || weightG === null) return;
+          if (hasDimensionColumns && (lengthCm === null || widthCm === null || heightCm === null)) return;
+          const normalizedSpec = normalizeSpec(specification);
+          if (!normalizedSpec) return;
+          const packageAttributes = attributeCombinationFromText(specification);
+          const packageAttributeValues = attributeValueCombinationFromText(specification)
+            || attributeValueCombinationFromTrailingParentheses(specification)
+            || normalizedSpec;
+          const packageKeys = new Set([
+            `spec:${normalizedSpec}`,
+            packageAttributes ? `attributes:${packageAttributes}` : "",
+            packageAttributeValues ? `attribute_values:${packageAttributeValues}` : ""
+          ].filter(Boolean));
+          const candidates = variants
+            .map((variant, index) => ({ variant, index, keys: strictKeysForVariant(variant) }))
+            .filter((item) => !usedVariantIndexes.has(item.index))
+            .filter((item) => item.keys.some((key) => packageKeys.has(key)));
+          const matched = candidates.length === 1 ? candidates[0] : null;
+          const record = {
+            variant_key: matched ? variantKeyFor(matched.variant) : normalizedSpec,
+            specification,
+            length_cm: lengthCm,
+            width_cm: widthCm,
+            height_cm: heightCm,
+            volume_cm3: volumeCm3,
+            weight_g: weightG,
+            match_status: matched ? "matched" : "unmatched",
+            source: "1688_product_pack_info"
+          };
+          if (matched) {
+            usedVariantIndexes.add(matched.index);
+            variants[matched.index].shipping_package = record;
+          }
+          records.push(record);
+        });
+      });
+      const selectedMatches = variants.filter((record) => record.selected && record.shipping_package);
+      return {
+        has_package_root: true,
+        // 模块存在但没有解析出任何有效件重尺记录时，给出明确提示块。
+        package_info_status: records.length ? "ok" : "empty",
+        package_info_error: records.length ? "" : "已定位商品件重尺模块，但未解析到有效的件重尺数据（可能是表格列名与预期不符或缺列）",
+        shipping_package_records: records,
+        source_variant_records: variants,
+        selected_shipping_package: selectedMatches.length === 1 ? selectedMatches[0].shipping_package : null
+      };
     };
     const cleanFreightContext = (value) => text(value)
         .replace(/退货包运费|退换货运费|运费险|官方包退货|包退货/gi, " ")
@@ -6388,12 +6616,13 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
     };
 
     let packageInfoText = capturePackageInfoText();
-    const initialPackageWeight = parseWeightFromText(packageInfoText);
-    const initialCombinedWeight = parseWeightFromText(combinedText);
+    const initialPackageWeight = has1688PackageInfoRoot ? { text: "", kg: null, source: "" } : parseWeightFromText(packageInfoText);
+    const initialCombinedWeight = has1688PackageInfoRoot ? { text: "", kg: null, source: "" } : parseWeightFromText(combinedText);
     let weightText = initialPackageWeight.text || initialCombinedWeight.text || "";
     let weightKg = initialPackageWeight.kg ?? initialCombinedWeight.kg ?? null;
     let weightSource = initialPackageWeight.text ? "package_info" : (initialCombinedWeight.text ? initialCombinedWeight.source : "");
     const refreshWeightEvidence = () => {
+      if (has1688PackageInfoRoot) return;
       packageInfoText = capturePackageInfoText();
       const packageWeight = parseWeightFromText(packageInfoText);
       const refreshedBody = text(document.body?.innerText || document.documentElement?.innerText || "");
@@ -7858,6 +8087,7 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
       && closedSkuPriceSource
     );
     const variantRecordKey = (record) => [
+      record.sku_id || "",
       record.spec_text || "",
       record.name || "",
       record.image_url || "",
@@ -7901,6 +8131,7 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
         ? Math.round(record.weight_kg * 10000) / 10000
         : parsedWeight.kg;
       const normalized = {
+        sku_id: text(record.sku_id || record.variant_key || "").slice(0, 120),
         spec_text: specText,
         name,
         image_url: imageUrl,
@@ -7944,6 +8175,7 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
           .join("; ") || text(combo.attribute_values?.join(" ") || combo.key || "");
         if (!combo.image_url && !Object.keys(attributes).length && /^\d+$/.test(specText)) return;
         pushVariantRecord({
+          sku_id: combo.sku_id || "",
           spec_text: specText,
           name: Object.keys(attributes).join("/") || "SKU",
           image_url: combo.image_url || "",
@@ -7958,10 +8190,27 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
           source: combo.source || "structured_sku_data"
         });
       });
-    const sourceVariantRecords = variantRecords.slice(0, 20);
-    const selectedVariantWeightRecord = sourceVariantRecords.find((record) => record.selected && (record.weight_text || record.weight_kg !== null && record.weight_kg !== undefined))
+    const packageMeasurementCapture = capture1688ShippingPackageRecords(variantRecords);
+    let sourceVariantRecords = packageMeasurementCapture.source_variant_records;
+    const shippingPackageRecords = packageMeasurementCapture.shipping_package_records;
+    const selectedPackageRecord = packageMeasurementCapture.selected_shipping_package;
+    // #productPackInfo 是 SKU 级件重尺模块：商品级重量只能来自唯一的当前选中 SKU，绝不回退全页文本扫描结果。
+    if (packageMeasurementCapture.has_package_root) {
+      weightText = selectedPackageRecord ? `重量 ${selectedPackageRecord.weight_g}g` : "";
+      weightKg = selectedPackageRecord ? selectedPackageRecord.weight_g / 1000 : null;
+      weightSource = selectedPackageRecord ? "1688_product_pack_info_selected_sku" : "";
+      packageInfoText = "";
+    }
+    const packageInfoStatus = packageMeasurementCapture.package_info_status || "";
+    const packageInfoError = packageMeasurementCapture.package_info_error || "";
+    const packageInfoNotice = packageInfoError ? (packageInfoStatus === "missing"
+      ? "未找到商品件重尺（商品包装信息）模块，无法采集件重尺数据"
+      : packageInfoStatus === "empty"
+        ? "已定位商品件重尺模块，但未能解析出有效的件重尺数据"
+        : "") : "";
+    const selectedVariantWeightRecord = packageMeasurementCapture.has_package_root ? null : (sourceVariantRecords.find((record) => record.selected && (record.weight_text || record.weight_kg !== null && record.weight_kg !== undefined))
       || sourceVariantRecords.find((record) => record.weight_text || record.weight_kg !== null && record.weight_kg !== undefined)
-      || null;
+      || null);
     const employeeActionWeightText = selectedVariantWeightRecord?.weight_text || weightText || "";
     const employeeActionWeightKg = selectedVariantWeightRecord?.weight_kg ?? weightKg ?? null;
     const employeeActionWeightSource = selectedVariantWeightRecord?.weight_source || weightSource || "";
@@ -8066,6 +8315,9 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
       source_variant_count: specOptions.length,
       source_variant_preview: variantPreview.slice(0, 12),
       source_variant_records: sourceVariantRecords,
+      shipping_package_records: shippingPackageRecords,
+      package_info_status: packageInfoStatus,
+      package_info_notice: packageInfoNotice,
       source_attributes: sourceAttributeData.attributes,
       source_attribute_pairs: sourceAttributeData.pairs,
       source_attribute_table: sourceAttributeData.table,
@@ -8090,7 +8342,7 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
         detail_capture_status: "captured",
         shipping_detail_url: location.href || expectedDetailUrl,
         shipping_text_sample: contextOf(/包邮|免运费|免邮|运费|邮费|物流|快递|配送|shipping|freight|postage/i, freightLine),
-        weight_text_sample: contextOf(/包装重量|商品重量|商品件重|计费重量|毛重|净重|重量|weight|grossWeight|packageWeight/i, weightText || packageInfoText),
+        weight_text_sample: packageMeasurementCapture.has_package_root ? "" : contextOf(/包装重量|商品重量|商品件重|计费重量|毛重|净重|重量|weight|grossWeight|packageWeight/i, weightText || packageInfoText),
         package_info_text_sample: packageInfoText.slice(0, 1200),
         weight_kg: weightKg,
         weight_source: weightSource,
@@ -8142,6 +8394,9 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
         source_variant_preview: variantPreview.slice(0, 12),
         source_variant_options_preview: variantPreview.slice(0, 30),
         source_variant_records: sourceVariantRecords,
+        shipping_package_records: shippingPackageRecords,
+        package_info_status: packageInfoStatus,
+        package_info_notice: packageInfoNotice,
         source_attributes: sourceAttributeData.attributes,
         source_attribute_pairs: sourceAttributeData.pairs,
         source_attribute_table: sourceAttributeData.table,
