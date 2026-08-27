@@ -7,6 +7,7 @@ most once for a started batch.
 
 from __future__ import annotations
 
+import json
 import secrets
 import threading
 import time
@@ -57,6 +58,8 @@ class _Item:
     status: str = "pending"
     outcome: str = ""
     draft_id: int | None = None
+    candidate: Mapping[str, Any] | None = None
+    review_status: str = ""
     error_code: str = ""
     message: str = ""
 
@@ -95,6 +98,35 @@ class _CompletedBatch:
     cleanup_timer: Any | None = None
 
 
+@dataclass
+class _SkuRepullJob:
+    batch_id: str
+    actor_id: str
+    workspace_id: str
+    round: int = 1
+    total: int = 0
+    done: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    status: str = "running"
+    message: str = ""
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+    progress_lock: threading.Lock = field(default_factory=threading.Lock)
+    updated_at: str = ""
+
+    def to_state(self) -> Mapping[str, Any]:
+        return {
+            "status": self.status,
+            "round": self.round,
+            "total": self.total,
+            "done": self.done,
+            "succeeded": self.succeeded,
+            "failed": self.failed,
+            "message": self.message,
+            "updated_at": self.updated_at,
+        }
+
+
 class PluginOneBoundCaptureService:
     """Owns only ephemeral batch state; product processing owns all drafts."""
 
@@ -115,6 +147,8 @@ class PluginOneBoundCaptureService:
         self._repository = PluginOneBoundCaptureRepository(dependencies.database_path) if dependencies.database_path else None
         self._batches: dict[str, _Batch] = {}
         self._completed: dict[str, _CompletedBatch] = {}
+        self._sku_repull_jobs: dict[str, _SkuRepullJob] = {}
+        self._sku_repull_lock = threading.Lock()
         self._lock = threading.RLock()
 
     def prepare(self, *, session_token: str, page_url: str, source_urls: list[str]) -> Mapping[str, Any]:
@@ -527,6 +561,219 @@ class PluginOneBoundCaptureService:
             self.execute_retry_child(actor_id=actor_id, workspace_id=workspace_id, batch_token=token)
         return child
 
+    def sku_repull_state(self, *, actor_id: str, workspace_id: str, batch_id: str) -> Mapping[str, Any]:
+        if self._repository is None:
+            return _empty_sku_repull_state()
+        self._require_persistent_batch(workspace_id, batch_id)
+        with self._sku_repull_lock:
+            job = self._sku_repull_jobs.get(batch_id)
+            if job is not None:
+                return job.to_state()
+        stored = self._repository.get_batch_sku_repull_state(batch_id)
+        if not stored.get("status"):
+            return _empty_sku_repull_state()
+        return stored
+
+    def start_sku_repull(self, *, actor_id: str, workspace_id: str, batch_id: str) -> Mapping[str, Any]:
+        if self._repository is None:
+            raise LookupError("persistent capture storage is unavailable")
+        batch = self._require_persistent_batch(workspace_id, batch_id)
+        if str(batch.get("status") or "") not in {"completed", "partial"}:
+            raise ValueError("only completed or partial capture batches can backfill SKU")
+        targets = self._sku_incomplete_candidates(batch_id)
+        with self._sku_repull_lock:
+            existing = self._sku_repull_jobs.get(batch_id)
+            if existing is not None and existing.status == "running":
+                return existing.to_state()
+            if not targets:
+                state = {
+                    "status": "completed", "round": 1, "total": 0, "done": 0,
+                    "succeeded": 0, "failed": 0, "message": "本批次没有需要补齐 SKU 的候选",
+                    "updated_at": _now_text(),
+                }
+                self._repository.set_batch_sku_repull_state(batch_id, state)
+                return state
+            job = _SkuRepullJob(
+                batch_id=batch_id, actor_id=actor_id, workspace_id=workspace_id,
+                round=1, total=len(targets), message="第 1 轮补齐进行中", updated_at=_now_text(),
+            )
+            self._sku_repull_jobs[batch_id] = job
+        threading.Thread(
+            target=self._run_sku_repull, args=(actor_id, workspace_id, batch_id, list(targets)),
+            name=f"plugin-sku-repull-{batch_id[:8]}", daemon=True,
+        ).start()
+        return job.to_state()
+
+    def cancel_sku_repull(self, *, actor_id: str, workspace_id: str, batch_id: str) -> Mapping[str, Any]:
+        if self._repository is None:
+            raise LookupError("persistent capture storage is unavailable")
+        self._require_persistent_batch(workspace_id, batch_id)
+        with self._sku_repull_lock:
+            job = self._sku_repull_jobs.get(batch_id)
+            if job is not None and job.status == "running":
+                job.cancel_event.set()
+        return self.sku_repull_state(actor_id=actor_id, workspace_id=workspace_id, batch_id=batch_id)
+
+    def confirm_candidates(
+        self, *, actor_id: str, workspace_id: str, batch_id: str, offer_ids: Sequence[str]
+    ) -> Mapping[str, Any]:
+        """Confirm selected pending candidates into the draft pool, idempotently."""
+        if self._repository is None:
+            raise LookupError("persistent capture storage is unavailable")
+        self._require_persistent_batch(workspace_id, batch_id)
+        with self._sku_repull_lock:
+            job = self._sku_repull_jobs.get(batch_id)
+            if job is not None and job.status == "running":
+                raise ValueError("SKU backfill is running; confirm after it completes")
+        selected = [str(offer_id).strip() for offer_id in offer_ids if str(offer_id).strip()]
+        if not selected:
+            raise ValueError("at least one candidate offer is required")
+        confirmed: list[Mapping[str, Any]] = []
+        for offer_id in selected:
+            item = self._repository_item(batch_id, offer_id)
+            if item is None or str(item.get("review_status") or "") != "pending":
+                continue
+            candidate = _candidate_from_json(item.get("candidate_json"))
+            if candidate is None:
+                continue
+            intake = self._dependencies.draft_writer.intake_shop_candidate(
+                batch_id=batch_id,
+                workspace_id=workspace_id,
+                candidate=candidate,
+            )
+            action = str(intake.get("action") or "created")
+            draft = intake.get("draft")
+            draft_id = int(draft["id"]) if isinstance(draft, Mapping) and draft.get("id") is not None else None
+            self._repository.set_item_review_status(
+                batch_id, offer_id, review_status="confirmed", draft_id=draft_id,
+                outcome="created" if action == "created" else ("refreshed" if action == "refreshed" else "skipped"),
+            )
+            confirmed.append({
+                "offer_id": offer_id, "action": action, "draft_id": draft_id,
+            })
+        return {"ok": True, "confirmed": confirmed, "confirmed_count": len(confirmed)}
+
+    def list_candidates(
+        self, *, actor_id: str, workspace_id: str, batch_id: str
+    ) -> Mapping[str, Any]:
+        """Return captured candidates for review, with review and SKU metadata."""
+        if self._repository is None:
+            raise LookupError("persistent capture storage is unavailable")
+        self._require_persistent_batch(workspace_id, batch_id)
+        items = self._repository.candidate_items(batch_id)
+        views = [_candidate_view(item) for item in items]
+        return {"items": views, "total": len(views)}
+
+    def _require_persistent_batch(self, workspace_id: str, batch_id: str) -> Mapping[str, Any]:
+        if self._repository is None:
+            raise LookupError("persistent capture storage is unavailable")
+        batch = self._repository.get(workspace_id=workspace_id, batch_id=batch_id)
+        if batch is None:
+            raise LookupError("capture batch not found")
+        return batch
+
+    def _repository_item(self, batch_id: str, offer_id: str) -> Mapping[str, Any] | None:
+        if self._repository is None:
+            return None
+        return self._repository.get_item(batch_id, offer_id)
+
+    def _sku_incomplete_candidates(self, batch_id: str) -> tuple[Mapping[str, Any], ...]:
+        return tuple(
+            item for item in self._repository.pending_review_items(batch_id)
+            if _candidate_sku_empty(_candidate_from_json(item.get("candidate_json")))
+        )
+
+    def _run_sku_repull(
+        self, actor_id: str, workspace_id: str, batch_id: str, targets: list[Mapping[str, Any]]
+    ) -> None:
+        with self._sku_repull_lock:
+            job = self._sku_repull_jobs.get(batch_id)
+        if job is None:
+            return
+        try:
+            actor = DailySelectionActor(actor_id=actor_id, workspace_id=workspace_id)
+            config = self._dependencies.provider_config_resolver(actor)
+            provider = self._dependencies.provider_factory(config)
+        except Exception:
+            job.status = "failed"
+            job.message = "1688 采集服务未配置，无法补齐 SKU"
+            job.updated_at = _now_text()
+            self._persist_sku_repull(job)
+            return
+        from .normalizer import enrich_candidate_with_detail
+        from .contracts import DailySelectionCandidate as Candidate
+
+        def repull_one(item: Mapping[str, Any]) -> None:
+            if job.cancel_event.is_set():
+                return
+            candidate = _candidate_from_json(item.get("candidate_json"))
+            if candidate is None:
+                with job.progress_lock:
+                    job.failed += 1
+                return
+            try:
+                model = Candidate.model_validate(candidate)
+                result = provider.get_item_detail(model.offer_id)
+                if bool(getattr(result, "ok", False)):
+                    enriched = enrich_candidate_with_detail(
+                        model, getattr(result, "response"), evidence=getattr(result, "audit", None)
+                    )
+                    enriched_data = enriched.model_dump(mode="python")
+                    enriched_data["candidate_id"] = f"1688:{model.offer_id}"
+                    self._repository.update_item_candidate(
+                        batch_id, str(item.get("offer_id")), candidate=enriched_data, review_status="pending"
+                    )
+                    with job.progress_lock:
+                        job.succeeded += 1
+                else:
+                    with job.progress_lock:
+                        job.failed += 1
+            except Exception:
+                with job.progress_lock:
+                    job.failed += 1
+            finally:
+                with job.progress_lock:
+                    job.done += 1
+                    job.updated_at = _now_text()
+
+        with ThreadPoolExecutor(max_workers=min(3, max(1, len(targets))), thread_name_prefix="plugin-sku-repull") as executor:
+            futures = [executor.submit(repull_one, item) for item in targets]
+            for future in futures:
+                if job.cancel_event.is_set():
+                    for pending in futures:
+                        pending.cancel()
+                    break
+                future.result()
+        if job.status == "running" and job.cancel_event.is_set():
+            job.status = "cancelled"
+            job.message = f"第 {job.round} 轮已中断：完成 {job.done}/{job.total}"
+        elif job.status == "running":
+            job.status = "completed"
+            job.message = f"第 {job.round} 轮补齐完成：成功 {job.succeeded}，失败 {job.failed}"
+        job.updated_at = _now_text()
+        self._persist_sku_repull(job)
+
+    def _persist_sku_repull(self, job: _SkuRepullJob) -> None:
+        if self._repository is not None:
+            try:
+                self._repository.set_batch_sku_repull_state(job.batch_id, job.to_state())
+            except Exception:
+                pass
+
+    def _maybe_auto_sku_repull(self, batch: _Batch, persistent_status: str) -> None:
+        """Start the first SKU backfill round once a batch settles as a candidate set."""
+        if persistent_status not in {"completed", "partial"}:
+            return
+        try:
+            self.start_sku_repull(
+                actor_id=batch.actor_id,
+                workspace_id=batch.workspace_id,
+                batch_id=batch.batch_id,
+            )
+        except Exception:
+            # Automatic backfill is best-effort; the user can still trigger it manually.
+            return
+
     def _execute_pending_items(
         self, identity: Mapping[str, str], batch_token: str
     ) -> None:
@@ -577,17 +824,16 @@ class PluginOneBoundCaptureService:
             raise ValueError("provider returned a mismatched offer")
         candidate["candidate_id"] = f"1688:{item.offer_id}"
         item.source_title = _candidate_source_title(candidate)
-        intake = self._dependencies.draft_writer.intake_shop_candidate(
-            batch_id=batch.batch_id,
-            workspace_id=batch.workspace_id,
-            candidate=candidate,
-        )
-        action = str(intake.get("action") or "created")
-        draft = intake.get("draft")
-        item.status = "skipped" if action == "skipped" else "succeeded"
-        item.outcome = action
-        item.draft_id = int(draft["id"]) if isinstance(draft, Mapping) and draft.get("id") is not None else None
-        item.message = "商品已写入草稿"
+        # 采集成功仅登记为候选，不直接写入草稿池；确认入池由用户在插件页手动完成。
+        item.status = "succeeded"
+        item.outcome = ""
+        item.candidate = candidate
+        item.review_status = "pending"
+        item.message = "商品已采集为候选"
+        if self._repository is not None:
+            self._repository.update_item_candidate(
+                batch.batch_id, item.offer_id, candidate=candidate, review_status="pending"
+            )
         return _item_response(item)
 
     def _identity(self, session_token: str) -> Mapping[str, str]:
@@ -664,6 +910,8 @@ class PluginOneBoundCaptureService:
                 error_message=batch.fatal_message,
                 summary=batch.final_summary,
             )
+            if persistent_status in {"completed", "partial"}:
+                self._maybe_auto_sku_repull(batch, persistent_status)
         self._cancel_timer(batch)
         completed: _CompletedBatch | None = None
         with self._lock:
@@ -913,6 +1161,63 @@ def register_plugin_onebound_capture_routes(
             except RuntimeError as error:
                 raise HTTPException(status_code=409, detail=str(error)) from error
 
+        @router.get(prefix + "/{batch_id}/candidates")
+        def list_persistent_candidates(batch_id: str, actor: DailySelectionActor = Depends(desktop_actor)) -> Mapping[str, Any]:
+            try:
+                return service.list_candidates(
+                    actor_id=actor.actor_id, workspace_id=actor.workspace_id, batch_id=batch_id,
+                )
+            except LookupError as error:
+                raise HTTPException(status_code=404, detail=str(error)) from error
+
+        @router.get(prefix + "/{batch_id}/sku-repull/state")
+        def get_plugin_sku_repull_state(batch_id: str, actor: DailySelectionActor = Depends(desktop_actor)) -> Mapping[str, Any]:
+            try:
+                return service.sku_repull_state(
+                    actor_id=actor.actor_id, workspace_id=actor.workspace_id, batch_id=batch_id,
+                )
+            except LookupError as error:
+                raise HTTPException(status_code=404, detail=str(error)) from error
+
+        @router.post(prefix + "/{batch_id}/sku-repull/start")
+        def start_plugin_sku_repull(batch_id: str, actor: DailySelectionActor = Depends(desktop_actor)) -> Mapping[str, Any]:
+            try:
+                return service.start_sku_repull(
+                    actor_id=actor.actor_id, workspace_id=actor.workspace_id, batch_id=batch_id,
+                )
+            except LookupError as error:
+                raise HTTPException(status_code=404, detail=str(error)) from error
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+
+        @router.post(prefix + "/{batch_id}/sku-repull/cancel")
+        def cancel_plugin_sku_repull(batch_id: str, actor: DailySelectionActor = Depends(desktop_actor)) -> Mapping[str, Any]:
+            try:
+                return service.cancel_sku_repull(
+                    actor_id=actor.actor_id, workspace_id=actor.workspace_id, batch_id=batch_id,
+                )
+            except LookupError as error:
+                raise HTTPException(status_code=404, detail=str(error)) from error
+
+        @router.post(prefix + "/{batch_id}/confirm")
+        def confirm_plugin_candidates(
+            batch_id: str,
+            payload: Mapping[str, Any] = Body(...),
+            actor: DailySelectionActor = Depends(desktop_actor),
+        ) -> Mapping[str, Any]:
+            try:
+                offer_ids = payload.get("offer_ids", ())
+                return service.confirm_candidates(
+                    actor_id=actor.actor_id,
+                    workspace_id=actor.workspace_id,
+                    batch_id=batch_id,
+                    offer_ids=list(offer_ids) if isinstance(offer_ids, (list, tuple)) else offer_ids,
+                )
+            except LookupError as error:
+                raise HTTPException(status_code=404, detail=str(error)) from error
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+
     return service
 
 
@@ -954,6 +1259,53 @@ def _candidate_source_title(candidate: Mapping[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _now_text() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _candidate_from_json(value: Any) -> Mapping[str, Any] | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        data = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, Mapping) else None
+
+
+def _candidate_sku_empty(candidate: Mapping[str, Any] | None) -> bool:
+    if not isinstance(candidate, Mapping):
+        return True
+    return not tuple(candidate.get("source_variant_records") or ())
+
+
+def _empty_sku_repull_state() -> Mapping[str, Any]:
+    return {
+        "status": "idle",
+        "round": 0,
+        "total": 0,
+        "done": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "message": "尚未补齐 SKU",
+        "updated_at": "",
+    }
+
+
+def _candidate_view(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    candidate = _candidate_from_json(item.get("candidate_json"))
+    variants = tuple((candidate or {}).get("source_variant_records") or ())
+    return {
+        "offer_id": str(item.get("offer_id") or ""),
+        "source_url": str(item.get("source_url") or ""),
+        "source_title": str(item.get("source_title") or ""),
+        "review_status": str(item.get("review_status") or ""),
+        "draft_id": item.get("draft_id"),
+        "sku_count": len(variants),
+        "main_image_url": str((candidate or {}).get("main_image_url") or ""),
+    }
 
 
 def _item_response(item: _Item) -> Mapping[str, Any]:

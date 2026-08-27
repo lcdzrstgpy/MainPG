@@ -186,6 +186,8 @@ def test_export_expands_new_skus_with_their_own_dimensions_and_last_scene_previe
         workbook.close()
 
     assert [row[3] for row in rows] == ["POD-001", "POD-001"]
+    assert [row[4] for row in rows] == ["尺寸", "尺寸"]
+    assert [row[5] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[10] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[11:14] for row in rows] == [(30, 20, 10), (40, 25, 15)]
     assert [row[14] for row in rows] == [450, 650]
@@ -227,6 +229,8 @@ def test_export_never_uses_a_chinese_sku_name_as_a_product_or_sku_code() -> None
         workbook.close()
 
     assert row[3] == "POD-001"
+    assert row[4] == "尺寸"
+    assert row[5] == "标题款"
     assert row[10] == "SKU-001-01"
 
 
@@ -269,6 +273,8 @@ def test_export_legacy_snapshot_without_skus_uses_global_dimensions_and_sku_name
         workbook.close()
 
     assert [row[3] for row in rows] == ["POD-001", "POD-001"]
+    assert [row[4] for row in rows] == ["尺寸", "尺寸"]
+    assert [row[5] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[10] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[11:14] for row in rows] == [(30, 20, 10), (30, 20, 10)]
 
@@ -376,7 +382,7 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
     assert row[:6] == [
         "Coastal Tote", "Coastal Tote",
         'Carry calm everywhere.\n<img src="https://images.example.com/pod/1/lifestyle.png" />\n<img src="https://images.example.com/pod/1/detail_a.png" />\n<img src="https://images.example.com/pod/1/detail_b.png" />\n<img src="https://images.example.com/pod/1/hero.png" />',
-        "POD-001", "Style", "Style 001",
+        "POD-001", "尺寸", "Default SKU",
     ]
     assert row[10] == "SKU-001-01"
     assert row[6:9] == [None, None, "https://images.example.com/pod/1/lifestyle.png"]
@@ -439,6 +445,8 @@ def test_service_export_repeats_each_style_for_saved_skus_and_uses_last_scene_as
         {"name": "CT-SAND", "length_cm": 40.0, "width_cm": 25.0, "height_cm": 15.0, "weight_g": 650.0},
     ]
     assert [row[3] for row in rows] == ["POD-001", "POD-001"]
+    assert [row[4] for row in rows] == ["尺寸", "尺寸"]
+    assert [row[5] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[10] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[11:14] for row in rows] == [(30, 20, 10), (40, 25, 15)]
     assert [row[14] for row in rows] == [450, 650]

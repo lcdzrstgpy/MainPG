@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -18,6 +19,11 @@ class PluginOneBoundCaptureRepository:
             marker = "data_collection:008_plugin_onebound_capture_batches"
             if conn.execute("SELECT 1 FROM schema_migrations WHERE migration_id = ?", (marker,)).fetchone() is None:
                 sql = Path(__file__).with_name("migrations").joinpath("008_plugin_onebound_capture_batches.sql").read_text(encoding="utf-8")
+                conn.executescript(sql)
+                conn.execute("INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, 'data_collection')", (marker,))
+            marker = "data_collection:011_plugin_onebound_capture_review"
+            if conn.execute("SELECT 1 FROM schema_migrations WHERE migration_id = ?", (marker,)).fetchone() is None:
+                sql = Path(__file__).with_name("migrations").joinpath("011_plugin_onebound_capture_review.sql").read_text(encoding="utf-8")
                 conn.executescript(sql)
                 conn.execute("INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, 'data_collection')", (marker,))
             self._backfill_legacy_plugin_onebound(conn)
@@ -154,6 +160,78 @@ class PluginOneBoundCaptureRepository:
                 (status, outcome, draft_id, source_title, source_title, error_code, error_message,
                  int(increment_attempt), batch_id, offer_id))
             self._refresh_batch_counts(conn, batch_id)
+
+    def update_item_candidate(self, batch_id: str, offer_id: str, *, candidate: Mapping[str, Any], review_status: str = "pending") -> None:
+        """Persist a captured candidate without writing it into the draft pool."""
+        with connect(self.database_path) as conn:
+            conn.execute("""UPDATE plugin_onebound_capture_items
+                SET candidate_json=?, review_status=?, updated_at=datetime('now')
+                WHERE batch_id=? AND offer_id=?""",
+                (json.dumps(candidate, ensure_ascii=False, default=str), review_status, batch_id, offer_id))
+
+    def set_item_review_status(self, batch_id: str, offer_id: str, *, review_status: str, draft_id: int | None = None, outcome: str = "") -> None:
+        with connect(self.database_path) as conn:
+            conn.execute("""UPDATE plugin_onebound_capture_items
+                SET review_status=?, draft_id=?, outcome=CASE WHEN ?<>'' THEN ? ELSE outcome END,
+                    updated_at=datetime('now')
+                WHERE batch_id=? AND offer_id=?""",
+                (review_status, draft_id, outcome, outcome, batch_id, offer_id))
+            self._refresh_batch_counts(conn, batch_id)
+
+    def set_batch_sku_repull_state(self, batch_id: str, state: Mapping[str, Any]) -> None:
+        with connect(self.database_path) as conn:
+            conn.execute("""UPDATE plugin_onebound_capture_batches
+                SET sku_repull_state=?, updated_at=datetime('now')
+                WHERE batch_id=?""",
+                (json.dumps(state, ensure_ascii=False, default=str), batch_id))
+
+    def get_batch_sku_repull_state(self, batch_id: str) -> Mapping[str, Any]:
+        with connect(self.database_path) as conn:
+            row = conn.execute(
+                "SELECT sku_repull_state FROM plugin_onebound_capture_batches WHERE batch_id=?",
+                (batch_id,),
+            ).fetchone()
+        if row is None:
+            return {}
+        try:
+            value = json.loads(row["sku_repull_state"] or "{}")
+        except (TypeError, ValueError):
+            return {}
+        return value if isinstance(value, Mapping) else {}
+
+    def pending_review_items(self, batch_id: str) -> tuple[Mapping[str, Any], ...]:
+        """Return captured candidates still awaiting confirmation for a batch."""
+        with connect(self.database_path) as conn:
+            rows = conn.execute(
+                """SELECT * FROM plugin_onebound_capture_items
+                WHERE batch_id=? AND review_status='pending'
+                ORDER BY offer_id""",
+                (batch_id,),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def get_item(self, batch_id: str, offer_id: str) -> Mapping[str, Any] | None:
+        with connect(self.database_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM plugin_onebound_capture_items WHERE batch_id=? AND offer_id=?",
+                (batch_id, offer_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def candidate_items(self, batch_id: str) -> tuple[Mapping[str, Any], ...]:
+        """Return captured candidates (succeeded items) for review in offer order.
+
+        Legacy backfilled drafts carry no ``candidate_json`` and are excluded so
+        historical batches stay read-only in the candidate review surface.
+        """
+        with connect(self.database_path) as conn:
+            rows = conn.execute(
+                """SELECT * FROM plugin_onebound_capture_items
+                WHERE batch_id=? AND status='succeeded' AND candidate_json<>''
+                ORDER BY offer_id""",
+                (batch_id,),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
 
     def get(self, *, workspace_id: str, batch_id: str) -> Mapping[str, Any] | None:
         with connect(self.database_path) as conn:

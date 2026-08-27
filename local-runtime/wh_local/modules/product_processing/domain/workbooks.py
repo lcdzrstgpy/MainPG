@@ -334,11 +334,28 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     dimensions = row.get("product_dimensions") or {}
     if not isinstance(dimensions, dict):
         dimensions = {}
-    length = _export_number(core_fields.get("length_cm") if "length_cm" in core_fields else dimensions.get("length_cm"))
-    width = _export_number(core_fields.get("width_cm") if "width_cm" in core_fields else dimensions.get("width_cm"))
-    height = _export_number(core_fields.get("height_cm") if "height_cm" in core_fields else dimensions.get("height_cm"))
+    package_fields, manual_package_fields = _variant_shipping_package_fields(row, variant, preview_overrides)
+    length = _export_number(
+        package_fields.get("length_cm")
+        if "length_cm" in package_fields
+        else core_fields.get("length_cm") if "length_cm" in core_fields else dimensions.get("length_cm")
+    )
+    width = _export_number(
+        package_fields.get("width_cm")
+        if "width_cm" in package_fields
+        else core_fields.get("width_cm") if "width_cm" in core_fields else dimensions.get("width_cm")
+    )
+    height = _export_number(
+        package_fields.get("height_cm")
+        if "height_cm" in package_fields
+        else core_fields.get("height_cm") if "height_cm" in core_fields else dimensions.get("height_cm")
+    )
     manual_weight_override = "weight_g" in core_fields
-    weight = _export_number(core_fields.get("weight_g") if manual_weight_override else dimensions.get("weight_g"))
+    weight = _export_number(
+        package_fields.get("weight_g")
+        if "weight_g" in package_fields
+        else core_fields.get("weight_g") if manual_weight_override else dimensions.get("weight_g")
+    )
     package_shape, package_type = _package_export_values(dimensions)
 
     # 店小秘体积重校验兜底：变种属性里的尺寸（如 30*20*10cm，店小秘以此算体积重）
@@ -361,10 +378,9 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     if isinstance(source_attributes, dict):
         dimensions_texts.extend(source_attributes.values())
     dimensions_texts.extend(value for _, value in variant_values)
-    # The precheck value is an operator-confirmed actual weight. Export it
-    # exactly as entered instead of silently replacing it with volumetric
-    # weight. The import-safety fallback remains for system-generated values.
-    if not manual_weight_override:
+    # Operator-confirmed product or SKU package weights are authoritative.
+    # System-generated values retain the import-safety volumetric safeguard.
+    if "weight_g" not in manual_package_fields and not manual_weight_override:
         weight = _weight_meeting_volumetric(weight, dimensions_texts)
 
     # 长宽高列兜底：AI 未产出 product_dimensions（长宽高缺失）时，从变种/规格表文本
@@ -444,6 +460,64 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         "件",  # SKU分类单位
         "", "", "", "", "", "", "", "", "",  # 其余 SKU 分类字段占位
     ]
+
+
+def _variant_shipping_package_fields(
+    row: dict[str, Any],
+    variant: dict[str, Any] | None,
+    preview_overrides: dict[str, Any],
+) -> tuple[dict[str, Any], set[str]]:
+    """Return exportable package evidence for exactly one matched SKU.
+
+    The 1688 package table can contain variants missing from the product's SKU
+    matrix. Such rows are intentionally ignored here; showing them in precheck
+    is useful, but allowing them to alter any exported SKU is not.
+    """
+    if not isinstance(variant, dict):
+        return {}, set()
+    variant_key = str(variant.get("sku_id") or "").strip()
+    if not variant_key:
+        return {}, set()
+    package_record: dict[str, Any] | None = None
+    records = row.get("shipping_package_records") or []
+    if isinstance(records, list):
+        for record in records:
+            if not isinstance(record, dict) or record.get("match_status") != "matched":
+                continue
+            if str(record.get("variant_key") or record.get("variant_sku_id") or record.get("record_key") or "").strip() == variant_key:
+                package_record = record
+                break
+    if package_record is None:
+        embedded = variant.get("shipping_package")
+        if isinstance(embedded, dict) and embedded.get("match_status") == "matched":
+            package_record = embedded
+    if package_record is None:
+        return {}, set()
+
+    fields = {
+        key: package_record[key]
+        for key in ("length_cm", "width_cm", "height_cm", "weight_g")
+        if _positive_export_number(package_record.get(key))
+    }
+    overrides = preview_overrides.get("shipping_package_records") or {}
+    if not isinstance(overrides, dict):
+        return fields, set()
+    manual = overrides.get(variant_key)
+    if not isinstance(manual, dict):
+        return fields, set()
+    manual_fields: set[str] = set()
+    for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
+        if _positive_export_number(manual.get(key)):
+            fields[key] = manual[key]
+            manual_fields.add(key)
+    return fields, manual_fields
+
+
+def _positive_export_number(value: Any) -> bool:
+    try:
+        return float(value) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _package_export_values(dimensions: dict[str, Any]) -> tuple[str, str]:

@@ -1553,6 +1553,107 @@
   background: #fff;
 }
 
+.precheck-shipping-package {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid #dbe7f1;
+  border-radius: 10px;
+  background: #fbfdff;
+}
+
+.precheck-shipping-package-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.precheck-shipping-package-head h3 {
+  margin: 0;
+  color: #29455f;
+  font-size: 0.95rem;
+}
+
+.precheck-shipping-package-head p,
+.precheck-shipping-package-head > span {
+  margin: 4px 0 0;
+  color: #647b90;
+  font-size: 0.76rem;
+}
+
+.precheck-shipping-package-head > span {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.precheck-shipping-package-scroll {
+  overflow-x: auto;
+}
+
+.precheck-shipping-package table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.precheck-shipping-package th,
+.precheck-shipping-package td {
+  padding: 7px 8px;
+  border-top: 1px solid #e7eef4;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.precheck-shipping-package th {
+  border-top: 0;
+  color: #526a82;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.precheck-shipping-package td:first-child {
+  min-width: 180px;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.precheck-shipping-package td input {
+  width: 78px;
+  padding: 5px 6px;
+  border: 1px solid #dbe7f1;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.precheck-shipping-package tr.is-unmatched {
+  color: #7c8996;
+  background: #f7f9fb;
+}
+
+.precheck-package-status {
+  display: inline-flex;
+  margin-right: 5px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.precheck-package-status.is-matched { background: #e6f9f3; color: #07966f; }
+.precheck-package-status.is-unmatched { background: #f0f3f6; color: #718092; }
+
+.precheck-shipping-package td small {
+  display: inline-block;
+  color: #718092;
+  white-space: nowrap;
+}
+
 .precheck-images {
   min-width: 0;
   display: grid;

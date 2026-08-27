@@ -43,6 +43,7 @@ class _Provider:
                         "detail_url": f"https://detail.1688.com/offer/{offer_id}.html",
                         "title": "Capture item",
                         "main_image_url": "https://img.example.com/main.jpg",
+                        "sku": {"sku": [{"sku_id": f"{offer_id}-sku", "price": "10.0"}]},
                     }
                 },
                 "audit": None,
@@ -143,14 +144,14 @@ def test_onebound_capture_batch_is_session_scoped_idempotent_and_materializes(tm
     first = client.post("/plugin/product-capture/onebound-batches/item", json={"session_token": token, "batch_token": batch_token, "source_url": links[0]})
     replay = client.post("/plugin/product-capture/onebound-batches/item", json={"session_token": token, "batch_token": batch_token, "source_url": links[0]})
     assert first.status_code == replay.status_code == 200
-    assert first.json()["outcome"] == "created"
-    assert replay.json()["outcome"] == "created"
+    assert first.json()["outcome"] == "succeeded"
+    assert replay.json()["outcome"] == "succeeded"
     assert provider.calls == 1
-    assert drafts.intakes[0]["candidate"]["candidate_id"] == "1688:12345678"
+    assert drafts.intakes == []
 
     finished = client.post("/plugin/product-capture/onebound-batches/finish", json={"session_token": token, "batch_token": batch_token, "cancelled": False})
     assert finished.status_code == 200
-    assert finished.json()["created_count"] == 1
+    assert finished.json()["created_count"] == 0
     assert finished.json()["unprocessed_count"] == 1
     assert drafts.materialized == ["workspace-1"]
 
@@ -230,7 +231,7 @@ def test_start_resolves_credentials_once_and_item_failures_do_not_block_other_it
 
     assert config_calls == 1
     assert failed.json()["error_code"] == "capture_failed"
-    assert succeeded.json()["outcome"] == "created"
+    assert succeeded.json()["outcome"] == "succeeded"
 
 
 def test_concurrent_same_offer_waits_for_one_provider_call_and_one_intake(tmp_path: Path) -> None:
@@ -292,11 +293,11 @@ def test_concurrent_same_offer_waits_for_one_provider_call_and_one_intake(tmp_pa
             source_url="https://detail.1688.com/offer/12345678.html",
         )
         provider.release.set()
-        assert first.result(timeout=3)["outcome"] == "created"
-        assert second.result(timeout=3)["outcome"] == "created"
+        assert first.result(timeout=3)["outcome"] == "succeeded"
+        assert second.result(timeout=3)["outcome"] == "succeeded"
 
     assert provider.calls == 1
-    assert len(drafts.intakes) == 1
+    assert len(drafts.intakes) == 0
 
 
 def test_start_missing_batch_token_is_a_validation_error(tmp_path: Path) -> None:
@@ -423,11 +424,11 @@ def test_finish_closes_the_batch_waits_for_inflight_item_and_materializes_once(t
                 source_urls=["https://detail.1688.com/offer/99999999.html"],
             )
         provider.release.set()
-        assert item.result(timeout=3)["outcome"] == "created"
+        assert item.result(timeout=3)["outcome"] == "succeeded"
         first_summary, first_claim = finish_one.result(timeout=3)
         second_summary, second_claim = finish_two.result(timeout=3)
-        assert first_summary["created_count"] == 1
-        assert second_summary["created_count"] == 1
+        assert first_summary["created_count"] == 0
+        assert second_summary["created_count"] == 0
 
     assert sum((first_claim, second_claim)) == 1
     service.materialize_best_effort("workspace-1")
@@ -549,20 +550,15 @@ def test_start_failure_is_batch_fatal_and_provider_guard_is_installed_once(tmp_p
     assert factory_calls == 1
 
 
-def test_skipped_intake_is_counted_authoritatively_and_finish_materializes_once(tmp_path: Path) -> None:
+def test_capture_produces_candidate_not_draft_and_finish_is_idempotent(tmp_path: Path) -> None:
     from wh_local.data_collection.plugin_onebound_capture import (
         PluginOneBoundCaptureDependencies,
         PluginOneBoundCaptureService,
     )
 
-    class SkippingDrafts(_Drafts):
-        def intake_shop_candidate(self, **kwargs):
-            self.intakes.append(kwargs)
-            return {"action": "skipped", "draft": {"id": 7, "status": "processing"}}
-
     queue = DataCollectionPluginQueue(tmp_path / "runtime.sqlite3")
     session = queue.create_session(actor_id="actor-1", workspace_id="workspace-1")
-    drafts = SkippingDrafts()
+    drafts = _Drafts()
     service = PluginOneBoundCaptureService(PluginOneBoundCaptureDependencies(
         plugin_queue=queue,
         provider_config_resolver=lambda _actor: {
@@ -590,9 +586,11 @@ def test_skipped_intake_is_counted_authoritatively_and_finish_materializes_once(
         session_token=session["session_token"], batch_token=prepared["batch_token"], cancelled=False,
     )
 
-    assert item["outcome"] == "skipped"
-    assert first["skipped_count"] == 1
+    assert item["outcome"] == "succeeded"
+    assert first["created_count"] == 0
+    assert first["skipped_count"] == 0
     assert replay == first
+    assert drafts.intakes == []
     assert drafts.materialized == []
 
 
@@ -698,7 +696,7 @@ def test_ttl_finalizer_closes_before_waiting_for_an_inflight_item(tmp_path: Path
                 source_url="https://detail.1688.com/offer/12345678.html",
             )
         provider.release.set()
-        assert item.result(timeout=3)["outcome"] == "created"
+        assert item.result(timeout=3)["outcome"] == "succeeded"
 
     assert drafts.done.wait(timeout=2)
     assert drafts.materialized == ["workspace-1"]
@@ -855,7 +853,7 @@ def test_detail_calls_across_two_batches_never_exceed_three_inflight(tmp_path: P
         assert provider.first_three.wait(timeout=1)
         provider.release.set()
         for future in futures:
-            assert future.result(timeout=3)["outcome"] == "created"
+            assert future.result(timeout=3)["outcome"] == "succeeded"
 
     assert provider.peak <= 3
 
@@ -905,7 +903,7 @@ def test_finish_route_returns_before_slow_or_failed_materialization_and_schedule
     replay = endpoint(BackgroundTasks(), payload)
 
     assert summary == replay
-    assert summary["created_count"] == 1
+    assert summary["created_count"] == 0
     assert len(tasks.tasks) == 1
     tasks.tasks[0].func(*tasks.tasks[0].args, **tasks.tasks[0].kwargs)
 
@@ -953,7 +951,7 @@ def test_persistent_batch_uses_public_batch_id_and_desktop_reads_it(tmp_path: Pa
     assert listed.status_code == detail.status_code == items.status_code == 200
     assert detail.json()["batch"]["batch_id"] == prepared["batch_id"]
     assert items.json()["items"][0]["status"] == "succeeded"
-    assert drafts.intakes[0]["batch_id"] == prepared["batch_id"]
+    assert drafts.intakes == []
 
 
 def test_desktop_start_button_executes_a_prepared_batch_through_onebound(tmp_path: Path) -> None:
@@ -976,10 +974,10 @@ def test_desktop_start_button_executes_a_prepared_batch_through_onebound(tmp_pat
     assert response.status_code == 202
     batch = client.get(f"/desktop/data-collection/plugin-onebound-batches/{prepared['batch_id']}").json()["batch"]
     assert batch["status"] == "completed"
-    assert batch["created_count"] == 2
+    assert batch["created_count"] == 0
     assert provider.calls == 2
     assert len(budget.calls) == 2
-    assert {entry["batch_id"] for entry in drafts.intakes} == {prepared["batch_id"]}
+    assert drafts.intakes == []
 
 
 def test_desktop_start_dispatches_three_onebound_items_concurrently(tmp_path: Path) -> None:
@@ -1055,7 +1053,7 @@ def test_desktop_start_failure_keeps_batch_prepared_and_allows_retry(tmp_path: P
     recovered = client.get(f"/desktop/data-collection/plugin-onebound-batches/{prepared['batch_id']}").json()["batch"]
     assert second.status_code == 202
     assert recovered["status"] == "completed"
-    assert recovered["created_count"] == 1
+    assert recovered["created_count"] == 0
     assert provider.calls == 1
 
 
@@ -1164,11 +1162,13 @@ def test_persistent_prepare_start_and_item_keep_live_aggregate_counts(tmp_path: 
     item = service._repository.items(workspace_id="workspace-1", batch_id=prepared["batch_id"])[1]
     assert live is not None
     assert {key: live[key] for key in ("total_count", "created_count", "skipped_count", "unprocessed_count")} == {
-        "total_count": 2, "created_count": 1, "skipped_count": 1, "unprocessed_count": 0,
+        "total_count": 2, "created_count": 0, "skipped_count": 1, "unprocessed_count": 0,
     }
     assert item["attempts"] == 1
-    assert item["error_message"] == "商品已写入草稿"
+    assert item["error_message"] == "商品已采集为候选"
     assert item["source_title"] == "Capture item"
+    assert item["review_status"] == "pending"
+    assert item["candidate_json"]
 
 
 def test_legacy_backfill_aggregates_one_plugin_batch_and_excludes_daily_and_shop(tmp_path: Path) -> None:
@@ -1393,10 +1393,10 @@ def test_retry_failed_returns_child_then_runs_onebound_under_shared_budget(tmp_p
     child = client.get(f"/desktop/data-collection/plugin-onebound-batches/{child_id}").json()["batch"]
     assert child["parent_batch_id"] == prepared["batch_id"]
     assert child["status"] == "completed"
-    assert child["created_count"] == 1
+    assert child["created_count"] == 0
     assert provider.calls >= 2
     assert len(budget.calls) >= 2
-    assert drafts.intakes[-1]["batch_id"] == child_id
+    assert drafts.intakes == []
 
 
 def test_retry_start_failure_finishes_child_with_diagnostic(tmp_path: Path) -> None:
