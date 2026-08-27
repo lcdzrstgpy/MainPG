@@ -34,6 +34,10 @@ if sys.stderr is None:
 # setdefault 允许运维用显式环境变量覆盖关闭（WH_PRODUCT_AI_DIRECT=0）。
 os.environ.setdefault("WH_PRODUCT_AI_DIRECT", "1")
 
+# 桌面端：关闭前端页面后自动终止后端进程（服务器 systemd 不设此变量，永不自动退出）。
+# 浏览器插件默认只连 8010；关页即停可避免后端残留进程锁定 MainPG.exe 导致安装失败。
+os.environ.setdefault("WH_LOCAL_RUNTIME_EXIT_ON_CLOSE", "1")
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8010
 

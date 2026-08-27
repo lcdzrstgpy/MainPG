@@ -49,6 +49,33 @@ export function App() {
     return () => window.removeEventListener("auth:session-expired", onSessionExpired);
   }, []);
 
+  // 桌面端心跳：告知后端页面仍存活；页面关闭(pagehide)时上报 bye，
+  // 让后端自动终止进程并释放锁定的 MainPG.exe（刷新重载由新页面心跳取消上次退出）。
+  // 仅桌面运行时启用 watchdog；服务器环境这些接口为 no-op，不会自动退出。
+  useEffect(() => {
+    const heartbeat = () => {
+      try {
+        navigator.sendBeacon("/api/runtime/heartbeat", "{}");
+      } catch {
+        // 发送失败忽略，后端有 idle 兜底
+      }
+    };
+    const bye = () => {
+      try {
+        navigator.sendBeacon("/api/runtime/bye", "{}");
+      } catch {
+        // 忽略
+      }
+    };
+    heartbeat();
+    const timer = window.setInterval(heartbeat, 15_000);
+    window.addEventListener("pagehide", bye);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("pagehide", bye);
+    };
+  }, []);
+
   async function signOut() {
     try {
       await httpJson<{ ok?: boolean }>("/api/customer/logout", { method: "POST" });

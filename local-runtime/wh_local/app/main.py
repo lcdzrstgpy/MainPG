@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
+import time
 
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
@@ -132,6 +134,70 @@ def _provider_factory(config: Mapping[str, Any]) -> OneBound1688Provider:
     return OneBound1688Provider(config)
 
 
+class _RuntimeExitController:
+    """Desktop-only: auto-terminate the backend after the frontend page closes.
+
+    The frontend App root uses ``navigator.sendBeacon`` to periodically report a
+    heartbeat and to report ``bye`` when the page is hidden/discarded (``pagehide``).
+
+    - On ``bye`` a short grace window opens; a fresh heartbeat from a reloaded page
+      cancels it, otherwise the whole process exits, releasing MainPG.exe so an
+      in-place install can replace it and no backend process lingers.
+    - Fallback: if no heartbeat arrives for a long time (browser crash / hard kill),
+      the watchdog also exits.
+
+    Only enabled when ``WH_LOCAL_RUNTIME_EXIT_ON_CLOSE=1``, which is set by the
+    desktop launcher (run_workbench.py / packaged MainPG.exe). The server runs
+    uvicorn directly under systemd without that variable, so it never self-exits.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._heartbeat = time.monotonic()
+        self._bye_deadline: float | None = None
+        self._watchdog: threading.Thread | None = None
+        self._grace_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_GRACE_S", "8"))
+        self._idle_s = float(os.environ.get("WH_LOCAL_RUNTIME_IDLE_TIMEOUT_S", "120"))
+        self._interval_s = float(os.environ.get("WH_LOCAL_RUNTIME_WATCHDOG_INTERVAL_S", "2"))
+        self.enabled = os.environ.get("WH_LOCAL_RUNTIME_EXIT_ON_CLOSE", "0") == "1"
+
+    def start(self) -> None:
+        if not self.enabled or self._watchdog is not None:
+            return
+        self._watchdog = threading.Thread(
+            target=self._run_watchdog, name="mainpg-runtime-exit", daemon=True
+        )
+        self._watchdog.start()
+
+    def touch(self) -> None:
+        with self._lock:
+            self._heartbeat = time.monotonic()
+            # 页面刷新后新页面重新心跳，取消上一次关闭时排定的退出。
+            self._bye_deadline = None
+
+    def bye(self) -> None:
+        with self._lock:
+            self._bye_deadline = time.monotonic() + self._grace_s
+
+    def _run_watchdog(self) -> None:
+        while True:
+            time.sleep(self._interval_s)
+            with self._lock:
+                heartbeat = self._heartbeat
+                deadline = self._bye_deadline
+                now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                self._exit("frontend page closed")
+            if now - heartbeat > self._idle_s:
+                self._exit("frontend heartbeat idle timeout")
+
+    @staticmethod
+    def _exit(reason: str) -> None:
+        print(f"[runtime] exiting because {reason}", flush=True)
+        # 硬退出整个进程（含所有守护工作线程），释放被锁定的 MainPG.exe。
+        os._exit(0)  # noqa: PLR1722 - deliberate hard exit on desktop page close
+
+
 def create_app(database_path: Path | None = None) -> FastAPI:
     config = default_config()
     db_path = database_path or config.database_path
@@ -194,6 +260,22 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # 桌面端：前端页面关闭后自动终止后端进程（服务器环境不启用 watchdog）。
+    runtime_exit = _RuntimeExitController()
+    if runtime_exit.enabled:
+        runtime_exit.start()
+    app.state.runtime_exit = runtime_exit
+
+    @app.post("/api/runtime/heartbeat")
+    def runtime_heartbeat() -> dict[str, Any]:
+        runtime_exit.touch()
+        return {"ok": True}
+
+    @app.post("/api/runtime/bye")
+    def runtime_bye() -> dict[str, Any]:
+        runtime_exit.bye()
+        return {"ok": True}
+
     _register_frontend_shell(app)
     app.state.update_manager = update_manager
     app.state.patch_manager = patch_manager
