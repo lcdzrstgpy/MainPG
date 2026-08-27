@@ -193,6 +193,16 @@
     let unchangedPasses = 0;
     let stopReason = "max_scroll_passes";
 
+    const nearestAplusReport = (el) => {
+      let node = el && el.parentElement;
+      for (let i = 0; node && i < 5; i += 1) {
+        const value = node.getAttribute?.("data-aplus-report");
+        if (value) return value;
+        node = node.parentElement;
+      }
+      return "";
+    };
+
     const scanLinks = () => {
       let added = 0;
       const anchors = page.document?.querySelectorAll?.("a[href]") || [];
@@ -207,23 +217,30 @@
         if (hostname !== "1688.com" && !hostname.endsWith(".1688.com")) continue;
 
         const offerIds = [];
-        const pathMatch = hostname === "detail.1688.com"
-          ? parsed.pathname.match(/^\/offer\/(\d+)(?:\.html?)?\/?$/i)
-          : null;
+        const pathMatch = parsed.pathname.match(/^\/offer\/(\d+)(?:\.html?)?\/?$/i);
         if (pathMatch) offerIds.push(pathMatch[1]);
-        const normalizedPath = parsed.pathname.toLowerCase();
-        const isMobileOfferLink = hostname === "detail.m.1688.com"
-          && normalizedPath === "/page/index.html";
-        const isSimilarOfferLink = hostname === "s.1688.com"
-          && /^\/selloffer\/similar_search\.html?$/.test(normalizedPath);
-        if (isMobileOfferLink || isSimilarOfferLink) {
-          for (const [name, value] of parsed.searchParams) {
-            const normalizedName = String(name || "").toLowerCase();
-            if (isMobileOfferLink ? normalizedName !== "offerid" : normalizedName !== "offerids") continue;
-            for (const offerId of String(value || "").split(",")) {
-              if (/^\d{6,20}$/.test(offerId)) offerIds.push(offerId);
+        // 兼容多种数字商品 ID 查询参数（offerid / offer_id / offerids / goods_id / item_id）
+        for (const [name, value] of parsed.searchParams) {
+          const normalizedName = String(name || "").toLowerCase();
+          if (!["offerid", "offer_id", "offerids", "goods_id", "item_id"].includes(normalizedName)) continue;
+          for (const offerId of String(value || "").split(",")) {
+            if (/^\d{6,20}$/.test(offerId)) offerIds.push(offerId);
+          }
+        }
+        // 部分 1688 页面商品链接由 JS 接管、href 不带商品 ID，兼容元素 data-* 属性上的数字商品 ID
+        if (anchor.dataset && typeof anchor.dataset === "object") {
+          for (const key of Object.keys(anchor.dataset)) {
+            const dataValue = String(anchor.dataset[key] || "").trim();
+            if (/^\d{6,20}$/.test(dataValue) && /offer|goods|item|product/i.test(key) && !offerIds.includes(dataValue)) {
+              offerIds.push(dataValue);
             }
           }
+        }
+        // 兼容 1688 新搜索页：商品链接为 dj.1688.com/ci_bb 跳转页，商品 ID 藏在
+        // 自身或祖先容器 data-aplus-report="object_type@offer^object_id@数字^..." 中。
+        const aplusReport = `${anchor.getAttribute?.("data-aplus-report") || ""} ${nearestAplusReport(anchor)}`;
+        for (const match of aplusReport.matchAll(/(?:object_id|objectId)@(\d{6,20})/g)) {
+          if (!offerIds.includes(match[1])) offerIds.push(match[1]);
         }
 
         for (const offerId of offerIds) {

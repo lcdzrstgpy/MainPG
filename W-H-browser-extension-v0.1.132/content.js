@@ -8,7 +8,14 @@
   let oneboundPageCapture = null;
   let oneboundPageCaptureGeneration = 0;
   let extensionContextInvalidated = false;
+  const FLOAT_POSITION_KEY = "temuWorkbenchFloatPosition";
+  const FLOAT_HANDLE_SIZE = 44;
+  let floatHandleEl = null;
+  let floatPanelEl = null;
+  let floatOpen = true; // 默认展开，用户点击手柄后收起
+  let floatDrag = { active: false, moved: false, startX: 0, startY: 0, originLeft: 0, originTop: 0 };
 
+  initFloatingControls();
   renderConnectorBadge();
   refreshConnectorBadge();
   syncProductCaptureButton();
@@ -167,30 +174,27 @@
   }
 
   function renderConnectorBadge() {
-    if (document.getElementById("temu-workbench-connector-badge")) return;
+    const content = floatContentRoot();
+    if (!content) return;
+    if (content.querySelector("#temu-workbench-connector-badge")) return;
     const badge = document.createElement("div");
     badge.id = "temu-workbench-connector-badge";
     badge.setAttribute("role", "status");
     badge.setAttribute("aria-live", "polite");
     badge.style.cssText = [
-      "position:fixed",
-      "left:14px",
-      "bottom:14px",
-      "z-index:2147483647",
       "display:flex",
       "align-items:center",
       "gap:7px",
-      "height:32px",
-      "max-width:220px",
+      "height:30px",
       "box-sizing:border-box",
-      "padding:0 11px",
+      "padding:0 10px",
       "border:1px solid rgba(15,159,154,0.42)",
       "border-radius:7px",
       "background:rgba(255,255,255,0.96)",
-      "box-shadow:0 8px 22px rgba(16,26,43,0.18)",
       "color:#102033",
       "font:12px/1.2 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif",
-      "pointer-events:none"
+      "pointer-events:none",
+      "margin-bottom:8px"
     ].join(";");
 
     const dot = document.createElement("span");
@@ -215,7 +219,7 @@
     ].join(";");
 
     badge.append(dot, text);
-    document.documentElement.appendChild(badge);
+    content.appendChild(badge);
   }
 
   function refreshConnectorBadge() {
@@ -398,30 +402,16 @@
 
   function renderProductCaptureButton() {
     if (!isSupportedProductPage()) return;
-    if (document.getElementById("temu-workbench-product-capture")) return;
+    const content = floatContentRoot();
+    if (!content) return;
+    if (content.querySelector("#temu-workbench-product-capture")) return;
     const button = document.createElement("button");
     button.id = "temu-workbench-product-capture";
     button.type = "button";
     button.textContent = "采集到工作台";
-    button.style.cssText = [
-      "position:fixed",
-      "left:14px",
-      "bottom:54px",
-      "z-index:2147483647",
-      "height:36px",
-      "max-width:180px",
-      "box-sizing:border-box",
-      "padding:0 13px",
-      "border:1px solid rgba(15,159,154,0.52)",
-      "border-radius:8px",
-      "background:#0f9f9a",
-      "box-shadow:0 10px 24px rgba(16,26,43,0.22)",
-      "color:#ffffff",
-      "font:700 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif",
-      "cursor:pointer"
-    ].join(";");
+    button.style.cssText = panelButtonStyle("#0f9f9a", "rgba(15,159,154,0.52)");
     button.addEventListener("click", captureProductToWorkbench);
-    document.documentElement.appendChild(button);
+    content.appendChild(button);
   }
 
   function refreshProductCaptureButton() {
@@ -548,17 +538,10 @@
       return false;
     }
     if (!/(^|\.)temu\.com$/i.test(parsed.hostname)) return false;
+    // 不做特定页面隐藏：仅按页面标题/文本识别核价相关页，稳定显示按钮。
     const pageText = String(document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 18000);
-    const tableHeaders = Array.from(document.querySelectorAll("th, [role='columnheader'], .ant-table-thead, .semi-table-thead"))
-      .map((element) => String(element?.innerText || element?.textContent || "").replace(/\s+/g, " ").trim())
-      .join(" ");
     const title = `${document.title || ""} ${pageText.slice(0, 1200)}`;
-    if (!/批量查看并确认申报价|批量查看并确认申报价格/.test(title)) return false;
-    const headers = ["SKC信息", "SKU属性", "原申报价", "调整后申报价", "新申报价"];
-    const headerEvidence = `${pageText} ${tableHeaders}`;
-    const headerCount = headers.filter((header) => headerEvidence.includes(header)).length;
-    if (headerCount < 3) return false;
-    return true;
+    return /批量查看并确认申报价|批量查看并确认申报价格/.test(title);
   }
 
   function syncPriceQuoteCaptureButton() {
@@ -572,21 +555,17 @@
   }
 
   function renderPriceQuoteCaptureButton() {
-    if (!isSupportedPriceQuotePage() || document.getElementById("temu-price-quote-capture")) return;
+    if (!isSupportedPriceQuotePage()) return;
+    const content = floatContentRoot();
+    if (!content) return;
+    if (content.querySelector("#temu-price-quote-capture")) return;
     const button = document.createElement("button");
     button.id = "temu-price-quote-capture";
     button.type = "button";
     button.textContent = "采集核价本页";
-    button.style.cssText = [
-      "position:fixed", "left:14px", "bottom:96px", "z-index:2147483647",
-      "height:36px", "max-width:180px", "box-sizing:border-box", "padding:0 13px",
-      "border:1px solid rgba(124,58,237,0.52)", "border-radius:8px",
-      "background:#7c3aed", "box-shadow:0 10px 24px rgba(16,26,43,0.22)",
-      "color:#ffffff", "font:700 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif",
-      "cursor:pointer"
-    ].join(";");
+    button.style.cssText = panelButtonStyle("#7c3aed", "rgba(124,58,237,0.52)");
     button.addEventListener("click", capturePriceQuotePageToWorkbench);
-    document.documentElement.appendChild(button);
+    content.appendChild(button);
   }
 
   function refreshPriceQuoteCaptureButton() {
@@ -659,7 +638,9 @@
 
   function renderProductListCaptureButton() {
     if (!isSupportedProductListPage()) return;
-    if (document.getElementById("temu-workbench-product-list-capture")) {
+    const content = floatContentRoot();
+    if (!content) return;
+    if (content.querySelector("#temu-workbench-product-list-capture")) {
       renderProductListCancelButton();
       return;
     }
@@ -667,23 +648,7 @@
     button.id = "temu-workbench-product-list-capture";
     button.type = "button";
     button.textContent = is1688ProductListPage() ? "整页采集（万邦）" : "批量采集本页";
-    button.style.cssText = [
-      "position:fixed",
-      "left:14px",
-      "bottom:96px",
-      "z-index:2147483647",
-      "height:36px",
-      "max-width:180px",
-      "box-sizing:border-box",
-      "padding:0 13px",
-      "border:1px solid rgba(37,99,235,0.48)",
-      "border-radius:8px",
-      "background:#2563eb",
-      "box-shadow:0 10px 24px rgba(16,26,43,0.22)",
-      "color:#ffffff",
-      "font:700 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif",
-      "cursor:pointer"
-    ].join(";");
+    button.style.cssText = panelButtonStyle("#2563eb", "rgba(37,99,235,0.48)");
     button.addEventListener("click", () => {
       if (is1688ProductListPage()) {
         prepare1688OneboundPageCapture();
@@ -691,7 +656,7 @@
       }
       captureProductListToWorkbench();
     });
-    document.documentElement.appendChild(button);
+    content.appendChild(button);
     renderProductListCancelButton();
   }
 
@@ -703,7 +668,7 @@
     button.textContent = "中断采集";
     button.style.cssText = [
       "position:fixed",
-      "left:14px",
+      "right:14px",
       "bottom:138px",
       "z-index:2147483647",
       "height:34px",
@@ -1096,5 +1061,189 @@
       setProductListCancelButtonState(false);
       window.setTimeout(refreshProductListCaptureButton, 3200);
     }
+  }
+
+  // ===== 悬浮抽屉式操作面板 =====
+  function panelButtonStyle(background, border) {
+    return [
+      "display:block",
+      "width:100%",
+      "box-sizing:border-box",
+      "padding:9px 12px",
+      "margin-bottom:8px",
+      "border-radius:8px",
+      "border:1px solid " + border,
+      "background:" + background,
+      "color:#ffffff",
+      "text-align:left",
+      "font:700 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif",
+      "cursor:pointer"
+    ].join(";");
+  }
+
+  function floatContentRoot() {
+    return document.getElementById("temu-workbench-float-content");
+  }
+
+  function initFloatingControls() {
+    if (document.getElementById("temu-workbench-float-handle")) return;
+
+    const handle = document.createElement("button");
+    handle.id = "temu-workbench-float-handle";
+    handle.type = "button";
+    handle.setAttribute("aria-label", "AI 工作台采集");
+    handle.setAttribute("aria-expanded", "true");
+    handle.textContent = "AI";
+    handle.title = "AI 工作台采集（点击展开/收起，拖拽可移动位置）";
+    handle.style.cssText = [
+      "position:fixed",
+      "right:20px",
+      "bottom:80px",
+      "z-index:2147483647",
+      "width:" + FLOAT_HANDLE_SIZE + "px",
+      "height:" + FLOAT_HANDLE_SIZE + "px",
+      "border-radius:999px",
+      "border:1px solid rgba(15,159,154,0.6)",
+      "background:#0f9f9a",
+      "color:#ffffff",
+      "font:800 20px/1 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif",
+      "display:flex",
+      "align-items:center",
+      "justify-content:center",
+      "cursor:grab",
+      "box-shadow:0 8px 22px rgba(16,26,43,0.28)",
+      "user-select:none"
+    ].join(";");
+
+    const panel = document.createElement("div");
+    panel.id = "temu-workbench-float-panel";
+    panel.setAttribute("role", "dialog");
+    panel.style.cssText = [
+      "position:fixed",
+      "right:74px",
+      "bottom:80px",
+      "z-index:2147483647",
+      "width:min(236px,calc(100vw - 104px))",
+      "box-sizing:border-box",
+      "padding:10px",
+      "border:1px solid rgba(15,159,154,0.36)",
+      "border-radius:10px",
+      "background:rgba(255,255,255,0.98)",
+      "box-shadow:0 12px 30px rgba(16,26,43,0.22)",
+      "color:#102033",
+      "font:12px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif"
+    ].join(";");
+    const content = document.createElement("div");
+    content.id = "temu-workbench-float-content";
+    panel.appendChild(content);
+
+    document.documentElement.appendChild(handle);
+    document.documentElement.appendChild(panel);
+
+    floatHandleEl = handle;
+    floatPanelEl = panel;
+
+    // 恢复拖拽位置（转成 left/top 定位）
+    try {
+      const saved = JSON.parse(localStorage.getItem(FLOAT_POSITION_KEY) || "null");
+      if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+        positionHandle(saved.x, saved.y);
+      }
+    } catch (_error) {
+      localStorage.removeItem(FLOAT_POSITION_KEY);
+    }
+    positionPanelRelativeToHandle();
+
+    handle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (floatDrag.moved) {
+        floatDrag.moved = false;
+        return;
+      }
+      toggleFloatPanel();
+    });
+    handle.addEventListener("pointerdown", startHandleDrag);
+    document.addEventListener("pointermove", onHandleDrag);
+    document.addEventListener("pointerup", endHandleDrag);
+    document.addEventListener("click", onDocumentClickForFloat);
+    window.addEventListener("resize", positionPanelRelativeToHandle);
+  }
+
+  function toggleFloatPanel() {
+    floatOpen = !floatOpen;
+    if (!floatPanelEl) return;
+    floatPanelEl.style.display = floatOpen ? "block" : "none";
+    if (floatHandleEl) floatHandleEl.setAttribute("aria-expanded", String(floatOpen));
+    if (floatOpen) positionPanelRelativeToHandle();
+  }
+
+  function onDocumentClickForFloat(event) {
+    if (!floatOpen || !floatPanelEl) return;
+    if (!floatPanelEl.contains(event.target) && event.target !== floatHandleEl) {
+      toggleFloatPanel();
+    }
+  }
+
+  function startHandleDrag(event) {
+    if (event.button !== 0 || !floatHandleEl) return;
+    const rect = floatHandleEl.getBoundingClientRect();
+    floatDrag.active = true;
+    floatDrag.moved = false;
+    floatDrag.startX = event.clientX;
+    floatDrag.startY = event.clientY;
+    floatDrag.originLeft = rect.left;
+    floatDrag.originTop = rect.top;
+    floatHandleEl.style.cursor = "grabbing";
+    event.preventDefault();
+  }
+
+  function onHandleDrag(event) {
+    if (!floatDrag.active || !floatHandleEl) return;
+    const dx = event.clientX - floatDrag.startX;
+    const dy = event.clientY - floatDrag.startY;
+    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) floatDrag.moved = true;
+    const left = clampHandlePosition(floatDrag.originLeft + dx, window.innerWidth - FLOAT_HANDLE_SIZE);
+    const top = clampHandlePosition(floatDrag.originTop + dy, window.innerHeight - FLOAT_HANDLE_SIZE);
+    positionHandle(left, top);
+    positionPanelRelativeToHandle();
+  }
+
+  function endHandleDrag() {
+    if (!floatDrag.active) return;
+    floatDrag.active = false;
+    if (floatHandleEl) floatHandleEl.style.cursor = "grab";
+    try {
+      localStorage.setItem(FLOAT_POSITION_KEY, JSON.stringify({ x: floatHandleEl.offsetLeft, y: floatHandleEl.offsetTop }));
+    } catch (_error) {
+      // 存储不可用时忽略，仅本次页面内移动
+    }
+  }
+
+  function positionHandle(left, top) {
+    if (!floatHandleEl) return;
+    floatHandleEl.style.left = String(Math.round(left)) + "px";
+    floatHandleEl.style.top = String(Math.round(top)) + "px";
+    floatHandleEl.style.right = "auto";
+    floatHandleEl.style.bottom = "auto";
+  }
+
+  function clampHandlePosition(value, max) {
+    return Math.max(0, Math.min(Math.round(value), Math.max(0, max)));
+  }
+
+  function positionPanelRelativeToHandle() {
+    if (!floatHandleEl || !floatPanelEl) return;
+    const rect = floatHandleEl.getBoundingClientRect();
+    const panelWidth = Math.min(236, window.innerWidth - 104);
+    const gap = 8;
+    let left = rect.right + gap;
+    if (left + panelWidth > window.innerWidth - 8) {
+      left = Math.max(8, rect.left - panelWidth - gap);
+    }
+    const top = Math.max(8, Math.min(rect.top, window.innerHeight - 240));
+    floatPanelEl.style.left = String(Math.round(left)) + "px";
+    floatPanelEl.style.top = String(Math.round(top)) + "px";
+    floatPanelEl.style.right = "auto";
+    floatPanelEl.style.bottom = "auto";
   }
 })();
