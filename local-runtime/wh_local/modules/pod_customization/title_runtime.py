@@ -406,6 +406,16 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
                 "accepted_titles: do not use a six-word prefix with five or more aligned words matching an "
                 "accepted title. Avoid dangling connectors and dangling punctuation."
             ),
+            "title_generation_recipe": (
+                "Plan silently before writing. First choose a distinct visual lead of two to five meaningful words "
+                "that is visibly grounded in this image and differs from accepted_titles. Then build the title in "
+                "this order: distinct visual lead; accurate product type; one or two visible or supplied factual "
+                "details such as motif, material, color, or use; a complete final qualifier. Aim for 95-160 ASCII "
+                "characters, leaving room below the 200-character limit. Silently check before output that the title "
+                "has six meaningful words, no five-of-six aligned prefix match with accepted_titles, no prohibited "
+                "term, and no dangling connector, punctuation, or unbalanced bracket. Do not output this plan or a "
+                "checklist."
+            ),
             "output_json_keys": [
                 "title",
                 "english_title",
@@ -430,8 +440,9 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
         "instructions": (
             "Use the cropped hero image as visual evidence. The title field is the canonical US English marketplace "
             "listing title and must be an ASCII 80-200-character complete natural noun phrase. Begin it with a "
-            "leading visual segment grounded in the image. Avoid an accepted title when five or more of the first "
-            "six meaningful words match in the same positions. Do not end it with a dangling connector or punctuation. "
+            "leading visual segment grounded in the image. Follow title_generation_recipe exactly and aim for 95-160 "
+            "characters. Avoid an accepted title when five or more of the first six meaningful words match in the same "
+            "positions. Do not end it with a dangling connector or punctuation. "
             "Generate title, english_title, and description "
             "together in this single response. Return exactly one JSON object, "
             "no Markdown or extra keys."

@@ -514,6 +514,11 @@ def test_title_request_contract_requires_distinct_complete_listing_phrases() -> 
     assert "complete" in lowered and "noun phrase" in lowered
     assert "leading visual segment" in lowered
     assert re.search(r"accepted_titles.{0,160}prefix|prefix.{0,160}accepted_titles", lowered)
+    assert "title_generation_recipe" in lowered
+    assert "95-160" in lowered
+    assert "silently check before output" in lowered
+    assert "distinct visual lead" in lowered
+    assert "product type" in lowered
 
 
 def test_title_validator_rejects_a_matching_meaningful_word_prefix() -> None:
