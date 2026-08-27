@@ -140,6 +140,58 @@ class ListingOnlyRuntime(FakePodRuntime):
         raise AssertionError("style-grid v2 must use the reference-locked direct listing runtime")
 
 
+class BlockingListingRuntime(ListingOnlyRuntime):
+    def __init__(self, grids: list[bytes]) -> None:
+        super().__init__(grids)
+        self.executor.shutdown(wait=True, cancel_futures=True)
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="blocking-pod-ai")
+        self.first_request_started = threading.Event()
+        self.allow_first_request_to_finish = threading.Event()
+
+    def generate_listing_grid(self, request, *, grant=None, call_id="") -> GeneratedMedia:
+        assert grant is not None and grant.provider_key("wuyin")
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            self.first_request_started.set()
+            assert self.allow_first_request_to_finish.wait(timeout=2)
+        if not self.grids:
+            raise RuntimeError("no fake listing grid remains")
+        return GeneratedMedia(
+            stage="grid_image",
+            content=self.grids.pop(0),
+            content_type="image/png",
+            suffix=".png",
+            provider="fake-listing",
+            model=request.model_id,
+            reference_count=1,
+        )
+
+
+class BeforeSubmitListingRuntime(ListingOnlyRuntime):
+    def __init__(self, grids: list[bytes]) -> None:
+        super().__init__(grids)
+        self.executor.shutdown(wait=True, cancel_futures=True)
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="before-submit-pod-ai")
+        self.before_provider_submit = threading.Event()
+        self.allow_provider_submit = threading.Event()
+
+    def generate_listing_grid(self, request, *, grant=None, call_id="", on_start=None) -> GeneratedMedia:
+        assert on_start is not None
+        self.before_provider_submit.set()
+        assert self.allow_provider_submit.wait(timeout=2)
+        on_start()
+        self.requests.append(request)
+        return GeneratedMedia(
+            stage="grid_image",
+            content=self.grids.pop(0),
+            content_type="image/png",
+            suffix=".png",
+            provider="fake-listing",
+            model=request.model_id,
+            reference_count=1,
+        )
+
+
 def _actor() -> Actor:
     return Actor(id="designer-1", username="designer", role="admin", workspace_id="workspace-a")
 
@@ -248,7 +300,7 @@ def test_worker_without_in_memory_grant_pauses_for_billing_auth(tmp_path: Path) 
     runtime.close()
 
 
-def test_settlement_network_failure_moves_batch_to_pending(tmp_path: Path) -> None:
+def test_settlement_network_failure_keeps_generation_result_retryable(tmp_path: Path) -> None:
     runtime = ListingOnlyRuntime([_grid([_pattern(index) for index in range(4)])])
     service = _service(tmp_path, runtime, FailingSettlementCoordinator())
     actor = _actor()
@@ -258,8 +310,10 @@ def test_settlement_network_failure_moves_batch_to_pending(tmp_path: Path) -> No
     service.worker.process_batch(batch["id"])
 
     stored = service.get_batch(actor, batch["id"])
-    assert stored["status"] == "settlement_pending"
-    assert "billing network unavailable" in stored["error_message"]
+    assert stored["status"] == "completed"
+    pending = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
+    assert pending[0]["status"] == "settlement_pending"
+    assert "billing network unavailable" in pending[0]["error_message"]
     service.close()
     runtime.close()
 
@@ -761,10 +815,10 @@ def test_billing_resume_claim_is_atomic_for_concurrent_requests(tmp_path: Path) 
     runtime.close()
 
 
-def _batch_request_for_test(template_id: str) -> BatchCreate:
+def _batch_request_for_test(template_id: str, *, count: int = 1) -> BatchCreate:
     return BatchCreate(
         template_id=template_id,
-        count=1,
+        count=count,
         prompt_version="v1",
         business_fields=BusinessFields(product_name="Tote bag", product_category="bags"),
         listing_fields=ListingFields(
@@ -859,7 +913,10 @@ def _prepare_batch_retry_candidates(service: PodCustomizationService, batch_id: 
         )
 
 
-def test_batch_retry_claims_mixed_image_and_title_failures_in_one_durable_action(tmp_path: Path) -> None:
+@pytest.mark.parametrize("terminal_status", ["partial_failure", "cancelled"])
+def test_batch_retry_claims_mixed_image_and_title_failures_in_one_durable_action(
+    tmp_path: Path, terminal_status: str
+) -> None:
     runtime = ListingOnlyRuntime([])
     billing = BillingCoordinator()
     service = _service(tmp_path, runtime, billing, title_runtime=object())
@@ -867,6 +924,11 @@ def test_batch_retry_claims_mixed_image_and_title_failures_in_one_durable_action
     template = _ready_template(service, actor)
     batch = _create_batch(service, actor, template["id"])
     _prepare_batch_retry_candidates(service, batch["id"])
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_batches SET status = ? WHERE batch_id = ?",
+            (terminal_status, batch["id"]),
+        )
     submitted: list[tuple[object, ...]] = []
     service.worker.submit_batch_retry = lambda *args: submitted.append(args)
 
@@ -904,7 +966,7 @@ def test_batch_retry_claims_mixed_image_and_title_failures_in_one_durable_action
     runtime.close()
 
 
-@pytest.mark.parametrize("blocked_status", ["billing_auth_required", "settlement_pending"])
+@pytest.mark.parametrize("blocked_status", ["billing_auth_required"])
 def test_batch_retry_rejects_billing_interrupted_batch_before_freezing(
     tmp_path: Path, blocked_status: str
 ) -> None:
@@ -931,6 +993,32 @@ def test_batch_retry_rejects_billing_interrupted_batch_before_freezing(
     # 预检在冻结前拒绝：除初始批次创建外，未新增任何计费任务。
     assert len(billing.freezes) == 1
     assert service.get_batch(actor, batch["id"])["status"] == blocked_status
+    service.close()
+    runtime.close()
+
+
+def test_batch_retry_allows_settlement_pending_batch_before_old_billing_is_recovered(
+    tmp_path: Path,
+) -> None:
+    runtime = ListingOnlyRuntime([])
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing, title_runtime=object())
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"])
+    _prepare_batch_retry_candidates(service, batch["id"])
+    with service.repository._connect() as connection:
+        connection.execute(
+            """UPDATE pod_customization_batches
+               SET status = 'settlement_pending' WHERE batch_id = ?""",
+            (batch["id"],),
+        )
+    service.worker.submit_batch_retry = lambda *_args: None
+
+    service.retry_failed(actor, batch["id"], image_style_indices=[1], title_style_indices=[2])
+
+    assert len(billing.freezes) == 2
+    assert service.get_batch(actor, batch["id"])["status"] == "generating_patterns"
     service.close()
     runtime.close()
 
@@ -1251,5 +1339,231 @@ def test_completed_whole_style_retry_is_rejected_without_freezing_or_mutating(tm
     assert captured.value.status_code == 409
     assert len(billing.freezes) == freezes_before
     assert after_items == before_items
+    service.close()
+    runtime.close()
+
+
+def test_batch_pause_cancel_resume_state_transitions(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+    batch_id = batch["id"]
+
+    # 运行中的批次可以请求暂停。
+    assert service.repository.request_pause(batch_id) is True
+    assert service.repository.get_batch_status(batch_id) == "pausing"
+    # 工作线程在检查点确认后落入 paused，保留已入库进度并可继续。
+    service.repository.mark_batch_paused(batch_id, "已暂停")
+    assert service.repository.get_batch_status(batch_id) == "paused"
+    assert service.repository.resume_paused_batch(batch_id) is True
+    assert service.repository.get_batch_status(batch_id) == "queued"
+
+    # 取消终态不可通过恢复继续。
+    assert service.repository.request_cancel(batch_id) is True
+    assert service.repository.get_batch_status(batch_id) == "cancelling"
+    service.repository.mark_batch_cancelled(batch_id, "已取消")
+    assert service.repository.get_batch_status(batch_id) == "cancelled"
+    assert service.repository.resume_paused_batch(batch_id) is False
+
+    service.close()
+    runtime.close()
+
+
+def test_pause_and_cancel_batch_service_guard_invalid_states(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+    batch_id = batch["id"]
+
+    assert service.pause_batch(actor, batch_id)["status"] == "pausing"
+    # 未经继续落盘，仅 pausing 的批次不可继续。
+    with pytest.raises(PodRepositoryError, match="仅已暂停的 POD 批次可以继续"):
+        service.resume_batch(actor, batch_id)
+
+    service.repository.mark_batch_paused(batch_id, "已暂停")
+    # 已暂停批次可以直接取消，且会同步落盘为 cancelled 终态。
+    assert service.cancel_batch(actor, batch_id)["status"] == "cancelled"
+    assert service.repository.get_batch_status(batch_id) == "cancelled"
+
+    service.close()
+    runtime.close()
+
+
+def test_cancel_batch_finishes_when_no_worker_is_running(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = PodCustomizationService(
+        tmp_path / "workbench.sqlite3",
+        tmp_path / "pod-assets",
+        runtime,
+        start_workers=False,
+    )
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+
+    cancelled = service.cancel_batch(actor, batch["id"])
+
+    assert cancelled["status"] == "cancelled"
+    assert service.repository.get_batch_status(batch["id"]) == "cancelled"
+
+    service.close()
+    runtime.close()
+
+
+def test_cancel_batch_recovers_an_abandoned_cancelling_state(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = PodCustomizationService(
+        tmp_path / "workbench.sqlite3",
+        tmp_path / "pod-assets",
+        runtime,
+        start_workers=False,
+    )
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+    with service.repository._connect() as connection:
+        connection.execute(
+            """UPDATE pod_customization_style_grid_results
+               SET status = 'completed', pattern_asset_id = 'pattern', composite_asset_id = 'composite'
+               WHERE batch_id = ? AND style_index = 1""",
+            (batch["id"],),
+        )
+        rows = connection.execute(
+            """SELECT result_id, variant_index FROM pod_customization_style_grid_results
+               WHERE batch_id = ? AND style_index = 1""",
+            (batch["id"],),
+        ).fetchall()
+        connection.executemany(
+            """INSERT INTO pod_customization_style_grid_publications
+               (result_id, role, public_url, updated_at)
+               VALUES (?, ?, ?, datetime('now'))""",
+            [
+                (row["result_id"], f"role-{row['variant_index']}", f"https://example.test/{row['variant_index']}")
+                for row in rows
+            ],
+        )
+    service.repository.claim_style_title(batch["id"], 1)
+    assert service.repository.request_cancel(batch["id"]) is True
+
+    cancelled = service.cancel_batch(actor, batch["id"])
+
+    assert cancelled["status"] == "cancelled"
+    assert service.repository.get_batch_status(batch["id"]) == "cancelled"
+    assert cancelled["style_titles"][0]["status"] == "failed"
+
+    service.close()
+    runtime.close()
+
+
+def test_resume_batch_requires_pending_billing_run(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+    batch_id = batch["id"]
+
+    service.repository.request_pause(batch_id)
+    service.repository.mark_batch_paused(batch_id, "已暂停")
+    # 计费 run 已结算后不再可恢复，继续应被拒绝。
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_billing_runs SET status = 'settled' WHERE batch_id = ?",
+            (batch_id,),
+        )
+    with pytest.raises(PodRepositoryError, match="缺少可恢复的计费授权"):
+        service.resume_batch(actor, batch_id)
+    # 批次仍处于 paused，未被误改。
+    assert service.repository.get_batch_status(batch_id) == "paused"
+
+    service.close()
+    runtime.close()
+
+
+def test_pause_drains_submitted_style_without_submitting_the_next_style(tmp_path: Path) -> None:
+    runtime = BlockingListingRuntime([
+        _grid([_pattern(index) for index in range(4)]),
+        _grid([_pattern(index + 10) for index in range(4)]),
+    ])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"], count=2), enqueue=False)
+
+    future = service.worker.submit(batch["id"])
+    assert runtime.first_request_started.wait(timeout=1)
+    assert service.pause_batch(actor, batch["id"])["status"] == "pausing"
+    runtime.allow_first_request_to_finish.set()
+    future.result(timeout=2)
+
+    stored = service.get_batch(actor, batch["id"])
+    assert len(runtime.requests) == 1
+    assert stored["status"] == "paused"
+    assert stored["completed_count"] == 1
+    assert stored["items"][4]["status"] == "queued"
+    service.close()
+    runtime.close()
+
+
+def test_pause_before_provider_submit_keeps_the_image_call_planned(tmp_path: Path) -> None:
+    runtime = BeforeSubmitListingRuntime([_grid([_pattern(index) for index in range(4)])])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+
+    future = service.worker.submit(batch["id"])
+    assert runtime.before_provider_submit.wait(timeout=1)
+    assert service.pause_batch(actor, batch["id"])["status"] == "pausing"
+    runtime.allow_provider_submit.set()
+    future.result(timeout=2)
+
+    stored = service.get_batch(actor, batch["id"])
+    assert runtime.requests == []
+    assert stored["status"] == "paused"
+    with service.repository._connect() as connection:
+        status = connection.execute(
+            "SELECT status FROM pod_customization_generation_calls WHERE batch_id = ?",
+            (batch["id"],),
+        ).fetchone()[0]
+    assert status == "queued"
+    service.close()
+    runtime.close()
+
+
+def test_resume_after_pause_submits_only_the_remaining_style(tmp_path: Path) -> None:
+    runtime = BlockingListingRuntime([
+        _grid([_pattern(index) for index in range(4)]),
+        _grid([_pattern(index + 10) for index in range(4)]),
+    ])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"], count=2), enqueue=False)
+
+    future = service.worker.submit(batch["id"])
+    assert runtime.first_request_started.wait(timeout=1)
+    service.pause_batch(actor, batch["id"])
+    runtime.allow_first_request_to_finish.set()
+    future.result(timeout=2)
+    assert len(runtime.requests) == 1
+
+    service.resume_batch(actor, batch["id"])
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        stored = service.get_batch(actor, batch["id"])
+        if stored["status"] in {"completed", "partial_failure", "failed"}:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("resumed POD batch did not settle")
+
+    assert stored["status"] == "completed"
+    assert len(runtime.requests) == 2
+    assert stored["completed_count"] == 2
     service.close()
     runtime.close()

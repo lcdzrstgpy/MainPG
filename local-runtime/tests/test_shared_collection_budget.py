@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from wh_local.data_collection.budget import SQLiteDailyApiBudget
+from wh_local.data_collection.budget import UnlimitedApiBudget
 
 
-def test_persistent_collection_budget_start_does_not_reset_daily_usage(tmp_path: Path) -> None:
-    budget = SQLiteDailyApiBudget(tmp_path / "budget.sqlite3")
+def test_unlimited_collection_budget_never_rejects_calls() -> None:
+    budget = UnlimitedApiBudget()
     fingerprint = "a" * 64
     first = budget.reserve(
         workspace_id="workspace-1",
@@ -26,4 +26,4 @@ def test_persistent_collection_budget_start_does_not_reset_daily_usage(tmp_path:
 
     assert first.reservation_granted is True
     assert second.reservation_granted is True
-    assert denied.reservation_granted is False
+    assert denied.reservation_granted is True

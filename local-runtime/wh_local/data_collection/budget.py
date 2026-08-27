@@ -44,6 +44,58 @@ class BudgetState:
     reservation_granted: bool = False
 
 
+class UnlimitedApiBudget:
+    """Compatibility adapter that records no local OneBound call limit."""
+
+    def start(self) -> None:
+        return None
+
+    def reserve(
+        self,
+        *,
+        workspace_id: str,
+        provider_fingerprint: str,
+        max_api_calls: int,
+        api_calls: int = 1,
+        now: datetime | None = None,
+    ) -> BudgetState:
+        return self._state(workspace_id, provider_fingerprint, now)
+
+    def state(
+        self,
+        *,
+        workspace_id: str,
+        provider_fingerprint: str,
+        max_api_calls: int,
+        now: datetime | None = None,
+    ) -> BudgetState:
+        return self._state(workspace_id, provider_fingerprint, now)
+
+    def release(
+        self,
+        *,
+        workspace_id: str,
+        provider_fingerprint: str,
+        max_api_calls: int,
+        api_calls: int,
+        now: datetime | None = None,
+    ) -> BudgetState:
+        return self._state(workspace_id, provider_fingerprint, now)
+
+    @staticmethod
+    def _state(workspace_id: str, provider_fingerprint: str, now: datetime | None) -> BudgetState:
+        return BudgetState(
+            allowed=True,
+            reservation_granted=True,
+            workspace_id=_required_text(workspace_id, "workspace_id"),
+            provider_fingerprint=_provider_fingerprint(provider_fingerprint),
+            shanghai_date=_shanghai_date(now),
+            api_calls_limit=0,
+            api_calls_used=0,
+            api_calls_remaining=0,
+        )
+
+
 class SQLiteDailyApiBudget:
     """Atomically reserve call slots for a workspace/provider/day ledger key."""
 

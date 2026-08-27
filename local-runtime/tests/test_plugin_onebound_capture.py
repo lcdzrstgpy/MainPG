@@ -311,7 +311,7 @@ def test_start_missing_batch_token_is_a_validation_error(tmp_path: Path) -> None
     assert response.status_code == 422
 
 
-def test_budget_exhaustion_marks_batch_fatal_and_stops_future_items(tmp_path: Path) -> None:
+def test_exhausted_local_budget_does_not_block_onebound_capture(tmp_path: Path) -> None:
     from wh_local.data_collection.plugin_onebound_capture import (
         PluginOneBoundCaptureDependencies,
         register_plugin_onebound_capture_routes,
@@ -352,9 +352,9 @@ def test_budget_exhaustion_marks_batch_fatal_and_stops_future_items(tmp_path: Pa
         **batch, "source_url": "https://detail.1688.com/offer/87654321.html",
     })
 
-    assert first.status_code == 429
-    assert second.status_code == 429
-    assert provider.calls == 0
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert provider.calls == 2
 
 
 def test_finish_closes_the_batch_waits_for_inflight_item_and_materializes_once(tmp_path: Path) -> None:
@@ -594,7 +594,7 @@ def test_capture_produces_candidate_not_draft_and_finish_is_idempotent(tmp_path:
     assert drafts.materialized == []
 
 
-def test_start_installs_one_provider_guard_for_the_entire_batch(tmp_path: Path) -> None:
+def test_start_does_not_install_a_local_provider_budget_guard(tmp_path: Path) -> None:
     from wh_local.data_collection.plugin_onebound_capture import (
         PluginOneBoundCaptureDependencies,
         PluginOneBoundCaptureService,
@@ -629,7 +629,7 @@ def test_start_installs_one_provider_guard_for_the_entire_batch(tmp_path: Path) 
     service.start(session_token=session["session_token"], batch_token=prepared["batch_token"])
     service.start(session_token=session["session_token"], batch_token=prepared["batch_token"])
 
-    assert provider.guards == 1
+    assert provider.guards == 0
 
 
 def test_ttl_finalizer_closes_before_waiting_for_an_inflight_item(tmp_path: Path) -> None:
@@ -976,7 +976,7 @@ def test_desktop_start_button_executes_a_prepared_batch_through_onebound(tmp_pat
     assert batch["status"] == "completed"
     assert batch["created_count"] == 0
     assert provider.calls == 2
-    assert len(budget.calls) == 2
+    assert budget.calls == []
     assert drafts.intakes == []
 
 
@@ -1361,7 +1361,7 @@ def test_retry_failed_rejects_a_parent_without_failed_items(tmp_path: Path) -> N
     assert response.status_code == 409
 
 
-def test_retry_failed_returns_child_then_runs_onebound_under_shared_budget(tmp_path: Path) -> None:
+def test_retry_failed_returns_child_then_runs_onebound_without_local_budget(tmp_path: Path) -> None:
     class FailFirstProvider(_Provider):
         def get_item_detail(self, offer_id: str):
             self.calls += 1
@@ -1395,7 +1395,7 @@ def test_retry_failed_returns_child_then_runs_onebound_under_shared_budget(tmp_p
     assert child["status"] == "completed"
     assert child["created_count"] == 0
     assert provider.calls >= 2
-    assert len(budget.calls) >= 2
+    assert budget.calls == []
     assert drafts.intakes == []
 
 
@@ -1677,7 +1677,7 @@ def test_retry_api_reuses_existing_child_without_second_provider_call(tmp_path: 
     assert first.status_code == second.status_code == 202
     assert first.json()["batch"]["batch_id"] == second.json()["batch"]["batch_id"]
     assert provider.calls == 1
-    assert len(budget.calls) == 1
+    assert budget.calls == []
 
 
 def test_concurrent_retry_preparation_creates_exactly_one_child(tmp_path: Path) -> None:

@@ -108,7 +108,7 @@ def test_worker_pages_sequentially_deduplicates_and_caps_detail_concurrency_at_t
     assert len(set(intakes)) == 8
 
 
-def test_worker_reserves_shared_api_budget_before_listing_and_detail_calls(
+def test_worker_does_not_reserve_local_api_budget_before_listing_and_detail_calls(
     tmp_path: Path,
 ) -> None:
     repository = _repository(tmp_path)
@@ -143,19 +143,14 @@ def test_worker_reserves_shared_api_budget_before_listing_and_detail_calls(
 
     worker.process_batch("batch-budget")
 
-    assert [call["api_calls"] for call in budget.calls] == [1, 1]
-    assert {call["workspace_id"] for call in budget.calls} == {"default"}
-    assert len({call["provider_fingerprint"] for call in budget.calls}) == 1
+    assert budget.calls == []
     with connect(repository.database_path) as connection:
         operations = connection.execute(
             """SELECT operation, reservation_granted
             FROM shop_collection_api_calls
             WHERE batch_id = 'batch-budget' ORDER BY call_id"""
         ).fetchall()
-    assert [(row["operation"], row["reservation_granted"]) for row in operations] == [
-        ("item_search_shop", 1),
-        ("item_get", 1),
-    ]
+    assert operations == []
 
 
 def test_failed_details_make_partial_batch_and_retry_only_failed_items(tmp_path: Path) -> None:

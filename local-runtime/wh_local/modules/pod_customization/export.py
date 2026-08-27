@@ -14,8 +14,8 @@ from .title_runtime import validate_listing_copy_text
 
 LISTING_IMAGE_ROLES = ("hero", "detail_a", "detail_b", "lifestyle")
 LISTING_PRESENTATION_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
-SETTLED_BATCH_STATUSES = frozenset({"completed", "partial_failure", "failed"})
-# 计费/结算中断批次：管线被中断而非正常生成完成，只有所有款式都完整时才能导出。
+SETTLED_BATCH_STATUSES = frozenset({"completed", "partial_failure", "failed", "cancelled"})
+# 账务任务与生成结果独立；已生成的完整款式可正常导出，未结算账务由其自身恢复操作处理。
 BILLING_INTERRUPTED_BATCH_STATUSES = frozenset({"billing_auth_required", "settlement_pending"})
 EXPORT_CANDIDATE_BATCH_STATUSES = SETTLED_BATCH_STATUSES | BILLING_INTERRUPTED_BATCH_STATUSES
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -84,13 +84,6 @@ def analyze_dianxiaomi_export(
         structurally_complete.add(style_index)
         if _is_complete_style_copy(style_copies.get(style_index)):
             exportable[style_index] = images
-
-    if status in BILLING_INTERRUPTED_BATCH_STATUSES:
-        # 授权/结算中断不改变导出资格判定：只有所有款式的图片、标题与上架文案都完整时
-        # 才允许导出；仍存在未完成款式时视为尚未完成生成，需恢复计费授权后继续。
-        if len(exportable) == requested_count:
-            return ExportAnalysis(exportable, 0, None)
-        return ExportAnalysis(exportable, requested_count - len(exportable), "billing_recovery_required")
 
     if exportable:
         return ExportAnalysis(exportable, requested_count - len(exportable), None)

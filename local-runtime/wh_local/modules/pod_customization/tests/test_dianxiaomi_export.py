@@ -555,6 +555,30 @@ def test_completed_style_without_copy_is_skipped_when_another_style_is_exportabl
     assert exported.skipped_style_count == 1
 
 
+def test_cancelled_batch_exports_the_styles_that_completed_before_cancellation(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    batch = _batch(service, actor, count=2)
+    _complete_style(service, batch["id"], 1)
+    _settle(service, batch["id"], "cancelled")
+    service.repository.upsert_style_copy(
+        batch["id"], actor.workspace_id, actor.id, 1,
+        title="Title", english_title="English", description="Description",
+    )
+
+    payload = service.get_batch(actor, batch["id"])
+    exported = service.export_dianxiaomi(actor, batch["id"])
+
+    assert payload["dianxiaomi_export"] == {
+        "ready": True,
+        "exportable_style_count": 1,
+        "skipped_style_count": 1,
+        "block_reason": None,
+    }
+    assert exported.exported_style_count == 1
+    assert exported.skipped_style_count == 1
+
+
 def test_billing_auth_required_complete_batch_is_exportable(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
@@ -598,23 +622,29 @@ def test_settlement_pending_complete_batch_is_exportable(tmp_path: Path) -> None
     assert exported.exported_style_count == 1
 
 
-def test_billing_auth_required_incomplete_batch_blocks_export(tmp_path: Path) -> None:
+def test_billing_auth_required_incomplete_batch_exports_ready_styles(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
     batch = _batch(service, actor, count=1)
     _complete_style(service, batch["id"], 1)
     _settle(service, batch["id"], "billing_auth_required")
+    service.repository.upsert_style_copy(
+        batch["id"], actor.workspace_id, actor.id, 1,
+        title="Coastal Tote", english_title="Coastal Canvas Tote", description="Carry calm everywhere.",
+    )
 
     payload = service.get_batch(actor, batch["id"])
 
-    assert payload["dianxiaomi_export"]["ready"] is False
-    assert payload["dianxiaomi_export"]["block_reason"] == "billing_recovery_required"
-    with pytest.raises(PodRepositoryError, match="requires billing authorization") as raised:
-        service.export_dianxiaomi(actor, batch["id"])
-    assert raised.value.status_code == 409
+    assert payload["dianxiaomi_export"] == {
+        "ready": True,
+        "exportable_style_count": 1,
+        "skipped_style_count": 0,
+        "block_reason": None,
+    }
+    assert service.export_dianxiaomi(actor, batch["id"]).exported_style_count == 1
 
 
-def test_settlement_pending_batch_with_incomplete_styles_blocks_export(tmp_path: Path) -> None:
+def test_settlement_pending_batch_with_incomplete_styles_exports_ready_styles(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
     batch = _batch(service, actor, count=2)
@@ -627,12 +657,15 @@ def test_settlement_pending_batch_with_incomplete_styles_blocks_export(tmp_path:
 
     payload = service.get_batch(actor, batch["id"])
 
-    # 只完成 1/2 款：即使其中一款已完整，中断批次也不作为完整批次导出。
-    assert payload["dianxiaomi_export"]["ready"] is False
-    assert payload["dianxiaomi_export"]["block_reason"] == "billing_recovery_required"
-    with pytest.raises(PodRepositoryError) as raised:
-        service.export_dianxiaomi(actor, batch["id"])
-    assert raised.value.status_code == 409
+    assert payload["dianxiaomi_export"] == {
+        "ready": True,
+        "exportable_style_count": 1,
+        "skipped_style_count": 1,
+        "block_reason": None,
+    }
+    exported = service.export_dianxiaomi(actor, batch["id"])
+    assert exported.exported_style_count == 1
+    assert exported.skipped_style_count == 1
 
 
 @pytest.mark.parametrize(

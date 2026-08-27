@@ -133,6 +133,8 @@ test("POD page opens a batch failed-retry dialog and refreshes the batch after s
   assert.match(source, /const \[failedRetryOpen, setFailedRetryOpen\] = useState\(false\);/);
   assert.match(source, /podCustomizationApi\.retryFailed\(activeBatch\.id, request\)/);
   assert.match(source, /setNotice\(`已提交图片重试 \$\{request\.image_style_indices\.length\} 款、标题重试 \$\{request\.title_style_indices\.length\} 款。`\)/);
+  assert.doesNotMatch(source, /if \(!canRetryPodBatchFailed\(activeBatch\.status\)\)/);
+  assert.match(source, /catch \(cause\) \{\s*setFailedRetryOpen\(false\);\s*setError/);
   assert.match(source, /onOpenFailedRetry=\{\(\) => setFailedRetryOpen\(true\)\}/);
   assert.match(source, /<PodFailedRetryDialog[\s\S]*?open=\{failedRetryOpen\}/);
 });

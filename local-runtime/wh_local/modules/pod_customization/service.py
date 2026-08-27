@@ -357,7 +357,59 @@ class PodCustomizationService:
         return {"batches": [self._batch_summary(row) for row in rows], "total": total}
 
     def get_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
+        if self.worker is None or not self.worker.is_batch_running(batch_id):
+            self.repository.reconcile_stale_generating_titles(batch_id)
         return self._batch_payload(self.repository.get_batch(batch_id, actor.workspace_id, actor.id))
+
+    def pause_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch["status"] in {"paused", "pausing"}:
+            return self._batch_payload(batch)
+        if not self.repository.request_pause(batch_id):
+            raise PodRepositoryError("仅运行中的 POD 批次可以暂停", 409)
+        return self._batch_payload(self.repository.get_batch(batch_id, actor.workspace_id, actor.id))
+
+    def cancel_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch["status"] == "cancelled":
+            return self._batch_payload(batch)
+        worker_running = self.worker is not None and self.worker.is_batch_running(batch_id)
+
+        def finish_cancelled() -> None:
+            self.repository.fail_remaining_items(batch_id, "POD 批次已取消")
+            self.repository.fail_pending_titles(batch_id, "POD 批次已取消")
+            self.repository.mark_batch_cancelled(batch_id, "POD 批次已取消")
+
+        if batch["status"] == "cancelling":
+            if not worker_running:
+                finish_cancelled()
+                batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+            return self._batch_payload(batch)
+        was_paused = batch["status"] == "paused"
+        if not self.repository.request_cancel(batch_id):
+            raise PodRepositoryError("仅运行中或已暂停的 POD 批次可以取消", 409)
+        if was_paused or not worker_running:
+            # 已暂停或 worker 已退出的批次不会再经过检查点，需同步收尾。
+            finish_cancelled()
+        return self._batch_payload(self.repository.get_batch(batch_id, actor.workspace_id, actor.id))
+
+    def resume_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch["status"] != "paused":
+            raise PodRepositoryError("仅已暂停的 POD 批次可以继续", 409)
+        run = self._pending_billing_run_for_batch(actor, batch_id)
+        if run is None:
+            raise PodRepositoryError("POD 批次缺少可恢复的计费授权，请重新授权后再继续", 409)
+        self.repository.resume_paused_batch(batch_id)
+        self.resume_billing_run(actor, run["run_id"], enqueue=self.start_workers)
+        return self._batch_payload(self.repository.get_batch(batch_id, actor.workspace_id, actor.id))
+
+    def _pending_billing_run_for_batch(self, actor: Actor, batch_id: str) -> dict[str, Any] | None:
+        try:
+            runs = self.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
+        except Exception:
+            return None
+        return next((run for run in runs if run.get("batch_id") == batch_id), None)
 
     def export_dianxiaomi(self, actor: Actor, batch_id: str) -> DianxiaomiExport:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
@@ -577,8 +629,8 @@ class PodCustomizationService:
 
     def _preflight_style_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        if batch["status"] not in {"completed", "partial_failure", "failed"}:
-            if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
+            if batch["status"] == "billing_auth_required":
                 raise PodRepositoryError(
                     "POD billing is not recovered; resume billing authorization before regenerating one style",
                     409,
@@ -593,8 +645,8 @@ class PodCustomizationService:
 
     def _preflight_title_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        if batch["status"] not in {"completed", "partial_failure", "failed"}:
-            if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
+            if batch["status"] == "billing_auth_required":
                 raise PodRepositoryError(
                     "POD billing is not recovered; resume billing authorization before regenerating its title",
                     409,
@@ -623,8 +675,8 @@ class PodCustomizationService:
         title_style_indices: tuple[int, ...],
     ) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        if batch["status"] not in {"completed", "partial_failure", "failed"}:
-            if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
+            if batch["status"] == "billing_auth_required":
                 raise PodRepositoryError(
                     "POD billing is not recovered; resume billing authorization before retrying failed styles",
                     409,
@@ -844,8 +896,6 @@ class PodCustomizationService:
         except PodBillingAuthorizationRequired:
             raise
         except Exception as exc:
-            if stored["batch_id"]:
-                self.repository.set_batch_status(stored["batch_id"], "settlement_pending", str(exc))
             raise
         if stored["batch_id"]:
             refreshed = self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)

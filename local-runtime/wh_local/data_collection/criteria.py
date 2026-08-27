@@ -64,8 +64,8 @@ class DailySelectionCriteria(BaseModel):
     min_sku_stock: int | None = None
     max_sku_stock: int | None = None
     target_count: int = Field(default=30, ge=1, le=100)
-    max_api_calls: int = Field(default=200, ge=1, le=300)
-    detail_count: int = Field(default=50, ge=1, le=190, description="详情拉取的最低覆盖数；采集器会在 API 预算内尽量全量拉取候选详情，保证 SKU/发源地/属性完整")
+    max_api_calls: int = Field(default=0, ge=0, description="兼容旧客户端字段；不再限制万邦调用次数")
+    detail_count: int = Field(default=50, ge=1, le=190, description="详情拉取的最低覆盖数；采集器会尽量全量拉取候选详情，保证 SKU/发源地/属性完整")
     exclude_risks: bool = True
     site: Literal["US", "CO", "EC"] = "US"
     max_parallel_collect: int = Field(default=6, ge=1, le=10, description="采集并行数，1=串行")
@@ -146,19 +146,6 @@ class DailySelectionCriteria(BaseModel):
             raise DailySelectionCriteriaError("min_sku_stock cannot be greater than max_sku_stock")
         if self.min_sku_stock is not None and self.min_sku_stock < 1:
             raise DailySelectionCriteriaError("min_sku_stock must be a positive integer")
-        # An image search always consumes download, upload, and search slots
-        # before any item detail can be fetched.  Reject impossible requests
-        # up front instead of silently returning a partial batch.
-        reserved_search_calls = 3 if self.collection_mode == "image" else len(self.keywords)
-        if self.collection_mode == "keyword" and self.selection_scope == "divergent":
-            # Divergent mode may issue one locally expanded query per source
-            # keyword.  Reserve for the worst allowed request, rather than
-            # quietly leaving fewer detail slots than the client requested.
-            reserved_search_calls *= 2
-        if self.detail_count > self.max_api_calls - reserved_search_calls:
-            raise DailySelectionCriteriaError(
-                "detail_count exceeds the remaining API-call budget for this request"
-            )
         return self
 
     @property

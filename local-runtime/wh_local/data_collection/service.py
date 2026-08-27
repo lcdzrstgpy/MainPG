@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .budget import TaskApiBudget
+from .budget import UnlimitedApiBudget
 from .collector import DailySelectionCollector, DailySelectionProvider
 from .criteria import DailySelectionCriteria
 from .empty_collection import (
@@ -177,7 +177,7 @@ class DailySelectionService:
         """Construct the two existing SQLite owners without changing schemas."""
         return cls(
             repository=DailySelectionRepository(database_path),
-            budget=TaskApiBudget(),
+            budget=UnlimitedApiBudget(),
             provider_config_resolver=provider_config_resolver,
             provider_factory=provider_factory,
             image_cache=image_cache,
@@ -561,7 +561,6 @@ def _recorded_image_urls(run: DailySelectionRun) -> frozenset[str]:
 
 
 def _collection_metadata(collected: Any) -> Mapping[str, Any]:
-    budget = collected.budget_state
     return {
         "search_calls": collected.search_calls,
         "image_search_calls": collected.image_search_calls,
@@ -574,12 +573,6 @@ def _collection_metadata(collected: Any) -> Mapping[str, Any]:
         },
         "expansion_rule_version": collected.expansion_rule_version,
         "derived_image_terms": list(collected.derived_image_terms),
-        "budget": {
-            "shanghai_date": budget.shanghai_date,
-            "api_calls_limit": budget.api_calls_limit,
-            "api_calls_used": budget.api_calls_used,
-            "api_calls_remaining": budget.api_calls_remaining,
-        },
     }
 
 

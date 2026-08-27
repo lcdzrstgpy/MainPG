@@ -10,7 +10,6 @@ import {
   POD_BATCH_COUNTS,
   buildPromptV1,
   businessFieldsForApi,
-  canRetryPodBatchFailed,
   isPodBatchCount,
   isActiveBatchStatus,
   isActivePodItemStatus,
@@ -575,6 +574,51 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  const pauseBatch = async () => {
+    if (!activeBatch) return;
+    setBusyAction("pause-batch");
+    clearMessages();
+    try {
+      await podCustomizationApi.pauseBatch(activeBatch.id);
+      setNotice("已请求暂停：已提交的款会完成整款，其余款不会继续发起。");
+      await refreshActiveBatch(activeBatch.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const cancelBatch = async () => {
+    if (!activeBatch) return;
+    setBusyAction("cancel-batch");
+    clearMessages();
+    try {
+      await podCustomizationApi.cancelBatch(activeBatch.id);
+      setNotice("已请求取消，正在停止批次。");
+      await refreshActiveBatch(activeBatch.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const resumeBatch = async () => {
+    if (!activeBatch) return;
+    setBusyAction("resume-batch");
+    clearMessages();
+    try {
+      await podCustomizationApi.resumeBatch(activeBatch.id);
+      setNotice("已提交继续，任务将在后台继续。");
+      await refreshActiveBatch(activeBatch.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   const downloadAsset = async (path: string, filename: string) => {
     const itemId = selectedItem?.id ?? "asset";
     setBusyAction(`download:${itemId}`);
@@ -604,10 +648,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
 
   const retryFailed = async (request: PodBatchRetryRequest) => {
     if (!activeBatch) return;
-    if (!canRetryPodBatchFailed(activeBatch.status)) {
-      setError("批次计费未恢复，请先重新授权并恢复后再重试。");
-      return;
-    }
     setBusyAction("retry-failed");
     clearMessages();
     try {
@@ -616,6 +656,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       setNotice(`已提交图片重试 ${request.image_style_indices.length} 款、标题重试 ${request.title_style_indices.length} 款。`);
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
+      setFailedRetryOpen(false);
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusyAction("");
@@ -719,6 +760,9 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             onExportDianxiaomi={() => void exportDianxiaomi()}
             onResumeBilling={(run) => void resumeBillingRun(run)}
             onOpenFailedRetry={() => setFailedRetryOpen(true)}
+            onPauseBatch={() => void pauseBatch()}
+            onCancelBatch={() => void cancelBatch()}
+            onResumeBatch={() => void resumeBatch()}
           />
         </main>
       </div>

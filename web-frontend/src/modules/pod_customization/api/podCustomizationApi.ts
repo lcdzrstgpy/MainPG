@@ -109,6 +109,18 @@ export const podCustomizationApi = {
     body,
   }),
   getBatch: (batchId: string) => httpJson<PodBatch>(`${API_BASE}/batches/${encodeURIComponent(batchId)}`),
+  pauseBatch: (batchId: string) => httpJson<PodBatch>(
+    `${API_BASE}/batches/${encodeURIComponent(batchId)}/pause`,
+    { method: "POST", body: {} },
+  ),
+  cancelBatch: (batchId: string) => httpJson<PodBatch>(
+    `${API_BASE}/batches/${encodeURIComponent(batchId)}/cancel`,
+    { method: "POST", body: {} },
+  ),
+  resumeBatch: (batchId: string) => httpJson<PodBatch>(
+    `${API_BASE}/batches/${encodeURIComponent(batchId)}/resume`,
+    { method: "POST", body: {} },
+  ),
   regenerateStyle: (batchId: string, styleIndex: number, creativePrompt?: string) => httpJson<{ style_index: number; results: PodBatchItem[] }>(
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/styles/${styleIndex}/regenerate`,
     { method: "POST", body: creativePrompt?.trim() ? { creative_prompt: creativePrompt.trim() } : {} },
