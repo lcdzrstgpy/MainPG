@@ -1566,11 +1566,16 @@ def freeze_batch_points(
                 or set(normalized_scope) - allowed_scope
             ):
                 raise HTTPException(status_code=400, detail="invalid POD batch billing scope")
-            link_price_units = [
-                (POD_LINK_PRICE_MIN_POINTS + secrets.randbelow(POD_LINK_PRICE_VARIANTS))
-                * PIC_UNIT_SCALE
-                for _ in range(link_count)
-            ]
+            # 纯标题调用（标题重生/补标题）不按款式价计费：图片才是计费锚点，
+            # 图片已生成后再补/重生标题不再扣积分。
+            if set(normalized_scope) == {"title"}:
+                link_price_units = [0 for _ in range(link_count)]
+            else:
+                link_price_units = [
+                    (POD_LINK_PRICE_MIN_POINTS + secrets.randbelow(POD_LINK_PRICE_VARIANTS))
+                    * PIC_UNIT_SCALE
+                    for _ in range(link_count)
+                ]
             frozen_units = sum(link_price_units)
         else:
             freeze_units_per_link = int(pricing["freeze_units_per_link"])

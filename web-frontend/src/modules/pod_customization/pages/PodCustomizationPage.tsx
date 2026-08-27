@@ -10,6 +10,7 @@ import {
   POD_BATCH_COUNTS,
   buildPromptV1,
   businessFieldsForApi,
+  canRetryPodBatchFailed,
   isPodBatchCount,
   isActiveBatchStatus,
   isActivePodItemStatus,
@@ -603,6 +604,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
 
   const retryFailed = async (request: PodBatchRetryRequest) => {
     if (!activeBatch) return;
+    if (!canRetryPodBatchFailed(activeBatch.status)) {
+      setError("批次计费未恢复，请先重新授权并恢复后再重试。");
+      return;
+    }
     setBusyAction("retry-failed");
     clearMessages();
     try {
@@ -707,10 +712,12 @@ export function PodCustomizationPage({ isActive = true }: Props) {
           <PodBatchGallery
             batch={activeBatch}
             busyAction={busyAction}
+            pendingBillingRuns={pendingBillingRuns}
             onOpenResult={(item) => setSelectedItemId(item.id)}
             onRegenerateStyle={(styleIndex) => void regenerateStyle(styleIndex)}
             onRegenerateTitle={(styleIndex) => void regenerateStyleTitle(styleIndex)}
             onExportDianxiaomi={() => void exportDianxiaomi()}
+            onResumeBilling={(run) => void resumeBillingRun(run)}
             onOpenFailedRetry={() => setFailedRetryOpen(true)}
           />
         </main>

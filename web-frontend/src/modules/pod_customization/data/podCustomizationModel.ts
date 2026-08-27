@@ -236,6 +236,15 @@ export function canRegeneratePodStyle(
   return SETTLED_BATCH_STATUSES.has(batchStatus) && styleStatus === "failed";
 }
 
+export function isBillingInterruptedPodBatch(status: PodBatchStatus): boolean {
+  return status === "billing_auth_required" || status === "settlement_pending";
+}
+
+// 批量重试会发起新的计费调用，不能绕过未结算/未授权状态；只有批次回落到终态后才开放。
+export function canRetryPodBatchFailed(batchStatus: PodBatchStatus): boolean {
+  return SETTLED_BATCH_STATUSES.has(batchStatus);
+}
+
 export function canRegeneratePodStyleTitle(
   batchStatus: PodBatchStatus,
   titleStatus: PodStyleTitleStatus | undefined,
@@ -298,7 +307,11 @@ export function defaultTemplateCalibration(): PodTemplateCalibration {
   };
 }
 
-export function podBatchStatusLabel(status: PodBatchStatus): string {
+export function podBatchStatusLabel(status: PodBatchStatus, dianxiaomiReady?: boolean): string {
+  // 授权/结算中断批次若已生成完整，以导出资格为准展示，不再只显示“需要重新授权”。
+  if (dianxiaomiReady && (status === "billing_auth_required" || status === "settlement_pending")) {
+    return "生成已完成，可导出";
+  }
   return {
     queued: "等待启动",
     generating_patterns: "生成图片",

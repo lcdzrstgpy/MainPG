@@ -904,6 +904,37 @@ def test_batch_retry_claims_mixed_image_and_title_failures_in_one_durable_action
     runtime.close()
 
 
+@pytest.mark.parametrize("blocked_status", ["billing_auth_required", "settlement_pending"])
+def test_batch_retry_rejects_billing_interrupted_batch_before_freezing(
+    tmp_path: Path, blocked_status: str
+) -> None:
+    runtime = ListingOnlyRuntime([])
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing, title_runtime=object())
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"])
+    _prepare_batch_retry_candidates(service, batch["id"])
+    with service.repository._connect() as connection:
+        connection.execute(
+            """UPDATE pod_customization_batches
+               SET status = ? WHERE batch_id = ?""",
+            (blocked_status, batch["id"]),
+        )
+
+    with pytest.raises(PodRepositoryError, match="billing is not recovered") as raised:
+        service.retry_failed(
+            actor, batch["id"], image_style_indices=[1], title_style_indices=[2]
+        )
+
+    assert raised.value.status_code == 409
+    # 预检在冻结前拒绝：除初始批次创建外，未新增任何计费任务。
+    assert len(billing.freezes) == 1
+    assert service.get_batch(actor, batch["id"])["status"] == blocked_status
+    service.close()
+    runtime.close()
+
+
 def test_batch_retry_billing_resume_reuses_the_persisted_selection(tmp_path: Path) -> None:
     runtime = ListingOnlyRuntime([])
     billing = RecoveringSettlementCoordinator()

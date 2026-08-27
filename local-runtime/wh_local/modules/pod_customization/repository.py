@@ -1804,6 +1804,11 @@ class PodCustomizationRepository:
             if batch is None:
                 raise PodRepositoryError("POD batch not found", 404)
             if batch["status"] not in {"completed", "partial_failure", "failed"}:
+                if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+                    raise PodRepositoryError(
+                        "POD billing is not recovered; resume billing authorization before retrying failed styles",
+                        409,
+                    )
                 raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
             requested_count = int(batch["requested_count"])
             if any(not 1 <= index <= requested_count for index in (*image_style_indices, *title_style_indices)):

@@ -3,6 +3,7 @@ const DIANXIAOMI_EXPORT_BLOCK_MESSAGES: Record<string, string> = {
   listing_fields_missing: "历史批次缺少店小秘上架信息，无法导出。",
   style_copy_missing: "完整标题、英文标题和产品描述生成后才能导出。",
   no_exportable_styles: "当前批次没有图片完整且符合要求的款式。",
+  billing_recovery_required: "本批次仍有未完成的图片、标题或上架文案，需恢复计费授权后继续。",
 };
 
 export function dianxiaomiExportBlockMessage(blockReason: string | null): string {

@@ -369,6 +369,10 @@ class PodCustomizationService:
                 "listing_fields_missing": "POD batch listing snapshot is missing",
                 "style_copy_missing": "POD style copy is missing",
                 "no_exportable_styles": "POD batch has zero exportable styles",
+                "billing_recovery_required": (
+                    "POD batch still has incomplete image/title/copy work and "
+                    "requires billing authorization to resume"
+                ),
             }
             raise PodRepositoryError(messages[analysis.block_reason], 409)
         exported = build_pod_dianxiaomi_export(batch, copies)
@@ -574,6 +578,11 @@ class PodCustomizationService:
     def _preflight_style_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         if batch["status"] not in {"completed", "partial_failure", "failed"}:
+            if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+                raise PodRepositoryError(
+                    "POD billing is not recovered; resume billing authorization before regenerating one style",
+                    409,
+                )
             raise PodRepositoryError("POD batch must settle before regenerating one style", 409)
         results = [
             item for item in batch.get("items", [])
@@ -585,6 +594,11 @@ class PodCustomizationService:
     def _preflight_title_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         if batch["status"] not in {"completed", "partial_failure", "failed"}:
+            if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+                raise PodRepositoryError(
+                    "POD billing is not recovered; resume billing authorization before regenerating its title",
+                    409,
+                )
             raise PodRepositoryError("POD batch must settle before regenerating its title", 409)
         title = next(
             (row for row in batch.get("style_titles", []) if int(row["style_index"]) == int(style_index)),
@@ -610,6 +624,11 @@ class PodCustomizationService:
     ) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         if batch["status"] not in {"completed", "partial_failure", "failed"}:
+            if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+                raise PodRepositoryError(
+                    "POD billing is not recovered; resume billing authorization before retrying failed styles",
+                    409,
+                )
             raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
         if any(index > int(batch["requested_count"]) for index in (*image_style_indices, *title_style_indices)):
             raise PodRepositoryError("POD style index is outside the batch range", 422)

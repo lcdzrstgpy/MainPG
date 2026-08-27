@@ -409,14 +409,17 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
                             <input type="checkbox" checked={checked} disabled={!selectable || backfillRunning} onChange={() => toggleCandidate(candidate.offer_id)} />
                           </label>
                           <div className="plugin-candidate-body">
-                            <a href={candidate.source_url} target="_blank" rel="noreferrer">{candidate.source_title.trim() || `商品 ${candidate.offer_id}`}</a>
+                            <strong className="plugin-candidate-title">{candidate.source_title.trim() || `商品 ${candidate.offer_id}`}</strong>
                             <small>
                               SKU {candidate.sku_count || "未知"} · {candidateReviewLabel(candidate.review_status)}
                             </small>
                           </div>
-                          {candidate.draft_id != null && onOpenDraft && (
-                            <button type="button" onClick={() => onOpenDraft(candidate.draft_id!)}>打开草稿 #{candidate.draft_id}</button>
-                          )}
+                          <div className="plugin-candidate-links">
+                            <a className="plugin-candidate-source" href={candidate.source_url} target="_blank" rel="noreferrer">查看来源</a>
+                            {candidate.draft_id != null && onOpenDraft && (
+                              <button type="button" onClick={() => onOpenDraft(candidate.draft_id!)}>打开草稿 #{candidate.draft_id}</button>
+                            )}
+                          </div>
                         </article>
                       );
                     })}
