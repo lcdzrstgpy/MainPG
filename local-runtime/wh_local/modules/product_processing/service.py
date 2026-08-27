@@ -2910,6 +2910,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "dimension_provenance": dimension_provenance,
             "preview_revision": preview_revision,
             "result_version": task_item_result_version(result),
+            # Kept separate from product_dimensions: these are shipping package
+            # measurements and must never drive the product body/canvas size.
+            "shipping_package_records": shipping_package_records,
             "core_fields": {
                 "sku": str(core_fields.get("sku") or result.get("sku") or "").strip(),
                 "declared_price": core_fields.get("declared_price", result.get("declared_price")),
