@@ -38,6 +38,7 @@ for _rel in (
     "wh_local/modules/pod_customization/migrations",
     "wh_local/modules/product_processing/migrations",
     "wh_local/modules/profit_activity/migrations",
+    "wh_local/modules/combo_kit/migrations",
     "wh_local/price_verification/migrations",
 ):
     _src = ROOT / _rel
