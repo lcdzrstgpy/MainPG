@@ -5,7 +5,7 @@ from wh_local.app.main import _RuntimeExitController
 
 def _controller(monkeypatch) -> _RuntimeExitController:
     monkeypatch.setenv("WH_LOCAL_RUNTIME_EXIT_ON_CLOSE", "1")
-    monkeypatch.setenv("WH_LOCAL_RUNTIME_EXIT_GRACE_S", "8")
+    monkeypatch.setenv("WH_LOCAL_RUNTIME_EXIT_GRACE_S", "60")
     monkeypatch.setenv("WH_LOCAL_RUNTIME_IDLE_TIMEOUT_S", "120")
     return _RuntimeExitController()
 
@@ -31,6 +31,15 @@ def test_closing_last_tab_schedules_exit(monkeypatch) -> None:
 
     assert controller._clients == {}
     assert controller._bye_deadline is not None
+
+
+def test_default_last_tab_exit_grace_is_sixty_seconds(monkeypatch) -> None:
+    monkeypatch.setenv("WH_LOCAL_RUNTIME_EXIT_ON_CLOSE", "1")
+    monkeypatch.delenv("WH_LOCAL_RUNTIME_EXIT_GRACE_S", raising=False)
+
+    controller = _RuntimeExitController()
+
+    assert controller._grace_s == 60
 
 
 def test_reload_heartbeat_cancels_last_tab_exit(monkeypatch) -> None:

@@ -174,7 +174,7 @@ class _RuntimeExitController:
         self._ever_connected = False
         self._bye_deadline: float | None = None
         self._watchdog: threading.Thread | None = None
-        self._grace_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_GRACE_S", "8"))
+        self._grace_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_GRACE_S", "60"))
         self._idle_s = float(os.environ.get("WH_LOCAL_RUNTIME_IDLE_TIMEOUT_S", "900"))
         self._interval_s = float(os.environ.get("WH_LOCAL_RUNTIME_WATCHDOG_INTERVAL_S", "2"))
         self.enabled = os.environ.get("WH_LOCAL_RUNTIME_EXIT_ON_CLOSE", "0") == "1"
