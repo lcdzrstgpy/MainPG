@@ -140,6 +140,12 @@ class PodBatchWorker:
         self._futures_lock = threading.Lock()
         self._title_batch_locks: dict[str, threading.Lock] = {}
         self._billing_runs: dict[str, PodBillingRun] = {}
+        # 独立的款式后处理执行池：容量与速创生图并发一致（image_workers），
+        # 使四图返回后的校验、切图、COS 发布与结果落库也能最多 8 款并行。
+        self._style_postprocess_pool = ThreadPoolExecutor(
+            max_workers=self._image_worker_count(),
+            thread_name_prefix="pod-style-postprocess",
+        )
         self._closing = threading.Event()
 
     def _require_open(self) -> None:
@@ -713,6 +719,7 @@ class PodBatchWorker:
             for future in self._futures.values():
                 future.cancel()
         self._coordinator.shutdown(wait=False, cancel_futures=True)
+        self._style_postprocess_pool.shutdown(wait=False, cancel_futures=True)
 
     def _run_grid_calls(self, batch: dict[str, Any], call_kind: str, count: int) -> list[tuple[dict[str, Any], bytes]]:
         futures: dict[Future[Any], dict[str, Any]] = {}
@@ -734,6 +741,11 @@ class PodBatchWorker:
                 continue
         return sorted(completed, key=lambda value: value[0]["call_index"])
 
+    def _image_worker_count(self) -> int:
+        """Number of concurrent provider/image jobs the POD runtime supports."""
+        config = getattr(self.ai_runtime, "config", None)
+        return max(1, int(getattr(config, "executor_workers", 1)))
+
     def _process_style_grids_streaming(
         self,
         batch: dict[str, Any],
@@ -741,11 +753,16 @@ class PodBatchWorker:
         template_content_type: str,
         billing_run: PodBillingRun,
     ) -> None:
-        """Generate and persist styles incrementally so progress tracks in real time.
+        """Generate and persist styles with a bounded generation window and a
+        parallel post-processing pool.
 
-        A bounded window keeps provider throughput while allowing pause to stop
-        further submissions.  Calls that reached the provider are drained into a
-        complete style before the batch becomes paused.
+        At most ``image_workers`` provider grids are in flight at once. As soon
+        as a grid returns, that style's validation, split, COS publish and
+        persistence are handed to the dedicated post-processing pool, freeing a
+        generation slot for the next style. Progress therefore lands in real
+        time instead of queuing behind a single-threaded post-processing phase.
+        Titles stay serialized inside the title runtime and continue to use
+        already-accepted titles and visual themes as deduplication context.
         """
         completed_by_style: dict[int, int] = {}
         for item in batch.get("items", []):
@@ -766,53 +783,20 @@ class PodBatchWorker:
         processed: set[int] = set()
         retry_reasons: dict[int, str] = {}
 
-        def process_attempt(
-            attempts: dict[int, tuple[dict[str, Any], Any]],
-            retryable_errors: dict[int, str],
-        ) -> None:
-            for style_index in sorted(attempts):
-                if self._closing.is_set():
-                    raise PodBillingAuthorizationRequired(
-                        "POD worker stopped before the remaining provider calls started"
-                    )
-                if self.repository.get_batch_status(batch["batch_id"]) == "cancelling":
-                    raise PodBatchCancelled("POD 批次已取消")
-                call, grid = attempts[style_index]
-                try:
-                    panels, fingerprints = self._validate_style_grid(grid)
-                except PodBillingAuthorizationRequired:
-                    raise
-                except Exception as exc:
-                    retryable_errors[style_index] = str(exc).strip() or exc.__class__.__name__
-                    continue
-                self._process_style_grids(batch, [(call, grid, panels, fingerprints)], billing_run)
-                processed.add(style_index)
-
-        first, first_errors, pause_requested = self._submit_style_attempts(
-            batch,
-            style_indices,
-            template_content,
-            template_content_type,
-            attempt=1,
-            billing_run=billing_run,
-        )
-        retry_reasons = dict(first_errors)
-        process_attempt(first, retry_reasons)
-        if pause_requested or self.repository.get_batch_status(batch["batch_id"]) == "pausing":
-            raise PodBatchPaused("POD 批次已暂停")
-
-        retry_indices = sorted(set(style_indices) - processed)
-        if retry_indices:
-            second, second_errors, pause_requested = self._submit_style_attempts(
+        for attempt in (1, 2):
+            pending = [index for index in style_indices if index not in processed]
+            if not pending:
+                break
+            attempt_processed, attempt_errors, pause_requested = self._stream_style_attempts(
                 batch,
-                retry_indices,
+                pending,
                 template_content,
                 template_content_type,
-                attempt=2,
+                attempt=attempt,
                 billing_run=billing_run,
             )
-            retry_reasons.update(second_errors)
-            process_attempt(second, retry_reasons)
+            retry_reasons.update(attempt_errors)
+            processed |= attempt_processed
             if pause_requested or self.repository.get_batch_status(batch["batch_id"]) == "pausing":
                 raise PodBatchPaused("POD 批次已暂停")
 
@@ -824,7 +808,7 @@ class PodBatchWorker:
                     retry_reasons.get(style_index, "本款两次图片生成均失败"),
                 )
 
-    def _submit_style_attempts(
+    def _stream_style_attempts(
         self,
         batch: dict[str, Any],
         style_indices: list[int],
@@ -833,19 +817,45 @@ class PodBatchWorker:
         *,
         attempt: int,
         billing_run: PodBillingRun,
-    ) -> tuple[dict[int, tuple[dict[str, Any], Any]], dict[int, str], bool]:
-        futures: dict[Future[Any], tuple[dict[str, Any], int]] = {}
-        completed: dict[int, tuple[dict[str, Any], Any]] = {}
+    ) -> tuple[set[int], dict[int, str], bool]:
+        """Pipeline one generation attempt with per-style post-processing.
+
+        A bounded provider window (``image_futures``) overlaps a parallel
+        post-processing pool (``postprocess_futures``). Each completed grid is
+        validated and handed to the post-processing pool immediately, so it does
+        not wait for the whole window to return. A style is marked ``processed``
+        only after its full publish/link step succeeds; validation and
+        generation failures stay retryable for the second attempt.
+        """
+        image_futures: dict[Future[Any], tuple[dict[str, Any], int]] = {}
+        postprocess_futures: dict[Future[Any], int] = {}
+        processed: set[int] = set()
         errors: dict[int, str] = {}
         call_kind = "initial" if attempt == 1 else "retry"
         pending = iter(style_indices)
         exhausted = False
         pause_requested = False
-        config = getattr(self.ai_runtime, "config", None)
-        max_in_flight = max(1, int(getattr(config, "executor_workers", 1)))
+        max_in_flight = self._image_worker_count()
 
-        while futures or not exhausted:
-            while not pause_requested and len(futures) < max_in_flight and not exhausted:
+        def submit_postprocess(style_index: int, call: dict[str, Any], grid: Any) -> None:
+            try:
+                panels, fingerprints = self._validate_style_grid(grid)
+            except PodBillingAuthorizationRequired:
+                raise
+            except Exception as exc:
+                errors[style_index] = str(exc).strip() or exc.__class__.__name__
+                return
+            future = self._style_postprocess_pool.submit(
+                self._process_style_grids,
+                batch,
+                [(call, grid, panels, fingerprints)],
+                billing_run,
+            )
+            postprocess_futures[future] = style_index
+
+        while True:
+            # Fill the bounded generation window while not paused.
+            while not pause_requested and not exhausted and len(image_futures) < max_in_flight:
                 if self._closing.is_set():
                     raise PodBillingAuthorizationRequired(
                         "POD worker stopped before the remaining provider calls started"
@@ -881,7 +891,8 @@ class PodBatchWorker:
                     asset = self.repository.get_asset(
                         asset_id, batch["workspace_id"], batch["owner_user_id"]
                     )
-                    completed[style_index] = (
+                    submit_postprocess(
+                        style_index,
                         call,
                         SimpleNamespace(
                             content=self.assets.read(asset["relative_path"]),
@@ -907,36 +918,66 @@ class PodBatchWorker:
                     prompt=prompt,
                     attempt=attempt,
                 )
-                futures[self.ai_runtime.submit(
+                future = self.ai_runtime.submit(
                     self._generate_listing_grid,
                     batch,
                     call,
                     request,
                     billing_run,
                     provider_call_id,
-                )] = (call, style_index)
+                )
+                image_futures[future] = (call, style_index)
 
-            if not futures:
-                if pause_requested:
-                    break
-                continue
-            done, _ = wait(tuple(futures), return_when=FIRST_COMPLETED)
+            # Nothing left in flight; the attempt is complete.
+            if not image_futures and not postprocess_futures:
+                break
+
+            # Wait for the first completion across generation and post-processing.
+            done, _ = wait(
+                tuple(image_futures) + tuple(postprocess_futures),
+                return_when=FIRST_COMPLETED,
+            )
             for future in done:
-                call, style_index = futures.pop(future)
-                try:
-                    completed[style_index] = (call, future.result())
-                except PodBillingAuthorizationRequired:
-                    raise
-                except PodBatchPaused:
-                    pause_requested = True
-                except Exception as exc:
-                    errors[style_index] = str(exc).strip() or exc.__class__.__name__
+                if future in image_futures:
+                    call, style_index = image_futures.pop(future)
+                    try:
+                        grid = future.result()
+                    except PodBillingAuthorizationRequired:
+                        raise
+                    except PodBatchPaused:
+                        pause_requested = True
+                        continue
+                    except PodBatchCancelled:
+                        raise
+                    except Exception as exc:
+                        errors[style_index] = str(exc).strip() or exc.__class__.__name__
+                        continue
+                    submit_postprocess(style_index, call, grid)
+                elif future in postprocess_futures:
+                    style_index = postprocess_futures.pop(future)
+                    try:
+                        future.result()
+                        processed.add(style_index)
+                    except PodBillingAuthorizationRequired:
+                        for pending_future in postprocess_futures:
+                            pending_future.cancel()
+                        raise
+                    except PodBatchPaused:
+                        processed.add(style_index)
+                        pause_requested = True
+                    except PodBatchCancelled:
+                        raise
+                    except Exception as exc:
+                        errors[style_index] = str(exc).strip() or exc.__class__.__name__
+
+            # Re-check control state after draining this wave of completions.
             status = self.repository.get_batch_status(batch["batch_id"])
             if status == "cancelling":
                 raise PodBatchCancelled("POD 批次已取消")
             if status == "pausing":
                 pause_requested = True
-        return completed, errors, pause_requested
+
+        return processed, errors, pause_requested
 
     def _validate_style_grid(
         self,
@@ -1200,9 +1241,6 @@ class PodBatchWorker:
                     business_fields=BusinessFields.model_validate(batch["business_fields"]),
                     creative_prompt=batch["creative_prompt"],
                     accepted_titles=self.repository.accepted_style_titles(
-                        batch["batch_id"], exclude_style_index=style_index
-                    ),
-                    accepted_visual_signatures=self.repository.accepted_visual_signatures(
                         batch["batch_id"], exclude_style_index=style_index
                     ),
                 )

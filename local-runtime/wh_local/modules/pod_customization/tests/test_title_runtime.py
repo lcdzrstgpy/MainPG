@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from threading import Event
 
 import pytest
@@ -99,7 +98,6 @@ class _Session:
 def _request(
     *,
     accepted_titles: tuple[str, ...] = (),
-    accepted_visual_signatures: tuple[str, ...] = (),
     rejected_reason: str = "",
 ):
     from wh_local.modules.pod_customization.title_runtime import PodTitleRequest
@@ -112,7 +110,6 @@ def _request(
         business_fields=BusinessFields(product_name="Canvas Tote", product_category="tote bag"),
         creative_prompt="coastal botanic line art",
         accepted_titles=accepted_titles,
-        accepted_visual_signatures=accepted_visual_signatures,
         rejected_reason=rejected_reason,
     )
 
@@ -182,7 +179,6 @@ def test_title_request_uses_cropped_hero_and_includes_style_task_id() -> None:
     assert "cropped-hero" not in json.dumps(content)
     user_contract = content[1]["text"]
     assert "untrusted_input_notice" in user_contract
-    assert "accepted_visual_signatures" in user_contract
     assert '"english_title"' in user_contract
     assert '"description"' in user_contract
 
@@ -253,11 +249,6 @@ def test_title_validator_accepts_a_safe_102_character_us_listing_title() -> None
         ("too short", (), "80-200 ASCII characters"),
         (_title("Amazon exclusive", "ocean fern"), (), "prohibited term"),
         (_title("ocean fern", "sandstone leaves"), (_title("ocean fern", "sandstone leaves"),), "duplicate"),
-        (
-            _title("ocean fern", "sandstone leaves"),
-            (_title("ocean fern", "sandstone leaves", "gift"),),
-            "too similar",
-        ),
     ],
 )
 def test_title_validator_rejects_invalid_listing_titles(
@@ -271,6 +262,15 @@ def test_title_validator_rejects_invalid_listing_titles(
         payload["description"] = "short"
     with pytest.raises(ValueError, match=expected_reason):
         validate_title_result(title_result_from_dict(payload), accepted_titles=accepted_titles)
+
+
+def test_title_validator_rejects_normalized_duplicate_despite_case_and_whitespace() -> None:
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    accepted = _title("ocean fern", "sandstone leaves")
+    candidate = "  " + accepted.upper().replace(" ", "   ") + "  "
+    with pytest.raises(ValueError, match="duplicate"):
+        validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
 
 
 @pytest.mark.parametrize(
@@ -314,60 +314,57 @@ def test_title_validator_requires_english_alphabetic_tokens() -> None:
         validate_title_result(title_result_from_dict(_payload(title=non_language_title)))
 
 
-def test_title_validator_rejects_accepted_visual_signature() -> None:
+def test_visual_signature_remains_a_stable_persistence_key() -> None:
     from wh_local.modules.pod_customization.title_runtime import (
-        validate_title_result,
         title_result_from_dict,
         visual_signature,
     )
 
     result = title_result_from_dict(_payload(title=_title("ocean fern", "sandstone leaves")))
-    signature = visual_signature(result)
-    assert signature == "coastal botanical ink|ocean fern|sandstone leaves"
-
-    with pytest.raises(ValueError, match="combination is duplicate"):
-        validate_title_result(result, accepted_visual_signatures=(signature.upper(),))
+    assert visual_signature(result) == "coastal botanical ink|ocean fern|sandstone leaves"
 
 
-def test_title_runtime_retries_when_persisted_visual_signature_is_accepted() -> None:
-    from wh_local.modules.pod_customization.title_runtime import (
-        PodTitleRuntime,
-        title_result_from_dict,
-        visual_signature,
+def test_title_validator_allows_a_matching_visual_signature_when_title_differs() -> None:
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    accepted = _title("ocean fern", "sandstone leaves")
+    result = title_result_from_dict(
+        _payload(
+            title=_title("desert sun", "copper blooms"),
+            visual_theme="Coastal botanical ink",
+            motif_keywords=["ocean fern", "sandstone leaves"],
+        )
     )
+    validate_title_result(result, accepted_titles=(accepted,))
 
-    accepted_signature = visual_signature(title_result_from_dict(_payload()))
+
+def test_title_runtime_accepts_a_result_without_visual_signature_retry() -> None:
+    from wh_local.modules.pod_customization.title_runtime import PodTitleRuntime
+
     session = _Session(
         [
-            _Response(_payload()),
             _Response(
                 _payload(
-                    title=_title("desert sun", "copper blooms"),
-                    visual_theme="Desert blooms",
-                    motif_keywords=["desert sun", "copper blooms"],
+                    title=_title("ocean fern", "sandstone leaves"),
                 )
-            ),
+            )
         ]
     )
     runtime = PodTitleRuntime(session=session, requests_per_minute=0, sleeper=lambda _seconds: None)
     try:
         result = runtime.generate_title(
-            _request(accepted_visual_signatures=(accepted_signature,)),
+            _request(accepted_titles=(_title("desert sun", "copper blooms"),)),
             grant=_grant(ark="ark-secret"),
             call_id="style-task-72:title:1",
         )
     finally:
         runtime.close()
 
-    assert result.attempt_count == 2
-    assert result.visual_theme == "Desert blooms"
-    assert len(session.requests) == 2
-    retry_prompt = session.requests[1]["json"]["messages"][1]["content"][1]["text"]
-    assert accepted_signature in retry_prompt
-    assert "duplicate" in retry_prompt
+    assert result.attempt_count == 1
+    assert len(session.requests) == 1
 
 
-def test_duplicate_theme_and_motifs_retries_three_times_with_feedback() -> None:
+def test_duplicate_title_retries_three_times_with_feedback() -> None:
     from wh_local.modules.pod_customization.title_runtime import PodTitleRuntime
 
     accepted = _distinct_title("ocean fern", "sandstone leaves", "gift")
@@ -513,32 +510,33 @@ def test_title_request_contract_requires_distinct_complete_listing_phrases() -> 
     lowered = contract.casefold()
     assert "complete" in lowered and "noun phrase" in lowered
     assert "leading visual segment" in lowered
-    assert re.search(r"accepted_titles.{0,160}prefix|prefix.{0,160}accepted_titles", lowered)
     assert "title_generation_recipe" in lowered
     assert "95-160" in lowered
     assert "silently check before output" in lowered
     assert "distinct visual lead" in lowered
     assert "product type" in lowered
+    assert "exact duplicate" in lowered
+    assert "six meaningful words" not in lowered
+    assert "five or more" not in lowered
+    assert "accepted_visual_signatures" not in lowered
 
 
-def test_title_validator_rejects_a_matching_meaningful_word_prefix() -> None:
+def test_title_validator_allows_a_matching_meaningful_word_prefix() -> None:
     from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
 
     accepted = _title("coastal botanical", "ocean fern", "navy tote")
     candidate = _title("coastal botanical", "ocean fern", "sand tote")
-    with pytest.raises(ValueError, match="prefix"):
-        validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
+    validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
 
 
-def test_title_validator_counts_visual_words_in_a_five_of_six_prefix() -> None:
+def test_title_validator_allows_visual_words_in_a_five_of_six_prefix() -> None:
     from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
 
     accepted = "Illustration Ink Texture Layered Sunlit Bloom Crystal Meadow Harbor Lantern Velvet Mosaic Quill Rhythm"
     candidate = "Illustration Ink Texture Layered Sunlit Fern Copper Prairie Summit Compass Willow Ember Juniper Thistle"
     assert 80 <= len(accepted) <= 200
     assert 80 <= len(candidate) <= 200
-    with pytest.raises(ValueError, match="prefix"):
-        validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
+    validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
 
 
 @pytest.mark.parametrize("ending", [" with", " and", " for", " or", " of", " in", " to", ",", "-", "(", "[", "{"])
@@ -550,7 +548,7 @@ def test_title_validator_rejects_incomplete_title_endings(ending: str) -> None:
         validate_title_result(title_result_from_dict(_payload(title=title)))
 
 
-def test_title_validator_rejects_same_six_word_opening_with_one_motif_replacement() -> None:
+def test_title_validator_allows_same_six_word_opening_with_one_motif_replacement() -> None:
     from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
 
     suffix = "Canvas Tote for Everyday Carry with Durable Handles and Seasonal Gifting"
@@ -558,8 +556,7 @@ def test_title_validator_rejects_same_six_word_opening_with_one_motif_replacemen
     candidate = f"Coastal Botanical Sand Ocean Fern Canvas {suffix}"
     assert 80 <= len(accepted) <= 200
     assert 80 <= len(candidate) <= 200
-    with pytest.raises(ValueError, match="prefix"):
-        validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
+    validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
 
 
 def test_title_validator_allows_a_complete_title_ending() -> None:

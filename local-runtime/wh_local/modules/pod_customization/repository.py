@@ -1352,33 +1352,6 @@ class PodCustomizationRepository:
             ).fetchall()
         return tuple(str(row["title"]) for row in rows)
 
-    def accepted_visual_signatures(
-        self, batch_id: str, *, exclude_style_index: int | None = None
-    ) -> tuple[str, ...]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """SELECT visual_tags_json FROM pod_customization_style_titles
-                   WHERE batch_id = ? AND status = 'completed'
-                     AND (? IS NULL OR style_index <> ?)
-                   ORDER BY style_index""",
-                (batch_id, exclude_style_index, exclude_style_index),
-            ).fetchall()
-        signatures: list[str] = []
-        for row in rows:
-            tags = json.loads(row["visual_tags_json"] or "{}")
-            signature = str(tags.get("visual_signature") or "").strip().casefold()
-            if not signature:
-                theme = " ".join(str(tags.get("visual_theme") or "").split()).casefold()
-                motifs = sorted(
-                    " ".join(str(value).split()).casefold()
-                    for value in tags.get("motif_keywords") or []
-                    if str(value).strip()
-                )
-                signature = "|".join((theme, *motifs)) if theme and motifs else ""
-            if signature:
-                signatures.append(signature)
-        return tuple(signatures)
-
     def get_style_title_context(self, batch_id: str, style_index: int) -> dict[str, Any]:
         batch = self.get_batch_internal(batch_id)
         title = next((row for row in batch["style_titles"] if row["style_index"] == style_index), None)

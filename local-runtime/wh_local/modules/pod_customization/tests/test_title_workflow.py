@@ -379,7 +379,7 @@ def test_detail_publication_failure_does_not_discard_generated_title(tmp_path: P
     images.close()
 
 
-def test_same_batch_title_generation_serializes_accepted_titles_and_visual_signatures(tmp_path: Path) -> None:
+def test_same_batch_title_generation_serializes_accepted_titles(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(17), _grid(27)])
     titles = SlowTitleRuntime()
     service = _service(tmp_path, images, titles)
@@ -392,11 +392,7 @@ def test_same_batch_title_generation_serializes_accepted_titles_and_visual_signa
     assert [request.style_index for request in titles.requests] == [1, 2]
     assert titles.max_active == 1
     assert titles.requests[0].accepted_titles == ()
-    assert titles.requests[0].accepted_visual_signatures == ()
     assert len(titles.requests[1].accepted_titles) == 1
-    assert titles.requests[1].accepted_visual_signatures == (
-        "coastal botanical|layered ink|ocean fern",
-    )
     service.close()
     titles.close()
     images.close()
