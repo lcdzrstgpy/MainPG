@@ -35,7 +35,16 @@ def candidate_sku_incomplete(candidate: Any) -> bool:
 
 
 def incomplete_candidates(run: Any) -> list[Any]:
-    return [candidate for candidate in run.candidates if candidate_sku_incomplete(candidate)]
+    """SKU 未捕获且未被用户确认的候选才需要补齐。
+
+    已确认（confirmed）的候选不再自动补齐，避免后台补拉把用户在页面上
+    的确认状态冲掉（入库层无状态前进保护，且补拉基于轮次启动时的快照）。
+    """
+    return [
+        candidate
+        for candidate in run.candidates
+        if candidate_sku_incomplete(candidate) and getattr(candidate, "status", None) != "confirmed"
+    ]
 
 
 def empty_repull_state() -> dict[str, Any]:

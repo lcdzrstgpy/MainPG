@@ -180,6 +180,7 @@ class DailySelectionCollector:
                 response_by_keyword: dict[str, ProviderCallResult] = {}
                 ordered_queries: list[tuple[str, bool]] = list(queries)
                 _reserve_all = True
+                reserved_search_calls = 0
                 if _cancel_requested():
                     cancelled = True
                 else:
@@ -189,6 +190,7 @@ class DailySelectionCollector:
                             errors.append(_budget_error())
                             _reserve_all = False
                             break
+                        reserved_search_calls += 1
                 if _reserve_all and not cancelled:
                     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -211,6 +213,9 @@ class DailySelectionCollector:
                     # Settle（超额 audit 释放差值）
                     total_audits = sum(len(r.audits) for r in response_by_keyword.values())
                     latest_budget = self._settle(criteria, len(ordered_queries), total_audits, collection_time)
+                elif reserved_search_calls:
+                    # 预算不足提前退出：释放已预占的差额
+                    latest_budget = self._settle(criteria, reserved_search_calls, 0, collection_time)
                 for query, expanded in ordered_queries:
                     response = response_by_keyword.get(query)
                     if response is None:
