@@ -97,6 +97,7 @@ def test_preview_default_matches_generated_results(tmp_path: Path) -> None:
     assert preview["item_count"] == 1
     item = preview["items"][0]
     assert item["title"] == "Original AI Generated Title"
+    assert item["source_url"] == "https://src.example.com/product"
     assert item["overrides"] == {}
     assert item["carousel_images"][0] == "https://cos.example.com/c1.jpg"
     assert item["main_image"] == "https://cos.example.com/c1.jpg"
@@ -367,6 +368,6 @@ def test_dxm_single_export_row_defaults_without_overrides() -> None:
             "https://cos.example.com/summary.jpg",
         ]
     )
-    # 系统生成值仍应用体积重兜底：20×15×10÷6=500，需严格大于 500。
-    assert values[14] == 501
+    # 系统生成值应用体积重兜底后，再按店小秘规则向上取整到 100g。
+    assert values[14] == 600
     assert values[19] == "https://cos.example.com/c1.jpg"

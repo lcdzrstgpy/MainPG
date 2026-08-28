@@ -3574,6 +3574,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "billing_retried": _item_had_retry(result),
             "title": title,
             "description": description,
+            "source_url": str(result.get("source_url") or result.get("product_link") or "").strip(),
             "source_image_urls": [self._display_url(value) for value in (result.get("source_image_urls") or [])],
             "carousel_images": [self._display_url(value) for value in carousel_sources],
             "main_image": self._display_url(main_source),

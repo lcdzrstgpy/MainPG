@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -152,14 +152,13 @@ def _provider_factory(config: Mapping[str, Any]) -> OneBound1688Provider:
 class _RuntimeExitController:
     """Desktop-only: auto-terminate the backend after the frontend page closes.
 
-    The frontend App root uses ``navigator.sendBeacon`` to periodically report a
-    heartbeat and to report ``bye`` when the page is hidden/discarded (``pagehide``).
+    The frontend App root gives every browser tab a unique client ID, then uses
+    ``navigator.sendBeacon`` to report heartbeats and ``bye`` on ``pagehide``.
 
-    - On ``bye`` a short grace window opens; a fresh heartbeat from a reloaded page
-      cancels it, otherwise the whole process exits, releasing MainPG.exe so an
-      in-place install can replace it and no backend process lingers.
-    - Fallback: if no heartbeat arrives for a long time (browser crash / hard kill),
-      the watchdog also exits.
+    - Closing one tab only removes that client. A short grace window opens after
+      the last tab closes; a fresh heartbeat from a reloaded page cancels it.
+    - Fallback: stale clients are pruned after the idle timeout. The watchdog exits
+      only when no live clients remain (browser crash / hard kill).
 
     Only enabled when ``WH_LOCAL_RUNTIME_EXIT_ON_CLOSE=1``, which is set by the
     desktop launcher (run_workbench.py / packaged MainPG.exe). The server runs
@@ -168,7 +167,11 @@ class _RuntimeExitController:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._heartbeat = time.monotonic()
+        self._started_at = time.monotonic()
+        self._clients: dict[str, tuple[float, int | None]] = {}
+        # 保留已关闭标签页最后一个事件序号，拦截网络乱序后晚到的旧心跳。
+        self._closed_clients: dict[str, tuple[float, int]] = {}
+        self._ever_connected = False
         self._bye_deadline: float | None = None
         self._watchdog: threading.Thread | None = None
         self._grace_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_GRACE_S", "8"))
@@ -191,27 +194,81 @@ class _RuntimeExitController:
         )
         self._watchdog.start()
 
-    def touch(self) -> None:
+    def touch(self, client_id: str, event_seq: int | None = None) -> None:
+        if not self.enabled:
+            return
         with self._lock:
-            self._heartbeat = time.monotonic()
+            now = time.monotonic()
+            closed = self._closed_clients.get(client_id)
+            if event_seq is not None and closed is not None and event_seq <= closed[1]:
+                return
+            current = self._clients.get(client_id)
+            if (
+                event_seq is not None
+                and current is not None
+                and current[1] is not None
+                and event_seq <= current[1]
+            ):
+                return
+            self._closed_clients.pop(client_id, None)
+            self._clients[client_id] = (now, event_seq)
+            self._ever_connected = True
             # 页面刷新后新页面重新心跳，取消上一次关闭时排定的退出。
             self._bye_deadline = None
 
-    def bye(self) -> None:
+    def bye(self, client_id: str, event_seq: int | None = None) -> None:
+        if not self.enabled:
+            return
         with self._lock:
-            self._bye_deadline = time.monotonic() + self._grace_s
+            now = time.monotonic()
+            current = self._clients.get(client_id)
+            closed = self._closed_clients.get(client_id)
+            if event_seq is not None:
+                if current is not None and current[1] is not None and event_seq <= current[1]:
+                    return
+                if closed is not None and event_seq <= closed[1]:
+                    return
+                self._closed_clients[client_id] = (now, event_seq)
+            self._clients.pop(client_id, None)
+            self._prune_stale_clients(now)
+            # 其他标签页仍存活时不能退出；只有最后一个标签页关闭才开始倒计时。
+            self._bye_deadline = (
+                now + self._grace_s if self._ever_connected and not self._clients else None
+            )
+
+    def _prune_stale_clients(self, now: float) -> None:
+        stale_clients = [
+            (client_id, event_seq)
+            for client_id, (heartbeat, event_seq) in self._clients.items()
+            if now - heartbeat > self._idle_s
+        ]
+        for client_id, event_seq in stale_clients:
+            self._clients.pop(client_id, None)
+            if event_seq is not None:
+                self._closed_clients[client_id] = (now, event_seq)
+        stale_closed_ids = [
+            client_id
+            for client_id, (closed_at, _) in self._closed_clients.items()
+            if now - closed_at > self._idle_s
+        ]
+        for client_id in stale_closed_ids:
+            self._closed_clients.pop(client_id, None)
 
     def _run_watchdog(self) -> None:
         while True:
             time.sleep(self._interval_s)
             with self._lock:
-                heartbeat = self._heartbeat
-                deadline = self._bye_deadline
                 now = time.monotonic()
+                self._prune_stale_clients(now)
+                deadline = self._bye_deadline
+                has_clients = bool(self._clients)
+                ever_connected = self._ever_connected
+                started_at = self._started_at
             if deadline is not None and now >= deadline:
-                self._exit("frontend page closed")
-            if now - heartbeat > self._idle_s:
-                self._exit("frontend heartbeat idle timeout")
+                self._exit("last frontend page closed")
+            if not has_clients and deadline is None:
+                if ever_connected or now - started_at > self._idle_s:
+                    self._exit("frontend heartbeat idle timeout")
 
     def _exit(self, reason: str) -> None:
         print(f"[runtime] exiting because {reason}", flush=True)
@@ -316,13 +373,19 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.state.runtime_exit = runtime_exit
 
     @app.post("/api/runtime/heartbeat")
-    def runtime_heartbeat() -> dict[str, Any]:
-        runtime_exit.touch()
+    def runtime_heartbeat(
+        client_id: str = Query(default="legacy", min_length=1, max_length=128),
+        event_seq: int | None = Query(default=None, ge=0),
+    ) -> dict[str, Any]:
+        runtime_exit.touch(client_id, event_seq)
         return {"ok": True}
 
     @app.post("/api/runtime/bye")
-    def runtime_bye() -> dict[str, Any]:
-        runtime_exit.bye()
+    def runtime_bye(
+        client_id: str = Query(default="legacy", min_length=1, max_length=128),
+        event_seq: int | None = Query(default=None, ge=0),
+    ) -> dict[str, Any]:
+        runtime_exit.bye(client_id, event_seq)
         return {"ok": True}
 
     _register_frontend_shell(app)

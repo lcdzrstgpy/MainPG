@@ -1682,6 +1682,39 @@
   gap: 18px;
 }
 
+.precheck-source-address {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin-top: -10px;
+  padding: 0 10px;
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+}
+
+.precheck-source-address strong {
+  flex: 0 0 auto;
+  color: var(--theme-text-primary);
+}
+
+.precheck-source-address a {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--theme-primary);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.precheck-source-address a:hover {
+  text-decoration: underline;
+}
+
+.precheck-source-address span {
+  color: var(--theme-text-muted);
+}
+
 .precheck-image-block {
   display: flex;
   flex-direction: column;
