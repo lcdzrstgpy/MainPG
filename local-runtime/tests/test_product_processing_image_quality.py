@@ -195,40 +195,108 @@ def test_direct_mode_prefers_remote_reference_urls_over_local_cache_paths(tmp_pa
     assert output.provider == "image_gpt"
 
 
-def test_direct_mode_falls_back_to_local_paths_when_no_remote_url(tmp_path, monkeypatch) -> None:
-    """全部参考都是本地路径（无远端 URL）时仍按原逻辑加载本地文件，不报错。"""
-    local_file = tmp_path / "local-only.jpg"
-    local_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-bytes")
+def test_direct_wuyin_relays_local_only_reference_and_cleans_it_up(monkeypatch) -> None:
+    """本地缓存图必须通过临时 COS URL 传给无印，完成后立即清理。"""
 
-    captured: dict[str, object] = {}
+    class _SubmitResponse:
+        ok = True
+        status_code = 200
 
-    def fake_load(values, *, limit):
-        captured["values"] = list(values)
-        return [(b"reference", "source.png", "image/jpeg")]
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield b'{"code":200,"data":{"id":"task-1"}}'
 
-    def fake_request_edit(*_args, **_kwargs):
-        return b"generated-image", "image/png"
+        def close(self) -> None:
+            return
+
+    class _TemporaryStore:
+        def __init__(self) -> None:
+            self.published: list[tuple[bytes, str]] = []
+            self.deleted: list[object] = []
+
+        def publish(self, content: bytes, content_type: str):
+            self.published.append((content, content_type))
+            return SimpleNamespace(
+                key="ai-service/transient/reference.image",
+                url="https://bucket.cos.ap-guangzhou.myqcloud.com/reference.image?signature=short-lived",
+            )
+
+        def delete(self, reference) -> None:
+            self.deleted.append(reference)
 
     processor = ProductImageProcessor(lambda: {})
-    monkeypatch.setattr(processor, "_load_references", fake_load)
-    monkeypatch.setattr(processor, "_request_edit", fake_request_edit)
+    store = _TemporaryStore()
+    submitted: dict[str, object] = {}
 
-    processor._generate_with_limits(
-        stage="grid_image",
-        prompt="prompt",
-        reference_values=[str(local_file)],
-        providers=[
-            {
-                "base_url": "https://api.wuyinkeji.com",
-                "api_key": "secret",
-                "name": "image_gpt",
-                "model": "image_gpt",
-                "reference_model": "",
-            }
-        ],
-        config={},
+    def submit(*_args, **kwargs):
+        submitted.update(kwargs)
+        return _SubmitResponse()
+
+    monkeypatch.setattr(processor, "_config", lambda: {"cos": {
+        "bucket": "bucket",
+        "region": "ap-guangzhou",
+        "secret_id": "secret-id",
+        "secret_key": "secret-key",
+    }})
+    monkeypatch.setattr(media_module, "TemporaryCosStore", lambda _config: store)
+    monkeypatch.setattr(media_module._SESSION, "post", submit)
+    monkeypatch.setattr(
+        processor,
+        "_poll_wuyin_image_result",
+        lambda *_args, **_kwargs: "https://scapi.net/result.png",
     )
-    assert captured["values"] == [str(local_file)]
+    monkeypatch.setattr(
+        media_module,
+        "_download_provider_result_image",
+        lambda _url: (b"generated-image", "image/png"),
+    )
+
+    content, content_type = processor._request_wuyin_image(
+        {
+            "base_url": "https://api.wuyinkeji.com",
+            "api_key": "secret",
+            "image_size": "2K",
+        },
+        "prompt",
+        [(b"reference", "source.png", "image/jpeg")],
+        timeout_seconds=600,
+    )
+
+    assert (content, content_type) == (b"generated-image", "image/png")
+    assert store.published == [(b"reference", "image/jpeg")]
+    assert submitted["json"]["urls"] == [
+        "https://bucket.cos.ap-guangzhou.myqcloud.com/reference.image?signature=short-lived"
+    ]
+    assert [item.key for item in store.deleted] == ["ai-service/transient/reference.image"]
+
+
+def test_wuyin_poll_does_not_print_provider_response(monkeypatch, capsys) -> None:
+    """Provider task IDs and result URLs must not leak into production stdout."""
+
+    class _DetailResponse:
+        ok = True
+        status_code = 200
+
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield (
+                b'{"code":200,"data":{"status":"success",'
+                b'"url":"https://scapi.net/private-result.png"}}'
+            )
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(media_module._SESSION, "get", lambda *args, **kwargs: _DetailResponse())
+    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+    processor = ProductImageProcessor(lambda: {})
+
+    result = processor._poll_wuyin_image_result(
+        {"base_url": "https://api.wuyinkeji.com", "api_key": "secret"},
+        "sensitive-task-id",
+        timeout_seconds=30,
+    )
+
+    assert result == "https://scapi.net/private-result.png"
+    assert capsys.readouterr().out == ""
 
 
 def test_four_grid_prompt_forbids_all_typography_and_requires_validated_dividers() -> None:

@@ -31,6 +31,12 @@ import requests
 
 from ..domain.policy import is_safe_external_url, resolve_safe_external_url
 from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
+from ...ai_service.temporary_cos import (
+    TemporaryCosStore,
+    TemporaryReference,
+    TemporaryReferenceError,
+)
+from ...basic_settings.service import RuntimeCosConfig
 from .grid_layout import (
     GridLayoutError,
     build_grid_scaffold,
@@ -1344,44 +1350,92 @@ class ProductImageProcessor:
         timeout_seconds: float,
         image_size: str | None = None,
     ) -> tuple[bytes, str]:
-        urls = [
-            str(ref[3]).strip()
-            for ref in references
-            if len(ref) >= 4 and is_safe_external_url(str(ref[3]).strip())
-        ]
-        global_ai_request_limiter().acquire()
-        response = _SESSION.post(
-            f"{provider['base_url']}{WUYIN_IMAGE_SUBMIT_PATH}",
-            params={"key": provider["api_key"]},
-            headers={
-                "Authorization": provider["api_key"],
-                "Content-Type": "application/json",
-            },
-            json={
-                "prompt": prompt,
-                "size": _wuyin_size(image_size or provider.get("image_size")),
-                **({"urls": urls} if urls else {}),
-            },
-            timeout=max(1.0, min(30.0, float(timeout_seconds))),
-            stream=True,
-        )
+        urls, temporary_store, temporary_references = self._wuyin_reference_urls(references)
         try:
-            if not response.ok:
-                raise MediaProcessingError(
-                    f"provider returned HTTP {response.status_code}",
-                    status_code=response.status_code,
-                )
-            payload = _bounded_response_json(response)
+            global_ai_request_limiter().acquire()
+            response = _SESSION.post(
+                f"{provider['base_url']}{WUYIN_IMAGE_SUBMIT_PATH}",
+                params={"key": provider["api_key"]},
+                headers={
+                    "Authorization": provider["api_key"],
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "prompt": prompt,
+                    "size": _wuyin_size(image_size or provider.get("image_size")),
+                    "urls": urls,
+                },
+                timeout=max(1.0, min(30.0, float(timeout_seconds))),
+                stream=True,
+            )
+            try:
+                if not response.ok:
+                    raise MediaProcessingError(
+                        f"provider returned HTTP {response.status_code}",
+                        status_code=response.status_code,
+                    )
+                payload = _bounded_response_json(response)
+            finally:
+                response.close()
+            if not isinstance(payload, dict) or int(payload.get("code") or 0) != 200:
+                raise MediaProcessingError(f"provider submit failed: {_provider_message(payload)}")
+            data = payload.get("data") or {}
+            task_id = str(data.get("id") or data.get("task_id") or "").strip() if isinstance(data, dict) else ""
+            if not task_id:
+                raise MediaProcessingError("provider response does not contain image task id")
+            result_url = self._poll_wuyin_image_result(provider, task_id, timeout_seconds=timeout_seconds)
+            return _download_provider_result_image(result_url)
         finally:
-            response.close()
-        if not isinstance(payload, dict) or int(payload.get("code") or 0) != 200:
-            raise MediaProcessingError(f"provider submit failed: {_provider_message(payload)}")
-        data = payload.get("data") or {}
-        task_id = str(data.get("id") or data.get("task_id") or "").strip() if isinstance(data, dict) else ""
-        if not task_id:
-            raise MediaProcessingError("provider response does not contain image task id")
-        result_url = self._poll_wuyin_image_result(provider, task_id, timeout_seconds=timeout_seconds)
-        return _download_provider_result_image(result_url)
+            if temporary_store is not None:
+                for temporary in temporary_references:
+                    temporary_store.delete(temporary)
+
+    def _wuyin_reference_urls(
+        self,
+        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
+    ) -> tuple[list[str], TemporaryCosStore | None, list[TemporaryReference]]:
+        """Return provider-fetchable URLs, relaying local-only references through private COS."""
+        urls: list[str] = []
+        local_references: list[tuple[bytes, str]] = []
+        for reference in references:
+            candidate = str(reference[3]).strip() if len(reference) >= 4 else ""
+            if candidate and is_safe_external_url(candidate):
+                urls.append(candidate)
+            else:
+                local_references.append((bytes(reference[0]), str(reference[2] or "image/jpeg")))
+
+        if not local_references:
+            if not urls:
+                raise MediaProcessingError("direct image provider requires a reference image")
+            return urls, None, []
+
+        cos = dict(self._config().get("cos") or {})
+        store = TemporaryCosStore(
+            RuntimeCosConfig(
+                bucket=str(cos.get("bucket") or "").strip(),
+                region=str(cos.get("region") or "").strip(),
+                secret_id=str(cos.get("secret_id") or "").strip(),
+                secret_key=str(cos.get("secret_key") or "").strip(),
+            )
+        )
+        temporary_references: list[TemporaryReference] = []
+        try:
+            for content, content_type in local_references:
+                temporary = store.publish(content, content_type)
+                if not _plausible_public_http_url(temporary.url):
+                    raise TemporaryReferenceError(
+                        "temporary COS reference did not return a provider-fetchable URL"
+                    )
+                temporary_references.append(temporary)
+                urls.append(temporary.url)
+        except TemporaryReferenceError as exc:
+            for temporary in temporary_references:
+                store.delete(temporary)
+            raise MediaProcessingError(
+                "failed to relay local reference image to the direct image provider"
+            ) from exc
+
+        return urls, store, temporary_references
 
     def _poll_wuyin_image_result(
         self,
@@ -1419,12 +1473,6 @@ class ProductImageProcessor:
                 continue
             data = payload.get("data") or {}
             status_value = str(data.get("status") or payload.get("status") or "").strip().lower() if isinstance(data, dict) else ""
-            # 临时诊断：打印无影 detail 原始返回，确认 status 数字语义（3/4/5 是失败还是处理中）
-            if _is_wuyin_image_provider(provider):
-                try:
-                    print(f"[wuyin-detail-diag] task={task_id} raw={json.dumps(payload, ensure_ascii=False)[:600]}", flush=True)
-                except Exception:
-                    print(f"[wuyin-detail-diag] task={task_id} raw={str(payload)[:600]}", flush=True)
             result_url = _first_image_url(data) or _first_image_url(payload)
             if result_url:
                 return result_url
