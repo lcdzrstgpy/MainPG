@@ -6,8 +6,9 @@ import os
 import threading
 import time
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+
+import requests
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
@@ -41,6 +42,8 @@ class CustomerAuthClient:
     def __init__(self, base_url: str = "", *, timeout_seconds: float = 8):
         self.base_url = str(base_url or "").strip().rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self._session = requests.Session()
+        self._session.trust_env = False
 
     def configured(self) -> bool:
         return bool(self.base_url)
@@ -339,27 +342,33 @@ class CustomerAuthClient:
             request_headers["Content-Type"] = "application/json"
         if headers:
             request_headers.update(headers)
-        request = Request(
-            f"{self.base_url}{path}",
-            data=body,
-            headers=request_headers,
-            method=method,
-        )
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8") or "{}")
-        except HTTPError as exc:
-            detail = _extract_error_message(exc)
-            if exc.code in (401, 403):
-                raise CustomerBillingPermissionError(exc.code) from exc
-            if 400 <= exc.code < 500:
+            response = self._session.request(
+                method,
+                f"{self.base_url}{path}",
+                data=body,
+                headers=request_headers,
+                timeout=self.timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise CustomerAuthUnavailable(str(getattr(exc, "reason", exc) or exc)) from exc
+        status = int(response.status_code)
+        if status >= 400:
+            detail = _detail_from_text(response.text)
+            if status in (401, 403):
+                raise CustomerBillingPermissionError(status) from None
+            if 400 <= status < 500:
                 raise CustomerAuthRejected(
-                    exc.code,
-                    detail or f"customer auth service rejected the request (HTTP {exc.code})",
-                ) from exc
-            raise CustomerAuthUnavailable(f"customer auth service returned HTTP {exc.code}: {detail}") from exc
-        except (URLError, TimeoutError) as exc:
-            raise CustomerAuthUnavailable(str(getattr(exc, "reason", exc))) from exc
+                    status,
+                    detail or f"customer auth service rejected the request (HTTP {status})",
+                ) from None
+            raise CustomerAuthUnavailable(
+                f"customer auth service returned HTTP {status}: {detail}"
+            ) from None
+        try:
+            return json.loads(response.text or "{}")
+        except (ValueError, TypeError) as exc:
+            raise CustomerAuthUnavailable("customer auth service returned an invalid response") from exc
 
     def _get(self, path: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
         if not self.base_url:
@@ -367,26 +376,54 @@ class CustomerAuthClient:
         request_headers = {"Accept": "application/json"}
         if headers:
             request_headers.update(headers)
-        request = Request(
-            f"{self.base_url}{path}",
-            headers=request_headers,
-            method="GET",
-        )
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8") or "{}")
-        except HTTPError as exc:
-            detail = _extract_error_message(exc)
-            if exc.code in (401, 403):
-                raise CustomerBillingPermissionError(exc.code) from exc
-            if 400 <= exc.code < 500:
+            response = self._session.request(
+                "GET",
+                f"{self.base_url}{path}",
+                headers=request_headers,
+                timeout=self.timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise CustomerAuthUnavailable(str(getattr(exc, "reason", exc) or exc)) from exc
+        status = int(response.status_code)
+        if status >= 400:
+            detail = _detail_from_text(response.text)
+            if status in (401, 403):
+                raise CustomerBillingPermissionError(status) from None
+            if 400 <= status < 500:
                 raise CustomerAuthRejected(
-                    exc.code,
-                    detail or f"customer auth service rejected the request (HTTP {exc.code})",
-                ) from exc
-            raise CustomerAuthUnavailable(f"customer auth service returned HTTP {exc.code}: {detail}") from exc
-        except (URLError, TimeoutError) as exc:
-            raise CustomerAuthUnavailable(str(getattr(exc, "reason", exc))) from exc
+                    status,
+                    detail or f"customer auth service rejected the request (HTTP {status})",
+                ) from None
+            raise CustomerAuthUnavailable(
+                f"customer auth service returned HTTP {status}: {detail}"
+            ) from None
+        try:
+            return json.loads(response.text or "{}")
+        except (ValueError, TypeError) as exc:
+            raise CustomerAuthUnavailable("customer auth service returned an invalid response") from exc
+
+
+def _detail_from_text(text: str) -> str:
+    raw = str(text or "")
+    try:
+        body = json.loads(raw or "{}")
+    except Exception:
+        return raw[:300]
+    detail = body.get("detail") or body.get("message") or body.get("error") if isinstance(body, dict) else ""
+    if isinstance(detail, dict):
+        detail = detail.get("detail") or detail.get("message") or str(detail)
+    if isinstance(detail, str):
+        try:
+            inner = json.loads(detail)
+        except Exception:
+            inner = None
+        if isinstance(inner, dict):
+            detail = inner.get("detail") or inner.get("message") or inner.get("error") or str(inner)
+        elif inner is not None:
+            detail = inner
+        detail = str(detail).strip()
+    return detail if detail else raw[:300]
 
 
 def _new_pod_grant_session() -> tuple[str, bytes]:

@@ -149,16 +149,19 @@ def derive_item_results(
     *,
     paid_retry: bool = False,
     retry_premium: bool = True,
+    cancelled: bool = False,
 ) -> list[dict[str, Any]]:
     """按任务结果把每条链接折算成子项状态上报。
 
     状态契约（与 auth-api compute_batch_charge 一致）：
     - success    成功，扣全价
-    - intercept  有返回但质量门拦截，退半价
+    - intercept  有返回但质量门拦截/用户取消任务，退半价（即按冻结积分 50% 扣除）
     - no_return  上游无返回/整条失败，全退
     一期保守策略：completed 链接全部 success；失败链接全部 no_return
     （拦截退半的细分留到 ai_notes 里带 quality-gate 标记时再细化）。
 
+    ``cancelled=True``：任务被用户取消（含页面关闭触发取消），已完成链接照常
+    success 全价扣，未完成链接按 ``intercept`` 退半（对应服务端 50% 结算）。
     ``paid_retry=True``：手动付费重试，无论成功失败都按全价扣（服务器按 paid_retry
     结算，不再按子项退款）。``retry_premium=False``：系统自动重试轮，不加重试溢价
     （两轮系统重试不向用户计费）。
@@ -169,6 +172,9 @@ def derive_item_results(
         status_value = str(item.get("status") or "")
         if status_value == "completed":
             subitems = [{"feature": feature, "status": "success"} for feature in features]
+        elif cancelled:
+            # 用户取消：未完成链接按 50%（intercept）结算，而非全退。
+            subitems = [{"feature": feature, "status": "intercept"} for feature in features]
         else:
             subitems = [{"feature": feature, "status": "no_return"} for feature in features]
         # 手动付费重试：无论成败都按全价计费（服务器依据 paid_retry 强制全价）。

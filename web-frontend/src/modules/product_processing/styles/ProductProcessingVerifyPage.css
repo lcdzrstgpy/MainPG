@@ -581,6 +581,28 @@
 
 .btn-mini.danger { color: #cf6068; border-color: #f5dbdc; }
 .btn-mini.danger:hover { background: #fff0f0; box-shadow: 0 4px 10px rgba(207, 96, 104, 0.1); }
+.btn-mini.primary { color: #0a8fca; border-color: #a5d9f2; }
+.btn-mini.primary:hover { background: #eef8ff; box-shadow: 0 4px 10px rgba(10, 143, 202, 0.12); }
+
+/* 商品自定义组合：来源图上传按钮（作为可点击 label 呈按钮样式） */
+.verify-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid #cfe0eb;
+  border-radius: 9px;
+  background: #fff;
+  color: #2f5878;
+  font-weight: 700;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.verify-upload-btn:hover {
+  border-color: #82c9ef;
+  box-shadow: 0 6px 14px #188bd61a;
+}
 
 /* ── 展开编辑面板 ── */
 .pool-edit-panel {
@@ -4101,6 +4123,53 @@
   color: #9caaba;
 }
 
+.sku-batch-range {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f7fafc;
+  border: 1px solid #dce9f2;
+  font-size: 0.78rem;
+  color: #526a82;
+}
+
+.sku-batch-range input {
+  width: 64px;
+  padding: 5px 8px;
+  border: 1px solid #d5e2ee;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  background: #fff;
+}
+
+.sku-batch-range button {
+  margin-left: 4px;
+  padding: 5px 12px;
+  border: 1px solid #d5e2ee;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.sku-batch-range button:hover:not(:disabled) {
+  border-color: #e55d5d;
+  color: #e55d5d;
+}
+
+.sku-batch-range button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sku-batch-range-tip {
+  margin: -6px 12px 0;
+  font-size: 0.74rem;
+  color: #e55d5d;
+}
 .sku-batch-summary {
   padding: 9px 12px;
   border-radius: 8px;

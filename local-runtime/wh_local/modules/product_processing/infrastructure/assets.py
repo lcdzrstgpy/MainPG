@@ -26,12 +26,14 @@ class ProductProcessingAssets:
         self.output_root = self.root / "outputs"
         self.preview_asset_root = self.output_root / "preview-assets"
         self.media_asset_root = self.output_root / "media-assets"
+        self.combo_source_root = self.output_root / "combo-sources"
         for path in (
             self.upload_root,
             self.library_root,
             self.output_root,
             self.preview_asset_root,
             self.media_asset_root,
+            self.combo_source_root,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -209,6 +211,43 @@ class ProductProcessingAssets:
             raise FileNotFoundError("preview asset does not exist")
         return path
 
+    def save_combo_source_image(
+        self,
+        content: bytes,
+        filename: str,
+        content_type: str = "",
+        *,
+        workspace_id: str = "local",
+    ) -> Path:
+        """Persist a manually uploaded combo source image in the workspace root."""
+        if not content:
+            raise ValueError("combo source image is empty")
+        suffix = self._image_suffix(filename, content_type)
+        digest = hashlib.sha256(content).hexdigest()
+        workspace_root = self._combo_workspace_root(workspace_id)
+        parent = (workspace_root / digest[:2]).resolve()
+        if workspace_root != parent and workspace_root not in parent.parents:
+            raise ValueError("combo source path is outside the workspace root")
+        parent.mkdir(parents=True, exist_ok=True)
+        path = (parent / f"{digest}{suffix}").resolve()
+        if path.parent != parent:
+            raise ValueError("combo source path is outside the managed root")
+        if not path.exists():
+            path.write_bytes(content)
+        return path
+
+    def require_workspace_combo_source(self, raw_path: str, *, workspace_id: str) -> Path:
+        """Resolve a database-owned combo source file within the caller's workspace."""
+        if not raw_path or "://" in raw_path:
+            raise ValueError("combo source must be a managed local path")
+        workspace_root = self._combo_workspace_root(workspace_id)
+        path = Path(raw_path).resolve()
+        if workspace_root != path and workspace_root not in path.parents:
+            raise ValueError("combo source is outside the workspace root")
+        if not path.is_file():
+            raise FileNotFoundError("combo source does not exist")
+        return path
+
     def save_media_asset(
         self,
         content: bytes,
@@ -286,6 +325,16 @@ class ProductProcessingAssets:
         if not path.is_file():
             raise FileNotFoundError("media asset does not exist")
         return path
+
+    def _combo_workspace_root(self, workspace_id: str) -> Path:
+        workspace_key = hashlib.sha256(
+            str(workspace_id or "").encode("utf-8")
+        ).hexdigest()[:24]
+        root = (self.combo_source_root / "workspaces" / workspace_key).resolve()
+        combo_root = self.combo_source_root.resolve()
+        if combo_root != root and combo_root not in root.parents:
+            raise ValueError("combo workspace path is outside the managed root")
+        return root
 
     def _media_workspace_root(self, workspace_id: str) -> Path:
         workspace_key = hashlib.sha256(

@@ -938,6 +938,10 @@ class PreviewImageRepository:
         if not set(provided_ids).issubset(owned_draft_ids):
             raise LookupError("preview image target does not belong to this task")
 
+        # 完整性校验（仅 finalize 执行，保存预览不校验）：允许提交任意「可导出项」
+        # 的子集（如勾选「只看成功链接」只导出成功项），但拒绝超出可导出范围的草稿
+        # （防止越界/重复/不可导出项混入）。只做子集判定（issubset），不再强求
+        # 精确等于全部可导出项——子集导出本就是产品需求。
         if require_complete_finalize:
             excluded_ids = {
                 int(value)
@@ -958,9 +962,9 @@ class PreviewImageRepository:
                     ).strip()
                 )
             }
-            if set(provided_ids) != exportable_ids:
+            if not set(provided_ids).issubset(exportable_ids):
                 raise ValueError(
-                    "preview finalization must contain every exportable draft exactly once"
+                    "preview finalization contains drafts that are not exportable"
                 )
 
         snapshots: list[dict[str, Any]] = []

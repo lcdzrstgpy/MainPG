@@ -5,11 +5,12 @@
 OCR 是后置验证器，不是第一变换器（§15 确定性验证 → AI 修复 → 确定性复验）。
 
 开关与配置：
-- ``WH_PRODUCT_OCR_GATE=0`` 仅关闭兼容详情图质检；生产四宫格始终 fail-closed；
-- ``WH_PRODUCT_OCR_MAX_REPAIRS`` 控制最大重绘轮数（默认 2：首轮失败后允许再重绘一次，
+- ``WH_PRODUCT_OCR_GATE`` ：默认 **0（关闭）**，与 POD 生图管线一致——生成图不做 OCR
+  质检/重绘，避免因检出中文或 AI 排版文字而失败整条链接。设为 ``1`` 可重新开启；
+- ``WH_PRODUCT_OCR_MAX_REPAIRS`` 控制最大重绘轮数（默认 1：首轮失败后允许再重绘一次，
   覆盖「产品本体印刷中文/字符」等难以一次修净的场景）。
 
-OCR 库未安装或推理失败时返回 ``None``，表示"无法判断"，调用方跳过质检、不阻断流水线。
+OCR 关闭或库未安装/推理失败时返回 ``None``，表示"无法判断"，调用方跳过质检、不阻断流水线。
 """
 
 from __future__ import annotations
@@ -46,7 +47,9 @@ _OCR_INFERENCE_SEMAPHORE = threading.BoundedSemaphore(_ocr_worker_limit())
 
 
 def ocr_gate_enabled() -> bool:
-    return os.environ.get("WH_PRODUCT_OCR_GATE", "1").strip() not in {"0", "false", "no", "off"}
+    # 已按业务要求彻底关闭：生成图不再做 OCR 文字质检/中文重绘，避免「图可用但因文字被卡」。
+    # 忽略 WH_PRODUCT_OCR_GATE 环境变量；如需临时重新启用，请改回原判断逻辑。
+    return False
 
 
 def max_repair_rounds() -> int:
@@ -98,8 +101,12 @@ def inspect_visible_text(content: bytes) -> dict[str, list[str]] | None:
 
     ``prominent`` 只命中足够大的字框，用来拦截模型生成的海报标题/卖点；
     商品本体上的细小型号、花纹或数字不会仅因被 OCR 识别就被删除。
-    OCR 不可用返回 ``None``，由调用方按自身质量合同决定是否阻断。
+    OCR 关闭或不可用时返回 ``None``，由调用方按自身质量合同决定是否阻断。
     """
+    if not ocr_gate_enabled():
+        # 默认关闭 OCR 质检（对齐 POD 生图管线）：生成图不做文字检测/重绘，
+        # 避免因检出中文或 AI 排版文字而判失败整条链接。
+        return None
     engine = _get_engine()
     if engine is None:
         return None

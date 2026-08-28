@@ -24,12 +24,16 @@ from ..infrastructure.dimension_canvas_repository import DimensionCanvasReposito
 from ..infrastructure.dimension_renderer import DimensionRenderer
 from ..infrastructure.repository import ProductProcessingRepository
 from ..service import (
+    COMBO_SCOPE_MAIN,
+    COMBO_SCOPE_PROCESS,
     ProductProcessingConflict,
     ProductProcessingNotFound,
     ProductProcessingService,
     ProductProcessingValidationError,
 )
 from .schemas import (
+    ComboProcessRequest,
+    ComboSourceAddRequest,
     DailySelectionIntakeRequest,
     DailySelectionHandoffRequest,
     DraftCreateRequest,
@@ -178,6 +182,115 @@ def create_product_processing_router(
         payload = {**body.model_dump(exclude_none=True), **extras(body)}
         draft, created = _call(service.create_draft, payload, workspace_id=_workspace(workspace_id))
         return {"draft": draft, "created": created}
+
+    # ---- 商品自定义组合：来源图暂存区（服务端持久化）----
+    @router.get("/combo/sources")
+    def list_combo_sources(
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return service.list_combo_sources(_workspace(workspace_id))
+
+    @router.post("/combo/sources")
+    def add_combo_source(
+        body: ComboSourceAddRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.add_combo_source,
+            {**body.model_dump(exclude_none=True), **extras(body)},
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.post("/combo/sources/upload")
+    async def upload_combo_source(
+        request: Request,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        form, file = await _upload_form(request, "image_file")
+        try:
+            return _call(
+                service.add_combo_source,
+                dict(form),
+                image_content=await file.read(),
+                image_filename=_filename(file, "combo-source.jpg"),
+                image_content_type=str(getattr(file, "content_type", "") or ""),
+                workspace_id=_workspace(workspace_id),
+            )
+        finally:
+            await file.close()
+
+    @router.delete("/combo/sources/{source_id}")
+    def remove_combo_source(
+        source_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(service.remove_combo_source, source_id, _workspace(workspace_id))
+
+    @router.delete("/combo/sources")
+    def clear_combo_sources(
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return service.clear_combo_sources(_workspace(workspace_id))
+
+    @router.get("/combo/sources/{source_id}/image")
+    def combo_source_image(
+        source_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> FileResponse:
+        path = _call(
+            service.combo_source_image_path,
+            source_id,
+            _workspace(workspace_id),
+        )
+        return FileResponse(path, filename=path.name)
+
+    @router.post("/combo/generate-main")
+    def generate_combo_main(
+        request: Request,
+        body: ComboProcessRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        # 组合生图直连：批次冻结领短期密钥，而不是服务端托管（server-managed-wuyin）。
+        # 未登录时 freeze_batch_points 会给出可读报错；成功后按 four_grid 子项结算。
+        return _call(
+            service.run_combo_direct,
+            _remote_token(request, customer_sessions),
+            source_ref="product_processing:combo:generate-main",
+            draft_id=body.draft_id,
+            scope=list(COMBO_SCOPE_MAIN),
+            workspace_id=_workspace(workspace_id),
+            account_id=actor.id,
+            run=lambda: service.generate_combo_main(
+                body.draft_id,
+                prompt=body.prompt or "",
+                workspace_id=_workspace(workspace_id),
+            ),
+        )
+
+    @router.post("/combo/process")
+    def process_combo(
+        request: Request,
+        body: ComboProcessRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        # 组合处理直连：批次冻结领短期密钥（four_grid + detail_images），直连生成 3 张
+        # 轮播 + 详情合成，成功后按 scope 结算。
+        return _call(
+            service.run_combo_direct,
+            _remote_token(request, customer_sessions),
+            source_ref="product_processing:combo:process",
+            draft_id=body.draft_id,
+            scope=list(COMBO_SCOPE_PROCESS),
+            workspace_id=_workspace(workspace_id),
+            account_id=actor.id,
+            run=lambda: service.process_combo(
+                body.draft_id,
+                prompt=body.prompt or "",
+                workspace_id=_workspace(workspace_id),
+            ),
+        )
 
     @router.post("/drafts/import")
     async def import_drafts(
@@ -448,6 +561,13 @@ def create_product_processing_router(
         finally:
             if image is not None and hasattr(image, "close"):
                 await image.close()
+
+    @router.get("/tasks/active-count")
+    def task_active_count(
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """返回仍在处理中的任务数，供前端「关闭页面提醒」判断。"""
+        return {"count": service.active_task_count(_workspace(workspace_id))}
 
     @router.get("/tasks/history")
     def task_history(
@@ -950,7 +1070,15 @@ def _attach_billing_context_and_require_points(
     )
     pricing = summary["pricing"]
     quantity = _billing_quantity(payload)
-    estimated_points = quantity * _billing_points_per_item(payload, pricing)
+    # 商品自定义组合按整条流程一口价分两步预扣（combo_points 覆盖默认按项计费）。
+    combo_points = payload.get("combo_points")
+    if combo_points is not None:
+        try:
+            estimated_points = max(0.0, float(combo_points))
+        except (TypeError, ValueError):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "combo_points 必须是数值") from None
+    else:
+        estimated_points = quantity * _billing_points_per_item(payload, pricing)
     if estimated_points <= 0:
         return
     available = available_points if available_points is not None else summary["available_points"]

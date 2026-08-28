@@ -858,7 +858,7 @@ background_plan / composition_plan / scene_plan / video_shot_plan / detail_plan
 | 变量 | 默认 | 作用 |
 |---|---|---|
 | `WH_PRODUCT_AI_ENABLED` | 1 | 0=关闭 AI（本地透传，测试/离线） |
-| `WH_PRODUCT_OCR_GATE` | 1 | 0=关闭 OCR 质量门 |
+| `WH_PRODUCT_OCR_GATE` | 0 | 1=开启 OCR 质量门（默认关闭，对齐 POD 生图管线） |
 | `WH_PRODUCT_OCR_MAX_REPAIRS` | 1 | 重绘轮数上限（0-4） |
 | `WH_PRODUCT_OCR_WORKERS` | 2 | OCR 并行推理数（1-2） |
 | `WH_PRODUCT_MAX_CONCURRENT_TASKS` | 1 | 产品任务并发数（1-8） |

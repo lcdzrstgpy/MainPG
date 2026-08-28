@@ -16,6 +16,7 @@ from sqlalchemy.pool import StaticPool
 from .database import ProductProcessingDatabase
 from .orm import (
     AiStageCacheRow,
+    ComboSourceRow,
     DailySelectionHandoffReceiptRow,
     DailySelectionIntakeRow,
     EnginePromptRow,
@@ -67,6 +68,54 @@ class ProductProcessingRepository:
             session.add(row)
             session.flush()
             return self._draft(row)
+
+    # ---- 商品自定义组合：来源图暂存区（服务端持久化）----
+
+    def list_combo_sources(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self.database.sessions.begin() as session:
+            rows = session.scalars(
+                select(ComboSourceRow)
+                .where(ComboSourceRow.workspace_id == workspace_id)
+                .order_by(ComboSourceRow.id.asc())
+            ).all()
+            return [self._combo_source(row) for row in rows]
+
+    def add_combo_source(self, values: dict[str, Any]) -> dict[str, Any]:
+        with self.database.sessions.begin() as session:
+            row = ComboSourceRow(**values)
+            session.add(row)
+            try:
+                session.flush()
+            except IntegrityError:
+                # 幂等：同 workspace + source_key 已存在时，重读胜者记录返回。
+                session.rollback()
+                existing = session.scalar(
+                    select(ComboSourceRow).where(
+                        ComboSourceRow.workspace_id == values["workspace_id"],
+                        ComboSourceRow.source_key == values["source_key"],
+                    )
+                )
+                if existing is None:
+                    raise
+                return self._combo_source(existing)
+            return self._combo_source(row)
+
+    def remove_combo_source(self, source_id: int, workspace_id: str) -> bool:
+        with self.database.sessions.begin() as session:
+            result = session.execute(
+                delete(ComboSourceRow).where(
+                    ComboSourceRow.id == source_id,
+                    ComboSourceRow.workspace_id == workspace_id,
+                )
+            )
+            return bool(result.rowcount) if result.rowcount is not None else False
+
+    def clear_combo_sources(self, workspace_id: str) -> int:
+        with self.database.sessions.begin() as session:
+            result = session.execute(
+                delete(ComboSourceRow).where(ComboSourceRow.workspace_id == workspace_id)
+            )
+            return int(result.rowcount or 0)
 
     def begin_product_billing_attempt(
         self,
@@ -854,6 +903,29 @@ class ProductProcessingRepository:
             if workspace_id is not None:
                 statement = statement.where(ProcessingTaskRow.workspace_id == workspace_id)
             return [self._task(row) for row in session.scalars(statement).all()]
+
+    def active_tasks(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        """枚举仍在处理中的任务（queued / running），用于「关闭前取消」。"""
+        with self.database.sessions() as session:
+            statement = (
+                select(ProcessingTaskRow)
+                .options(selectinload(ProcessingTaskRow.items))
+                .where(ProcessingTaskRow.status.in_(("queued", "running")))
+                .order_by(ProcessingTaskRow.id)
+            )
+            if workspace_id is not None:
+                statement = statement.where(ProcessingTaskRow.workspace_id == workspace_id)
+            return [self._task(row) for row in session.scalars(statement).all()]
+
+    def active_task_count(self, workspace_id: str | None = None) -> int:
+        """统计仍在处理中的任务数量（queued / running）。"""
+        with self.database.sessions() as session:
+            statement = select(func.count()).select_from(ProcessingTaskRow).where(
+                ProcessingTaskRow.status.in_(("queued", "running"))
+            )
+            if workspace_id is not None:
+                statement = statement.where(ProcessingTaskRow.workspace_id == workspace_id)
+            return int(session.scalar(statement) or 0)
 
     def recover_interrupted_tasks(self) -> list[dict[str, Any]]:
         """Turn process-lost running work into an explicit retryable terminal state."""
@@ -1817,6 +1889,40 @@ class ProductProcessingRepository:
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }
+
+    def set_combo_main(self, source_id: int, workspace_id: str) -> dict[str, Any]:
+        """把某张来源图设为组合主图：同 workspace 先取消其他主图标记，再设置该张。
+
+        ``source_id`` 不存在时抛 KeyError，由 service 层转成 404。
+        """
+        with self.database.sessions.begin() as session:
+            target = session.get(ComboSourceRow, source_id)
+            if target is None or target.workspace_id != workspace_id:
+                raise KeyError(source_id)
+            session.execute(
+                update(ComboSourceRow)
+                .where(ComboSourceRow.workspace_id == workspace_id)
+                .values(is_main=False)
+            )
+            target.is_main = True
+            session.flush()
+            return self._combo_source(target)
+
+    @staticmethod
+    def _combo_source(row: ComboSourceRow) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "workspace_id": row.workspace_id,
+            "source_key": row.source_key,
+            "source_type": row.source_type,
+            "draft_id": row.draft_id,
+            "title": row.title,
+            "url": row.url,
+            "is_main": bool(row.is_main),
+            "local_path": row.local_path,
+            "created_at": row.created_at,
+        }
+
 
     @staticmethod
     def _billing_attempt(row: ProductProcessingBillingAttemptRow) -> dict[str, Any]:

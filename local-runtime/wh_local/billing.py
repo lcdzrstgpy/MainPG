@@ -46,6 +46,9 @@ FEATURE_PRICING: dict[str, FeaturePricing] = {
     # (text 5 + image 35) and reserves 45 points while it is running.
     "product_processing.text": FeaturePricing(5, 5, 5, 1.0),
     "product_processing.image_grid_2k": FeaturePricing(40, 35, 35, 1.0),
+    # 商品自定义组合：整条流程一口价，分两步单次计费（生成主图 40 / 并行三图+文本 60）。
+    "product_processing.combo_main": FeaturePricing(40, 40, 40, 1.0),
+    "product_processing.combo_process": FeaturePricing(60, 60, 60, 1.0),
 }
 
 

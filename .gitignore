@@ -33,3 +33,7 @@ local-runtime/_rsa_public.pem
 local-runtime/python.exe
 .trae/
 product_processing.db
+
+# 公告发布后台本地数据
+announcement-admin/announcements.sqlite3
+announcement-admin/config.json

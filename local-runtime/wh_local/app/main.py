@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
+import time
 
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
@@ -60,6 +62,11 @@ from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
 from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
+from ..messages import (
+    AnnouncementSyncService,
+    MessagesRepository,
+    create_messages_router,
+)
 from ..modules.basic_settings.service import SystemConfigService
 from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
 from ..modules.pod_customization import create_router as create_pod_customization_router
@@ -69,6 +76,17 @@ from ..modules.pod_customization.remote_billing import (
     session_remote_token_resolver,
 )
 from ..modules.pod_customization.title_runtime import PodTitleRuntime
+from ..modules.combo_kit import (
+    create_combo_kit_router,
+    register_combo_kit_exception_handlers,
+)
+from ..modules.combo_kit.ai_runtime import ComboKitAiRuntime
+from ..modules.combo_kit.assets import ComboKitAssets
+from ..modules.combo_kit.billing import (
+    ComboKitBillingCoordinator,
+    session_remote_token_resolver as combo_session_token_resolver,
+)
+from ..modules.combo_kit.repository import ComboKitRepository
 from ..modules.product_processing.api.router import create_product_processing_router
 from ..modules.product_processing.domain.models import DailySelectionHandoffEnvelope
 from ..modules.product_processing.infrastructure.assets import ProductProcessingAssets
@@ -131,6 +149,99 @@ def _provider_factory(config: Mapping[str, Any]) -> OneBound1688Provider:
     return OneBound1688Provider(config)
 
 
+class _RuntimeExitController:
+    """Desktop-only: auto-terminate the backend after the frontend page closes.
+
+    The frontend App root uses ``navigator.sendBeacon`` to periodically report a
+    heartbeat and to report ``bye`` when the page is hidden/discarded (``pagehide``).
+
+    - On ``bye`` a short grace window opens; a fresh heartbeat from a reloaded page
+      cancels it, otherwise the whole process exits, releasing MainPG.exe so an
+      in-place install can replace it and no backend process lingers.
+    - Fallback: if no heartbeat arrives for a long time (browser crash / hard kill),
+      the watchdog also exits.
+
+    Only enabled when ``WH_LOCAL_RUNTIME_EXIT_ON_CLOSE=1``, which is set by the
+    desktop launcher (run_workbench.py / packaged MainPG.exe). The server runs
+    uvicorn directly under systemd without that variable, so it never self-exits.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._heartbeat = time.monotonic()
+        self._bye_deadline: float | None = None
+        self._watchdog: threading.Thread | None = None
+        self._grace_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_GRACE_S", "8"))
+        self._idle_s = float(os.environ.get("WH_LOCAL_RUNTIME_IDLE_TIMEOUT_S", "900"))
+        self._interval_s = float(os.environ.get("WH_LOCAL_RUNTIME_WATCHDOG_INTERVAL_S", "2"))
+        self.enabled = os.environ.get("WH_LOCAL_RUNTIME_EXIT_ON_CLOSE", "0") == "1"
+        # 确认真退出前执行的「取消运行中任务并结算」回调（仅桌面端注入）。
+        self._on_before_exit: Any | None = None
+        self._exit_cancel_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_CANCEL_S", "6"))
+
+    def set_on_before_exit(self, callback: Any | None) -> None:
+        """注入退出前回调；仅在真正决定退出（而非刷新重载）时执行一次。"""
+        self._on_before_exit = callback
+
+    def start(self) -> None:
+        if not self.enabled or self._watchdog is not None:
+            return
+        self._watchdog = threading.Thread(
+            target=self._run_watchdog, name="mainpg-runtime-exit", daemon=True
+        )
+        self._watchdog.start()
+
+    def touch(self) -> None:
+        with self._lock:
+            self._heartbeat = time.monotonic()
+            # 页面刷新后新页面重新心跳，取消上一次关闭时排定的退出。
+            self._bye_deadline = None
+
+    def bye(self) -> None:
+        with self._lock:
+            self._bye_deadline = time.monotonic() + self._grace_s
+
+    def _run_watchdog(self) -> None:
+        while True:
+            time.sleep(self._interval_s)
+            with self._lock:
+                heartbeat = self._heartbeat
+                deadline = self._bye_deadline
+                now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                self._exit("frontend page closed")
+            if now - heartbeat > self._idle_s:
+                self._exit("frontend heartbeat idle timeout")
+
+    def _exit(self, reason: str) -> None:
+        print(f"[runtime] exiting because {reason}", flush=True)
+        # 确认真退出前，先优雅取消仍 in-flight 的处理任务并按 50% 结算，
+        # 使「关闭页面→任务取消/已取消+按冻结积分 50% 扣费」可达成。仅在真正
+        # 决定退出（非刷新重载）时执行；回调带超时保护，绝不无限阻塞。
+        self._run_before_exit()
+        # 硬退出整个进程（含所有守护工作线程），释放被锁定的 MainPG.exe。
+        os._exit(0)  # noqa: PLR1722 - deliberate hard exit on desktop page close
+
+    def _run_before_exit(self) -> None:
+        """在独立线程执行退出前回调，并限时等待，避免阻塞退出。"""
+        callback = self._on_before_exit
+        if callback is None:
+            return
+        done = threading.Event()
+
+        def _wrap() -> None:
+            try:
+                callback()
+            except Exception:
+                # 取消/结算尽力而为；失败交给对账 / 服务端 TTL 兜底。
+                pass
+            finally:
+                done.set()
+
+        threading.Thread(target=_wrap, daemon=True, name="mainpg-exit-cancel").start()
+        done.wait(timeout=self._exit_cancel_s)
+
+
 def create_app(database_path: Path | None = None) -> FastAPI:
     config = default_config()
     db_path = database_path or config.database_path
@@ -167,13 +278,18 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         pod_service = getattr(runtime_app.state, "pod_customization_service", None)
         pod_ai_runtime = getattr(runtime_app.state, "pod_customization_ai_runtime", None)
         pod_title_runtime = getattr(runtime_app.state, "pod_customization_title_runtime", None)
+        messages_sync = getattr(runtime_app.state, "messages_sync", None)
         if shop_worker is not None:
             shop_worker.start()
+        if messages_sync is not None:
+            messages_sync.start()
         try:
             yield
         finally:
             if shop_worker is not None:
                 shop_worker.close()
+            if messages_sync is not None:
+                messages_sync.stop()
             if pod_service is not None:
                 pod_service.close()
             if pod_title_runtime is not None:
@@ -193,6 +309,22 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # 桌面端：前端页面关闭后自动终止后端进程（服务器环境不启用 watchdog）。
+    runtime_exit = _RuntimeExitController()
+    if runtime_exit.enabled:
+        runtime_exit.start()
+    app.state.runtime_exit = runtime_exit
+
+    @app.post("/api/runtime/heartbeat")
+    def runtime_heartbeat() -> dict[str, Any]:
+        runtime_exit.touch()
+        return {"ok": True}
+
+    @app.post("/api/runtime/bye")
+    def runtime_bye() -> dict[str, Any]:
+        runtime_exit.bye()
+        return {"ok": True}
+
     _register_frontend_shell(app)
     app.state.update_manager = update_manager
     app.state.patch_manager = patch_manager
@@ -257,12 +389,34 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.state.pod_customization_ai_runtime = pod_ai_runtime
     app.state.pod_customization_title_runtime = pod_title_runtime
 
+    # 商品组合套装：独立业务模块，与产品处理 / POD 完全隔离。
+    combo_kit_repo = ComboKitRepository(db_path.parent / "combo-kit" / "combo_kit.sqlite3")
+    combo_kit_assets = ComboKitAssets(db_path.parent / "combo-kit" / "assets")
+    combo_kit_ai = ComboKitAiRuntime()
+    combo_kit_billing = ComboKitBillingCoordinator(
+        remote_customer_auth,
+        combo_session_token_resolver(customer_sessions),
+    )
+    combo_kit_router = create_combo_kit_router(
+        combo_kit_repo,
+        combo_kit_assets,
+        combo_kit_ai,
+        combo_kit_billing,
+    )
+    app.include_router(combo_kit_router)
+    register_combo_kit_exception_handlers(app)
+    app.state.combo_kit_service = getattr(combo_kit_router, "combo_kit_service")
+
     # Normal requests delete transient references immediately. This startup
     # construction sweep handles objects left by a prior interrupted process.
     runtime = SystemConfigService(db_path).get_runtime_config()
     TemporaryCosStore(runtime.cos).cleanup_stale()
     plugin_queue = DataCollectionPluginQueue(db_path)
     product_processing = _product_processing_service(db_path)
+    # 桌面端：确认退出（关闭页面页面不再恢复）前取消所有仍在处理的任务并按 50% 结算，
+    # 使「关前端页 → 任务已取消 + 按冻结积分 50% 扣费」可达成。服务器环境 watchdog 未
+    # 启用，该回调不被触发。
+    runtime_exit.set_on_before_exit(product_processing.cancel_all_active_for_shutdown)
     app.include_router(
         create_product_processing_router(
             product_processing,
@@ -289,6 +443,16 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         app, db_path, config.data_dir, plugin_queue, product_processing,
         product_library_service=profit_activity_service,
     )
+
+    # 公告消息：从公告发布后台定时同步，前端右上角站内信读取。
+    messages_repository = MessagesRepository(db_path)
+    messages_sync = AnnouncementSyncService(
+        messages_repository,
+        config.announce_base_url,
+        interval_seconds=300,
+    )
+    app.include_router(create_messages_router(messages_repository, messages_sync))
+    app.state.messages_sync = messages_sync
 
     return app
 

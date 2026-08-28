@@ -5,6 +5,7 @@ export type WorkspaceModuleId =
   | "product_processing"
   | "product_processing_history"
   | "product_processing_tasks"
+  | "product_combo"
   | "dimension_canvas"
   | "pod_customization"
   | "profit_activity"
@@ -89,6 +90,14 @@ const productProcessingHistory: WorkspaceModule = {
   description: "查看并找回 AI 处理批次",
 };
 
+const productCombo: WorkspaceModule = {
+  id: "product_combo",
+  label: "商品组合套装",
+  icon: "",
+  iconClass: "iconfont icon-skin",
+  description: "独立组合套装板块：上传原图、主体解析、文本+6图生成、隔离扣费与独立预检",
+};
+
 const priceVerification: WorkspaceModule = {
   id: "price_verification",
   label: "核价/货源匹配",
@@ -148,7 +157,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     iconClass: "iconfont icon-build",
     description: "采集、处理与尺寸图制作",
     defaultChildId: "daily_selection",
-    children: [collection, productProcessing, productProcessingHistory, dimensionCanvas],
+    children: [collection, productProcessing, productCombo, productProcessingHistory, dimensionCanvas],
   },
   podCustomization,
   {
@@ -169,6 +178,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   collectionPanel,
   productProcessing,
   productProcessingHistory,
+  productCombo,
   processingTasks,
   dimensionCanvas,
   podCustomization,

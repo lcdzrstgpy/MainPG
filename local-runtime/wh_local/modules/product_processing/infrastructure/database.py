@@ -65,6 +65,9 @@ _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("preview_overrides_json", "TEXT NOT NULL DEFAULT '{}'"),
         ("media_contract_version", "INTEGER NOT NULL DEFAULT 1"),
     ],
+    "product_processing_combo_sources": [
+        ("is_main", "BOOLEAN NOT NULL DEFAULT 0"),
+    ],
     "product_processing_dimension_items": [
         ("render_input_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ("rendered_input_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
