@@ -16,6 +16,7 @@ from .billing_contract import (
     PodCallPlan,
     PodExecutionGrant,
     PodPlannedCall,
+    TITLE_ATTEMPTS,
 )
 from .contracts import (
     BatchCreate,
@@ -1036,7 +1037,7 @@ class PodCustomizationService:
         plan = PodCallPlan.for_retry(
             action_id,
             feature=feature,  # type: ignore[arg-type]
-            max_attempts=3 if feature == "pod.title" else 1,
+            max_attempts=TITLE_ATTEMPTS if feature == "pod.title" else 1,
         )
         return self._freeze_action(
             actor,

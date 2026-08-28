@@ -138,7 +138,6 @@ class PodBatchWorker:
         )
         self._futures: dict[tuple[str, str], Future[Any]] = {}
         self._futures_lock = threading.Lock()
-        self._title_batch_locks: dict[str, threading.Lock] = {}
         self._billing_runs: dict[str, PodBillingRun] = {}
         # 独立的款式后处理执行池：容量与速创生图并发一致（image_workers），
         # 使四图返回后的校验、切图、COS 发布与结果落库也能最多 8 款并行。
@@ -1229,65 +1228,64 @@ class PodBatchWorker:
             raise RuntimeError("POD title runtime is disabled")
         if not provider_call_ids:
             raise RuntimeError("POD title call plan is missing")
-        with self._title_batch_lock(batch["batch_id"]):
-            try:
-                from .contracts import BusinessFields
+        try:
+            from .contracts import BusinessFields
 
-                request = PodTitleRequest(
-                    style_task_id=style_task_id,
-                    style_index=style_index,
-                    hero_image=hero.content,
-                    hero_content_type=hero.content_type,
-                    business_fields=BusinessFields.model_validate(batch["business_fields"]),
-                    creative_prompt=batch["creative_prompt"],
-                    accepted_titles=self.repository.accepted_style_titles(
-                        batch["batch_id"], exclude_style_index=style_index
-                    ),
+            request = PodTitleRequest(
+                style_task_id=style_task_id,
+                style_index=style_index,
+                hero_image=hero.content,
+                hero_content_type=hero.content_type,
+                business_fields=BusinessFields.model_validate(batch["business_fields"]),
+                creative_prompt=batch["creative_prompt"],
+                accepted_titles=self.repository.accepted_style_titles(
+                    batch["batch_id"], exclude_style_index=style_index
+                ),
+            )
+            title_kwargs = {
+                "grant": billing_run.grant,
+                "call_id": provider_call_ids[0],
+                "call_ids": provider_call_ids,
+                "on_outcome": lambda call_id, status: billing_run.record(
+                    call_id, "pod.title", status
+                ),
+            }
+            if _accepts_keyword(self.title_runtime.generate_title, "on_start"):
+                title_kwargs["on_start"] = lambda call_id: billing_run.start(
+                    call_id, "pod.title"
                 )
-                title_kwargs = {
-                    "grant": billing_run.grant,
-                    "call_id": provider_call_ids[0],
-                    "call_ids": provider_call_ids,
-                    "on_outcome": lambda call_id, status: billing_run.record(
-                        call_id, "pod.title", status
-                    ),
-                }
-                if _accepts_keyword(self.title_runtime.generate_title, "on_start"):
-                    title_kwargs["on_start"] = lambda call_id: billing_run.start(
-                        call_id, "pod.title"
-                    )
-                result = self.title_runtime.generate_title(request, **title_kwargs)
-                if not any(billing_run.has_outcome(call_id) for call_id in provider_call_ids):
-                    # Test doubles and legacy injected runtimes may not emit the
-                    # optional per-attempt callback; one returned result is one success.
-                    billing_run.record(provider_call_ids[0], "pod.title", "success")
-                persisted = vars(result)
-                persisted["visual_signature"] = visual_signature(result)
-                self.repository.finish_style_title(
-                    batch["batch_id"],
-                    style_index,
-                    persisted,
-                    workspace_id=batch["workspace_id"],
-                    owner_user_id=batch["owner_user_id"],
-                    style_copy={
-                        "title": result.title,
-                        "english_title": result.english_title,
-                        "description": result.description,
-                    },
-                )
-            except PodBillingAuthorizationRequired:
-                raise
-            except RuntimeClosedError as exc:
-                raise PodBillingAuthorizationRequired(
-                    "POD runtime stopped before the next title call; sign in to resume"
-                ) from exc
-            except Exception as exc:
-                if not any(billing_run.has_outcome(call_id) for call_id in provider_call_ids):
-                    billing_run.record(provider_call_ids[0], "pod.title", "no_return")
-                attempt_count = int(getattr(exc, "attempt_count", 0) or 0)
-                self.repository.fail_style_title(
-                    batch["batch_id"], style_index, safe_error_message(exc), attempt_count=attempt_count
-                )
+            result = self.title_runtime.generate_title(request, **title_kwargs)
+            if not any(billing_run.has_outcome(call_id) for call_id in provider_call_ids):
+                # Test doubles and legacy injected runtimes may not emit the
+                # optional per-attempt callback; one returned result is one success.
+                billing_run.record(provider_call_ids[0], "pod.title", "success")
+            persisted = vars(result)
+            persisted["visual_signature"] = visual_signature(result)
+            self.repository.finish_style_title(
+                batch["batch_id"],
+                style_index,
+                persisted,
+                workspace_id=batch["workspace_id"],
+                owner_user_id=batch["owner_user_id"],
+                style_copy={
+                    "title": result.title,
+                    "english_title": result.english_title,
+                    "description": result.description,
+                },
+            )
+        except PodBillingAuthorizationRequired:
+            raise
+        except RuntimeClosedError as exc:
+            raise PodBillingAuthorizationRequired(
+                "POD runtime stopped before the next title call; sign in to resume"
+            ) from exc
+        except Exception as exc:
+            if not any(billing_run.has_outcome(call_id) for call_id in provider_call_ids):
+                billing_run.record(provider_call_ids[0], "pod.title", "no_return")
+            attempt_count = int(getattr(exc, "attempt_count", 0) or 0)
+            self.repository.fail_style_title(
+                batch["batch_id"], style_index, safe_error_message(exc), attempt_count=attempt_count
+            )
 
     @staticmethod
     def _title_call_ids(
@@ -1329,10 +1327,6 @@ class PodBatchWorker:
         if len(fallback) == 1:
             return fallback[0]
         raise RuntimeError(f"POD image call plan is missing style {style_index} attempt {attempt}")
-
-    def _title_batch_lock(self, batch_id: str) -> threading.Lock:
-        with self._futures_lock:
-            return self._title_batch_locks.setdefault(batch_id, threading.Lock())
 
     def _lifestyle_media(self, context: dict[str, Any]) -> Any:
         batch = context["batch"]

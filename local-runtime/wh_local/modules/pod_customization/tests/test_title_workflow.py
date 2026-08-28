@@ -500,6 +500,8 @@ def test_title_resume_skips_persisted_success_and_uses_only_remaining_calls(tmp_
         "success",
         "success",
         "no_return",
+        "no_return",
+        "no_return",
     ]
     service.close()
     titles.close()

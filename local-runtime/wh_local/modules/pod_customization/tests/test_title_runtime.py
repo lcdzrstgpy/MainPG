@@ -511,7 +511,7 @@ def test_title_request_contract_requires_distinct_complete_listing_phrases() -> 
     assert "complete" in lowered and "noun phrase" in lowered
     assert "leading visual segment" in lowered
     assert "title_generation_recipe" in lowered
-    assert "95-160" in lowered
+    assert "110-150" in lowered
     assert "silently check before output" in lowered
     assert "distinct visual lead" in lowered
     assert "product type" in lowered

@@ -20,7 +20,7 @@ from .runtime import AiRuntime, AiRuntimeConfig
 
 
 PROMPT_VERSION = "pod-title-v1"
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 5
 RETRY_BACKOFF_SECONDS = 0.5
 TITLE_MIN_LENGTH = 80
 TITLE_MAX_LENGTH = 200
@@ -227,7 +227,7 @@ class PodTitleRuntime(AiRuntime):
             for attempt in range(1, MAX_ATTEMPTS + 1)
         )
         if not planned_call_ids or len(planned_call_ids) > MAX_ATTEMPTS:
-            raise ValueError("POD title runtime requires one to three frozen provider calls")
+            raise ValueError(f"POD title runtime requires one to {MAX_ATTEMPTS} frozen provider calls")
         max_attempts = len(planned_call_ids)
         for attempt in range(1, max_attempts + 1):
             self._ensure_open()
@@ -280,10 +280,13 @@ class PodTitleRuntime(AiRuntime):
             except ValueError as exc:
                 # A contract-invalid title still came back from the provider,
                 # so its attempt was already reported as success above.
-                error = _invalid_response("POD title output failed the listing contract", attempt_count=attempt)
+                reason = _normalized_text(str(exc)) or "title output violated the listing contract"
+                error = _invalid_response(
+                    f"POD title output failed the listing contract: {reason}", attempt_count=attempt
+                )
                 if attempt >= max_attempts:
                     raise error from exc
-                last_feedback = _normalized_text(str(exc)) or "title output violated the listing contract"
+                last_feedback = reason
             if attempt < max_attempts:
                 self._retry_wait(RETRY_BACKOFF_SECONDS)
         raise AssertionError("unreachable")
@@ -369,7 +372,7 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
         "contract": {
             "market": "United States",
             "language": "English ASCII only",
-            "title_length": "80-200 ASCII characters after normalized whitespace",
+            "title_length": "80-195 ASCII characters after normalized whitespace",
             "title_composition": (
                 "Write a complete natural US-English noun phrase with a leading visual segment that names a "
                 "visible style-specific visual theme, motif, or color. Avoid reproducing an accepted title "
@@ -379,8 +382,8 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
                 "Plan silently before writing. First choose a distinct visual lead of two to five meaningful words "
                 "that is visibly grounded in this image. Then build the title in this order: distinct visual lead; "
                 "accurate product type; one or two visible or supplied factual details such as motif, material, "
-                "color, or use; a complete final qualifier. Aim for 95-160 ASCII characters, leaving room below the "
-                "200-character limit. Silently check before output that the title is not an exact duplicate of an "
+                "color, or use; a complete final qualifier. Aim for 110-150 ASCII characters and never exceed 195. "
+                "Silently check before output that the title is not an exact duplicate of an "
                 "accepted title, contains no prohibited term, and has no dangling connector, punctuation, or "
                 "unbalanced bracket. Do not output this plan or a checklist."
             ),
@@ -404,10 +407,10 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
         "rejection_feedback": rejection_feedback,
         "instructions": (
             "Use the cropped hero image as visual evidence. The title field is the canonical US English marketplace "
-            "listing title and must be an ASCII 80-200-character complete natural noun phrase. Begin it with a "
-            "leading visual segment grounded in the image. Follow title_generation_recipe exactly and aim for 95-160 "
-            "characters. Do not reproduce an accepted title exactly. Do not end it with a dangling connector or "
-            "punctuation. Generate title, english_title, and description together in this single response. Return "
+            "listing title and must be an ASCII 80-195-character complete natural noun phrase. Begin it with a "
+            "leading visual segment grounded in the image. Follow title_generation_recipe exactly and aim for 110-150 "
+            "characters. End it with a complete noun, never a dangling connector or punctuation. Do not reproduce an "
+            "accepted title exactly. Generate title, english_title, and description together in this single response. Return "
             "exactly one JSON object, no Markdown or extra keys."
         ),
     }
