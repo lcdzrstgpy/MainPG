@@ -511,7 +511,12 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         const state = await getSkuRepullState(activeRun.run_id);
         setSkuRepull(state);
         if (state.status !== "running") {
-          setActiveRun(await getSelectionRun(activeRun.run_id));
+          const [refreshedRun, refreshedRuns] = await Promise.all([
+            getSelectionRun(activeRun.run_id),
+            listSelectionRuns(),
+          ]);
+          setActiveRun(refreshedRun);
+          setRuns(refreshedRuns);
         }
       } catch (requestError) {
         setError(requestError instanceof Error ? requestError.message : "SKU 补齐进度读取失败");

@@ -51,6 +51,39 @@ def empty_repull_state() -> dict[str, Any]:
     }
 
 
+def _reconcile_completed_run(run: Any, metadata: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Remove recovered detail errors and derive the final persisted run status."""
+    unresolved_offer_ids = {
+        str(candidate.offer_id)
+        for candidate in incomplete_candidates(run)
+    }
+    detail_errors = metadata.get("detail_errors")
+    if isinstance(detail_errors, Mapping):
+        resolved_errors = [
+            error
+            for offer_id, error in detail_errors.items()
+            if str(offer_id) not in unresolved_offer_ids
+        ]
+        metadata["detail_errors"] = {
+            offer_id: error
+            for offer_id, error in detail_errors.items()
+            if str(offer_id) in unresolved_offer_ids
+        }
+        errors = metadata.get("errors")
+        if isinstance(errors, (list, tuple)):
+            remaining_errors = list(errors)
+            for resolved_error in resolved_errors:
+                try:
+                    remaining_errors.remove(resolved_error)
+                except ValueError:
+                    continue
+            metadata["errors"] = remaining_errors
+    status = getattr(run, "status", "partial")
+    if status == "partial" and not unresolved_offer_ids and not metadata.get("errors"):
+        status = "completed"
+    return metadata, status
+
+
 @dataclass
 class SkuRepullJob:
     """In-memory progress for one run's current re-pull round."""
@@ -149,7 +182,23 @@ class SkuRepullRunner:
             if job is not None:
                 return job.to_state()
         stored = run.metadata.get("sku_repull")
-        return dict(stored) if isinstance(stored, Mapping) else empty_repull_state()
+        if not isinstance(stored, Mapping):
+            return empty_repull_state()
+        state = dict(stored)
+        # Runs completed before status reconciliation was introduced may still
+        # be persisted as partial. Heal them when their stored round is read.
+        if state.get("status") == "completed" and getattr(run, "status", None) == "partial":
+            try:
+                metadata, status = _reconcile_completed_run(run, dict(run.metadata))
+                self._repository.update_run_metadata(
+                    workspace_id=actor.workspace_id,
+                    run_id=run.run_id,
+                    metadata=metadata,
+                    status=status,
+                )
+            except Exception:
+                pass
+        return state
 
     def cancel(self, *, actor: Any, run: Any) -> dict[str, Any]:
         key = (actor.workspace_id, run.run_id)
@@ -246,10 +295,14 @@ class SkuRepullRunner:
             )
             metadata = dict(run.metadata)
             metadata["sku_repull"] = job.to_state()
+            reconciled_status = getattr(run, "status", "partial")
+            if job.status == "completed":
+                metadata, reconciled_status = _reconcile_completed_run(run, metadata)
             self._repository.update_run_metadata(
                 workspace_id=job.workspace_id,
                 run_id=job.run_id,
                 metadata=metadata,
+                status=reconciled_status,
             )
         except Exception:
             # 元数据持久化失败不阻断本轮结果；下一轮 start 仍按内存 job 推进。

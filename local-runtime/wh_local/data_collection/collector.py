@@ -380,7 +380,16 @@ class DailySelectionCollector:
 
     def _settle(self, criteria: DailySelectionCriteria, reserved_calls: int, actual_calls: int, now: datetime) -> BudgetState:
         if actual_calls > reserved_calls:
-            raise ValueError("provider audit count exceeds the operation budget")
+            # Provider retries are represented by one audit per HTTP attempt.
+            # The extra calls have already happened, so account for them instead
+            # of turning a recoverable upstream retry into a failed collection.
+            return self._budget.reserve(
+                workspace_id=self._workspace_id,
+                provider_fingerprint=self._provider_fingerprint,
+                max_api_calls=criteria.max_api_calls,
+                api_calls=actual_calls - reserved_calls,
+                now=now,
+            )
         if actual_calls == reserved_calls:
             return self._budget.state(
                 workspace_id=self._workspace_id,
