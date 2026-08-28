@@ -161,3 +161,18 @@ class BatchRetryFailedCreate(BaseModel):
         if set(image_indices).intersection(title_indices):
             raise ValueError("a style cannot be retried as both image and title")
         return self
+
+
+class ManualTitleUpdate(BaseModel):
+    """A user-entered listing title that bypasses AI copy validation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+
+    @model_validator(mode="after")
+    def strip_title(self) -> "ManualTitleUpdate":
+        self.title = self.title.strip()
+        if not self.title:
+            raise ValueError("title is required")
+        return self

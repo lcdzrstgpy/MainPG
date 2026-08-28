@@ -43,7 +43,21 @@ def test_pod_customization_migrations_are_registered_in_forward_order() -> None:
         "pod_customization:007_requested_count_upgrade",
         "pod_customization:008_persistent_billing_runs",
         "pod_customization:009_export_records",
+        "pod_customization:010_pod_title_source",
     ]
+
+
+def test_init_db_applies_pod_title_source_migration(tmp_path: Path) -> None:
+    database_path = tmp_path / "pod.sqlite3"
+    init_db(database_path)
+
+    with transaction(database_path) as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(pod_customization_style_titles)")
+        }
+
+    assert "source" in columns
 
 
 def test_operator_role_receives_new_pod_permissions(tmp_path: Path) -> None:

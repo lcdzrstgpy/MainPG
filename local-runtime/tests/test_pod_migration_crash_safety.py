@@ -29,6 +29,7 @@ MIGRATION_NAMES = (
     "007_requested_count_upgrade",
     "008_persistent_billing_runs",
     "009_export_records",
+    "010_pod_title_source",
 )
 
 
@@ -195,7 +196,7 @@ def test_fresh_and_repeated_startup_produces_complete_pod_schema(
         init_db(database)
 
     _assert_all_effects(database)
-    assert _markers(database)[:9] == [
+    assert _markers(database) == [
         f"pod_customization:{name}" for name in MIGRATION_NAMES
     ]
 
@@ -212,7 +213,7 @@ def test_repository_upgrades_supported_pod_checkpoints_and_is_repeatable(
     PodCustomizationRepository(database)
 
     _assert_all_effects(database)
-    assert _markers(database)[:9] == [
+    assert _markers(database) == [
         f"pod_customization:{name}" for name in MIGRATION_NAMES
     ]
 

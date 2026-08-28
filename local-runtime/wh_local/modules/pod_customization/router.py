@@ -18,6 +18,7 @@ from .contracts import (
     BatchRetryFailedCreate,
     CalibrationUpdate,
     DirectListingTrialCreate,
+    ManualTitleUpdate,
     RegenerateItemCreate,
     SceneOptimizationCreate,
 )
@@ -256,6 +257,22 @@ def create_router(
             batch_id,
             style_index,
             enqueue=start_workers,
+        )
+
+    @router.patch("/batches/{batch_id}/styles/{style_index}/title")
+    def update_title_manual(
+        batch_id: str,
+        style_index: int,
+        body: ManualTitleUpdate,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(
+            service.set_manual_title,
+            actor,
+            batch_id,
+            style_index,
+            body.title,
         )
 
     @router.get("/assets/{asset_id}")

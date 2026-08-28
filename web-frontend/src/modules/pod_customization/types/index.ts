@@ -119,12 +119,14 @@ export type PodBatchItemStatus =
   | "optimizing_scene";
 
 export type PodStyleTitleStatus = "queued" | "generating" | "completed" | "failed";
+export type PodStyleTitleSource = "ai" | "manual";
 
 export type PodStyleTitle = {
   style_index: number;
   style_task_id: string;
   status: PodStyleTitleStatus;
   title: string | null;
+  source?: PodStyleTitleSource;
   listing_ready: boolean;
   error_message?: string;
   updated_at: string;

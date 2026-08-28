@@ -1,6 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
-import { podItemStatusLabel, podStyleTitleStatusLabel, type PodStyleRow } from "../data/podCustomizationModel";
+import {
+  canEditPodStyleTitle,
+  podItemStatusLabel,
+  podStyleTitleStatusLabel,
+  type PodStyleRow,
+} from "../data/podCustomizationModel";
 import { PodAssetImage } from "../data/usePodAssetUrl";
 import type { PodBatch } from "../types";
 
@@ -8,6 +13,7 @@ type Props = {
   batch: PodBatch;
   style?: PodStyleRow;
   onClose: () => void;
+  onSaveTitle: (styleIndex: number, title: string) => Promise<void>;
 };
 
 const ROLE_LABELS = ["主图", "细节图 A", "细节图 B", "素材图"] as const;
@@ -19,7 +25,13 @@ type LegacyListingDimensions = {
   weight_g?: number;
 };
 
-export function PodListingDetailDrawer({ batch, style, onClose }: Props) {
+export function PodListingDetailDrawer({ batch, style, onClose, onSaveTitle }: Props) {
+  const [draftTitle, setDraftTitle] = useState(
+    () => (style && style.title_status === "completed" ? style.title : ""),
+  );
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
   useEffect(() => {
     if (!style) return;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -29,7 +41,29 @@ export function PodListingDetailDrawer({ batch, style, onClose }: Props) {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [onClose, style]);
 
+  useEffect(() => {
+    setDraftTitle(style && style.title_status === "completed" ? style.title : "");
+    setSaving(false);
+    setSaveError("");
+  }, [style?.index]);
+
   if (!style) return null;
+
+  const canEdit = canEditPodStyleTitle(batch.status, style.title_status, style.results);
+  const handleSave = async () => {
+    const next = draftTitle.trim();
+    if (!next) return;
+    setSaving(true);
+    setSaveError("");
+    try {
+      await onSaveTitle(style.index, next);
+      setDraftTitle(next);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const listingFields = batch.listing_fields;
   const legacyListingFields = listingFields as (typeof listingFields & LegacyListingDimensions) | undefined;
@@ -65,7 +99,23 @@ export function PodListingDetailDrawer({ batch, style, onClose }: Props) {
         <section className="pod-listing-detail-title">
           <span>完整商品标题</span>
           <h3>{style.title}</h3>
+          {style.title_source === "manual" && <em className="pod-listing-title-source">手动标题</em>}
           {style.title_error_message && <p>{style.title_error_message}</p>}
+          <div className="pod-listing-title-editor">
+            <textarea
+              value={draftTitle}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              rows={4}
+              placeholder="在此输入标题（可含中文），保存后立即生效"
+            />
+            <div className="pod-listing-title-editor-foot">
+              <button type="button" disabled={!canEdit || saving || !draftTitle.trim()} onClick={handleSave}>
+                {saving ? "保存中…" : "保存手动标题"}
+              </button>
+              {saveError && <span className="pod-listing-title-editor-error">{saveError}</span>}
+              {!canEdit && <span className="pod-listing-title-editor-hint">四张图片均生成并发布后即可手动填写标题。</span>}
+            </div>
+          </div>
         </section>
 
         <section className="pod-listing-detail-snapshot">

@@ -300,6 +300,9 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             )
         },
     ),
+    "010_pod_title_source": MigrationEffect(
+        column_additions={"pod_customization_style_titles": ("source",)}
+    ),
 }
 
 
