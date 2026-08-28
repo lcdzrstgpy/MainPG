@@ -97,6 +97,7 @@ def test_preview_default_matches_generated_results(tmp_path: Path) -> None:
     assert preview["item_count"] == 1
     item = preview["items"][0]
     assert item["title"] == "Original AI Generated Title"
+    assert item["source_url"] == "https://src.example.com/product"
     assert item["overrides"] == {}
     assert item["carousel_images"][0] == "https://cos.example.com/c1.jpg"
     assert item["main_image"] == "https://cos.example.com/c1.jpg"

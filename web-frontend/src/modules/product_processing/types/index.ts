@@ -351,6 +351,7 @@ export type PreviewItem = {
   reason: string;
   title: string;
   description: string;
+  source_url?: string;
   source_image_urls: string[];
   carousel_images: string[];
   main_image: string;
