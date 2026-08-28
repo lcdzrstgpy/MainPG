@@ -31,7 +31,7 @@ class DailySelectionEmptyInitialFieldsTest(unittest.TestCase):
             'const [maxSkuStock, setMaxSkuStock] = useState("")',
             'const [targetCount, setTargetCount] = useState("")',
             'const [excludeRisks, setExcludeRisks] = useState(false)',
-            'const [maxParallelCollect, setMaxParallelCollect] = useState(1)',
+            'const [maxParallelCollect, setMaxParallelCollect] = useState(8)',
         ]
         for initializer in expected_initializers:
             with self.subTest(initializer=initializer):
@@ -50,7 +50,7 @@ class DailySelectionEmptyInitialFieldsTest(unittest.TestCase):
             'setScope("divergent")',
             'setMinMoq("2")',
             'setExcludeRisks(true)',
-            'setMaxParallelCollect(6)',
+            'setMaxParallelCollect(8)',
             'setKeywords(direction.keywords.join("，"))',
             'setSite(direction.site ?? "US")',
             'setMinPrice(String(direction.price[0]))',

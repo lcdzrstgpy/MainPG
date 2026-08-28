@@ -68,7 +68,7 @@ class DailySelectionCriteria(BaseModel):
     detail_count: int = Field(default=50, ge=1, le=190, description="详情拉取的最低覆盖数；采集器会在 API 预算内尽量全量拉取候选详情，保证 SKU/发源地/属性完整")
     exclude_risks: bool = True
     site: Literal["US", "CO", "EC"] = "US"
-    max_parallel_collect: int = Field(default=6, ge=1, le=10, description="采集并行数，1=串行")
+    max_parallel_collect: int = Field(default=8, ge=1, le=10, description="采集并行数，1=串行")
 
     def __init__(self, **data: Any) -> None:
         try:
