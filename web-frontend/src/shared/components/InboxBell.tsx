@@ -25,6 +25,7 @@ export function InboxBell() {
   const [messages, setMessages] = useState<InboxMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const listRequestIdRef = useRef(0);
 
   const refreshUnread = useCallback(async () => {
     try {
@@ -35,15 +36,17 @@ export function InboxBell() {
   }, []);
 
   const refreshList = useCallback(async () => {
+    const requestId = ++listRequestIdRef.current;
     setLoading(true);
     try {
       const items = await fetchMessages();
+      if (requestId !== listRequestIdRef.current) return;
       setMessages(items);
       setUnread(items.filter((item) => !item.read).length);
     } catch {
       // 静默
     } finally {
-      setLoading(false);
+      if (requestId === listRequestIdRef.current) setLoading(false);
     }
   }, []);
 
@@ -65,14 +68,18 @@ export function InboxBell() {
 
   useEffect(() => {
     if (!open) return;
+    const refreshTimer = window.setInterval(refreshList, POLL_INTERVAL);
     const onDocMouseDown = (event: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
         setOpen(false);
       }
     };
     document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [open]);
+    return () => {
+      window.clearInterval(refreshTimer);
+      document.removeEventListener("mousedown", onDocMouseDown);
+    };
+  }, [open, refreshList]);
 
   const togglePanel = () => {
     const next = !open;
@@ -90,6 +97,7 @@ export function InboxBell() {
       current.map((item) => (item.id === messageId ? { ...item, read: true } : item)),
     );
     setUnread((current) => Math.max(0, current - 1));
+    void refreshList();
   };
 
   const handleMarkAll = async () => {
@@ -100,6 +108,7 @@ export function InboxBell() {
     }
     setMessages((current) => current.map((item) => ({ ...item, read: true })));
     setUnread(0);
+    void refreshList();
   };
 
   return (

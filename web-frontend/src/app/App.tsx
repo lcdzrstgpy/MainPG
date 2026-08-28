@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { WorkspaceShell } from "./layout/WorkspaceShell";
 import { AuthPage } from "../modules/customer/pages/AuthPage";
@@ -30,6 +30,12 @@ async function fetchActiveTaskCount(): Promise<number> {
 }
 
 export function App() {
+  const runtimeClientId = useRef(
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  const runtimeEventSequence = useRef(0);
   const [enteredWorkspace, setEnteredWorkspace] = useState(false);
   const [playEntryAnimation, setPlayEntryAnimation] = useState(false);
   const [ready, setReady] = useState(false);
@@ -70,29 +76,42 @@ export function App() {
     return () => window.removeEventListener("auth:session-expired", onSessionExpired);
   }, []);
 
-  // 桌面端心跳：告知后端页面仍存活；页面关闭(pagehide)时上报 bye，
-  // 让后端自动终止进程并释放锁定的 MainPG.exe（刷新重载由新页面心跳取消上次退出）。
+  // 桌面端心跳：每个浏览器标签页使用独立 ID。只有最后一个标签页关闭后，
+  // 后端才会终止进程并释放锁定的 MainPG.exe；刷新由新页面的心跳取消退出。
   // 仅桌面运行时启用 watchdog；服务器环境这些接口为 no-op，不会自动退出。
   useEffect(() => {
+    const clientId = runtimeClientId.current;
+    const runtimeUrl = (action: "heartbeat" | "bye") => {
+      runtimeEventSequence.current += 1;
+      const query = new URLSearchParams({
+        client_id: clientId,
+        event_seq: String(runtimeEventSequence.current),
+      });
+      return `/api/runtime/${action}?${query.toString()}`;
+    };
     const heartbeat = () => {
       try {
-        navigator.sendBeacon("/api/runtime/heartbeat", "{}");
+        navigator.sendBeacon(runtimeUrl("heartbeat"), "{}");
       } catch {
         // 发送失败忽略，后端有 idle 兜底
       }
     };
-    const bye = () => {
+    const bye = (event: PageTransitionEvent) => {
+      // 进入浏览器前进/后退缓存并不代表标签页关闭，恢复后仍需继续使用后端。
+      if (event.persisted) return;
       try {
-        navigator.sendBeacon("/api/runtime/bye", "{}");
+        navigator.sendBeacon(runtimeUrl("bye"), "{}");
       } catch {
         // 忽略
       }
     };
     heartbeat();
     const timer = window.setInterval(heartbeat, 15_000);
+    window.addEventListener("pageshow", heartbeat);
     window.addEventListener("pagehide", bye);
     return () => {
       window.clearInterval(timer);
+      window.removeEventListener("pageshow", heartbeat);
       window.removeEventListener("pagehide", bye);
     };
   }, []);
