@@ -422,7 +422,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
               <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
               <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
               {!!initialPremiumDraftIds?.length && (
-                <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条：一次 4K 智能生图，拆为 4 张高清图</span>
+                <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条</span>
               )}
             </div>
           </section>}

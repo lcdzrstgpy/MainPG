@@ -266,7 +266,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [maxSkuStock, setMaxSkuStock] = useState("");
   const [targetCount, setTargetCount] = useState("");
   const [excludeRisks, setExcludeRisks] = useState(false);
-  const [maxParallelCollect, setMaxParallelCollect] = useState(1);
+  const [maxParallelCollect, setMaxParallelCollect] = useState(8);
   const [advancedCollectionOpen, setAdvancedCollectionOpen] = useState(false);
   const [runs, setRuns] = useState<DailySelectionRunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<DailySelectionRun | null>(null);
@@ -646,7 +646,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     setMinMoq("2");
     setTargetCount(String(direction.target));
     setExcludeRisks(true);
-    setMaxParallelCollect(6);
+    setMaxParallelCollect(8);
   }
 
   function resetPresetForm() {
