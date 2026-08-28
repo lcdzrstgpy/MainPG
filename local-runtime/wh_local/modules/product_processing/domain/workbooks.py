@@ -424,6 +424,10 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     if core_fields.get("stock") not in (None, ""):
         stock = _normalize_stock(core_fields.get("stock"))
 
+    # 店小秘重量导出统一向上取整到 100：不足 100 按 100、不足 200 按 200…
+    # （最低 100）。在体积重兜底与人工确认之后统一应用，保证导出终值符合规则。
+    weight = _ceil_weight_for_export(weight)
+
     return [
         optimized_title,
         optimized_title,
@@ -536,6 +540,24 @@ def _export_number(value: Any) -> Any:
     if number == int(number):
         return int(number)
     return round(number, 2)
+
+
+def _ceil_weight_for_export(value: Any) -> Any:
+    """店小秘重量导出向上取整到 100：不足 100 按 100、不足 200 按 200…（最低 100）。
+
+    仅在有效数值上生效；空值/非数值原样返回，避免掩盖缺失。取整只会让重量不小于
+    原值，因此不会破坏「实际重量须大于体积重」的店小秘导入校验。
+    """
+    if value in (None, ""):
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    if number <= 0:
+        return value
+    ceiled = int(math.ceil(number / 100.0)) * 100
+    return ceiled
 
 
 # 尺寸文本模式：如 "30*20*10" / "30×20×10cm" / "40.5*30*20 CM"（1688 变种尺寸属性值）
