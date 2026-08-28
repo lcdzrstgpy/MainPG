@@ -227,7 +227,12 @@ def test_listing_snapshot_and_style_copy_are_persisted_with_historical_null_comp
         title="Coastal Mug", english_title="Coastal Stoneware Mug", description="A calm mug.",
     )
     assert service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id) == {
-        1: {"title": "Coastal Mug", "english_title": "Coastal Stoneware Mug", "description": "A calm mug."}
+        1: {
+            "title": "Coastal Mug",
+            "english_title": "Coastal Stoneware Mug",
+            "description": "A calm mug.",
+            "source": "ai",
+        }
     }
 
     with sqlite3.connect(service.database_path) as connection:

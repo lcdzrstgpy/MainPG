@@ -13,6 +13,7 @@ type Props = {
   onOpenResult: (item: PodBatchItem, styleIndex: number) => void;
   onRegenerateStyle: (styleIndex: number) => void;
   onRegenerateTitle: (styleIndex: number) => void;
+  onSaveTitle: (styleIndex: number, title: string) => Promise<void>;
   onExportDianxiaomi: () => void;
   onResumeBilling: (run: PodBillingRun) => void;
   onOpenFailedRetry: () => void;
@@ -42,7 +43,7 @@ async function copyTitle(title: string): Promise<void> {
   }
 }
 
-export function PodBatchGallery({ batch, busyAction, pendingBillingRuns, onOpenResult, onRegenerateStyle, onRegenerateTitle, onExportDianxiaomi, onResumeBilling, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
+export function PodBatchGallery({ batch, busyAction, pendingBillingRuns, onOpenResult, onRegenerateStyle, onRegenerateTitle, onSaveTitle, onExportDianxiaomi, onResumeBilling, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
   const [selectedStyleIndex, setSelectedStyleIndex] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
   const showWaitingTime = Boolean(batch && isActiveBatchStatus(batch.status));
@@ -119,5 +120,5 @@ export function PodBatchGallery({ batch, busyAction, pendingBillingRuns, onOpenR
         </article>;
       })}
     </div>
-  </section><PodListingDetailDrawer batch={batch} style={selectedStyle} onClose={() => setSelectedStyleIndex(undefined)} /></>;
+  </section><PodListingDetailDrawer key={selectedStyle?.index ?? "none"} batch={batch} style={selectedStyle} onClose={() => setSelectedStyleIndex(undefined)} onSaveTitle={onSaveTitle} /></>;
 }

@@ -492,8 +492,13 @@ class PodCustomizationRepository:
             if batch is None:
                 raise PodRepositoryError("POD batch not found", 404)
             rows = connection.execute(
-                """SELECT style_index, title, english_title, description
-                   FROM pod_customization_style_copy WHERE batch_id = ? ORDER BY style_index""",
+                """SELECT copies.style_index, copies.title, copies.english_title,
+                          copies.description, COALESCE(titles.source, 'ai') AS source
+                   FROM pod_customization_style_copy AS copies
+                   LEFT JOIN pod_customization_style_titles AS titles
+                     ON titles.batch_id = copies.batch_id
+                    AND titles.style_index = copies.style_index
+                   WHERE copies.batch_id = ? ORDER BY copies.style_index""",
                 (batch_id,),
             ).fetchall()
         return {
@@ -501,6 +506,7 @@ class PodCustomizationRepository:
                 "title": row["title"],
                 "english_title": row["english_title"],
                 "description": row["description"],
+                "source": row["source"],
             }
             for row in rows
         }
@@ -1246,9 +1252,9 @@ class PodCustomizationRepository:
                 )
             result = connection.execute(
                 """UPDATE pod_customization_style_titles
-                   SET status = 'completed', title = ?, normalized_title = ?, visual_tags_json = ?,
-                       model = ?, prompt_version = ?, attempt_count = ?, error_message = '',
-                       updated_at = ?, finished_at = ?
+                   SET status = 'completed', source = 'ai', title = ?, normalized_title = ?,
+                       visual_tags_json = ?, model = ?, prompt_version = ?, attempt_count = ?,
+                       error_message = '', updated_at = ?, finished_at = ?
                    WHERE batch_id = ? AND style_index = ? AND status = 'generating'""",
                 (
                     title,
@@ -1269,6 +1275,65 @@ class PodCustomizationRepository:
                 self._upsert_style_copy_record(
                     connection, batch_id, style_index, values=copy_values, now=now
                 )
+
+    def complete_manual_title(
+        self,
+        batch_id: str,
+        style_index: int,
+        title: str,
+        workspace_id: str,
+        owner_user_id: str,
+    ) -> dict[str, Any]:
+        """Atomically replace a finished title with a user-entered value.
+
+        Manual titles bypass AI copy validation and cross-style deduplication:
+        ``normalized_title`` stays NULL so the unique index cannot reject two
+        styles sharing the same user text.  Only titles that already reached a
+        terminal state (completed or failed) with all four public images are
+        eligible; no provider call or billing record is created.
+        """
+        clean = str(title or "").strip()
+        if not clean:
+            raise ValueError("manual title is required")
+        now = _now()
+        with self._connect() as connection:
+            self._require_owned_style(connection, batch_id, workspace_id, owner_user_id, style_index)
+            ready_images = int(connection.execute(
+                """SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
+                   INNER JOIN pod_customization_style_grid_publications AS publications
+                     ON publications.result_id = results.result_id
+                   WHERE results.batch_id = ? AND results.style_index = ?
+                     AND results.status = 'completed' AND publications.public_url <> ''""",
+                (batch_id, style_index),
+            ).fetchone()[0])
+            if ready_images != 4:
+                raise PodRepositoryError(
+                    "all four public POD images are required before saving a manual title", 409
+                )
+            result = connection.execute(
+                """UPDATE pod_customization_style_titles
+                   SET status = 'completed', source = 'manual', title = ?, normalized_title = NULL,
+                       visual_tags_json = '{}', model = '', prompt_version = '',
+                       attempt_count = 0, error_message = '', updated_at = ?, finished_at = ?
+                   WHERE batch_id = ? AND style_index = ? AND status IN ('completed', 'failed')""",
+                (clean, now, now, batch_id, style_index),
+            )
+            if result.rowcount != 1:
+                raise PodRepositoryError("POD style title is not in a finished state", 409)
+            self._upsert_style_copy_record(
+                connection,
+                batch_id,
+                style_index,
+                values=self._style_copy_values(clean, clean, clean),
+                now=now,
+            )
+            row = connection.execute(
+                "SELECT * FROM pod_customization_style_titles WHERE batch_id = ? AND style_index = ?",
+                (batch_id, style_index),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD style title not found", 404)
+        return self._decode_title_row(row)
 
     def fail_style_title(
         self,

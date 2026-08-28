@@ -129,6 +129,10 @@ export const podCustomizationApi = {
     const request = podStyleTitleRegenerateRequest(batchId, styleIndex);
     return httpJson<PodStyleTitle>(request.path, request.options);
   },
+  updateManualTitle: (batchId: string, styleIndex: number, title: string) => httpJson<PodStyleTitle>(
+    `${API_BASE}/batches/${encodeURIComponent(batchId)}/styles/${styleIndex}/title`,
+    { method: "PATCH", body: { title } },
+  ),
   retryFailed: (batchId: string, body: PodBatchRetryRequest) => httpJson<PodBatchRetryResult>(
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/retry-failed`,
     { method: "POST", body },

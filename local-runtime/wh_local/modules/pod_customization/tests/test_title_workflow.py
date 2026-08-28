@@ -317,6 +317,7 @@ def test_batch_title_uses_generation_call_id_and_listing_ready_statistics(tmp_pa
             "title": stored["style_titles"][0]["title"],
             "english_title": "Coastal Botanical Canvas Tote Style 1",
             "description": "Layered ocean fern artwork for style 1.",
+            "source": "ai",
         }
     }
     assert stored["title_completed_count"] == 1
@@ -832,6 +833,184 @@ def test_title_regeneration_api_returns_claimed_title_without_starting_an_image_
     assert response.json()["style_task_id"] == before["style_task_id"]
     assert response.json()["status"] == "generating"
     assert len(images.requests) == image_call_count
+    service.close()
+    titles.close()
+    images.close()
+
+
+def test_manual_title_completes_failed_style_without_billing(tmp_path: Path) -> None:
+    images = ImageRuntime([_grid(11)])
+    titles = TitleRuntime(failures=1)
+    billing = BillingCoordinator()
+    service = _service(tmp_path, images, titles, billing)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+    before = service.get_batch(actor, batch["id"])
+    assert before["style_titles"][0]["status"] == "failed"
+    assert before["status"] == "failed"
+    freezes_before = len(billing.freezes)
+    settlements_before = len(billing.settlements)
+
+    saved = service.set_manual_title(actor, batch["id"], 1, "  海岸植物帆布包 手绘 通勤  ")
+
+    assert saved["status"] == "completed"
+    assert saved["source"] == "manual"
+    assert saved["title"] == "海岸植物帆布包 手绘 通勤"
+    assert saved["listing_ready"] is True
+    assert len(billing.freezes) == freezes_before
+    assert len(billing.settlements) == settlements_before
+    stored = service.get_batch(actor, batch["id"])
+    assert stored["style_titles"][0]["source"] == "manual"
+    assert stored["status"] == "completed"
+    assert stored["listing_ready_count"] == 1
+    assert service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id) == {
+        1: {
+            "title": "海岸植物帆布包 手绘 通勤",
+            "english_title": "海岸植物帆布包 手绘 通勤",
+            "description": "海岸植物帆布包 手绘 通勤",
+            "source": "manual",
+        }
+    }
+    assert service.export_dianxiaomi(actor, batch["id"]).exported_style_count == 1
+    service.close()
+    titles.close()
+    images.close()
+
+
+def test_manual_title_rejects_blank_text(tmp_path: Path) -> None:
+    images = ImageRuntime([_grid(12)])
+    titles = TitleRuntime(failures=1)
+    service = _service(tmp_path, images, titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+
+    with pytest.raises(ValueError, match="manual title is required"):
+        service.set_manual_title(actor, batch["id"], 1, "  \n \t ")
+    service.close()
+    titles.close()
+    images.close()
+
+
+def test_manual_title_rejects_incomplete_images(tmp_path: Path) -> None:
+    images = ImageRuntime([_grid(13)], publish_failures={"detail_a": 2})
+    titles = TitleRuntime()
+    service = _service(tmp_path, images, titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+    before = service.get_batch(actor, batch["id"])
+    assert before["style_titles"][0]["status"] == "completed"
+    assert before["style_titles"][0]["listing_ready"] is False
+
+    with pytest.raises(PodRepositoryError, match="all four public POD images") as captured:
+        service.set_manual_title(actor, batch["id"], 1, "手动标题")
+    assert captured.value.status_code == 409
+    service.close()
+    titles.close()
+    images.close()
+
+
+def test_manual_title_overrides_completed_ai_title(tmp_path: Path) -> None:
+    images = ImageRuntime([_grid(14)])
+    titles = TitleRuntime()
+    service = _service(tmp_path, images, titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+    assert service.get_batch(actor, batch["id"])["style_titles"][0]["source"] == "ai"
+
+    saved = service.set_manual_title(actor, batch["id"], 1, "Manual 手动标题")
+
+    assert saved["source"] == "manual"
+    assert saved["title"] == "Manual 手动标题"
+    copies = service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id)
+    assert copies[1]["title"] == "Manual 手动标题"
+    assert copies[1]["english_title"] == "Manual 手动标题"
+    assert copies[1]["description"] == "Manual 手动标题"
+    assert copies[1]["source"] == "manual"
+    service.close()
+    titles.close()
+    images.close()
+
+
+def test_manual_title_rejects_unsettled_batch(tmp_path: Path) -> None:
+    images = ImageRuntime([_grid(15)])
+    titles = TitleRuntime()
+    service = _service(tmp_path, images, titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
+    assert service.get_batch(actor, batch["id"])["status"] == "queued"
+
+    with pytest.raises(PodRepositoryError, match="must settle before saving a manual title") as captured:
+        service.set_manual_title(actor, batch["id"], 1, "手动标题")
+    assert captured.value.status_code == 409
+    service.close()
+    titles.close()
+    images.close()
+
+
+def test_manual_title_rejects_settlement_pending_without_changing_status(tmp_path: Path) -> None:
+    images = ImageRuntime([_grid(16)])
+    titles = TitleRuntime(failures=1)
+    service = _service(tmp_path, images, titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_batches SET status = 'settlement_pending' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+    assert service.get_batch(actor, batch["id"])["status"] == "settlement_pending"
+
+    with pytest.raises(PodRepositoryError, match="settlement is pending") as captured:
+        service.set_manual_title(actor, batch["id"], 1, "手动标题")
+    assert captured.value.status_code == 409
+    assert service.get_batch(actor, batch["id"])["status"] == "settlement_pending"
+    service.close()
+    titles.close()
+    images.close()
+
+
+def test_manual_title_update_api_returns_manual_source(tmp_path: Path) -> None:
+    images = ImageRuntime([_grid(71)])
+    titles = TitleRuntime(failures=1)
+    app = FastAPI()
+    router = create_router(
+        tmp_path / "workbench.sqlite3",
+        tmp_path / "pod-assets",
+        images,
+        title_runtime=titles,
+        billing_coordinator=BillingCoordinator(),
+        start_workers=True,
+    )
+    app.include_router(router)
+    service = getattr(router, "pod_customization_service")
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+
+    response = TestClient(app).patch(
+        f"/api/pod-customization/batches/{batch['id']}/styles/1/title",
+        json={"title": "  手动标题  "},
+        headers={"Authorization": "Bearer dev-admin-token"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["source"] == "manual"
+    assert payload["title"] == "手动标题"
+    assert payload["listing_ready"] is True
     service.close()
     titles.close()
     images.close()

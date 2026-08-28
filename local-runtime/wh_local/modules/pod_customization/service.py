@@ -582,6 +582,30 @@ class PodCustomizationService:
             self.worker.submit_title_regeneration(batch_id, style_index, billing_run)
         return self._title_payload(title)
 
+    def set_manual_title(
+        self,
+        actor: Actor,
+        batch_id: str,
+        style_index: int,
+        title: str,
+    ) -> dict[str, Any]:
+        clean = str(title or "").strip()
+        if not clean:
+            raise ValueError("manual title is required")
+        self._preflight_manual_title(actor, batch_id, style_index)
+        self.repository.complete_manual_title(
+            batch_id, style_index, clean, actor.workspace_id, actor.id
+        )
+        self.repository.settle_batch_by_listing_readiness(batch_id)
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        saved = next(
+            (row for row in batch["style_titles"] if int(row["style_index"]) == int(style_index)),
+            None,
+        )
+        if saved is None:
+            raise PodRepositoryError("POD style title not found", 404)
+        return self._title_payload(saved)
+
     def retry_failed(
         self,
         actor: Actor,
@@ -667,6 +691,21 @@ class PodCustomizationService:
             item.get("status") != "completed" or not item.get("public_url") for item in results
         ):
             raise PodRepositoryError("all four public POD images are required before regenerating a title", 409)
+
+    def _preflight_manual_title(self, actor: Actor, batch_id: str, style_index: int) -> None:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
+            if batch["status"] == "settlement_pending":
+                raise PodRepositoryError(
+                    "POD billing settlement is pending; settle billing before saving a manual title",
+                    409,
+                )
+            if batch["status"] == "billing_auth_required":
+                raise PodRepositoryError(
+                    "POD billing is not recovered; resume billing authorization before saving a manual title",
+                    409,
+                )
+            raise PodRepositoryError("POD batch must settle before saving a manual title", 409)
 
     def _preflight_batch_retry(
         self,
@@ -1340,6 +1379,7 @@ class PodCustomizationService:
             "style_task_id": title.get("style_task_id", ""),
             "status": title["status"],
             "title": title.get("title") or None,
+            "source": title.get("source", "ai"),
             "listing_ready": bool(title.get("listing_ready", False)),
             "error_message": title.get("error_message", ""),
             "updated_at": title.get("updated_at", ""),

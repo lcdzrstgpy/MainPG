@@ -10,12 +10,14 @@ import type {
   PodListingFieldsDraft,
   PodTemplateCalibration,
   PodStyleTitleStatus,
+  PodStyleTitleSource,
 } from "../types";
 
 export type PodStyleRow = {
   index: number;
   title: string;
   title_status?: PodStyleTitleStatus;
+  title_source?: PodStyleTitleSource;
   listing_ready?: boolean;
   title_error_message?: string;
   results: Array<PodBatchItem | undefined>;
@@ -73,6 +75,14 @@ const ACTIVE_ITEM_STATUSES = new Set<PodBatchItemStatus>([
 const ACTIVE_TITLE_STATUSES = new Set<PodStyleTitleStatus>(["queued", "generating"]);
 const SETTLED_BATCH_STATUSES = new Set<PodBatchStatus>(["completed", "partial_failure", "failed", "cancelled"]);
 const RETRYABLE_BATCH_STATUSES = new Set<PodBatchStatus>([...SETTLED_BATCH_STATUSES, "settlement_pending"]);
+// Manual titles must never clobber unsettled billing state, so this stays narrower
+// than RETRYABLE_BATCH_STATUSES (it deliberately excludes settlement_pending).
+const MANUAL_TITLE_EDITABLE_BATCH_STATUSES = new Set<PodBatchStatus>([
+  "completed",
+  "partial_failure",
+  "failed",
+  "cancelled",
+]);
 
 function valueOrFallback(value: string): string {
   return value.trim() || "未填写";
@@ -207,6 +217,7 @@ export function groupPodStyleRows(
       index,
       title: styleTitle?.title?.trim() || `${productName} · 款式 #${String(index).padStart(3, "0")}`,
       title_status: styleTitle?.status,
+      title_source: styleTitle?.source,
       listing_ready: styleTitle?.listing_ready,
       title_error_message: styleTitle?.error_message,
       results: presentationResults,
@@ -275,6 +286,17 @@ export function canRegeneratePodStyleTitle(
 ): boolean {
   return RETRYABLE_BATCH_STATUSES.has(batchStatus)
     && titleStatus === "failed"
+    && results.length === 4
+    && results.every((item) => item?.status === "completed" && Boolean(item.public_url));
+}
+
+export function canEditPodStyleTitle(
+  batchStatus: PodBatchStatus,
+  titleStatus: PodStyleTitleStatus | undefined,
+  results: Array<Pick<PodBatchItem, "status" | "public_url"> | undefined>,
+): boolean {
+  return MANUAL_TITLE_EDITABLE_BATCH_STATUSES.has(batchStatus)
+    && (titleStatus === "failed" || titleStatus === "completed")
     && results.length === 4
     && results.every((item) => item?.status === "completed" && Boolean(item.public_url));
 }
