@@ -6,6 +6,7 @@ import {
   filterActive,
   matchSku,
   variantLabel,
+  variantKey,
   type SkuFilterState,
 } from '../utils/skuFilter';
 
@@ -24,6 +25,20 @@ type Props = {
 function draftVariants(draft: DraftSummary): DraftVariant[] {
   const raw = draft.raw_payload || {};
   return Array.isArray(raw.source_variant_records) ? raw.source_variant_records : [];
+}
+
+function deleteToken(variant: DraftVariant): string {
+  const label = variantLabel(variant);
+  return label || variantKey(variant, label);
+}
+
+function variantDeleted(variant: DraftVariant, deletes: Set<string>): boolean {
+  const label = variantLabel(variant);
+  return deletes.has(label) || deletes.has(variantKey(variant, label));
+}
+
+function orderVariantsForDelete(variants: DraftVariant[], deletes: Set<string>): DraftVariant[] {
+  return [...variants].sort((a, b) => Number(variantDeleted(a, deletes)) - Number(variantDeleted(b, deletes)));
 }
 
 /** 计算一个草稿应用动作后的新删除集合；返回 null 表示该商品跳过（无命中可保留）。 */
@@ -51,10 +66,37 @@ function nextDeletes(
   return Array.from(next);
 }
 
+function nextRangeDeletes(
+  variants: DraftVariant[],
+  base: Set<string>,
+  start: number,
+  end: number
+): string[] | null {
+  const ordered = orderVariantsForDelete(variants, base);
+  const targets = ordered.filter((_variant, index) => index + 1 >= start && index + 1 <= end);
+  if (targets.length === 0) return null;
+
+  const next = new Set(base);
+  const added: string[] = [];
+  for (const variant of targets) {
+    const token = deleteToken(variant);
+    if (!next.has(token)) added.push(token);
+    next.add(token);
+  }
+
+  while (variants.filter((variant) => !variantDeleted(variant, next)).length < 1 && added.length > 0) {
+    next.delete(added.pop()!);
+  }
+  return Array.from(next);
+}
+
 export function SkuBatchManager({ drafts, baseDeletes, onSaveDeletes, onBatchSaved, onClose }: Props) {
   const [filter, setFilter] = useState<SkuFilterState>(EMPTY_SKU_FILTER);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
+  const [rangeStart, setRangeStart] = useState('');
+  const [rangeEnd, setRangeEnd] = useState('');
+  const [rangeTip, setRangeTip] = useState('');
 
   const rows = useMemo(
     () =>
@@ -72,6 +114,7 @@ export function SkuBatchManager({ drafts, baseDeletes, onSaveDeletes, onBatchSav
 
   const hitCount = useMemo(() => rows.reduce((sum, r) => sum + r.hitLabels.size, 0), [rows]);
   const totalVariants = useMemo(() => rows.reduce((sum, r) => sum + r.variants.length, 0), [rows]);
+  const maxVariantsPerDraft = useMemo(() => rows.reduce((max, r) => Math.max(max, r.variants.length), 0), [rows]);
   const active = filterActive(filter);
 
   const run = async (mode: 'delete' | 'keep') => {
@@ -95,6 +138,46 @@ export function SkuBatchManager({ drafts, baseDeletes, onSaveDeletes, onBatchSav
         }
       }
       setNotice(`已保存 ${saved} 个商品` + (skipped ? ` · 跳过 ${skipped} 个（无可保留命中）` : '') + (failed ? ` · 失败：${failed}` : ''));
+      onBatchSaved?.();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runRangeDelete = async () => {
+    if (saving) return;
+    const start = Number(rangeStart);
+    const end = Number(rangeEnd);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end > maxVariantsPerDraft) {
+      setRangeTip(`请输入有效范围（1-${maxVariantsPerDraft}）`);
+      return;
+    }
+    const matched = rows.reduce((sum, row) => sum + Math.max(0, Math.min(end, row.variants.length) - start + 1), 0);
+    if (matched === 0) {
+      setRangeTip('当前范围没有命中 SKU');
+      return;
+    }
+    if (!window.confirm(`确定批量删除每个商品第 ${start} 到第 ${end} 个 SKU？共命中 ${matched} 个 SKU。`)) return;
+    setSaving(true);
+    setNotice('');
+    setRangeTip('');
+    let saved = 0;
+    let skipped = 0;
+    let failed = '';
+    try {
+      for (const row of rows) {
+        const next = nextRangeDeletes(row.variants, new Set(baseDeletes(row.draft.id)), start, end);
+        if (next === null) { skipped += 1; continue; }
+        try {
+          await onSaveDeletes(row.draft.id, next);
+          saved += 1;
+        } catch (err) {
+          failed = failed || (err instanceof Error ? err.message : String(err));
+        }
+      }
+      setRangeStart('');
+      setRangeEnd('');
+      setNotice(`已按范围保存 ${saved} 个商品` + (skipped ? ` · 跳过 ${skipped} 个（范围无命中）` : '') + (failed ? ` · 失败：${failed}` : ''));
       onBatchSaved?.();
     } finally {
       setSaving(false);
@@ -149,6 +232,17 @@ export function SkuBatchManager({ drafts, baseDeletes, onSaveDeletes, onBatchSav
               disabled={!active}
             >清空条件</button>
           </div>
+
+          <div className="sku-batch-range">
+            <span>批量删除</span>
+            <span>从第</span>
+            <input type="number" min="1" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} placeholder="1" aria-label="批量起始序号" />
+            <span>个到第</span>
+            <input type="number" min="1" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} placeholder={maxVariantsPerDraft > 0 ? String(maxVariantsPerDraft) : '1'} aria-label="批量结束序号" />
+            <span>个</span>
+            <button type="button" onClick={() => void runRangeDelete()} disabled={saving || maxVariantsPerDraft === 0}>删除该范围</button>
+          </div>
+          {rangeTip && <p className="sku-batch-range-tip">{rangeTip}</p>}
 
           <div className="sku-batch-summary">
             {active

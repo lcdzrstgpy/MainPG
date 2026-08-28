@@ -16,7 +16,7 @@ type ShopCollectionPanelProps = {
   isActive?: boolean;
 };
 
-const ITEM_PAGE_SIZE = 20;
+const ITEM_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -41,6 +41,7 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
   const [items, setItems] = useState<ShopCollectionItem[]>([]);
   const [itemsTotal, setItemsTotal] = useState(0);
   const [itemsOffset, setItemsOffset] = useState(0);
+  const [itemsPageSize, setItemsPageSize] = useState<(typeof ITEM_PAGE_SIZE_OPTIONS)[number]>(20);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [actionBusy, setActionBusy] = useState("");
@@ -69,13 +70,13 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
 
   const refreshItems = useCallback(async (batchId: string, offset: number) => {
     try {
-      const page = await shopCollectionApi.listItems(batchId, ITEM_PAGE_SIZE, offset);
+      const page = await shopCollectionApi.listItems(batchId, itemsPageSize, offset);
       setItems(page.items);
       setItemsTotal(page.total);
     } catch (requestError) {
       setError(formatShopCollectionError(requestError));
     }
-  }, []);
+  }, [itemsPageSize]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -142,6 +143,8 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
   const actions = selectedBatch ? getShopBatchActions(selectedBatch) : null;
   const pageStart = itemsTotal === 0 ? 0 : itemsOffset + 1;
   const pageEnd = Math.min(itemsOffset + items.length, itemsTotal);
+  const currentPage = itemsTotal === 0 ? 1 : Math.floor(itemsOffset / itemsPageSize) + 1;
+  const totalPages = Math.max(1, Math.ceil(itemsTotal / itemsPageSize));
 
   return (
     <section className="shop-collection-panel" aria-label="整店采集">
@@ -194,7 +197,23 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
                 {items.map((item) => <article key={item.item_id}><div><strong>{item.source_title || `商品 ${item.offer_id}`}</strong><small>{item.offer_id} · {itemStatusLabel(item)}{item.intake_action !== "none" ? ` · ${item.intake_action}` : ""}</small>{item.error_message && <em>{formatShopCollectionError(new Error(item.error_message))}</em>}</div><a href={item.source_url} target="_blank" rel="noreferrer">查看来源</a></article>)}
                 {items.length === 0 && <p className="shop-empty">商品将在店铺列表发现完成后显示。</p>}
               </div>
-              <div className="shop-pagination"><button type="button" disabled={itemsOffset === 0} onClick={() => setItemsOffset((value) => Math.max(0, value - ITEM_PAGE_SIZE))}>上一页</button><button type="button" disabled={itemsOffset + items.length >= itemsTotal} onClick={() => setItemsOffset((value) => value + ITEM_PAGE_SIZE)}>下一页</button></div>
+              <div className="shop-pagination">
+                <span className="shop-pagination-status">第 {currentPage} 页 / 共 {totalPages} 页</span>
+                <label className="shop-page-size">
+                  <span>每页</span>
+                  <select
+                    value={itemsPageSize}
+                    onChange={(event) => {
+                      setItemsPageSize(Number(event.target.value) as (typeof ITEM_PAGE_SIZE_OPTIONS)[number]);
+                      setItemsOffset(0);
+                    }}
+                  >
+                    {ITEM_PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}
+                  </select>
+                </label>
+                <button type="button" disabled={itemsOffset === 0} onClick={() => setItemsOffset((value) => Math.max(0, value - itemsPageSize))}>上一页</button>
+                <button type="button" disabled={itemsOffset + items.length >= itemsTotal} onClick={() => setItemsOffset((value) => value + itemsPageSize)}>下一页</button>
+              </div>
             </>
           )}
         </div>

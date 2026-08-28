@@ -20,6 +20,8 @@ type PluginOneboundCapturePanelProps = {
   onOpenDraft?: (draftId: number) => void;
 };
 
+const PLUGIN_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
+
 function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
@@ -65,7 +67,13 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
   const [batches, setBatches] = useState<PluginOneboundCaptureBatch[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState("");
   const [items, setItems] = useState<PluginOneboundCaptureItem[]>([]);
+  const [itemsTotal, setItemsTotal] = useState(0);
+  const [itemsOffset, setItemsOffset] = useState(0);
+  const [itemsPageSize, setItemsPageSize] = useState<(typeof PLUGIN_PAGE_SIZE_OPTIONS)[number]>(10);
   const [candidates, setCandidates] = useState<PluginOneboundCandidate[]>([]);
+  const [candidateOffset, setCandidateOffset] = useState(0);
+  const [candidatePageSize, setCandidatePageSize] = useState<(typeof PLUGIN_PAGE_SIZE_OPTIONS)[number]>(10);
+  const [detailSection, setDetailSection] = useState<"candidates" | "items">("candidates");
   const [skuRepull, setSkuRepull] = useState<PluginOneboundSkuRepullState | null>(null);
   const [selectedOfferIds, setSelectedOfferIds] = useState<string[]>([]);
   const [skuFilterMin, setSkuFilterMin] = useState("");
@@ -99,18 +107,19 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
     }
   }, []);
 
-  const refreshSelected = useCallback(async (batchId: string) => {
+  const refreshSelected = useCallback(async (batchId: string, offset = itemsOffset) => {
     try {
       const [batch, page] = await Promise.all([
         pluginOneboundCaptureApi.getBatch(batchId),
-        pluginOneboundCaptureApi.listItems(batchId),
+        pluginOneboundCaptureApi.listItems(batchId, itemsPageSize, offset),
       ]);
       setBatches((current) => current.map((item) => item.batch_id === batch.batch_id ? batch : item));
       setItems(page.items);
+      setItemsTotal(page.total);
     } catch (requestError) {
       setError(formatShopCollectionError(requestError));
     }
-  }, []);
+  }, [itemsOffset, itemsPageSize]);
 
   const refreshCandidates = useCallback(async (batchId: string) => {
     try {
@@ -133,7 +142,10 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
   useEffect(() => {
     if (!isActive || !selectedBatchId) {
       setItems([]);
+      setItemsTotal(0);
+      setItemsOffset(0);
       setCandidates([]);
+      setCandidateOffset(0);
       setSkuRepull(null);
       setSelectedOfferIds([]);
       setAppliedSkuFilter({ min: null, max: null });
@@ -141,18 +153,18 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
       setSkuFilterMax("");
       return;
     }
-    void refreshSelected(selectedBatchId);
+    void refreshSelected(selectedBatchId, itemsOffset);
     void refreshCandidates(selectedBatchId);
-  }, [isActive, refreshSelected, refreshCandidates, selectedBatchId]);
+  }, [isActive, itemsOffset, refreshSelected, refreshCandidates, selectedBatchId]);
 
   useEffect(() => {
     if (!isActive || !batches.some((batch) => isActivePluginCaptureStatus(batch.status))) return;
     const timer = window.setInterval(() => {
       void refreshBatches();
-      if (selectedBatchId) void refreshSelected(selectedBatchId);
+      if (selectedBatchId) void refreshSelected(selectedBatchId, itemsOffset);
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [batches, isActive, refreshBatches, refreshSelected, selectedBatchId]);
+  }, [batches, isActive, itemsOffset, refreshBatches, refreshSelected, selectedBatchId]);
 
   // 批次从采集中转为终态后，上面的 active 轮询会停止，需主动刷新一次候选与 SKU 补齐状态，
   // 否则终态后候选区会保持空白，用户必须切换批次或刷新页面才能审核。
@@ -178,7 +190,21 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
     });
   }, [candidates, appliedSkuFilter]);
 
+  useEffect(() => {
+    setCandidateOffset(0);
+  }, [appliedSkuFilter, candidatePageSize, selectedBatchId]);
+
+  useEffect(() => {
+    if (candidateOffset === 0 || candidateOffset < filteredCandidates.length) return;
+    setCandidateOffset(Math.max(0, Math.floor(Math.max(0, filteredCandidates.length - 1) / candidatePageSize) * candidatePageSize));
+  }, [candidateOffset, candidatePageSize, filteredCandidates.length]);
+
   const selectableCandidates = filteredCandidates.filter((candidate) => candidate.review_status === "pending");
+  const pagedCandidates = filteredCandidates.slice(candidateOffset, candidateOffset + candidatePageSize);
+  const candidateCurrentPage = filteredCandidates.length === 0 ? 1 : Math.floor(candidateOffset / candidatePageSize) + 1;
+  const candidateTotalPages = Math.max(1, Math.ceil(filteredCandidates.length / candidatePageSize));
+  const itemsCurrentPage = itemsTotal === 0 ? 1 : Math.floor(itemsOffset / itemsPageSize) + 1;
+  const itemsTotalPages = Math.max(1, Math.ceil(itemsTotal / itemsPageSize));
   const backfillRunning = skuRepull?.status === "running";
   const allCandidatesSelected = selectableCandidates.length > 0
     && selectableCandidates.every((candidate) => selectedOfferIds.includes(candidate.offer_id));
@@ -253,7 +279,11 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
   }
 
   function selectAllCandidates() {
-    setSelectedOfferIds(selectableCandidates.map((candidate) => candidate.offer_id));
+    setSelectedOfferIds((current) => {
+      const ids = selectableCandidates.map((candidate) => candidate.offer_id);
+      const allSelected = ids.length > 0 && ids.every((id) => current.includes(id));
+      return allSelected ? current.filter((id) => !ids.includes(id)) : [...new Set([...current, ...ids])];
+    });
   }
 
   async function confirmSelected() {
@@ -294,7 +324,16 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
           {batches.map((batch) => {
             const batchProgress = pluginCaptureProgress(batch);
             return (
-              <button key={batch.batch_id} type="button" className={batch.batch_id === selectedBatchId ? "is-selected" : ""} onClick={() => setSelectedBatchId(batch.batch_id)}>
+              <button
+                key={batch.batch_id}
+                type="button"
+                className={batch.batch_id === selectedBatchId ? "is-selected" : ""}
+                onClick={() => {
+                  setSelectedBatchId(batch.batch_id);
+                  setItemsOffset(0);
+                  setCandidateOffset(0);
+                }}
+              >
                 <span><strong>{batch.batch_id.slice(0, 8)}</strong><small>{pluginCaptureStatusLabel(batch.status)} · {formatDate(batch.created_at)}</small></span>
                 <b>{batchProgress.percent}%</b>
               </button>
@@ -312,7 +351,7 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
                   <strong>批次 {selectedBatch.batch_id.slice(0, 8)}</strong>
                   <small>
                     创建于 {formatDate(selectedBatch.created_at)}
-                    {selectedBatch.page_url && <> · <a href={selectedBatch.page_url} target="_blank" rel="noreferrer">查看采集页面</a></>}
+                    {selectedBatch.page_url && <> · <a className="plugin-link-pill" href={selectedBatch.page_url} target="_blank" rel="noreferrer">查看采集页面</a></>}
                   </small>
                 </div>
                 <div className="shop-progress"><span><i style={{ width: `${progress.percent}%` }} /></span><b>{progress.percent}%</b></div>
@@ -344,11 +383,20 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
                 </p>
               )}
 
-              {isTerminalPluginCaptureStatus(selectedBatch.status) && candidates.length > 0 && (
+              <div className="plugin-section-tabs" role="tablist" aria-label="插件采集数据">
+                <button type="button" className={detailSection === "candidates" ? "is-active" : ""} onClick={() => setDetailSection("candidates")}>
+                  候选商品 <span>{filteredCandidates.length}</span>
+                </button>
+                <button type="button" className={detailSection === "items" ? "is-active" : ""} onClick={() => setDetailSection("items")}>
+                  采集明细 <span>{itemsTotal}</span>
+                </button>
+              </div>
+
+              {detailSection === "candidates" && (
                 <div className="plugin-candidate-review">
                   <div className="shop-items-heading plugin-review-heading">
                     <strong>候选商品</strong>
-                    <span>{candidates.length} 条</span>
+                    <span>{filteredCandidates.length ? `${candidateOffset + 1}-${Math.min(candidateOffset + pagedCandidates.length, filteredCandidates.length)} / ${filteredCandidates.length}` : "暂无商品"}</span>
                     <div className="sku-filter">
                       <span className="sku-filter-label">SKU筛选</span>
                       <input type="number" min={0} placeholder="最小" value={skuFilterMin} onChange={(event) => setSkuFilterMin(event.target.value)} disabled={backfillRunning} />
@@ -397,10 +445,10 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
                   </div>
 
                   {filteredCandidates.length === 0 && (
-                    <p className="shop-empty">没有符合 SKU 筛选条件的候选商品。</p>
+                    <p className="shop-empty">{isTerminalPluginCaptureStatus(selectedBatch.status) ? "没有符合 SKU 筛选条件的候选商品。" : "采集完成后，候选商品会显示在这里。"}</p>
                   )}
                   <div className="plugin-candidate-list">
-                    {filteredCandidates.map((candidate) => {
+                    {pagedCandidates.map((candidate) => {
                       const selectable = candidate.review_status === "pending";
                       const checked = selectedOfferIds.includes(candidate.offer_id);
                       return (
@@ -409,7 +457,7 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
                             <input type="checkbox" checked={checked} disabled={!selectable || backfillRunning} onChange={() => toggleCandidate(candidate.offer_id)} />
                           </label>
                           <div className="plugin-candidate-body">
-                            <a href={candidate.source_url} target="_blank" rel="noreferrer">{candidate.source_title.trim() || `商品 ${candidate.offer_id}`}</a>
+                            <a className="plugin-title-link" href={candidate.source_url} target="_blank" rel="noreferrer">{candidate.source_title.trim() || `商品 ${candidate.offer_id}`}</a>
                             <small>
                               SKU {candidate.sku_count || "未知"} · {candidateReviewLabel(candidate.review_status)}
                             </small>
@@ -421,41 +469,74 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
                       );
                     })}
                   </div>
+                  <div className="shop-pagination plugin-pagination">
+                    <span className="shop-pagination-status">第 {candidateCurrentPage} 页 / 共 {candidateTotalPages} 页</span>
+                    <label className="shop-page-size">每页
+                      <select value={candidatePageSize} onChange={(event) => {
+                        setCandidatePageSize(Number(event.target.value) as (typeof PLUGIN_PAGE_SIZE_OPTIONS)[number]);
+                        setCandidateOffset(0);
+                      }}>
+                        {PLUGIN_PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}
+                      </select>
+                    </label>
+                    <button type="button" disabled={candidateOffset === 0} onClick={() => setCandidateOffset(Math.max(0, candidateOffset - candidatePageSize))}>上一页</button>
+                    <button type="button" disabled={candidateOffset + candidatePageSize >= filteredCandidates.length} onClick={() => setCandidateOffset(candidateOffset + candidatePageSize)}>下一页</button>
+                  </div>
                 </div>
               )}
 
-              <div className="shop-items-heading"><strong>采集明细</strong><span>{items.length ? `${items.length} 条` : "暂无商品"}</span></div>
-              <div className="shop-items-list">
-                {items.map((item) => {
-                  const statusLabel = itemStatusLabel(item);
-                  const outcomeLabel = itemOutcomeLabel(item);
-                  const itemErrorMessage = item.error_message
-                    ? formatShopCollectionError(new Error(item.error_message))
-                    : "";
-                  return (
-                    <article key={item.offer_id}>
-                      <div>
-                        <strong>{item.source_title.trim() || `商品 ${item.offer_id}`}</strong>
-                        <small>
-                          {statusLabel}
-                          {outcomeLabel && outcomeLabel !== statusLabel ? ` · ${outcomeLabel}` : ""}
-                          {item.attempts > 0 ? ` · 尝试 ${item.attempts} 次` : ""}
-                        </small>
-                        {(item.error_code || itemErrorMessage) && <em>{[item.error_code, itemErrorMessage].filter(Boolean).join(" · ")}</em>}
-                      </div>
-                      <div className="plugin-capture-item-links">
-                        <a href={item.source_url} target="_blank" rel="noreferrer">查看来源</a>
-                        {item.draft_id != null && onOpenDraft && (
-                          <button type="button" onClick={() => onOpenDraft(item.draft_id!)}>
-                            打开产品处理 · 草稿 #{item.draft_id}
-                          </button>
-                        )}
-                      </div>
-                    </article>
-                  );
-                })}
-                {items.length === 0 && <p className="shop-empty">插件登记的商品链接会显示在这里。</p>}
-              </div>
+              {detailSection === "items" && (
+                <>
+                  <div className="shop-items-heading">
+                    <strong>采集明细</strong>
+                    <span>{itemsTotal ? `${itemsOffset + 1}-${Math.min(itemsOffset + items.length, itemsTotal)} / ${itemsTotal}` : "暂无商品"}</span>
+                  </div>
+                  <div className="shop-items-list">
+                    {items.map((item) => {
+                      const statusLabel = itemStatusLabel(item);
+                      const outcomeLabel = itemOutcomeLabel(item);
+                      const itemErrorMessage = item.error_message
+                        ? formatShopCollectionError(new Error(item.error_message))
+                        : "";
+                      return (
+                        <article key={item.offer_id}>
+                          <div>
+                            <strong>{item.source_title.trim() || `商品 ${item.offer_id}`}</strong>
+                            <small>
+                              {statusLabel}
+                              {outcomeLabel && outcomeLabel !== statusLabel ? ` · ${outcomeLabel}` : ""}
+                              {item.attempts > 0 ? ` · 尝试 ${item.attempts} 次` : ""}
+                            </small>
+                            {(item.error_code || itemErrorMessage) && <em>{[item.error_code, itemErrorMessage].filter(Boolean).join(" · ")}</em>}
+                          </div>
+                          <div className="plugin-capture-item-links">
+                            <a className="plugin-link-pill" href={item.source_url} target="_blank" rel="noreferrer">查看来源</a>
+                            {item.draft_id != null && onOpenDraft && (
+                              <button type="button" onClick={() => onOpenDraft(item.draft_id!)}>
+                                打开产品处理 · 草稿 #{item.draft_id}
+                              </button>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })}
+                    {items.length === 0 && <p className="shop-empty">插件登记的商品链接会显示在这里。</p>}
+                  </div>
+                  <div className="shop-pagination plugin-pagination">
+                    <span className="shop-pagination-status">第 {itemsCurrentPage} 页 / 共 {itemsTotalPages} 页</span>
+                    <label className="shop-page-size">每页
+                      <select value={itemsPageSize} onChange={(event) => {
+                        setItemsPageSize(Number(event.target.value) as (typeof PLUGIN_PAGE_SIZE_OPTIONS)[number]);
+                        setItemsOffset(0);
+                      }}>
+                        {PLUGIN_PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}
+                      </select>
+                    </label>
+                    <button type="button" disabled={itemsOffset === 0} onClick={() => setItemsOffset(Math.max(0, itemsOffset - itemsPageSize))}>上一页</button>
+                    <button type="button" disabled={itemsOffset + itemsPageSize >= itemsTotal} onClick={() => setItemsOffset(itemsOffset + itemsPageSize)}>下一页</button>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>
