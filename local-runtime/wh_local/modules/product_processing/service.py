@@ -2994,7 +2994,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
     def download_path(self, task_id: int, kind: str, workspace_id: str = "local") -> Path:
         task = self._require_task(task_id, workspace_id)
-        if task["status"] not in {"completed", "failed", "partial_failure"}:
+        # 取消（终态）后允许下载已生成的输出文件（错误报告/清单等）；paused 仍拒绝。
+        if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
             raise ProductProcessingConflict(
                 f"任务尚未完成（当前状态：{task['status']}），输出文件将在处理后生成"
             )
@@ -3025,7 +3026,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         用户已保存的预览覆盖优先展示；未覆盖时展示生成结果原值。
         """
         task = self._require_task(task_id, workspace_id)
-        if task["status"] not in {"completed", "failed", "partial_failure"}:
+        # 取消是终态：已完成项的结果（标题/图片/字段）仍完整保留，允许用户预检并导出
+        # 已成功的部分，避免因中途取消导致已生成图片/表格全部作废。paused 属暂态，仍拒绝。
+        if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
             raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
         excluded_ids = {
             int(value)
@@ -3400,7 +3403,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         字段规则与原版一致（workbooks._dxm_export_rows 逐 SKU 行 + 规格组合去重）。
         """
         task = self._require_task(task_id, workspace_id)
-        if task["status"] not in {"completed", "failed", "partial_failure"}:
+        # 取消（终态）后仍允许导出已成功商品的最终版表格；paused 属暂态，仍拒绝。
+        if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
             raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
         rows: list[dict[str, Any]] = []
         for item in task["items"]:
