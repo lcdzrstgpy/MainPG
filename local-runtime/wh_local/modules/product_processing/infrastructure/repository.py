@@ -904,6 +904,29 @@ class ProductProcessingRepository:
                 statement = statement.where(ProcessingTaskRow.workspace_id == workspace_id)
             return [self._task(row) for row in session.scalars(statement).all()]
 
+    def active_tasks(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        """枚举仍在处理中的任务（queued / running），用于「关闭前取消」。"""
+        with self.database.sessions() as session:
+            statement = (
+                select(ProcessingTaskRow)
+                .options(selectinload(ProcessingTaskRow.items))
+                .where(ProcessingTaskRow.status.in_(("queued", "running")))
+                .order_by(ProcessingTaskRow.id)
+            )
+            if workspace_id is not None:
+                statement = statement.where(ProcessingTaskRow.workspace_id == workspace_id)
+            return [self._task(row) for row in session.scalars(statement).all()]
+
+    def active_task_count(self, workspace_id: str | None = None) -> int:
+        """统计仍在处理中的任务数量（queued / running）。"""
+        with self.database.sessions() as session:
+            statement = select(func.count()).select_from(ProcessingTaskRow).where(
+                ProcessingTaskRow.status.in_(("queued", "running"))
+            )
+            if workspace_id is not None:
+                statement = statement.where(ProcessingTaskRow.workspace_id == workspace_id)
+            return int(session.scalar(statement) or 0)
+
     def recover_interrupted_tasks(self) -> list[dict[str, Any]]:
         """Turn process-lost running work into an explicit retryable terminal state."""
         recovered: list[tuple[int, str]] = []

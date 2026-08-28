@@ -92,10 +92,10 @@ const productProcessingHistory: WorkspaceModule = {
 
 const productCombo: WorkspaceModule = {
   id: "product_combo",
-  label: "商品自定义组合",
+  label: "商品组合套装",
   icon: "",
   iconClass: "iconfont icon-skin",
-  description: "自定义多件商品组合售卖：生成组合主图与轮播图并导出",
+  description: "独立组合套装板块：上传原图、主体解析、文本+6图生成、隔离扣费与独立预检",
 };
 
 const priceVerification: WorkspaceModule = {

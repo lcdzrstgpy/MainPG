@@ -77,6 +77,17 @@ from ..modules.pod_customization.remote_billing import (
     session_remote_token_resolver,
 )
 from ..modules.pod_customization.title_runtime import PodTitleRuntime
+from ..modules.combo_kit import (
+    create_combo_kit_router,
+    register_combo_kit_exception_handlers,
+)
+from ..modules.combo_kit.ai_runtime import ComboKitAiRuntime
+from ..modules.combo_kit.assets import ComboKitAssets
+from ..modules.combo_kit.billing import (
+    ComboKitBillingCoordinator,
+    session_remote_token_resolver as combo_session_token_resolver,
+)
+from ..modules.combo_kit.repository import ComboKitRepository
 from ..modules.product_processing.api.router import create_product_processing_router
 from ..modules.product_processing.domain.models import DailySelectionHandoffEnvelope
 from ..modules.product_processing.infrastructure.assets import ProductProcessingAssets
@@ -162,9 +173,16 @@ class _RuntimeExitController:
         self._bye_deadline: float | None = None
         self._watchdog: threading.Thread | None = None
         self._grace_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_GRACE_S", "8"))
-        self._idle_s = float(os.environ.get("WH_LOCAL_RUNTIME_IDLE_TIMEOUT_S", "120"))
+        self._idle_s = float(os.environ.get("WH_LOCAL_RUNTIME_IDLE_TIMEOUT_S", "900"))
         self._interval_s = float(os.environ.get("WH_LOCAL_RUNTIME_WATCHDOG_INTERVAL_S", "2"))
         self.enabled = os.environ.get("WH_LOCAL_RUNTIME_EXIT_ON_CLOSE", "0") == "1"
+        # 确认真退出前执行的「取消运行中任务并结算」回调（仅桌面端注入）。
+        self._on_before_exit: Any | None = None
+        self._exit_cancel_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_CANCEL_S", "6"))
+
+    def set_on_before_exit(self, callback: Any | None) -> None:
+        """注入退出前回调；仅在真正决定退出（而非刷新重载）时执行一次。"""
+        self._on_before_exit = callback
 
     def start(self) -> None:
         if not self.enabled or self._watchdog is not None:
@@ -196,11 +214,33 @@ class _RuntimeExitController:
             if now - heartbeat > self._idle_s:
                 self._exit("frontend heartbeat idle timeout")
 
-    @staticmethod
-    def _exit(reason: str) -> None:
+    def _exit(self, reason: str) -> None:
         print(f"[runtime] exiting because {reason}", flush=True)
+        # 确认真退出前，先优雅取消仍 in-flight 的处理任务并按 50% 结算，
+        # 使「关闭页面→任务取消/已取消+按冻结积分 50% 扣费」可达成。仅在真正
+        # 决定退出（非刷新重载）时执行；回调带超时保护，绝不无限阻塞。
+        self._run_before_exit()
         # 硬退出整个进程（含所有守护工作线程），释放被锁定的 MainPG.exe。
         os._exit(0)  # noqa: PLR1722 - deliberate hard exit on desktop page close
+
+    def _run_before_exit(self) -> None:
+        """在独立线程执行退出前回调，并限时等待，避免阻塞退出。"""
+        callback = self._on_before_exit
+        if callback is None:
+            return
+        done = threading.Event()
+
+        def _wrap() -> None:
+            try:
+                callback()
+            except Exception:
+                # 取消/结算尽力而为；失败交给对账 / 服务端 TTL 兜底。
+                pass
+            finally:
+                done.set()
+
+        threading.Thread(target=_wrap, daemon=True, name="mainpg-exit-cancel").start()
+        done.wait(timeout=self._exit_cancel_s)
 
 
 def create_app(database_path: Path | None = None) -> FastAPI:
@@ -350,12 +390,34 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.state.pod_customization_ai_runtime = pod_ai_runtime
     app.state.pod_customization_title_runtime = pod_title_runtime
 
+    # 商品组合套装：独立业务模块，与产品处理 / POD 完全隔离。
+    combo_kit_repo = ComboKitRepository(db_path.parent / "combo-kit" / "combo_kit.sqlite3")
+    combo_kit_assets = ComboKitAssets(db_path.parent / "combo-kit" / "assets")
+    combo_kit_ai = ComboKitAiRuntime()
+    combo_kit_billing = ComboKitBillingCoordinator(
+        remote_customer_auth,
+        combo_session_token_resolver(customer_sessions),
+    )
+    combo_kit_router = create_combo_kit_router(
+        combo_kit_repo,
+        combo_kit_assets,
+        combo_kit_ai,
+        combo_kit_billing,
+    )
+    app.include_router(combo_kit_router)
+    register_combo_kit_exception_handlers(app)
+    app.state.combo_kit_service = getattr(combo_kit_router, "combo_kit_service")
+
     # Normal requests delete transient references immediately. This startup
     # construction sweep handles objects left by a prior interrupted process.
     runtime = SystemConfigService(db_path).get_runtime_config()
     TemporaryCosStore(runtime.cos).cleanup_stale()
     plugin_queue = DataCollectionPluginQueue(db_path)
     product_processing = _product_processing_service(db_path)
+    # 桌面端：确认退出（关闭页面页面不再恢复）前取消所有仍在处理的任务并按 50% 结算，
+    # 使「关前端页 → 任务已取消 + 按冻结积分 50% 扣费」可达成。服务器环境 watchdog 未
+    # 启用，该回调不被触发。
+    runtime_exit.set_on_before_exit(product_processing.cancel_all_active_for_shutdown)
     app.include_router(
         create_product_processing_router(
             product_processing,

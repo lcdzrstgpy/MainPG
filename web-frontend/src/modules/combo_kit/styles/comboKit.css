@@ -1,0 +1,83 @@
+.combo-kit-page {
+  padding: 20px;
+  background: #f6f7f9;
+  min-height: 100%;
+}
+.combo-kit-header h1 { margin: 0 0 4px; font-size: 20px; }
+.combo-kit-header p { margin: 0 0 16px; color: #6b7280; font-size: 13px; }
+.combo-kit-message { padding: 10px 14px; border-radius: 8px; background: #e8f6ee; color: #1f7a46; margin-bottom: 14px; }
+.combo-kit-message.error { background: #fdecec; color: #b42318; }
+
+.combo-kit-body { display: flex; gap: 18px; align-items: flex-start; }
+.combo-kit-list { width: 240px; flex-shrink: 0; background: #fff; border-radius: 10px; padding: 14px; border: 1px solid #e5e7eb; }
+.combo-kit-list h2 { font-size: 15px; margin: 0 0 12px; }
+.combo-kit-list ul { list-style: none; margin: 12px 0 0; padding: 0; }
+.combo-kit-list li { padding: 10px; border-radius: 8px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.combo-kit-list li:hover { background: #f3f4f6; }
+.combo-kit-list li.active { background: #e8f0fe; }
+.combo-kit-list .empty { color: #9ca3af; }
+.combo-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #e5e7eb; color: #4b5563; }
+
+.combo-kit-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.combo-kit-empty { color: #9ca3af; padding: 40px; text-align: center; background: #fff; border-radius: 10px; }
+.combo-section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 18px; }
+.combo-section h2 { font-size: 16px; margin: 0 0 14px; }
+.combo-subtitle { font-size: 14px; color: #374151; margin: 16px 0 10px; }
+.combo-hint { color: #9ca3af; font-size: 12px; margin-top: 10px; }
+
+.combo-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 12px; }
+.combo-grid label, .combo-section > label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #374151; }
+.combo-grid .combo-grid-full { grid-column: 1 / -1; }
+.combo-grid input, .combo-grid textarea, .combo-section textarea, .combo-item input {
+  border: 1px solid #d1d5db; border-radius: 6px; padding: 8px 10px; font-size: 13px; background: #fff;
+}
+.combo-grid textarea, .combo-section textarea { resize: vertical; }
+.combo-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.combo-actions button, .combo-kit-list button {
+  padding: 8px 14px; border-radius: 6px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; font-size: 13px;
+}
+.combo-actions button.primary { background: #1f7a46; color: #fff; border-color: #1f7a46; }
+.combo-actions button.danger { background: #b42318; color: #fff; border-color: #b42318; }
+
+.combo-upload { display: inline-block; padding: 8px 14px; border: 1px dashed #a8b3bf; border-radius: 6px; cursor: pointer; font-size: 13px; color: #1f7a46; margin-bottom: 12px; }
+
+.combo-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+.combo-item { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.combo-item-thumb { position: relative; }
+.combo-item-thumb img { width: 100%; max-height: 160px; object-fit: contain; background: #f3f4f6; border-radius: 6px; }
+.combo-item-thumb .idx { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,0.6); color: #fff; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
+.combo-item-thumb .btn-mini { position: absolute; top: 6px; right: 6px; }
+.btn-mini { padding: 4px 10px; border-radius: 5px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; font-size: 12px; }
+.btn-mini.danger { color: #b42318; border-color: #f3c2c2; }
+.btn-mini.primary { color: #1f7a46; border-color: #b7dcc6; }
+.combo-item .empty { color: #9ca3af; }
+
+.combo-mask { border-top: 1px dashed #e5e7eb; padding-top: 8px; }
+.combo-mask-toolbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.combo-mask-stage { position: relative; }
+.combo-mask-hint { color: #9ca3af; font-size: 11px; margin-top: 6px; }
+
+.combo-text-result { margin-top: 14px; background: #f9fafb; border-radius: 8px; padding: 14px; }
+.combo-text-result h3 { margin: 0 0 8px; font-size: 15px; }
+.combo-text-result ul { margin: 8px 0 0; padding-left: 18px; }
+
+.combo-images { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 14px; }
+.combo-images figure { margin: 0; }
+.combo-images img { width: 100%; border-radius: 8px; background: #f3f4f6; }
+.combo-images figcaption { text-align: center; font-size: 12px; color: #6b7280; margin-top: 4px; }
+.combo-images .empty, .combo-items .empty { color: #9ca3af; }
+.combo-fusion-preview { margin-top: 16px; }
+.combo-fusion-preview h3 { font-size: 14px; margin: 0 0 8px; }
+.combo-fusion-preview img { width: 320px; max-width: 100%; border-radius: 8px; background: #f3f4f6; border: 1px solid #e5e7eb; }
+
+.combo-billing { margin-top: 16px; }
+.combo-billing h3 { font-size: 14px; margin: 0 0 8px; }
+.combo-billing ul { margin: 0; padding-left: 18px; }
+
+.combo-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.combo-modal { background: #fff; border-radius: 10px; padding: 20px; width: 380px; max-width: 90vw; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+.combo-modal h3 { margin: 0 0 14px; font-size: 16px; }
+.combo-modal input { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+.combo-modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+.combo-modal-actions button { padding: 8px 14px; border-radius: 6px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; font-size: 13px; }
+.combo-modal-actions button.primary { background: #1f7a46; color: #fff; border-color: #1f7a46; }

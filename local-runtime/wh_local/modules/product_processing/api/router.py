@@ -562,6 +562,13 @@ def create_product_processing_router(
             if image is not None and hasattr(image, "close"):
                 await image.close()
 
+    @router.get("/tasks/active-count")
+    def task_active_count(
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """返回仍在处理中的任务数，供前端「关闭页面提醒」判断。"""
+        return {"count": service.active_task_count(_workspace(workspace_id))}
+
     @router.get("/tasks/history")
     def task_history(
         limit: int = Query(default=80, ge=1, le=200),

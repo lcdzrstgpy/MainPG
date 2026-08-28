@@ -2754,6 +2754,31 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 with self._task_last_seen_lock:
                     self._task_last_seen.pop((workspace_id, task_id), None)
 
+    def active_task_count(self, workspace_id: str | None = None) -> int:
+        """返回仍在处理中的任务数（queued / running），供前端关闭提醒判断。"""
+        return self.repository.active_task_count(workspace_id)
+
+    def cancel_all_active_for_shutdown(self, workspace_id: str | None = None) -> int:
+        """桌面端确认退出前：取消所有仍在处理中的任务并按 50% 结算。
+
+        ``cancel_task`` 会把任务置为终态 ``cancelled``，并对仍 open 的冻结批次
+        按「已完成全价 / 未完成 50%」结算；token 失效或网络失败不抛出，交由
+        对账 / 服务端 TTL 兜底。返回取消的任务数量。
+        """
+        cancelled = 0
+        for task in self.repository.active_tasks(workspace_id):
+            task_id = int(task.get("id") or 0)
+            ws = str(task.get("workspace_id") or "local")
+            if not task_id:
+                continue
+            try:
+                self.cancel_task(task_id, ws)
+                cancelled += 1
+            except Exception:
+                # 单个任务取消失败不阻断其余任务，也不阻断后端退出。
+                continue
+        return cancelled
+
     def cancel_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
         """取消任务：终态操作，立即停止后续 AI 调用，未处理链接标记失败（用户取消）。
 
@@ -2768,7 +2793,35 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         with self._task_last_seen_lock:
             self._task_last_seen.pop((workspace_id, int(task_id)), None)
         task = self.repository.mark_task_cancelled(task_id, workspace_id) or task
-        return {**self._task_response(task), "message": "产品处理任务已取消，未处理链接已释放"}
+        # 取消后立即按「已完成全价 / 未完成 50%」结算该任务仍 open 的冻结批次，
+        # 使积分扣费符合「取消按实际冻结积分 50% 扣除」的预期。token 失效或结算
+        # 失败时不阻断：保留 open 记录，由对账 / 服务端 TTL 兜底。
+        token = self._text(self._task_remote_tokens.get(int(task_id)) or "")
+        if token:
+            try:
+                self._settle_cancelled_freezes(task_id, workspace_id, token)
+            except Exception:
+                pass
+        return {**self._task_response(task), "message": "产品处理任务已取消，未处理链接已释放，未完成链接按冻结积分 50% 结算"}
+
+    def _settle_cancelled_freezes(self, task_id: int, workspace_id: str, token: str) -> None:
+        """把某任务仍 open 的冻结批次按 50% 结算（已完成全价、未完成退半）。
+
+        _settle_open_batch 会依据 task.status == 'cancelled' 把未完成链接折算为
+        intercept（退半），因此这里只负责定位仍为 open 的 freeze_id 并触发结算。
+        """
+        task = self._require_task(task_id, workspace_id)
+        billing = task.get("settings") or {}
+        billing = billing.get("_billing") if isinstance(billing, dict) else None
+        account_id = self._text(billing.get("account_id") if isinstance(billing, dict) else "")
+        if not account_id:
+            return
+        for record in _open_freezes_for_account(account_id):
+            if int(record.get("task_id") or 0) != int(task_id):
+                continue
+            freeze_id = str(record.get("freeze_id") or "")
+            if freeze_id:
+                self._settle_open_batch(task_id, workspace_id, token, freeze_id)
 
     def pause_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
         task = self._require_task(task_id, workspace_id)
@@ -3758,7 +3811,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # 结算模式：paid=手动付费重试（无论成败全价扣）；free=系统自动重试轮
             # （不加重试溢价）；空=首次正常处理。仅首次正常处理保留「重试溢价」，
             # 系统自动轮与手动付费重试都不再叠加溢价（手动重试按 35-45 积分全价封顶）。
+            # cancelled=True：任务已被取消，未完成链接按 50%（intercept）结算。
             retry_mode = str(task["settings"].get("_retry_mode") or "")
+            task_cancelled = str(task.get("status") or "") == "cancelled"
             _billing_call_with_retry(
                 client.settle_batch_points,
                 token,
@@ -3768,6 +3823,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     task["settings"],
                     paid_retry=retry_mode == "paid",
                     retry_premium=retry_mode == "",
+                    cancelled=task_cancelled,
                 )},
             )
             _forget_batch_freeze(freeze_id)
@@ -3819,6 +3875,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         settings,
                         paid_retry=retry_mode == "paid",
                         retry_premium=retry_mode == "",
+                        cancelled=task_status == "cancelled",
                     )},
                 )
                 _forget_batch_freeze(freeze_id)
