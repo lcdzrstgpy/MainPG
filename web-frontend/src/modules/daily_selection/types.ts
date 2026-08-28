@@ -20,7 +20,7 @@ export type DailySelectionCriteria = {
   min_sku_stock?: number;
   max_sku_stock?: number;
   target_count: number;
-  max_api_calls: number;
+  max_api_calls?: number;
   detail_count: number;
   exclude_risks: boolean;
   site: TargetSite;

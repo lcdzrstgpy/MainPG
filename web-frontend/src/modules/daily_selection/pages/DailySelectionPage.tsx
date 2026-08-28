@@ -789,7 +789,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       selection_scope: scope,
       category: selectedDirection.name,
       target_count: parsedTargetCount,
-      max_api_calls: 200,
       detail_count: 50,
       exclude_risks: excludeRisks,
       site,
@@ -1262,7 +1261,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
           <div className="collection-actions">
             <span>{!platform || platform === "1688"
-              ? "1688 每批最多调用 200 次 API，并在预算内尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。"
+              ? "1688 会尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。"
               : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
             <div className="collection-submit-area">
               <button className="collect-button" type="submit" disabled={busy || collecting}>{collecting ? `采集中 ${collectionProgress}%` : "开始采集"}</button>

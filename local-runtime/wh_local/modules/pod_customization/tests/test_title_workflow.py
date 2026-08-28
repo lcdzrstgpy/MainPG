@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import sqlite3
 import threading
 import time
@@ -27,6 +28,7 @@ from wh_local.modules.pod_customization.billing_contract import PodCallOutcome, 
 from wh_local.modules.pod_customization.images import split_grid_2x2
 from wh_local.modules.pod_customization.repository import PodRepositoryError
 from wh_local.modules.pod_customization.service import PodCustomizationService
+from wh_local.modules.pod_customization.worker import PodBillingRun
 from wh_local.modules.pod_customization.router import create_router
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia
 from wh_local.session import Actor
@@ -377,7 +379,7 @@ def test_detail_publication_failure_does_not_discard_generated_title(tmp_path: P
     images.close()
 
 
-def test_same_batch_title_generation_serializes_accepted_titles_and_visual_signatures(tmp_path: Path) -> None:
+def test_same_batch_title_generation_serializes_accepted_titles(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(17), _grid(27)])
     titles = SlowTitleRuntime()
     service = _service(tmp_path, images, titles)
@@ -390,11 +392,7 @@ def test_same_batch_title_generation_serializes_accepted_titles_and_visual_signa
     assert [request.style_index for request in titles.requests] == [1, 2]
     assert titles.max_active == 1
     assert titles.requests[0].accepted_titles == ()
-    assert titles.requests[0].accepted_visual_signatures == ()
     assert len(titles.requests[1].accepted_titles) == 1
-    assert titles.requests[1].accepted_visual_signatures == (
-        "coastal botanical|layered ink|ocean fern",
-    )
     service.close()
     titles.close()
     images.close()
@@ -502,7 +500,108 @@ def test_title_resume_skips_persisted_success_and_uses_only_remaining_calls(tmp_
         "success",
         "success",
         "no_return",
+        "no_return",
+        "no_return",
     ]
+    service.close()
+    titles.close()
+    images.close()
+
+
+def test_get_batch_reconciles_stale_generating_title_after_worker_exit(tmp_path: Path) -> None:
+    images = ImageRuntime([_grid(23)])
+    titles = TitleRuntime()
+    service = _service(tmp_path, images, titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+
+    # Reproduce a worker that has already exited after its provider calls were
+    # settled but left the style title marked as active.
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_batches SET status = 'generating_titles', finished_at = '' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+        connection.execute(
+            """UPDATE pod_customization_style_titles
+               SET status = 'generating', title = '', normalized_title = NULL, finished_at = ''
+               WHERE batch_id = ? AND style_index = 1""",
+            (batch["id"],),
+        )
+
+    reconciled = service.get_batch(actor, batch["id"])
+
+    assert reconciled["status"] == "failed"
+    assert reconciled["style_titles"][0]["status"] == "failed"
+    assert reconciled["style_titles"][0]["error_message"] == "POD worker exited before title completion"
+    service.close()
+    titles.close()
+    images.close()
+
+
+def test_reprocessing_completed_images_skips_title_when_initial_calls_are_exhausted(tmp_path: Path) -> None:
+    images = ImageRuntime([_grid(24)])
+    titles = TitleRuntime()
+    service = _service(tmp_path, images, titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+    before_title_requests = len(titles.requests)
+
+    stored_run = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
+    assert stored_run == []
+    with service.repository._connect() as connection:
+        run = connection.execute(
+            "SELECT action_key, plan_json FROM pod_customization_billing_runs WHERE batch_id = ?",
+            (batch["id"],),
+        ).fetchone()
+        call_row = connection.execute(
+            """SELECT call_id, call_kind, call_index FROM pod_customization_generation_calls
+               WHERE batch_id = ? AND call_kind = 'initial' AND call_index = 1""",
+            (batch["id"],),
+        ).fetchone()
+        connection.execute(
+            """UPDATE pod_customization_style_titles
+               SET status = 'failed', error_message = 'original title failure'
+               WHERE batch_id = ? AND style_index = 1""",
+            (batch["id"],),
+        )
+    assert run is not None
+    billing_run = PodBillingRun(
+        actor,
+        service.billing_coordinator,
+        service._billing_plan(json.loads(run["plan_json"])),
+        PodExecutionGrant("freeze-replay", 1, "2099-01-01T00:00:00Z", {"wuyin": "key", "ark": "key"}),
+        repository=service.repository,
+        action_key=run["action_key"],
+        resumed=True,
+    )
+    internal = service.repository.get_batch_internal(batch["id"])
+    assert call_row is not None
+    call = {**dict(call_row), "style_index": 1}
+    grid = GeneratedMedia(
+        stage="grid_image",
+        content=_grid(25),
+        content_type="image/png",
+        suffix=".png",
+        provider="test",
+        model="image-model",
+        reference_count=1,
+    )
+
+    service.worker._process_style_grids(
+        internal,
+        [(call, grid, images.split_listing_grid(grid), ["a", "b", "c", "d"])],
+        billing_run,
+    )
+
+    refreshed = service.get_batch(actor, batch["id"])
+    assert refreshed["style_titles"][0]["status"] == "failed"
+    assert refreshed["style_titles"][0]["error_message"] == "original title failure"
+    assert len(titles.requests) == before_title_requests
     service.close()
     titles.close()
     images.close()

@@ -402,7 +402,7 @@ def test_pod_random_profile_charges_when_images_succeed_even_if_title_fails(
     assert settled["refunded_points"] == 0
 
 
-def test_pod_random_profile_refunds_title_only_retry_even_when_title_succeeds(
+def test_pod_random_profile_title_only_retry_freezes_zero_points(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -414,9 +414,13 @@ def test_pod_random_profile_refunds_title_only_retry_even_when_title_succeeds(
         actor,
         link_count=1,
         scope=["title"],
-        idempotency_key="pod:retry:title-only-refund-0001",
+        idempotency_key="pod:retry:title-only-free-0001",
         billing_profile="pod_random_v1",
     )
+
+    # 纯标题调用（标题重生/补标题）不按款式价计费：图片才是计费锚点，冻结即 0 点。
+    assert freeze["frozen_points"] == 0
+    assert freeze["link_prices"] == [0]
 
     settled = settle_batch_points(
         database_path,
@@ -429,7 +433,15 @@ def test_pod_random_profile_refunds_title_only_retry_even_when_title_succeeds(
     )
 
     assert settled["charged_points"] == 0
-    assert settled["refunded_points"] == 40
+    assert settled["refunded_points"] == 0
+
+    with transaction(database_path) as conn:
+        wallet = conn.execute(
+            "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
+            (actor.id,),
+        ).fetchone()
+    # 标题重生全程不冻结、不扣费，余额保持不变。
+    assert dict(wallet) == {"points_balance": 1000, "locked_points": 0}
 
 
 def test_usage_history_identifies_pod_batch_charge(

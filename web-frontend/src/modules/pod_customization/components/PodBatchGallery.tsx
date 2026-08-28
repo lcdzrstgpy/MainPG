@@ -1,19 +1,24 @@
 import { useEffect, useState } from "react";
 
-import { batchProgress, canRegeneratePodStyle, canRegeneratePodStyleTitle, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
+import { batchProgress, canCancelPodBatch, canPausePodBatch, canRegeneratePodStyle, canRegeneratePodStyleTitle, canResumePodBatch, canRetryPodBatchFailed, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, podBatchStatusDetail, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
 import { dianxiaomiExportBlockMessage, isDianxiaomiExportEnabled } from "../data/dianxiaomiExport";
 import { PodAssetImage } from "../data/usePodAssetUrl";
-import type { PodBatch, PodBatchItem } from "../types";
+import type { PodBatch, PodBatchItem, PodBillingRun } from "../types";
 import { PodListingDetailDrawer } from "./PodListingDetailDrawer";
 
 type Props = {
   batch: PodBatch | null;
   busyAction: string;
+  pendingBillingRuns: PodBillingRun[];
   onOpenResult: (item: PodBatchItem, styleIndex: number) => void;
   onRegenerateStyle: (styleIndex: number) => void;
   onRegenerateTitle: (styleIndex: number) => void;
   onExportDianxiaomi: () => void;
+  onResumeBilling: (run: PodBillingRun) => void;
   onOpenFailedRetry: () => void;
+  onPauseBatch: () => void;
+  onCancelBatch: () => void;
+  onResumeBatch: () => void;
 };
 
 const ROLE_LABELS = ["主图", "细节图 A", "细节图 B", "素材图"] as const;
@@ -37,7 +42,7 @@ async function copyTitle(title: string): Promise<void> {
   }
 }
 
-export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateStyle, onRegenerateTitle, onExportDianxiaomi, onOpenFailedRetry }: Props) {
+export function PodBatchGallery({ batch, busyAction, pendingBillingRuns, onOpenResult, onRegenerateStyle, onRegenerateTitle, onExportDianxiaomi, onResumeBilling, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
   const [selectedStyleIndex, setSelectedStyleIndex] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
   const showWaitingTime = Boolean(batch && isActiveBatchStatus(batch.status));
@@ -59,15 +64,36 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
     ? exporting ? "正在生成店小秘导出文件，请稍候。" : "当前批次正在处理其他操作，请稍候。"
     : dianxiaomiExportBlockMessage(exportStatus.block_reason);
   const canExport = isDianxiaomiExportEnabled(batch.dianxiaomi_export.ready, busyAction);
+  const pendingBillingRunsForBatch = pendingBillingRuns.filter((run) => run.batch_id === batch.id);
+  const billingRecoveryRun = pendingBillingRunsForBatch[0];
+  const showBillingRecovery = Boolean(billingRecoveryRun);
+  const billingRecoveryLabel = billingRecoveryRun?.status === "auth_required" ? "重新授权并恢复" : "重试计费结算";
+  const canRetryBatch = canRetryPodBatchFailed(batch.status);
+  const retryBlockReason = "";
   const selectedStyle = styles.find((style) => style.index === selectedStyleIndex);
+  const canPause = canPausePodBatch(batch.status);
+  const canCancel = canCancelPodBatch(batch.status);
+  const canResume = canResumePodBatch(batch.status);
+  const batchStatusDetail = podBatchStatusDetail(batch.status);
+  const pausing = busyAction === "pause-batch";
+  const cancelling = busyAction === "cancel-batch";
+  const resuming = busyAction === "resume-batch";
   return <><section className="pod-gallery" aria-label="POD 批次画廊">
     <header className="pod-gallery-header">
       <div><span>POD BATCH · {batch.id.slice(0, 8)}</span><h2>{batch.title || `${batch.template_name} 创作批次`}</h2><p>当前批次 <b>{batch.count} 款</b> · {batch.template_name}</p></div>
       <div className="pod-gallery-header-actions">
-        <div className={`pod-batch-status status-${batch.status}`}><strong>{podBatchStatusLabel(batch.status)}</strong><span>{batch.processed_count} / {batch.count} 款</span><span>可上架 {batch.listing_ready_count ?? 0} / 总款数 {batch.count}</span></div>
+        <div className={`pod-batch-status status-${batch.status}`}><strong>{podBatchStatusLabel(batch.status, batch.dianxiaomi_export.ready)}</strong><span>{batch.processed_count} / {batch.count} 款</span><span>可上架 {batch.listing_ready_count ?? 0} / 总款数 {batch.count}</span></div>
+        <div className="pod-batch-control">
+          {canResume && <button type="button" className="pod-batch-resume" disabled={Boolean(busyAction)} onClick={onResumeBatch}>{resuming ? "继续中" : "继续"}</button>}
+          {canPause && <button type="button" className="pod-batch-pause" disabled={Boolean(busyAction)} onClick={onPauseBatch}>{pausing ? "暂停中" : "暂停"}</button>}
+          {canCancel && <button type="button" className="pod-batch-cancel" disabled={Boolean(busyAction)} onClick={onCancelBatch}>{cancelling ? "取消中" : "取消"}</button>}
+        </div>
+        {batchStatusDetail && <small className="pod-batch-status-detail">{batchStatusDetail}</small>}
         <div className="pod-dianxiaomi-export">
-          <button type="button" className="pod-open-failed-retry" disabled={Boolean(busyAction)} onClick={onOpenFailedRetry}>批量重试失败项</button>
+          <button type="button" className="pod-open-failed-retry" disabled={!canRetryBatch || Boolean(busyAction)} title={retryBlockReason || "批量重试失败款式"} onClick={onOpenFailedRetry}>批量重试失败项</button>
+          {!canRetryBatch && retryBlockReason && <small>{retryBlockReason}</small>}
           <button type="button" disabled={!canExport} title={canExport ? `可导出 ${exportStatus.exportable_style_count} 款` : exportBlockReason} onClick={onExportDianxiaomi}>{exporting ? "正在导出店小秘表格" : "导出店小秘表格"}</button>
+          {showBillingRecovery && <><button type="button" className="pod-billing-resume" disabled={Boolean(busyAction)} onClick={() => onResumeBilling(billingRecoveryRun!)}>{billingRecoveryLabel}</button><small>有待结算账务，不影响继续重试或导出已完成款式。</small></>}
           {!canExport && <small>{exportBlockReason}</small>}
         </div>
       </div>

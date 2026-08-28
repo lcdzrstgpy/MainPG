@@ -9,7 +9,6 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from .budget import SQLiteDailyApiBudget, credential_fingerprint
 from .contracts import DailySelectionCandidate
 from .normalizer import normalize_detail_response
 from .service import DailySelectionActor
@@ -37,10 +36,6 @@ class _StaleItemLease(RuntimeError):
     pass
 
 
-class ShopApiBudgetExhausted(RuntimeError):
-    code = "api_budget_exhausted"
-
-
 class ShopCollectionWorker:
     """Runs durable batches with one global three-slot detail pool."""
 
@@ -60,7 +55,7 @@ class ShopCollectionWorker:
         retry_delay_seconds: float = 0.05,
         unfinished_poll_seconds: float = 0.25,
         budget: Any | None = None,
-        max_api_calls: int = 300,
+        max_api_calls: int = 0,
     ) -> None:
         self.repository = repository
         self._provider_config_resolver = provider_config_resolver
@@ -72,10 +67,6 @@ class ShopCollectionWorker:
         if unfinished_poll_seconds <= 0:
             raise ValueError("unfinished_poll_seconds must be positive")
         self._unfinished_poll_seconds = unfinished_poll_seconds
-        if isinstance(max_api_calls, bool) or not 1 <= int(max_api_calls) <= 300:
-            raise ValueError("max_api_calls must be between 1 and 300")
-        self._max_api_calls = int(max_api_calls)
-        self._budget = budget or SQLiteDailyApiBudget(repository.database_path)
         self._owner = f"shop-worker-{uuid.uuid4().hex}"
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -126,12 +117,6 @@ class ShopCollectionWorker:
             actor = DailySelectionActor(actor_id=batch.actor_id, workspace_id=batch.workspace_id)
             config = self._provider_config_resolver(actor)
             provider = self._provider_factory(config)
-            provider = self._budgeted_provider(
-                provider,
-                batch_id=batch.batch_id,
-                workspace_id=batch.workspace_id,
-                provider_fingerprint=credential_fingerprint(config),
-            )
             if batch.status == "queued":
                 batch = self._transition(active_lease, "resolving", {"queued"})
             if batch.status == "resolving":
@@ -375,39 +360,6 @@ class ShopCollectionWorker:
                     raise _WorkerStopping()
         return result
 
-    def _budgeted_provider(
-        self,
-        provider: Any,
-        *,
-        batch_id: str,
-        workspace_id: str,
-        provider_fingerprint: str,
-    ) -> Any:
-        def reserve(operation: str) -> None:
-            state = self._budget.reserve(
-                workspace_id=workspace_id,
-                provider_fingerprint=provider_fingerprint,
-                max_api_calls=self._max_api_calls,
-                api_calls=1,
-            )
-            granted = bool(getattr(state, "reservation_granted", False))
-            self.repository.record_api_call_reservation(
-                batch_id=batch_id,
-                workspace_id=workspace_id,
-                operation=operation,
-                reservation_granted=granted,
-            )
-            if not granted:
-                raise ShopApiBudgetExhausted(
-                    f"OneBound API budget exhausted before {operation}"
-                )
-
-        installer = getattr(provider, "install_api_call_guard", None)
-        if callable(installer):
-            installer(reserve)
-            return provider
-        return _BudgetedProviderProxy(provider, reserve)
-
     def _apply_control_state(self, batch: Any, lease: ShopBatchLease) -> bool:
         if batch.status == "pausing":
             self._transition(lease, "paused", {"pausing"})
@@ -458,22 +410,6 @@ def _default_page_normalizer(payload: Mapping[str, Any], evidence: Any = None) -
     from .shop_parsing import normalize_shop_page
 
     return normalize_shop_page(payload, evidence)
-
-
-class _BudgetedProviderProxy:
-    """Apply the same guard to injected providers used outside OneBound's client."""
-
-    def __init__(self, provider: Any, reserve: Callable[[str], None]) -> None:
-        self._provider = provider
-        self._reserve = reserve
-
-    def search_shop(self, seller_nick: str, page: int) -> Any:
-        self._reserve("item_search_shop")
-        return self._provider.search_shop(seller_nick, page)
-
-    def get_item_detail(self, offer_id: str) -> Any:
-        self._reserve("item_get")
-        return self._provider.get_item_detail(offer_id)
 
 
 def _default_detail_normalizer(item: Any, result: Any) -> DailySelectionCandidate:

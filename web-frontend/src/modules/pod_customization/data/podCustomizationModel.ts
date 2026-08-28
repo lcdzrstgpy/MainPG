@@ -52,7 +52,17 @@ const ACTIVE_BATCH_STATUSES = new Set<PodBatchStatus>([
   "generating_patterns",
   "compositing",
   "generating_titles",
+  "pausing",
+  "cancelling",
   "settlement_pending",
+]);
+
+// 可发起暂停的运行态，与后端 request_pause 的原子状态门槛保持一致。
+const PAUSABLE_BATCH_STATUSES = new Set<PodBatchStatus>([
+  "queued",
+  "generating_patterns",
+  "compositing",
+  "generating_titles",
 ]);
 const ACTIVE_ITEM_STATUSES = new Set<PodBatchItemStatus>([
   "queued",
@@ -61,7 +71,8 @@ const ACTIVE_ITEM_STATUSES = new Set<PodBatchItemStatus>([
   "optimizing_scene",
 ]);
 const ACTIVE_TITLE_STATUSES = new Set<PodStyleTitleStatus>(["queued", "generating"]);
-const SETTLED_BATCH_STATUSES = new Set<PodBatchStatus>(["completed", "partial_failure", "failed"]);
+const SETTLED_BATCH_STATUSES = new Set<PodBatchStatus>(["completed", "partial_failure", "failed", "cancelled"]);
+const RETRYABLE_BATCH_STATUSES = new Set<PodBatchStatus>([...SETTLED_BATCH_STATUSES, "settlement_pending"]);
 
 function valueOrFallback(value: string): string {
   return value.trim() || "未填写";
@@ -233,7 +244,28 @@ export function canRegeneratePodStyle(
   batchStatus: PodBatchStatus,
   styleStatus: PodStyleRow["status"],
 ): boolean {
-  return SETTLED_BATCH_STATUSES.has(batchStatus) && styleStatus === "failed";
+  return RETRYABLE_BATCH_STATUSES.has(batchStatus) && styleStatus === "failed";
+}
+
+export function isBillingInterruptedPodBatch(status: PodBatchStatus): boolean {
+  return status === "billing_auth_required" || status === "settlement_pending";
+}
+
+export function canPausePodBatch(status: PodBatchStatus): boolean {
+  return PAUSABLE_BATCH_STATUSES.has(status);
+}
+
+export function canCancelPodBatch(status: PodBatchStatus): boolean {
+  return PAUSABLE_BATCH_STATUSES.has(status) || status === "pausing" || status === "paused";
+}
+
+export function canResumePodBatch(status: PodBatchStatus): boolean {
+  return status === "paused";
+}
+
+// 结算任务与生成结果独立；结算待处理不能锁死失败项重试。
+export function canRetryPodBatchFailed(batchStatus: PodBatchStatus): boolean {
+  return RETRYABLE_BATCH_STATUSES.has(batchStatus);
 }
 
 export function canRegeneratePodStyleTitle(
@@ -241,7 +273,7 @@ export function canRegeneratePodStyleTitle(
   titleStatus: PodStyleTitleStatus | undefined,
   results: Array<Pick<PodBatchItem, "status" | "public_url"> | undefined>,
 ): boolean {
-  return SETTLED_BATCH_STATUSES.has(batchStatus)
+  return RETRYABLE_BATCH_STATUSES.has(batchStatus)
     && titleStatus === "failed"
     && results.length === 4
     && results.every((item) => item?.status === "completed" && Boolean(item.public_url));
@@ -298,18 +330,32 @@ export function defaultTemplateCalibration(): PodTemplateCalibration {
   };
 }
 
-export function podBatchStatusLabel(status: PodBatchStatus): string {
+export function podBatchStatusLabel(status: PodBatchStatus, dianxiaomiReady?: boolean): string {
+  // 授权/结算中断批次若已生成完整，以导出资格为准展示，不再只显示“需要重新授权”。
+  if (dianxiaomiReady && (status === "billing_auth_required" || status === "settlement_pending")) {
+    return "生成已完成，可导出";
+  }
   return {
     queued: "等待启动",
     generating_patterns: "生成图片",
     compositing: "拆分并发布",
     generating_titles: "生成标题",
+    pausing: "暂停中",
+    paused: "已暂停",
+    cancelling: "取消中",
+    cancelled: "已取消",
     completed: "已完成",
     partial_failure: "部分完成",
     failed: "生成失败",
     settlement_pending: "等待计费结算",
     billing_auth_required: "需要重新授权",
   }[status];
+}
+
+export function podBatchStatusDetail(status: PodBatchStatus): string {
+  if (status === "pausing") return "已提交的款正在完成，其余款不会继续发起。";
+  if (status === "paused") return "已暂停，可继续剩余款式。";
+  return "";
 }
 
 export function podItemStatusLabel(status: string): string {

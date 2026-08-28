@@ -1039,7 +1039,7 @@ class PodCustomizationRepository:
 
     def set_batch_status(self, batch_id: str, status: str, error_message: str = "") -> None:
         now = _now()
-        finished_at = now if status in {"completed", "partial_failure", "failed"} else ""
+        finished_at = now if status in {"completed", "partial_failure", "failed", "cancelled"} else ""
         with self._connect() as connection:
             result = connection.execute(
                 """UPDATE pod_customization_batches SET status = ?, error_message = ?, updated_at = ?,
@@ -1049,6 +1049,73 @@ class PodCustomizationRepository:
             )
         if result.rowcount != 1:
             raise PodRepositoryError("POD batch not found", 404)
+
+    def get_batch_status(self, batch_id: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT status FROM pod_customization_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD batch not found", 404)
+        return str(row["status"])
+
+    def request_pause(self, batch_id: str) -> bool:
+        """Atomically ask the running worker to pause at its next checkpoint."""
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batches SET status = 'pausing', updated_at = ?
+                   WHERE batch_id = ?
+                     AND status IN ('queued', 'generating_patterns', 'compositing', 'generating_titles')""",
+                (now, batch_id),
+            )
+        return result.rowcount == 1
+
+    def request_cancel(self, batch_id: str) -> bool:
+        """Atomically ask the running worker to cancel at its next checkpoint."""
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batches SET status = 'cancelling', updated_at = ?
+                   WHERE batch_id = ?
+                     AND status IN ('queued', 'generating_patterns', 'compositing', 'generating_titles',
+                                    'pausing', 'paused')""",
+                (now, batch_id),
+            )
+        return result.rowcount == 1
+
+    def mark_batch_paused(self, batch_id: str, error_message: str = "") -> None:
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = 'paused', error_message = ?, updated_at = ?, finished_at = ''
+                   WHERE batch_id = ? AND status = 'pausing'""",
+                (_safe_error(error_message), now, batch_id),
+            )
+
+    def mark_batch_cancelled(self, batch_id: str, error_message: str = "") -> None:
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = 'cancelled', error_message = ?, updated_at = ?, finished_at = ?
+                   WHERE batch_id = ? AND status = 'cancelling'""",
+                (_safe_error(error_message), now, now, batch_id),
+            )
+
+    def resume_paused_batch(self, batch_id: str) -> bool:
+        """Move a paused batch back to queued so it can be resubmitted."""
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = 'queued', error_message = '', updated_at = ?, finished_at = ''
+                   WHERE batch_id = ? AND status = 'paused'""",
+                (now, batch_id),
+            )
+        return result.rowcount == 1
 
     def claim_style_title(
         self,
@@ -1118,7 +1185,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_batches
                    SET status = 'generating_titles', error_message = '', updated_at = ?, finished_at = ''
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
-                     AND status IN ('completed', 'partial_failure', 'failed')""",
+                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')""",
                 (now, batch_id, workspace_id, owner_user_id),
             )
             if batch_claim.rowcount != 1:
@@ -1261,6 +1328,19 @@ class PodCustomizationRepository:
             )
         return int(result.rowcount or 0)
 
+    def fail_pending_titles(self, batch_id: str, error_message: str) -> int:
+        """Close every title attempt that cannot outlive a cancelled batch."""
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_style_titles
+                   SET status = 'failed', title = '', normalized_title = NULL,
+                       visual_tags_json = '{}', error_message = ?, updated_at = ?, finished_at = ?
+                   WHERE batch_id = ? AND status IN ('queued', 'generating')""",
+                (_safe_error(error_message), now, now, batch_id),
+            )
+        return int(result.rowcount or 0)
+
     def accepted_style_titles(self, batch_id: str, *, exclude_style_index: int | None = None) -> tuple[str, ...]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -1271,33 +1351,6 @@ class PodCustomizationRepository:
                 (batch_id, exclude_style_index, exclude_style_index),
             ).fetchall()
         return tuple(str(row["title"]) for row in rows)
-
-    def accepted_visual_signatures(
-        self, batch_id: str, *, exclude_style_index: int | None = None
-    ) -> tuple[str, ...]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """SELECT visual_tags_json FROM pod_customization_style_titles
-                   WHERE batch_id = ? AND status = 'completed'
-                     AND (? IS NULL OR style_index <> ?)
-                   ORDER BY style_index""",
-                (batch_id, exclude_style_index, exclude_style_index),
-            ).fetchall()
-        signatures: list[str] = []
-        for row in rows:
-            tags = json.loads(row["visual_tags_json"] or "{}")
-            signature = str(tags.get("visual_signature") or "").strip().casefold()
-            if not signature:
-                theme = " ".join(str(tags.get("visual_theme") or "").split()).casefold()
-                motifs = sorted(
-                    " ".join(str(value).split()).casefold()
-                    for value in tags.get("motif_keywords") or []
-                    if str(value).strip()
-                )
-                signature = "|".join((theme, *motifs)) if theme and motifs else ""
-            if signature:
-                signatures.append(signature)
-        return tuple(signatures)
 
     def get_style_title_context(self, batch_id: str, style_index: int) -> dict[str, Any]:
         batch = self.get_batch_internal(batch_id)
@@ -1383,6 +1436,60 @@ class PodCustomizationRepository:
             )
         return status
 
+    def reconcile_stale_generating_titles(self, batch_id: str) -> bool:
+        """Close an abandoned title phase only after all provider work is terminal.
+
+        A worker exception can leave a title in ``generating`` after every image
+        result and billing outcome has already settled.  That state cannot make
+        progress on its own, so it must become a retryable terminal batch.
+        """
+        now = _now()
+        message = "POD worker exited before title completion"
+        with self._connect() as connection:
+            batch = connection.execute(
+                "SELECT requested_count, status FROM pod_customization_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            if batch is None or batch["status"] != "generating_titles":
+                return False
+            unfinished_images = int(connection.execute(
+                """SELECT COUNT(*) FROM pod_customization_style_grid_results
+                   WHERE batch_id = ? AND status NOT IN ('completed', 'failed')""",
+                (batch_id,),
+            ).fetchone()[0])
+            settled_images = int(connection.execute(
+                "SELECT COUNT(*) FROM pod_customization_style_grid_results WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()[0])
+            active_calls = int(connection.execute(
+                """SELECT COUNT(*) FROM pod_customization_billing_outcomes AS outcomes
+                   INNER JOIN pod_customization_billing_runs AS runs ON runs.run_id = outcomes.run_id
+                   WHERE runs.batch_id = ? AND outcomes.status IN ('planned', 'started')""",
+                (batch_id,),
+            ).fetchone()[0])
+            active_titles = int(connection.execute(
+                """SELECT COUNT(*) FROM pod_customization_style_titles
+                   WHERE batch_id = ? AND status IN ('queued', 'generating')""",
+                (batch_id,),
+            ).fetchone()[0])
+            if (
+                not active_titles
+                or unfinished_images
+                or settled_images != int(batch["requested_count"]) * 4
+                or active_calls
+            ):
+                return False
+            connection.execute(
+                """UPDATE pod_customization_style_titles
+                   SET status = 'failed', title = '', normalized_title = NULL,
+                       visual_tags_json = '{}', error_message = ?, updated_at = ?, finished_at = ?
+                   WHERE batch_id = ? AND status IN ('queued', 'generating')""",
+                (message, now, now, batch_id),
+            )
+        self.settle_batch_by_listing_readiness(batch_id)
+        return True
+        return status
+
     def create_generation_call(
         self,
         batch: dict[str, Any],
@@ -1461,6 +1568,16 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_generation_calls SET status = 'running', started_at = ?
                    WHERE call_id = ? AND status = 'queued'""",
                 (_now(), call_id),
+            )
+
+    def requeue_generation_call(self, call_id: str) -> None:
+        """Undo a local start which was stopped before the provider accepted it."""
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_generation_calls
+                   SET status = 'queued', started_at = '', error_message = '', finished_at = ''
+                   WHERE call_id = ? AND status = 'running' AND grid_asset_id = ''""",
+                (call_id,),
             )
 
     def finish_generation_call(
@@ -1703,7 +1820,7 @@ class PodCustomizationRepository:
             ).fetchone()
             if batch is None:
                 raise PodRepositoryError("POD batch not found", 404)
-            if batch["status"] not in {"completed", "partial_failure", "failed"}:
+            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
                 raise PodRepositoryError("POD batch must settle before regenerating one item", 409)
             result = connection.execute(
                 """UPDATE pod_customization_batch_items
@@ -1730,7 +1847,7 @@ class PodCustomizationRepository:
             ).fetchone()
             if batch is None:
                 raise PodRepositoryError("POD batch not found", 404)
-            if batch["status"] not in {"completed", "partial_failure", "failed"}:
+            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
                 raise PodRepositoryError("POD batch must settle before regenerating one style", 409)
             result = connection.execute(
                 """UPDATE pod_customization_style_grid_results
@@ -1803,7 +1920,12 @@ class PodCustomizationRepository:
             ).fetchone()
             if batch is None:
                 raise PodRepositoryError("POD batch not found", 404)
-            if batch["status"] not in {"completed", "partial_failure", "failed"}:
+            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
+                if batch["status"] == "billing_auth_required":
+                    raise PodRepositoryError(
+                        "POD billing is not recovered; resume billing authorization before retrying failed styles",
+                        409,
+                    )
                 raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
             requested_count = int(batch["requested_count"])
             if any(not 1 <= index <= requested_count for index in (*image_style_indices, *title_style_indices)):
@@ -1847,7 +1969,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_batches
                    SET status = ?, error_message = '', updated_at = ?, finished_at = ''
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
-                     AND status IN ('completed', 'partial_failure', 'failed')""",
+                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')""",
                 (next_status, now, batch_id, workspace_id, owner_user_id),
             )
             if claimed.rowcount != 1:

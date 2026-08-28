@@ -50,7 +50,6 @@ from ..data_collection import (
     register_plugin_onebound_capture_routes,
 )
 from ..data_collection.provider import OneBound1688Provider
-from ..data_collection.budget import SQLiteDailyApiBudget
 from ..data_collection.plugin_queue import DataCollectionPluginQueue
 from ..data_collection.image_cache import PublicDailySelectionImageCache
 from ..data_collection.shop_repository import ShopCollectionRepository
@@ -508,14 +507,11 @@ def _register_data_collection(
     product_processing: ProductProcessingService,
 ) -> None:
     """Register daily-selection routes with the host-owned adapters."""
-    shared_api_budget = SQLiteDailyApiBudget(db_path)
-    app.state.data_collection_api_budget = shared_api_budget
     dependencies = DailySelectionRouteDependencies(
         resolve_actor=daily_selection_actor_from_authorization,
         provider_config_resolver=_provider_config,
         provider_factory=_provider_factory,
         database_path=db_path,
-        budget=shared_api_budget,
         plugin_queue=plugin_queue,
         plugin_draft_writer=product_processing,
         handoff_consumer=lambda handoffs: product_processing.consume_daily_selection_handoffs(
@@ -535,7 +531,6 @@ def _register_data_collection(
             plugin_queue=plugin_queue,
             provider_config_resolver=_provider_config,
             provider_factory=_provider_factory,
-            budget=shared_api_budget,
             draft_writer=product_processing,
             database_path=str(db_path),
             resolve_actor=daily_selection_actor_from_authorization,
@@ -547,7 +542,6 @@ def _register_data_collection(
         provider_config_resolver=_provider_config,
         provider_factory=_provider_factory,
         intake_shop_candidate=product_processing.intake_shop_candidate,
-        budget=shared_api_budget,
     )
     app.state.shop_collection_worker = shop_worker
     app.include_router(

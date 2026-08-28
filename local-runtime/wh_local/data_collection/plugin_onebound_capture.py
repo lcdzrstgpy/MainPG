@@ -21,7 +21,6 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
 from pydantic import ValidationError
 
-from .budget import credential_fingerprint
 from .link_collection import canonical_1688_offer_url
 from .normalizer import normalize_detail_response
 from .plugin_queue import DataCollectionPluginQueue
@@ -32,7 +31,6 @@ from .service import DailySelectionActor
 _TTL_SECONDS = 30 * 60
 _MAX_BATCHES_PER_IDENTITY = 2
 _MAX_URLS_PER_BATCH = 80
-_MAX_API_CALLS = 300
 _MAX_DETAIL_CONCURRENCY = 3
 _DETAIL_CALL_SEMAPHORE = threading.BoundedSemaphore(_MAX_DETAIL_CONCURRENCY)
 
@@ -44,8 +42,8 @@ class PluginOneBoundCaptureDependencies:
     plugin_queue: DataCollectionPluginQueue
     provider_config_resolver: Callable[[DailySelectionActor], Mapping[str, Any]]
     provider_factory: Callable[[Mapping[str, Any]], Any]
-    budget: Any
     draft_writer: Any
+    budget: Any | None = None
     database_path: str | None = None
     resolve_actor: Callable[..., Any] | None = None
 
@@ -75,8 +73,7 @@ class _Batch:
     expires_at_text: str
     items: dict[str, _Item]
     existing_offer_ids: tuple[str, ...]
-    provider: tuple[Any, Callable[[str], None]] | None = None
-    provider_has_guard: bool = False
+    provider: Any | None = None
     started: bool = False
     closing: bool = False
     finished: bool = False
@@ -260,29 +257,12 @@ class PluginOneBoundCaptureService:
                     if not isinstance(config, Mapping):
                         raise ValueError("provider configuration is unavailable")
                     provider = self._dependencies.provider_factory(config)
-                    fingerprint = credential_fingerprint(config)
-
-                    def reserve(_operation: str) -> None:
-                        state = self._dependencies.budget.reserve(
-                            workspace_id=batch.workspace_id,
-                            provider_fingerprint=fingerprint,
-                            max_api_calls=_MAX_API_CALLS,
-                            api_calls=1,
-                        )
-                        if not bool(getattr(state, "reservation_granted", False)):
-                            raise _BudgetExhausted()
-
-                    installer = getattr(provider, "install_api_call_guard", None)
-                    if callable(installer):
-                        installer(reserve)
-                        batch.provider_has_guard = True
-                    batch.provider = (provider, reserve)
+                    batch.provider = provider
                     batch.started = True
                     if self._repository is not None:
                         self._repository.set_status(batch.batch_id, "running")
                 except Exception:
                     batch.provider = None
-                    batch.provider_has_guard = False
                     self._set_fatal(batch, "start_failed", "1688 采集服务启动失败")
                     raise _BatchFatal(batch.fatal_code, batch.fatal_message) from None
             return {"ok": True, "batch_token": batch.token, "statusText": "批次已启动"}
@@ -311,11 +291,6 @@ class PluginOneBoundCaptureService:
 
         try:
             response = self._capture_item(batch, item)
-        except _BudgetExhausted:
-            with batch.condition:
-                _failure(item, "api_budget_exhausted", "今日采集额度已用完")
-                self._set_fatal(batch, "api_budget_exhausted", "今日采集额度已用完")
-            raise _BatchFatal("api_budget_exhausted", "今日采集额度已用完") from None
         except Exception:
             # Provider detail errors remain per-item diagnostics.  Do not expose
             # arbitrary upstream text because it can contain request metadata.
@@ -458,7 +433,6 @@ class PluginOneBoundCaptureService:
                 return
             with batch.condition:
                 batch.provider = None
-                batch.provider_has_guard = False
                 batch.started = False
                 batch.execution_claimed = False
                 batch.fatal_code = ""
@@ -808,11 +782,7 @@ class PluginOneBoundCaptureService:
     def _capture_item(self, batch: _Batch, item: _Item) -> Mapping[str, Any]:
         if batch.provider is None:
             raise RuntimeError("capture batch provider is unavailable")
-        provider, reserve = batch.provider
-        if not batch.provider_has_guard:
-            reserve("item_get")
-        # Production OneBound has its own guard, but this boundary also covers
-        # injected/fake providers and concurrent plugin batches.
+        provider = batch.provider
         with _DETAIL_CALL_SEMAPHORE:
             result = provider.get_item_detail(item.offer_id)
         if not bool(getattr(result, "ok", False)):
@@ -885,7 +855,6 @@ class PluginOneBoundCaptureService:
             batch.final_summary = _finish_summary(batch, cancelled=cancelled)
             batch.finished = True
             batch.provider = None
-            batch.provider_has_guard = False
             materialize = not batch.materialization_claimed
             batch.materialization_claimed = True
             batch.condition.notify_all()
@@ -982,10 +951,6 @@ class PluginOneBoundCaptureService:
         batch.expiry_timer = None
 
 
-class _BudgetExhausted(RuntimeError):
-    pass
-
-
 class _BatchFatal(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -1049,8 +1014,7 @@ def register_plugin_onebound_capture_routes(
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except _BatchFatal as error:
-            status = 429 if error.code == "api_budget_exhausted" else 503
-            raise HTTPException(status_code=status, detail=error.code) from error
+            raise HTTPException(status_code=503, detail=error.code) from error
         except _BatchClosed as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except RuntimeError as error:

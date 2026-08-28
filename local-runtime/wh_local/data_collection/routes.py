@@ -16,7 +16,7 @@ import threading
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from .budget import TaskApiBudget
+from .budget import UnlimitedApiBudget
 from .contracts import DailySelectionContractError
 from .criteria import DailySelectionCriteriaError
 from .repository import (
@@ -132,7 +132,7 @@ class DailySelectionRouteDependencies:
             database_path = self.database_path or repository.database_path
             if str(database_path) == ":memory:":
                 raise ValueError("an in-memory database requires an injected budget")
-            budget = TaskApiBudget()
+            budget = UnlimitedApiBudget()
         return DailySelectionService(
             repository=repository,
             budget=budget,

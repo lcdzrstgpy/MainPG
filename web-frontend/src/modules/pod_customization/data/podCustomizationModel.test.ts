@@ -4,14 +4,19 @@ import test from "node:test";
 import {
   POD_BATCH_COUNTS,
   businessFieldsForApi,
+  canCancelPodBatch,
+  canPausePodBatch,
   canRegeneratePodStyle,
   canRegeneratePodStyleTitle,
+  canRetryPodBatchFailed,
+  canResumePodBatch,
   formatPodBatchWaitingTime,
   groupPodStyleRows,
   isActiveBatchStatus,
   isPodBatchCount,
   listingFieldsForApi,
   podBatchStatusLabel,
+  podBatchStatusDetail,
 } from "./podCustomizationModel.ts";
 
 test("POD style results present the lifestyle panel as the primary image and hero as material", () => {
@@ -44,6 +49,35 @@ test("billing recovery statuses are visible and only settlement keeps polling", 
   assert.equal(isActiveBatchStatus("billing_auth_required"), false);
   assert.equal(podBatchStatusLabel("settlement_pending"), "等待计费结算");
   assert.equal(podBatchStatusLabel("billing_auth_required"), "需要重新授权");
+});
+
+test("pause cancel and resume guards follow the backend state gate", () => {
+  assert.equal(canPausePodBatch("queued"), true);
+  assert.equal(canPausePodBatch("generating_titles"), true);
+  assert.equal(canPausePodBatch("paused"), false);
+  assert.equal(canPausePodBatch("completed"), false);
+  assert.equal(canCancelPodBatch("generating_patterns"), true);
+  assert.equal(canCancelPodBatch("pausing"), true);
+  assert.equal(canCancelPodBatch("paused"), true);
+  assert.equal(canCancelPodBatch("completed"), false);
+  assert.equal(canResumePodBatch("paused"), true);
+  assert.equal(canResumePodBatch("queued"), false);
+  assert.equal(canRetryPodBatchFailed("cancelled"), true);
+  // 账务结算与生成结果分开：结算待处理不能锁死失败项重试。
+  assert.equal(canRetryPodBatchFailed("settlement_pending"), true);
+  assert.equal(canRetryPodBatchFailed("billing_auth_required"), false);
+});
+
+test("pause and cancel statuses render labels and keep pausing polling", () => {
+  assert.equal(podBatchStatusLabel("pausing"), "暂停中");
+  assert.equal(podBatchStatusLabel("paused"), "已暂停");
+  assert.equal(podBatchStatusLabel("cancelling"), "取消中");
+  assert.equal(podBatchStatusLabel("cancelled"), "已取消");
+  assert.equal(isActiveBatchStatus("pausing"), true);
+  assert.equal(isActiveBatchStatus("cancelling"), true);
+  assert.equal(isActiveBatchStatus("paused"), false);
+  assert.equal(podBatchStatusDetail("pausing"), "已提交的款正在完成，其余款不会继续发起。");
+  assert.equal(podBatchStatusDetail("paused"), "已暂停，可继续剩余款式。");
 });
 
 test("active POD batches show the elapsed time since creation", () => {

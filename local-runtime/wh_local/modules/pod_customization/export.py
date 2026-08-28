@@ -14,7 +14,10 @@ from .title_runtime import validate_listing_copy_text
 
 LISTING_IMAGE_ROLES = ("hero", "detail_a", "detail_b", "lifestyle")
 LISTING_PRESENTATION_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
-SETTLED_BATCH_STATUSES = frozenset({"completed", "partial_failure", "failed"})
+SETTLED_BATCH_STATUSES = frozenset({"completed", "partial_failure", "failed", "cancelled"})
+# 账务任务与生成结果独立；已生成的完整款式可正常导出，未结算账务由其自身恢复操作处理。
+BILLING_INTERRUPTED_BATCH_STATUSES = frozenset({"billing_auth_required", "settlement_pending"})
+EXPORT_CANDIDATE_BATCH_STATUSES = SETTLED_BATCH_STATUSES | BILLING_INTERRUPTED_BATCH_STATUSES
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _PRIVATE_DNS_SUFFIXES = (
     "arpa",
@@ -63,7 +66,8 @@ def analyze_dianxiaomi_export(
     batch: dict[str, Any], style_copies: dict[int, Any]
 ) -> ExportAnalysis:
     requested_count = int(batch["requested_count"])
-    if batch["status"] not in SETTLED_BATCH_STATUSES:
+    status = batch["status"]
+    if status not in EXPORT_CANDIDATE_BATCH_STATUSES:
         return ExportAnalysis({}, requested_count, "active_batch")
     if not batch.get("listing_fields"):
         return ExportAnalysis({}, requested_count, "listing_fields_missing")

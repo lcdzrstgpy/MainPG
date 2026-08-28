@@ -14,4 +14,4 @@ def test_app_registers_shop_routes_and_host_owned_worker(tmp_path: Path) -> None
     assert response.status_code in (401, 403)
 
     assert app.state.shop_collection_worker is not None
-    assert app.state.shop_collection_worker._budget is app.state.data_collection_api_budget
+    assert not hasattr(app.state, "data_collection_api_budget")
