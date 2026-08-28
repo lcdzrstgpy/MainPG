@@ -561,23 +561,36 @@ class DailySelectionRepository:
         workspace_id: str,
         run_id: str,
         metadata: Mapping[str, Any] | BaseModel,
+        status: str | None = None,
     ) -> None:
-        """Persist merged run metadata (used by SKU re-pull round tracking)."""
+        """Persist merged run metadata and, when supplied, its reconciled status."""
         workspace_id = _required_text(workspace_id, "workspace_id")
         run_id = _required_text(run_id, "run_id")
+        if status is not None:
+            status = _required_text(status, "status")
         metadata_json = _dump_json(metadata)
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             self._owned_run(connection, workspace_id=workspace_id, run_id=run_id)
-            connection.execute(
-                """
-                UPDATE daily_selection_runs
-                SET metadata_json = ?, updated_at = ?
-                WHERE workspace_id = ? AND run_id = ?
-                """,
-                (metadata_json, _now(), workspace_id, run_id),
-            )
+            if status is None:
+                connection.execute(
+                    """
+                    UPDATE daily_selection_runs
+                    SET metadata_json = ?, updated_at = ?
+                    WHERE workspace_id = ? AND run_id = ?
+                    """,
+                    (metadata_json, _now(), workspace_id, run_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE daily_selection_runs
+                    SET metadata_json = ?, status = ?, updated_at = ?
+                    WHERE workspace_id = ? AND run_id = ?
+                    """,
+                    (metadata_json, status, _now(), workspace_id, run_id),
+                )
             connection.commit()
         except BaseException:
             connection.rollback()
