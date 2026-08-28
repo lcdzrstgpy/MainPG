@@ -1157,3 +1157,100 @@ def test_system_settings_cos_credentials_feed_internal_media_config(monkeypatch)
         "secret_id": "runtime-id",
         "secret_key": "runtime-key",
     }
+
+
+def _poll_response(payload: dict) -> SimpleNamespace:
+    """Build a fake requests response shaped like _SESSION.get(...)."""
+    body = json.dumps(payload).encode("utf-8")
+    return SimpleNamespace(
+        ok=True,
+        status_code=200,
+        content=body,
+        text=body.decode("utf-8"),
+        close=lambda: None,
+        iter_content=lambda chunk_size=65536: [body],
+        headers={},
+        url="",
+    )
+
+
+def test_wuyin_poll_status_3_is_processing_and_waits_for_image(monkeypatch) -> None:
+    """status=3（等待中）不是失败终态，应继续轮询直到拿到 status=1 的图片 URL。"""
+    processor = ProductImageProcessor(lambda: {})
+    # 第一次轮询返回 status=3 无图；第二次返回 status=1 带图。
+    calls: list[str] = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        if len(calls) == 1:
+            return _poll_response(
+                {"code": 200, "data": {"status": 3, "msg": "成功"}, "msg": "成功"}
+            )
+        return _poll_response(
+            {
+                "code": 200,
+                "data": {
+                    "status": 1,
+                    "image": "https://wxtechsz.oss.example.com/grid.png",
+                },
+            }
+        )
+
+    monkeypatch.setattr(media_module._SESSION, "get", fake_get)
+    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+
+    result_url = processor._poll_wuyin_image_result(
+        {"base_url": "https://api.wuyinkeji.com", "api_key": "secret"},
+        "task-1",
+        timeout_seconds=30,
+    )
+    assert result_url == "https://wxtechsz.oss.example.com/grid.png"
+    assert len(calls) == 2
+
+
+def test_wuyin_poll_status_negative_is_failure(monkeypatch) -> None:
+    """status<0（如 -1 处理失败）应抛错且状态可重试（transient）。"""
+    processor = ProductImageProcessor(lambda: {})
+
+    def fake_get(url, **kwargs):
+        return _poll_response({"code": 200, "data": {"status": -1, "msg": "处理失败"}})
+
+    monkeypatch.setattr(media_module._SESSION, "get", fake_get)
+    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+
+    with pytest.raises(MediaProcessingError) as caught:
+        processor._poll_wuyin_image_result(
+            {"base_url": "https://api.wuyinkeji.com", "api_key": "secret"},
+            "task-1",
+            timeout_seconds=30,
+        )
+    assert "provider image task failed" in str(caught.value)
+    assert caught.value.status_class == "transient"
+
+
+def test_wuyin_poll_status_4_5_are_processing_not_failure(monkeypatch) -> None:
+    """status=4（处理中）、5（发布处理中）都属处理中，绝不误判为失败。"""
+    for numeric in ("4", "5"):
+        processor = ProductImageProcessor(lambda: {})
+        returned_url = "https://wxtechsz.oss.example.com/grid.png"
+
+        def fake_get(url, _n=numeric, _url=returned_url, **kwargs):
+            if _n == numeric:
+                return _poll_response({"code": 200, "data": {"status": numeric, "msg": "成功"}})
+            return _poll_response(
+                {"code": 200, "data": {"status": 1, "image": _url}}
+            )
+
+        monkeypatch.setattr(media_module._SESSION, "get", fake_get)
+        monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+
+        # 只返回一次 status=4/5 无图 → 最多轮询到 deadline 仍无图，应抛超时而非“失败”。
+        # 这里直接验证 status=4/5 不会被当作失败终态（不抛 provider image task failed）。
+        with pytest.raises(MediaProcessingError) as caught:
+            processor._poll_wuyin_image_result(
+                {"base_url": "https://api.wuyinkeji.com", "api_key": "secret"},
+                "task-1",
+                timeout_seconds=1,
+            )
+        assert "timed out" in str(caught.value)
+        assert caught.value.status_class == ""  # 超时不属于非重试失败

@@ -271,19 +271,28 @@ class PodCustomizationAiRuntime(AiRuntime):
                 return result_url
             status_value = str(data.get("status") or payload.get("status") or "").strip().lower() if isinstance(data, dict) else ""
             message = _suchuang_message(payload)
-            if status_value in {"2", "success", "succeeded", "finish", "finished", "completed", "done"}:
+            # 上游 status 为异步任务状态码（纯数字或文本）：≥0 为排队/准备/等待/处理中/发布，
+            # 1<0 为失败，1/成功文本才表示完成。3/4/5 数字实为“处理中”，不能按文本失败集误判成失败。
+            try:
+                numeric_status = int(float(status_value)) if status_value else None
+            except (TypeError, ValueError):
+                numeric_status = None
+            if numeric_status is not None:
+                if numeric_status < 0:
+                    raise MediaProcessingError(
+                        f"速创图片任务失败：{message}",
+                        attempt_count=1,
+                        status_class="transient",
+                    )
+                last_message = message or f"status={status_value}"
+                continue
+            if status_value in {"success", "succeeded", "finish", "finished", "completed", "done"}:
                 raise MediaProcessingError(
                     f"速创已完成但没有图片地址：{message}",
                     attempt_count=1,
                     status_class="transient",
                 )
-            if status_value == "5" and (
-                "成功" in message or "success" in message.lower()
-            ):
-                # 速创会先返回「5 / 成功」，再异步补上图片 URL；这不是失败终态。
-                last_message = message or "status=5"
-                continue
-            if status_value in {"3", "4", "5", "fail", "failed", "error", "cancelled", "canceled"}:
+            if status_value in {"fail", "failed", "error", "cancelled", "canceled"}:
                 raise MediaProcessingError(
                     f"速创图片任务失败：{message}",
                     attempt_count=1,
