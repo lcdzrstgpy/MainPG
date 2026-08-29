@@ -18,9 +18,15 @@ type VersionView = {
   targetVersion: string;
   notes: string[];
   progress: number | null;
+  progressDetail: string;
   error: string;
   mandatory: boolean;
 };
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";
+  return `${(bytes / 1024 / 1024).toFixed(bytes >= 10 * 1024 * 1024 ? 1 : 2)} MB`;
+}
 
 /** 后端全量/增量更新均返回 percentage 字段，旧版前端类型记为 percent，这里统一兼容。 */
 function resolveProgress(status: AppUpdateStatus | PatchStatus | null): number | null {
@@ -46,14 +52,21 @@ function phaseOf(state: string, hasRelease: boolean): VersionPhase {
 function toView(status: AppUpdateStatus | null, patch: PatchStatus | null): VersionView {
   const currentVersion = patch?.current_version || status?.current_version || "--";
   if (patch?.patch) {
+    const matchingRelease = status?.release?.version === patch.patch.to_version ? status.release : null;
     return {
       phase: phaseOf(patch.state, true),
       currentVersion,
       targetVersion: patch.patch.to_version,
-      notes: [`增量更新：仅下载 ${patch.patch.files.length} 个变更文件（${patch.patch.from_version} → ${patch.patch.to_version}），速度更快。`],
+      notes: [
+        `增量更新：仅下载 ${patch.patch.files.length} 个变更文件（${patch.patch.from_version} → ${patch.patch.to_version}），速度更快。`,
+        ...(matchingRelease?.release_notes.split(/\r?\n/).map((note) => note.trim()).filter(Boolean) ?? []),
+      ],
       progress: resolveProgress(patch),
+      progressDetail: patch.progress
+        ? `${formatBytes(patch.progress.downloaded_bytes)} / ${formatBytes(patch.progress.total_bytes)} · ${patch.progress.downloaded_files}/${patch.progress.total_files} 个文件`
+        : "",
       error: patch.error ?? "",
-      mandatory: false,
+      mandatory: matchingRelease?.mandatory === true,
     };
   }
   const release = status?.release ?? null;
@@ -63,6 +76,9 @@ function toView(status: AppUpdateStatus | null, patch: PatchStatus | null): Vers
     targetVersion: release?.version ?? "",
     notes: release?.release_notes.split(/\r?\n/).map((note) => note.trim()).filter(Boolean) ?? [],
     progress: resolveProgress(status),
+    progressDetail: status?.progress?.total_bytes
+      ? `${formatBytes(status.progress.downloaded_bytes)} / ${formatBytes(status.progress.total_bytes)}`
+      : "",
     error: status?.error ?? "",
     mandatory: release?.mandatory === true,
   };
@@ -199,6 +215,7 @@ export function SystemVersionPanel() {
           <strong>{Math.round(view.progress)}%</strong>
         </>}
         <small>{view.phase === "installing" ? "请退出当前程序后重新启动，以完成版本更新。" : phaseLabel[view.phase]}</small>
+        {view.progressDetail && <small>{view.progressDetail}</small>}
       </div>}
 
       {view.notes.length > 0 && !inProgress && <div className="version-notes"><h3>更新说明</h3><ul>{view.notes.map((note) => <li key={note}>{note}</li>)}</ul></div>}

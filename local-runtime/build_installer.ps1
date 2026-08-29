@@ -22,6 +22,10 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
+# Reproducible build isolation: never let unrelated packages from the Windows
+# user's roaming site-packages leak into PyInstaller analysis or the bundle.
+$env:PYTHONNOUSERSITE = "1"
+
 if (-not $PublishedAt) { $PublishedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }
 
 # This module is bundled by PyInstaller and is the runtime's build metadata.
@@ -30,9 +34,10 @@ $runtimeConfig = Join-Path $PSScriptRoot "wh_local\config.py"
 # UTF-8 BOM, which corrupts non-ASCII source comments on every build. Use explicit
 # UTF-8 (no BOM) file IO instead.
 $configText = [IO.File]::ReadAllText($runtimeConfig, [Text.Encoding]::UTF8)
-$versionMatch = [regex]::Match($configText, '(?m)^APP_VERSION = "[^"]*"$')
+$versionPattern = '(?m)^APP_VERSION = "[^"\r\n]*"(?=\r?$)'
+$versionMatch = [regex]::Match($configText, $versionPattern)
 if (-not $versionMatch.Success) { throw "APP_VERSION metadata entry missing from $runtimeConfig" }
-$updatedConfig = [regex]::Replace($configText, '(?m)^APP_VERSION = "[^"]*"$', "APP_VERSION = `"$Version`"", 1)
+$updatedConfig = [regex]::Replace($configText, $versionPattern, "APP_VERSION = `"$Version`"", 1)
 [IO.File]::WriteAllText($runtimeConfig, $updatedConfig, [Text.UTF8Encoding]::new($false))
 
 # Pin the interpreter that has the packaging dependencies (override with WH_PYTHON);
@@ -47,6 +52,31 @@ if (-not $python) {
 }
 if (-not $python) { throw "Python not found (set WH_PYTHON to an interpreter with PyInstaller/uvicorn/qcloud_cos)" }
 Write-Host "[build] using Python: $python"
+
+# Preserve the currently built runtime before PyInstaller replaces dist\MainPG.
+# It becomes the automatic incremental-patch baseline for the next version.
+$autoPatchBaseline = ""
+$autoPatchFromVersion = ""
+$currentDist = Join-Path $PSScriptRoot "dist\MainPG"
+$autoPatchSource = if ($PatchFromDir) { $PatchFromDir } else { $currentDist }
+if (Test-Path -LiteralPath $autoPatchSource -PathType Container) {
+    $sourceVersionJson = Join-Path $autoPatchSource "version.json"
+    if (Test-Path -LiteralPath $sourceVersionJson -PathType Leaf) {
+        try {
+            $autoPatchFromVersion = [string](Get-Content -Raw -LiteralPath $sourceVersionJson | ConvertFrom-Json).version
+        } catch {
+            $autoPatchFromVersion = ""
+        }
+    }
+    if ($autoPatchFromVersion -and $autoPatchFromVersion -ne $Version) {
+        $autoPatchBaseline = Join-Path $PSScriptRoot "dist\_patch-baseline"
+        if (Test-Path -LiteralPath $autoPatchBaseline) {
+            Remove-Item -LiteralPath $autoPatchBaseline -Recurse -Force
+        }
+        Copy-Item -LiteralPath $autoPatchSource -Destination $autoPatchBaseline -Recurse -Force
+        Write-Host "[build] preserved patch baseline: $autoPatchFromVersion"
+    }
+}
 
 # 1. Build the frontend
 Write-Host "[build] building web-frontend ..."
@@ -109,10 +139,16 @@ if ($forbiddenFiles) {
 # Media publishing: precheck finalization exports final images as public COS
 # URLs. Bundle the controlled cos.local.json next to the exe so installed users
 # can publish final images without manual setup; collection credentials
-# (onebound.local.json) are bundled the same way. The forbidden-names check
-# above only guards the pre-copy dist state so stale credentials from previous
-# builds never leak in silently; .env / databases stay forbidden entirely.
-$cosSource = Join-Path $PSScriptRoot "wh_local\modules\product_processing\cos.local.json"
+# (onebound.local.json) are bundled the same way. Keep release credentials
+# outside Git by setting MAINPG_COS_CONFIG_PATH and MAINPG_ONEBOUND_CONFIG_PATH.
+# The forbidden-names check above only guards the pre-copy dist state so stale
+# credentials from previous builds never leak in silently; .env / databases
+# stay forbidden entirely.
+$cosSource = if ($env:MAINPG_COS_CONFIG_PATH) {
+    $env:MAINPG_COS_CONFIG_PATH
+} else {
+    Join-Path $PSScriptRoot "wh_local\modules\product_processing\cos.local.json"
+}
 if (Test-Path -LiteralPath $cosSource) {
     Copy-Item -LiteralPath $cosSource -Destination $dist -ErrorAction Stop
     Write-Host "[build] bundled cos.local.json (media publishing)"
@@ -123,7 +159,11 @@ if (Test-Path -LiteralPath $cosSource) {
 # OneBound collection credentials: daily-selection / 1688 collection needs the
 # project-local API key. Missing file still installs (feature degrades) but is
 # flagged loudly so release builds never silently ship without it.
-$oneboundSource = Join-Path $PSScriptRoot "wh_local\onebound.local.json"
+$oneboundSource = if ($env:MAINPG_ONEBOUND_CONFIG_PATH) {
+    $env:MAINPG_ONEBOUND_CONFIG_PATH
+} else {
+    Join-Path $PSScriptRoot "wh_local\onebound.local.json"
+}
 if (Test-Path -LiteralPath $oneboundSource) {
     Copy-Item -LiteralPath $oneboundSource -Destination $dist -ErrorAction Stop
     Write-Host "[build] bundled onebound.local.json (collection credentials)"
@@ -161,6 +201,21 @@ try {
 
 $installer = Join-Path $PSScriptRoot "dist\MainPG-Setup-$Version.exe"
 if (-not (Test-Path -LiteralPath $installer)) { throw "versioned installer output missing: $installer" }
+
+# Keep administrator workflow to one EXE upload: append a ZIP-compatible,
+# unsigned patch payload after the Inno installer. The release server verifies
+# every file hash and adds the server-only Ed25519 signature before publishing.
+if ($autoPatchBaseline) {
+    Write-Host "[build] embedding incremental patch payload ..."
+    & $python -m wh_local.runtime.embedded_patch_builder `
+        --installer $installer `
+        --from-dir $autoPatchBaseline `
+        --to-dir $dist `
+        --from-version $autoPatchFromVersion `
+        --to-version $Version
+    if ($LASTEXITCODE -ne 0) { throw "embedded patch generation failed" }
+    Write-Host "[build] embedded incremental patch: $autoPatchFromVersion -> $Version"
+}
 
 # 7. Build the signed incremental patch (optional). Compares PatchFromDir (the
 # previous dist\MainPG) against the new bundle and emits only changed files.
@@ -226,3 +281,6 @@ if ($InstallerUrl) {
 
 Write-Host "[build] done: $zip"
 Write-Host "[build] done: $installer"
+if ($autoPatchBaseline -and (Test-Path -LiteralPath $autoPatchBaseline)) {
+    Remove-Item -LiteralPath $autoPatchBaseline -Recurse -Force
+}

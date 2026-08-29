@@ -314,6 +314,29 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     finally { setControlBusy(false); }
   };
 
+  // 暂停后只保留已成功商品进入预检；确认后剩余商品永久取消，任务不可恢复。
+  const finalizeSuccessfulItems = async () => {
+    if (!batch || !taskPaused || controlBusy || batch.success_count <= 0) return;
+    const remaining = batch.items.filter(
+      (item) => item.status === 'pending' || item.status === 'running'
+    ).length;
+    if (!window.confirm(
+      `将保留当前 ${batch.success_count} 个成功商品进入预检，并永久取消剩余 ${remaining} 个未完成商品。取消后不能继续处理，确认导出？`
+    )) return;
+    setControlBusy(true);
+    try {
+      const data = await ppRequest<TaskOutputsResponse>(
+        ctx,
+        `${API_BASE}/tasks/${batch.task_id}/finalize-successes`,
+        { body: {} },
+      );
+      setBatch(data);
+      notify(data.message || `已保留 ${data.success_count} 个成功商品进入预检`);
+      onOpenPrecheck?.(batch.task_id);
+    } catch (err) { fail(err); }
+    finally { setControlBusy(false); }
+  };
+
   // 取消：终态操作，立即停止后续 AI 调用，未处理链接标记失败并释放（不再产生 AI 费用）。
   const cancelTask = async () => {
     if (!batch || controlBusy) return;
@@ -508,12 +531,27 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       title="取消任务：立即停止后续 AI 调用，未处理链接标记失败并释放积分（不可恢复）"
                     >取消任务</button>
                   )}
-                  <button
-                    className="primary"
-                    disabled={taskActive}
-                    onClick={() => onOpenPrecheck?.(batch.task_id)}
-                    title={taskActive ? '处理完成后可进入预检' : '打开预检页：核对标题/图片/字段，修改后导出最终版表格'}
-                  >预检并导出最终版</button>
+                  {taskPaused ? (
+                    <button
+                      className="primary"
+                      disabled={controlBusy || loading || batch.success_count <= 0}
+                      onClick={() => void finalizeSuccessfulItems()}
+                      title={batch.success_count > 0
+                        ? '永久取消剩余未完成商品，只预检并导出当前成功商品'
+                        : '当前还没有成功商品可导出'}
+                    >预检并导出成功商品（{batch.success_count}）</button>
+                  ) : (
+                    <button
+                      className="primary"
+                      disabled={taskActive || batch.success_count <= 0}
+                      onClick={() => onOpenPrecheck?.(batch.task_id)}
+                      title={taskActive
+                        ? '处理完成后可进入预检'
+                        : batch.success_count <= 0
+                          ? '当前没有成功商品可预检导出'
+                          : '打开预检页：核对标题/图片/字段，修改后导出最终版表格'}
+                    >{taskCancelled ? '预检并导出成功商品' : '预检并导出最终版'}</button>
+                  )}
                   {batch.outputs.product_video_manifest && <button onClick={() => void downloadOutput('video_manifest', `product_video_manifest_task_${batch.task_id}.csv`)}>下载视频清单</button>}
                 </div>
               </>

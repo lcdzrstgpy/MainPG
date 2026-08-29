@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 # Release automation updates this single value when producing a desktop build.
-APP_VERSION = "1.3.3-beta.3"
+APP_VERSION = "1.3.3-beta.7"
 # Replace this host only when the official MainPG release origin moves. Keep the
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
@@ -19,8 +19,9 @@ UPDATE_PATCH_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/patch
 UPDATE_MANIFEST_ALLOWED_HOSTS = frozenset({UPDATE_RELEASE_HOST})
 # Public verification key only. The matching private key belongs in the release
 # signing system and must never be distributed with the application.
-# 2026-08-23 regenerated keypair; private key: C:\secure\mainpg-release-ed25519.pem
-UPDATE_ED25519_PUBLIC_KEY_B64 = "qxQ5zE+euDRvWKgT+VcWeCoKcNrOxv6skEBVoCE1MIc="
+# 2026-08-29 internal-test key rotation. The matching private key is held only
+# by the independent release server and is never distributed with MainPG.
+UPDATE_ED25519_PUBLIC_KEY_B64 = "qsK3rFMm732q6oZFG8m938ewHkFGj3EoxjRGq3YmHo0="
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,7 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
 
 
 def runtime_root(workspace: Path | None = None) -> Path:
-    """Data root: explicit workspace > packaged (%APPDATA%\MainPG) > current directory.
+    r"""Data root: explicit workspace > packaged (%APPDATA%\MainPG) > current directory.
 
     For packaged builds the user double-clicks the exe, so cwd may be the install
     directory or a system directory (possibly read-only). Data goes to

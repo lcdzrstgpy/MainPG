@@ -22,6 +22,7 @@ function statusLabel(status: string): string {
     queued: "等待处理",
     running: "处理中",
     paused: "已暂停",
+    cancelled: "已终止·保留成功项",
     completed: "已完成",
     completed_with_review: "完成·待确认",
     partial_failure: "部分失败",
@@ -40,7 +41,7 @@ function formatDuration(seconds?: number): string {
 }
 
 function canEnterPrecheck(task: TaskHistoryItem): boolean {
-  return task.success_count > 0 && ["completed", "completed_with_review", "partial_failure"].includes(task.status);
+  return task.success_count > 0 && ["completed", "completed_with_review", "partial_failure", "cancelled"].includes(task.status);
 }
 
 export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Props) {

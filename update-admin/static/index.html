@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MainPG 更新发布后台</title>
+  <link rel="stylesheet" href="static/app.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">MAINPG RELEASE CENTER</p>
+        <h1>软件更新后台</h1>
+      </div>
+      <div id="session-actions" class="session-actions hidden">
+        <span id="current-user"></span>
+        <button id="change-password-button" class="button ghost" type="button">修改密码</button>
+        <button id="logout-button" class="button ghost" type="button">退出</button>
+      </div>
+    </header>
+
+    <section id="notice" class="notice hidden" role="status"></section>
+
+    <section id="login-view" class="auth-card hidden">
+      <div>
+        <p class="eyebrow">ADMIN LOGIN</p>
+        <h2>管理员登录</h2>
+        <p>登录后可上传 MainPG 安装包并发布更新。</p>
+      </div>
+      <form id="login-form" class="form-stack">
+        <label>管理员账号<input name="username" autocomplete="username" required maxlength="32"></label>
+        <label>密码<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+        <button class="button primary" type="submit">登录</button>
+      </form>
+    </section>
+
+    <section id="password-view" class="auth-card hidden">
+      <div>
+        <p class="eyebrow">PASSWORD SECURITY</p>
+        <h2 id="password-title">首次登录，请修改密码</h2>
+        <p>新密码至少 10 个字符，保存后需要重新登录。</p>
+      </div>
+      <form id="password-form" class="form-stack">
+        <label>当前密码<input name="current_password" type="password" autocomplete="current-password" required maxlength="256"></label>
+        <label>新密码<input name="new_password" type="password" autocomplete="new-password" required minlength="10" maxlength="256"></label>
+        <label>再次输入新密码<input name="confirm_password" type="password" autocomplete="new-password" required minlength="10" maxlength="256"></label>
+        <div class="button-row">
+          <button class="button primary" type="submit">保存新密码</button>
+          <button id="cancel-password-button" class="button ghost hidden" type="button">取消</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="dashboard-view" class="dashboard hidden">
+      <article class="panel publish-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">PUBLISH UPDATE</p>
+            <h2>发布新版本</h2>
+          </div>
+          <span class="status-dot">EV Sign + 更新清单双重签名</span>
+        </div>
+        <form id="publish-form" class="publish-form">
+          <label>版本号<input name="version" placeholder="例如：1.3.4" required maxlength="64"></label>
+          <label class="file-field">EXE 安装包<input name="installer" type="file" accept=".exe,application/vnd.microsoft.portable-executable" required></label>
+          <label class="notes-field">更新说明<textarea name="release_notes" rows="5" maxlength="10000" placeholder="每行一条，例如：&#10;修复公告同步问题&#10;优化启动速度"></textarea></label>
+          <label class="checkbox"><input name="mandatory" type="checkbox">设为强制更新</label>
+          <div class="publish-actions">
+            <p>后台会完成代码签名和双重校验，并自动与上一版本比较，生成可显示下载进度的增量补丁；补丁不可用时客户端仍可使用完整安装包。</p>
+            <button id="publish-button" class="button primary" type="submit">上传、签名并发布</button>
+          </div>
+        </form>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">RELEASE HISTORY</p><h2>发布记录</h2></div>
+          <button id="refresh-button" class="button ghost" type="button">刷新</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>版本</th><th>发布人</th><th>发布时间</th><th>类型</th><th>完整安装包</th><th>增量补丁</th><th>校验</th><th>代码签名</th></tr></thead>
+            <tbody id="release-rows"></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading"><div><p class="eyebrow">AUDIT LOG</p><h2>操作记录</h2></div></div>
+        <div class="table-wrap compact">
+          <table>
+            <thead><tr><th>时间</th><th>管理员</th><th>操作</th><th>目标</th><th>IP</th></tr></thead>
+            <tbody id="audit-rows"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+  </main>
+  <script src="static/app.js?v=20260829-4" defer></script>
+</body>
+</html>
