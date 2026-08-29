@@ -12,6 +12,7 @@ from typing import Any
 from .doubao_ark import (
     API_URL,
     MODEL_ID,
+    VISION_TIMEOUT_SECONDS,
     DoubaoArkClient,
     DoubaoArkError,
 )
@@ -154,10 +155,14 @@ class DoubaoVisionClient:
         for attempt in range(1, MAX_ATTEMPTS + 1):
             self.last_attempt_count = attempt
             try:
-                content = self._ark.complete(messages)
+                content = self._ark.complete(messages, timeout=VISION_TIMEOUT_SECONDS)
                 return _parse_subject_analysis(content)
             except DoubaoVisionError as exc:
                 exc.attempt_count = attempt
+                # 视觉输出是随机的：偶发的非法 JSON / 不符合主体合同也可在预算内重试
+                # （与文本客户端一致），避免一次坏输出就把整单判 dead。
+                if exc.error_kind == "invalid_response":
+                    exc.retryable = True
                 if not exc.retryable or attempt >= MAX_ATTEMPTS:
                     raise
             if attempt < MAX_ATTEMPTS:

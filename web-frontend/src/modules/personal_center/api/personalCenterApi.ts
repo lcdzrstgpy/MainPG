@@ -146,10 +146,12 @@ export type BillingUsageQuery = {
   /** YYYY-MM-DD，按记录创建日期过滤（含当日） */
   dateFrom?: string;
   dateTo?: string;
+  /** 单次拉取条数上限（服务端上限 100）。分页与统计在客户端完成。 */
+  limit?: number;
 };
 
 export function loadBillingUsageHistory(query: BillingUsageQuery = {}) {
-  const params = new URLSearchParams({ limit: "30" });
+  const params = new URLSearchParams({ limit: String(query.limit ?? 30) });
   if (query.cursor) params.set("cursor", query.cursor);
   if (query.featureKey) params.set("feature_key", query.featureKey);
   if (query.usageStatus) params.set("usage_status", query.usageStatus);

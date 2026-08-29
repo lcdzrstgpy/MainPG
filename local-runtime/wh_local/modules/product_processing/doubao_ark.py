@@ -13,12 +13,30 @@ from .server_ai_proxy import gateway_base_url, granted_key, remote_token, usage_
 
 API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
 MODEL_ID = "doubao-seed-2-0-mini-260428"
+# 文本调用通常很快，保持 60s 默认即可。
 REQUEST_TIMEOUT_SECONDS = 60.0
+# 多图视觉识别（主体分析）实测单次可超过 60s；放宽超时避免被误判为 transient 超时，
+# 否则会出现「60s 超时 × 3 重试 ≈ 180s+」的伪失败。
+VISION_TIMEOUT_SECONDS = 120.0
 USER_AGENT = "MainPG-Doubao/1.0"
 
 _HTTP_SESSION = requests.Session()
 _HTTP_SESSION.trust_env = False
 _SERVER_AI_REQUEST_GATE = threading.BoundedSemaphore(2)
+
+
+def _classify_http_status(status_code: int) -> tuple[str, bool]:
+    """Classify an Ark HTTP status into a (error_kind, retryable) pair.
+
+    401/403 are persistent credential/config problems. 408/409/425/429 and any
+    5xx are transient and worth retrying. The remaining 4xx (bad body, upstream
+    refusal) are non-retryable provider errors.
+    """
+    if status_code in {401, 403}:
+        return "configuration", False
+    if status_code in {408, 409, 425, 429} or status_code >= 500:
+        return "transient", True
+    return "provider_http", False
 
 
 class DoubaoArkError(RuntimeError):
@@ -63,12 +81,16 @@ class DoubaoArkClient:
         # Compatibility for existing diagnostics; never logs the real key.
         self.api_key = self.granted_key if self.direct else "server-managed"
 
-    def complete(self, messages: list[dict[str, Any]]) -> str:
+    def complete(
+        self, messages: list[dict[str, Any]], *, timeout: float = REQUEST_TIMEOUT_SECONDS
+    ) -> str:
         if self.direct:
-            return self._complete_direct(messages)
-        return self._complete_gateway(messages)
+            return self._complete_direct(messages, timeout=timeout)
+        return self._complete_gateway(messages, timeout=timeout)
 
-    def _complete_gateway(self, messages: list[dict[str, Any]]) -> str:
+    def _complete_gateway(
+        self, messages: list[dict[str, Any]], *, timeout: float = REQUEST_TIMEOUT_SECONDS
+    ) -> str:
         response: requests.Response | None = None
         try:
             with _SERVER_AI_REQUEST_GATE:
@@ -85,7 +107,7 @@ class DoubaoArkClient:
                         "messages": messages,
                         "usage_id": self.usage_id,
                     },
-                    timeout=REQUEST_TIMEOUT_SECONDS,
+                    timeout=timeout,
                     allow_redirects=False,
                 )
                 body = bytes(response.content)
@@ -101,12 +123,7 @@ class DoubaoArkClient:
 
         status_code = int(response.status_code)
         if status_code >= 400 or 300 <= status_code < 400:
-            if status_code in {401, 403} or 400 <= status_code < 429:
-                error_kind, retryable = "configuration", False
-            elif status_code == 429 or status_code >= 500:
-                error_kind, retryable = "transient", True
-            else:
-                error_kind, retryable = "provider_http", False
+            error_kind, retryable = _classify_http_status(status_code)
             raise DoubaoArkError(
                 f"server text-and-vision gateway returned HTTP {status_code}",
                 error_kind=error_kind,
@@ -131,7 +148,9 @@ class DoubaoArkClient:
             )
         return content.strip()
 
-    def _complete_direct(self, messages: list[dict[str, Any]]) -> str:
+    def _complete_direct(
+        self, messages: list[dict[str, Any]], *, timeout: float = REQUEST_TIMEOUT_SECONDS
+    ) -> str:
         response: requests.Response | None = None
         try:
             response = _HTTP_SESSION.post(
@@ -145,7 +164,7 @@ class DoubaoArkClient:
                     "model": MODEL_ID,
                     "messages": messages,
                 },
-                timeout=REQUEST_TIMEOUT_SECONDS,
+                timeout=timeout,
                 allow_redirects=False,
             )
             body = bytes(response.content)
@@ -161,12 +180,7 @@ class DoubaoArkClient:
 
         status_code = int(response.status_code)
         if status_code >= 400 or 300 <= status_code < 400:
-            if status_code in {401, 403}:
-                error_kind, retryable = "configuration", False
-            elif status_code == 429 or status_code >= 500:
-                error_kind, retryable = "transient", True
-            else:
-                error_kind, retryable = "provider_http", False
+            error_kind, retryable = _classify_http_status(status_code)
             raise DoubaoArkError(
                 f"ark upstream returned HTTP {status_code}",
                 error_kind=error_kind,

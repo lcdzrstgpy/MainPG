@@ -80,6 +80,10 @@ def create_combo_kit_router(
     ) -> dict[str, Any]:
         return service.update_set(set_id, await _body(request), workspace_id=actor.workspace_id)
 
+    @router.delete("/sets/{set_id}")
+    def delete_set(set_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        return service.remove_set(set_id)
+
     @router.get("/sets/{set_id}/items")
     def list_items(set_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         return service.list_items(set_id)
@@ -154,8 +158,24 @@ def create_combo_kit_router(
         return service.generate_text(set_id, actor=actor)
 
     @router.post("/sets/{set_id}/generate-images")
-    def generate_images(set_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
-        return service.generate_images(set_id, actor=actor)
+    async def generate_images(
+        set_id: str,
+        request: Request,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        body = await _body(request)
+        roles = body.get("roles")
+        return service.generate_images(
+            set_id,
+            actor=actor,
+            roles=[str(r).strip() for r in roles if str(r).strip()] if isinstance(roles, list) else None,
+        )
+
+    @router.delete("/sets/{set_id}/images/{role}")
+    def delete_image(
+        set_id: str, role: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        return service.delete_generated_image(set_id, role)
 
     @router.post("/sets/{set_id}/preview")
     def create_preview(set_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:

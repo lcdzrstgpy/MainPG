@@ -294,6 +294,10 @@ def usage_history(
         raw_status = str(row["status"] or "")
         billing_profile = str(row["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
         is_pod = billing_profile == BATCH_BILLING_PROFILE_POD
+        freeze_id = str(row["freeze_id"] or "")
+        # 组合套装扣费通过 freeze_batch_points(idempotency_key=combo-kit:xxx) 写入，
+        # 按 freeze_id 前缀划分独立板块，便于消费流水按服务归类管理。
+        is_combo = freeze_id.startswith("combo-kit:")
         if raw_status == "settled":
             status = "succeeded"
         elif raw_status == "released":
@@ -302,15 +306,21 @@ def usage_history(
             status = "frozen"
         result.append(
             {
-                "usage_id": f"batch:{row['freeze_id']}",
-                "feature_key": "pod_customization.batch" if is_pod else "product_processing.batch",
+                "usage_id": f"batch:{freeze_id}",
+                "feature_key": (
+                    "combo_kit.batch"
+                    if is_combo
+                    else ("pod_customization.batch" if is_pod else "product_processing.batch")
+                ),
                 "billing_profile": billing_profile,
                 "source_ref": "",
                 "reserved_points": _display_points(int(row["frozen_points"]), scale),
                 "charged_points": _display_points(int(row["charged_points"]), scale),
                 "refunded_points": _display_points(int(row["refunded_points"]), scale),
                 "status": status,
-                "provider": "POD 定制结算" if is_pod else "批量链接结算",
+                "provider": (
+                    "套装组合结算" if is_combo else ("POD 定制结算" if is_pod else "批量链接结算")
+                ),
                 "model": (
                     f"{int(row['link_count'])} 款创作"
                     if is_pod

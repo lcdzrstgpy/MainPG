@@ -98,6 +98,9 @@ class ComboKitAiRuntime:
         fusion_suffix: str,
         set_id: str,
         workspace_id: str,
+        title: str = "",
+        category: str = "",
+        roles: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         from .generation import generate_combo_images
 
@@ -109,6 +112,9 @@ class ComboKitAiRuntime:
             fusion_suffix=fusion_suffix,
             set_id=set_id,
             workspace_id=workspace_id,
+            title=title,
+            category=category,
+            roles=roles,
         )
 
 
@@ -258,7 +264,7 @@ def _parse_text_json(content: str) -> dict[str, Any]:
         raise ComboKitValidationError("文本生成缺少标题")
     return {
         "title": title[:500],
-        "description": description[:3000],
+        "description": description[:320],
         "bullets": cleaned[:5],
     }
 

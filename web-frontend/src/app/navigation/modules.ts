@@ -5,7 +5,9 @@ export type WorkspaceModuleId =
   | "product_processing"
   | "product_processing_history"
   | "product_processing_tasks"
-  | "product_combo"
+  | "combo_generate"
+  | "combo_prompt_preset"
+  | "combo_history"
   | "dimension_canvas"
   | "pod_customization"
   | "profit_activity"
@@ -13,7 +15,7 @@ export type WorkspaceModuleId =
   | "price_verification"
   | "personal_center";
 
-export type WorkspaceNavigationGroupId = "product_workflow" | "sourcing_workflow";
+export type WorkspaceNavigationGroupId = "product_workflow" | "combo_workflow" | "sourcing_workflow";
 
 export type WorkspaceModule = {
   id: WorkspaceModuleId;
@@ -90,12 +92,28 @@ const productProcessingHistory: WorkspaceModule = {
   description: "查看并找回 AI 处理批次",
 };
 
-const productCombo: WorkspaceModule = {
-  id: "product_combo",
-  label: "商品组合套装",
+const comboGenerate: WorkspaceModule = {
+  id: "combo_generate",
+  label: "组合生图",
   icon: "",
   iconClass: "iconfont icon-skin",
-  description: "独立组合套装板块：上传原图、主体解析、文本+6图生成、隔离扣费与独立预检",
+  description: "独立组合套装：套装信息→上传原图→融合主图→文本→6张成品图→独立预检",
+};
+
+const comboPromptPreset: WorkspaceModule = {
+  id: "combo_prompt_preset",
+  label: "提示词模板预设",
+  icon: "",
+  iconClass: "iconfont icon-skin",
+  description: "预设/自定义组合生图提示词模板，供组合生图板块自动填充使用",
+};
+
+const comboHistory: WorkspaceModule = {
+  id: "combo_history",
+  label: "历史组合套装",
+  icon: "",
+  iconClass: "iconfont icon-time-circle",
+  description: "查看历史组合套装，可按标题模糊查询并回到组合生图继续制作",
 };
 
 const priceVerification: WorkspaceModule = {
@@ -157,7 +175,16 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     iconClass: "iconfont icon-build",
     description: "采集、处理与尺寸图制作",
     defaultChildId: "daily_selection",
-    children: [collection, productProcessing, productCombo, productProcessingHistory, dimensionCanvas],
+    children: [collection, productProcessing, productProcessingHistory, dimensionCanvas],
+  },
+  {
+    id: "combo_workflow",
+    label: "商品组合套装",
+    icon: "",
+    iconClass: "iconfont icon-skin",
+    description: "组合生图、提示词模板预设与历史组合套装",
+    defaultChildId: "combo_generate",
+    children: [comboGenerate, comboPromptPreset, comboHistory],
   },
   podCustomization,
   {
@@ -178,7 +205,9 @@ export const workspacePageModules: WorkspaceModule[] = [
   collectionPanel,
   productProcessing,
   productProcessingHistory,
-  productCombo,
+  comboGenerate,
+  comboPromptPreset,
+  comboHistory,
   processingTasks,
   dimensionCanvas,
   podCustomization,

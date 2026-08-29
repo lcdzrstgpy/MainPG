@@ -21,6 +21,7 @@ export type WorkspaceTab = {
   dimensionItemId?: string;
   returnTaskId?: number;
   dimensionChangeSetId?: string;
+  initialSetId?: string;
 };
 
 type TopNavigationProps = {

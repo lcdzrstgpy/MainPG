@@ -196,6 +196,25 @@ class ComboKitRepository:
             )
             return bool(result.rowcount)
 
+    def remove_set(self, set_id: str) -> bool:
+        """级联删除一个组合套装及其所有子记录（素材/Prompt/任务/扣费/预检）。"""
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM combo_kit_sets WHERE set_id = ?", (set_id,)
+            ).fetchone()
+            if exists is None:
+                return False
+            for table in (
+                "combo_kit_items",
+                "combo_kit_prompts",
+                "combo_kit_tasks",
+                "combo_kit_billing",
+                "combo_kit_previews",
+            ):
+                connection.execute(f"DELETE FROM {table} WHERE set_id = ?", (set_id,))
+            connection.execute("DELETE FROM combo_kit_sets WHERE set_id = ?", (set_id,))
+            return True
+
     def _item_dict(self, row: sqlite3.Row) -> dict[str, object]:
         data = self._row_keys(row)
         data["mask_inverted"] = bool(data.get("mask_inverted"))

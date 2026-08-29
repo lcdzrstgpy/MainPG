@@ -22,6 +22,8 @@ import { ProductProcessingTaskPage } from "../../modules/product_processing/page
 import { ProductProcessingHistoryPage } from "../../modules/product_processing/pages/ProductProcessingHistoryPage";
 import { ProductProcessingPrecheckPage } from "../../modules/product_processing/pages/ProductProcessingPrecheckPage";
 import { ComboKitPage } from "../../modules/combo_kit/pages/ComboKitPage";
+import { ComboKitPromptPresetPage } from "../../modules/combo_kit/pages/ComboKitPromptPresetPage";
+import { ComboKitHistoryPage } from "../../modules/combo_kit/pages/ComboKitHistoryPage";
 import { DimensionCanvasPage } from "../../modules/product_processing/pages/DimensionCanvasPage";
 import { PodCustomizationPage } from "../../modules/pod_customization/pages/PodCustomizationPage";
 import {
@@ -240,6 +242,19 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     setWorkspaceNotice("");
   };
 
+  const openComboGenerate = (setId: string) => {
+    setExpandedGroupId("combo_workflow");
+    setTabs((current) => {
+      const existing = current.find((tab) => tab.moduleId === "combo_generate");
+      if (existing) {
+        return current.map((tab) => (tab.moduleId === "combo_generate" ? { ...tab, initialSetId: setId } : tab));
+      }
+      return [...current, { key: "combo_generate", moduleId: "combo_generate", label: "组合生图", icon: "", initialSetId: setId }];
+    });
+    activateTab("combo_generate");
+    setWorkspaceNotice("");
+  };
+
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     if (query.get("module") !== "personal_center" || query.get("payment") !== "success") return;
@@ -427,8 +442,12 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
             onOpenPrecheck={openProcessingPrecheck}
           />
         );
-      case "product_combo":
-        return <ComboKitPage isActive={isActive} />;
+      case "combo_generate":
+        return <ComboKitPage isActive={isActive} initialSetId={tab.initialSetId} />;
+      case "combo_prompt_preset":
+        return <ComboKitPromptPresetPage isActive={isActive} />;
+      case "combo_history":
+        return <ComboKitHistoryPage isActive={isActive} onOpenSet={openComboGenerate} />;
       case "dimension_canvas":
         return <DimensionCanvasPage initialBatchId={tab.dimensionBatchId} initialItemId={tab.dimensionItemId} onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
       case "pod_customization":
