@@ -3035,11 +3035,22 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             for value in task["settings"].get("excluded_preview_draft_ids", [])
             if str(value).isdigit()
         }
+        # 性能：一次性批量加载本任务所有草稿，替代逐条 get_draft 的 N 次独立查询；
+        # 并把 owned draft ids 传给图片投影，跳过每个商品重复加载整个 task 的 O(N²) 查询。
+        owned_draft_ids = {
+            int(item.get("product_draft_id"))
+            for item in task["items"]
+            if item.get("product_draft_id")
+        }
+        drafts_by_id = {
+            draft["id"]: draft
+            for draft in self.repository.get_drafts(owned_draft_ids, workspace_id=workspace_id)
+        }
         items = []
         for item in task["items"]:
             result = item.get("result") or {}
             draft_id = item.get("product_draft_id")
-            draft = self.repository.get_draft(draft_id, workspace_id=workspace_id) if draft_id else None
+            draft = drafts_by_id.get(int(draft_id)) if draft_id else None
             saved = (draft or {}).get("preview_overrides") or {}
             if not isinstance(saved, dict):
                 saved = {}
@@ -3050,6 +3061,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 saved=saved,
                 workspace_id=workspace_id,
                 media_contract_version=int((draft or {}).get("media_contract_version") or 1),
+                task_owned_draft_ids=owned_draft_ids,
             )
             items.append({
                 **self._preview_item(
