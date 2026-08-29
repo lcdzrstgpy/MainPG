@@ -1,0 +1,30 @@
+[Unit]
+Description=MainPG independent update publishing admin
+After=network.target
+
+[Service]
+Type=simple
+User=mainpg-update
+Group=www-data
+WorkingDirectory=/opt/mainpg-update-admin
+EnvironmentFile=/etc/mainpg-update-admin.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/mainpg-update-admin/venv/bin/uvicorn app:app_factory --factory --host 127.0.0.1 --port 8013 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=3
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/mainpg-update-admin /var/www/html/mainpg/windows
+
+[Install]
+WantedBy=multi-user.target

@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,11 @@ from wh_local.app_update import (
     canonical_patch_payload,
 )
 from wh_local.runtime.patch_manifest_builder import build_patch
+from wh_local.runtime.embedded_patch_builder import (
+    EMBEDDED_PATCH_COMMENT,
+    EMBEDDED_PATCH_DESCRIPTOR,
+    append_embedded_patch,
+)
 from wh_local.runtime.release_manifest import load_private_key
 
 UPDATER_EXE = Path(__file__).resolve().parents[1] / "updater" / "MainPG-Updater.exe"
@@ -139,6 +145,32 @@ def test_build_patch_diff_and_signature(tmp_path: Path) -> None:
         manager._validate_manifest(tampered_signature)
 
 
+def test_embedded_patch_keeps_executable_prefix_and_contains_only_diff(tmp_path: Path) -> None:
+    old = _dist(tmp_path, "1.1.0", {"same.txt": "same", "changed.txt": "old", "removed.txt": "gone"})
+    new = _dist(tmp_path, "1.2.0", {"same.txt": "same", "changed.txt": "new", "added.txt": "fresh"})
+    installer = tmp_path / "MainPG-Setup-1.2.0.exe"
+    executable_prefix = b"MZ" + b"fake-inno-setup" * 16
+    installer.write_bytes(executable_prefix)
+
+    descriptor = append_embedded_patch(
+        installer=installer,
+        from_dir=old,
+        to_dir=new,
+        from_version="1.1.0",
+        to_version="1.2.0",
+    )
+    assert installer.read_bytes().startswith(executable_prefix)
+    assert len(descriptor["files"]) == 3
+    with zipfile.ZipFile(installer) as archive:
+        assert archive.comment == EMBEDDED_PATCH_COMMENT
+        archived_descriptor = json.loads(archive.read(EMBEDDED_PATCH_DESCRIPTOR))
+        assert archived_descriptor == descriptor
+        assert archive.read("mainpg-patch/files/changed.txt") == b"new"
+        assert archive.read("mainpg-patch/files/added.txt") == b"fresh"
+        assert "mainpg-patch/files/same.txt" not in archive.namelist()
+        assert "mainpg-patch/files/removed.txt" not in archive.namelist()
+
+
 def test_patch_manager_downloads_and_renders_state(tmp_path: Path, updater_present) -> None:
     key, key_path, public_b64 = _make_key(tmp_path)
     old = _dist(tmp_path, "1.1.0", {"a.txt": "old-a", "b.txt": "keep", "c.txt": "remove"})
@@ -192,6 +224,13 @@ def test_patch_manager_downloads_and_renders_state(tmp_path: Path, updater_prese
     assert manager._begin("downloading")
     manager._install_after_begin()
     assert manager._state == "installing", f"state={manager._state} error={manager._error}"  # updater launched; main process keeps running until exit
+    assert manager._progress == {
+        "downloaded_files": len(manifest["files"]),
+        "total_files": len(manifest["files"]),
+        "downloaded_bytes": len(b"new-a") + len(b"added-d"),
+        "total_bytes": len(b"new-a") + len(b"added-d"),
+        "percentage": 100.0,
+    }
     assert launched and launched[0][0] == str(install_root / "MainPG-Updater.exe")
     assert launched[0][1] == ["--apply", str(runtime_root / "updates" / "patch-state.txt")]
 

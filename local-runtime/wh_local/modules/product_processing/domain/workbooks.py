@@ -5,7 +5,7 @@ import math
 import re
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from openpyxl import Workbook, load_workbook
 
@@ -19,9 +19,6 @@ DECLARED_PRICE_MULTIPLIER = 4
 DECLARED_PRICE_MIN_CNY = 150.0
 DXM_STOCK_MIN = 0
 DXM_STOCK_MAX = 999999
-# 店小秘 *重量（g） 导入允许区间上限（校验规则 0.01-99999.9）
-DXM_WEIGHT_MAX_G = 99999.9
-
 # 外包装形状/类型（对齐原型 _build_dxm_row：soft → 软包装软物/气泡袋，rigid → 硬包装硬物/纸箱）
 _PACKAGE_EXPORT_BY_PROFILE = {
     "rigid_container": ("硬包装硬物", "纸箱"),
@@ -334,7 +331,7 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     dimensions = row.get("product_dimensions") or {}
     if not isinstance(dimensions, dict):
         dimensions = {}
-    package_fields, manual_package_fields = _variant_shipping_package_fields(row, variant, preview_overrides)
+    package_fields, _ = _variant_shipping_package_fields(row, variant, preview_overrides)
     length = _export_number(
         package_fields.get("length_cm")
         if "length_cm" in package_fields
@@ -350,16 +347,15 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         if "height_cm" in package_fields
         else core_fields.get("height_cm") if "height_cm" in core_fields else dimensions.get("height_cm")
     )
-    manual_weight_override = "weight_g" in core_fields
     weight = _export_number(
         package_fields.get("weight_g")
         if "weight_g" in package_fields
-        else core_fields.get("weight_g") if manual_weight_override else dimensions.get("weight_g")
+        else core_fields.get("weight_g") if "weight_g" in core_fields else dimensions.get("weight_g")
     )
     package_shape, package_type = _package_export_values(dimensions)
 
-    # 店小秘体积重校验兜底：变种属性里的尺寸（如 30*20*10cm，店小秘以此算体积重）
-    # 与独立长宽高列取体积重（长×宽×高÷6），重量必须大于体积重，否则导入整行被拒。
+    # 收集尺寸文本仅用于长宽高缺失时的尺寸兜底。导出重量始终采用当前重量，
+    # 不再按长×宽×高计算抛重，也不再用抛重抬高当前重量。
     source_attr_map = source_attributes if isinstance(source_attributes, dict) else {}
     dimensions_texts: list[Any] = []
     if length not in ("", None) and width not in ("", None) and height not in ("", None):
@@ -378,11 +374,6 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     if isinstance(source_attributes, dict):
         dimensions_texts.extend(source_attributes.values())
     dimensions_texts.extend(value for _, value in variant_values)
-    # Operator-confirmed product or SKU package weights are authoritative.
-    # System-generated values retain the import-safety volumetric safeguard.
-    if "weight_g" not in manual_package_fields and not manual_weight_override:
-        weight = _weight_meeting_volumetric(weight, dimensions_texts)
-
     # 长宽高列兜底：AI 未产出 product_dimensions（长宽高缺失）时，从变种/规格表文本
     # 解析首个三维尺寸填列，保证店小秘 *长/宽/高（cm） 必填列非空。
     if length == "" or width == "" or height == "":
@@ -424,8 +415,8 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     if core_fields.get("stock") not in (None, ""):
         stock = _normalize_stock(core_fields.get("stock"))
 
-    # 店小秘重量导出统一向上取整到 100：不足 100 按 100、不足 200 按 200…
-    # （最低 100）。在体积重兜底与人工确认之后统一应用，保证导出终值符合规则。
+    # 店小秘重量导出统一以当前重量向上取整到 100：不足 100 按 100、
+    # 不足 200 按 200……（最低 100）。长宽高和抛重不参与重量计算。
     weight = _ceil_weight_for_export(weight)
 
     return [
@@ -545,8 +536,7 @@ def _export_number(value: Any) -> Any:
 def _ceil_weight_for_export(value: Any) -> Any:
     """店小秘重量导出向上取整到 100：不足 100 按 100、不足 200 按 200…（最低 100）。
 
-    仅在有效数值上生效；空值/非数值原样返回，避免掩盖缺失。取整只会让重量不小于
-    原值，因此不会破坏「实际重量须大于体积重」的店小秘导入校验。
+    仅在有效数值上生效；空值/非数值原样返回，避免掩盖缺失。
     """
     if value in (None, ""):
         return value
@@ -580,7 +570,7 @@ def _parse_dimensions(value: Any) -> tuple[float, float, float] | None:
     1. 乘号分隔三维尺寸（30*20*10cm / 30×20×10 CM），单位 mm/毫米 时换算为厘米（÷10）。
     2. 空格分隔的 1688 规格表行（"25 20 0.50 250 4"，前三个数为长/宽/高 cm）。
     1688 变种尺寸属性常以毫米标注（如 34.5cm 商品写 "345*255*55mm"），
-    若不换算会把体积重虚大 1000 倍，导致导出重量超出店小秘允许区间。
+    因此必须换算后再写入长宽高列。
     """
     if value in (None, ""):
         return None
@@ -602,36 +592,6 @@ def _parse_dimensions(value: Any) -> tuple[float, float, float] | None:
     if length <= 0 or width <= 0 or height <= 0:
         return None
     return length, width, height
-
-
-def _volumetric_weight_g(length: float, width: float, height: float) -> float:
-    """店小秘体积重（克）：长×宽×高(cm³) ÷ 6。导入校验要求实际重量大于体积重。"""
-    return length * width * height / 6.0
-
-
-def _weight_meeting_volumetric(weight: Any, dimensions_texts: Sequence[Any]) -> Any:
-    """按店小秘体积重校验兜底重量。
-
-    对每段尺寸文本解析长宽高并计算体积重（取最大值），若当前重量缺失或小于等于
-    体积重，则提升到「体积重之上 1g」，保证店小秘导入不因「材积重量大于实际重量」
-    拒绝整行，且不虚高申报重量。无有效尺寸时原样返回。
-
-    店小秘 *重量（g） 只接受 0.01-99999.9：当兜底值超上限时（例如带 mm 单位但
-    未识别的异常尺寸文本使体积重虚大），封顶到上限，避免导出行被区间校验整行拒绝。
-    """
-    volumetric = 0.0
-    for text in dimensions_texts:
-        parsed = _parse_dimensions(text)
-        if parsed is not None:
-            volumetric = max(volumetric, _volumetric_weight_g(*parsed))
-    if volumetric <= 0:
-        return weight
-    if isinstance(weight, (int, float)) and weight > math.ceil(volumetric):
-        return weight
-    # 体积重为小数时（含小数长宽高），店小秘若将体积重四舍五入到整数再与重量比较，
-    # 低于 ceil(vol)+1 的重量（含恰好等于舍入值）会被 "材积重量大于实际重量" 拒绝；
-    # ceil(vol)+1 保证重量严格大于任何舍入结果（比最低值多 ≤1g，不虚高）。
-    return min(math.ceil(volumetric) + 1, DXM_WEIGHT_MAX_G)
 
 
 def _normalize_stock(value: Any) -> int:

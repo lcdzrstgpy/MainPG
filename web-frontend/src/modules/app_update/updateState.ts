@@ -39,6 +39,8 @@ export type PatchRelease = {
 export type PatchProgress = {
   downloaded_files: number;
   total_files: number;
+  downloaded_bytes: number;
+  total_bytes: number;
   percentage: number;
 };
 

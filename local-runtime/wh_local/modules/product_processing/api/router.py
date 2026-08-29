@@ -799,6 +799,18 @@ def create_product_processing_router(
         """取消任务：终态操作，未处理链接立即标记失败并释放（不再产生 AI 费用）。"""
         return _call(service.cancel_task, task_id, _workspace(workspace_id))
 
+    @router.post("/tasks/{task_id}/finalize-successes")
+    def finalize_paused_successes(
+        task_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """永久取消暂停任务的剩余商品，并只保留成功商品进入预检。"""
+        return _call(
+            service.finalize_paused_successes,
+            task_id,
+            _workspace(workspace_id),
+        )
+
     @router.post("/tasks/{task_id}/resume")
     def resume_task(
         request: Request,

@@ -2741,10 +2741,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 continue
             status = str(task.get("status") or "")
             if status in {"queued", "running"}:
-                try:
-                    self.repository.set_task_status(task_id, "paused", workspace_id)
-                except Exception:
-                    pass
+                # 商品已经全部得到终态时，worker 只剩本地文件收尾；此时暂停会
+                # 把 6/6 的任务卡在 99%，并阻断预检/导出。
+                if self._task_has_unfinished_items(task):
+                    try:
+                        self.repository.pause_task_execution(task_id, workspace_id)
+                    except Exception:
+                        pass
                 # 移除心跳记录：resume 后由前端重新轮询重建，避免用陈旧时间戳
                 # 在 resume 的首个轮询窗口再次误暂停。
                 with self._task_last_seen_lock:
@@ -2804,6 +2807,32 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 pass
         return {**self._task_response(task), "message": "产品处理任务已取消，未处理链接已释放，未完成链接按冻结积分 50% 结算"}
 
+    def finalize_paused_successes(
+        self, task_id: int, workspace_id: str = "local"
+    ) -> dict[str, Any]:
+        """Permanently discard paused remainder and open successful items for preview."""
+        task = self._require_task(task_id, workspace_id)
+        exportable = [
+            item
+            for item in task.get("items") or []
+            if item.get("status") == "completed"
+            and self._text((item.get("result") or {}).get("optimized_title"))
+        ]
+        if not exportable:
+            raise ProductProcessingConflict("当前还没有可预检并导出的成功商品")
+        if task["status"] in {"completed", "partial_failure", "cancelled"}:
+            return {
+                **self._task_response(task),
+                "message": f"已保留 {len(exportable)} 个成功商品，可进入预检导出",
+            }
+        if task["status"] != "paused":
+            raise ProductProcessingConflict("请先暂停任务，再导出已成功商品")
+        result = self.cancel_task(task_id, workspace_id)
+        result["message"] = (
+            f"已永久取消剩余未完成商品，保留 {len(exportable)} 个成功商品进入预检"
+        )
+        return result
+
     def _settle_cancelled_freezes(self, task_id: int, workspace_id: str, token: str) -> None:
         """把某任务仍 open 的冻结批次按 50% 结算（已完成全价、未完成退半）。
 
@@ -2827,8 +2856,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         task = self._require_task(task_id, workspace_id)
         if task["status"] in {"completed", "failed", "partial_failure", "cancelled"}:
             return {**self._task_response(task), "message": "任务已结束，无需暂停"}
-        task = self.repository.set_task_status(task_id, "paused", workspace_id) or task
+        if not self._task_has_unfinished_items(task):
+            return {**self._task_response(task), "message": "全部商品已处理，正在生成导出文件"}
+        self.repository.pause_task_execution(task_id, workspace_id)
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] != "paused":
+            return {**self._task_response(task), "message": "任务已结束，无需暂停"}
         return {**self._task_response(task), "message": "产品处理任务已暂停"}
+
+    @staticmethod
+    def _task_has_unfinished_items(task: dict[str, Any]) -> bool:
+        return any(
+            str(item.get("status") or "") in {"pending", "running"}
+            for item in (task.get("items") or [])
+        )
 
     def resume_task(
         self,
@@ -3047,7 +3088,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             for draft in self.repository.get_drafts(owned_draft_ids, workspace_id=workspace_id)
         }
         items = []
-        for item in task["items"]:
+        preview_items = task["items"]
+        if task["status"] == "cancelled":
+            # “暂停后导出成功商品”会永久取消余项；预检只显示当时已成功的
+            # 商品，取消/失败项既不进入预检，也不会进入最终表格。
+            preview_items = [item for item in preview_items if item["status"] == "completed"]
+        for item in preview_items:
             result = item.get("result") or {}
             draft_id = item.get("product_draft_id")
             draft = drafts_by_id.get(int(draft_id)) if draft_id else None
@@ -3933,7 +3979,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         successes: list[dict[str, Any]] = [
             dict(item.get("result") or {}) for item in task["items"] if item["status"] == "completed"
         ]
-        failures: list[dict[str, Any]] = []
+        # 断点续跑只处理 pending/running；暂停前已经落库的失败项也必须重新
+        # 纳入错误报告，否则恢复后的最终导出会漏掉这些明细。
+        failures: list[dict[str, Any]] = [
+            dict(item)
+            for item in task["items"]
+            if item["status"] not in {"pending", "running", "completed"}
+        ]
         source_images: list[str] = [
             str(url)
             for result in successes
@@ -4095,7 +4147,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
                                 self._mark_draft_failed(draft, workspace_id)
 
-        final_status = self._require_task(task_id, workspace_id)["status"]
+        final_task = self._require_task(task_id, workspace_id)
+        final_status = final_task["status"]
         if final_status in {"paused", "cancelled"}:
             if final_status == "cancelled":
                 # 取消发生在自动补跑轮中段：执行被检查点中止且不会走到收尾的
@@ -4112,7 +4165,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         )
                 except Exception:
                     pass
-            return self._require_task(task_id, workspace_id)
+                return self._require_task(task_id, workspace_id)
+            # 暂停只中断仍需调用 AI 的条目。若最后一项已经持久化，继续完成
+            # 本地工作簿/错误报告收尾，避免任务停在 6/6、99% 且无法导出。
+            if self._task_has_unfinished_items(final_task):
+                return final_task
 
         preserve = settings.get("source_image_to_library")
         if preserve is None:

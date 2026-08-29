@@ -1029,6 +1029,25 @@ class ProductProcessingRepository:
             row.updated_at = utc_now()
         return self.get_task(task_id, workspace_id)
 
+    def pause_task_execution(self, task_id: int, workspace_id: str = "local") -> bool:
+        """Atomically pause only an active task.
+
+        A worker may finish between the service reading the task and persisting the
+        pause request.  Restricting the transition here prevents a completed task
+        from being moved backwards to ``paused`` by that race.
+        """
+        with self.database.sessions.begin() as session:
+            changed = session.execute(
+                update(ProcessingTaskRow)
+                .where(
+                    ProcessingTaskRow.id == task_id,
+                    ProcessingTaskRow.workspace_id == workspace_id,
+                    ProcessingTaskRow.status.in_(("queued", "running")),
+                )
+                .values(status="paused", updated_at=utc_now())
+            )
+            return changed.rowcount == 1
+
     def mark_task_cancelled(self, task_id: int, workspace_id: str = "local") -> dict[str, Any] | None:
         """取消任务：置为终态 cancelled，并把未处理（pending/running）链接标记为失败。
 
@@ -1168,6 +1187,12 @@ class ProductProcessingRepository:
             item = session.get(ProcessingTaskItemRow, item_id)
             if item is None or item.task_id != task_id:
                 raise LookupError("product processing task item not found")
+
+            # A cancelled task is immutable. In-flight AI calls and heartbeat
+            # threads may return shortly after cancellation; allowing those late
+            # writes would resurrect permanently discarded items.
+            if task.status == "cancelled":
+                return self._task(self._load_task(session, task.id))
 
             def bucket(current: str | None) -> str | None:
                 if current == "completed":
