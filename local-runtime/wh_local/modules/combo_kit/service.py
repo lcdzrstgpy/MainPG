@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -239,6 +240,21 @@ class ComboKitService:
             raise ComboKitNotFound("来源图不存在") from None
         return {"item_id": item_id, "status": "removed"}
 
+    def set_primary_item(self, set_id: str, item_id: str) -> dict[str, Any]:
+        """把某成员设为套装的主要商品（其余成员自动取消主要标记）。"""
+        self._require_set(set_id)
+        try:
+            self.repository.set_primary_item(set_id, item_id)
+        except KeyError:
+            raise ComboKitNotFound("来源图不存在") from None
+        return self.repository.get_item(item_id)
+
+    def clear_primary_item(self, set_id: str) -> dict[str, Any]:
+        """取消套装的主要商品标记（清空 is_primary）。"""
+        self._require_set(set_id)
+        self.repository.clear_primary_item(set_id)
+        return {"items": self.repository.list_items(set_id)}
+
     def list_items(self, set_id: str) -> dict[str, Any]:
         self._require_set(set_id)
         return {"items": self.repository.list_items(set_id)}
@@ -336,14 +352,16 @@ class ComboKitService:
         specs = _read_json(base.get("sku_specs_json") or [], [])
         category = str(base.get("category_path") or "")
         set_name = str(base.get("name") or "")
+        primary_subject = _primary_subject(items)
         prompt_text = build_text_prompt(
-            set_name=set_name, category=category, specs=specs, subject_summaries=subject_summaries
+            set_name=set_name, category=category, specs=specs,
+            subject_summaries=subject_summaries, primary_subject=primary_subject,
         )
         freeze = self.billing.freeze(
             actor,
             billing_type="text",
             set_id=set_id,
-            idempotency_key=f"combo-kit:text:{set_id}",
+            idempotency_key=f"combo-kit:text:{set_id}:{uuid.uuid4().hex}",
             scope=["title"],
         )
         billing = self.repository.add_billing(
@@ -410,7 +428,7 @@ class ComboKitService:
             actor,
             billing_type="image",
             set_id=set_id,
-            idempotency_key=f"combo-kit:image:{set_id}",
+            idempotency_key=f"combo-kit:image:{set_id}:{uuid.uuid4().hex}",
             scope=["four_grid"],
         )
         billing = self.repository.add_billing(
@@ -578,6 +596,7 @@ class ComboKitService:
             if summary:
                 subject_summaries.append(summary)
         set_name = str(base.get("name") or "")
+        primary_subject = _primary_subject(items)
         # 预览融合主图：生图上下文临时冻结 → 生成 → 退额（零净扣费）。
         # 真正扣费在整套生成阶段打包 100 分结算（第 1 次生图调用计数）。
         freeze: dict[str, Any] | None = None
@@ -596,6 +615,7 @@ class ComboKitService:
                     reference_values=reference_values,
                     set_name=set_name,
                     subject_summaries=subject_summaries,
+                    primary_subject=primary_subject,
                     custom_prompt=custom_prompt,
                 )
         except Exception as exc:  # 不阻断主体解析结果返回。
@@ -936,6 +956,15 @@ def _first_subject(items: list[dict[str, Any]]) -> dict[str, Any] | None:
         if isinstance(parsed, dict) and parsed.get("sellable_subject"):
             return parsed
     return None
+
+
+def _primary_subject(items: list[dict[str, Any]]) -> str:
+    """取用户标记的「主要商品」主体的英文名；未标记则返回空串。"""
+    for item in items:
+        if item.get("is_primary"):
+            parsed = _read_json(item.get("subject_parsed_json") or {}, {})
+            return str(parsed.get("sellable_subject") or item.get("subject_keywords") or "").strip()
+    return ""
 
 
 def text_context(freeze: dict[str, Any]):

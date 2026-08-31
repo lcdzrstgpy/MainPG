@@ -26,6 +26,7 @@ export type ComboKitItem = {
   mask_regex_serial: number;
   subject_parsed_json: Record<string, unknown>;
   spec_text: string;
+  is_primary: boolean;
   width: number;
   height: number;
 };
@@ -137,6 +138,10 @@ export async function deleteSet(ctx: ApiContext, setId: string): Promise<unknown
 
 export async function reorderItems(ctx: ApiContext, setId: string, order: string[]): Promise<{ items: ComboKitItem[] }> {
   return ppRequest(ctx, `${API_BASE}/sets/${setId}/items/order`, { body: { order } });
+}
+
+export async function setPrimaryItem(ctx: ApiContext, setId: string, itemId: string): Promise<ComboKitItem> {
+  return ppRequest(ctx, `${API_BASE}/sets/${setId}/items/${itemId}/primary`, { method: 'POST' });
 }
 
 export async function analyzeSubject(ctx: ApiContext, setId: string, itemIds?: string[]): Promise<{ results: unknown[]; items: ComboKitItem[] }> {

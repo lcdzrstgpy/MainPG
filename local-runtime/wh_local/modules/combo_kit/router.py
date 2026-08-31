@@ -127,6 +127,12 @@ def create_combo_kit_router(
     ) -> dict[str, Any]:
         return service.remove_item(set_id, item_id)
 
+    @router.post("/sets/{set_id}/items/{item_id}/primary")
+    def set_primary_item(
+        set_id: str, item_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        return service.set_primary_item(set_id, item_id)
+
     @router.post("/sets/{set_id}/items/order")
     async def reorder_items(
         set_id: str, request: Request, actor: Actor = Depends(actor_from_authorization)

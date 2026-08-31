@@ -31,6 +31,13 @@
 .combo-subtitle { font-size: 14px; color: #172b44; margin: 16px 0 10px; font-weight: 800; }
 .combo-hint { color: #8aa0b4; font-size: 12px; margin-top: 10px; }
 
+.combo-extra-fields { border: 1px dashed #d6e0ea; border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
+.combo-extra-fields > summary { cursor: pointer; font-size: 13px; font-weight: 700; color: #526a82; list-style: none; display: flex; align-items: center; gap: 6px; }
+.combo-extra-fields > summary::before { content: "▸"; transition: transform .15s ease; font-size: 12px; }
+.combo-extra-fields[open] > summary::before { transform: rotate(90deg); }
+.combo-extra-fields > summary:hover { color: #172b44; }
+.combo-extra-fields > .combo-grid { margin-top: 12px; margin-bottom: 0; }
+
 .combo-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 12px; }
 .combo-grid label, .combo-section > label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: #526a82; font-weight: 700; }
 .combo-grid .combo-grid-full { grid-column: 1 / -1; }
@@ -63,6 +70,9 @@
 .combo-edit-stage-mask { min-width: 0; }
 .combo-edit-stage-info { display: flex; flex-direction: column; gap: 10px; }
 .combo-edit-stage-info label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #526a82; font-weight: 700; }
+.combo-edit-stage-info .combo-primary-toggle { flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
+.combo-primary-toggle input { width: auto; height: auto; margin: 0; }
+.combo-primary-toggle span { color: #087bf5; font-weight: 700; }
 
 /* 素材 2×2 缩略格 */
 .combo-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
@@ -139,6 +149,7 @@
 .combo-drawer-thumb img { width: 100%; height: 110px; object-fit: contain; background: #f3f6f9; display: block; }
 .combo-drawer-thumb-label { display: block; padding: 6px 8px; font-size: 12px; color: #526a82; }
 .combo-drawer-thumb-remove { position: absolute; top: 6px; right: 6px; padding: 3px 8px; font-size: 11px; border: 1px solid #f3c4c9; background: #fff; color: #db5960; border-radius: 7px; cursor: pointer; }
+.combo-drawer-thumb-primary { position: absolute; top: 6px; left: 6px; padding: 2px 8px; font-size: 11px; background: #087bf5; color: #fff; border-radius: 7px; z-index: 1; }
 
 /* 提示词模板预设页 */
 .combo-preset-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }

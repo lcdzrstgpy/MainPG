@@ -292,6 +292,75 @@ def _ai_error_reason(exc: Exception) -> str:
     return message[:200] if message else type(exc).__name__
 
 
+def _real_failure_reason(item: Mapping[str, Any], result: Mapping[str, Any]) -> str:
+    """从处理过程中的真实留痕拼装「真正失败原因」，供后台直接展示。
+
+    优先取 ai_notes 中的底层 :ai-failed: 详情（例如 image:ai-failed: <provider 报错>），
+    其次附加生成不足 / 质量门降级 / 回退来源图等过程信号；最后才回退到前端展示用的
+    reason / debug_hint，避免后台只看到笼统的「待补充」等中性提示。
+    """
+    notes = [str(note) for note in (result.get("ai_notes") or [])]
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def add(text: str) -> None:
+        text = text.strip()
+        if text and text not in seen:
+            seen.add(text)
+            parts.append(text)
+
+    # 1) 底层 AI 失败详情（含 image_grid_incomplete 完全未生成时记下的 image:ai-failed:）。
+    failure_detail = ""
+    marker = ":ai-failed:"
+    for note in reversed(notes):
+        _stage, separator, detail = note.partition(marker)
+        if separator and detail.strip():
+            failure_detail = detail.strip()
+            break
+    if failure_detail:
+        add(f"AI 失败：{failure_detail}")
+
+    # 2) 图片不足 / 质量门降级 / 回退来源图等过程信号。
+    for note in notes:
+        if "grid_incomplete" in note:
+            add(f"轮播图未达 4 张：{note}")
+        elif "quality_unresolved" in note:
+            add(f"图片质量未达标：{note}")
+        elif "quality_repair_failed" in note:
+            add(f"图片质量修复失败：{note}")
+        elif "media-unconfigured" in note:
+            add(f"媒体未配置无法出图：{note}")
+        elif "grid_fallback_source" in note:
+            add("生图全失败，已回退为来源图入库")
+
+    # 3) 提供方尝试次数与状态类，用于定位根因。
+    attempts = result.get("provider_attempts") or {}
+    if isinstance(attempts, dict) and any(
+        isinstance(v, (int, float)) and v > 1 for v in attempts.values()
+    ):
+        add("生成发生多次重试：" + ", ".join(
+            f"{k}={v}"
+            for k, v in attempts.items()
+            if isinstance(v, (int, float)) and v > 1
+        ))
+    status_classes = result.get("provider_status_classes") or {}
+    if isinstance(status_classes, dict):
+        noisy = [f"{k}={v}" for k, v in status_classes.items() if not str(v).startswith("success")]
+        if noisy:
+            add("提供方状态：noise")
+            _last = noisy[-1]
+            parts[-1] = f"提供方状态：{_last}"
+
+    # 4) 兜底：前端展示用的原因 / 排错细节。
+    if not parts:
+        fallback = str(item.get("reason") or result.get("debug_hint") or "").strip()
+        if fallback:
+            add(fallback)
+        elif result.get("error_type"):
+            add(f"错误类型：{result['error_type']}")
+    return "；".join(parts)
+
+
 def _billing_call_with_retry(
     function: Callable[..., Any],
     *args: Any,
@@ -4018,11 +4087,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             workspace_id=workspace_id,
                         ),
                     )
+                vision_billing = False
+                if draft is not None and isinstance(draft.get("raw_payload"), dict):
+                    try:
+                        vision_billing = self._doubao_identity_required(
+                            draft["raw_payload"], draft, settings, preflight_only
+                        )
+                    except Exception:
+                        vision_billing = False
                 usage_ids = self._reserve_product_processing_item_usage(
                     task_id,
                     item_id,
                     settings,
                     workspace_id=workspace_id,
+                    vision_billing=vision_billing,
                 )
                 with server_ai_context(self._task_remote_token(task_id), usage_ids):
                     return self._run_with_item_heartbeat(
@@ -4235,12 +4313,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             if str(repull_state.get("status") or "") == "running":
                 # 下一轮自动补跑还在进行，等最后一轮终态再上报。
                 return
-            failed_items = [
+            # 覆盖「不论什么状态」：只要该项在本次处理中经历过 AI 失败/降级
+            # （含最终被自动补跑、回退来源图或重试转成 completed 的项），都上报
+            # 真实失败原因，供后台诊断；而不仅是终态 failed/attention_required 项。
+            failure_items = [
                 item
                 for item in (task.get("items") or [])
-                if item.get("status") in {"failed", "attention_required"}
+                if self._item_has_failure_trace(item)
             ]
-            if not failed_items:
+            if not failure_items:
                 return
             attention_required = sum(
                 1
@@ -4265,7 +4346,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     str(value) for value in (settings.get("processing_scope") or [])
                 ],
                 "items": [
-                    self._failure_diagnostic_item(item) for item in failed_items
+                    self._failure_diagnostic_item(item) for item in failure_items
                 ],
             }
             threading.Thread(
@@ -4277,6 +4358,50 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         except Exception:
             # 诊断上报绝不允许影响任务主流程。
             pass
+
+    @staticmethod
+    def _item_has_failure_trace(item: Mapping[str, Any]) -> bool:
+        """判断某个商品在本次处理中是否经历过 AI 失败（无论最终状态）。
+
+        覆盖「不论什么状态」：只要底层 AI 服务/质量门出现过失败或降级，
+        即使最终通过自动补跑、回退来源图或重试转为 completed，也要把真实
+        失败原因上报给服务器供后台诊断，而不是只在终态 failed/attention_required
+        时才上报。判定信号取自处理过程中真实的留痕（ai_notes / 诊断字段），
+        不依赖最终 status。
+        """
+        status = str(item.get("status") or "")
+        if status in {"failed", "attention_required"}:
+            return True
+        result = item.get("result") or {}
+        if not isinstance(result, dict):
+            return False
+        if result.get("error_type") or result.get("failure_class"):
+            return True
+        if result.get("rejected_image_paths"):
+            return True
+        notes = (result.get("ai_notes") or [])
+        if any(
+            isinstance(note, str)
+            and (
+                ":ai-failed:" in note
+                or "quality_unresolved" in note
+                or "quality_repair_failed" in note
+                or "media-unconfigured" in note
+                or "grid_incomplete" in note
+            )
+            for note in notes
+        ):
+            return True
+        attempts = result.get("provider_attempts") or {}
+        if any(isinstance(v, (int, float)) and v > 1 for v in attempts.values()):
+            return True
+        status_classes = result.get("provider_status_classes") or {}
+        if any(
+            isinstance(v, str) and v and v not in {"success", "receipt_hit"}
+            for v in status_classes.values()
+        ):
+            return True
+        return False
 
     @staticmethod
     def _failure_diagnostic_item(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -4292,6 +4417,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "title": str(item.get("title") or "")[:200],
             "status": str(item.get("status") or ""),
             "reason": str(item.get("reason") or "")[:2000],
+            # 真正失败原因：从 ai_notes 提取底层 :ai-failed: 详情（含 image_grid_incomplete
+            # 且完全未生成时记下的 image:ai-failed:），并附带生成不足/重试 / 质量门降级等
+            # 过程信号，供后台直接看到，而非只有前端的笼统「待补充」提示。
+            "real_failure_reason": _real_failure_reason(item, result)[:2000],
             "failure_class": str(result.get("failure_class") or ""),
             "error_type": str(result.get("error_type") or ""),
             "operator_hint": str(result.get("operator_hint") or "")[:2000],
@@ -4307,6 +4436,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "provider_status_classes": {
                 str(key): str(value)
                 for key, value in (result.get("provider_status_classes") or {}).items()
+            },
+            "provider_status_codes": {
+                str(key): int(value)
+                for key, value in (result.get("provider_status_codes") or {}).items()
+                if isinstance(value, (int, float))
             },
             "stage_timings_ms": {
                 str(key): int(value)
@@ -4346,9 +4480,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """
         task = self._require_task(task_id, workspace_id)
         settings = dict(task["settings"] or {})
-        if not bool(settings.get("auto_repull", True)):
-            # 用户在提交时选择「不自动修复失败项」：任务结束后保留失败项，
-            # 留给用户在结果页手动重新处理（默认开启，保持原有自动补跑行为）。
+        if not bool(settings.get("auto_repull", False)):
+            # 用户在提交时未勾选「自动补跑」（默认关闭）：任务结束后保留失败项，
+            # 留给用户在结果页手动重新处理。
             return
         state = settings.get("_auto_repull")
         if not failures and not (
@@ -4707,8 +4841,59 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 raise RuntimeError(safe_reason) from None
             raise first_error
 
+    def _doubao_identity_required(
+        self,
+        raw: dict[str, Any],
+        draft: dict[str, Any],
+        settings: dict[str, Any],
+        preflight_only: bool,
+    ) -> bool:
+        """Predict whether this item will run Doubao vision (subject identity).
+
+        Mirrors the inline `requires_doubao_identity` in ``_process_one`` so the
+        per-item reserve step can charge ``product_processing.vision`` only when
+        a visual call is actually going to happen (avoid silent over-billing).
+        """
+        scope = set(settings.get("processing_scope") or [])
+        image_url = self._text(
+            draft.get("image_url")
+            or raw.get("main_image_url")
+            or self._first(raw.get("source_image_urls"))
+        )
+        source_image_urls = list(
+            dict.fromkeys(
+                value
+                for value in [image_url, *self._url_list(raw.get("source_image_urls"))]
+                if value
+            )
+        )
+        need_grid = (
+            not preflight_only
+            and "four_grid" in scope
+            and _as_bool(settings.get("ai_media_opt_in"), default=True)
+        )
+        need_detail = (
+            not preflight_only
+            and "detail_images" in scope
+            and _as_bool(settings.get("ai_media_opt_in"), default=True)
+        )
+        return bool(
+            not preflight_only
+            and _ai_enabled()
+            and source_image_urls
+            and (
+                need_grid
+                or need_detail
+                or bool({"title", "details", "product_dimensions"} & scope)
+                or bool(self._unique_variant_values(raw))
+            )
+        )
+
     def _billable_product_processing_features(
-        self, settings: dict[str, Any]
+        self,
+        settings: dict[str, Any],
+        *,
+        vision_billing: bool = False,
     ) -> list[tuple[str, str]]:
         scope = set(settings.get("processing_scope") or [])
         text_enabled = (
@@ -4727,6 +4912,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             features.append(("text", "product_processing.text"))
         if image_enabled:
             features.append(("image_grid", "product_processing.image_grid_2k"))
+        # 主体识别（豆包识图）独立计费，仅在实际需要发起视觉调用时预留。
+        if vision_billing:
+            features.append(("vision", "product_processing.vision"))
         return features
 
     def _reserve_product_processing_item_usage(
@@ -4736,6 +4924,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         settings: dict[str, Any],
         *,
         workspace_id: str = "local",
+        vision_billing: bool = False,
     ) -> dict[str, str]:
         existing = self._reserved_usage_ids(task_id, item_id)
         if existing:
@@ -4749,7 +4938,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         account_id = self._text(billing.get("account_id"))
         attempt = None
         try:
-            for kind, feature_key in self._billable_product_processing_features(settings):
+            for kind, feature_key in self._billable_product_processing_features(
+                settings, vision_billing=vision_billing
+            ):
                 attempt = None
                 if account_id:
                     attempt = self.repository.begin_product_billing_attempt(
@@ -5278,16 +5469,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "delete_downstream_stage_receipts",
             )
         )
-        requires_doubao_identity = bool(
-            not preflight_only
-            and _ai_enabled()
-            and source_image_urls
-            and (
-                need_grid
-                or need_detail
-                or bool({"title", "details", "product_dimensions"} & scope)
-                or bool(self._unique_variant_values(raw))
-            )
+        requires_doubao_identity = self._doubao_identity_required(
+            raw, draft, settings, preflight_only
         )
         if requires_doubao_identity:
             stage_started = time.perf_counter()
@@ -5351,6 +5534,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     record_stage("doubao_subject", stage_started)
                     configuration_error = exc.error_kind == "configuration"
                     identity_error = exc.error_kind in {"invalid_input", "invalid_response"}
+                    provider_http_status = (
+                        exc.status_code if exc.error_kind == "provider_http" else None
+                    )
+                    http_hint = (
+                        f"；上游返回 HTTP {provider_http_status}"
+                        if provider_http_status is not None
+                        else ""
+                    )
+                    upstream_detail = getattr(exc, "upstream_detail", None)
+                    upstream_hint = f"；上游: {upstream_detail}" if upstream_detail else ""
                     return {
                         **item,
                         "title": title,
@@ -5387,7 +5580,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                                 else (
                                     "服务器主体识别结果不符合结构化合同；已阻止后续文案和生图"
                                     if identity_error
-                                    else "服务器主体识别暂时不可用；未调用后续文本或生图，请稍后重试"
+                                    else "服务器主体识别暂时不可用；未调用后续文本或生图，请稍后重试" + http_hint + upstream_hint
                                 )
                             ),
                             "retryable": True,
@@ -5397,6 +5590,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             },
                             "provider_status_classes": {
                                 "doubao_vision": exc.error_kind
+                            },
+                            "provider_status_codes": {
+                                "doubao_vision": exc.status_code
                             },
                             "stage_timings_ms": timing_snapshot(),
                         },
@@ -5980,42 +6176,22 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             provider_status_classes["four_grid"] = grid_output.provider_status_class
             stage_timings_ms.update(grid_output.stage_timings_ms)
             if len(grid_image_paths) != 4:
-                # Success means four real carousel images. Never turn a split or
-                # generation failure into a misleading completed result, even when
-                # an older task payload contains force-import compatibility flags.
-                mode_label = "精品4K" if premium_mode else "普通智能生图"
+                # 与 POD 处理一致：不刻意做质量检验，也不因图片不足 4 张而阻断流水线。
+                # 保留已生成的可用轮播图，完全没有时回退来源图补齐；仅留痕供后台诊断，
+                # 让商品正常进入 completed（对齐 POD「生成即入库」）。
                 image_failure_detail = self._latest_ai_failure_detail(ai_notes)
-                return {
-                    **item,
-                    "title": optimized_title,
-                    "image_url": image_url,
-                    "status": "attention_required",
-                    "reason": "商品图片待补充",
-                    "result": {
-                        "error_type": "image_grid_incomplete",
-                        "failure_class": "technical_retryable",
-                        "partial_result": True,
-                        "pending_stage": "carousel_images",
-                        "operator_hint": "图片未达质量标准，可重试生成；或直接入库后人工替换图片",
-                        "debug_hint": (
-                            f"{mode_label}未生成4张可用轮播图；生成图未通过本地质量门；"
-                            "可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警"
-                            + (f"；底层原因：{image_failure_detail}" if image_failure_detail else "")
-                        ),
-                        "retryable": True,
-                        "rejected_image_paths": list(grid_output.rejected_image_paths),
-                        "optimized_title": optimized_title,
-                        "description": description,
-                        "variant_value_translations": variant_value_translations,
-                        "product_dimensions": product_dimensions,
-                        "vision_identity": vision_identity,
-                        "text_generation": text_generation,
-                        "ai_notes": ai_notes,
-                        "provider_attempts": provider_attempts,
-                        "provider_status_classes": provider_status_classes,
-                        "stage_timings_ms": timing_snapshot(),
-                    },
-                }
+                if ai_notes is not None:
+                    ai_notes.append(
+                        f"image:grid_incomplete:{len(grid_image_paths)}/{image_generation_count}"
+                    )
+                    if image_failure_detail:
+                        ai_notes.append(f"image:ai-failed: {image_failure_detail}")
+                if not grid_image_paths:
+                    # 完全没有生成可用轮播图：记录原因并回退来源图作为轮播图，
+                    # 对齐 POD 直接以来源图入库，而非让商品停留在待补充。
+                    grid_image_paths = list(source_image_urls[:image_generation_count])
+                    if ai_notes is not None and grid_image_paths:
+                        ai_notes.append("image:grid_fallback_source")
         if need_detail and not images_receipt_hit:
             # 检查点：任务被暂停/取消时不再合成或发起详情图生成。
             self._raise_if_task_stopped(task_id, workspace_id)
@@ -8107,6 +8283,52 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 parts.append(f"{name}: {value}")
         return "; ".join(parts[:12])
 
+    @staticmethod
+    def _compact_vision_image(content: bytes, fallback_media_type: str) -> tuple[bytes, str]:
+        """把源图缩放到服务端安全尺寸并重编码为 JPEG，避免视觉识别请求体超限。
+
+        服务端 `/api/customer/ai/chat` 限制单次请求体 ≤ 12MB、单张图 ≤ 8MB。多张较大源图
+        直接拼 base64 会稳定超限而被秒拒（HTTP 413/400 → provider_http），表现为「开始处理
+        秒失败、进度飞快、整单全失败」。这里在客户端把每张源图缩到安全尺寸并统一重编码为
+        JPEG，确保识别请求体始终远低于服务端上限。Pillow 不可用或图片不可解码时回退到
+        原始字节与原始媒体类型（保持既有行为）。
+        """
+        try:
+            from io import BytesIO
+            from PIL import Image  # type: ignore[import-not-found]
+        except Exception:
+            return content, fallback_media_type
+        try:
+            image = Image.open(BytesIO(content))
+            image.load()
+        except Exception:
+            return content, fallback_media_type
+        try:
+            if image.mode in {"RGBA", "LA", "P"}:
+                background = Image.new("RGB", image.size, (255, 255, 255))
+                rgba = image.convert("RGBA")
+                background.paste(rgba, mask=rgba.split()[-1])
+                image = background
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
+        except Exception:
+            return content, fallback_media_type
+        max_side = 1280
+        if max(image.size) > max_side:
+            image.thumbnail((max_side, max_side))
+        quality = 85
+        # 每张图预算 < 1MB：即便最多 6 张，合并 base64 后的请求体也远低于服务端 12MB 上限
+        # （6 × 1MB × base64 膨胀 1.33 ≈ 8MB < 12MB），避免被秒拒。
+        budget_bytes = 1 * 1024 * 1024
+        while True:
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", optimize=True, quality=quality)
+            encoded = buffer.getvalue()
+            if len(encoded) <= budget_bytes or quality <= 50:
+                break
+            quality -= 10
+        return encoded, "image/jpeg"
+
     def _image_to_data_url(self, image_url: str) -> str:
         """安全下载图片并转 base64 data URL（供多模态视觉识别，隔离下载/限字节）。"""
         with self._source_data_url_lock:
@@ -8132,7 +8354,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             or getattr(image, "content_type", None)
             or "image/jpeg"
         ).split(";", 1)[0].strip()
-        value = f"data:{content_type or 'image/jpeg'};base64,{base64.b64encode(content).decode('ascii')}"
+        content, content_type = self._compact_vision_image(
+            content, content_type or "image/jpeg"
+        )
+        value = f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}"
         with self._source_data_url_lock:
             if len(self._source_data_url_cache) >= 64:
                 self._source_data_url_cache.pop(next(iter(self._source_data_url_cache)))

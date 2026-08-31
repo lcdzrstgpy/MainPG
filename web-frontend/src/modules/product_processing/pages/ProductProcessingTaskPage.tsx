@@ -111,7 +111,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       ipCheck: true,
       maxParallelDrafts: 8,
       imageTemplate: 'A',
-      autoRepull: true,
+      autoRepull: false,
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
@@ -257,7 +257,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       ip_check: options.ipCheck,
       max_parallel_drafts: options.maxParallelDrafts,
       image_template: options.imageTemplate || 'A',
-      // 用户选择是否对技术可重试的失败项自动补跑（默认开启）
+      // 用户选择是否对技术可重试的失败项自动补跑（默认关闭）
       auto_repull: options.autoRepull !== false,
       // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
       image_generation_count: 4,

@@ -18,6 +18,7 @@ import {
   removeItem,
   reviewPreview,
   savePrompt,
+  setPrimaryItem,
   updateItem,
   updateSet,
   uploadItem,
@@ -27,7 +28,7 @@ import {
   type ComboRoles,
 } from '../../product_processing/api/comboKitApi';
 import { MaskCanvas } from '../components/MaskCanvas';
-import { resolveActiveTemplate } from '../presetTemplates';
+import { COMBO_PRESET_TEMPLATES, resolveActiveTemplate } from '../presetTemplates';
 import '../styles/comboKit.css';
 
 type Props = { isActive?: boolean; initialSetId?: string };
@@ -151,13 +152,29 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       await refreshSet(sid);
       const full = await getSet(ctx, sid);
       const p = (full.prompt || {}) as Record<string, unknown>;
-      const hasCustomPrompt = Boolean(p.base_prompt_a) || Boolean(p.image_prompts);
-      if (hasCustomPrompt) {
-        setPrompts(((p.image_prompts as Record<string, string>) || {}) as Record<string, string>);
-        setBaseA(String(p.base_prompt_a || ''));
+      const storedBase = String(p.base_prompt_a || '').trim();
+      const storedRoles = ((p.image_prompts as Record<string, string>) || {}) as Record<string, string>;
+      const t = resolveActiveTemplate();
+      const hasRoleContent = Object.values(storedRoles).some((v) => String(v).trim());
+      // 若套装存的模板恰好等于某个内置预设：说明是「自动填充预设」，应在激活新预设时切换过去。
+      const matchesBuiltin = COMBO_PRESET_TEMPLATES.some(
+        (tpl) =>
+          storedBase === tpl.base_prompt_a &&
+          (storedRoles.carousel_2 || '') === tpl.role_directions.carousel_2 &&
+          (storedRoles.carousel_3 || '') === tpl.role_directions.carousel_3 &&
+          (storedRoles.white_bg || '') === tpl.role_directions.white_bg
+      );
+      const isCustomized = (storedBase || hasRoleContent) && !matchesBuiltin;
+      if (isCustomized) {
+        // 用户已自定义：保留，空角色用「当前激活预设」补齐，保证图片板块各辅助词可见。
+        const mergedRoles: Record<string, string> = {
+          ...(t.role_directions as Record<string, string>),
+          ...Object.fromEntries(Object.entries(storedRoles).filter(([, v]) => String(v).trim())),
+        };
+        setBaseA(storedBase);
+        setPrompts(mergedRoles);
       } else {
-        // 未配置自定义模板：用「当前激活预设」自动填充，并写入该套装，保证生成使用该模板。
-        const t = resolveActiveTemplate();
+        // 全新套装 或 旧预设自动填充的套装：按「当前激活预设」填充，并保存到该套装，保证生成使用该模板。
         const imagePrompts = {
           carousel_2: t.role_directions.carousel_2,
           carousel_3: t.role_directions.carousel_3,
@@ -284,6 +301,13 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
     try { await reorderItems(ctx, set.set_id, order); await refreshSet(set.set_id); } catch (e) { fail(e); }
   };
 
+  const onSetPrimary = async (itemId: string) => {
+    if (!set) return;
+    // 乐观更新：本地先把该成员标为主要、其余取消，再请求后端持久化（失败时刷新回滚）。
+    setSet((s) => (s ? { ...s, items: s.items.map((it) => ({ ...it, is_primary: it.item_id === itemId })) } : s));
+    try { await setPrimaryItem(ctx, set.set_id, itemId); } catch (e) { fail(e); }
+  };
+
   const onAnalyze = async () => {
     if (!set) return;
     setBusy('analyze');
@@ -306,6 +330,23 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
     try {
       await savePrompt(ctx, set.set_id, { base_prompt_a: baseA, image_prompts: prompts });
       notify('模板配置已保存到该套装');
+    } catch (e) { fail(e); } finally { setBusy(''); }
+  };
+
+  const onApplyPreset = async () => {
+    if (!set) return;
+    const t = resolveActiveTemplate();
+    const imagePrompts = {
+      carousel_2: t.role_directions.carousel_2,
+      carousel_3: t.role_directions.carousel_3,
+      white_bg: t.role_directions.white_bg,
+    };
+    setBaseA(t.base_prompt_a);
+    setPrompts(imagePrompts);
+    setBusy('savedPrompt');
+    try {
+      await savePrompt(ctx, set.set_id, { base_prompt_a: t.base_prompt_a, image_prompts: imagePrompts });
+      notify('已应用当前预设到该套装的图片模板');
     } catch (e) { fail(e); } finally { setBusy(''); }
   };
 
@@ -387,10 +428,6 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
           <div className="combo-grid">
             <label>套装名称<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
             <label>SKU 货号<input value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} /></label>
-            <label>SKU 全称（可编辑）<input value={form.sku_display} onChange={(e) => setForm({ ...form, sku_display: e.target.value })} /></label>
-            <label>类目路径（选填）<input value={form.category_path} onChange={(e) => setForm({ ...form, category_path: e.target.value })} placeholder="选套装类目后按需填写，可留空" /></label>
-            <label>类目ID（选填）<input value={form.category_id} onChange={(e) => setForm({ ...form, category_id: e.target.value })} placeholder="可留空" /></label>
-            <label>各商品规格（;分隔）<input value={form.spec} onChange={(e) => setForm({ ...form, spec: e.target.value })} placeholder="暗黑版;透明版" /></label>
           </div>
           <h3 className="combo-subtitle">店小秘导入必填字段</h3>
           <div className="combo-grid">
@@ -399,7 +436,6 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
             <label>宽（cm）<input type="number" value={form.width_cm} onChange={(e) => setForm({ ...form, width_cm: e.target.value })} /></label>
             <label>高（cm）<input type="number" value={form.height_cm} onChange={(e) => setForm({ ...form, height_cm: e.target.value })} /></label>
             <label>重量（g）<input type="number" value={form.weight_g} onChange={(e) => setForm({ ...form, weight_g: e.target.value })} /></label>
-            <label>库存（件）<input type="number" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} /></label>
             <label>产品分类（必填，套装类目）
               <select value={form.category_name} onChange={(e) => setForm({ ...form, category_name: e.target.value })}>
                 <option value="">— 请选择套装类目 —</option>
@@ -408,10 +444,20 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
                 ))}
               </select>
             </label>
-            <label>建议售价（USD）<input type="number" value={form.suggested_price_usd} onChange={(e) => setForm({ ...form, suggested_price_usd: e.target.value })} /></label>
-            <label>识别码类型<input value={form.id_type} onChange={(e) => setForm({ ...form, id_type: e.target.value })} placeholder="如 UPC/EAN" /></label>
-            <label>识别码<input value={form.id_code} onChange={(e) => setForm({ ...form, id_code: e.target.value })} /></label>
           </div>
+          <details className="combo-extra-fields">
+            <summary>扩展字段（选填，不影响导出必填校验）</summary>
+            <div className="combo-grid">
+              <label>SKU 全称（可编辑）<input value={form.sku_display} onChange={(e) => setForm({ ...form, sku_display: e.target.value })} /></label>
+              <label>各商品规格（;分隔）<input value={form.spec} onChange={(e) => setForm({ ...form, spec: e.target.value })} placeholder="暗黑版;透明版" /></label>
+              <label>库存（件）<input type="number" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} /></label>
+              <label>建议售价（USD）<input type="number" value={form.suggested_price_usd} onChange={(e) => setForm({ ...form, suggested_price_usd: e.target.value })} /></label>
+              <label>识别码类型<input value={form.id_type} onChange={(e) => setForm({ ...form, id_type: e.target.value })} placeholder="如 UPC/EAN" /></label>
+              <label>识别码<input value={form.id_code} onChange={(e) => setForm({ ...form, id_code: e.target.value })} /></label>
+              <label>类目路径（选填）<input value={form.category_path} onChange={(e) => setForm({ ...form, category_path: e.target.value })} placeholder="可留空" /></label>
+              <label>类目ID（选填）<input value={form.category_id} onChange={(e) => setForm({ ...form, category_id: e.target.value })} placeholder="可留空" /></label>
+            </div>
+          </details>
           <div className="combo-actions"><button onClick={() => void saveSet()} disabled={busy === 'save'}>保存套装信息</button></div>
           <div className="combo-hint">SKU 规则：一套套装 = 单个独立 SKU；子商品仅作素材。导出店小秘需补齐必填项，成品图须已发布到 COS。</div>
         </section>
@@ -447,6 +493,10 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
                   <MaskCanvas key={currentItem.item_id} setId={set.set_id} item={currentItem} onSaveMask={onSaveMask} />
                 </div>
                 <div className="combo-edit-stage-info">
+                  <label className="combo-primary-toggle">
+                    <input type="checkbox" checked={!!currentItem.is_primary} onChange={(e) => { if (e.target.checked) void onSetPrimary(currentItem.item_id); }} />
+                    <span>设为套装主要商品（标题/主图主角）</span>
+                  </label>
                   <label>主体词<input value={currentItem.subject_keywords} onChange={(e) => onItemKeyword(currentItem.item_id, e.target.value)} placeholder="如：手机壳" /></label>
                   <label>规格<input value={currentItem.spec_text} onChange={(e) => onItemSpec(currentItem.item_id, e.target.value)} placeholder="如：暗黑版" /></label>
                   <button className="btn-mini primary" onClick={() => setDrawerOpen(true)}>切换其他图片</button>
@@ -479,7 +529,10 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
               <label key={role.role}>{role.label}<textarea rows={2} value={prompts[role.role] ?? ''} onChange={(e) => setPrompts({ ...prompts, [role.role]: e.target.value })} /></label>
             ))}
           </div>
-          <div className="combo-actions"><button onClick={() => void onSavePrompt()} disabled={busy === 'savedPrompt'}>保存模板到该套装</button></div>
+          <div className="combo-actions">
+            <button className="primary" onClick={() => void onApplyPreset()} disabled={busy === 'savedPrompt'}>应用当前预设</button>
+            <button onClick={() => void onSavePrompt()} disabled={busy === 'savedPrompt'}>保存模板到该套装</button>
+          </div>
           <div className="combo-hint">细节图、详情图复用固定模板，不开放自定义提示词。可在「提示词模板预设」切换全局默认模板。</div>
           <h3 className="combo-subtitle">生成 6 张成品图</h3>
           <div className="combo-actions"><button className="primary" onClick={() => void onGenerateImages()} disabled={busy === 'images'}>{busy === 'images' ? '并行生成中…' : '生成 6 张图（并行，扣 100 积分）'}</button></div>
@@ -677,6 +730,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
                   onClick={() => { setSelectedItemId(item.item_id); setDrawerOpen(false); }}
                 >
                   <img src={comboKitOriginUrl(set.set_id, (item.original_url || '').split('/').pop() || '')} alt={item.subject_keywords || '原图'} referrerPolicy="no-referrer" />
+                  {item.is_primary && <span className="combo-drawer-thumb-primary">主要</span>}
                   <span className="combo-drawer-thumb-label">{idx + 1}. {item.subject_keywords || '未填主体词'}</span>
                   <button className="combo-drawer-thumb-remove" onClick={(e) => { e.stopPropagation(); void onRemoveItem(item.item_id); }}>移除</button>
                 </div>

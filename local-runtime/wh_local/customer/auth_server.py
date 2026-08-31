@@ -974,7 +974,11 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         account = _required_account(db_path, authorization)
         feature_key = str(payload.get("feature_key") or "").strip()
         idempotency_key = str(payload.get("idempotency_key") or "").strip()
-        if feature_key not in {"product_processing.text", "product_processing.image_grid_2k"}:
+        if feature_key not in {
+            "product_processing.text",
+            "product_processing.image_grid_2k",
+            "product_processing.vision",
+        }:
             raise HTTPException(status_code=400, detail="unsupported billing feature")
         if not 16 <= len(idempotency_key) <= 200:
             raise HTTPException(status_code=400, detail="idempotency_key is required")
@@ -1203,23 +1207,28 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
         usage_id = str(payload.get("usage_id") or "")
+        # 该网关同时承载文本与视觉（多模态）聊天。feature_key 由 usage 事件决定，
+        # 不再硬编码文本，确保视觉 usage_id 不会被 "usage feature does not match" 拒绝。
+        feature_key = _usage_feature(db_path, usage_id)
+        if feature_key not in {"product_processing.text", "product_processing.vision"}:
+            raise HTTPException(status_code=400, detail="usage feature does not match operation")
         _require_reserved_usage(
             db_path,
             usage_id=usage_id,
             account_id=str(account["account_id"]),
-            feature_key="product_processing.text",
+            feature_key=feature_key,
         )
         messages = _validated_chat_messages(payload.get("messages"))
         if "model" in payload and not isinstance(payload.get("model"), str):
             raise HTTPException(status_code=400, detail="text request is invalid")
         request_hash = _gateway_request_hash(
-            {"model": TEXT_MODEL, "messages": messages}
+            {"feature_key": feature_key, "model": TEXT_MODEL, "messages": messages}
         )
         claim = _claim_gateway_request(
             db_path,
             usage_id=usage_id,
             account_id=str(account["account_id"]),
-            feature_key="product_processing.text",
+            feature_key=feature_key,
             request_hash=request_hash,
         )
         if claim.cached_response is not None:

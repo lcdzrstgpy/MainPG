@@ -39,6 +39,34 @@ def _classify_http_status(status_code: int) -> tuple[str, bool]:
     return "provider_http", False
 
 
+def _extract_upstream_detail(body: bytes) -> str | None:
+    """Pull a short, printable error detail (code/message) out of an Ark/网关 body.
+
+    Returns None when the body is not the expected JSON error envelope. The result
+    is intentionally truncated and stripped of control chars so it is safe to persist
+    in task diagnostics without leaking credentials.
+    """
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return None
+    parts: list[str] = []
+    code = error.get("code")
+    message = error.get("message")
+    if code:
+        parts.append(f"code={str(code)[:80]}")
+    if message:
+        parts.append(str(message)[:200])
+    if not parts:
+        return None
+    detail = "；".join(part for part in parts if part)
+    detail = "".join(ch for ch in detail if ch.isprintable()).strip()
+    return detail or None
+
+
 class DoubaoArkError(RuntimeError):
     """Sanitized Ark failure safe for persisted task diagnostics."""
 
@@ -50,12 +78,16 @@ class DoubaoArkError(RuntimeError):
         retryable: bool,
         status_code: int | None = None,
         attempt_count: int = 0,
+        upstream_detail: str | None = None,
     ) -> None:
         super().__init__(message)
         self.error_kind = str(error_kind)
         self.retryable = bool(retryable)
         self.status_code = status_code
         self.attempt_count = max(0, int(attempt_count))
+        # 上游（网关或火山方舟）返回的脱敏错误详情（code/message），用于区分 400/413/404，
+        # 避免只看到一个不透光的 provider_http。
+        self.upstream_detail = upstream_detail
 
 
 class DoubaoArkClient:
@@ -67,14 +99,14 @@ class DoubaoArkClient:
     rollout keeps both paths live).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, usage_kind: str = "text") -> None:
         self.granted_key = granted_key("ark")
         self.direct = bool(self.granted_key)
         self.platform_token = remote_token()
-        self.usage_id = usage_id("text")
+        self.usage_id = usage_id(usage_kind)
         if not self.direct and (not self.platform_token or not self.usage_id):
             raise DoubaoArkError(
-                "server-managed text usage is not reserved",
+                "server-managed usage is not reserved",
                 error_kind="configuration",
                 retryable=False,
             )
@@ -129,6 +161,7 @@ class DoubaoArkClient:
                 error_kind=error_kind,
                 retryable=retryable,
                 status_code=status_code,
+                upstream_detail=_extract_upstream_detail(body),
             )
 
         try:
@@ -186,6 +219,7 @@ class DoubaoArkClient:
                 error_kind=error_kind,
                 retryable=retryable,
                 status_code=status_code,
+                upstream_detail=_extract_upstream_detail(body),
             )
 
         try:

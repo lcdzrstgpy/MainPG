@@ -46,6 +46,9 @@ FEATURE_PRICING: dict[str, FeaturePricing] = {
     # (text 5 + image 35) and reserves 45 points while it is running.
     "product_processing.text": FeaturePricing(5, 5, 5, 1.0),
     "product_processing.image_grid_2k": FeaturePricing(40, 35, 35, 1.0),
+    # 豆包识图独立计费：视觉主体识别不再与文本共用 usage_id("text")，避免
+    # 视觉成本被文本 5 分打包。该值为兼容估计（×10 单位），预留 15 / 扣 10 积分。
+    "product_processing.vision": FeaturePricing(15, 10, 10, 1.0),
     # 商品自定义组合：整条流程一口价，分两步单次计费（生成主图 40 / 并行三图+文本 60）。
     "product_processing.combo_main": FeaturePricing(40, 40, 40, 1.0),
     "product_processing.combo_process": FeaturePricing(60, 60, 60, 1.0),
@@ -856,6 +859,11 @@ def _pricing_payload(rule: Any) -> dict[str, Any]:
     text_charge = int(rule["text_charge_units"])
     image_reserve = int(rule["image_reserve_units"])
     image_charge = int(rule["image_charge_units"])
+    # 视觉主体识别兼容估计：与 _pricing 的 legacy 路径（points × scale）保持一致，
+    # 没有独立规则列，取值来自 FEATURE_PRICING，按 point_unit_scale 换算成单位。
+    _vision = FEATURE_PRICING["product_processing.vision"]
+    vision_reserve = int(_vision.reserve_points) * scale
+    vision_charge = int(_vision.fixed_charge_points) * scale
     return {
         "rule_version": int(rule["rule_version"]),
         "currency": "CNY",
@@ -879,6 +887,12 @@ def _pricing_payload(rule: Any) -> dict[str, Any]:
                 "charge_units": image_charge,
                 "reserve_points": _display_points(image_reserve, scale),
                 "charge_points": _display_points(image_charge, scale),
+            },
+            "product_processing.vision": {
+                "reserve_units": vision_reserve,
+                "charge_units": vision_charge,
+                "reserve_points": _display_points(vision_reserve, scale),
+                "charge_points": _display_points(vision_charge, scale),
             },
         },
         "min_client_version": str(rule["min_client_version"] or ""),
