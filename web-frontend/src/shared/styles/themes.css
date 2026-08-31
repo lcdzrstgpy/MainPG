@@ -3,7 +3,7 @@
    主题通过 [data-theme] 属性切换：
      - classic  : 经典蓝青（默认）
      - sunset   : 暖阳橙
-     - violet   : 深空紫
+     - violet   : 樱雾粉紫
      - quirky   : 怪趣贴纸
      - chinese  : 水墨青黛
    ================================================================ */
@@ -185,7 +185,7 @@
   --theme-module-overlay: rgba(67, 20, 7, .22);
 }
 
-/* ---- 粉白紫：柔和少女风 ---- */
+/* ---- 樱雾粉紫：柔和、低饱和的女生向主题 ---- */
 [data-theme="violet"] {
   --theme-page-bg: #f5e4f1;
   --theme-card-bg: rgba(255, 244, 251, .95);
@@ -4377,12 +4377,10 @@
   .section-heading h2,
   .personal-card-title h2
 ) {
-  font-family: "STKaiti", "KaiTi", "Kaiti SC", "FangSong", "Microsoft YaHei", sans-serif;
   letter-spacing: .045em;
 }
 
 [data-theme="dessert"] :is(.sidebar-item, .sidebar-subitem, .page-tab > button, .theme-option-name) {
-  font-family: "STKaiti", "KaiTi", "Kaiti SC", "Microsoft YaHei", sans-serif;
   font-weight: 800;
   letter-spacing: .025em;
 }

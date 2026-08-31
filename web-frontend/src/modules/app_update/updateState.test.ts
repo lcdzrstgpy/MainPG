@@ -117,6 +117,18 @@ test("download progress and failure have distinct public dialog states", () => {
   );
 });
 
+test("full installer progress accepts the runtime percentage field", () => {
+  const downloading = toUpdateDialogState({
+    state: "downloading",
+    current_version: "1.2.0",
+    release: { version: "1.3.0", mandatory: false, release_notes: "", published_at: "" },
+    progress: { downloaded_bytes: 68, total_bytes: 100, percentage: 68 },
+  });
+
+  assert.equal(downloading.phase, "downloading");
+  assert.equal(downloading.progress, 68);
+});
+
 test("no update response does not render a dialog", () => {
   assert.equal(toUpdateDialogState({ state: "idle" }).visible, false);
 });
