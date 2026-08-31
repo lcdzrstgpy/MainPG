@@ -815,6 +815,17 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 shop_candidate_uniqueness_sql.read_text(encoding="utf-8"),
             )
         )
+    dimension_templates_sql = (
+        root / "modules" / "product_processing" / "migrations" / "005_dimension_templates.sql"
+    )
+    if dimension_templates_sql.exists():
+        migrations.append(
+            (
+                "product_processing:005_dimension_templates",
+                "product_processing",
+                dimension_templates_sql.read_text(encoding="utf-8"),
+            )
+        )
     pod_customization_migrations = (
         "001_pod_customization",
         "002_direct_listing_trials",

@@ -2,12 +2,14 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import select
 
 from wh_local.data_collection.routes import _plugin_physical_evidence, _plugin_product_to_draft
 from wh_local.modules.product_processing.api.schemas import PreviewDesiredState, PreviewSaveItem
 from wh_local.modules.product_processing.domain.workbooks import _dxm_export_rows
 from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
 from wh_local.modules.product_processing.infrastructure.database import create_database
+from wh_local.modules.product_processing.infrastructure.dimension_template_orm import DimensionObservationRow
 from wh_local.modules.product_processing.infrastructure.repository import ProductProcessingRepository
 from wh_local.modules.product_processing.service import ProductProcessingService
 from wh_local.modules.product_processing.service import ProductProcessingValidationError
@@ -231,6 +233,23 @@ def test_preview_persists_per_sku_package_overrides_without_mutating_capture(tmp
     after = service.task_preview(task["id"], workspace_id="local")["items"][0]
     assert after["shipping_package_records"] == [source_record]
     assert after["overrides"]["shipping_package_records"] == {"sku-black": {"weight_g": 1350}}
+
+    # Re-saving the same desired package value (for example while editing only
+    # the title) must not turn one product into multiple statistical samples.
+    service.save_task_preview(
+        task["id"],
+        [{
+            "product_draft_id": draft["id"],
+            "expected_preview_revision": after["preview_revision"],
+            "overrides": {"shipping_package_records": {"sku-black": {"weight_g": 1350}}},
+        }],
+        workspace_id="local",
+    )
+    with service.repository.database.sessions() as session:
+        observations = session.scalars(select(DimensionObservationRow)).all()
+        assert len(observations) == 1
+        assert observations[0].weight_g == 1350
+        assert observations[0].source_kind == "manual_confirmed"
 
 
 @pytest.mark.parametrize("patch", [{"weight_g": float("nan")}, {"weight_g": float("inf")}, {"weight_g": True}, {"weight_g": 1, "specification": "spoof"}])

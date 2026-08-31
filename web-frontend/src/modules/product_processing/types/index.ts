@@ -364,6 +364,10 @@ export type PreviewItem = {
   shipping_package_records?: ShippingPackageRecord[];
   /** 重量/尺寸字段来源：manual=手动 / source=采集值 / ai=AI 预估 */
   dimension_provenance?: Record<string, string>;
+  /** 每个物流字段的置信度：high / medium / low。 */
+  dimension_confidence?: Record<string, string>;
+  /** 被人工先验硬边界修正过的 AI 字段。 */
+  dimension_clamped_fields?: string[];
 };
 
 export type PreviewResponse = {
