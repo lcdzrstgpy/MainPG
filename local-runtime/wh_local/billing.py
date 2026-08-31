@@ -24,9 +24,12 @@ BATCH_BILLING_PROFILE_POD = "pod_random_v1"
 # POD 每条款式定价：服务器随机取 40..50 整数积分。
 POD_LINK_PRICE_MIN_POINTS = 40
 POD_LINK_PRICE_VARIANTS = 11
-TOPUP_PROMOTION_ID = "topup_double"
-TOPUP_PROMOTION_NAME = "充值积分翻倍活动"
-TOPUP_PROMOTION_MULTIPLIER = 2
+# The historical ``topup_double`` configuration remains in SQLite for audit
+# and old order snapshots.  New orders use this fixed rule and deliberately do
+# not read that mutable configuration.
+TOPUP_PROMOTION_ID = "fixed_package_bonus_25"
+TOPUP_PROMOTION_NAME = "固定套餐赠送 25%"
+TOPUP_PROMOTION_BONUS_PERCENT = 25
 
 
 @dataclass(frozen=True)
@@ -74,74 +77,13 @@ def active_pricing(database_path: Path) -> dict[str, Any]:
     return cache.get_or_set("pricing:active", 60, load)
 
 
-def topup_promotion_status(database_path: Path) -> dict[str, Any]:
-    """Return the current manually managed recharge activity state."""
-    with transaction(database_path) as conn:
-        return _topup_promotion_payload(_topup_promotion(conn))
-
-
-def set_topup_promotion_active(
-    database_path: Path,
-    *,
-    active: bool,
-    updated_by: str,
-) -> dict[str, Any]:
-    """Enable or disable the fixed double-points campaign without a restart."""
-    now = _utc_now()
-    with transaction(database_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO billing_topup_promotions (
-                promotion_id, name, multiplier, is_active, updated_at, updated_by
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(promotion_id) DO UPDATE SET
-                name = excluded.name,
-                multiplier = excluded.multiplier,
-                is_active = excluded.is_active,
-                updated_at = excluded.updated_at,
-                updated_by = excluded.updated_by
-            """,
-            (
-                TOPUP_PROMOTION_ID,
-                TOPUP_PROMOTION_NAME,
-                TOPUP_PROMOTION_MULTIPLIER,
-                1 if active else 0,
-                now,
-                str(updated_by or "operator")[:160],
-            ),
-        )
-        return _topup_promotion_payload(_topup_promotion(conn))
-
-
-def _topup_promotion(conn: Any) -> Any:
-    row = conn.execute(
-        """
-        SELECT promotion_id, name, multiplier, is_active, updated_at
-        FROM billing_topup_promotions
-        WHERE promotion_id = ?
-        """,
-        (TOPUP_PROMOTION_ID,),
-    ).fetchone()
-    if row is not None:
-        return row
-    # Defensive fallback for databases opened before init_db completed. The
-    # next normal initialization seeds the durable disabled configuration.
+def topup_promotion_status() -> dict[str, Any]:
+    """Describe the permanent rule used for new fixed-package orders."""
     return {
-        "promotion_id": TOPUP_PROMOTION_ID,
+        "active": True,
         "name": TOPUP_PROMOTION_NAME,
-        "multiplier": TOPUP_PROMOTION_MULTIPLIER,
-        "is_active": 0,
-        "updated_at": "",
-    }
-
-
-def _topup_promotion_payload(row: Any) -> dict[str, Any]:
-    return {
-        "active": bool(int(row["is_active"])),
-        "name": str(row["name"]),
-        "multiplier": int(row["multiplier"]),
-        "updated_at": str(row["updated_at"] or ""),
+        "bonus_rate_percent": TOPUP_PROMOTION_BONUS_PERCENT,
+        "applies_to": "fixed_packages",
     }
 
 

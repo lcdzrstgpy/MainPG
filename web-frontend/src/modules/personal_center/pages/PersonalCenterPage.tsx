@@ -426,7 +426,7 @@ export function PersonalCenterPage() {
             writePendingOrderId("");
             const promotionBonus = promotionBonusPoints(order);
             setPaymentNotice(
-              `充值成功，${totalPoints(order).toLocaleString()} 积分已到账。${promotionBonus ? `含活动赠送 ${promotionBonus.toLocaleString()} 积分。` : ""}`,
+              `充值成功，${totalPoints(order).toLocaleString()} 积分已到账。${promotionBonus ? `含赠送 ${promotionBonus.toLocaleString()} 积分。` : ""}`,
             );
           }
         })
@@ -713,11 +713,9 @@ export function PersonalCenterPage() {
               支付宝
             </button>
           </div>
-          {summary?.topup_promotion?.active && (
-            <p className="topup-promotion-banner">
-              {summary.topup_promotion.name || "充值积分翻倍活动"}：充值任意金额，基础积分翻倍到账。
-            </p>
-          )}
+          <p className="topup-promotion-banner">
+            {summary?.topup_promotion?.name || "固定套餐常驻赠送 25%"}：仅 49 / 99 / 499 / 4999 元固定套餐享赠送，自定义金额按原价到账。
+          </p>
           <div className="topup-products">
             {summary?.topup_products.map((item) => (
               <button
@@ -730,7 +728,7 @@ export function PersonalCenterPage() {
                 <span>{money(item.amount_cents)}</span>
                 <small>
                   基础 {basePoints(item).toLocaleString()}
-                  {promotionBonusPoints(item) ? ` + 活动赠送 ${promotionBonusPoints(item).toLocaleString()}` : ""}
+                  {promotionBonusPoints(item) ? ` + 赠送 25% ${promotionBonusPoints(item).toLocaleString()}` : ""}
                   {promotionBonusPoints(item) ? ` = 合计 ${totalPoints(item).toLocaleString()}` : ""}
                 </small>
               </button>
@@ -767,7 +765,7 @@ export function PersonalCenterPage() {
                     : customQuoteError
                       ? customQuoteError
                       : customQuote
-                        ? `预计基础 ${basePoints(customQuote).toLocaleString()} + 活动赠送 ${promotionBonusPoints(customQuote).toLocaleString()} = 合计 ${totalPoints(customQuote).toLocaleString()} 积分`
+                        ? `预计到账 ${totalPoints(customQuote).toLocaleString()} 积分（自定义金额不参与固定套餐赠送）`
                         : "正在获取服务器报价..."}
             </small>
           </label>
@@ -779,7 +777,7 @@ export function PersonalCenterPage() {
               <strong>订单已创建：{createdOrder.order.out_trade_no}</strong>
               <span>
                 本订单到账：基础 {basePoints(createdOrder.order).toLocaleString()}
-                {promotionBonusPoints(createdOrder.order) ? ` + 活动赠送 ${promotionBonusPoints(createdOrder.order).toLocaleString()}` : ""}
+                {promotionBonusPoints(createdOrder.order) ? ` + 赠送 ${promotionBonusPoints(createdOrder.order).toLocaleString()}` : ""}
                 {` = 合计 ${totalPoints(createdOrder.order).toLocaleString()} 积分`}
               </span>
               <span>{createdOrder.payment.message}</span>
@@ -804,7 +802,7 @@ export function PersonalCenterPage() {
                 <div>
                   <b>{money(order.amount_cents)}</b>
                   <span>+{totalPoints(order).toLocaleString()} 积分</span>
-                  {promotionBonusPoints(order) > 0 && <small>含活动赠送 {promotionBonusPoints(order).toLocaleString()} 积分</small>}
+                  {promotionBonusPoints(order) > 0 && <small>含赠送 {promotionBonusPoints(order).toLocaleString()} 积分</small>}
                 </div>
               </div>
             )) : <p className="empty-orders">暂无充值订单</p>}
