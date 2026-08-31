@@ -536,7 +536,8 @@ def _export_number(value: Any) -> Any:
 def _ceil_weight_for_export(value: Any) -> Any:
     """店小秘重量导出向上取整到 100：不足 100 按 100、不足 200 按 200…（最低 100）。
 
-    仅在有效数值上生效；空值/非数值原样返回，避免掩盖缺失。
+    仅在有效数值上生效；空值/非数值原样返回，避免掩盖缺失。非正值（含 AI
+    估出的 0）视为无效重量，导出为空而非写入 0。
     """
     if value in (None, ""):
         return value
@@ -545,7 +546,7 @@ def _ceil_weight_for_export(value: Any) -> Any:
     except (TypeError, ValueError):
         return value
     if number <= 0:
-        return value
+        return ""
     ceiled = int(math.ceil(number / 100.0)) * 100
     return ceiled
 

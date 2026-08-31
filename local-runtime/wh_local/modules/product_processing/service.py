@@ -2611,12 +2611,18 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             worker.start()
         return True
 
-    def _launch_media_materialization(self, workspace_id: str) -> bool:
-        """Start one bounded materialization worker per workspace."""
+    def _launch_media_materialization(self, workspace_id: str | None) -> bool:
+        """Start one bounded materialization worker per workspace.
+
+        ``workspace_id=None`` claims and drains remote assets across every
+        workspace; used by startup recovery so the drain never blocks boot.
+        """
 
         def _run() -> None:
             try:
-                self.media_assets.materialize_until_idle(workspace_id=workspace_id, batch_size=20)
+                self.media_assets.materialize_until_idle(
+                    workspace_id=workspace_id, batch_size=20
+                )
             finally:
                 with self._media_materialization_lock:
                     if self._media_materialization_workers.get(workspace_id) is threading.current_thread():
@@ -2661,7 +2667,18 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             for task in launchable
         )
         finalize = self.preview_images.recover_background_work()
-        media = self.media_assets.materialize_until_idle(batch_size=50)
+        # 启动后台排空所有 workspace 的 pending 媒体（不阻塞启动）：
+        # 若此处同步调用 materialize_until_idle，会一次性下载全部 pending 图，
+        # 让应用一直卡在 “Waiting for application startup”。交由后台 worker 持续
+        # 认领，直到没有可认领批次。
+        media_launched = self._launch_media_materialization(None)
+        media = {
+            "claimed": 0,
+            "ready": 0,
+            "retryable": 0,
+            "failed": 0,
+            "launched": int(media_launched),
+        }
         return {
             "interrupted": len(interrupted),
             "queued": len(queued),
@@ -3140,6 +3157,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         # 已成功的部分，避免因中途取消导致已生成图片/表格全部作废。paused 属暂态，仍拒绝。
         if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
             raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
+        # 打开预检页即自动驱动后台物化：源图（remote_source）注册后若无后台 worker
+        # 持续认领会一直停留在 pending（“等待同步”）。每次打开预检页自愈一批，
+        # 避免用户看到“等待同步”后无法加入素材库。
+        self._launch_media_materialization(workspace_id)
         excluded_ids = {
             int(value)
             for value in task["settings"].get("excluded_preview_draft_ids", [])
@@ -3682,6 +3703,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 dimension_provenance[key] = "source"
             else:
                 dimension_provenance[key] = "ai"
+        # AI 预估重量过低（0 或 <10g）视为不可靠数据，剔除以免污染预检页展示。
+        # 真实来源/件重尺（source/manual）即便低于 10g 也保留，仅过滤纯 AI 预估。
+        if dimension_provenance.get("weight_g") == "ai":
+            ai_weight = self._number(dimensions.get("weight_g"))
+            if ai_weight is not None and ai_weight < 10:
+                dimensions = {**dimensions, "weight_g": None}
         # 标题/描述：覆盖优先，其次生成结果
         title = str(saved.get("title") or result.get("optimized_title") or "").strip()
         description = str(saved.get("description") or result.get("description") or "").strip()
@@ -4913,9 +4940,29 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if image_enabled:
             features.append(("image_grid", "product_processing.image_grid_2k"))
         # 主体识别（豆包识图）独立计费，仅在实际需要发起视觉调用时预留。
-        if vision_billing:
+        # 兼容：旧服务端未在价格规则里声明 vision 时，不申请 vision 独立预留，
+        # 否则远端会立即拒绝导致整条任务失败；此时视觉识别回落到主链路（text）。
+        if vision_billing and self._remote_declares_product_processing_vision(settings):
             features.append(("vision", "product_processing.vision"))
         return features
+
+    def _remote_declares_product_processing_vision(self, settings: dict[str, Any]) -> bool:
+        """Return whether the remote pricing rule declares ``product_processing.vision``.
+
+        Older account services do not expose a vision feature in their pricing rule.
+        When it is missing, the desktop must not request a ``product_processing.vision``
+        reservation (the remote rejects an undeclared feature and fails the whole item);
+        vision recognition then falls back to the main text pipeline.
+        """
+        billing = settings.get("_billing") if isinstance(settings.get("_billing"), dict) else {}
+        pricing_rule = billing.get("pricing_rule") if isinstance(billing.get("pricing_rule"), dict) else {}
+        features = (
+            pricing_rule.get("features") if isinstance(pricing_rule.get("features"), dict) else None
+        )
+        if features is None:
+            # 未携带完整价格规则时保持原行为（独立预留 vision），避免静默丢失计费。
+            return True
+        return "product_processing.vision" in features
 
     def _reserve_product_processing_item_usage(
         self,
@@ -5440,6 +5487,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if detail_local_reference_count and detail_reference_values != source_reference_values:
             ai_notes.append(f"detail_references:local-cache:{detail_local_reference_count}")
         provider_status_classes: dict[str, str] = {}
+        provider_status_codes: dict[str, int] = {}
         optimized_title = title
         description = self._text(draft.get("description") or raw.get("description"))
         need_grid = (
@@ -5457,6 +5505,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         premium_mode = int(draft["id"]) in {int(x) for x in (settings.get("premium_draft_ids") or [])}
         vision_subject = ""
         vision_identity: dict[str, Any] = {}
+        vision_degraded: dict[str, Any] | None = None
         combined_variant_translations: dict[str, str] = {}
         product_dimensions: dict[str, Any] = {}
         task_item_id = int(item.get("item_id") or 0)
@@ -5534,125 +5583,45 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     record_stage("doubao_subject", stage_started)
                     configuration_error = exc.error_kind == "configuration"
                     identity_error = exc.error_kind in {"invalid_input", "invalid_response"}
-                    provider_http_status = (
-                        exc.status_code if exc.error_kind == "provider_http" else None
-                    )
-                    http_hint = (
-                        f"；上游返回 HTTP {provider_http_status}"
-                        if provider_http_status is not None
-                        else ""
-                    )
                     upstream_detail = getattr(exc, "upstream_detail", None)
-                    upstream_hint = f"；上游: {upstream_detail}" if upstream_detail else ""
-                    return {
-                        **item,
-                        "title": title,
-                        "image_url": image_url,
-                        "status": (
-                            "attention_required"
-                            if configuration_error or identity_error
-                            else "failed"
+                    # 视觉主体识别失败不阻断整条：降级用来源标题兜底主体，继续文本与生图。
+                    provider_status_classes["doubao_vision"] = exc.error_kind
+                    provider_status_codes["doubao_vision"] = exc.status_code
+                    provider_attempts["doubao_vision"] = max(0, int(exc.attempt_count))
+                    vision_subject = source_title
+                    vision_degraded = {
+                        "error_kind": exc.error_kind,
+                        "status_code": exc.status_code,
+                        "upstream_detail": upstream_detail,
+                        "reason": "视觉主体识别暂不可用，已降级使用来源标题兜底，继续文案与生图",
+                        "operator_hint": (
+                            "AI 识别服务暂不可用，系统已用来源标题兜底继续处理"
+                            if configuration_error
+                            else (
+                                "AI 识别结果异常，系统已用来源标题兜底继续处理"
+                                if identity_error
+                                else "AI 识别服务暂不可用，系统已用来源标题兜底继续处理"
+                            )
                         ),
-                        "reason": "AI 识别服务暂不可用，请稍后重试",
-                        "result": {
-                            "error_type": "vision_service_unavailable",
-                            "failure_class": (
-                                "configuration_blocked"
-                                if configuration_error
-                                else (
-                                    "identity_review_required"
-                                    if identity_error
-                                    else "technical_retryable"
-                                )
-                            ),
-                            "operator_hint": (
-                                "AI 识别服务暂不可用，请稍后重试"
-                                if configuration_error
-                                else (
-                                    "AI 识别结果异常，请重新提交或更换商品后重试"
-                                    if identity_error
-                                    else "AI 识别服务暂不可用，请稍后重试"
-                                )
-                            ),
-                            "debug_hint": (
-                                "服务器主体识别服务未就绪；请检查服务器文本/识图路由、密钥与余额后重试"
-                                if configuration_error
-                                else (
-                                    "服务器主体识别结果不符合结构化合同；已阻止后续文案和生图"
-                                    if identity_error
-                                    else "服务器主体识别暂时不可用；未调用后续文本或生图，请稍后重试" + http_hint + upstream_hint
-                                )
-                            ),
-                            "retryable": True,
-                            "vision_identity": {},
-                            "provider_attempts": {
-                                "doubao_vision": max(0, int(exc.attempt_count))
-                            },
-                            "provider_status_classes": {
-                                "doubao_vision": exc.error_kind
-                            },
-                            "provider_status_codes": {
-                                "doubao_vision": exc.status_code
-                            },
-                            "stage_timings_ms": timing_snapshot(),
-                        },
                     }
-                measured_attempts = getattr(attempt_state, "doubao_vision", None)
-                provider_attempts["doubao_vision"] = (
-                    1 if measured_attempts is None else max(0, int(measured_attempts))
-                )
-                provider_status_classes["doubao_vision"] = "success"
-            record_stage("doubao_subject", stage_started)
-            vision_identity = {
-                **analysis.as_dict(),
-                "provider": "doubao",
-                "model": DOUBAO_VISION_MODEL_ID,
-                "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
-                "status": "accepted" if analysis.confidence in {"high", "medium"} else "rejected",
-            }
-            if vision_receipt_input and provider_attempts["doubao_vision"] > 0:
-                self.repository.upsert_stage_receipt(
-                    task_id,
-                    task_item_id,
-                    "vision_identity",
-                    input_hash=vision_receipt_input,
-                    output_data=vision_identity,
-                    workspace_id=workspace_id,
-                )
-            if analysis.confidence == "low":
-                identity_override = int(draft["id"]) in {
-                    int(value)
-                    for value in settings.get("identity_override_draft_ids", [])
-                    if str(value).isdigit()
-                }
-                low_subject = self._text(analysis.sellable_subject).strip()
-                if not identity_override and not low_subject:
-                    # 仅当模型完全无法给出可售主体时才拦截（极端兜底）；
-                    # 低置信但已识别出主体（多色号/多件套/场景展示等正常电商主图）
-                    # 直接放行，避免把常见商品误判为「多个或遮挡主体」导致大面积失败。
-                    return {
-                        **item,
-                        "title": title,
-                        "image_url": image_url,
-                        "status": "attention_required",
-                        "reason": "无法确认商品可售主体",
-                        "result": {
-                            "error_type": "vision_subject_low_confidence",
-                            "failure_class": "identity_review_required",
-                            "operator_hint": "主图存在多个或遮挡主体，请更换主图后重试",
-                            "debug_hint": "1688 主图存在多个或遮挡主体；重试可能仍无法确认，确认主体可售后可继续文案与生图",
-                            "retryable": True,
-                            "vision_identity": vision_identity,
-                            "provider_attempts": provider_attempts,
-                            "provider_status_classes": provider_status_classes,
-                            "stage_timings_ms": timing_snapshot(),
-                        },
-                    }
-                # 低置信但已识别出主体（或用户已确认）：放行主体识别门，沿用 AI 最佳猜测
-                # 主体继续文案与生图；保留原始低置信度证据供预审/导出参考。
+                    ai_notes.append(
+                        "subject_identity:degraded:" + str(exc.error_kind)
+                        + (f":http-{exc.status_code}" if exc.status_code else "")
+                    )
+                if analysis is not None:
+                    measured_attempts = getattr(attempt_state, "doubao_vision", None)
+                    provider_attempts["doubao_vision"] = (
+                        1 if measured_attempts is None else max(0, int(measured_attempts))
+                    )
+                    provider_status_classes["doubao_vision"] = "success"
+            if analysis is not None:
+                record_stage("doubao_subject", stage_started)
                 vision_identity = {
-                    **vision_identity,
-                    "status": "user_override" if identity_override else "accepted",
+                    **analysis.as_dict(),
+                    "provider": "doubao",
+                    "model": DOUBAO_VISION_MODEL_ID,
+                    "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
+                    "status": "accepted" if analysis.confidence in {"high", "medium"} else "rejected",
                 }
                 if vision_receipt_input and provider_attempts["doubao_vision"] > 0:
                     self.repository.upsert_stage_receipt(
@@ -5663,23 +5632,67 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         output_data=vision_identity,
                         workspace_id=workspace_id,
                     )
-                vision_subject = str(analysis.sellable_subject or "").strip() or source_title
-                ai_notes.extend(
-                    [
-                        "subject_identity:user-override"
-                        if identity_override
-                        else "subject_identity:low-confidence-pass",
-                        f"subject_identity:confidence:{analysis.confidence}",
-                    ]
-                )
-            else:
-                vision_subject = analysis.sellable_subject
-                ai_notes.extend(
-                    [
-                        "subject_identity:managed-service",
-                        f"subject_identity:confidence:{analysis.confidence}",
-                    ]
-                )
+                if analysis.confidence == "low":
+                    identity_override = int(draft["id"]) in {
+                        int(value)
+                        for value in settings.get("identity_override_draft_ids", [])
+                        if str(value).isdigit()
+                    }
+                    low_subject = self._text(analysis.sellable_subject).strip()
+                    if not identity_override and not low_subject:
+                        # 仅当模型完全无法给出可售主体时才拦截（极端兜底）；
+                        # 低置信但已识别出主体（多色号/多件套/场景展示等正常电商主图）
+                        # 直接放行，避免把常见商品误判为「多个或遮挡主体」导致大面积失败。
+                        return {
+                            **item,
+                            "title": title,
+                            "image_url": image_url,
+                            "status": "attention_required",
+                            "reason": "无法确认商品可售主体",
+                            "result": {
+                                "error_type": "vision_subject_low_confidence",
+                                "failure_class": "identity_review_required",
+                                "operator_hint": "主图存在多个或遮挡主体，请更换主图后重试",
+                                "debug_hint": "1688 主图存在多个或遮挡主体；重试可能仍无法确认，确认主体可售后可继续文案与生图",
+                                "retryable": True,
+                                "vision_identity": vision_identity,
+                                "provider_attempts": provider_attempts,
+                                "provider_status_classes": provider_status_classes,
+                                "stage_timings_ms": timing_snapshot(),
+                            },
+                        }
+                    # 低置信但已识别出主体（或用户已确认）：放行主体识别门，沿用 AI 最佳猜测
+                    # 主体继续文案与生图；保留原始低置信度证据供预审/导出参考。
+                    vision_identity = {
+                        **vision_identity,
+                        "status": "user_override" if identity_override else "accepted",
+                    }
+                    if vision_receipt_input and provider_attempts["doubao_vision"] > 0:
+                        self.repository.upsert_stage_receipt(
+                            task_id,
+                            task_item_id,
+                            "vision_identity",
+                            input_hash=vision_receipt_input,
+                            output_data=vision_identity,
+                            workspace_id=workspace_id,
+                        )
+                    vision_subject = str(analysis.sellable_subject or "").strip() or source_title
+                    ai_notes.extend(
+                        [
+                            "subject_identity:user-override"
+                            if identity_override
+                            else "subject_identity:low-confidence-pass",
+                            f"subject_identity:confidence:{analysis.confidence}",
+                        ]
+                    )
+                else:
+                    vision_subject = analysis.sellable_subject
+                    ai_notes.extend(
+                        [
+                            "subject_identity:managed-service",
+                            f"subject_identity:confidence:{analysis.confidence}",
+                        ]
+                    )
         images_receipt_input = (
             self._processing_stage_input_hash(
                 "images",
@@ -6386,6 +6399,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "ai_notes": ai_notes,
             "provider_attempts": provider_attempts,
             "provider_status_classes": provider_status_classes,
+            "provider_status_codes": provider_status_codes,
+            "vision_degraded": vision_degraded,
             "stage_timings_ms": timing_snapshot(),
             "preview_overrides": draft.get("preview_overrides") or {},
             "selection_run_id": draft.get("selection_run_id"),

@@ -104,6 +104,15 @@ class DoubaoArkClient:
         self.direct = bool(self.granted_key)
         self.platform_token = remote_token()
         self.usage_id = usage_id(usage_kind)
+        # 兼容：旧服务端未声明 vision 独立计费时，视觉识别不单独预留，此时
+        # 回落到主链路（text）的 usage_id，避免触发 "usage is not reserved" 失败。
+        if (
+            usage_kind == "vision"
+            and not self.usage_id
+            and not self.direct
+            and usage_id("text")
+        ):
+            self.usage_id = usage_id("text")
         if not self.direct and (not self.platform_token or not self.usage_id):
             raise DoubaoArkError(
                 "server-managed usage is not reserved",

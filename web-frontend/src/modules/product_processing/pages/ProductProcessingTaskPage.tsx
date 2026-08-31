@@ -164,6 +164,22 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   const taskActive = batchProcessing || taskPaused;
   const batchTotal = batch?.total_count || 0;
   const batchProcessed = batch?.processed_count ?? 0;
+  // 进行中条数与最长已持续时长：从轮询返回的 items 里 status=running 的条目
+  // 提取「已持续 N 秒」心跳文本，让操作员在生图/文本长耗时期间看到具体走向。
+  const runningCount = batch
+    ? batch.items.filter((item) => processingStatuses.includes(item.status)).length
+    : 0;
+  const maxOngoingSeconds = useMemo(() => {
+    if (!batch) return 0;
+    let max = 0;
+    for (const item of batch.items) {
+      if (item.status !== 'running') continue;
+      // 心跳文本形如「…中 · 心跳正常 · 已持续 N 秒」
+      const match = item.reason.match(/已持续\s+(\d+)\s+秒/);
+      if (match) max = Math.max(max, Number(match[1]));
+    }
+    return max;
+  }, [batch]);
   // 只要任务到达终态（含整单失败/取消/完成待复核），进度都应计算为 100%，
   // 否则前端会永远被 Math.min(99,…) 卡在 99%。自动补跑轮仍在运行时除外。
   const taskDone = batch
@@ -486,6 +502,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                           : <>已处理 <b>{batchProcessed}</b> / {batchTotal} 条</>}
                       </span>
                       <span className="verify-elapsed">已用时 {formatDuration(batch.elapsed_seconds ?? batch.task.elapsed_seconds)}</span>
+                      {batchProcessing && runningCount > 0 && (
+                        <span className="verify-live-detail">
+                          进行中 <b>{runningCount}</b> 条
+                          {maxOngoingSeconds > 0 && <> · 最长已持续 {formatDuration(maxOngoingSeconds)}</>}
+                        </span>
+                      )}
                     </div>
                   </div>
                 )}

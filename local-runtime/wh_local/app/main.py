@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -552,6 +552,21 @@ def _register_frontend_shell(app: FastAPI) -> None:
         app.mount("/brand", StaticFiles(directory=brand), name="workbench-brand")
     if theme.is_dir():
         app.mount("/theme", StaticFiles(directory=theme), name="workbench-theme")
+
+    # 浏览器缓存策略：Vite 对 /assets 下的 JS/CSS 等文件名带内容 hash，
+    # 文件名改变才意味着新版本，因此可安全地长期缓存（immutable）；
+    # 而 index.html 以及未 hash 的品牌/主题资源是版本入口，必须每次重新校验
+    # （no-cache，借助 ETag/Last-Modified 命中 304），避免更新后浏览器仍展示旧界面。
+    @app.middleware("http")
+    async def frontend_cache_control(request: Request, call_next):
+        response = await call_next(request)
+        if request.method in ("GET", "HEAD"):
+            path = request.url.path
+            if path.startswith("/assets/"):
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            elif path == "/" or path.startswith("/brand/") or path.startswith("/theme/"):
+                response.headers["Cache-Control"] = "no-cache"
+        return response
 
     @app.get("/", include_in_schema=False, response_class=HTMLResponse)
     def workbench_root():

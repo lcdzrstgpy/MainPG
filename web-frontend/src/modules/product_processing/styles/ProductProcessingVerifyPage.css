@@ -2802,6 +2802,17 @@
   content: "⏱";
   font-size: 0.85rem;
 }
+.verify-live-detail {
+  color: #147a9b;
+}
+.verify-live-detail::before {
+  content: "⚙";
+  font-size: 0.8rem;
+}
+.verify-live-detail b {
+  color: #147a9b;
+  font-variant-numeric: tabular-nums;
+}
 
 /* ── 处理进度（环形，参考产品采集进度条） ── */
 .verify-progress-area {

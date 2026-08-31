@@ -1157,18 +1157,43 @@ class ProductImageProcessor:
                     errors.append(f"local image failed: {_safe_error(exc)}")
                     continue
                 references.append((content, path.name, content_type))
-            else:
+            elif _plausible_public_http_url(value):
                 try:
                     content, content_type = self._download_reference_image_cached(value)
                 except (requests.RequestException, MediaProcessingError) as exc:
                     detail = f"download failed: {_safe_error(exc)}"
                     errors.append(detail)
+                    # 打印具体失败值，便于在客户机器上定位是哪个参考图 URL 出问题。
+                    print(
+                        f"[reference-skip] stage=reference_input branch=url "
+                        f"value={value[:160]!r} detail={detail}",
+                        flush=True,
+                    )
                     continue
                 if not content or not content_type.startswith("image/"):
                     detail = "reference URL did not return an image"
                     errors.append(detail)
+                    print(
+                        f"[reference-skip] stage=reference_input branch=url "
+                        f"value={value[:160]!r} detail={detail}",
+                        flush=True,
+                    )
                     continue
                 references.append((content, _filename_for_url(value), content_type, value))
+            else:
+                # 既不是 data URI 也不是本机存在文件，也不满足公网 http(s) URL 结构：
+                # 说明该参考值是一段脏字符串/失效的本地路径（例如 windows 绝对路径、
+                # 裸 token），不能当作图片 URL 去下载，否则会以
+                # "provider result URL is not a safe public URL" 硬失败并拖垮整条图生图。
+                # 这里直接跳过，交给后续仍可用的参考，避免一个坏值拖垮整条生成。
+                errors.append(f"reference value is not a usable source: {value[:120]!r}")
+                # 打印被跳过的具体脏值，便于在客户机器上确认是哪个引用值污损。
+                print(
+                    f"[reference-skip] stage=reference_input branch=non-url "
+                    f"value={value[:160]!r} reason=not-a-public-http-url",
+                    flush=True,
+                )
+                continue
         if not references:
             detail = f" ({errors[0]})" if errors else ""
             raise MediaProcessingError(f"reference image download failed{detail}")

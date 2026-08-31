@@ -81,11 +81,17 @@ def append_subject_analysis(
     """Append the authoritative Doubao JSON after an internal GPT image prompt."""
     if analysis is None:
         return str(prompt or "")
-    normalized = (
-        analysis
-        if isinstance(analysis, SubjectAnalysis)
-        else _subject_analysis_from_payload(dict(analysis))
-    )
+    if isinstance(analysis, SubjectAnalysis):
+        normalized = analysis
+    else:
+        # 兼容：视觉识别失败降级时可能传入空 dict（无有效主体结果），此时静默跳过，
+        # 避免 _text_list(None) 抛 "subject list field failed validation" 而失败整条。
+        if not isinstance(analysis, Mapping):
+            return str(prompt or "")
+        payload = dict(analysis)
+        if not payload.get("sellable_subject"):
+            return str(prompt or "")
+        normalized = _subject_analysis_from_payload(payload)
     subject_json = json.dumps(
         normalized.as_dict(),
         ensure_ascii=False,
