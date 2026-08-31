@@ -68,8 +68,10 @@ export function StartupUpdateGate({ onPassed }: { onPassed: () => void }) {
   const [status, setStatus] = useState<AppUpdateStatus | null>(null);
   const [patch, setPatch] = useState<PatchStatus | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [pollGeneration, setPollGeneration] = useState(0);
   const passedRef = useRef(false);
   const updateSeenRef = useRef(false);
+  const installRequestedRef = useRef(false);
 
   const pass = () => {
     if (passedRef.current) return;
@@ -119,25 +121,38 @@ export function StartupUpdateGate({ onPassed }: { onPassed: () => void }) {
       cancelled = true;
       if (timer !== null) clearTimeout(timer);
     };
-  }, []);
+  }, [pollGeneration]);
 
   const view = toGateView(status, patch);
   const pending = isPendingUpdate(status, patch);
   const inProgress = view.phase === "checking" || view.phase === "downloading" || view.phase === "verifying" || view.phase === "installing";
   const mandatory = Boolean(status?.release?.mandatory);
-  const canInstall = view.phase === "done" && pending === false;
-
   // 检测到更新后自动开始安装（patch 优先）；mandatory 静默自动，非强制由用户点击。
-  const startInstall = (auto: boolean) => {
-    if (passedRef.current) return;
-    if (patch?.patch) {
-      void appUpdateApi.patchInstall().catch(() => setPatch((previous) => previous ? { ...previous, state: "failed", error: "更新请求失败" } : previous));
-      if (auto) setRestarting(true);
-      return;
-    }
-    if (status?.release) {
-      void appUpdateApi.install().catch(() => setStatus((previous) => previous ? { ...previous, state: "failed", error: "更新请求失败" } : previous));
-      if (auto) setRestarting(true);
+  const startInstall = async (auto: boolean) => {
+    if (passedRef.current || installRequestedRef.current) return;
+    installRequestedRef.current = true;
+    if (auto) setRestarting(true);
+    try {
+      if (patch?.patch) {
+        // Keep the response: it changes available -> downloading immediately.
+        setPatch(await appUpdateApi.patchInstall());
+      } else if (status?.release) {
+        setStatus(await appUpdateApi.install());
+      } else {
+        installRequestedRef.current = false;
+        return;
+      }
+      // The initial poll intentionally stops while waiting for an optional
+      // user's choice. Restart it after the user actually begins updating.
+      setPollGeneration((value) => value + 1);
+    } catch (error) {
+      installRequestedRef.current = false;
+      const message = error instanceof Error ? error.message : "更新请求失败";
+      if (patch?.patch) {
+        setPatch((previous) => previous ? { ...previous, state: "failed", error: message } : previous);
+      } else {
+        setStatus((previous) => previous ? { ...previous, state: "failed", error: message } : previous);
+      }
     }
   };
 
@@ -145,14 +160,17 @@ export function StartupUpdateGate({ onPassed }: { onPassed: () => void }) {
     if (!pending || passedRef.current) return;
     if (mandatory) {
       // 强制更新：自动开始安装，不给跳过。
-      if (view.phase === "done" || view.phase === "checking") startInstall(true);
+      if (view.phase === "done" || view.phase === "checking") void startInstall(true);
     }
     // 非强制：等待用户点击「立即更新」或「跳过」。
   }, [pending, mandatory, view.phase]);
 
   // 安装进入完成态（后端已拉起安装器/自退重启）后，若页面仍在则提示手动重启兜底。
   useEffect(() => {
-    if (restarting && view.phase === "failed") setRestarting(false);
+    if (view.phase === "failed") {
+      installRequestedRef.current = false;
+      if (restarting) setRestarting(false);
+    }
   }, [view.phase, restarting]);
 
   const showScreen = !passedRef.current && (pending || view.phase === "failed");
@@ -193,7 +211,7 @@ export function StartupUpdateGate({ onPassed }: { onPassed: () => void }) {
         )}
         {!inProgress && !isFailed && pending && !mandatory && (
           <div className="app-update-actions">
-            <button type="button" className="app-update-primary" onClick={() => startInstall(false)}>立即更新</button>
+            <button type="button" className="app-update-primary" onClick={() => void startInstall(false)}>立即更新</button>
             <button type="button" className="app-update-secondary" onClick={pass}>跳过，直接进入</button>
           </div>
         )}

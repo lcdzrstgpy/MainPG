@@ -694,40 +694,51 @@ class PatchManager:
             staging = self._staging_dir(release)
             staging.mkdir(parents=True, exist_ok=True)
             entries = list(release.files)
-            downloaded = 0
-            for index, entry in enumerate(entries, start=1):
+            downloaded_files = 0
+            downloaded_bytes = 0
+            total_bytes = sum(entry.size for entry in entries if entry.action != "delete")
+
+            def report_progress() -> None:
+                if total_bytes > 0:
+                    percentage = round(min(100, downloaded_bytes * 100 / total_bytes), 2)
+                else:
+                    percentage = round(downloaded_files * 100 / len(entries), 2)
+                self._set_state(
+                    "downloading",
+                    progress={
+                        "downloaded_files": downloaded_files,
+                        "total_files": len(entries),
+                        "downloaded_bytes": downloaded_bytes,
+                        "total_bytes": total_bytes,
+                        "percentage": percentage,
+                    },
+                )
+
+            for entry in entries:
                 if entry.action == "delete":
                     # delete entries carry no payload; keep them for the state file
-                    downloaded += 1
-                    self._set_state(
-                        "downloading",
-                        progress={
-                            "downloaded_files": downloaded,
-                            "total_files": len(entries),
-                            "percentage": round(downloaded * 100 / len(entries), 2),
-                        },
-                    )
+                    downloaded_files += 1
+                    report_progress()
                     continue
                 target = staging / entry.path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 source = self._downloader(f"{release.file_base_url}/{entry.path}")
                 self._validate_response_url(source)
                 digest = hashlib.sha256()
+                file_bytes = 0
                 with target.open("wb") as output:
                     for chunk in self._download_chunks(source):
                         output.write(chunk)
                         digest.update(chunk)
+                        file_bytes += len(chunk)
+                        downloaded_bytes += len(chunk)
+                        report_progress()
+                if file_bytes != entry.size:
+                    raise RuntimeError(f"Downloaded patch file size mismatch for {entry.path}")
                 if entry.sha256 and digest.hexdigest().lower() != entry.sha256:
                     raise RuntimeError(f"Downloaded patch file SHA-256 mismatch for {entry.path}")
-                downloaded += 1
-                self._set_state(
-                    "downloading",
-                    progress={
-                        "downloaded_files": downloaded,
-                        "total_files": len(entries),
-                        "percentage": round(downloaded * 100 / len(entries), 2),
-                    },
-                )
+                downloaded_files += 1
+                report_progress()
                 close = getattr(source, "close", None)
                 if callable(close):
                     close()

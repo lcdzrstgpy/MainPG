@@ -76,6 +76,7 @@ function taskStatusLabel(status: string): string {
     queued: '等待处理',
     running: '处理中',
     paused: '已暂停',
+    cancelled: '已终止，仅保留成功商品',
     completed: '已完成',
     partial_failure: '部分完成',
     failed: '任务失败',

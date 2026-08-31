@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { WorkspaceShell } from "./layout/WorkspaceShell";
 import { AuthPage } from "../modules/customer/pages/AuthPage";
 import { StartupUpdateGate } from "../modules/app_update/components/StartupUpdateGate";
+import { RuntimeUpdateNotifier } from "../modules/app_update/components/RuntimeUpdateNotifier";
 import { GlobalToast } from "../shared/components/GlobalToast";
 import { clearAuthSession, getAuthAccount, getAuthToken, httpJson } from "../transport/http/client";
 
@@ -181,6 +182,7 @@ export function App() {
     ) : (
       <AuthPage onEnter={enterWorkspaceAfterLogin} />
     )}
+    <RuntimeUpdateNotifier />
     <GlobalToast />
   </>;
 }

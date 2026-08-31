@@ -10,7 +10,9 @@ export type AppUpdateRelease = {
 export type AppUpdateProgress = {
   downloaded_bytes: number;
   total_bytes: number | null;
-  percent: number | null;
+  /** Newer runtimes use percentage; percent is kept for older packages. */
+  percentage?: number | null;
+  percent?: number | null;
 };
 
 export type AppUpdateStatus = {
@@ -39,6 +41,8 @@ export type PatchRelease = {
 export type PatchProgress = {
   downloaded_files: number;
   total_files: number;
+  downloaded_bytes: number;
+  total_bytes: number;
   percentage: number;
 };
 
@@ -85,7 +89,7 @@ function dialogPhase(phase: AppUpdatePhase): UpdateDialogPhase {
 export function toUpdateDialogState(status: Partial<AppUpdateStatus>): UpdateDialogState {
   const phase = dialogPhase(status.state ?? "idle");
   const release = status.release ?? null;
-  const rawProgress = status.progress?.percent;
+  const rawProgress = status.progress?.percentage ?? status.progress?.percent;
   const progress = typeof rawProgress === "number" && Number.isFinite(rawProgress)
     ? Math.min(100, Math.max(0, rawProgress))
     : null;

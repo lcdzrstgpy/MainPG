@@ -11,11 +11,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from wh_local.config import default_config
+from wh_local.config import APP_VERSION, default_config
 
 
 def test_runtime_version_is_release_owned() -> None:
-    assert default_config().app_version == "1.3.0"  # APP_VERSION in wh_local/config.py
+    from wh_local.app_update import SemanticVersion
+
+    assert default_config().app_version == APP_VERSION
+    assert SemanticVersion.parse(APP_VERSION)
 
 
 def test_default_update_manifest_uses_the_official_https_release_host() -> None:
@@ -455,7 +458,7 @@ def test_runtime_registers_update_status_and_action_routes(tmp_path: Path) -> No
         install = client.post("/api/app-update/install")
 
     assert status.status_code == 200
-    assert status.json()["current_version"] == "1.3.0"
+    assert status.json()["current_version"] == APP_VERSION
     assert check.status_code == 200
     assert install.status_code == 200
 
