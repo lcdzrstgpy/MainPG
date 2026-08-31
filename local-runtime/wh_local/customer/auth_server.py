@@ -78,11 +78,10 @@ from .alipay_gateway import (
 REMOTE_SESSION_TTL = timedelta(hours=12)
 BILLING_POINT_RATIO = 100
 BILLING_TOPUP_PRODUCTS = {
-    "points_50": {"amount_cents": 5000, "label": "50 元积分包"},
+    "points_49": {"amount_cents": 4900, "label": "49 元积分包"},
     "points_99": {"amount_cents": 9900, "label": "99 元积分包"},
-    "points_199": {"amount_cents": 19900, "label": "199 元积分包"},
     "points_499": {"amount_cents": 49900, "label": "499 元积分包"},
-    "points_999": {"amount_cents": 99900, "label": "999 元积分包"},
+    "points_4999": {"amount_cents": 499900, "label": "4999 元积分包"},
 }
 # Amounts are immutable product amounts.  Their point value is calculated
 # from the active server rule, never from this legacy display mapping.
@@ -2599,10 +2598,8 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
     workspace_id = str(account.get("workspace_id") or "default")
     # 展示型余额/流水缓存（短 TTL）；冻结/结算/充值等写路径会主动失效。
     pricing = active_pricing(database_path)
-    promotion = topup_promotion_status(database_path)
-    # The mutable campaign state is part of the cache key, so an enable/disable
-    # command is visible to all clients immediately without a process restart.
-    cache_key = f"wallet:{account_id}:topup:{promotion['updated_at']}"
+    promotion = topup_promotion_status()
+    cache_key = f"wallet:{account_id}:topup:fixed-package-bonus-25:{pricing['rule_version']}"
     cached = _cache.cache_get(cache_key)
     if cached is not None:
         return cached
@@ -2660,9 +2657,10 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         "topup_promotion": {
             "active": promotion["active"],
             "name": promotion["name"],
-            "multiplier": promotion["multiplier"],
+            "bonus_rate_percent": promotion["bonus_rate_percent"],
+            "applies_to": promotion["applies_to"],
         },
-        "topup_products": _topup_products(pricing, promotion),
+        "topup_products": _topup_products(pricing),
         "recent_ledger": [_display_ledger_row(dict(row), pricing) for row in ledgers],
         "recent_orders": [
             _display_topup_order(dict(row), pricing)
@@ -2691,14 +2689,14 @@ def _topup_product(
     label: str,
     amount_cents: int,
     pricing: dict[str, Any],
-    promotion: dict[str, Any],
+    includes_fixed_package_bonus: bool,
 ) -> dict[str, Any]:
     base_points = (
         (int(amount_cents) // 100)
         * int(pricing["points_per_cny"])
         * int(pricing["point_unit_scale"])
     )
-    promotion_bonus_points = base_points if bool(promotion["active"]) else 0
+    promotion_bonus_points = base_points * 25 // 100 if includes_fixed_package_bonus else 0
     total_points = base_points + promotion_bonus_points
     return {
         "package_id": package_id,
@@ -2709,19 +2707,19 @@ def _topup_product(
         "base_points": _display_billing_points(base_points, pricing),
         "promotion_bonus_points": _display_billing_points(promotion_bonus_points, pricing),
         "total_points": _display_billing_points(total_points, pricing),
-        "promotion_id": "topup_double" if promotion_bonus_points else "",
-        "promotion_name": str(promotion["name"]) if promotion_bonus_points else "",
+        "promotion_id": "fixed_package_bonus_25" if promotion_bonus_points else "",
+        "promotion_name": "固定套餐赠送 25%" if promotion_bonus_points else "",
     }
 
 
-def _topup_products(pricing: dict[str, Any], promotion: dict[str, Any]) -> list[dict[str, Any]]:
+def _topup_products(pricing: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         _topup_product(
             package_id=package_id,
             label=str(item["label"]),
             amount_cents=int(item["amount_cents"]),
             pricing=pricing,
-            promotion=promotion,
+            includes_fixed_package_bonus=True,
         )
         for package_id, item in TOPUP_PACKAGE_CENTS.items()
     ]
@@ -2766,13 +2764,12 @@ def _custom_topup_amount(payload: dict[str, Any]) -> int:
 
 def _topup_quote(database_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     pricing = active_pricing(database_path)
-    promotion = topup_promotion_status(database_path)
     product = _topup_product(
         package_id="custom",
         label="自定义积分充值",
         amount_cents=_custom_topup_amount(payload),
         pricing=pricing,
-        promotion=promotion,
+        includes_fixed_package_bonus=False,
     )
     return {"ok": True, "product": product}
 
@@ -2809,27 +2806,12 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
     )
     with transaction(database_path) as conn:
         _ensure_wallet(conn, account_id, workspace_id)
-        promotion_row = conn.execute(
-            """
-            SELECT promotion_id, name, multiplier, is_active, updated_at
-            FROM billing_topup_promotions WHERE promotion_id = 'topup_double'
-            """
-        ).fetchone()
-        promotion = (
-            {
-                "active": bool(int(promotion_row["is_active"])),
-                "name": str(promotion_row["name"]),
-                "multiplier": int(promotion_row["multiplier"]),
-            }
-            if promotion_row is not None
-            else {"active": False, "name": "充值积分翻倍活动", "multiplier": 2}
-        )
         base_points = (
             (int(product["amount_cents"]) // 100)
             * int(pricing["points_per_cny"])
             * int(pricing["point_unit_scale"])
         )
-        promotion_bonus_points = base_points if bool(promotion["active"]) else 0
+        promotion_bonus_points = base_points * 25 // 100 if package_id != "custom" else 0
         total_points = base_points + promotion_bonus_points
         existing = conn.execute(
             """
@@ -2867,8 +2849,8 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
                 base_points,
                 promotion_bonus_points,
                 total_points,
-                "topup_double" if promotion_bonus_points else "",
-                str(promotion["name"]) if promotion_bonus_points else "",
+                "fixed_package_bonus_25" if promotion_bonus_points else "",
+                "固定套餐赠送 25%" if promotion_bonus_points else "",
                 idempotency_key,
                 request_hash,
                 expires_at,

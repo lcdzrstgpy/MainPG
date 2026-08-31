@@ -436,8 +436,9 @@ CREATE TABLE IF NOT EXISTS billing_payment_orders (
 CREATE INDEX IF NOT EXISTS idx_billing_payment_orders_account_status
     ON billing_payment_orders (account_id, status, created_at);
 
--- 充值活动由开发运维命令维护，默认关闭。订单在创建时复制活动快照，
--- 因此启停不会改变已经生成的待支付订单。
+-- Legacy double-points campaign configuration is retained only for audit of
+-- historical orders. New fixed packages use a permanent 25% bonus rule and
+-- never read this switch.
 CREATE TABLE IF NOT EXISTS billing_topup_promotions (
     promotion_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -1029,6 +1030,12 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_payment_orders", "total_points", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "billing_payment_orders", "promotion_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "billing_payment_orders", "promotion_name", "TEXT NOT NULL DEFAULT ''")
+    # The retired 2x switch must not remain armed after the permanent package
+    # rule ships. Existing orders already carry immutable bonus snapshots.
+    conn.execute(
+        "UPDATE billing_topup_promotions SET is_active = 0 "
+        "WHERE promotion_id = 'topup_double' AND is_active <> 0"
+    )
     _migrate_billing_points_to_tenths(conn)
 
 
