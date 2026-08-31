@@ -5,6 +5,7 @@ import contextvars
 import importlib.util
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -71,6 +72,11 @@ from .domain.language_contract import (
     normalize_target_language,
 )
 from .domain.description_contract import normalize_five_point_description
+from .domain.dimension_templates import (
+    AXIS_FIELDS,
+    template_axis_policy,
+    template_signature,
+)
 from .domain.image_slots import DEFAULT_SLOT_IDS, apply_slot_overrides
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
 from .domain.physical_dimensions import extract_physical_dimensions
@@ -93,6 +99,7 @@ from .infrastructure.ocr_gate import (
     ocr_gate_enabled,
 )
 from .infrastructure.repository import ProductProcessingRepository
+from .infrastructure.dimension_template_repository import DimensionTemplateRepository
 from .infrastructure.preview_image_repository import (
     PreviewIdempotencyConflict,
     PreviewImageRepository,
@@ -108,6 +115,7 @@ from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai
 from .server_ai_proxy import server_ai_context
 
 _MEDIA_TYPES: tuple | None = None
+_LOGGER = logging.getLogger(__name__)
 
 # 来源尺寸/重量确定性提取（对齐原项目 five-stage 的 deterministic_fact_build，0 AI）
 _DIMENSION_TRIPLE = re.compile(
@@ -599,6 +607,7 @@ class ProductProcessingService:
         public_image_fetcher: Callable[[str], FetchedPublicImage] = fetch_public_image,
     ):
         self.repository = repository
+        self.dimension_templates = DimensionTemplateRepository(repository.database)
         self.assets = assets
         self._public_image_fetcher = public_image_fetcher
         self._provider_attempt_state = threading.local()
@@ -641,6 +650,18 @@ class ProductProcessingService:
         self._doubao_subject_cache_lock = threading.Lock()
         self._source_data_url_cache: dict[str, str] = {}
         self._source_data_url_lock = threading.Lock()
+        self.dimension_templates.configure_background_refresh(
+            busy_check=self._dimension_template_refresh_busy,
+            debounce_seconds=30,
+        )
+
+    def _dimension_template_refresh_busy(self) -> bool:
+        """Keep statistics work out of the way while product/media work is active."""
+        with self._task_worker_lock:
+            if any(worker.is_alive() for worker in self._task_workers.values()):
+                return True
+        with self._media_materialization_lock:
+            return any(worker.is_alive() for worker in self._media_materialization_workers.values())
 
     def engine_status(self) -> dict[str, Any]:
         dependency_status = {
@@ -3282,6 +3303,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """
         task = self._require_task(task_id, workspace_id)
         normalized = self._normalized_preview_entries(task, items)
+        previous_dimension_overrides = self._saved_dimension_overrides(
+            normalized, workspace_id=workspace_id
+        )
         try:
             saved_items = self.preview_images.save_preview(
                 task_id,
@@ -3296,6 +3320,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raise ProductProcessingValidationError(str(exc)) from exc
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
+        self._record_manual_shipping_observations(
+            task,
+            normalized,
+            saved_items,
+            previous_dimension_overrides,
+            workspace_id=workspace_id,
+        )
         return {"task_id": task_id, "saved_count": len(saved_items), "items": saved_items}
 
     def upload_preview_image(
@@ -3410,8 +3441,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "未配置可导出的图床：请配置 COS 或公共媒体地址（public_base_url）"
             )
         normalized = self._normalized_preview_entries(task, items)
+        previous_dimension_overrides = self._saved_dimension_overrides(
+            normalized, workspace_id=workspace_id
+        )
         try:
-            return self.preview_images.begin_finalize(
+            run = self.preview_images.begin_finalize(
                 task_id,
                 normalized,
                 workspace_id=workspace_id,
@@ -3423,6 +3457,231 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raise ProductProcessingValidationError(str(exc)) from exc
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
+        self._record_manual_shipping_observations(
+            task,
+            normalized,
+            list(run.get("snapshot") or []),
+            previous_dimension_overrides,
+            workspace_id=workspace_id,
+        )
+        return run
+
+    def _saved_dimension_overrides(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        workspace_id: str,
+    ) -> dict[int, dict[str, Any]]:
+        previous: dict[int, dict[str, Any]] = {}
+        for entry in entries:
+            draft_id = int(entry.get("product_draft_id") or 0)
+            draft = self.repository.get_draft(draft_id, workspace_id=workspace_id)
+            overrides = (draft or {}).get("preview_overrides") or {}
+            previous[draft_id] = dict(overrides) if isinstance(overrides, dict) else {}
+        return previous
+
+    def _record_manual_shipping_observations(
+        self,
+        task: dict[str, Any],
+        entries: list[dict[str, Any]],
+        saved_items: list[dict[str, Any]],
+        previous_overrides: dict[int, dict[str, Any]],
+        *,
+        workspace_id: str,
+    ) -> None:
+        results_by_draft = {
+            int(item.get("product_draft_id") or 0): dict(item.get("result") or {})
+            for item in task.get("items") or []
+            if item.get("product_draft_id")
+        }
+        saved_by_draft = {
+            int(item.get("product_draft_id") or 0): item for item in saved_items
+        }
+        for entry in entries:
+            draft_id = int(entry.get("product_draft_id") or 0)
+            saved = saved_by_draft.get(draft_id)
+            if saved is None:
+                continue
+            desired = (entry.get("overrides") or {}).get("shipping_package_records") or {}
+            if not isinstance(desired, dict):
+                continue
+            old_saved = previous_overrides.get(draft_id, {})
+            old = old_saved.get("shipping_package_records") or {}
+            if not isinstance(old, dict):
+                old = {}
+            result = results_by_draft.get(draft_id, {})
+            title = self._text(result.get("optimized_title") or result.get("title"))
+            desired_core = (entry.get("overrides") or {}).get("core_fields") or {}
+            old_core = old_saved.get("core_fields") or {}
+            if isinstance(desired_core, dict) and isinstance(old_core, dict):
+                dimensions = result.get("product_dimensions") or {}
+                if not isinstance(dimensions, dict):
+                    dimensions = {}
+                matched_packages = [
+                    record
+                    for record in (result.get("shipping_package_records") or [])
+                    if isinstance(record, dict)
+                    and (record.get("selected") or record.get("match_status") == "matched")
+                ]
+                selected_package = next(
+                    (
+                        record
+                        for record in matched_packages
+                    ),
+                    {},
+                )
+                changed_core = {}
+                for field in AXIS_FIELDS:
+                    if field not in desired_core:
+                        continue
+                    previous_value = old_core.get(
+                        field, selected_package.get(field, dimensions.get(field))
+                    )
+                    desired_number = self._number(desired_core.get(field))
+                    previous_number = self._number(previous_value)
+                    if (
+                        desired_number is not None
+                        and (
+                            previous_number is None
+                            or abs(float(desired_number) - float(previous_number)) > 1e-9
+                        )
+                    ):
+                        changed_core[field] = desired_core[field]
+                # A product with concrete SKU package rows learns only from
+                # those SKU identities. The product-level fallback would count
+                # the same physical package a second time.
+                if changed_core and not matched_packages:
+                    try:
+                        self.dimension_templates.record_observation(
+                            workspace_id=workspace_id,
+                            observation_key=f"package:{draft_id}:__default__",
+                            raw=result,
+                            title=title,
+                            values=changed_core,
+                            provenance={field: "manual_confirmed" for field in changed_core},
+                            source_kind="manual_confirmed",
+                            estimate_context=(
+                                result.get("product_dimensions")
+                                if isinstance(result.get("product_dimensions"), dict)
+                                else {}
+                            ),
+                            task_id=int(task.get("id") or 0),
+                            product_draft_id=draft_id,
+                            variant_key="__default__",
+                        )
+                    except Exception:  # noqa: BLE001 - learning must not break a saved preview
+                        _LOGGER.exception(
+                            "failed to record manual default shipping dimension observation",
+                            extra={"task_id": task.get("id"), "product_draft_id": draft_id},
+                        )
+            for variant_key, patch in desired.items():
+                if not isinstance(patch, dict):
+                    continue
+                old_patch = old.get(variant_key) if isinstance(old.get(variant_key), dict) else {}
+                changed = {
+                    field: patch[field]
+                    for field in AXIS_FIELDS
+                    if field in patch
+                    and (
+                        self._number(old_patch.get(field)) is None
+                        or abs(
+                            float(self._number(patch.get(field)) or 0)
+                            - float(self._number(old_patch.get(field)) or 0)
+                        )
+                        > 1e-9
+                    )
+                }
+                if not changed:
+                    continue
+                try:
+                    self.dimension_templates.record_observation(
+                        workspace_id=workspace_id,
+                        observation_key=f"package:{draft_id}:{variant_key}",
+                        raw=result,
+                        title=title,
+                        values=changed,
+                        provenance={field: "manual_confirmed" for field in changed},
+                        source_kind="manual_confirmed",
+                        estimate_context=(
+                            result.get("product_dimensions")
+                            if isinstance(result.get("product_dimensions"), dict)
+                            else {}
+                        ),
+                        task_id=int(task.get("id") or 0),
+                        product_draft_id=draft_id,
+                        variant_key=str(variant_key),
+                    )
+                except Exception:  # noqa: BLE001 - learning must not break a saved preview
+                    _LOGGER.exception(
+                        "failed to record manual shipping dimension observation",
+                        extra={"task_id": task.get("id"), "product_draft_id": draft_id},
+                    )
+
+    def _record_source_shipping_observations(
+        self,
+        result: dict[str, Any],
+        *,
+        task_id: int,
+        product_draft_id: int,
+        workspace_id: str,
+    ) -> None:
+        dimension_repository = getattr(self, "dimension_templates", None)
+        if dimension_repository is None:
+            return
+        records = result.get("shipping_package_records") or []
+        if not isinstance(records, list):
+            return
+        title = self._text(result.get("optimized_title") or result.get("title"))
+        has_matched_package = any(
+            isinstance(record, dict)
+            and (record.get("match_status") == "matched" or record.get("selected"))
+            for record in records
+        )
+        if has_matched_package:
+            try:
+                dimension_repository.delete_observation(
+                    workspace_id=workspace_id,
+                    observation_key=f"package:{product_draft_id}:__default__",
+                )
+            except Exception:  # noqa: BLE001 - cleanup must not break processing
+                _LOGGER.exception(
+                    "failed to remove duplicate default shipping dimension observation",
+                    extra={"task_id": task_id, "product_draft_id": product_draft_id},
+                )
+        for index, record in enumerate(records):
+            if not isinstance(record, dict):
+                continue
+            if record.get("match_status") != "matched" and not record.get("selected"):
+                continue
+            variant_key = self._text(
+                record.get("variant_key")
+                or record.get("variant_sku_id")
+                or record.get("record_key")
+            ) or f"row-{index + 1}"
+            values = {field: record.get(field) for field in AXIS_FIELDS if record.get(field) is not None}
+            try:
+                dimension_repository.record_observation(
+                    workspace_id=workspace_id,
+                    observation_key=f"package:{product_draft_id}:{variant_key}",
+                    raw=result,
+                    title=title,
+                    values=values,
+                    provenance={field: "source_confirmed" for field in values},
+                    source_kind="source_confirmed",
+                    estimate_context=(
+                        result.get("product_dimensions")
+                        if isinstance(result.get("product_dimensions"), dict)
+                        else {}
+                    ),
+                    task_id=int(task_id),
+                    product_draft_id=int(product_draft_id),
+                    variant_key=variant_key,
+                )
+            except Exception:  # noqa: BLE001 - learning must not break product processing
+                _LOGGER.exception(
+                    "failed to record source shipping dimension observation",
+                    extra={"task_id": task_id, "product_draft_id": product_draft_id},
+                )
 
     def _normalized_preview_entries(
         self, task: dict[str, Any], items: list[dict[str, Any]]
@@ -3666,6 +3925,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if not isinstance(dimensions, dict):
             dimensions = {}
         provenance_source = str(dimensions.get("source") or "").strip()
+        field_provenance = dimensions.get("field_provenance") or {}
+        if not isinstance(field_provenance, dict):
+            field_provenance = {}
+        field_confidence = dimensions.get("field_confidence") or {}
+        if not isinstance(field_confidence, dict):
+            field_confidence = {}
         # 1688 件重尺（#productPackInfo）抓到的真实物流包裹数据。前端「物流包裹
         # 长/宽/高/重量」框优先采用这些真实值，避免回退到商品本体尺寸的 AI 预估。
         shipping_package_records = result.get("shipping_package_records") or []
@@ -3693,16 +3958,37 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             if package_value is not None and package_value > 0:
                 package_dimensions[key] = float(package_value)
         dimension_provenance: dict[str, str] = {}
+        dimension_confidence: dict[str, str] = {}
         for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
-            if key in core_fields:
+            baseline_value = package_dimensions.get(key, dimensions.get(key))
+            manual_value = self._number(core_fields.get(key)) if key in core_fields else None
+            baseline_number = self._number(baseline_value)
+            is_manual_change = key in core_fields and (
+                manual_value is None
+                or baseline_number is None
+                or abs(float(manual_value) - float(baseline_number)) > 1e-9
+            )
+            if is_manual_change:
                 dimension_provenance[key] = "manual"
+                dimension_confidence[key] = "high"
             elif key in package_dimensions:
                 # 该字段来自件重尺真实抓取值，而非 AI 预估。
                 dimension_provenance[key] = "source"
-            elif "source_evidence" in provenance_source or "source_evidence" in str(dimensions.get("reason") or ""):
+                dimension_confidence[key] = "high"
+            elif field_provenance.get(key) == "source_confirmed" or (
+                not field_provenance
+                and (
+                    "source_evidence" in provenance_source
+                    or "source_evidence" in str(dimensions.get("reason") or "")
+                )
+            ):
                 dimension_provenance[key] = "source"
+                dimension_confidence[key] = "high"
             else:
                 dimension_provenance[key] = "ai"
+                dimension_confidence[key] = str(
+                    field_confidence.get(key) or dimensions.get("confidence") or "medium"
+                )
         # AI 预估重量过低（0 或 <10g）视为不可靠数据，剔除以免污染预检页展示。
         # 真实来源/件重尺（source/manual）即便低于 10g 也保留，仅过滤纯 AI 预估。
         if dimension_provenance.get("weight_g") == "ai":
@@ -3742,6 +4028,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # measurements and must never drive the product body/canvas size.
             "shipping_package_records": shipping_package_records,
             "dimension_provenance": dimension_provenance,
+            "dimension_confidence": dimension_confidence,
+            "dimension_clamped_fields": list(dimensions.get("clamped_fields") or []),
             "preview_revision": preview_revision,
             "result_version": task_item_result_version(result),
             # Kept separate from product_dimensions: these are shipping package
@@ -5824,6 +6112,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     vision_identity=vision_identity,
                     workspace_id=workspace_id,
                 )
+        dimension_repository = getattr(self, "dimension_templates", None)
+        dimension_template = (
+            dimension_repository.resolve(raw, title, workspace_id=workspace_id)
+            if "product_dimensions" in scope and dimension_repository is not None
+            else None
+        )
         structured_receipt_input = (
             self._processing_stage_input_hash(
                 "doubao_text",
@@ -5842,6 +6136,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     "provider": "doubao",
                     "model": DOUBAO_TEXT_MODEL_ID,
                     "prompt_version": DOUBAO_TEXT_PROMPT_VERSION,
+                    # Learned bounds/defaults are part of the dimension result.
+                    # A changed template must invalidate an older stage receipt.
+                    "dimension_template_signature": template_signature(dimension_template),
                 },
             )
             if supports_stage_receipts
@@ -5925,13 +6222,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         needs_description=bool(needs_desc),
                         needs_dimensions=bool(needs_dimensions),
                         known_dimensions=known_dimensions,
+                        dimension_template=dimension_template,
                     )
                 except DoubaoTextError as exc:
                     text_failure = exc
                     combined = None
                     needs_title = False
                     needs_desc = False
-                    product_dimensions = dict(known_dimensions)
+                    product_dimensions = self._combined_dimensions(
+                        {}, known_dimensions, dimension_template
+                    )
                     provider_attempts["doubao_text"] = max(
                         0, int(exc.attempt_count)
                     )
@@ -5971,10 +6271,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 if combined.get("variant_translations"):
                     translations = combined["variant_translations"]
                 if needs_dimensions:
-                    product_dimensions = dict(combined.get("product_dimensions") or {})
-                    # Never let the text model replace measurements explicitly
-                    # captured from the source table, selected SKU, or image.
-                    product_dimensions.update(known_dimensions)
+                    product_dimensions = self._combined_dimensions(
+                        combined.get("product_dimensions") or {},
+                        known_dimensions,
+                        dimension_template,
+                    )
                 ai_notes.append("text:managed-service-combined")
             if (needs_title or needs_desc) and text_failure is None:
                 text_failure = DoubaoTextError(
@@ -6450,6 +6751,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "retryable": text_failure is not None,
             "exchange_contract": "daily-selection-product-processing-v1" if draft.get("selection_run_id") else None,
         }
+        self._record_source_shipping_observations(
+            result,
+            task_id=int(task_id),
+            product_draft_id=int(draft["id"]),
+            workspace_id=workspace_id,
+        )
         return {
             **item,
             "skc": skc,
@@ -6508,6 +6815,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         needs_description: bool,
         needs_dimensions: bool,
         known_dimensions: dict[str, Any] | None = None,
+        dimension_template: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Generate every requested listing-text field in one text-only Doubao stage."""
         variant_values = self._unique_variant_values(raw)
@@ -6618,6 +6926,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "variant_translations": variant_values,
             "product_dimensions": bool(needs_dimensions),
         }
+        dimension_policy = (
+            {
+                field: template_axis_policy(dimension_template, field)
+                for field in AXIS_FIELDS
+            }
+            if dimension_template
+            else {}
+        )
         dimension_contract = (
             "PRODUCT DIMENSION ESTIMATION CONTRACT:\n"
             "Because product_dimensions is requested, return all four positive numeric fields: "
@@ -6628,7 +6944,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "When the source provides no weight or size evidence at all, estimate within the typical "
             "range for the product category and avoid implausible extremes (for example an ordinary "
             "smartphone should never be estimated below 50 g or a garment above several kilograms). "
-            "Do not use dimension estimates in the title or description.\n"
+            "Do not use dimension estimates in the title or description. The expected ranges below "
+            "are soft category guidance; the hard range is mandatory for estimated values. Source "
+            "measurements listed as known dimensions remain authoritative even outside the range.\n"
+            f"Dimension template policy: {json.dumps(dimension_policy, ensure_ascii=False, sort_keys=True)}\n"
             if needs_dimensions
             else ""
         )
@@ -6683,7 +7002,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 raise ValueError("Doubao text variant translations are incomplete")
 
             dimensions = self._combined_dimensions(
-                result.product_dimensions, known
+                result.product_dimensions, known, dimension_template
             )
             if needs_dimensions and any(
                 self._number(dimensions.get(key)) is None
@@ -8207,29 +8526,108 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         cls,
         value: Any,
         known: dict[str, Any] | None = None,
+        dimension_template: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Validate combined dimension output while preserving source evidence."""
+        """Resolve shipping measurements without allowing estimates to replace evidence.
+
+        Learned P10/P90 values are soft expected ranges. Only conservative human
+        prior min/max values are hard-clamped; this avoids clipping legitimate
+        tails simply because they fall outside a percentile band.
+        """
 
         raw = dict(value) if isinstance(value, dict) else {}
+        previous_raw_estimate = (
+            dict(raw.get("raw_estimate")) if isinstance(raw.get("raw_estimate"), dict) else {}
+        )
+        previous_resolution_method = (
+            dict(raw.get("resolution_method"))
+            if isinstance(raw.get("resolution_method"), dict)
+            else {}
+        )
         result: dict[str, Any] = {}
-        for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
-            number = cls._number(raw.get(key))
+        raw_estimate: dict[str, float] = {}
+        provenance: dict[str, str] = {}
+        confidence: dict[str, str] = {}
+        resolution_method: dict[str, str] = {}
+        clamped: list[str] = []
+        for key in AXIS_FIELDS:
+            previous_method = str(previous_resolution_method.get(key) or "")
+            if previous_method in {"known_default", "stat_p50_default"}:
+                number = None
+            else:
+                number = cls._number(previous_raw_estimate.get(key, raw.get(key)))
             if number is not None and number > 0:
-                result[key] = float(number)
-        for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
+                resolved = float(number)
+                raw_estimate[key] = resolved
+                policy = template_axis_policy(dimension_template, key) if dimension_template else {}
+                hard_min = cls._number(policy.get("hard_min"))
+                hard_max = cls._number(policy.get("hard_max"))
+                if hard_min is not None and resolved < hard_min:
+                    resolved = float(hard_min)
+                    clamped.append(key)
+                if hard_max is not None and resolved > hard_max:
+                    resolved = float(hard_max)
+                    clamped.append(key)
+                result[key] = resolved
+                provenance[key] = "package_estimate"
+                expected_min = cls._number(policy.get("expected_min"))
+                expected_max = cls._number(policy.get("expected_max"))
+                outside_expected = (
+                    (expected_min is not None and resolved < expected_min)
+                    or (expected_max is not None and resolved > expected_max)
+                )
+                confidence[key] = "low" if key in clamped or outside_expected else "medium"
+                resolution_method[key] = "ai_clamped" if key in clamped else "ai"
+        for key in AXIS_FIELDS:
             source_value = cls._number((known or {}).get(key))
             if source_value is not None and source_value > 0:
                 result[key] = float(source_value)
+                provenance[key] = "source_confirmed"
+                confidence[key] = "high"
+                resolution_method[key] = "source"
+                clamped = [field for field in clamped if field != key]
+        if dimension_template:
+            for key in AXIS_FIELDS:
+                if key in result:
+                    continue
+                default = cls._number(template_axis_policy(dimension_template, key).get("default"))
+                if default is not None and default > 0:
+                    result[key] = float(default)
+                    provenance[key] = "package_estimate"
+                    confidence[key] = "low"
+                    resolution_method[key] = (
+                        "stat_p50_default"
+                        if template_axis_policy(dimension_template, key).get("uses_statistics")
+                        else "known_default"
+                    )
         if not result:
             return {}
+        confidence_order = {"low": 0, "medium": 1, "high": 2}
+        overall_confidence = min(
+            confidence.values(), key=lambda item: confidence_order.get(item, 0)
+        )
+        all_source = bool(provenance) and all(value == "source_confirmed" for value in provenance.values())
         result.update(
             {
-                "confidence": cls._text(raw.get("confidence")) or (
-                    "high" if known and all((known or {}).get(key) for key in result) else "medium"
+                "confidence": overall_confidence,
+                "field_confidence": confidence,
+                "field_provenance": provenance,
+                "resolution_method": resolution_method,
+                "raw_estimate": raw_estimate,
+                "clamped_fields": sorted(set(clamped)),
+                "package_profile": cls._text(raw.get("package_profile")) or (
+                    str(dimension_template.get("package_profile") or "") if dimension_template else ""
                 ),
-                "package_profile": cls._text(raw.get("package_profile")),
                 "reason": cls._text(raw.get("reason")),
-                "source": "combined_ai_with_source_evidence" if known else "combined_ai_estimated",
+                "source": (
+                    "source_evidence"
+                    if all_source
+                    else ("dimension_template_resolved" if dimension_template else "combined_ai_estimated")
+                ),
+                "template_key": (
+                    str(dimension_template.get("category_key") or "") if dimension_template else ""
+                ),
+                "template_version": template_signature(dimension_template),
             }
         )
         return result
@@ -8240,7 +8638,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         parts: list[str] = []
         if title:
             parts.append(f"title: {title}")
-        category = raw.get("category") or raw.get("source_category_path")
+        category = raw.get("category_path") or raw.get("source_category_path") or raw.get("category")
         if category:
             parts.append(f"category: {category}")
         evidence = cls._canonical_prompt_evidence(raw)
