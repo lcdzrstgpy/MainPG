@@ -69,6 +69,16 @@ _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "product_processing_combo_sources": [
         ("is_main", "BOOLEAN NOT NULL DEFAULT 0"),
     ],
+    "product_dimension_templates": [
+        ("quarantined_axis_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("accuracy_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ],
+    "product_dimension_observations": [
+        ("quality_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("raw_estimate_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("resolved_estimate_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("error_metrics_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ],
     "product_processing_dimension_items": [
         ("render_input_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ("rendered_input_hash", "VARCHAR(64) NOT NULL DEFAULT ''"),
