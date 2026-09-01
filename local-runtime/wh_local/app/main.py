@@ -657,6 +657,13 @@ def _register_price_verification(
             if product_processing is not None
             else None
         ),
+        history_source_lookup=(
+            lambda requests, workspace_id: product_processing.latest_completed_sources_by_title(
+                requests, workspace_id
+            )
+            if product_processing is not None
+            else {}
+        ),
         product_library_service=product_library_service,
     )
     register_price_verification_routes(app.router, dependencies)

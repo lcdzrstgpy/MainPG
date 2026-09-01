@@ -111,6 +111,56 @@ def test_local_source_download_uses_hardened_fetcher_behind_proxy_fake_ip(
     assert calls == ["https://cbu01.alicdn.com/source.jpg"]
 
 
+def test_persistent_vision_cache_uses_actual_image_content_and_workspace() -> None:
+    repository = _PersistentCacheRepository()
+    provider_calls = 0
+
+    class _VisionClient:
+        last_attempt_count = 0
+
+        def recognize_subject(self, _data_urls, _source_title):
+            nonlocal provider_calls
+            provider_calls += 1
+            self.last_attempt_count = 1
+            return SubjectAnalysis(
+                sellable_subject="travel mug",
+                subject_explanation="The mug is the complete foreground product.",
+                visible_attributes=("blue body",),
+                excluded_elements=("table",),
+                confidence="high",
+                uncertainty_reason="",
+            )
+
+    def build_service(content: bytes, workspace_id: str) -> ProductProcessingService:
+        service = object.__new__(ProductProcessingService)
+        service.repository = repository
+        service._source_data_url_cache = {}
+        service._source_data_url_lock = threading.Lock()
+        service._doubao_subject_cache = {}
+        service._doubao_subject_cache_lock = threading.Lock()
+        service._public_image_fetcher = lambda url, **_kwargs: FetchedPublicImage(
+            content, "image/jpeg", url
+        )
+        service._doubao_vision_client = lambda: _VisionClient()
+        service._attempt_state().workspace_id = workspace_id
+        return service
+
+    first = build_service(b"same-image", "workspace-a")
+    second = build_service(b"same-image", "workspace-a")
+    changed = build_service(b"changed-image", "workspace-a")
+    other_workspace = build_service(b"same-image", "workspace-b")
+
+    first._recognize_doubao_subject("https://example.com/source.jpg", "Travel Mug")
+    second._recognize_doubao_subject("https://example.com/source.jpg", "Travel Mug")
+    assert second._attempt_state().doubao_vision_cache_hit is True
+    changed._recognize_doubao_subject("https://example.com/source.jpg", "Travel Mug")
+    other_workspace._recognize_doubao_subject(
+        "https://example.com/source.jpg", "Travel Mug"
+    )
+
+    assert provider_calls == 3
+
+
 def _raw() -> dict:
     return {
         "source_url": "https://example.com/product",
@@ -168,6 +218,57 @@ class _ReceiptRepository(_PromptRepository):
         for stage in stages:
             self.receipts.pop(stage, None)
         return 0
+
+
+class _PersistentCacheRepository(_ReceiptRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.receipts_by_task: dict[tuple[int, str], dict] = {}
+        self.stage_cache: dict[tuple[str, str], dict] = {}
+
+    def load_stage_receipt(self, task_id, _item_id, stage, **_kwargs):
+        return self.receipts_by_task.get((int(task_id), str(stage)))
+
+    def upsert_stage_receipt(
+        self, task_id, _item_id, stage, *, input_hash, output_data, **_kwargs
+    ):
+        receipt = {"input_hash": input_hash, "output": output_data}
+        self.receipts_by_task[(int(task_id), str(stage))] = receipt
+        return receipt
+
+    def delete_invalid_stage_receipt(
+        self, task_id, _item_id, stage, *, expected_input_hash, **_kwargs
+    ):
+        key = (int(task_id), str(stage))
+        receipt = self.receipts_by_task.get(key)
+        if receipt and receipt["input_hash"] != expected_input_hash:
+            self.receipts_by_task.pop(key, None)
+            return True
+        return False
+
+    def delete_downstream_stage_receipts(
+        self, task_id, _item_id, stages, **_kwargs
+    ):
+        for stage in stages:
+            self.receipts_by_task.pop((int(task_id), str(stage)), None)
+        return 0
+
+    def get_ai_stage_cache(self, cache_key, *, workspace_id="local"):
+        value = self.stage_cache.get((str(workspace_id), str(cache_key)))
+        return {"output": value} if value is not None else None
+
+    def save_ai_stage_cache(
+        self,
+        cache_key,
+        *,
+        workspace_id="local",
+        output_data,
+        **_kwargs,
+    ):
+        self.stage_cache.setdefault(
+            (str(workspace_id), str(cache_key)),
+            output_data,
+        )
 
 
 class _DoubaoListingClient:
@@ -421,6 +522,7 @@ def test_doubao_subject_precedes_independent_text_and_image_branches(monkeypatch
 
     def combined(*_args, **kwargs):
         order.append("doubao-text")
+        captured["text_source_title"] = _args[0]
         captured["combined_identity"] = kwargs["vision_identity"]
         return {
             "title": "Rectangular Bamboo Cooling Mat, Woven Summer Sleeping Pad",
@@ -460,7 +562,8 @@ def test_doubao_subject_precedes_independent_text_and_image_branches(monkeypatch
     )
     assert captured["combined_identity"] == result["result"]["vision_identity"]
     assert captured["grid_identity"] == result["result"]["vision_identity"]
-    assert captured["vision_source_title"] == source_title
+    assert captured["vision_source_title"] == draft["title"]
+    assert captured["text_source_title"] == draft["title"]
 
 
 def test_doubao_text_failure_keeps_gpt_image_result_and_requires_attention(monkeypatch) -> None:
@@ -845,7 +948,79 @@ def test_doubao_identity_receipt_avoids_repeat_recognition_on_task_retry(monkeyp
     assert second["result"]["provider_status_classes"]["doubao_vision"] == "receipt_hit"
 
 
-def test_source_title_change_invalidates_doubao_identity_receipt(monkeypatch) -> None:
+def test_new_task_reuses_exact_vision_and_text_without_billing_text_again(
+    monkeypatch,
+) -> None:
+    service = _process_service(monkeypatch)
+    service.repository = _PersistentCacheRepository()
+    recognition_calls = 0
+    text_calls = 0
+
+    def recognize(*_args, **_kwargs) -> SubjectAnalysis:
+        nonlocal recognition_calls
+        recognition_calls += 1
+        state = service._attempt_state()
+        state.doubao_vision = 1 if recognition_calls == 1 else 0
+        state.doubao_vision_cache_hit = recognition_calls > 1
+        return SubjectAnalysis(
+            sellable_subject="travel mug",
+            subject_explanation="The travel mug is the complete foreground product.",
+            visible_attributes=("blue body",),
+            excluded_elements=("table",),
+            confidence="high",
+            uncertainty_reason="",
+        )
+
+    def generate_text(*_args, **_kwargs):
+        nonlocal text_calls
+        text_calls += 1
+        service._attempt_state().doubao_text = 1
+        return {
+            "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
+            "description": VALID_DESCRIPTION,
+            "variant_translations": {},
+            "vision_subject": "travel mug",
+            "product_dimensions": {},
+        }
+
+    monkeypatch.setattr(service, "_recognize_doubao_subject", recognize)
+    monkeypatch.setattr(service, "_generate_doubao_text", generate_text)
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
+            attempt_count=1,
+            provider_status_class="success",
+        ),
+    )
+
+    first = service._process_one(
+        {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
+    )
+    second = service._process_one(
+        {"id": 2, "item_id": 201}, _draft(), _settings(), False, task_id=13
+    )
+    changed_site = service._process_one(
+        {"id": 3, "item_id": 301},
+        _draft(),
+        {**_settings(), "target_site": "CA"},
+        False,
+        task_id=14,
+    )
+
+    assert first["status"] == second["status"] == changed_site["status"] == "completed"
+    assert recognition_calls == 3
+    assert text_calls == 2
+    assert second["result"]["provider_status_classes"]["doubao_vision"] == "cache_hit"
+    assert second["result"]["provider_status_classes"]["doubao_text"] == "cache_hit"
+    assert second["result"]["billing_skipped_kinds"] == ["text"]
+    assert changed_site["result"]["provider_status_classes"]["doubao_text"] == "success"
+
+
+def test_operator_title_change_invalidates_doubao_identity_receipt(monkeypatch) -> None:
     service = _process_service(monkeypatch)
     service.repository = _ReceiptRepository()
     recognition_titles: list[str] = []
@@ -876,11 +1051,13 @@ def test_source_title_change_invalidates_doubao_identity_receipt(monkeypatch) ->
 
     first_draft = {
         **_draft(),
+        "title": "用户修正的中文水杯标题",
         "raw_payload": {**_raw(), "source_title": "1688 ORIGINAL MUG TITLE"},
     }
     second_draft = {
         **_draft(),
-        "raw_payload": {**_raw(), "source_title": "1688 CORRECTED MUG TITLE"},
+        "title": "用户再次修正的中文保温杯标题",
+        "raw_payload": {**_raw(), "source_title": "1688 ORIGINAL MUG TITLE"},
     }
     first = service._process_one(
         {"id": 1, "item_id": 101}, first_draft, _settings(), False, task_id=12
@@ -891,8 +1068,8 @@ def test_source_title_change_invalidates_doubao_identity_receipt(monkeypatch) ->
 
     assert first["status"] == second["status"] == "completed"
     assert recognition_titles == [
-        first_draft["raw_payload"]["source_title"],
-        second_draft["raw_payload"]["source_title"],
+        first_draft["title"],
+        second_draft["title"],
     ]
     assert second["result"]["provider_attempts"]["doubao_vision"] == 1
 

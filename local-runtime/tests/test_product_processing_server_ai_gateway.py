@@ -5,6 +5,8 @@ import contextvars
 import json
 import socket
 import sqlite3
+import threading
+import time
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -1617,6 +1619,70 @@ def test_image_adapter_calls_platform_gateway_and_downloads_safe_result(monkeypa
     assert gateway_request["headers"]["Authorization"] == "Bearer platform-token"
     assert gateway_request["json"]["usage_id"] == "usage-image"
     assert gateway_request["json"]["urls"] == ["https://images.example.test/source.jpg"]
+
+
+def test_server_image_gate_rotates_between_usage_ids_before_same_item_repairs() -> None:
+    gate = media_module._FairUsageRequestGate()
+    execution_order: list[str] = []
+    execution_lock = threading.Lock()
+    release_events = {
+        label: threading.Event()
+        for label in ("product-a-repair-1", "product-a-repair-2", "product-b-main")
+    }
+
+    # Hold product A's current request while its repairs and product B's main
+    # request enter the queue in a deterministic order.
+    gate.acquire("usage-a")
+
+    def run(label: str, usage: str) -> None:
+        with gate.hold(usage):
+            with execution_lock:
+                execution_order.append(label)
+            release_events[label].wait(timeout=2)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [
+            pool.submit(run, "product-a-repair-1", "usage-a"),
+            pool.submit(run, "product-a-repair-2", "usage-a"),
+        ]
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with gate._lock:
+                if len(gate._waiters_by_key.get("usage-a", ())) == 2:
+                    break
+            time.sleep(0.005)
+        futures.append(pool.submit(run, "product-b-main", "usage-b"))
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with gate._lock:
+                if len(gate._waiters_by_key.get("usage-b", ())) == 1:
+                    break
+            time.sleep(0.005)
+
+        gate.release("usage-a")
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not execution_order:
+            time.sleep(0.005)
+        assert execution_order == ["product-b-main"]
+
+        release_events["product-b-main"].set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and len(execution_order) < 2:
+            time.sleep(0.005)
+        assert execution_order[:2] == ["product-b-main", "product-a-repair-1"]
+
+        release_events["product-a-repair-1"].set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and len(execution_order) < 3:
+            time.sleep(0.005)
+        assert execution_order == [
+            "product-b-main",
+            "product-a-repair-1",
+            "product-a-repair-2",
+        ]
+        release_events["product-a-repair-2"].set()
+        for future in futures:
+            future.result(timeout=2)
 
 
 @pytest.mark.parametrize(

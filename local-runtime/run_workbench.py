@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import webbrowser
+from urllib.parse import quote
 
 import uvicorn
 
@@ -167,6 +168,12 @@ def _open_browser_later(url: str, delay: float = 2.5) -> None:
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _workbench_url(host: str, port: int, app_version: str) -> str:
+    """Use a versioned document URL so a desktop upgrade cannot reuse stale HTML."""
+    version = quote(app_version.strip() or "unknown", safe="")
+    return f"http://{host}:{port}/?app_version={version}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="H Smart Ecommerce Local Workbench")
     parser.add_argument("--host", default=DEFAULT_HOST, help="监听地址，默认 127.0.0.1")
@@ -183,8 +190,9 @@ def main() -> int:
         print(f"[run-workbench] port {args.port} in use, fallback to {port}")
 
     from wh_local.app.main import app
+    from wh_local.config import APP_VERSION
 
-    url = f"http://{args.host}:{port}/"
+    url = _workbench_url(args.host, port, APP_VERSION)
     if not args.no_browser:
         _open_browser_later(url)
     print(f"[run-workbench] serving workbench at {url}")

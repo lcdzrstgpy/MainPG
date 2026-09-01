@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+import unicodedata
 from collections.abc import Iterable
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -42,6 +44,19 @@ def loads(value: str | None, fallback: Any) -> Any:
         return json.loads(value or "")
     except (TypeError, ValueError):
         return fallback
+
+
+def _normalized_history_title(value: object) -> str:
+    text_value = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return re.sub(r"\s+", " ", text_value).strip()
+
+
+def _complete_1688_source_url(value: object) -> bool:
+    url = str(value or "").strip()
+    return bool(
+        re.match(r"^https?://(?:[^/]+\.)?1688\.com/", url, flags=re.IGNORECASE)
+        and re.search(r"(?:offer/|offerId=|offer_id=)\d{3,}", url, flags=re.IGNORECASE)
+    )
 
 
 class StalePreviewRevision(RuntimeError):
@@ -808,6 +823,30 @@ class ProductProcessingRepository:
                 row.updated_at = now
             return [row.id for row in rows]
 
+    def restore_drafts(self, draft_ids: list[int], workspace_id: str = "local") -> list[int]:
+        """Restore a specific soft-deleted batch to the draft pool.
+
+        Filtering by both workspace and ``deleted`` status makes repeated undo calls
+        harmless and prevents an old undo action from changing an active draft.
+        """
+        ids = list(dict.fromkeys(int(item) for item in draft_ids if int(item) > 0))
+        if not ids:
+            return []
+        with self.database.sessions.begin() as session:
+            rows = session.scalars(
+                select(ProductDraftRow).where(
+                    ProductDraftRow.id.in_(ids),
+                    ProductDraftRow.workspace_id == workspace_id,
+                    ProductDraftRow.status == "deleted",
+                )
+            ).all()
+            now = utc_now()
+            for row in rows:
+                row.status = "draft"
+                row.updated_at = now
+            restored = {row.id for row in rows}
+            return [draft_id for draft_id in ids if draft_id in restored]
+
     def create_task(
         self,
         *,
@@ -891,6 +930,85 @@ class ProductProcessingRepository:
                 .limit(limit)
             ).all()
             return [self._task(row) for row in rows], total
+
+    def latest_completed_sources_by_title(
+        self,
+        requests: list[dict[str, Any]],
+        workspace_id: str = "local",
+    ) -> dict[str, dict[str, Any]]:
+        """Find the newest usable 1688 source for each normalized AI title."""
+        pending: dict[str, list[dict[str, Any]]] = {}
+        for request in requests:
+            skc = str(request.get("skc") or "").strip()
+            normalized = _normalized_history_title(request.get("title"))
+            if skc and normalized:
+                excluded_offer_ids = {
+                    str(value).strip()
+                    for value in request.get("excluded_offer_ids") or ()
+                    if str(value).strip()
+                }
+                pending.setdefault(normalized, []).append(
+                    {
+                        "skc": skc,
+                        "title": str(request.get("title") or ""),
+                        "excluded_offer_ids": excluded_offer_ids,
+                    }
+                )
+        if not pending:
+            return {}
+
+        matched: dict[str, dict[str, Any]] = {}
+        with self.database.sessions() as session:
+            rows = session.scalars(
+                select(ProcessingTaskItemRow)
+                .join(ProcessingTaskRow, ProcessingTaskRow.id == ProcessingTaskItemRow.task_id)
+                .where(
+                    ProcessingTaskRow.workspace_id == workspace_id,
+                    ProcessingTaskItemRow.status == "completed",
+                )
+                .order_by(ProcessingTaskItemRow.updated_at.desc(), ProcessingTaskItemRow.id.desc())
+            ).yield_per(200)
+            for row in rows:
+                result = loads(row.result_json, {})
+                if not isinstance(result, dict):
+                    continue
+                normalized = _normalized_history_title(result.get("optimized_title") or row.title)
+                targets = pending.get(normalized)
+                if not targets:
+                    continue
+                source_url = str(result.get("source_url") or "").strip()
+                if not _complete_1688_source_url(source_url):
+                    continue
+                source_offer_match = re.search(
+                    r"(?:offer/|offerId=|offer_id=)(\d{3,})",
+                    source_url,
+                    flags=re.IGNORECASE,
+                )
+                source_offer_id = source_offer_match.group(1) if source_offer_match else ""
+                history_skc = str(result.get("skc") or row.skc or "").strip()
+                remaining: list[dict[str, Any]] = []
+                for target in targets:
+                    if (
+                        (history_skc and history_skc == target["skc"])
+                        or source_offer_id in target["excluded_offer_ids"]
+                    ):
+                        remaining.append(target)
+                        continue
+                    matched[target["skc"]] = {
+                        "source_url": source_url,
+                        "history_task_id": int(row.task_id),
+                        "history_item_id": int(row.id),
+                        "history_skc": history_skc,
+                        "matched_title": str(result.get("optimized_title") or row.title or ""),
+                        "updated_at": row.updated_at,
+                    }
+                if remaining:
+                    pending[normalized] = remaining
+                else:
+                    pending.pop(normalized, None)
+                if not pending:
+                    break
+        return matched
 
     def queued_tasks(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
         with self.database.sessions() as session:

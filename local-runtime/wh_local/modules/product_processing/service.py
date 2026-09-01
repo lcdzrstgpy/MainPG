@@ -179,7 +179,7 @@ _CACHE_VOLATILE_RAW_KEYS = frozenset(
     }
 )
 
-_STAGE_CACHE_VERSION = 3
+_STAGE_CACHE_VERSION = 4
 _TASK_HEARTBEAT_SECONDS = 10.0
 # 前端任务页轮询 /tasks/{id}/outputs 即为心跳；超过该时长没有心跳（页面关闭/
 # 切走/浏览器标签被回收）自动把任务置为暂停，避免用户已不在看却继续烧 AI 成本。
@@ -1786,6 +1786,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         ids = self.repository.delete_drafts(draft_ids, workspace_id)
         return {"deleted_count": len(ids), "ids": ids, "status": "deleted"}
 
+    def restore_drafts(self, draft_ids: list[int], workspace_id: str = "local") -> dict[str, Any]:
+        ids = self.repository.restore_drafts(draft_ids, workspace_id)
+        return {"restored_count": len(ids), "ids": ids, "status": "draft"}
+
     def import_workbook(
         self,
         filename: str,
@@ -2687,6 +2691,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 }
             )
         return {"tasks": history, "limit": limit, "offset": offset, "total": total}
+
+    def latest_completed_sources_by_title(
+        self,
+        requests: list[dict[str, Any]],
+        workspace_id: str = "local",
+    ) -> dict[str, dict[str, Any]]:
+        """Expose a read-only, workspace-scoped history lookup to sourcing."""
+        return self.repository.latest_completed_sources_by_title(requests, workspace_id)
 
     def _task_control_reason(self, task_id: int, workspace_id: str) -> str:
         """返回任务控制状态原因：'用户已暂停任务' / '用户已取消任务'，正常继续返回空串。
@@ -4935,26 +4947,55 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # 重试溢价：该链接发生过 AI 重试/重绘/修复时标记，服务端按重试单价结算。
             "billing_retried": _item_had_retry(result),
         }
+        skipped_kinds = {
+            str(value or "").strip()
+            for value in (result.get("billing_skipped_kinds") or [])
+            if str(value or "").strip()
+        }
         first_error: Exception | None = None
         for kind, usage in self._reserved_usage_ids(task_id, item_id).items():
             if not self._claim_usage_settlement(task_id, item_id, kind, usage):
                 continue
+            skipped_without_provider_call = kind in skipped_kinds
             attempt = self._product_billing_attempt_for_usage(task_id, item_id, kind, usage)
             if attempt is not None:
                 self.repository.mark_product_billing_desired_outcome(
                     int(attempt["id"]),
-                    desired_outcome="succeeded",
-                    error_message="",
+                    desired_outcome=(
+                        "failed" if skipped_without_provider_call else "succeeded"
+                    ),
+                    error_message=(
+                        "exact AI stage cache hit; provider was not called"
+                        if skipped_without_provider_call
+                        else ""
+                    ),
                 )
             try:
-                response = _billing_call_with_retry(
-                    client.settle_ai_usage_success,
-                    remote_token,
-                    usage,
-                    {"metadata": metadata},
-                )
+                if skipped_without_provider_call:
+                    response = _billing_call_with_retry(
+                        client.settle_ai_usage_failure,
+                        remote_token,
+                        usage,
+                        {
+                            "error_message": (
+                                "exact AI stage cache hit; provider was not called"
+                            )
+                        },
+                    )
+                else:
+                    response = _billing_call_with_retry(
+                        client.settle_ai_usage_success,
+                        remote_token,
+                        usage,
+                        {"metadata": metadata},
+                    )
                 remote_status = self._remote_settlement_status(response, usage)
-                if remote_status != "succeeded":
+                valid_statuses = (
+                    {"succeeded", "failed"}
+                    if skipped_without_provider_call
+                    else {"succeeded"}
+                )
+                if remote_status not in valid_statuses:
                     raise CustomerBillingProtocolError()
             except Exception as exc:
                 error = self._stable_remote_billing_error(exc)
@@ -5413,12 +5454,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             }
         raw = draft["raw_payload"]
         title = self._text(draft.get("title") or draft.get("product_name") or raw.get("source_title"))
-        source_title = self._text(
-            raw.get("source_title")
-            or raw.get("title")
-            or raw.get("product_name")
-            or title
-        )
+        # ``draft.title`` is the operator-editable Chinese reference title from
+        # the draft pool. Keep the collected title in raw_payload for traceability,
+        # but make the operator's correction authoritative for every downstream
+        # AI stage (vision identity, text, dimensions and image planning).
+        source_title = title
         image_url = self._text(draft.get("image_url") or raw.get("main_image_url") or self._first(raw.get("source_image_urls")))
         source_url = self._text(raw.get("source_url") or raw.get("product_link") or draft.get("source_ref"))
         missing = [name for name, value in (("title", title), ("image", image_url)) if not value]
@@ -5615,6 +5655,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 self._raise_if_task_stopped(task_id, workspace_id)
                 attempt_state = self._attempt_state()
                 attempt_state.doubao_vision = None
+                attempt_state.doubao_vision_cache_hit = False
+                attempt_state.workspace_id = workspace_id
                 try:
                     analysis = self._recognize_doubao_subject(
                         vision_reference_urls, source_title
@@ -5677,7 +5719,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 provider_attempts["doubao_vision"] = (
                     1 if measured_attempts is None else max(0, int(measured_attempts))
                 )
-                provider_status_classes["doubao_vision"] = "success"
+                vision_cache_hit = bool(
+                    getattr(attempt_state, "doubao_vision_cache_hit", False)
+                )
+                provider_status_classes["doubao_vision"] = (
+                    "cache_hit" if vision_cache_hit else "success"
+                )
+                if vision_cache_hit:
+                    ai_notes.append("subject_identity:cache-hit")
             record_stage("doubao_subject", stage_started)
             vision_identity = {
                 **analysis.as_dict(),
@@ -5893,31 +5942,39 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             if "product_dimensions" in scope and dimension_repository is not None
             else None
         )
+        structured_stage_input = {
+            "draft_id": int(draft["id"]),
+            "title": title,
+            "category": category,
+            "raw": self._stable_raw(raw),
+            "target_site": target_site,
+            "target_language": target_language,
+            "scope": sorted(
+                {"title", "details", "product_dimensions"} & scope
+            ),
+            "vision_identity": vision_identity,
+            "vision_prompt_version": DOUBAO_VISION_PROMPT_VERSION,
+            "provider": "doubao",
+            "model": DOUBAO_TEXT_MODEL_ID,
+            "prompt_version": DOUBAO_TEXT_PROMPT_VERSION,
+            # Operator template additions are separate from the global prompt
+            # repository. Switching or editing a template must invalidate a
+            # cross-task text result even when every source field is unchanged.
+            "active_prompt_additions": self._active_template_prompts(),
+            # Learned bounds/defaults are part of the dimension result.
+            # A changed template must invalidate an older stage receipt/cache.
+            "dimension_template_signature": template_signature(dimension_template),
+        }
+        structured_stage_hash = self._processing_stage_input_hash(
+            "doubao_text",
+            structured_stage_input,
+        )
         structured_receipt_input = (
-            self._processing_stage_input_hash(
-                "doubao_text",
-                {
-                    "draft_id": int(draft["id"]),
-                    "title": title,
-                    "category": category,
-                    "raw": self._stable_raw(raw),
-                    "target_site": target_site,
-                    "target_language": target_language,
-                    "scope": sorted(
-                        {"title", "details", "product_dimensions"} & scope
-                    ),
-                    "vision_identity": vision_identity,
-                    "vision_prompt_version": DOUBAO_VISION_PROMPT_VERSION,
-                    "provider": "doubao",
-                    "model": DOUBAO_TEXT_MODEL_ID,
-                    "prompt_version": DOUBAO_TEXT_PROMPT_VERSION,
-                    # Learned bounds/defaults are part of the dimension result.
-                    # A changed template must invalidate an older stage receipt.
-                    "dimension_template_signature": template_signature(dimension_template),
-                },
-            )
-            if supports_stage_receipts
-            else ""
+            structured_stage_hash if supports_stage_receipts else ""
+        )
+        structured_cache_key = self._ai_stage_cache_key(
+            "doubao_text",
+            input_data={"stage_input_hash": structured_stage_hash},
         )
         structured_receipt: dict[str, Any] | None = None
         if task_item_id and supports_stage_receipts:
@@ -5979,50 +6036,70 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 provider_status_classes["doubao_text"] = "receipt_hit"
                 text_generation["status"] = "receipt_hit"
             elif needs_title or needs_desc or needs_dimensions or variant_values:
-                # 检查点：任务被暂停/取消时不再发起豆包文案生成。
-                self._raise_if_task_stopped(task_id, workspace_id)
-                stage_started = time.perf_counter()
-                attempt_state = self._attempt_state()
-                attempt_state.doubao_text = None
-                try:
-                    combined = self._generate_doubao_text(
-                        title,
-                        category,
-                        raw,
-                        target_language,
-                        target_site,
-                        ai_notes,
-                        vision_identity=vision_identity,
-                        needs_title=bool(needs_title),
-                        needs_description=bool(needs_desc),
-                        needs_dimensions=bool(needs_dimensions),
-                        known_dimensions=known_dimensions,
-                        dimension_template=dimension_template,
-                    )
-                except DoubaoTextError as exc:
-                    text_failure = exc
-                    combined = None
-                    needs_title = False
-                    needs_desc = False
-                    product_dimensions = self._combined_dimensions(
-                        {}, known_dimensions, dimension_template
-                    )
-                    provider_attempts["doubao_text"] = max(
-                        0, int(exc.attempt_count)
-                    )
-                    provider_status_classes["doubao_text"] = exc.error_kind
-                    text_generation["status"] = "failed"
-                    ai_notes.append(f"text:managed-service-failed:{exc.error_kind}")
+                cached_combined = self._load_ai_stage_cache(
+                    "doubao_text",
+                    structured_cache_key,
+                    workspace_id=workspace_id,
+                )
+                if isinstance(cached_combined, dict):
+                    combined = dict(cached_combined)
+                    ai_notes.append("structured_text:cache-hit")
+                    provider_attempts["doubao_text"] = 0
+                    provider_status_classes["doubao_text"] = "cache_hit"
+                    text_generation["status"] = "cache_hit"
                 else:
-                    measured_attempts = getattr(attempt_state, "doubao_text", None)
-                    provider_attempts["doubao_text"] = (
-                        1
-                        if measured_attempts is None
-                        else max(0, int(measured_attempts))
-                    )
-                    provider_status_classes["doubao_text"] = "success"
-                    text_generation["status"] = "success"
-                record_stage("doubao_text", stage_started)
+                    # 检查点：任务被暂停/取消时不再发起豆包文案生成。
+                    self._raise_if_task_stopped(task_id, workspace_id)
+                    stage_started = time.perf_counter()
+                    attempt_state = self._attempt_state()
+                    attempt_state.doubao_text = None
+                    try:
+                        combined = self._generate_doubao_text(
+                            title,
+                            category,
+                            raw,
+                            target_language,
+                            target_site,
+                            ai_notes,
+                            vision_identity=vision_identity,
+                            needs_title=bool(needs_title),
+                            needs_description=bool(needs_desc),
+                            needs_dimensions=bool(needs_dimensions),
+                            known_dimensions=known_dimensions,
+                            dimension_template=dimension_template,
+                        )
+                    except DoubaoTextError as exc:
+                        text_failure = exc
+                        combined = None
+                        needs_title = False
+                        needs_desc = False
+                        product_dimensions = self._combined_dimensions(
+                            {}, known_dimensions, dimension_template
+                        )
+                        provider_attempts["doubao_text"] = max(
+                            0, int(exc.attempt_count)
+                        )
+                        provider_status_classes["doubao_text"] = exc.error_kind
+                        text_generation["status"] = "failed"
+                        ai_notes.append(f"text:managed-service-failed:{exc.error_kind}")
+                    else:
+                        measured_attempts = getattr(attempt_state, "doubao_text", None)
+                        provider_attempts["doubao_text"] = (
+                            1
+                            if measured_attempts is None
+                            else max(0, int(measured_attempts))
+                        )
+                        provider_status_classes["doubao_text"] = "success"
+                        text_generation["status"] = "success"
+                        if combined:
+                            self._save_ai_stage_cache(
+                                "doubao_text",
+                                structured_cache_key,
+                                output_data=combined,
+                                input_data=structured_stage_input,
+                                workspace_id=workspace_id,
+                            )
+                    record_stage("doubao_text", stage_started)
                 if combined and task_item_id and supports_stage_receipts:
                     self.repository.upsert_stage_receipt(
                         task_id,
@@ -6090,7 +6167,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if (
             not preflight_only
             and text_failure is None
-            and text_generation["status"] in {"success", "receipt_hit"}
+            and text_generation["status"] in {"success", "receipt_hit", "cache_hit"}
             and task_item_id
             and supports_stage_receipts
         ):
@@ -6450,6 +6527,27 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         text_failure_is_config = bool(
             text_failure is not None and text_failure.error_kind == "configuration"
         )
+        text_provider_attempted = any(
+            int(provider_attempts.get(stage) or 0) > 0
+            for stage in ("doubao_vision", "doubao_text")
+        )
+        text_reused = any(
+            provider_status_classes.get(stage) in {"receipt_hit", "cache_hit"}
+            for stage in ("doubao_vision", "doubao_text")
+        )
+        billable_kinds = {
+            kind for kind, _feature in self._billable_product_processing_features(settings)
+        }
+        billing_skipped_kinds = (
+            ["text"]
+            if (
+                "text" in billable_kinds
+                and text_failure is None
+                and text_reused
+                and not text_provider_attempted
+            )
+            else []
+        )
         result = {
             "product_draft_id": draft["id"],
             "candidate_id": raw.get("candidate_id") or draft.get("candidate_id"),
@@ -6495,6 +6593,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "ai_notes": ai_notes,
             "provider_attempts": provider_attempts,
             "provider_status_classes": provider_status_classes,
+            # Reserved text usage is released rather than charged when both
+            # recognition and listing text were supplied entirely by exact
+            # stage receipts/content-addressed caches.
+            "billing_skipped_kinds": billing_skipped_kinds,
             "stage_timings_ms": timing_snapshot(),
             "preview_overrides": draft.get("preview_overrides") or {},
             "selection_run_id": draft.get("selection_run_id"),
@@ -7963,12 +8065,21 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         )
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
-    def _load_ai_stage_cache(self, stage: str, cache_key: str) -> Any:
+    def _load_ai_stage_cache(
+        self,
+        stage: str,
+        cache_key: str,
+        *,
+        workspace_id: str = "local",
+    ) -> Any:
         """读取阶段级 AI 缓存；命中返回输出对象，否则 None。缓存异常不影响主流程。"""
         if not cache_key:
             return None
         try:
-            cached = self.repository.get_ai_stage_cache(cache_key, workspace_id="local")
+            cached = self.repository.get_ai_stage_cache(
+                cache_key,
+                workspace_id=workspace_id,
+            )
         except Exception:
             return None
         return cached.get("output") if cached else None
@@ -7981,6 +8092,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         output_data: Any,
         prompt: str = "",
         input_data: Any = None,
+        workspace_id: str = "local",
     ) -> None:
         if not cache_key:
             return
@@ -7991,7 +8103,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             ).hexdigest()
             self.repository.save_ai_stage_cache(
                 cache_key,
-                workspace_id="local",
+                workspace_id=workspace_id,
                 stage=stage,
                 model_signature="",
                 prompt_hash=prompt_hash,
@@ -8542,29 +8654,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         image_urls = [image_url] if isinstance(image_url, str) else list(image_url)
         image_urls = [str(value or "").strip() for value in image_urls if str(value or "").strip()][:6]
         normalized_title = " ".join(str(source_title or "").split()).strip()[:1000]
-        cache_payload = json.dumps(
-            {
-                "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
-                "image_urls": image_urls,
-                "source_title": normalized_title,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
-        cache = getattr(self, "_doubao_subject_cache", None)
-        lock = getattr(self, "_doubao_subject_cache_lock", None)
-        if cache is None or lock is None:
-            cache = {}
-            lock = threading.Lock()
-            self._doubao_subject_cache = cache
-            self._doubao_subject_cache_lock = lock
-        with lock:
-            cached = cache.get(cache_key)
-        if cached is not None:
-            self._attempt_state().doubao_vision = 0
-            return cached
         data_urls = [
             data_url
             for value in image_urls
@@ -8576,13 +8665,71 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 error_kind="transient",
                 retryable=True,
             )
+        # Persistent identity caching is based on the bytes actually sent to
+        # Doubao, not just on mutable CDN URLs. A changed source image therefore
+        # invalidates the cache even when its URL remains unchanged.
+        cache_input = {
+            "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
+            "model": DOUBAO_VISION_MODEL_ID,
+            "source_title": normalized_title,
+            "image_hashes": [
+                hashlib.sha256(value.encode("utf-8")).hexdigest()
+                for value in data_urls
+            ],
+        }
+        cache_key = self._ai_stage_cache_key(
+            "vision_identity",
+            input_data=cache_input,
+        )
+        cache = getattr(self, "_doubao_subject_cache", None)
+        lock = getattr(self, "_doubao_subject_cache_lock", None)
+        if cache is None or lock is None:
+            cache = {}
+            lock = threading.Lock()
+            self._doubao_subject_cache = cache
+            self._doubao_subject_cache_lock = lock
+        with lock:
+            cached = cache.get(cache_key)
+        attempt_state = self._attempt_state()
+        if cached is None:
+            workspace_id = str(
+                getattr(attempt_state, "workspace_id", "local") or "local"
+            )
+            persisted = self._load_ai_stage_cache(
+                "vision_identity",
+                cache_key,
+                workspace_id=workspace_id,
+            )
+            if isinstance(persisted, dict):
+                try:
+                    cached = subject_analysis_from_dict(persisted)
+                except DoubaoVisionError:
+                    cached = None
+        if cached is not None:
+            attempt_state.doubao_vision = 0
+            attempt_state.doubao_vision_cache_hit = True
+            with lock:
+                cache[cache_key] = cached
+            return cached
         client = self._doubao_vision_client()
         try:
             analysis = client.recognize_subject(data_urls, normalized_title)
         finally:
-            self._attempt_state().doubao_vision = client.last_attempt_count
+            attempt_state.doubao_vision = client.last_attempt_count
+        attempt_state.doubao_vision_cache_hit = False
         with lock:
             cache[cache_key] = analysis
+            while len(cache) > 128:
+                cache.pop(next(iter(cache)))
+        self._save_ai_stage_cache(
+            "vision_identity",
+            cache_key,
+            output_data=analysis.as_dict(),
+            input_data=cache_input,
+            workspace_id=str(
+                getattr(attempt_state, "workspace_id", "local") or "local"
+            ),
+        )
         return analysis
 
     def _media_processor(self) -> Any:

@@ -519,6 +519,7 @@
 }
 
 .pv-source-card-meta em.is-manual { color: #9a5c13; background: #fff2d7; }
+.pv-source-card-meta em.is-history { color: #146c58; background: #dff7ef; }
 
 .pv-source-card-meta small {
   color: #8197a8;

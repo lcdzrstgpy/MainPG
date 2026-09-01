@@ -21,6 +21,7 @@ ENV_DIRECT = "WH_PRODUCT_AI_DIRECT"
 
 # 与 auth-api 的 billing_pricing_items.feature_key 对齐（顺序即展示顺序）。
 SUBITEM_FEATURES = ("title", "description", "product_dimensions", "four_grid", "detail_images")
+TEXT_SUBITEM_FEATURES = frozenset({"title", "description", "product_dimensions"})
 
 
 def direct_ai_enabled() -> bool:
@@ -170,8 +171,24 @@ def derive_item_results(
     results: list[dict[str, Any]] = []
     for index, item in enumerate(task_items, start=1):
         status_value = str(item.get("status") or "")
+        item_result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        skipped_kinds = {
+            str(value or "").strip()
+            for value in (item_result.get("billing_skipped_kinds") or [])
+            if str(value or "").strip()
+        }
         if status_value == "completed":
-            subitems = [{"feature": feature, "status": "success"} for feature in features]
+            subitems = [
+                {
+                    "feature": feature,
+                    "status": (
+                        "no_return"
+                        if "text" in skipped_kinds and feature in TEXT_SUBITEM_FEATURES
+                        else "success"
+                    ),
+                }
+                for feature in features
+            ]
         elif cancelled:
             # 用户取消：未完成链接按 50%（intercept）结算，而非全退。
             subitems = [{"feature": feature, "status": "intercept"} for feature in features]

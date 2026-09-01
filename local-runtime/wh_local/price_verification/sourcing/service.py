@@ -59,6 +59,10 @@ class SourcingService:
         plugin_gateway: SharedPluginGateway | None = None,
         plugin_bridge: PluginBridgeService | None = None,
         product_library_service: Any | None = None,
+        history_source_lookup: (
+            Callable[[list[dict[str, Any]], str], Mapping[str, Mapping[str, Any]]]
+            | None
+        ) = None,
     ) -> None:
         if not isinstance(repository, PriceVerificationRepository):
             raise TypeError("repository must be PriceVerificationRepository")
@@ -73,6 +77,7 @@ class SourcingService:
         # present, every retained SKC that has active 1688 source links is
         # auto-synced into the product library after link/unlink operations.
         self._product_library_service = product_library_service
+        self._history_source_lookup = history_source_lookup
 
     def search_batch_selections_by_image(
         self,
@@ -128,6 +133,41 @@ class SourcingService:
             raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
         adapter = OneBoundSourceAdapter(self._repository, provider_factory)
         result = adapter.search_by_image(actor, tasks, keyword_search=False)
+        if self._history_source_lookup is not None:
+            try:
+                result_items = {
+                    _text(item.get("skc_id")): item
+                    for item in result.get("items") or []
+                    if isinstance(item, Mapping) and _text(item.get("skc_id"))
+                }
+                history_requests = []
+                for item in selections:
+                    source_item = result_items.get(item.skc_id, {})
+                    excluded_offer_ids = {
+                        _candidate_offer_id(candidate)
+                        for candidate in source_item.get("candidates") or []
+                        if isinstance(candidate, Mapping)
+                    }
+                    history_requests.append(
+                        {
+                            "skc": item.skc_id,
+                            "title": item.product_title,
+                            "excluded_offer_ids": sorted(
+                                value for value in excluded_offer_ids if value
+                            ),
+                        }
+                    )
+                history_sources = self._history_source_lookup(
+                    history_requests, actor.workspace_id
+                )
+                history_candidates = adapter.lookup_history_sources(
+                    actor, history_sources
+                )
+                _append_history_candidates(result, history_candidates)
+            except Exception:
+                # Optional enrichment must never disturb the established five
+                # image-search candidates or fail the sourcing operation.
+                pass
         quotes = [task.to_payload() for task in tasks]
         preview = _apply_batch_ranking(
             build_source_preview(quotes, result),
@@ -1089,6 +1129,53 @@ def build_source_preview(
     }
 
 
+def _append_history_candidates(
+    source_result: dict[str, Any],
+    history_candidates: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Append at most one non-duplicate history candidate after five image hits."""
+    added = 0
+    items = source_result.get("items")
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        skc_id = _text(item.get("skc_id"))
+        candidate = history_candidates.get(skc_id)
+        existing = item.get("candidates")
+        if (
+            not isinstance(candidate, Mapping)
+            or not isinstance(existing, list)
+            or len(existing) < DEFAULT_CANDIDATE_LIMIT
+        ):
+            continue
+        candidate_offer_id = _candidate_offer_id(candidate)
+        candidate_url = canonical_source_url(
+            _candidate_source_url(candidate), offer_id=candidate_offer_id
+        )
+        if not candidate_offer_id or not candidate_url:
+            continue
+        duplicate = any(
+            isinstance(value, Mapping)
+            and (
+                _candidate_offer_id(value) == candidate_offer_id
+                or canonical_source_url(
+                    _candidate_source_url(value), offer_id=_candidate_offer_id(value)
+                )
+                == candidate_url
+            )
+            for value in existing
+        )
+        if duplicate:
+            continue
+        item["candidates"] = [*existing, dict(candidate)]
+        added += 1
+    counts = source_result.get("counts")
+    if added and isinstance(counts, dict):
+        counts["candidate_count"] = int(counts.get("candidate_count") or 0) + added
+
+
 def _preview_for_skc_ids(
     preview: Mapping[str, Any] | None,
     skc_ids: Sequence[str],
@@ -1199,9 +1286,24 @@ def _apply_batch_ranking(
             if isinstance(raw_candidates, list)
             else []
         )
-        manual_candidates = [candidate for candidate in all_candidates if candidate.get("manual_lookup")]
-        image_candidates = [candidate for candidate in all_candidates if not candidate.get("manual_lookup")]
-        ranked = (*manual_candidates, *rank_candidates_by_image_order(image_candidates))
+        history_candidates = [candidate for candidate in all_candidates if candidate.get("history_lookup")]
+        manual_candidates = [
+            candidate
+            for candidate in all_candidates
+            if candidate.get("manual_lookup") and not candidate.get("history_lookup")
+        ]
+        image_candidates = [
+            candidate
+            for candidate in all_candidates
+            if not candidate.get("manual_lookup") and not candidate.get("history_lookup")
+        ]
+        # The history match is a sixth supplement, not ranking input.  Keeping
+        # it last guarantees the established five results retain their order.
+        ranked = (
+            *manual_candidates,
+            *rank_candidates_by_image_order(image_candidates),
+            *history_candidates[:1],
+        )
         selection = selections_by_skc.get(_text(item.get("skc_id")))
         site = _site_code(selection.site) if selection is not None else ""
         selling_price = _text(selection.adjusted_min) if selection is not None else ""
@@ -1347,6 +1449,7 @@ def _preview_unverified_visual_skc_ids(preview: Mapping[str, Any] | None) -> tup
             isinstance(candidate, Mapping)
             and not candidate.get("manual_lookup")
             and not candidate.get("image_similarity_selected")
+            and not candidate.get("history_lookup")
             for candidate in candidates
         ):
             skc_id = _text(item.get("skc_id")) or _text(item.get("quote_key"))
@@ -1373,7 +1476,11 @@ def _verified_preview_candidate(
         for candidate in candidates:
             if (
                 not isinstance(candidate, Mapping)
-                or (not candidate.get("manual_lookup") and not candidate.get("image_similarity_selected"))
+                or (
+                    not candidate.get("manual_lookup")
+                    and not candidate.get("image_similarity_selected")
+                    and not candidate.get("history_lookup")
+                )
             ):
                 continue
             candidate_offer_id = _text(candidate.get("offer_id")) or _offer_id_from_url(candidate.get("source_url"))
@@ -1489,6 +1596,22 @@ def _site_code(value: object) -> str:
 def _offer_id_from_url(value: object) -> str:
     match = re.search(r"(?:offer/|offerId=|offer_id=)(\d{3,})", _text(value), re.IGNORECASE)
     return match.group(1) if match else ""
+
+
+def _candidate_source_url(candidate: Mapping[str, Any]) -> str:
+    for key in ("source_url", "detail_url", "item_url", "url", "product_url"):
+        value = _text(candidate.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _candidate_offer_id(candidate: Mapping[str, Any]) -> str:
+    for key in ("offer_id", "num_iid", "item_id", "product_id"):
+        value = _text(candidate.get(key))
+        if value:
+            return value
+    return _offer_id_from_url(_candidate_source_url(candidate))
 
 
 def _group_source_items_by_skc(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
