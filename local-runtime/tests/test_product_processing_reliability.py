@@ -9,8 +9,15 @@ from sqlalchemy import func, inspect, select
 import wh_local.modules.product_processing.service as service_module
 from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
 from wh_local.modules.product_processing.infrastructure.database import create_database
-from wh_local.modules.product_processing.infrastructure.orm import ProductDraftRow
-from wh_local.modules.product_processing.infrastructure.repository import ProductProcessingRepository
+from wh_local.modules.product_processing.infrastructure.orm import (
+    ProcessingTaskItemRow,
+    ProcessingTaskRow,
+    ProductDraftRow,
+)
+from wh_local.modules.product_processing.infrastructure.repository import (
+    ProductProcessingRepository,
+    dumps,
+)
 from wh_local.modules.product_processing.service import ProductProcessingConflict, ProductProcessingService
 
 
@@ -26,6 +33,93 @@ def _draft(service: ProductProcessingService, title: str) -> dict:
         {"source_type": "manual", "title": title, "product_name": title},
         workspace_id="local",
     )[0]
+
+
+def test_history_source_lookup_uses_latest_nonduplicate_exact_title_in_workspace(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+
+    def add_history(
+        *, workspace: str, skc: str, title: str, offer_id: str, updated_at: str
+    ) -> None:
+        with service.repository.database.sessions.begin() as session:
+            task = ProcessingTaskRow(
+                workspace_id=workspace,
+                title="history",
+                status="completed",
+                total_count=1,
+                success_count=1,
+                created_at=updated_at,
+                updated_at=updated_at,
+            )
+            task.items.append(
+                ProcessingTaskItemRow(
+                    skc=skc,
+                    title=title,
+                    status="completed",
+                    result_json=dumps(
+                        {
+                            "skc": skc,
+                            "optimized_title": title,
+                            "source_url": f"https://detail.1688.com/offer/{offer_id}.html",
+                        }
+                    ),
+                    created_at=updated_at,
+                    updated_at=updated_at,
+                )
+            )
+            session.add(task)
+
+    add_history(
+        workspace="workspace",
+        skc="older-valid",
+        title="Fancy Mug",
+        offer_id="333333",
+        updated_at="2026-08-01T00:00:00+00:00",
+    )
+    add_history(
+        workspace="workspace",
+        skc="duplicate",
+        title="  FANCY   MUG  ",
+        offer_id="222222",
+        updated_at="2026-08-02T00:00:00+00:00",
+    )
+    add_history(
+        workspace="workspace",
+        skc="current-skc",
+        title="Fancy Mug",
+        offer_id="111111",
+        updated_at="2026-08-03T00:00:00+00:00",
+    )
+    add_history(
+        workspace="other-workspace",
+        skc="other-user",
+        title="Fancy Mug",
+        offer_id="999999",
+        updated_at="2026-08-04T00:00:00+00:00",
+    )
+    add_history(
+        workspace="workspace",
+        skc="fuzzy-only",
+        title="Fancy Mug Set",
+        offer_id="444444",
+        updated_at="2026-08-05T00:00:00+00:00",
+    )
+
+    matched = service.latest_completed_sources_by_title(
+        [
+            {
+                "skc": "current-skc",
+                "title": "fancy mug",
+                "excluded_offer_ids": ["222222"],
+            }
+        ],
+        workspace_id="workspace",
+    )
+
+    assert matched["current-skc"]["history_skc"] == "older-valid"
+    assert matched["current-skc"]["source_url"].endswith("/333333.html")
 
 
 def test_skip_duplicates_marks_only_drafts_in_created_task(tmp_path: Path, monkeypatch) -> None:
@@ -113,6 +207,30 @@ def test_executor_failure_restores_unfinished_draft_for_retry(tmp_path: Path) ->
     assert failed["status"] == "failed"
     assert failed["items"][0]["status"] == "failed"
     assert service.get_draft(draft["id"])["status"] == "draft"
+
+
+def test_delete_undo_restores_only_latest_workspace_batch(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    first = _draft(service, "first")
+    second = _draft(service, "second")
+    other = service.create_draft(
+        {"source_type": "manual", "title": "other workspace", "product_name": "other workspace"},
+        workspace_id="other",
+    )[0]
+    service.delete_drafts([first["id"], second["id"]], workspace_id="local")
+    service.delete_drafts([other["id"]], workspace_id="other")
+
+    restored = service.restore_drafts([second["id"], first["id"], other["id"]], workspace_id="local")
+
+    assert restored == {
+        "restored_count": 2,
+        "ids": [second["id"], first["id"]],
+        "status": "draft",
+    }
+    assert service.get_draft(first["id"], workspace_id="local")["status"] == "draft"
+    assert service.get_draft(second["id"], workspace_id="local")["status"] == "draft"
+    assert service.repository.get_draft(other["id"], include_deleted=True, workspace_id="other")["status"] == "deleted"
+    assert service.restore_drafts([first["id"]], workspace_id="local")["restored_count"] == 0
 
 
 def test_clear_rejects_non_terminal_task(tmp_path: Path) -> None:

@@ -39,6 +39,7 @@ from .schemas import (
     DraftCreateRequest,
     DraftDeleteRequest,
     DraftProcessRequest,
+    DraftRestoreRequest,
     DraftUpdateRequest,
     PreviewFinalizeRequest,
     PreviewSaveRequest,
@@ -463,6 +464,15 @@ def create_product_processing_router(
         if not body.delete_all and not body.draft_ids:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
         return service.delete_drafts(None if body.delete_all else body.draft_ids, _workspace(workspace_id))
+
+    @router.post("/drafts/restore")
+    def restore_drafts(
+        body: DraftRestoreRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        if not body.draft_ids:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
+        return service.restore_drafts(body.draft_ids, _workspace(workspace_id))
 
     @router.post("/drafts/process")
     def process_drafts(

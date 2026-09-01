@@ -419,15 +419,18 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
             const cap = item?.max_candidates && item.max_candidates > 0 ? item.max_candidates : 10;
             const all = item?.all_candidates?.length ? item.all_candidates : item?.candidates ?? [];
             const displayLimit = Math.min(CANDIDATE_LIMIT, cap);
-            const manualCandidates = all.filter((candidate) => candidate.manual_lookup);
-            const imageCandidates = all.filter((candidate) => !candidate.manual_lookup);
+            const historyCandidates = all.filter((candidate) => candidate.history_lookup).slice(0, 1);
+            const regularCandidates = all.filter((candidate) => !candidate.history_lookup);
+            const manualCandidates = regularCandidates.filter((candidate) => candidate.manual_lookup);
+            const imageCandidates = regularCandidates.filter((candidate) => !candidate.manual_lookup);
             // 手动核验的链接必须优先展示；纯图搜候选沿用现有首条后移展示规则。
             const rankedCandidates = manualCandidates.length
               ? [...manualCandidates, ...imageCandidates].slice(0, displayLimit)
-              : all.slice(0, displayLimit);
-            const candidates = !manualCandidates.length && rankedCandidates.length > 1
+              : regularCandidates.slice(0, displayLimit);
+            const originalCandidates = !manualCandidates.length && rankedCandidates.length > 1
               ? [...rankedCandidates.slice(1), rankedCandidates[0]]
               : rankedCandidates;
+            const candidates = [...originalCandidates, ...historyCandidates];
             return (
               <div className="pv-source-result-stack" key={group.skc_id}>
                     <div className="pv-source-result-head">
@@ -470,6 +473,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
                                 <span className="pv-source-card-title">{candidate.source_title || "候选商品"}</span>
                                   <div className="pv-source-card-meta">
                                   {candidate.manual_lookup ? <em className="is-manual">手动查询</em> : null}
+                                  {candidate.history_lookup ? <em className="is-history">历史匹配</em> : null}
                                   {candidate.source_decision ? <em className="is-plain">{decisionLabel(candidate.source_decision)}</em> : null}
                                   {metaParts.length ? <small>{metaParts.join(" · ")}</small> : null}
                                 </div>

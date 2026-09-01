@@ -21,6 +21,12 @@ type DraftEdit = {
   skuDeletes: string[];
 };
 
+type DeletedDraftBatch = {
+  ids: number[];
+  selectedIds: number[];
+  premiumIds: number[];
+};
+
 type Props = {
   onStartProcessing?: (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[]) => boolean;
   isActive?: boolean;
@@ -83,6 +89,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   // 不看单规格：隐藏无变种 / 仅 1 个变种的草稿
   const [hideSingleSpec, setHideSingleSpec] = useState(false);
   const [isStickyToolbar, setIsStickyToolbar] = useState(false);
+  const [deletedBatch, setDeletedBatch] = useState<DeletedDraftBatch | null>(null);
   const draftListRef = useRef<HTMLDivElement>(null);
   const stickyToolbarRef = useRef<HTMLDivElement>(null);
   const stickySpacerRef = useRef<HTMLDivElement>(null);
@@ -430,28 +437,71 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     if (!ids.length) return;
     setLoading(true);
     try {
-      await ppRequest(ctx, `${API_BASE}/drafts/delete`, { body: { draft_ids: ids, delete_all: false } });
+      const result = await ppRequest<{ deleted_count: number; ids: number[] }>(ctx, `${API_BASE}/drafts/delete`, {
+        body: { draft_ids: ids, delete_all: false },
+      });
+      const deletedIds = result.ids || [];
+      if (!deletedIds.length) {
+        notify('所选草稿已经不在草稿池中');
+        return;
+      }
+      const deletedSet = new Set(deletedIds);
+      setDeletedBatch({
+        ids: deletedIds,
+        selectedIds: Array.from(selectedIds).filter((id) => deletedSet.has(id)),
+        premiumIds: Array.from(premiumIds).filter((id) => deletedSet.has(id)),
+      });
       if (targetIds) {
         setSelectedIds((prev) => {
           const next = new Set(prev);
-          for (const id of ids) next.delete(id);
+          for (const id of deletedIds) next.delete(id);
           return next;
         });
         setPremiumIds((prev) => {
           const next = new Set(prev);
-          for (const id of ids) next.delete(id);
+          for (const id of deletedIds) next.delete(id);
           return next;
         });
       } else {
         setSelectedIds(new Set());
         setPremiumIds((prev) => {
           const next = new Set(prev);
-          for (const id of ids) next.delete(id);
+          for (const id of deletedIds) next.delete(id);
           return next;
         });
       }
       await refresh();
-      notify(`已移除 ${ids.length} 条草稿`);
+      notify(`已移除 ${deletedIds.length} 条草稿，可点击“撤回删除”恢复`);
+    } catch (err) { fail(err); } finally { setLoading(false); }
+  };
+
+  const undoDelete = async () => {
+    if (!deletedBatch?.ids.length) return;
+    const batch = deletedBatch;
+    setLoading(true);
+    try {
+      const result = await ppRequest<{ restored_count: number; ids: number[] }>(ctx, `${API_BASE}/drafts/restore`, {
+        body: { draft_ids: batch.ids },
+      });
+      const restoredIds = result.ids || [];
+      const restoredSet = new Set(restoredIds);
+      setDeletedBatch(null);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of batch.selectedIds) {
+          if (restoredSet.has(id) && next.size < 100) next.add(id);
+        }
+        return next;
+      });
+      setPremiumIds((prev) => {
+        const next = new Set(prev);
+        for (const id of batch.premiumIds) {
+          if (restoredSet.has(id)) next.add(id);
+        }
+        return next;
+      });
+      await refresh();
+      notify(`已撤回删除，恢复 ${restoredIds.length} 条草稿`);
     } catch (err) { fail(err); } finally { setLoading(false); }
   };
 
@@ -533,7 +583,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
             <button onClick={openSkuBatch} disabled={!selectedIds.size}><i className="iconfont icon-barcode" aria-hidden="true" />批量管理 SKU</button>
             <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
             <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
-            <button onClick={() => deleteSelected()} disabled={!selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
+            <button onClick={() => deleteSelected()} disabled={loading || !selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
+            <button className="undo-delete" onClick={undoDelete} disabled={loading || !deletedBatch} title={deletedBatch ? `恢复最近删除的 ${deletedBatch.ids.length} 条草稿` : '暂无可撤回的删除'}><span aria-hidden="true">↶</span>撤回删除{deletedBatch ? `（${deletedBatch.ids.length}）` : ''}</button>
             <button onClick={() => refresh().catch(fail)} disabled={loading}><i className="iconfont icon-sync" aria-hidden="true" />刷新</button>
           </div>
         </div>
@@ -679,7 +730,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                       {isPremium && <span className="pool-premium-tag"><i className="iconfont icon-gem" aria-hidden="true" />精品</span>}
                       <div className="pool-inline-acts">
                         <button className="btn-mini" onClick={() => copy(displayTitle)}><i className="iconfont icon-file-copy" aria-hidden="true" />复制</button>
-                        <button className="btn-mini" onClick={() => beginEdit(draft)}><i className="iconfont icon-edit" aria-hidden="true" />{isExpanded ? '收起' : '编辑'}</button>
+                        <button className="btn-mini" onClick={() => beginEdit(draft)} title="修改后续 AI 处理优先参考的中文标题"><i className="iconfont icon-edit" aria-hidden="true" />{isExpanded ? '收起' : '编辑标题'}</button>
                         <button className="btn-mini primary" onClick={() => void addToCombo(draft)} title="把该条草稿图片加入「商品自定义组合」来源图暂存区"><i className="iconfont icon-skin" aria-hidden="true" />加入组合定制</button>
                         <button className="btn-mini danger" onClick={() => { if (window.confirm('确认删除该草稿？')) deleteSelected([draft.id]); }}><i className="iconfont icon-delete" aria-hidden="true" />删除</button>
                       </div>
@@ -735,8 +786,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                 {isExpanded && edit && (
                   <div className="pool-edit-panel">
                     <div className="verify-editor-grid">
-                      <label>商品标题
-                        <input value={edit.title} onChange={(e) => setEdits((p) => ({ ...p, [draft.id]: { ...edit, title: e.target.value } }))} />
+                      <label>中文参考标题
+                        <input value={edit.title} placeholder="请输入准确的中文商品标题" onChange={(e) => setEdits((p) => ({ ...p, [draft.id]: { ...edit, title: e.target.value } }))} />
+                        <small className="verify-title-reference-tip">后续 AI 识别、标题、详情与图片处理会优先参考此标题；开始处理时自动保存。</small>
                       </label>
                       <div className="verify-source-ref">
                         <span>来源</span>

@@ -24,7 +24,7 @@ ProtectControlGroups=true
 LockPersonality=true
 RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/mainpg-update-admin /var/www/html/mainpg/windows
+ReadWritePaths=/var/lib/mainpg-update-admin /var/www/html/mainpg/windows /var/www/html/internal-downloads /var/www/html/downloads
 
 [Install]
 WantedBy=multi-user.target

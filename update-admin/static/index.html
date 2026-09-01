@@ -67,10 +67,30 @@
           <label class="notes-field">更新说明<textarea name="release_notes" rows="5" maxlength="10000" placeholder="每行一条，例如：&#10;修复公告同步问题&#10;优化启动速度"></textarea></label>
           <label class="checkbox"><input name="mandatory" type="checkbox">设为强制更新</label>
           <div class="publish-actions">
-            <p>后台会完成代码签名和双重校验，并自动与上一版本比较，生成可显示下载进度的增量补丁；补丁不可用时客户端仍可使用完整安装包。</p>
-            <button id="publish-button" class="button primary" type="submit">上传、签名并发布</button>
+            <p>“只发布更新”仅更新客户端版本，不改官网下载；另外两个按钮会在签名和校验成功后同步对应的官网固定下载文件。</p>
+            <div class="publish-channel-actions">
+              <button id="publish-update-only-button" class="button ghost" type="submit" name="channel" value="update_only">只发布更新（不同步官网）</button>
+              <button id="publish-internal-button" class="button primary" type="submit" name="channel" value="internal">上传并发布内测版</button>
+              <button id="publish-public-button" class="button public-release" type="submit" name="channel" value="public">上传并发布公共版</button>
+            </div>
           </div>
         </form>
+        <section id="publish-progress" class="publish-progress hidden" aria-live="polite">
+          <div class="progress-heading">
+            <div><strong id="progress-version">发布任务</strong><span id="progress-phase"></span></div>
+            <span id="progress-percent">0%</span>
+          </div>
+          <div class="progress-track"><span id="progress-bar"></span></div>
+          <div class="progress-detail"><span id="progress-bytes">准备上传</span><span id="progress-message"></span></div>
+          <ol id="progress-steps" class="progress-steps">
+            <li data-phase="uploading">上传安装包</li>
+            <li data-phase="evsign">EV Sign 签名</li>
+            <li data-phase="authenticode">Authenticode 验证</li>
+            <li data-phase="patching">生成增量补丁</li>
+            <li data-phase="publishing">发布更新文件</li>
+            <li data-phase="completed">清单签名完成</li>
+          </ol>
+        </section>
       </article>
 
       <article class="panel">
@@ -80,10 +100,11 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>版本</th><th>发布人</th><th>发布时间</th><th>类型</th><th>完整安装包</th><th>增量补丁</th><th>校验</th><th>代码签名</th></tr></thead>
+            <thead><tr><th>版本</th><th>渠道</th><th>发布人</th><th>发布时间</th><th>类型</th><th>完整安装包</th><th>增量补丁</th><th>校验</th><th>代码签名</th></tr></thead>
             <tbody id="release-rows"></tbody>
           </table>
         </div>
+        <nav id="release-pagination" class="pagination" aria-label="发布记录分页"></nav>
       </article>
 
       <article class="panel">
@@ -94,9 +115,10 @@
             <tbody id="audit-rows"></tbody>
           </table>
         </div>
+        <nav id="audit-pagination" class="pagination" aria-label="操作记录分页"></nav>
       </article>
     </section>
   </main>
-  <script src="static/app.js?v=20260829-4" defer></script>
+  <script src="static/app.js?v=20260831-4" defer></script>
 </body>
 </html>

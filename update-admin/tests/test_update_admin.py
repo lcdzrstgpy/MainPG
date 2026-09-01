@@ -51,6 +51,8 @@ def test_context(tmp_path: Path):
         expected_public_key_b64=public_key_b64,
         initial_password="123456",
         boss_initial_password="Boss-Test-Password!",
+        internal_download_path=tmp_path / "website" / "internal" / "MainPG-Internal-Setup.exe",
+        public_download_path=tmp_path / "website" / "public" / "MainPG-Setup.exe",
         secure_cookie=False,
         require_authenticode=False,
     )
@@ -112,7 +114,7 @@ def test_failed_logins_are_audited_and_temporarily_lock_account(test_context):
 def test_publish_raw_exe_creates_signed_atomic_manifest(test_context):
     client, settings, private_key = test_context
     assert login(client, "boss", "Boss-Test-Password!").status_code == 200
-    payload = b"MZ" + (b"internal-installer" * 128)
+    payload = b"MZ" + (b"update-only-installer" * 128)
 
     published = client.post(
         "/api/releases/publish",
@@ -127,11 +129,17 @@ def test_publish_raw_exe_creates_signed_atomic_manifest(test_context):
     result = published.json()
     assert result["release"]["version"] == "1.3.4-beta.1"
     assert result["release"]["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert result["channel"] == "update_only"
+    assert result["website_download_url"] == ""
 
     installer_path = settings.publish_dir / "MainPG-Setup-1.3.4-beta.1.exe"
     manifest_path = settings.publish_dir / "manifest.json"
     history_manifest_path = settings.publish_dir / "releases" / "1.3.4-beta.1" / "manifest.json"
     assert installer_path.read_bytes() == payload
+    assert settings.internal_download_path is not None
+    assert not settings.internal_download_path.exists()
+    assert settings.public_download_path is not None
+    assert not settings.public_download_path.exists()
     assert history_manifest_path.is_file()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert set(MANIFEST_FIELDS).issubset(manifest)
@@ -161,6 +169,7 @@ def test_publish_raw_exe_creates_signed_atomic_manifest(test_context):
 
     releases = client.get("/api/releases").json()["items"]
     assert releases[0]["version"] == "1.3.4-beta.1"
+    assert releases[0]["channel"] == "update_only"
     durable_status = client.get("/api/releases/status/1.3.4-beta.1")
     assert durable_status.status_code == 200
     assert durable_status.json()["published"] is True
@@ -171,6 +180,241 @@ def test_publish_raw_exe_creates_signed_atomic_manifest(test_context):
     assert missing_status.json()["release"] is None
     audits = client.get("/api/audit-logs").json()["items"]
     assert any(item["action"] == "release_published" for item in audits)
+
+
+def test_public_channel_only_replaces_public_website_download(test_context):
+    client, settings, _ = test_context
+    assert login(client, "boss", "Boss-Test-Password!").status_code == 200
+    payload = b"MZ" + (b"public-installer" * 128)
+
+    published = client.post(
+        "/api/releases/publish",
+        data={
+            "version": "1.3.4",
+            "channel": "public",
+            "mandatory": "false",
+            "release_notes": "public release",
+        },
+        files={"installer": ("public-build.exe", payload, "application/octet-stream")},
+    )
+
+    assert published.status_code == 200, published.text
+    result = published.json()
+    assert result["channel"] == "public"
+    assert result["website_download_url"] == "/downloads/MainPG-Setup.exe"
+    assert settings.public_download_path is not None
+    assert settings.public_download_path.read_bytes() == payload
+    assert settings.internal_download_path is not None
+    assert not settings.internal_download_path.exists()
+    release = client.get("/api/releases/status/1.3.4").json()["release"]
+    assert release["channel"] == "public"
+
+
+def test_internal_channel_only_replaces_internal_website_download(test_context):
+    client, settings, _ = test_context
+    assert login(client, "boss", "Boss-Test-Password!").status_code == 200
+    payload = b"MZ" + (b"internal-installer" * 128)
+
+    published = client.post(
+        "/api/releases/publish",
+        data={
+            "version": "1.3.4-beta.8",
+            "channel": "internal",
+            "mandatory": "false",
+            "release_notes": "internal release",
+        },
+        files={"installer": ("internal-build.exe", payload, "application/octet-stream")},
+    )
+
+    assert published.status_code == 200, published.text
+    result = published.json()
+    assert result["channel"] == "internal"
+    assert result["website_download_url"] == "/internal-downloads/MainPG-Internal-Setup.exe"
+    assert settings.internal_download_path is not None
+    assert settings.internal_download_path.read_bytes() == payload
+    assert settings.public_download_path is not None
+    assert not settings.public_download_path.exists()
+
+
+def test_release_and_audit_log_pagination_uses_fixed_page_sizes(test_context):
+    client, _, _ = test_context
+    assert login(client, "boss", "Boss-Test-Password!").status_code == 200
+    service = client.app.state.update_admin
+    initial_audit_total = client.get("/api/audit-logs?page=1").json()["total"]
+    now = "2026-08-31T00:00:00Z"
+    with service.db.connect() as connection:
+        for index in range(23):
+            version = f"9.0.{index}"
+            connection.execute(
+                """
+                INSERT INTO releases(
+                    version, channel, mandatory, release_notes, installer_filename,
+                    installer_url, sha256, file_size, signature, authenticode_status,
+                    status, created_by, created_at, published_at
+                ) VALUES (?, 'internal', 0, '', ?, ?, ?, 100, 'signature', 'Valid',
+                          'published', 'boss', ?, ?)
+                """,
+                (
+                    version,
+                    f"MainPG-Setup-{version}.exe",
+                    f"https://localhost/{version}.exe",
+                    f"{index:064x}",
+                    now,
+                    now,
+                ),
+            )
+        for index in range(120):
+            connection.execute(
+                """
+                INSERT INTO audit_logs(created_at, username, action, target, ip_address, details_json)
+                VALUES (?, 'boss', 'pagination_test', ?, '127.0.0.1', '{}')
+                """,
+                (now, str(index)),
+            )
+
+    first_releases = client.get("/api/releases?page=1").json()
+    third_releases = client.get("/api/releases?page=3").json()
+    assert first_releases["page_size"] == 10
+    assert first_releases["total"] == 23
+    assert first_releases["pages"] == 3
+    assert len(first_releases["items"]) == 10
+    assert first_releases["items"][0]["version"] == "9.0.22"
+    assert len(third_releases["items"]) == 3
+
+    first_audits = client.get("/api/audit-logs?page=1").json()
+    third_audits = client.get("/api/audit-logs?page=3").json()
+    assert first_audits["page_size"] == 50
+    assert first_audits["total"] == initial_audit_total + 120
+    assert first_audits["pages"] == 3
+    assert len(first_audits["items"]) == 50
+    assert len(third_audits["items"]) == initial_audit_total + 20
+    assert client.get("/api/releases?page=0").status_code == 422
+    assert client.get("/api/audit-logs?page=0").status_code == 422
+
+
+def test_publish_job_rejects_upload_for_a_different_channel(test_context):
+    client, _, _ = test_context
+    assert login(client, "boss", "Boss-Test-Password!").status_code == 200
+    payload = b"MZ-channel-mismatch"
+    created = client.post(
+        "/api/publish-jobs",
+        json={
+            "version": "1.3.4-beta.9",
+            "channel": "internal",
+            "mandatory": False,
+            "release_notes": "channel test",
+            "installer_filename": "channel.exe",
+            "total_bytes": len(payload),
+        },
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()["job"]
+    assert job["channel"] == "internal"
+
+    rejected = client.post(
+        "/api/releases/publish",
+        data={
+            "job_id": job["id"],
+            "version": "1.3.4-beta.9",
+            "channel": "public",
+            "mandatory": "false",
+            "release_notes": "channel test",
+        },
+        files={"installer": ("channel.exe", payload, "application/octet-stream")},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == "publish_job_mismatch"
+
+
+def test_publish_job_persists_upload_progress_and_server_phases(test_context, monkeypatch):
+    client, _, _ = test_context
+    assert login(client, "boss", "Boss-Test-Password!").status_code == 200
+    payload = b"MZ" + (b"progress-installer" * 128)
+    created = client.post(
+        "/api/publish-jobs",
+        json={
+            "version": "1.3.4-beta.3",
+            "mandatory": False,
+            "release_notes": "progress",
+            "installer_filename": "progress.exe",
+            "total_bytes": len(payload),
+        },
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()["job"]
+    assert job["phase"] == "uploading"
+    assert job["uploaded_bytes"] == 0
+
+    progress = client.post(
+        f"/api/publish-jobs/{job['id']}/upload-progress",
+        json={"uploaded_bytes": len(payload) // 2, "total_bytes": len(payload)},
+    )
+    assert progress.status_code == 200
+    persisted = client.get(f"/api/publish-jobs/{job['id']}").json()["job"]
+    assert persisted["uploaded_bytes"] == len(payload) // 2
+    assert persisted["total_bytes"] == len(payload)
+
+    service = client.app.state.update_admin
+    original_update = service.update_publish_job
+    phases: list[str] = []
+
+    def recording_update(job_id: str, **kwargs):
+        phases.append(kwargs["phase"])
+        return original_update(job_id, **kwargs)
+
+    monkeypatch.setattr(service, "update_publish_job", recording_update)
+    published = client.post(
+        "/api/releases/publish",
+        data={
+            "job_id": job["id"],
+            "version": "1.3.4-beta.3",
+            "mandatory": "false",
+            "release_notes": "progress",
+        },
+        files={"installer": ("progress.exe", payload, "application/octet-stream")},
+    )
+    assert published.status_code == 200, published.text
+    assert phases == ["evsign", "authenticode", "patching", "publishing", "completed"]
+    completed = client.get(f"/api/publish-jobs/{job['id']}").json()["job"]
+    assert completed["phase"] == "completed"
+    assert completed["uploaded_bytes"] == len(payload)
+    assert completed["completed_at"]
+
+
+def test_publish_job_records_failed_phase(test_context, monkeypatch):
+    client, _, _ = test_context
+    assert login(client, "boss", "Boss-Test-Password!").status_code == 200
+    payload = b"MZ" + (b"failing-installer" * 64)
+    created = client.post(
+        "/api/publish-jobs",
+        json={
+            "version": "1.3.4-beta.4",
+            "mandatory": False,
+            "release_notes": "failure",
+            "installer_filename": "failure.exe",
+            "total_bytes": len(payload),
+        },
+    ).json()["job"]
+
+    def fail_sign(*_args, **_kwargs):
+        raise app_module.api_error(502, "evsign_rejected", "EV Sign 测试失败")
+
+    monkeypatch.setattr(app_module, "sign_with_evsign", fail_sign)
+    failed = client.post(
+        "/api/releases/publish",
+        data={
+            "job_id": created["id"],
+            "version": "1.3.4-beta.4",
+            "mandatory": "false",
+            "release_notes": "failure",
+        },
+        files={"installer": ("failure.exe", payload, "application/octet-stream")},
+    )
+    assert failed.status_code == 502
+    job = client.get(f"/api/publish-jobs/{created['id']}").json()["job"]
+    assert job["phase"] == "failed"
+    assert job["failed_phase"] == "evsign"
+    assert job["error"] == "EV Sign 测试失败"
 
 
 def test_evsign_runs_before_final_hash_and_atomic_publish(tmp_path: Path, monkeypatch):
@@ -198,6 +442,8 @@ def test_evsign_runs_before_final_hash_and_atomic_publish(tmp_path: Path, monkey
         expected_public_key_b64=public_key_b64,
         initial_password="123456",
         boss_initial_password="Boss-Test-Password!",
+        internal_download_path=tmp_path / "website" / "internal" / "MainPG-Internal-Setup.exe",
+        public_download_path=tmp_path / "website" / "public" / "MainPG-Setup.exe",
         secure_cookie=False,
         evsign_license_key="test-license-key",
         evsign_required=True,

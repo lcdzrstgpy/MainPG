@@ -15,7 +15,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -23,7 +23,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -60,6 +60,17 @@ SEMVER_RE = re.compile(
     r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
 )
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{2,31}$")
+PUBLISH_JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+DOWNLOAD_CHANNELS = frozenset({"update_only", "internal", "public"})
+DOWNLOAD_CHANNEL_LABELS = {
+    "update_only": "仅软件更新",
+    "internal": "内测版",
+    "public": "公共版",
+}
+DOWNLOAD_CHANNEL_URLS = {
+    "internal": "/internal-downloads/MainPG-Internal-Setup.exe",
+    "public": "/downloads/MainPG-Setup.exe",
+}
 SEEDED_USERNAMES = ("He123", "Liu123", "Dai123", "Yang123", "Shen123")
 LOGGER = logging.getLogger("mainpg.update_admin")
 UTC = timezone.utc
@@ -83,6 +94,37 @@ def api_error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
 
 
+def normalize_download_channel(value: str) -> Literal["update_only", "internal", "public"]:
+    channel = value.strip().lower()
+    if channel not in DOWNLOAD_CHANNELS:
+        raise api_error(
+            422,
+            "invalid_download_channel",
+            "发布方式只能选择仅软件更新、内测版官网或公共版官网",
+        )
+    return channel  # type: ignore[return-value]
+
+
+def website_download_target(
+    settings: "Settings",
+    channel: Literal["update_only", "internal", "public"],
+) -> Path | None:
+    if channel == "update_only":
+        return None
+    target = (
+        settings.internal_download_path
+        if channel == "internal"
+        else settings.public_download_path
+    )
+    if target is None:
+        raise api_error(
+            503,
+            "download_channel_not_configured",
+            f"服务器尚未配置{DOWNLOAD_CHANNEL_LABELS[channel]}官网下载文件路径",
+        )
+    return target
+
+
 @dataclass(frozen=True)
 class Settings:
     db_path: Path
@@ -93,6 +135,8 @@ class Settings:
     expected_public_key_b64: str
     initial_password: str
     boss_initial_password: str | None
+    internal_download_path: Path | None = None
+    public_download_path: Path | None = None
     cookie_name: str = "mainpg_update_admin"
     cookie_path: str = "/"
     secure_cookie: bool = True
@@ -113,6 +157,8 @@ class Settings:
     def from_env(cls) -> "Settings":
         data_dir = Path(os.environ.get("UPDATE_ADMIN_DATA_DIR", APP_DIR / "data")).resolve()
         signing_path = os.environ.get("UPDATE_SIGNING_KEY_PATH", "").strip()
+        internal_download_path = os.environ.get("UPDATE_INTERNAL_DOWNLOAD_PATH", "").strip()
+        public_download_path = os.environ.get("UPDATE_PUBLIC_DOWNLOAD_PATH", "").strip()
         return cls(
             db_path=Path(os.environ.get("UPDATE_ADMIN_DB_PATH", data_dir / "update-admin.sqlite3")).resolve(),
             staging_dir=Path(os.environ.get("UPDATE_ADMIN_STAGING_DIR", data_dir / "staging")).resolve(),
@@ -128,6 +174,12 @@ class Settings:
             ).strip(),
             initial_password=os.environ.get("UPDATE_ADMIN_INITIAL_PASSWORD", "123456"),
             boss_initial_password=os.environ.get("UPDATE_ADMIN_BOSS_INITIAL_PASSWORD") or None,
+            internal_download_path=(
+                Path(internal_download_path).resolve() if internal_download_path else None
+            ),
+            public_download_path=(
+                Path(public_download_path).resolve() if public_download_path else None
+            ),
             cookie_name=os.environ.get("UPDATE_ADMIN_COOKIE_NAME", "mainpg_update_admin").strip(),
             cookie_path=os.environ.get("UPDATE_ADMIN_COOKIE_PATH", "/").strip() or "/",
             secure_cookie=os.environ.get("UPDATE_ADMIN_SECURE_COOKIE", "1").strip() != "0",
@@ -217,6 +269,20 @@ class ChangePasswordBody(BaseModel):
     new_password: str = Field(min_length=10, max_length=256)
 
 
+class PublishJobCreateBody(BaseModel):
+    version: str = Field(min_length=1, max_length=64)
+    channel: Literal["update_only", "internal", "public"] = "update_only"
+    mandatory: bool = False
+    release_notes: str = Field(default="", max_length=10_000)
+    installer_filename: str = Field(min_length=1, max_length=255)
+    total_bytes: int = Field(ge=1)
+
+
+class PublishJobProgressBody(BaseModel):
+    uploaded_bytes: int = Field(ge=0)
+    total_bytes: int = Field(ge=1)
+
+
 @dataclass(frozen=True)
 class AdminPrincipal:
     username: str
@@ -265,6 +331,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS releases (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     version TEXT NOT NULL UNIQUE,
+                    channel TEXT NOT NULL DEFAULT 'internal',
                     mandatory INTEGER NOT NULL,
                     release_notes TEXT NOT NULL,
                     installer_filename TEXT NOT NULL,
@@ -279,6 +346,25 @@ class Database:
                     published_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_releases_published_at ON releases(published_at DESC);
+                CREATE TABLE IF NOT EXISTS publish_jobs (
+                    id TEXT PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    channel TEXT NOT NULL DEFAULT 'internal',
+                    mandatory INTEGER NOT NULL,
+                    release_notes TEXT NOT NULL,
+                    installer_filename TEXT NOT NULL,
+                    uploaded_bytes INTEGER NOT NULL DEFAULT 0,
+                    total_bytes INTEGER NOT NULL,
+                    phase TEXT NOT NULL,
+                    failed_phase TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT '',
+                    created_by TEXT NOT NULL REFERENCES admins(username),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_publish_jobs_updated_at ON publish_jobs(updated_at DESC);
                 CREATE TABLE IF NOT EXISTS audit_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -296,6 +382,7 @@ class Database:
                 for row in connection.execute("PRAGMA table_info(releases)").fetchall()
             }
             release_migrations = {
+                "channel": "TEXT NOT NULL DEFAULT 'internal'",
                 "patch_status": "TEXT NOT NULL DEFAULT 'not_available'",
                 "patch_from_version": "TEXT NOT NULL DEFAULT ''",
                 "patch_file_count": "INTEGER NOT NULL DEFAULT 0",
@@ -305,6 +392,30 @@ class Database:
             for column, declaration in release_migrations.items():
                 if column not in release_columns:
                     connection.execute(f"ALTER TABLE releases ADD COLUMN {column} {declaration}")
+            publish_job_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(publish_jobs)").fetchall()
+            }
+            if "failed_phase" not in publish_job_columns:
+                connection.execute(
+                    "ALTER TABLE publish_jobs ADD COLUMN failed_phase TEXT NOT NULL DEFAULT ''"
+                )
+            if "channel" not in publish_job_columns:
+                connection.execute(
+                    "ALTER TABLE publish_jobs ADD COLUMN channel TEXT NOT NULL DEFAULT 'internal'"
+                )
+            # A process restart cannot resume an in-flight EV Sign HTTP stream.
+            # Preserve the durable record and make the interruption explicit.
+            connection.execute(
+                """
+                UPDATE publish_jobs
+                SET failed_phase = phase, phase = 'failed', message = '服务重启，发布任务已中断',
+                    error = '服务重启，发布任务已中断，请重新上传',
+                    updated_at = ?, completed_at = ?
+                WHERE phase NOT IN ('completed', 'failed')
+                """,
+                (iso_utc(), iso_utc()),
+            )
             existing = {
                 row["username"]
                 for row in connection.execute("SELECT username FROM admins").fetchall()
@@ -520,33 +631,42 @@ class UpdateAdminService:
             connection.execute("DELETE FROM sessions WHERE username = ?", (principal.username,))
         self.db.audit(principal.username, "password_changed", ip_address=ip_address)
 
-    def list_releases(self) -> list[dict[str, Any]]:
+    def list_releases(self, page: int, page_size: int = 10) -> dict[str, Any]:
+        offset = (page - 1) * page_size
         with self.db.connect() as connection:
+            total = int(connection.execute("SELECT COUNT(*) FROM releases").fetchone()[0])
             rows = connection.execute(
                 """
-                SELECT version, mandatory, release_notes, installer_filename, installer_url,
+                SELECT version, channel, mandatory, release_notes, installer_filename, installer_url,
                        sha256, file_size, authenticode_status, status, created_by, published_at,
                        patch_status, patch_from_version, patch_file_count, patch_total_bytes,
                        patch_error
                 FROM releases
                 ORDER BY id DESC
-                LIMIT 100
-                """
+                LIMIT ? OFFSET ?
+                """,
+                (page_size, offset),
             ).fetchall()
-        return [
-            {
-                **dict(row),
-                "mandatory": bool(row["mandatory"]),
-            }
-            for row in rows
-        ]
+        return {
+            "items": [
+                {
+                    **dict(row),
+                    "mandatory": bool(row["mandatory"]),
+                }
+                for row in rows
+            ],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "pages": max(1, (total + page_size - 1) // page_size),
+        }
 
     def get_release(self, version: str) -> dict[str, Any] | None:
         """Return one exact release so the UI can reconcile a lost POST response."""
         with self.db.connect() as connection:
             row = connection.execute(
                 """
-                SELECT version, mandatory, release_notes, installer_filename, installer_url,
+                SELECT version, channel, mandatory, release_notes, installer_filename, installer_url,
                        sha256, file_size, authenticode_status, status, created_by, published_at,
                        patch_status, patch_from_version, patch_file_count, patch_total_bytes,
                        patch_error
@@ -594,15 +714,168 @@ class UpdateAdminService:
                 (status, from_version, file_count, total_bytes, error[:1000], version),
             )
 
-    def list_audit_logs(self) -> list[dict[str, Any]]:
+    @staticmethod
+    def _publish_job_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            **dict(row),
+            "mandatory": bool(row["mandatory"]),
+            "uploaded_bytes": int(row["uploaded_bytes"]),
+            "total_bytes": int(row["total_bytes"]),
+        }
+
+    def create_publish_job(
+        self,
+        *,
+        version: str,
+        channel: Literal["update_only", "internal", "public"],
+        mandatory: bool,
+        release_notes: str,
+        installer_filename: str,
+        total_bytes: int,
+        created_by: str,
+    ) -> dict[str, Any]:
+        if total_bytes <= 0 or total_bytes > self.settings.max_upload_bytes:
+            raise api_error(413, "upload_too_large", "安装包体积超过服务器允许上限")
+        safe_filename = Path(installer_filename).name
+        if not safe_filename.lower().endswith(".exe"):
+            raise api_error(422, "invalid_installer", "只能上传 Windows EXE 安装包")
+        job_id = secrets.token_hex(16)
+        now = iso_utc()
         with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO publish_jobs(
+                    id, version, channel, mandatory, release_notes, installer_filename,
+                    uploaded_bytes, total_bytes, phase, failed_phase, message, error,
+                    created_by, created_at, updated_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'uploading', '', '正在上传安装包', '', ?, ?, ?, NULL)
+                """,
+                (
+                    job_id,
+                    version,
+                    channel,
+                    int(bool(mandatory)),
+                    release_notes,
+                    safe_filename,
+                    total_bytes,
+                    created_by,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute("SELECT * FROM publish_jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise api_error(500, "publish_job_missing", "发布任务创建失败")
+        return self._publish_job_payload(row)
+
+    def get_publish_job(self, job_id: str) -> dict[str, Any] | None:
+        if not PUBLISH_JOB_ID_RE.fullmatch(job_id):
+            return None
+        with self.db.connect() as connection:
+            row = connection.execute("SELECT * FROM publish_jobs WHERE id = ?", (job_id,)).fetchone()
+        return self._publish_job_payload(row) if row is not None else None
+
+    def list_publish_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM publish_jobs ORDER BY updated_at DESC LIMIT ?",
+                (max(1, min(limit, 100)),),
+            ).fetchall()
+        return [self._publish_job_payload(row) for row in rows]
+
+    def require_publish_job(
+        self,
+        job_id: str,
+        principal: AdminPrincipal,
+        *,
+        version: str | None = None,
+    ) -> dict[str, Any]:
+        job = self.get_publish_job(job_id)
+        if job is None:
+            raise api_error(404, "publish_job_not_found", "发布任务不存在")
+        if job["created_by"] != principal.username:
+            raise api_error(403, "publish_job_forbidden", "不能操作其他管理员的发布任务")
+        if version is not None and job["version"] != version:
+            raise api_error(409, "publish_job_mismatch", "发布任务版本与上传版本不一致")
+        return job
+
+    def update_publish_job(
+        self,
+        job_id: str,
+        *,
+        phase: str,
+        message: str,
+        uploaded_bytes: int | None = None,
+        total_bytes: int | None = None,
+        error: str = "",
+    ) -> None:
+        terminal = phase in {"completed", "failed"}
+        assignments = ["phase = ?", "message = ?", "error = ?", "updated_at = ?"]
+        values: list[Any] = [phase, message[:500], error[:1000], iso_utc()]
+        if phase == "failed":
+            assignments.append("failed_phase = phase")
+        elif phase == "completed":
+            assignments.append("failed_phase = ''")
+        if uploaded_bytes is not None:
+            assignments.append("uploaded_bytes = ?")
+            values.append(max(0, int(uploaded_bytes)))
+        if total_bytes is not None:
+            assignments.append("total_bytes = ?")
+            values.append(max(1, int(total_bytes)))
+        if terminal:
+            assignments.append("completed_at = ?")
+            values.append(iso_utc())
+        values.append(job_id)
+        with self.db.connect() as connection:
+            connection.execute(
+                f"UPDATE publish_jobs SET {', '.join(assignments)} WHERE id = ?",
+                values,
+            )
+
+    def update_publish_upload_progress(
+        self,
+        job_id: str,
+        *,
+        uploaded_bytes: int,
+        total_bytes: int,
+    ) -> None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT phase, total_bytes FROM publish_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None or row["phase"] != "uploading":
+                return
+            expected_total = int(row["total_bytes"])
+            safe_total = expected_total if expected_total > 0 else total_bytes
+            safe_uploaded = min(max(0, uploaded_bytes), safe_total)
+            connection.execute(
+                """
+                UPDATE publish_jobs
+                SET uploaded_bytes = ?, total_bytes = ?, message = ?, updated_at = ?
+                WHERE id = ? AND phase = 'uploading'
+                """,
+                (
+                    safe_uploaded,
+                    safe_total,
+                    f"正在上传安装包：{safe_uploaded} / {safe_total} 字节",
+                    iso_utc(),
+                    job_id,
+                ),
+            )
+
+    def list_audit_logs(self, page: int, page_size: int = 50) -> dict[str, Any]:
+        offset = (page - 1) * page_size
+        with self.db.connect() as connection:
+            total = int(connection.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0])
             rows = connection.execute(
                 """
                 SELECT created_at, username, action, target, ip_address, details_json
                 FROM audit_logs
                 ORDER BY id DESC
-                LIMIT 200
-                """
+                LIMIT ? OFFSET ?
+                """,
+                (page_size, offset),
             ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
@@ -613,7 +886,13 @@ class UpdateAdminService:
                 item["details"] = {}
                 item.pop("details_json", None)
             result.append(item)
-        return result
+        return {
+            "items": result,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "pages": max(1, (total + page_size - 1) // page_size),
+        }
 
     def assert_new_version(self, candidate: SemVer) -> None:
         with self.db.connect() as connection:
@@ -1176,6 +1455,33 @@ def atomic_copy(source: Path, destination: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def stage_atomic_download_alias(source: Path, destination: Path) -> Path:
+    """Prepare a verified replacement beside the live website download file."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        try:
+            os.link(source, temporary)
+        except OSError:
+            with source.open("rb") as input_file, temporary.open("xb") as output_file:
+                shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
+                output_file.flush()
+                os.fsync(output_file.fileno())
+        source_hash, source_size = hash_file(source)
+        staged_hash, staged_size = hash_file(temporary)
+        if source_hash != staged_hash or source_size != staged_size:
+            raise RuntimeError("官网下载文件复制后校验不一致")
+        return temporary
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def commit_atomic_download_alias(staged: Path, destination: Path) -> None:
+    """Atomically expose a fully signed and verified installer on the website."""
+    os.replace(staged, destination)
+
+
 def atomic_write_json(destination: Path, payload: dict[str, Any]) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{secrets.token_hex(8)}.tmp")
@@ -1309,8 +1615,11 @@ def create_app(
         return {"ok": True, "requires_relogin": True}
 
     @app.get("/api/releases")
-    def releases(principal: AdminPrincipal = Depends(ready_admin)) -> dict[str, Any]:
-        return {"items": service.list_releases(), "username": principal.username}
+    def releases(
+        page: int = Query(1, ge=1),
+        principal: AdminPrincipal = Depends(ready_admin),
+    ) -> dict[str, Any]:
+        return {**service.list_releases(page, 10), "username": principal.username}
 
     @app.get("/api/releases/status/{version}")
     def release_status(
@@ -1329,15 +1638,75 @@ def create_app(
         }
 
     @app.get("/api/audit-logs")
-    def audit_logs(principal: AdminPrincipal = Depends(ready_admin)) -> dict[str, Any]:
-        return {"items": service.list_audit_logs(), "username": principal.username}
+    def audit_logs(
+        page: int = Query(1, ge=1),
+        principal: AdminPrincipal = Depends(ready_admin),
+    ) -> dict[str, Any]:
+        return {**service.list_audit_logs(page, 50), "username": principal.username}
+
+    @app.post("/api/publish-jobs")
+    def create_publish_job(
+        body: PublishJobCreateBody,
+        request: Request,
+        principal: AdminPrincipal = Depends(ready_admin),
+    ) -> dict[str, Any]:
+        ensure_same_origin(request)
+        try:
+            semantic_version = SemVer.parse(body.version)
+        except ValueError as exc:
+            raise api_error(422, "invalid_version", str(exc)) from exc
+        website_download_target(resolved, body.channel)
+        notes = body.release_notes.strip()
+        service.assert_new_version(semantic_version)
+        job = service.create_publish_job(
+            version=semantic_version.raw,
+            channel=body.channel,
+            mandatory=body.mandatory,
+            release_notes=notes,
+            installer_filename=body.installer_filename,
+            total_bytes=body.total_bytes,
+            created_by=principal.username,
+        )
+        return {"job": job}
+
+    @app.get("/api/publish-jobs")
+    def publish_jobs(principal: AdminPrincipal = Depends(ready_admin)) -> dict[str, Any]:
+        return {"items": service.list_publish_jobs(), "username": principal.username}
+
+    @app.get("/api/publish-jobs/{job_id}")
+    def publish_job(
+        job_id: str,
+        principal: AdminPrincipal = Depends(ready_admin),
+    ) -> dict[str, Any]:
+        job = service.get_publish_job(job_id)
+        if job is None:
+            raise api_error(404, "publish_job_not_found", "发布任务不存在")
+        return {"job": job, "username": principal.username}
+
+    @app.post("/api/publish-jobs/{job_id}/upload-progress")
+    def publish_job_upload_progress(
+        job_id: str,
+        body: PublishJobProgressBody,
+        request: Request,
+        principal: AdminPrincipal = Depends(ready_admin),
+    ) -> dict[str, Any]:
+        ensure_same_origin(request)
+        service.require_publish_job(job_id, principal)
+        service.update_publish_upload_progress(
+            job_id,
+            uploaded_bytes=body.uploaded_bytes,
+            total_bytes=body.total_bytes,
+        )
+        return {"ok": True}
 
     @app.post("/api/releases/publish")
     async def publish_release(
         request: Request,
         version: str = Form(...),
+        channel: str = Form("update_only"),
         mandatory: bool = Form(False),
         release_notes: str = Form(""),
+        job_id: str = Form(""),
         installer: UploadFile = File(...),
         principal: AdminPrincipal = Depends(ready_admin),
     ) -> dict[str, Any]:
@@ -1346,21 +1715,58 @@ def create_app(
             semantic_version = SemVer.parse(version)
         except ValueError as exc:
             raise api_error(422, "invalid_version", str(exc)) from exc
+        normalized_channel = normalize_download_channel(channel)
+        download_target = website_download_target(resolved, normalized_channel)
         notes = release_notes.strip()
         if len(notes) > 10_000:
             raise api_error(422, "release_notes_too_long", "更新说明不能超过 10000 个字符")
+        original_filename = Path(installer.filename or "installer.exe").name
+        resolved_job_id = job_id.strip()
+        if resolved_job_id:
+            job = service.require_publish_job(
+                resolved_job_id,
+                principal,
+                version=semantic_version.raw,
+            )
+            if job["phase"] != "uploading":
+                raise api_error(409, "publish_job_not_uploading", "发布任务当前不能接收安装包")
+            if bool(job["mandatory"]) != bool(mandatory) or job["release_notes"] != notes:
+                raise api_error(409, "publish_job_mismatch", "发布任务参数与上传参数不一致")
+            if job["channel"] != normalized_channel:
+                raise api_error(409, "publish_job_mismatch", "发布任务渠道与上传渠道不一致")
+            if job["installer_filename"] != original_filename:
+                raise api_error(409, "publish_job_mismatch", "发布任务文件名与上传文件不一致")
+        else:
+            total_hint = int(getattr(installer, "size", 0) or 1)
+            job = service.create_publish_job(
+                version=semantic_version.raw,
+                channel=normalized_channel,
+                mandatory=mandatory,
+                release_notes=notes,
+                installer_filename=original_filename,
+                total_bytes=total_hint,
+                created_by=principal.username,
+            )
+            resolved_job_id = job["id"]
         staged: Path | None = None
         signed_staged: Path | None = None
         final_installer: Path | None = None
         version_dir: Path | None = None
         patch_work_dir: Path | None = None
+        website_alias_staged: Path | None = None
         database_release_inserted = False
         manifest_published = False
         async with service.publish_lock:
-            service.assert_new_version(semantic_version)
             try:
-                original_filename = Path(installer.filename or "installer.exe").name
-                staged, _, _ = await stage_upload(installer, resolved)
+                service.assert_new_version(semantic_version)
+                staged, _, uploaded_size = await stage_upload(installer, resolved)
+                service.update_publish_job(
+                    resolved_job_id,
+                    phase="evsign",
+                    message="安装包上传完成，正在进行 EV Sign 签名",
+                    uploaded_bytes=uploaded_size,
+                    total_bytes=uploaded_size,
+                )
                 publish_source, evsign = await run_in_threadpool(
                     sign_with_evsign,
                     staged,
@@ -1369,8 +1775,18 @@ def create_app(
                 )
                 if publish_source != staged:
                     signed_staged = publish_source
+                service.update_publish_job(
+                    resolved_job_id,
+                    phase="authenticode",
+                    message="EV Sign 已返回，正在验证 Authenticode 签名与时间戳",
+                )
                 authenticode = await run_in_threadpool(verify_authenticode, publish_source, resolved)
                 sha256, file_size = await run_in_threadpool(hash_file, publish_source)
+                service.update_publish_job(
+                    resolved_job_id,
+                    phase="patching",
+                    message="代码签名验证通过，正在生成并校验增量补丁",
+                )
                 signing_key = load_signing_key(resolved)
                 filename = f"MainPG-Setup-{semantic_version.raw}.exe"
                 published_at = iso_utc()
@@ -1461,6 +1877,11 @@ def create_app(
                 elif not resolved.patch_enabled:
                     patch_result.update(status="disabled", error="服务器已关闭增量补丁")
 
+                service.update_publish_job(
+                    resolved_job_id,
+                    phase="publishing",
+                    message="增量补丁处理完成，正在发布官网文件和签名清单",
+                )
                 version_dir = resolved.publish_dir / "releases" / semantic_version.raw
                 final_installer = resolved.publish_dir / filename
                 if final_installer.exists() or version_dir.exists():
@@ -1468,19 +1889,26 @@ def create_app(
                 version_dir.mkdir(parents=True, exist_ok=False)
                 atomic_copy(publish_source, final_installer)
                 atomic_write_json(version_dir / "manifest.json", manifest)
+                if download_target is not None:
+                    website_alias_staged = await run_in_threadpool(
+                        stage_atomic_download_alias,
+                        final_installer,
+                        download_target,
+                    )
 
                 with service.db.connect() as connection:
                     connection.execute(
                         """
                         INSERT INTO releases(
-                            version, mandatory, release_notes, installer_filename, installer_url,
+                            version, channel, mandatory, release_notes, installer_filename, installer_url,
                             sha256, file_size, signature, authenticode_status, status,
                             created_by, created_at, published_at, patch_status,
                             patch_from_version, patch_file_count, patch_total_bytes, patch_error
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             semantic_version.raw,
+                            normalized_channel,
                             int(bool(mandatory)),
                             notes,
                             filename,
@@ -1528,6 +1956,13 @@ def create_app(
                     )
                 except sqlite3.Error:
                     LOGGER.exception("release published but patch status update failed")
+                if website_alias_staged is not None and download_target is not None:
+                    await run_in_threadpool(
+                        commit_atomic_download_alias,
+                        website_alias_staged,
+                        download_target,
+                    )
+                    website_alias_staged = None
                 try:
                     service.db.audit(
                         principal.username,
@@ -1535,6 +1970,8 @@ def create_app(
                         target=semantic_version.raw,
                         ip_address=service.client_ip(request),
                         details={
+                            "channel": normalized_channel,
+                            "website_download_url": DOWNLOAD_CHANNEL_URLS.get(normalized_channel, ""),
                             "mandatory": bool(mandatory),
                             "sha256": sha256,
                             "file_size": file_size,
@@ -1551,15 +1988,48 @@ def create_app(
                     # 发布已原子生效时，审计写入异常不能把成功响应伪装成失败，
                     # 否则管理员可能重复上传同一版本。
                     LOGGER.exception("release published but audit insert failed: %s", semantic_version.raw)
+                if normalized_channel == "update_only":
+                    completion_message = "更新清单签名完成，版本已发布；官网下载文件未变更"
+                else:
+                    completion_message = (
+                        f"更新清单签名完成，{DOWNLOAD_CHANNEL_LABELS[normalized_channel]}"
+                        "官网下载文件已同步"
+                    )
+                if patch_result["status"] == "failed":
+                    completion_message += "；增量补丁失败，客户端将使用完整安装包"
+                service.update_publish_job(
+                    resolved_job_id,
+                    phase="completed",
+                    message=completion_message,
+                )
                 return {
                     "ok": True,
+                    "job": service.get_publish_job(resolved_job_id),
                     "release": manifest,
+                    "channel": normalized_channel,
+                    "website_download_url": DOWNLOAD_CHANNEL_URLS.get(normalized_channel, ""),
                     "file_size": file_size,
                     "evsign": evsign,
                     "authenticode": authenticode,
                     "patch": patch_result,
                 }
-            except Exception:
+            except Exception as exc:
+                detail = getattr(exc, "detail", None)
+                if isinstance(detail, dict):
+                    failure_message = str(detail.get("message") or "发布失败")
+                elif isinstance(detail, str):
+                    failure_message = detail
+                else:
+                    failure_message = str(exc) or "发布失败"
+                try:
+                    service.update_publish_job(
+                        resolved_job_id,
+                        phase="failed",
+                        message="发布失败",
+                        error=failure_message,
+                    )
+                except sqlite3.Error:
+                    LOGGER.exception("publish failed and job status update also failed: %s", resolved_job_id)
                 if not manifest_published:
                     if database_release_inserted:
                         with service.db.connect() as connection:
@@ -1576,6 +2046,8 @@ def create_app(
                     signed_staged.unlink(missing_ok=True)
                 if patch_work_dir is not None and patch_work_dir.exists():
                     shutil.rmtree(patch_work_dir, ignore_errors=True)
+                if website_alias_staged is not None:
+                    website_alias_staged.unlink(missing_ok=True)
 
     return app
 

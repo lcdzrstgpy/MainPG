@@ -52,6 +52,7 @@ class PriceVerificationRouteDependencies:
     provider_factory: Callable[[Mapping[str, Any]], Any] | None = None
     plugin_queue: DataCollectionPluginQueue | None = None
     draft_writer: Callable[[Mapping[str, Any]], tuple[Mapping[str, Any], bool]] | None = None
+    history_source_lookup: Callable[[list[dict[str, Any]], str], Mapping[str, Mapping[str, Any]]] | None = None
     # Optional profit-activity product library: retained SKCs with active 1688
     # source links are auto-synced here after link/unlink operations.
     product_library_service: Any | None = None
@@ -72,6 +73,7 @@ class PriceVerificationRouteDependencies:
             repository=repository,
             plugin_gateway=gateway,
             product_library_service=self.product_library_service,
+            history_source_lookup=self.history_source_lookup,
         )
         return repository, gateway, quote, sourcing
 

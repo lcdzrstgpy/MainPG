@@ -179,7 +179,7 @@ _CACHE_VOLATILE_RAW_KEYS = frozenset(
     }
 )
 
-_STAGE_CACHE_VERSION = 3
+_STAGE_CACHE_VERSION = 4
 _TASK_HEARTBEAT_SECONDS = 10.0
 # 前端任务页轮询 /tasks/{id}/outputs 即为心跳；超过该时长没有心跳（页面关闭/
 # 切走/浏览器标签被回收）自动把任务置为暂停，避免用户已不在看却继续烧 AI 成本。
@@ -298,75 +298,6 @@ def _ai_error_reason(exc: Exception) -> str:
     """将 AI 失败异常转成可展示的原因（超时/HTTP 状态/语言违规等）。"""
     message = str(exc).strip()
     return message[:200] if message else type(exc).__name__
-
-
-def _real_failure_reason(item: Mapping[str, Any], result: Mapping[str, Any]) -> str:
-    """从处理过程中的真实留痕拼装「真正失败原因」，供后台直接展示。
-
-    优先取 ai_notes 中的底层 :ai-failed: 详情（例如 image:ai-failed: <provider 报错>），
-    其次附加生成不足 / 质量门降级 / 回退来源图等过程信号；最后才回退到前端展示用的
-    reason / debug_hint，避免后台只看到笼统的「待补充」等中性提示。
-    """
-    notes = [str(note) for note in (result.get("ai_notes") or [])]
-    parts: list[str] = []
-    seen: set[str] = set()
-
-    def add(text: str) -> None:
-        text = text.strip()
-        if text and text not in seen:
-            seen.add(text)
-            parts.append(text)
-
-    # 1) 底层 AI 失败详情（含 image_grid_incomplete 完全未生成时记下的 image:ai-failed:）。
-    failure_detail = ""
-    marker = ":ai-failed:"
-    for note in reversed(notes):
-        _stage, separator, detail = note.partition(marker)
-        if separator and detail.strip():
-            failure_detail = detail.strip()
-            break
-    if failure_detail:
-        add(f"AI 失败：{failure_detail}")
-
-    # 2) 图片不足 / 质量门降级 / 回退来源图等过程信号。
-    for note in notes:
-        if "grid_incomplete" in note:
-            add(f"轮播图未达 4 张：{note}")
-        elif "quality_unresolved" in note:
-            add(f"图片质量未达标：{note}")
-        elif "quality_repair_failed" in note:
-            add(f"图片质量修复失败：{note}")
-        elif "media-unconfigured" in note:
-            add(f"媒体未配置无法出图：{note}")
-        elif "grid_fallback_source" in note:
-            add("生图全失败，已回退为来源图入库")
-
-    # 3) 提供方尝试次数与状态类，用于定位根因。
-    attempts = result.get("provider_attempts") or {}
-    if isinstance(attempts, dict) and any(
-        isinstance(v, (int, float)) and v > 1 for v in attempts.values()
-    ):
-        add("生成发生多次重试：" + ", ".join(
-            f"{k}={v}"
-            for k, v in attempts.items()
-            if isinstance(v, (int, float)) and v > 1
-        ))
-    status_classes = result.get("provider_status_classes") or {}
-    if isinstance(status_classes, dict):
-        noisy = [f"{k}={v}" for k, v in status_classes.items() if not str(v).startswith("success")]
-        if noisy:
-            add("提供方状态：noise")
-            _last = noisy[-1]
-            parts[-1] = f"提供方状态：{_last}"
-
-    # 4) 兜底：前端展示用的原因 / 排错细节。
-    if not parts:
-        fallback = str(item.get("reason") or result.get("debug_hint") or "").strip()
-        if fallback:
-            add(fallback)
-        elif result.get("error_type"):
-            add(f"错误类型：{result['error_type']}")
-    return "；".join(parts)
 
 
 def _billing_call_with_retry(
@@ -1855,6 +1786,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         ids = self.repository.delete_drafts(draft_ids, workspace_id)
         return {"deleted_count": len(ids), "ids": ids, "status": "deleted"}
 
+    def restore_drafts(self, draft_ids: list[int], workspace_id: str = "local") -> dict[str, Any]:
+        ids = self.repository.restore_drafts(draft_ids, workspace_id)
+        return {"restored_count": len(ids), "ids": ids, "status": "draft"}
+
     def import_workbook(
         self,
         filename: str,
@@ -2632,18 +2567,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             worker.start()
         return True
 
-    def _launch_media_materialization(self, workspace_id: str | None) -> bool:
-        """Start one bounded materialization worker per workspace.
-
-        ``workspace_id=None`` claims and drains remote assets across every
-        workspace; used by startup recovery so the drain never blocks boot.
-        """
+    def _launch_media_materialization(self, workspace_id: str) -> bool:
+        """Start one bounded materialization worker per workspace."""
 
         def _run() -> None:
             try:
-                self.media_assets.materialize_until_idle(
-                    workspace_id=workspace_id, batch_size=20
-                )
+                self.media_assets.materialize_until_idle(workspace_id=workspace_id, batch_size=20)
             finally:
                 with self._media_materialization_lock:
                     if self._media_materialization_workers.get(workspace_id) is threading.current_thread():
@@ -2688,18 +2617,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             for task in launchable
         )
         finalize = self.preview_images.recover_background_work()
-        # 启动后台排空所有 workspace 的 pending 媒体（不阻塞启动）：
-        # 若此处同步调用 materialize_until_idle，会一次性下载全部 pending 图，
-        # 让应用一直卡在 “Waiting for application startup”。交由后台 worker 持续
-        # 认领，直到没有可认领批次。
-        media_launched = self._launch_media_materialization(None)
-        media = {
-            "claimed": 0,
-            "ready": 0,
-            "retryable": 0,
-            "failed": 0,
-            "launched": int(media_launched),
-        }
+        media = self.media_assets.materialize_until_idle(batch_size=50)
         return {
             "interrupted": len(interrupted),
             "queued": len(queued),
@@ -2773,6 +2691,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 }
             )
         return {"tasks": history, "limit": limit, "offset": offset, "total": total}
+
+    def latest_completed_sources_by_title(
+        self,
+        requests: list[dict[str, Any]],
+        workspace_id: str = "local",
+    ) -> dict[str, dict[str, Any]]:
+        """Expose a read-only, workspace-scoped history lookup to sourcing."""
+        return self.repository.latest_completed_sources_by_title(requests, workspace_id)
 
     def _task_control_reason(self, task_id: int, workspace_id: str) -> str:
         """返回任务控制状态原因：'用户已暂停任务' / '用户已取消任务'，正常继续返回空串。
@@ -3142,8 +3068,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
     def download_path(self, task_id: int, kind: str, workspace_id: str = "local") -> Path:
         task = self._require_task(task_id, workspace_id)
-        # 取消（终态）后允许下载已生成的输出文件（错误报告/清单等）；paused 仍拒绝。
-        if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
+        if task["status"] not in {"completed", "failed", "partial_failure"}:
             raise ProductProcessingConflict(
                 f"任务尚未完成（当前状态：{task['status']}），输出文件将在处理后生成"
             )
@@ -3174,29 +3099,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         用户已保存的预览覆盖优先展示；未覆盖时展示生成结果原值。
         """
         task = self._require_task(task_id, workspace_id)
-        # 取消是终态：已完成项的结果（标题/图片/字段）仍完整保留，允许用户预检并导出
-        # 已成功的部分，避免因中途取消导致已生成图片/表格全部作废。paused 属暂态，仍拒绝。
         if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
             raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
-        # 打开预检页即自动驱动后台物化：源图（remote_source）注册后若无后台 worker
-        # 持续认领会一直停留在 pending（“等待同步”）。每次打开预检页自愈一批，
-        # 避免用户看到“等待同步”后无法加入素材库。
-        self._launch_media_materialization(workspace_id)
         excluded_ids = {
             int(value)
             for value in task["settings"].get("excluded_preview_draft_ids", [])
             if str(value).isdigit()
-        }
-        # 性能：一次性批量加载本任务所有草稿，替代逐条 get_draft 的 N 次独立查询；
-        # 并把 owned draft ids 传给图片投影，跳过每个商品重复加载整个 task 的 O(N²) 查询。
-        owned_draft_ids = {
-            int(item.get("product_draft_id"))
-            for item in task["items"]
-            if item.get("product_draft_id")
-        }
-        drafts_by_id = {
-            draft["id"]: draft
-            for draft in self.repository.get_drafts(owned_draft_ids, workspace_id=workspace_id)
         }
         items = []
         preview_items = task["items"]
@@ -3207,7 +3115,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         for item in preview_items:
             result = item.get("result") or {}
             draft_id = item.get("product_draft_id")
-            draft = drafts_by_id.get(int(draft_id)) if draft_id else None
+            draft = self.repository.get_draft(draft_id, workspace_id=workspace_id) if draft_id else None
             saved = (draft or {}).get("preview_overrides") or {}
             if not isinstance(saved, dict):
                 saved = {}
@@ -3218,7 +3126,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 saved=saved,
                 workspace_id=workspace_id,
                 media_contract_version=int((draft or {}).get("media_contract_version") or 1),
-                task_owned_draft_ids=owned_draft_ids,
             )
             items.append({
                 **self._preview_item(
@@ -3810,8 +3717,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         字段规则与原版一致（workbooks._dxm_export_rows 逐 SKU 行 + 规格组合去重）。
         """
         task = self._require_task(task_id, workspace_id)
-        # 取消（终态）后仍允许导出已成功商品的最终版表格；paused 属暂态，仍拒绝。
-        if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
+        if task["status"] not in {"completed", "failed", "partial_failure"}:
             raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
         rows: list[dict[str, Any]] = []
         for item in task["items"]:
@@ -3989,12 +3895,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 dimension_confidence[key] = str(
                     field_confidence.get(key) or dimensions.get("confidence") or "medium"
                 )
-        # AI 预估重量过低（0 或 <10g）视为不可靠数据，剔除以免污染预检页展示。
-        # 真实来源/件重尺（source/manual）即便低于 10g 也保留，仅过滤纯 AI 预估。
-        if dimension_provenance.get("weight_g") == "ai":
-            ai_weight = self._number(dimensions.get("weight_g"))
-            if ai_weight is not None and ai_weight < 10:
-                dimensions = {**dimensions, "weight_g": None}
         # 标题/描述：覆盖优先，其次生成结果
         title = str(saved.get("title") or result.get("optimized_title") or "").strip()
         description = str(saved.get("description") or result.get("description") or "").strip()
@@ -4402,20 +4302,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             workspace_id=workspace_id,
                         ),
                     )
-                vision_billing = False
-                if draft is not None and isinstance(draft.get("raw_payload"), dict):
-                    try:
-                        vision_billing = self._doubao_identity_required(
-                            draft["raw_payload"], draft, settings, preflight_only
-                        )
-                    except Exception:
-                        vision_billing = False
                 usage_ids = self._reserve_product_processing_item_usage(
                     task_id,
                     item_id,
                     settings,
                     workspace_id=workspace_id,
-                    vision_billing=vision_billing,
                 )
                 with server_ai_context(self._task_remote_token(task_id), usage_ids):
                     return self._run_with_item_heartbeat(
@@ -4628,15 +4519,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             if str(repull_state.get("status") or "") == "running":
                 # 下一轮自动补跑还在进行，等最后一轮终态再上报。
                 return
-            # 覆盖「不论什么状态」：只要该项在本次处理中经历过 AI 失败/降级
-            # （含最终被自动补跑、回退来源图或重试转成 completed 的项），都上报
-            # 真实失败原因，供后台诊断；而不仅是终态 failed/attention_required 项。
-            failure_items = [
+            failed_items = [
                 item
                 for item in (task.get("items") or [])
-                if self._item_has_failure_trace(item)
+                if item.get("status") in {"failed", "attention_required"}
             ]
-            if not failure_items:
+            if not failed_items:
                 return
             attention_required = sum(
                 1
@@ -4661,7 +4549,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     str(value) for value in (settings.get("processing_scope") or [])
                 ],
                 "items": [
-                    self._failure_diagnostic_item(item) for item in failure_items
+                    self._failure_diagnostic_item(item) for item in failed_items
                 ],
             }
             threading.Thread(
@@ -4673,50 +4561,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         except Exception:
             # 诊断上报绝不允许影响任务主流程。
             pass
-
-    @staticmethod
-    def _item_has_failure_trace(item: Mapping[str, Any]) -> bool:
-        """判断某个商品在本次处理中是否经历过 AI 失败（无论最终状态）。
-
-        覆盖「不论什么状态」：只要底层 AI 服务/质量门出现过失败或降级，
-        即使最终通过自动补跑、回退来源图或重试转为 completed，也要把真实
-        失败原因上报给服务器供后台诊断，而不是只在终态 failed/attention_required
-        时才上报。判定信号取自处理过程中真实的留痕（ai_notes / 诊断字段），
-        不依赖最终 status。
-        """
-        status = str(item.get("status") or "")
-        if status in {"failed", "attention_required"}:
-            return True
-        result = item.get("result") or {}
-        if not isinstance(result, dict):
-            return False
-        if result.get("error_type") or result.get("failure_class"):
-            return True
-        if result.get("rejected_image_paths"):
-            return True
-        notes = (result.get("ai_notes") or [])
-        if any(
-            isinstance(note, str)
-            and (
-                ":ai-failed:" in note
-                or "quality_unresolved" in note
-                or "quality_repair_failed" in note
-                or "media-unconfigured" in note
-                or "grid_incomplete" in note
-            )
-            for note in notes
-        ):
-            return True
-        attempts = result.get("provider_attempts") or {}
-        if any(isinstance(v, (int, float)) and v > 1 for v in attempts.values()):
-            return True
-        status_classes = result.get("provider_status_classes") or {}
-        if any(
-            isinstance(v, str) and v and v not in {"success", "receipt_hit"}
-            for v in status_classes.values()
-        ):
-            return True
-        return False
 
     @staticmethod
     def _failure_diagnostic_item(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -4732,10 +4576,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "title": str(item.get("title") or "")[:200],
             "status": str(item.get("status") or ""),
             "reason": str(item.get("reason") or "")[:2000],
-            # 真正失败原因：从 ai_notes 提取底层 :ai-failed: 详情（含 image_grid_incomplete
-            # 且完全未生成时记下的 image:ai-failed:），并附带生成不足/重试 / 质量门降级等
-            # 过程信号，供后台直接看到，而非只有前端的笼统「待补充」提示。
-            "real_failure_reason": _real_failure_reason(item, result)[:2000],
             "failure_class": str(result.get("failure_class") or ""),
             "error_type": str(result.get("error_type") or ""),
             "operator_hint": str(result.get("operator_hint") or "")[:2000],
@@ -4751,11 +4591,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "provider_status_classes": {
                 str(key): str(value)
                 for key, value in (result.get("provider_status_classes") or {}).items()
-            },
-            "provider_status_codes": {
-                str(key): int(value)
-                for key, value in (result.get("provider_status_codes") or {}).items()
-                if isinstance(value, (int, float))
             },
             "stage_timings_ms": {
                 str(key): int(value)
@@ -4795,9 +4630,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """
         task = self._require_task(task_id, workspace_id)
         settings = dict(task["settings"] or {})
-        if not bool(settings.get("auto_repull", False)):
-            # 用户在提交时未勾选「自动补跑」（默认关闭）：任务结束后保留失败项，
-            # 留给用户在结果页手动重新处理。
+        if not bool(settings.get("auto_repull", True)):
+            # 用户在提交时选择「不自动修复失败项」：任务结束后保留失败项，
+            # 留给用户在结果页手动重新处理（默认开启，保持原有自动补跑行为）。
             return
         state = settings.get("_auto_repull")
         if not failures and not (
@@ -5112,26 +4947,55 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # 重试溢价：该链接发生过 AI 重试/重绘/修复时标记，服务端按重试单价结算。
             "billing_retried": _item_had_retry(result),
         }
+        skipped_kinds = {
+            str(value or "").strip()
+            for value in (result.get("billing_skipped_kinds") or [])
+            if str(value or "").strip()
+        }
         first_error: Exception | None = None
         for kind, usage in self._reserved_usage_ids(task_id, item_id).items():
             if not self._claim_usage_settlement(task_id, item_id, kind, usage):
                 continue
+            skipped_without_provider_call = kind in skipped_kinds
             attempt = self._product_billing_attempt_for_usage(task_id, item_id, kind, usage)
             if attempt is not None:
                 self.repository.mark_product_billing_desired_outcome(
                     int(attempt["id"]),
-                    desired_outcome="succeeded",
-                    error_message="",
+                    desired_outcome=(
+                        "failed" if skipped_without_provider_call else "succeeded"
+                    ),
+                    error_message=(
+                        "exact AI stage cache hit; provider was not called"
+                        if skipped_without_provider_call
+                        else ""
+                    ),
                 )
             try:
-                response = _billing_call_with_retry(
-                    client.settle_ai_usage_success,
-                    remote_token,
-                    usage,
-                    {"metadata": metadata},
-                )
+                if skipped_without_provider_call:
+                    response = _billing_call_with_retry(
+                        client.settle_ai_usage_failure,
+                        remote_token,
+                        usage,
+                        {
+                            "error_message": (
+                                "exact AI stage cache hit; provider was not called"
+                            )
+                        },
+                    )
+                else:
+                    response = _billing_call_with_retry(
+                        client.settle_ai_usage_success,
+                        remote_token,
+                        usage,
+                        {"metadata": metadata},
+                    )
                 remote_status = self._remote_settlement_status(response, usage)
-                if remote_status != "succeeded":
+                valid_statuses = (
+                    {"succeeded", "failed"}
+                    if skipped_without_provider_call
+                    else {"succeeded"}
+                )
+                if remote_status not in valid_statuses:
                     raise CustomerBillingProtocolError()
             except Exception as exc:
                 error = self._stable_remote_billing_error(exc)
@@ -5156,59 +5020,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 raise RuntimeError(safe_reason) from None
             raise first_error
 
-    def _doubao_identity_required(
-        self,
-        raw: dict[str, Any],
-        draft: dict[str, Any],
-        settings: dict[str, Any],
-        preflight_only: bool,
-    ) -> bool:
-        """Predict whether this item will run Doubao vision (subject identity).
-
-        Mirrors the inline `requires_doubao_identity` in ``_process_one`` so the
-        per-item reserve step can charge ``product_processing.vision`` only when
-        a visual call is actually going to happen (avoid silent over-billing).
-        """
-        scope = set(settings.get("processing_scope") or [])
-        image_url = self._text(
-            draft.get("image_url")
-            or raw.get("main_image_url")
-            or self._first(raw.get("source_image_urls"))
-        )
-        source_image_urls = list(
-            dict.fromkeys(
-                value
-                for value in [image_url, *self._url_list(raw.get("source_image_urls"))]
-                if value
-            )
-        )
-        need_grid = (
-            not preflight_only
-            and "four_grid" in scope
-            and _as_bool(settings.get("ai_media_opt_in"), default=True)
-        )
-        need_detail = (
-            not preflight_only
-            and "detail_images" in scope
-            and _as_bool(settings.get("ai_media_opt_in"), default=True)
-        )
-        return bool(
-            not preflight_only
-            and _ai_enabled()
-            and source_image_urls
-            and (
-                need_grid
-                or need_detail
-                or bool({"title", "details", "product_dimensions"} & scope)
-                or bool(self._unique_variant_values(raw))
-            )
-        )
-
     def _billable_product_processing_features(
-        self,
-        settings: dict[str, Any],
-        *,
-        vision_billing: bool = False,
+        self, settings: dict[str, Any]
     ) -> list[tuple[str, str]]:
         scope = set(settings.get("processing_scope") or [])
         text_enabled = (
@@ -5227,30 +5040,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             features.append(("text", "product_processing.text"))
         if image_enabled:
             features.append(("image_grid", "product_processing.image_grid_2k"))
-        # 主体识别（豆包识图）独立计费，仅在实际需要发起视觉调用时预留。
-        # 兼容：旧服务端未在价格规则里声明 vision 时，不申请 vision 独立预留，
-        # 否则远端会立即拒绝导致整条任务失败；此时视觉识别回落到主链路（text）。
-        if vision_billing and self._remote_declares_product_processing_vision(settings):
-            features.append(("vision", "product_processing.vision"))
         return features
-
-    def _remote_declares_product_processing_vision(self, settings: dict[str, Any]) -> bool:
-        """Return whether the remote pricing rule declares ``product_processing.vision``.
-
-        Older account services do not expose a vision feature in their pricing rule.
-        When it is missing, the desktop must not request a ``product_processing.vision``
-        reservation (the remote rejects an undeclared feature and fails the whole item);
-        vision recognition then falls back to the main text pipeline.
-        """
-        billing = settings.get("_billing") if isinstance(settings.get("_billing"), dict) else {}
-        pricing_rule = billing.get("pricing_rule") if isinstance(billing.get("pricing_rule"), dict) else {}
-        features = (
-            pricing_rule.get("features") if isinstance(pricing_rule.get("features"), dict) else None
-        )
-        if features is None:
-            # 未携带完整价格规则时保持原行为（独立预留 vision），避免静默丢失计费。
-            return True
-        return "product_processing.vision" in features
 
     def _reserve_product_processing_item_usage(
         self,
@@ -5259,7 +5049,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         settings: dict[str, Any],
         *,
         workspace_id: str = "local",
-        vision_billing: bool = False,
     ) -> dict[str, str]:
         existing = self._reserved_usage_ids(task_id, item_id)
         if existing:
@@ -5273,9 +5062,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         account_id = self._text(billing.get("account_id"))
         attempt = None
         try:
-            for kind, feature_key in self._billable_product_processing_features(
-                settings, vision_billing=vision_billing
-            ):
+            for kind, feature_key in self._billable_product_processing_features(settings):
                 attempt = None
                 if account_id:
                     attempt = self.repository.begin_product_billing_attempt(
@@ -5667,12 +5454,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             }
         raw = draft["raw_payload"]
         title = self._text(draft.get("title") or draft.get("product_name") or raw.get("source_title"))
-        source_title = self._text(
-            raw.get("source_title")
-            or raw.get("title")
-            or raw.get("product_name")
-            or title
-        )
+        # ``draft.title`` is the operator-editable Chinese reference title from
+        # the draft pool. Keep the collected title in raw_payload for traceability,
+        # but make the operator's correction authoritative for every downstream
+        # AI stage (vision identity, text, dimensions and image planning).
+        source_title = title
         image_url = self._text(draft.get("image_url") or raw.get("main_image_url") or self._first(raw.get("source_image_urls")))
         source_url = self._text(raw.get("source_url") or raw.get("product_link") or draft.get("source_ref"))
         missing = [name for name, value in (("title", title), ("image", image_url)) if not value]
@@ -5775,7 +5561,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if detail_local_reference_count and detail_reference_values != source_reference_values:
             ai_notes.append(f"detail_references:local-cache:{detail_local_reference_count}")
         provider_status_classes: dict[str, str] = {}
-        provider_status_codes: dict[str, int] = {}
         optimized_title = title
         description = self._text(draft.get("description") or raw.get("description"))
         need_grid = (
@@ -5793,7 +5578,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         premium_mode = int(draft["id"]) in {int(x) for x in (settings.get("premium_draft_ids") or [])}
         vision_subject = ""
         vision_identity: dict[str, Any] = {}
-        vision_degraded: dict[str, Any] | None = None
         combined_variant_translations: dict[str, str] = {}
         product_dimensions: dict[str, Any] = {}
         task_item_id = int(item.get("item_id") or 0)
@@ -5806,8 +5590,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "delete_downstream_stage_receipts",
             )
         )
-        requires_doubao_identity = self._doubao_identity_required(
-            raw, draft, settings, preflight_only
+        requires_doubao_identity = bool(
+            not preflight_only
+            and _ai_enabled()
+            and source_image_urls
+            and (
+                need_grid
+                or need_detail
+                or bool({"title", "details", "product_dimensions"} & scope)
+                or bool(self._unique_variant_values(raw))
+            )
         )
         if requires_doubao_identity:
             stage_started = time.perf_counter()
@@ -5863,6 +5655,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 self._raise_if_task_stopped(task_id, workspace_id)
                 attempt_state = self._attempt_state()
                 attempt_state.doubao_vision = None
+                attempt_state.doubao_vision_cache_hit = False
+                attempt_state.workspace_id = workspace_id
                 try:
                     analysis = self._recognize_doubao_subject(
                         vision_reference_urls, source_title
@@ -5871,45 +5665,119 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     record_stage("doubao_subject", stage_started)
                     configuration_error = exc.error_kind == "configuration"
                     identity_error = exc.error_kind in {"invalid_input", "invalid_response"}
-                    upstream_detail = getattr(exc, "upstream_detail", None)
-                    # 视觉主体识别失败不阻断整条：降级用来源标题兜底主体，继续文本与生图。
-                    provider_status_classes["doubao_vision"] = exc.error_kind
-                    provider_status_codes["doubao_vision"] = exc.status_code
-                    provider_attempts["doubao_vision"] = max(0, int(exc.attempt_count))
-                    vision_subject = source_title
-                    vision_degraded = {
-                        "error_kind": exc.error_kind,
-                        "status_code": exc.status_code,
-                        "upstream_detail": upstream_detail,
-                        "reason": "视觉主体识别暂不可用，已降级使用来源标题兜底，继续文案与生图",
-                        "operator_hint": (
-                            "AI 识别服务暂不可用，系统已用来源标题兜底继续处理"
-                            if configuration_error
-                            else (
-                                "AI 识别结果异常，系统已用来源标题兜底继续处理"
-                                if identity_error
-                                else "AI 识别服务暂不可用，系统已用来源标题兜底继续处理"
-                            )
+                    return {
+                        **item,
+                        "title": title,
+                        "image_url": image_url,
+                        "status": (
+                            "attention_required"
+                            if configuration_error or identity_error
+                            else "failed"
                         ),
+                        "reason": "AI 识别服务暂不可用，请稍后重试",
+                        "result": {
+                            "error_type": "vision_service_unavailable",
+                            "failure_class": (
+                                "configuration_blocked"
+                                if configuration_error
+                                else (
+                                    "identity_review_required"
+                                    if identity_error
+                                    else "technical_retryable"
+                                )
+                            ),
+                            "operator_hint": (
+                                "AI 识别服务暂不可用，请稍后重试"
+                                if configuration_error
+                                else (
+                                    "AI 识别结果异常，请重新提交或更换商品后重试"
+                                    if identity_error
+                                    else "AI 识别服务暂不可用，请稍后重试"
+                                )
+                            ),
+                            "debug_hint": (
+                                "服务器主体识别服务未就绪；请检查服务器文本/识图路由、密钥与余额后重试"
+                                if configuration_error
+                                else (
+                                    "服务器主体识别结果不符合结构化合同；已阻止后续文案和生图"
+                                    if identity_error
+                                    else "服务器主体识别暂时不可用；未调用后续文本或生图，请稍后重试"
+                                )
+                            ),
+                            "retryable": True,
+                            "vision_identity": {},
+                            "provider_attempts": {
+                                "doubao_vision": max(0, int(exc.attempt_count))
+                            },
+                            "provider_status_classes": {
+                                "doubao_vision": exc.error_kind
+                            },
+                            "stage_timings_ms": timing_snapshot(),
+                        },
                     }
-                    ai_notes.append(
-                        "subject_identity:degraded:" + str(exc.error_kind)
-                        + (f":http-{exc.status_code}" if exc.status_code else "")
-                    )
-                if analysis is not None:
-                    measured_attempts = getattr(attempt_state, "doubao_vision", None)
-                    provider_attempts["doubao_vision"] = (
-                        1 if measured_attempts is None else max(0, int(measured_attempts))
-                    )
-                    provider_status_classes["doubao_vision"] = "success"
-            if analysis is not None:
-                record_stage("doubao_subject", stage_started)
+                measured_attempts = getattr(attempt_state, "doubao_vision", None)
+                provider_attempts["doubao_vision"] = (
+                    1 if measured_attempts is None else max(0, int(measured_attempts))
+                )
+                vision_cache_hit = bool(
+                    getattr(attempt_state, "doubao_vision_cache_hit", False)
+                )
+                provider_status_classes["doubao_vision"] = (
+                    "cache_hit" if vision_cache_hit else "success"
+                )
+                if vision_cache_hit:
+                    ai_notes.append("subject_identity:cache-hit")
+            record_stage("doubao_subject", stage_started)
+            vision_identity = {
+                **analysis.as_dict(),
+                "provider": "doubao",
+                "model": DOUBAO_VISION_MODEL_ID,
+                "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
+                "status": "accepted" if analysis.confidence in {"high", "medium"} else "rejected",
+            }
+            if vision_receipt_input and provider_attempts["doubao_vision"] > 0:
+                self.repository.upsert_stage_receipt(
+                    task_id,
+                    task_item_id,
+                    "vision_identity",
+                    input_hash=vision_receipt_input,
+                    output_data=vision_identity,
+                    workspace_id=workspace_id,
+                )
+            if analysis.confidence == "low":
+                identity_override = int(draft["id"]) in {
+                    int(value)
+                    for value in settings.get("identity_override_draft_ids", [])
+                    if str(value).isdigit()
+                }
+                low_subject = self._text(analysis.sellable_subject).strip()
+                if not identity_override and not low_subject:
+                    # 仅当模型完全无法给出可售主体时才拦截（极端兜底）；
+                    # 低置信但已识别出主体（多色号/多件套/场景展示等正常电商主图）
+                    # 直接放行，避免把常见商品误判为「多个或遮挡主体」导致大面积失败。
+                    return {
+                        **item,
+                        "title": title,
+                        "image_url": image_url,
+                        "status": "attention_required",
+                        "reason": "无法确认商品可售主体",
+                        "result": {
+                            "error_type": "vision_subject_low_confidence",
+                            "failure_class": "identity_review_required",
+                            "operator_hint": "主图存在多个或遮挡主体，请更换主图后重试",
+                            "debug_hint": "1688 主图存在多个或遮挡主体；重试可能仍无法确认，确认主体可售后可继续文案与生图",
+                            "retryable": True,
+                            "vision_identity": vision_identity,
+                            "provider_attempts": provider_attempts,
+                            "provider_status_classes": provider_status_classes,
+                            "stage_timings_ms": timing_snapshot(),
+                        },
+                    }
+                # 低置信但已识别出主体（或用户已确认）：放行主体识别门，沿用 AI 最佳猜测
+                # 主体继续文案与生图；保留原始低置信度证据供预审/导出参考。
                 vision_identity = {
-                    **analysis.as_dict(),
-                    "provider": "doubao",
-                    "model": DOUBAO_VISION_MODEL_ID,
-                    "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
-                    "status": "accepted" if analysis.confidence in {"high", "medium"} else "rejected",
+                    **vision_identity,
+                    "status": "user_override" if identity_override else "accepted",
                 }
                 if vision_receipt_input and provider_attempts["doubao_vision"] > 0:
                     self.repository.upsert_stage_receipt(
@@ -5920,67 +5788,23 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         output_data=vision_identity,
                         workspace_id=workspace_id,
                     )
-                if analysis.confidence == "low":
-                    identity_override = int(draft["id"]) in {
-                        int(value)
-                        for value in settings.get("identity_override_draft_ids", [])
-                        if str(value).isdigit()
-                    }
-                    low_subject = self._text(analysis.sellable_subject).strip()
-                    if not identity_override and not low_subject:
-                        # 仅当模型完全无法给出可售主体时才拦截（极端兜底）；
-                        # 低置信但已识别出主体（多色号/多件套/场景展示等正常电商主图）
-                        # 直接放行，避免把常见商品误判为「多个或遮挡主体」导致大面积失败。
-                        return {
-                            **item,
-                            "title": title,
-                            "image_url": image_url,
-                            "status": "attention_required",
-                            "reason": "无法确认商品可售主体",
-                            "result": {
-                                "error_type": "vision_subject_low_confidence",
-                                "failure_class": "identity_review_required",
-                                "operator_hint": "主图存在多个或遮挡主体，请更换主图后重试",
-                                "debug_hint": "1688 主图存在多个或遮挡主体；重试可能仍无法确认，确认主体可售后可继续文案与生图",
-                                "retryable": True,
-                                "vision_identity": vision_identity,
-                                "provider_attempts": provider_attempts,
-                                "provider_status_classes": provider_status_classes,
-                                "stage_timings_ms": timing_snapshot(),
-                            },
-                        }
-                    # 低置信但已识别出主体（或用户已确认）：放行主体识别门，沿用 AI 最佳猜测
-                    # 主体继续文案与生图；保留原始低置信度证据供预审/导出参考。
-                    vision_identity = {
-                        **vision_identity,
-                        "status": "user_override" if identity_override else "accepted",
-                    }
-                    if vision_receipt_input and provider_attempts["doubao_vision"] > 0:
-                        self.repository.upsert_stage_receipt(
-                            task_id,
-                            task_item_id,
-                            "vision_identity",
-                            input_hash=vision_receipt_input,
-                            output_data=vision_identity,
-                            workspace_id=workspace_id,
-                        )
-                    vision_subject = str(analysis.sellable_subject or "").strip() or source_title
-                    ai_notes.extend(
-                        [
-                            "subject_identity:user-override"
-                            if identity_override
-                            else "subject_identity:low-confidence-pass",
-                            f"subject_identity:confidence:{analysis.confidence}",
-                        ]
-                    )
-                else:
-                    vision_subject = analysis.sellable_subject
-                    ai_notes.extend(
-                        [
-                            "subject_identity:managed-service",
-                            f"subject_identity:confidence:{analysis.confidence}",
-                        ]
-                    )
+                vision_subject = str(analysis.sellable_subject or "").strip() or source_title
+                ai_notes.extend(
+                    [
+                        "subject_identity:user-override"
+                        if identity_override
+                        else "subject_identity:low-confidence-pass",
+                        f"subject_identity:confidence:{analysis.confidence}",
+                    ]
+                )
+            else:
+                vision_subject = analysis.sellable_subject
+                ai_notes.extend(
+                    [
+                        "subject_identity:managed-service",
+                        f"subject_identity:confidence:{analysis.confidence}",
+                    ]
+                )
         images_receipt_input = (
             self._processing_stage_input_hash(
                 "images",
@@ -6118,31 +5942,39 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             if "product_dimensions" in scope and dimension_repository is not None
             else None
         )
+        structured_stage_input = {
+            "draft_id": int(draft["id"]),
+            "title": title,
+            "category": category,
+            "raw": self._stable_raw(raw),
+            "target_site": target_site,
+            "target_language": target_language,
+            "scope": sorted(
+                {"title", "details", "product_dimensions"} & scope
+            ),
+            "vision_identity": vision_identity,
+            "vision_prompt_version": DOUBAO_VISION_PROMPT_VERSION,
+            "provider": "doubao",
+            "model": DOUBAO_TEXT_MODEL_ID,
+            "prompt_version": DOUBAO_TEXT_PROMPT_VERSION,
+            # Operator template additions are separate from the global prompt
+            # repository. Switching or editing a template must invalidate a
+            # cross-task text result even when every source field is unchanged.
+            "active_prompt_additions": self._active_template_prompts(),
+            # Learned bounds/defaults are part of the dimension result.
+            # A changed template must invalidate an older stage receipt/cache.
+            "dimension_template_signature": template_signature(dimension_template),
+        }
+        structured_stage_hash = self._processing_stage_input_hash(
+            "doubao_text",
+            structured_stage_input,
+        )
         structured_receipt_input = (
-            self._processing_stage_input_hash(
-                "doubao_text",
-                {
-                    "draft_id": int(draft["id"]),
-                    "title": title,
-                    "category": category,
-                    "raw": self._stable_raw(raw),
-                    "target_site": target_site,
-                    "target_language": target_language,
-                    "scope": sorted(
-                        {"title", "details", "product_dimensions"} & scope
-                    ),
-                    "vision_identity": vision_identity,
-                    "vision_prompt_version": DOUBAO_VISION_PROMPT_VERSION,
-                    "provider": "doubao",
-                    "model": DOUBAO_TEXT_MODEL_ID,
-                    "prompt_version": DOUBAO_TEXT_PROMPT_VERSION,
-                    # Learned bounds/defaults are part of the dimension result.
-                    # A changed template must invalidate an older stage receipt.
-                    "dimension_template_signature": template_signature(dimension_template),
-                },
-            )
-            if supports_stage_receipts
-            else ""
+            structured_stage_hash if supports_stage_receipts else ""
+        )
+        structured_cache_key = self._ai_stage_cache_key(
+            "doubao_text",
+            input_data={"stage_input_hash": structured_stage_hash},
         )
         structured_receipt: dict[str, Any] | None = None
         if task_item_id and supports_stage_receipts:
@@ -6204,50 +6036,70 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 provider_status_classes["doubao_text"] = "receipt_hit"
                 text_generation["status"] = "receipt_hit"
             elif needs_title or needs_desc or needs_dimensions or variant_values:
-                # 检查点：任务被暂停/取消时不再发起豆包文案生成。
-                self._raise_if_task_stopped(task_id, workspace_id)
-                stage_started = time.perf_counter()
-                attempt_state = self._attempt_state()
-                attempt_state.doubao_text = None
-                try:
-                    combined = self._generate_doubao_text(
-                        title,
-                        category,
-                        raw,
-                        target_language,
-                        target_site,
-                        ai_notes,
-                        vision_identity=vision_identity,
-                        needs_title=bool(needs_title),
-                        needs_description=bool(needs_desc),
-                        needs_dimensions=bool(needs_dimensions),
-                        known_dimensions=known_dimensions,
-                        dimension_template=dimension_template,
-                    )
-                except DoubaoTextError as exc:
-                    text_failure = exc
-                    combined = None
-                    needs_title = False
-                    needs_desc = False
-                    product_dimensions = self._combined_dimensions(
-                        {}, known_dimensions, dimension_template
-                    )
-                    provider_attempts["doubao_text"] = max(
-                        0, int(exc.attempt_count)
-                    )
-                    provider_status_classes["doubao_text"] = exc.error_kind
-                    text_generation["status"] = "failed"
-                    ai_notes.append(f"text:managed-service-failed:{exc.error_kind}")
+                cached_combined = self._load_ai_stage_cache(
+                    "doubao_text",
+                    structured_cache_key,
+                    workspace_id=workspace_id,
+                )
+                if isinstance(cached_combined, dict):
+                    combined = dict(cached_combined)
+                    ai_notes.append("structured_text:cache-hit")
+                    provider_attempts["doubao_text"] = 0
+                    provider_status_classes["doubao_text"] = "cache_hit"
+                    text_generation["status"] = "cache_hit"
                 else:
-                    measured_attempts = getattr(attempt_state, "doubao_text", None)
-                    provider_attempts["doubao_text"] = (
-                        1
-                        if measured_attempts is None
-                        else max(0, int(measured_attempts))
-                    )
-                    provider_status_classes["doubao_text"] = "success"
-                    text_generation["status"] = "success"
-                record_stage("doubao_text", stage_started)
+                    # 检查点：任务被暂停/取消时不再发起豆包文案生成。
+                    self._raise_if_task_stopped(task_id, workspace_id)
+                    stage_started = time.perf_counter()
+                    attempt_state = self._attempt_state()
+                    attempt_state.doubao_text = None
+                    try:
+                        combined = self._generate_doubao_text(
+                            title,
+                            category,
+                            raw,
+                            target_language,
+                            target_site,
+                            ai_notes,
+                            vision_identity=vision_identity,
+                            needs_title=bool(needs_title),
+                            needs_description=bool(needs_desc),
+                            needs_dimensions=bool(needs_dimensions),
+                            known_dimensions=known_dimensions,
+                            dimension_template=dimension_template,
+                        )
+                    except DoubaoTextError as exc:
+                        text_failure = exc
+                        combined = None
+                        needs_title = False
+                        needs_desc = False
+                        product_dimensions = self._combined_dimensions(
+                            {}, known_dimensions, dimension_template
+                        )
+                        provider_attempts["doubao_text"] = max(
+                            0, int(exc.attempt_count)
+                        )
+                        provider_status_classes["doubao_text"] = exc.error_kind
+                        text_generation["status"] = "failed"
+                        ai_notes.append(f"text:managed-service-failed:{exc.error_kind}")
+                    else:
+                        measured_attempts = getattr(attempt_state, "doubao_text", None)
+                        provider_attempts["doubao_text"] = (
+                            1
+                            if measured_attempts is None
+                            else max(0, int(measured_attempts))
+                        )
+                        provider_status_classes["doubao_text"] = "success"
+                        text_generation["status"] = "success"
+                        if combined:
+                            self._save_ai_stage_cache(
+                                "doubao_text",
+                                structured_cache_key,
+                                output_data=combined,
+                                input_data=structured_stage_input,
+                                workspace_id=workspace_id,
+                            )
+                    record_stage("doubao_text", stage_started)
                 if combined and task_item_id and supports_stage_receipts:
                     self.repository.upsert_stage_receipt(
                         task_id,
@@ -6315,7 +6167,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if (
             not preflight_only
             and text_failure is None
-            and text_generation["status"] in {"success", "receipt_hit"}
+            and text_generation["status"] in {"success", "receipt_hit", "cache_hit"}
             and task_item_id
             and supports_stage_receipts
         ):
@@ -6490,22 +6342,42 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             provider_status_classes["four_grid"] = grid_output.provider_status_class
             stage_timings_ms.update(grid_output.stage_timings_ms)
             if len(grid_image_paths) != 4:
-                # 与 POD 处理一致：不刻意做质量检验，也不因图片不足 4 张而阻断流水线。
-                # 保留已生成的可用轮播图，完全没有时回退来源图补齐；仅留痕供后台诊断，
-                # 让商品正常进入 completed（对齐 POD「生成即入库」）。
+                # Success means four real carousel images. Never turn a split or
+                # generation failure into a misleading completed result, even when
+                # an older task payload contains force-import compatibility flags.
+                mode_label = "精品4K" if premium_mode else "普通智能生图"
                 image_failure_detail = self._latest_ai_failure_detail(ai_notes)
-                if ai_notes is not None:
-                    ai_notes.append(
-                        f"image:grid_incomplete:{len(grid_image_paths)}/{image_generation_count}"
-                    )
-                    if image_failure_detail:
-                        ai_notes.append(f"image:ai-failed: {image_failure_detail}")
-                if not grid_image_paths:
-                    # 完全没有生成可用轮播图：记录原因并回退来源图作为轮播图，
-                    # 对齐 POD 直接以来源图入库，而非让商品停留在待补充。
-                    grid_image_paths = list(source_image_urls[:image_generation_count])
-                    if ai_notes is not None and grid_image_paths:
-                        ai_notes.append("image:grid_fallback_source")
+                return {
+                    **item,
+                    "title": optimized_title,
+                    "image_url": image_url,
+                    "status": "attention_required",
+                    "reason": "商品图片待补充",
+                    "result": {
+                        "error_type": "image_grid_incomplete",
+                        "failure_class": "technical_retryable",
+                        "partial_result": True,
+                        "pending_stage": "carousel_images",
+                        "operator_hint": "图片未达质量标准，可重试生成；或直接入库后人工替换图片",
+                        "debug_hint": (
+                            f"{mode_label}未生成4张可用轮播图；生成图未通过本地质量门；"
+                            "可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警"
+                            + (f"；底层原因：{image_failure_detail}" if image_failure_detail else "")
+                        ),
+                        "retryable": True,
+                        "rejected_image_paths": list(grid_output.rejected_image_paths),
+                        "optimized_title": optimized_title,
+                        "description": description,
+                        "variant_value_translations": variant_value_translations,
+                        "product_dimensions": product_dimensions,
+                        "vision_identity": vision_identity,
+                        "text_generation": text_generation,
+                        "ai_notes": ai_notes,
+                        "provider_attempts": provider_attempts,
+                        "provider_status_classes": provider_status_classes,
+                        "stage_timings_ms": timing_snapshot(),
+                    },
+                }
         if need_detail and not images_receipt_hit:
             # 检查点：任务被暂停/取消时不再合成或发起详情图生成。
             self._raise_if_task_stopped(task_id, workspace_id)
@@ -6655,6 +6527,27 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         text_failure_is_config = bool(
             text_failure is not None and text_failure.error_kind == "configuration"
         )
+        text_provider_attempted = any(
+            int(provider_attempts.get(stage) or 0) > 0
+            for stage in ("doubao_vision", "doubao_text")
+        )
+        text_reused = any(
+            provider_status_classes.get(stage) in {"receipt_hit", "cache_hit"}
+            for stage in ("doubao_vision", "doubao_text")
+        )
+        billable_kinds = {
+            kind for kind, _feature in self._billable_product_processing_features(settings)
+        }
+        billing_skipped_kinds = (
+            ["text"]
+            if (
+                "text" in billable_kinds
+                and text_failure is None
+                and text_reused
+                and not text_provider_attempted
+            )
+            else []
+        )
         result = {
             "product_draft_id": draft["id"],
             "candidate_id": raw.get("candidate_id") or draft.get("candidate_id"),
@@ -6700,8 +6593,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "ai_notes": ai_notes,
             "provider_attempts": provider_attempts,
             "provider_status_classes": provider_status_classes,
-            "provider_status_codes": provider_status_codes,
-            "vision_degraded": vision_degraded,
+            # Reserved text usage is released rather than charged when both
+            # recognition and listing text were supplied entirely by exact
+            # stage receipts/content-addressed caches.
+            "billing_skipped_kinds": billing_skipped_kinds,
             "stage_timings_ms": timing_snapshot(),
             "preview_overrides": draft.get("preview_overrides") or {},
             "selection_run_id": draft.get("selection_run_id"),
@@ -8170,12 +8065,21 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         )
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
-    def _load_ai_stage_cache(self, stage: str, cache_key: str) -> Any:
+    def _load_ai_stage_cache(
+        self,
+        stage: str,
+        cache_key: str,
+        *,
+        workspace_id: str = "local",
+    ) -> Any:
         """读取阶段级 AI 缓存；命中返回输出对象，否则 None。缓存异常不影响主流程。"""
         if not cache_key:
             return None
         try:
-            cached = self.repository.get_ai_stage_cache(cache_key, workspace_id="local")
+            cached = self.repository.get_ai_stage_cache(
+                cache_key,
+                workspace_id=workspace_id,
+            )
         except Exception:
             return None
         return cached.get("output") if cached else None
@@ -8188,6 +8092,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         output_data: Any,
         prompt: str = "",
         input_data: Any = None,
+        workspace_id: str = "local",
     ) -> None:
         if not cache_key:
             return
@@ -8198,7 +8103,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             ).hexdigest()
             self.repository.save_ai_stage_cache(
                 cache_key,
-                workspace_id="local",
+                workspace_id=workspace_id,
                 stage=stage,
                 model_signature="",
                 prompt_hash=prompt_hash,
@@ -8696,52 +8601,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 parts.append(f"{name}: {value}")
         return "; ".join(parts[:12])
 
-    @staticmethod
-    def _compact_vision_image(content: bytes, fallback_media_type: str) -> tuple[bytes, str]:
-        """把源图缩放到服务端安全尺寸并重编码为 JPEG，避免视觉识别请求体超限。
-
-        服务端 `/api/customer/ai/chat` 限制单次请求体 ≤ 12MB、单张图 ≤ 8MB。多张较大源图
-        直接拼 base64 会稳定超限而被秒拒（HTTP 413/400 → provider_http），表现为「开始处理
-        秒失败、进度飞快、整单全失败」。这里在客户端把每张源图缩到安全尺寸并统一重编码为
-        JPEG，确保识别请求体始终远低于服务端上限。Pillow 不可用或图片不可解码时回退到
-        原始字节与原始媒体类型（保持既有行为）。
-        """
-        try:
-            from io import BytesIO
-            from PIL import Image  # type: ignore[import-not-found]
-        except Exception:
-            return content, fallback_media_type
-        try:
-            image = Image.open(BytesIO(content))
-            image.load()
-        except Exception:
-            return content, fallback_media_type
-        try:
-            if image.mode in {"RGBA", "LA", "P"}:
-                background = Image.new("RGB", image.size, (255, 255, 255))
-                rgba = image.convert("RGBA")
-                background.paste(rgba, mask=rgba.split()[-1])
-                image = background
-            elif image.mode != "RGB":
-                image = image.convert("RGB")
-        except Exception:
-            return content, fallback_media_type
-        max_side = 1280
-        if max(image.size) > max_side:
-            image.thumbnail((max_side, max_side))
-        quality = 85
-        # 每张图预算 < 1MB：即便最多 6 张，合并 base64 后的请求体也远低于服务端 12MB 上限
-        # （6 × 1MB × base64 膨胀 1.33 ≈ 8MB < 12MB），避免被秒拒。
-        budget_bytes = 1 * 1024 * 1024
-        while True:
-            buffer = BytesIO()
-            image.save(buffer, format="JPEG", optimize=True, quality=quality)
-            encoded = buffer.getvalue()
-            if len(encoded) <= budget_bytes or quality <= 50:
-                break
-            quality -= 10
-        return encoded, "image/jpeg"
-
     def _image_to_data_url(self, image_url: str) -> str:
         """安全下载图片并转 base64 data URL（供多模态视觉识别，隔离下载/限字节）。"""
         with self._source_data_url_lock:
@@ -8767,10 +8626,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             or getattr(image, "content_type", None)
             or "image/jpeg"
         ).split(";", 1)[0].strip()
-        content, content_type = self._compact_vision_image(
-            content, content_type or "image/jpeg"
-        )
-        value = f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}"
+        value = f"data:{content_type or 'image/jpeg'};base64,{base64.b64encode(content).decode('ascii')}"
         with self._source_data_url_lock:
             if len(self._source_data_url_cache) >= 64:
                 self._source_data_url_cache.pop(next(iter(self._source_data_url_cache)))
@@ -8798,29 +8654,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         image_urls = [image_url] if isinstance(image_url, str) else list(image_url)
         image_urls = [str(value or "").strip() for value in image_urls if str(value or "").strip()][:6]
         normalized_title = " ".join(str(source_title or "").split()).strip()[:1000]
-        cache_payload = json.dumps(
-            {
-                "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
-                "image_urls": image_urls,
-                "source_title": normalized_title,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
-        cache = getattr(self, "_doubao_subject_cache", None)
-        lock = getattr(self, "_doubao_subject_cache_lock", None)
-        if cache is None or lock is None:
-            cache = {}
-            lock = threading.Lock()
-            self._doubao_subject_cache = cache
-            self._doubao_subject_cache_lock = lock
-        with lock:
-            cached = cache.get(cache_key)
-        if cached is not None:
-            self._attempt_state().doubao_vision = 0
-            return cached
         data_urls = [
             data_url
             for value in image_urls
@@ -8832,13 +8665,71 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 error_kind="transient",
                 retryable=True,
             )
+        # Persistent identity caching is based on the bytes actually sent to
+        # Doubao, not just on mutable CDN URLs. A changed source image therefore
+        # invalidates the cache even when its URL remains unchanged.
+        cache_input = {
+            "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
+            "model": DOUBAO_VISION_MODEL_ID,
+            "source_title": normalized_title,
+            "image_hashes": [
+                hashlib.sha256(value.encode("utf-8")).hexdigest()
+                for value in data_urls
+            ],
+        }
+        cache_key = self._ai_stage_cache_key(
+            "vision_identity",
+            input_data=cache_input,
+        )
+        cache = getattr(self, "_doubao_subject_cache", None)
+        lock = getattr(self, "_doubao_subject_cache_lock", None)
+        if cache is None or lock is None:
+            cache = {}
+            lock = threading.Lock()
+            self._doubao_subject_cache = cache
+            self._doubao_subject_cache_lock = lock
+        with lock:
+            cached = cache.get(cache_key)
+        attempt_state = self._attempt_state()
+        if cached is None:
+            workspace_id = str(
+                getattr(attempt_state, "workspace_id", "local") or "local"
+            )
+            persisted = self._load_ai_stage_cache(
+                "vision_identity",
+                cache_key,
+                workspace_id=workspace_id,
+            )
+            if isinstance(persisted, dict):
+                try:
+                    cached = subject_analysis_from_dict(persisted)
+                except DoubaoVisionError:
+                    cached = None
+        if cached is not None:
+            attempt_state.doubao_vision = 0
+            attempt_state.doubao_vision_cache_hit = True
+            with lock:
+                cache[cache_key] = cached
+            return cached
         client = self._doubao_vision_client()
         try:
             analysis = client.recognize_subject(data_urls, normalized_title)
         finally:
-            self._attempt_state().doubao_vision = client.last_attempt_count
+            attempt_state.doubao_vision = client.last_attempt_count
+        attempt_state.doubao_vision_cache_hit = False
         with lock:
             cache[cache_key] = analysis
+            while len(cache) > 128:
+                cache.pop(next(iter(cache)))
+        self._save_ai_stage_cache(
+            "vision_identity",
+            cache_key,
+            output_data=analysis.as_dict(),
+            input_data=cache_input,
+            workspace_id=str(
+                getattr(attempt_state, "workspace_id", "local") or "local"
+            ),
+        )
         return analysis
 
     def _media_processor(self) -> Any:

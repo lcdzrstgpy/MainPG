@@ -152,6 +152,37 @@ def test_item_usage_reserves_selected_features_and_settles_success(
     assert service._reserved_usage_ids(7, 11) == {}
 
 
+def test_exact_text_cache_hit_releases_text_usage_but_charges_generated_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    remote = RecordingBillingClient()
+    _install_remote(monkeypatch, remote)
+    service._task_remote_tokens[7] = "remote-token"
+    settings = _settings(scope=["title", "four_grid"])
+    service._reserve_product_processing_item_usage(7, 11, settings)
+
+    service._settle_product_processing_item_success(
+        7,
+        11,
+        settings,
+        {
+            "ai_notes": ["subject_identity:cache-hit", "structured_text:cache-hit"],
+            "billing_skipped_kinds": ["text"],
+        },
+    )
+
+    assert remote.failed == [
+        (
+            "remote-token",
+            "use-text",
+            "exact AI stage cache hit; provider was not called",
+        )
+    ]
+    assert remote.succeeded == [("remote-token", "use-image")]
+    assert service._reserved_usage_ids(7, 11) == {}
+
+
 @pytest.mark.parametrize(
     ("scope", "expected"),
     [
