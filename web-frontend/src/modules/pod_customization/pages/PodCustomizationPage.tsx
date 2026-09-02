@@ -558,6 +558,26 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  const saveManualTitle = async (styleIndex: number, title: string) => {
+    if (!activeBatch) return;
+    setBusyAction(`save-title:${styleIndex}`);
+    clearMessages();
+    try {
+      const updated = await podCustomizationApi.updateManualTitle(activeBatch.id, styleIndex, title);
+      setActiveBatch((current) => current ? {
+        ...current,
+        style_titles: [...(current.style_titles ?? []).filter((item) => item.style_index !== updated.style_index), updated],
+      } : current);
+      setNotice(`款式 #${styleIndex} 已保存手动标题。`);
+      await refreshActiveBatch(activeBatch.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   const resumeBillingRun = async (run: PodBillingRun) => {
     setBusyAction(`resume-billing:${run.id}`);
     clearMessages();
@@ -757,6 +777,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             onOpenResult={(item) => setSelectedItemId(item.id)}
             onRegenerateStyle={(styleIndex) => void regenerateStyle(styleIndex)}
             onRegenerateTitle={(styleIndex) => void regenerateStyleTitle(styleIndex)}
+            onSaveTitle={(styleIndex, title) => saveManualTitle(styleIndex, title)}
             onExportDianxiaomi={() => void exportDianxiaomi()}
             onResumeBilling={(run) => void resumeBillingRun(run)}
             onOpenFailedRetry={() => setFailedRetryOpen(true)}

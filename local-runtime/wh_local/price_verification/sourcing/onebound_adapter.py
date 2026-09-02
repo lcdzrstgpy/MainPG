@@ -125,6 +125,78 @@ class OneBoundSourceAdapter:
                 parallelism = 1
         return _result_for_items(items)
 
+    def lookup_history_sources(
+        self,
+        actor: PriceVerificationActor,
+        sources: Mapping[str, Mapping[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Resolve historical 1688 URLs without affecting image-search success."""
+        if not isinstance(actor, PriceVerificationActor):
+            raise TypeError("actor must be PriceVerificationActor")
+        entries = tuple(
+            (str(skc), dict(source))
+            for skc, source in sources.items()
+            if str(skc).strip()
+        )
+        if not entries:
+            return {}
+
+        def lookup(entry: tuple[str, dict[str, Any]]) -> tuple[str, dict[str, Any] | None]:
+            skc_id, source = entry
+            source_url = _text(source.get("source_url"))
+            offer_id = _offer_id({"source_url": source_url})
+            if not offer_id:
+                return skc_id, None
+            try:
+                provider = self._provider_factory()
+                with self._provider_request_gate:
+                    detail_result = provider.get_item_detail(offer_id)
+                if not _result_ok(detail_result):
+                    return skc_id, None
+                detail = dict(_detail_item(_response(detail_result)))
+                source_title = next(
+                    (
+                        _text(detail.get(key))
+                        for key in ("source_title", "title", "product_title", "item_title", "subject", "name")
+                        if _text(detail.get(key))
+                    ),
+                    "",
+                )
+                candidate = {
+                    **detail,
+                    "offer_id": offer_id,
+                    "source_url": source_url,
+                    "source_title": source_title,
+                    "main_image_url": _candidate_image_url(detail),
+                    "source_channel": "history",
+                    "history_lookup": True,
+                    "history_task_id": source.get("history_task_id"),
+                    "history_item_id": source.get("history_item_id"),
+                    "matched_history_title": source.get("matched_title"),
+                    "moq": detail.get("moq") or detail.get("min_num"),
+                }
+                if not _history_candidate_complete(candidate):
+                    return skc_id, None
+                return skc_id, _safe_candidate(
+                    candidate,
+                    _redacted_audits(detail_result),
+                    channel="history",
+                )
+            except Exception:
+                return skc_id, None
+
+        workers = min(_MAX_PARALLEL_PROVIDER_REQUESTS, len(entries))
+        if workers <= 1:
+            resolved = [lookup(entry) for entry in entries]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                resolved = list(executor.map(lookup, entries))
+        return {
+            skc_id: candidate
+            for skc_id, candidate in resolved
+            if candidate is not None
+        }
+
     def _search_task_with_new_provider(
         self,
         task: SourceSearchTask,
@@ -543,6 +615,28 @@ def _needs_detail_lookup(candidate: Mapping[str, Any]) -> bool:
         for key in ("price", "promotion_price", "price_info", "original_price")
     )
     return not (has_title and has_image and has_url and has_price)
+
+
+def _history_candidate_complete(candidate: Mapping[str, Any]) -> bool:
+    """History additions require every field needed by the sixth result card."""
+    return bool(
+        _offer_id(candidate)
+        and _candidate_image_url(candidate)
+        and _text(candidate.get("source_title"))
+        and any(
+            candidate.get(key) not in (None, "")
+            for key in (
+                "price",
+                "price_cny",
+                "unit_price",
+                "unit_price_cny",
+                "sku_price",
+                "promotion_price",
+                "sale_price",
+                "activity_price",
+            )
+        )
+    )
 
 
 def _with_title_evidence(

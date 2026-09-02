@@ -13,12 +13,58 @@ from .server_ai_proxy import gateway_base_url, granted_key, remote_token, usage_
 
 API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
 MODEL_ID = "doubao-seed-2-0-mini-260428"
+# 文本调用通常很快，保持 60s 默认即可。
 REQUEST_TIMEOUT_SECONDS = 60.0
+# 多图视觉识别（主体分析）实测单次可超过 60s；放宽超时避免被误判为 transient 超时，
+# 否则会出现「60s 超时 × 3 重试 ≈ 180s+」的伪失败。
+VISION_TIMEOUT_SECONDS = 120.0
 USER_AGENT = "MainPG-Doubao/1.0"
 
 _HTTP_SESSION = requests.Session()
 _HTTP_SESSION.trust_env = False
 _SERVER_AI_REQUEST_GATE = threading.BoundedSemaphore(2)
+
+
+def _classify_http_status(status_code: int) -> tuple[str, bool]:
+    """Classify an Ark HTTP status into a (error_kind, retryable) pair.
+
+    401/403 are persistent credential/config problems. 408/409/425/429 and any
+    5xx are transient and worth retrying. The remaining 4xx (bad body, upstream
+    refusal) are non-retryable provider errors.
+    """
+    if status_code in {401, 403}:
+        return "configuration", False
+    if status_code in {408, 409, 425, 429} or status_code >= 500:
+        return "transient", True
+    return "provider_http", False
+
+
+def _extract_upstream_detail(body: bytes) -> str | None:
+    """Pull a short, printable error detail (code/message) out of an Ark/网关 body.
+
+    Returns None when the body is not the expected JSON error envelope. The result
+    is intentionally truncated and stripped of control chars so it is safe to persist
+    in task diagnostics without leaking credentials.
+    """
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return None
+    parts: list[str] = []
+    code = error.get("code")
+    message = error.get("message")
+    if code:
+        parts.append(f"code={str(code)[:80]}")
+    if message:
+        parts.append(str(message)[:200])
+    if not parts:
+        return None
+    detail = "；".join(part for part in parts if part)
+    detail = "".join(ch for ch in detail if ch.isprintable()).strip()
+    return detail or None
 
 
 class DoubaoArkError(RuntimeError):
@@ -32,12 +78,16 @@ class DoubaoArkError(RuntimeError):
         retryable: bool,
         status_code: int | None = None,
         attempt_count: int = 0,
+        upstream_detail: str | None = None,
     ) -> None:
         super().__init__(message)
         self.error_kind = str(error_kind)
         self.retryable = bool(retryable)
         self.status_code = status_code
         self.attempt_count = max(0, int(attempt_count))
+        # 上游（网关或火山方舟）返回的脱敏错误详情（code/message），用于区分 400/413/404，
+        # 避免只看到一个不透光的 provider_http。
+        self.upstream_detail = upstream_detail
 
 
 class DoubaoArkClient:
@@ -49,26 +99,39 @@ class DoubaoArkClient:
     rollout keeps both paths live).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, usage_kind: str = "text") -> None:
         self.granted_key = granted_key("ark")
         self.direct = bool(self.granted_key)
         self.platform_token = remote_token()
-        self.usage_id = usage_id("text")
+        self.usage_id = usage_id(usage_kind)
+        # 兼容：旧服务端未声明 vision 独立计费时，视觉识别不单独预留，此时
+        # 回落到主链路（text）的 usage_id，避免触发 "usage is not reserved" 失败。
+        if (
+            usage_kind == "vision"
+            and not self.usage_id
+            and not self.direct
+            and usage_id("text")
+        ):
+            self.usage_id = usage_id("text")
         if not self.direct and (not self.platform_token or not self.usage_id):
             raise DoubaoArkError(
-                "server-managed text usage is not reserved",
+                "server-managed usage is not reserved",
                 error_kind="configuration",
                 retryable=False,
             )
         # Compatibility for existing diagnostics; never logs the real key.
         self.api_key = self.granted_key if self.direct else "server-managed"
 
-    def complete(self, messages: list[dict[str, Any]]) -> str:
+    def complete(
+        self, messages: list[dict[str, Any]], *, timeout: float = REQUEST_TIMEOUT_SECONDS
+    ) -> str:
         if self.direct:
-            return self._complete_direct(messages)
-        return self._complete_gateway(messages)
+            return self._complete_direct(messages, timeout=timeout)
+        return self._complete_gateway(messages, timeout=timeout)
 
-    def _complete_gateway(self, messages: list[dict[str, Any]]) -> str:
+    def _complete_gateway(
+        self, messages: list[dict[str, Any]], *, timeout: float = REQUEST_TIMEOUT_SECONDS
+    ) -> str:
         response: requests.Response | None = None
         try:
             with _SERVER_AI_REQUEST_GATE:
@@ -85,7 +148,7 @@ class DoubaoArkClient:
                         "messages": messages,
                         "usage_id": self.usage_id,
                     },
-                    timeout=REQUEST_TIMEOUT_SECONDS,
+                    timeout=timeout,
                     allow_redirects=False,
                 )
                 body = bytes(response.content)
@@ -101,17 +164,13 @@ class DoubaoArkClient:
 
         status_code = int(response.status_code)
         if status_code >= 400 or 300 <= status_code < 400:
-            if status_code in {401, 403} or 400 <= status_code < 429:
-                error_kind, retryable = "configuration", False
-            elif status_code == 429 or status_code >= 500:
-                error_kind, retryable = "transient", True
-            else:
-                error_kind, retryable = "provider_http", False
+            error_kind, retryable = _classify_http_status(status_code)
             raise DoubaoArkError(
                 f"server text-and-vision gateway returned HTTP {status_code}",
                 error_kind=error_kind,
                 retryable=retryable,
                 status_code=status_code,
+                upstream_detail=_extract_upstream_detail(body),
             )
 
         try:
@@ -131,7 +190,9 @@ class DoubaoArkClient:
             )
         return content.strip()
 
-    def _complete_direct(self, messages: list[dict[str, Any]]) -> str:
+    def _complete_direct(
+        self, messages: list[dict[str, Any]], *, timeout: float = REQUEST_TIMEOUT_SECONDS
+    ) -> str:
         response: requests.Response | None = None
         try:
             response = _HTTP_SESSION.post(
@@ -145,7 +206,7 @@ class DoubaoArkClient:
                     "model": MODEL_ID,
                     "messages": messages,
                 },
-                timeout=REQUEST_TIMEOUT_SECONDS,
+                timeout=timeout,
                 allow_redirects=False,
             )
             body = bytes(response.content)
@@ -161,17 +222,13 @@ class DoubaoArkClient:
 
         status_code = int(response.status_code)
         if status_code >= 400 or 300 <= status_code < 400:
-            if status_code in {401, 403}:
-                error_kind, retryable = "configuration", False
-            elif status_code == 429 or status_code >= 500:
-                error_kind, retryable = "transient", True
-            else:
-                error_kind, retryable = "provider_http", False
+            error_kind, retryable = _classify_http_status(status_code)
             raise DoubaoArkError(
                 f"ark upstream returned HTTP {status_code}",
                 error_kind=error_kind,
                 retryable=retryable,
                 status_code=status_code,
+                upstream_detail=_extract_upstream_detail(body),
             )
 
         try:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from ..product_processing.infrastructure.media import (
     GeneratedMedia,
     MediaConfigurationError,
     MediaProcessingError,
+    ProductImageProcessor,
+    _plausible_public_http_url,
 )
 from .assets import ComboKitAssets
 from .billing import ComboKitBillingCoordinator
@@ -39,7 +42,7 @@ from .prompts import (
 from .export import build_combo_dianxiaomi_export
 from .repository import ComboKitRepository
 from .ai_runtime import ComboKitAiRuntime
-from .generation import _make_media_processor, crop_subject_references
+from .generation import _make_media_processor, _static_config, crop_subject_references
 
 
 def _now() -> str:
@@ -110,6 +113,11 @@ class ComboKitService:
             "billing": self.repository.list_billing(set_id),
             "preview": self._preview_or_none(set_id),
         }
+
+    def remove_set(self, set_id: str) -> dict[str, Any]:
+        if not self.repository.remove_set(set_id):
+            raise ComboKitNotFound("组合套装不存在")
+        return {"set_id": set_id, "status": "removed"}
 
     def _preview_or_none(self, set_id: str) -> dict[str, Any] | None:
         try:
@@ -232,6 +240,21 @@ class ComboKitService:
             raise ComboKitNotFound("来源图不存在") from None
         return {"item_id": item_id, "status": "removed"}
 
+    def set_primary_item(self, set_id: str, item_id: str) -> dict[str, Any]:
+        """把某成员设为套装的主要商品（其余成员自动取消主要标记）。"""
+        self._require_set(set_id)
+        try:
+            self.repository.set_primary_item(set_id, item_id)
+        except KeyError:
+            raise ComboKitNotFound("来源图不存在") from None
+        return self.repository.get_item(item_id)
+
+    def clear_primary_item(self, set_id: str) -> dict[str, Any]:
+        """取消套装的主要商品标记（清空 is_primary）。"""
+        self._require_set(set_id)
+        self.repository.clear_primary_item(set_id)
+        return {"items": self.repository.list_items(set_id)}
+
     def list_items(self, set_id: str) -> dict[str, Any]:
         self._require_set(set_id)
         return {"items": self.repository.list_items(set_id)}
@@ -329,14 +352,16 @@ class ComboKitService:
         specs = _read_json(base.get("sku_specs_json") or [], [])
         category = str(base.get("category_path") or "")
         set_name = str(base.get("name") or "")
+        primary_subject = _primary_subject(items)
         prompt_text = build_text_prompt(
-            set_name=set_name, category=category, specs=specs, subject_summaries=subject_summaries
+            set_name=set_name, category=category, specs=specs,
+            subject_summaries=subject_summaries, primary_subject=primary_subject,
         )
         freeze = self.billing.freeze(
             actor,
             billing_type="text",
             set_id=set_id,
-            idempotency_key=f"combo-kit:text:{set_id}",
+            idempotency_key=f"combo-kit:text:{set_id}:{uuid.uuid4().hex}",
             scope=["title"],
         )
         billing = self.repository.add_billing(
@@ -367,7 +392,7 @@ class ComboKitService:
 
     # ---- 生图（100 积分，隔离扣费） ----
 
-    def generate_images(self, set_id: str, *, actor: Any) -> dict[str, Any]:
+    def generate_images(self, set_id: str, *, actor: Any, roles: list[str] | None = None) -> dict[str, Any]:
         base = self._require_set(set_id)
         items = self.repository.list_items(set_id)
         if not items:
@@ -388,6 +413,11 @@ class ComboKitService:
             reference_values = [str(item.get("original_path") or "") for item in items if str(item.get("original_path") or "").strip()]
         if not reference_values:
             reference_values = [str(item.get("original_url") or "") for item in items if str(item.get("original_url") or "").strip()]
+        # server-managed-wuyin 托管网关只能抓取公网 http(s) URL；本地参考图需先
+        # 发布到 COS 生成公网直链，否则网关 urls=[] 导致图生图任务失败。
+        reference_values = self._publish_references(
+            reference_values, workspace_id=str(base.get("workspace_id") or "local")
+        )
         prompt_cfg = self._prompt_or_default(set_id)
         image_prompts = _read_json(prompt_cfg.get("image_prompts") or {}, {})
         per_image = self._build_image_prompts(set_id, base, prompt_cfg, image_prompts)
@@ -398,7 +428,7 @@ class ComboKitService:
             actor,
             billing_type="image",
             set_id=set_id,
-            idempotency_key=f"combo-kit:image:{set_id}",
+            idempotency_key=f"combo-kit:image:{set_id}:{uuid.uuid4().hex}",
             scope=["four_grid"],
         )
         billing = self.repository.add_billing(
@@ -417,6 +447,9 @@ class ComboKitService:
         )
         set_id_val = set_id
         workspace_id = str(base.get("workspace_id") or "local")
+        # 并发生图子线程读不到 server_ai_context 的 ContextVar，需注入固化直连密钥
+        # 的处理器，避免退化到托管分支（usage not reserved）。
+        self.ai_runtime._media = self._direct_media_processor(freeze)
         try:
             with image_context(freeze):
                 outputs = self.ai_runtime.generate_images(
@@ -426,11 +459,14 @@ class ComboKitService:
                     fusion_suffix=fusion_suffix,
                     set_id=set_id_val,
                     workspace_id=workspace_id,
+                    title=str(base.get("name") or ""),
+                    category=str(base.get("category_path") or ""),
+                    roles=roles,
                 )
         except (ComboKitError, MediaConfigurationError, MediaProcessingError):
             self._settle_billing(billing["billing_id"], freeze, success=False, actor=actor)
             raise
-        # 全部成功后落盘并结算。main 命中则保留，其余 5 张并排写入。
+        # 全部成功后落盘并结算。main 命中则保留，其余张按角色并入，不覆盖本次未生成的角色。
         saved = []
         for out in outputs:
             path = self.assets.save_generated(
@@ -455,10 +491,38 @@ class ComboKitService:
                 "model": out.get("model"),
                 "attempt_count": out.get("attempt_count"),
             })
-        final = ([main_entry] if main_entry and main_entry.get("role") else []) + saved
+        # 保留本次未重新生成的角色（含 main），按 IMAGE_ROLES 稳定排序，替换时其它图不被覆盖。
+        regenerated_roles = {str(item.get("role") or "") for item in saved}
+        existing = _read_json(base.get("image_results_json") or [], [])
+        kept = [
+            entry for entry in existing
+            if str(entry.get("role") or "") not in regenerated_roles
+        ]
+        final = _order_image_entries([*kept, *saved])
         self.repository.update_set(set_id, {"image_results_json": json.dumps(final, ensure_ascii=False), "status": "images_ready", "stage": "images"})
         self._settle_billing(billing["billing_id"], freeze, success=True, actor=actor)
         return {"images": final}
+
+    def delete_generated_image(self, set_id: str, role: str) -> dict[str, Any]:
+        """删除某一张成品图（角色），其余图保留；删除后从列表移除并释放落盘文件。"""
+        base = self._require_set(set_id)
+        existing = _read_json(base.get("image_results_json") or [], [])
+        target = str(role or "").strip()
+        kept = [entry for entry in existing if str(entry.get("role") or "") != target]
+        if len(kept) == len(existing):
+            raise ComboKitNotFound(f"成品图角色不存在：{target}")
+        # 删除落盘文件（尽力而为）：本地路径只清理受管目录。
+        for entry in existing:
+            if str(entry.get("role") or "") == target:
+                path = str(entry.get("path") or "")
+                try:
+                    if path and "://" not in path:
+                        Path(path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        self.repository.update_set(set_id, {"image_results_json": json.dumps(_order_image_entries(kept), ensure_ascii=False)})
+        kept_set = {str(e.get("role") or "") for e in kept}
+        return {"images": _order_image_entries(kept), "status": "removed", "removed_role": target, "remaining_roles": sorted(kept_set)}
 
     def _build_image_prompts(self, set_id: str, base: dict[str, Any], prompt_cfg: dict[str, Any], image_prompts: dict[str, Any]) -> dict[str, str]:
         subject = _first_subject(self.repository.list_items(set_id))
@@ -521,6 +585,10 @@ class ComboKitService:
             reference_values = [str(item.get("original_path") or "") for item in items if str(item.get("original_path") or "").strip()]
         if not reference_values:
             reference_values = [str(item.get("original_url") or "") for item in items if str(item.get("original_url") or "").strip()]
+        # 融合主图同样走托管网关：本地参考图需先发布为公网直链。
+        reference_values = self._publish_references(
+            reference_values, workspace_id=str(base.get("workspace_id") or "local")
+        )
         subject_summaries = []
         for item in items:
             parsed = _read_json(item.get("subject_parsed_json") or {}, {})
@@ -528,6 +596,7 @@ class ComboKitService:
             if summary:
                 subject_summaries.append(summary)
         set_name = str(base.get("name") or "")
+        primary_subject = _primary_subject(items)
         # 预览融合主图：生图上下文临时冻结 → 生成 → 退额（零净扣费）。
         # 真正扣费在整套生成阶段打包 100 分结算（第 1 次生图调用计数）。
         freeze: dict[str, Any] | None = None
@@ -541,10 +610,12 @@ class ComboKitService:
                 scope=["four_grid"],
             )
             with image_context(freeze):
+                self.ai_runtime._media = self._direct_media_processor(freeze)
                 out = self.ai_runtime.generate_fusion_main(
                     reference_values=reference_values,
                     set_name=set_name,
                     subject_summaries=subject_summaries,
+                    primary_subject=primary_subject,
                     custom_prompt=custom_prompt,
                 )
         except Exception as exc:  # 不阻断主体解析结果返回。
@@ -651,6 +722,80 @@ class ComboKitService:
         except Exception:
             return None
 
+    def _publish_references(
+        self, reference_values: list[str], *, workspace_id: str
+    ) -> list[str]:
+        """把参考图依次升级为托管网关可下载的公网 URL。
+
+        组合套装的参考图来自本地抠图产物（tempfile）或本地上传原图（本地绝对
+        路径），而 server-managed-wuyin 网关只能抓取公网 http(s) URL；直接提交
+        本地路径会让请求 urls=[]，网关图生图任务因缺参考图而失败（等待后无图）。
+        → 已配置 COS 时把每个本地参考图发布为公网直链；已是 http(s) URL 的保留。
+        发布失败时保留原值（托管模式仍会失败，但至少不人为丢弃本地参考）。
+        """
+        published: list[str] = []
+        for raw in reference_values:
+            value = str(raw or "").strip()
+            if not value:
+                continue
+            if _plausible_public_http_url(value):
+                published.append(value)
+                continue
+            url = self._upload_reference_to_cos(value, workspace_id=workspace_id)
+            published.append(url or value)
+        return published
+
+    def _upload_reference_to_cos(self, path: str, *, workspace_id: str) -> str | None:
+        try:
+            content = Path(path).read_bytes()
+        except OSError:
+            return None
+        if not content:
+            return None
+        suffix = Path(path).suffix.lower() or ".jpg"
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+            suffix = ".jpg"
+        return self._publish_to_cos(
+            content, stage="reference", suffix=suffix, workspace_id=workspace_id
+        )
+
+    def _direct_media_processor(self, freeze: dict[str, Any]) -> ProductImageProcessor:
+        """构造一个固化 wuyin 直连密钥的图片处理器。
+
+        组合套装生图在 ThreadPoolExecutor 子线程里调用
+        ``processor.generate()``，而 ``server_ai_context`` 的 ContextVar 只在
+        主线程可见，子线程读不到 granted_keys → ``resolve_ai_provider()``
+        会退回 server-managed-wuyin 托管分支，进而因缺少 ``usage_id(image_grid)``
+        报 "server-managed image usage is not reserved"。
+
+        这里把冻结下发的中转 wuyin 密钥直接写入 config 的 image 段，使
+        provider 在任何线程都解析为直连地址（https://api.wuyinkeji.com），
+        不依赖线程上下文。
+        """
+        base_config = dict(_static_config())
+        wuyin_key = str((freeze.get("keys") or {}).get("wuyin") or "").strip()
+        if not wuyin_key:
+            # 无直连密钥：退回默认（可能仍走托管，由下层给出可读报错）。
+            return _make_media_processor()
+        imports = self._import_provider_config_direct()
+        base_url = imports["IMAGE_AI_BASE_URL"]
+        image_section = dict(base_config.get("image") or {})
+        image_section["base_url"] = base_url
+        image_section["api_key"] = wuyin_key
+        image_section["model"] = str(image_section.get("model") or "image_gpt")
+        image_section["reference_model"] = str(image_section.get("reference_model") or image_section["model"])
+        image_section["image_models"] = [str(image_section.get("model") or "image_gpt")]
+        base_config["image"] = image_section
+        base_config["backup_image"] = {}
+        # 直连时不再有任何托管 provider，避免 server_managed 分支干扰。
+        return ProductImageProcessor(config_provider=lambda: dict(base_config))
+
+    @staticmethod
+    def _import_provider_config_direct() -> dict[str, str]:
+        from ..product_processing.provider_config import IMAGE_AI_BASE_URL
+
+        return {"IMAGE_AI_BASE_URL": IMAGE_AI_BASE_URL}
+
     def _settle_billing(self, billing_id: str, freeze: dict[str, Any], *, success: bool, actor: Any) -> None:
         try:
             self.billing.settle(actor, freeze, success=success)
@@ -722,11 +867,59 @@ class ComboKitService:
     def export_dianxiaomi(self, set_id: str) -> Any:
         """把一套已完成组合套装导出为店小秘导入 xlsx。
 
-        缺必填字段（申报价/长宽高/重量/分类等）或成品图未发布到 COS 时，
+        导出前先「过图床」：把尚未发布 COS 公网直链的成品图补发一次（幂等），
+        并回写到 image_results_json，保证表格里的图片是公网可抓取直链。
+        缺必填字段（申报价/长宽高/重量/分类等）或成品图无法发布 COS 时，
         抛 ComboDianxiaomiExportError（由路由映射为 422）。
         """
         base = self._require_set(set_id)
+        base = {**base, "image_results_json": self._ensure_images_published(set_id, base)}
         return build_combo_dianxiaomi_export(base)
+
+    def _ensure_images_published(self, set_id: str, base: dict[str, Any]) -> list[dict[str, Any]]:
+        """遍历所有成品图，缺 COS 公网直链的补发一次并回写，返回更新后的列表。
+
+        幂等：已发布（public_url 非空）的保留原样；发布失败时保留原条目，交由
+        导出校验报「需已发布到 COS」，避免静默出坏图。
+        """
+        entries = _read_json(base.get("image_results_json") or [], [])
+        if not isinstance(entries, list):
+            return entries
+        workspace_id = str(base.get("workspace_id") or "local")
+        result: list[dict[str, Any]] = []
+        changed = False
+        for entry in entries:
+            if not isinstance(entry, dict):
+                result.append(entry)
+                continue
+            if str(entry.get("public_url") or "").strip():
+                result.append(entry)
+                continue
+            role = str(entry.get("role") or "")
+            path = str(entry.get("path") or "")
+            content = b""
+            try:
+                if path and "://" not in path:
+                    content = Path(path).read_bytes()
+            except OSError:
+                content = b""
+            suffix = Path(path).suffix.lower() if path else ".jpg"
+            if not content:
+                result.append(entry)
+                continue
+            url = self._publish_to_cos(
+                content, stage=role or "generated", suffix=suffix or ".jpg", workspace_id=workspace_id
+            )
+            if not url:
+                result.append(entry)
+                continue
+            updated = dict(entry)
+            updated["public_url"] = url
+            result.append(updated)
+            changed = True
+        if changed:
+            self.repository.update_set(set_id, {"image_results_json": json.dumps(result, ensure_ascii=False)})
+        return result
 
 
 def _uuid() -> str:
@@ -751,12 +944,27 @@ def _read_json(value: Any, default: Any) -> Any:
         return default
 
 
+def _order_image_entries(entries: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按 IMAGE_ROLES 固定顺序对成品图条目排序（未知角色排在最后）。"""
+    order = {str(spec["role"]): index for index, spec in enumerate(IMAGE_ROLES)}
+    return sorted(entries, key=lambda entry: order.get(str(entry.get("role") or ""), len(order)))
+
+
 def _first_subject(items: list[dict[str, Any]]) -> dict[str, Any] | None:
     for item in items:
         parsed = _read_json(item.get("subject_parsed_json") or {}, {})
         if isinstance(parsed, dict) and parsed.get("sellable_subject"):
             return parsed
     return None
+
+
+def _primary_subject(items: list[dict[str, Any]]) -> str:
+    """取用户标记的「主要商品」主体的英文名；未标记则返回空串。"""
+    for item in items:
+        if item.get("is_primary"):
+            parsed = _read_json(item.get("subject_parsed_json") or {}, {})
+            return str(parsed.get("sellable_subject") or item.get("subject_keywords") or "").strip()
+    return ""
 
 
 def text_context(freeze: dict[str, Any]):

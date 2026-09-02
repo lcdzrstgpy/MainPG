@@ -5,6 +5,7 @@ import contextvars
 import importlib.util
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -71,6 +72,11 @@ from .domain.language_contract import (
     normalize_target_language,
 )
 from .domain.description_contract import normalize_five_point_description
+from .domain.dimension_templates import (
+    AXIS_FIELDS,
+    template_axis_policy,
+    template_signature,
+)
 from .domain.image_slots import DEFAULT_SLOT_IDS, apply_slot_overrides
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
 from .domain.physical_dimensions import extract_physical_dimensions
@@ -93,6 +99,7 @@ from .infrastructure.ocr_gate import (
     ocr_gate_enabled,
 )
 from .infrastructure.repository import ProductProcessingRepository
+from .infrastructure.dimension_template_repository import DimensionTemplateRepository
 from .infrastructure.preview_image_repository import (
     PreviewIdempotencyConflict,
     PreviewImageRepository,
@@ -108,6 +115,7 @@ from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai
 from .server_ai_proxy import server_ai_context
 
 _MEDIA_TYPES: tuple | None = None
+_LOGGER = logging.getLogger(__name__)
 
 # 来源尺寸/重量确定性提取（对齐原项目 five-stage 的 deterministic_fact_build，0 AI）
 _DIMENSION_TRIPLE = re.compile(
@@ -171,7 +179,7 @@ _CACHE_VOLATILE_RAW_KEYS = frozenset(
     }
 )
 
-_STAGE_CACHE_VERSION = 3
+_STAGE_CACHE_VERSION = 4
 _TASK_HEARTBEAT_SECONDS = 10.0
 # 前端任务页轮询 /tasks/{id}/outputs 即为心跳；超过该时长没有心跳（页面关闭/
 # 切走/浏览器标签被回收）自动把任务置为暂停，避免用户已不在看却继续烧 AI 成本。
@@ -530,6 +538,7 @@ class ProductProcessingService:
         public_image_fetcher: Callable[[str], FetchedPublicImage] = fetch_public_image,
     ):
         self.repository = repository
+        self.dimension_templates = DimensionTemplateRepository(repository.database)
         self.assets = assets
         self._public_image_fetcher = public_image_fetcher
         self._provider_attempt_state = threading.local()
@@ -572,6 +581,18 @@ class ProductProcessingService:
         self._doubao_subject_cache_lock = threading.Lock()
         self._source_data_url_cache: dict[str, str] = {}
         self._source_data_url_lock = threading.Lock()
+        self.dimension_templates.configure_background_refresh(
+            busy_check=self._dimension_template_refresh_busy,
+            debounce_seconds=30,
+        )
+
+    def _dimension_template_refresh_busy(self) -> bool:
+        """Keep statistics work out of the way while product/media work is active."""
+        with self._task_worker_lock:
+            if any(worker.is_alive() for worker in self._task_workers.values()):
+                return True
+        with self._media_materialization_lock:
+            return any(worker.is_alive() for worker in self._media_materialization_workers.values())
 
     def engine_status(self) -> dict[str, Any]:
         dependency_status = {
@@ -1765,6 +1786,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         ids = self.repository.delete_drafts(draft_ids, workspace_id)
         return {"deleted_count": len(ids), "ids": ids, "status": "deleted"}
 
+    def restore_drafts(self, draft_ids: list[int], workspace_id: str = "local") -> dict[str, Any]:
+        ids = self.repository.restore_drafts(draft_ids, workspace_id)
+        return {"restored_count": len(ids), "ids": ids, "status": "draft"}
+
     def import_workbook(
         self,
         filename: str,
@@ -2667,6 +2692,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             )
         return {"tasks": history, "limit": limit, "offset": offset, "total": total}
 
+    def latest_completed_sources_by_title(
+        self,
+        requests: list[dict[str, Any]],
+        workspace_id: str = "local",
+    ) -> dict[str, dict[str, Any]]:
+        """Expose a read-only, workspace-scoped history lookup to sourcing."""
+        return self.repository.latest_completed_sources_by_title(requests, workspace_id)
+
     def _task_control_reason(self, task_id: int, workspace_id: str) -> str:
         """返回任务控制状态原因：'用户已暂停任务' / '用户已取消任务'，正常继续返回空串。
 
@@ -2741,10 +2774,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 continue
             status = str(task.get("status") or "")
             if status in {"queued", "running"}:
-                try:
-                    self.repository.set_task_status(task_id, "paused", workspace_id)
-                except Exception:
-                    pass
+                # 商品已经全部得到终态时，worker 只剩本地文件收尾；此时暂停会
+                # 把 6/6 的任务卡在 99%，并阻断预检/导出。
+                if self._task_has_unfinished_items(task):
+                    try:
+                        self.repository.pause_task_execution(task_id, workspace_id)
+                    except Exception:
+                        pass
                 # 移除心跳记录：resume 后由前端重新轮询重建，避免用陈旧时间戳
                 # 在 resume 的首个轮询窗口再次误暂停。
                 with self._task_last_seen_lock:
@@ -2804,6 +2840,32 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 pass
         return {**self._task_response(task), "message": "产品处理任务已取消，未处理链接已释放，未完成链接按冻结积分 50% 结算"}
 
+    def finalize_paused_successes(
+        self, task_id: int, workspace_id: str = "local"
+    ) -> dict[str, Any]:
+        """Permanently discard paused remainder and open successful items for preview."""
+        task = self._require_task(task_id, workspace_id)
+        exportable = [
+            item
+            for item in task.get("items") or []
+            if item.get("status") == "completed"
+            and self._text((item.get("result") or {}).get("optimized_title"))
+        ]
+        if not exportable:
+            raise ProductProcessingConflict("当前还没有可预检并导出的成功商品")
+        if task["status"] in {"completed", "partial_failure", "cancelled"}:
+            return {
+                **self._task_response(task),
+                "message": f"已保留 {len(exportable)} 个成功商品，可进入预检导出",
+            }
+        if task["status"] != "paused":
+            raise ProductProcessingConflict("请先暂停任务，再导出已成功商品")
+        result = self.cancel_task(task_id, workspace_id)
+        result["message"] = (
+            f"已永久取消剩余未完成商品，保留 {len(exportable)} 个成功商品进入预检"
+        )
+        return result
+
     def _settle_cancelled_freezes(self, task_id: int, workspace_id: str, token: str) -> None:
         """把某任务仍 open 的冻结批次按 50% 结算（已完成全价、未完成退半）。
 
@@ -2827,8 +2889,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         task = self._require_task(task_id, workspace_id)
         if task["status"] in {"completed", "failed", "partial_failure", "cancelled"}:
             return {**self._task_response(task), "message": "任务已结束，无需暂停"}
-        task = self.repository.set_task_status(task_id, "paused", workspace_id) or task
+        if not self._task_has_unfinished_items(task):
+            return {**self._task_response(task), "message": "全部商品已处理，正在生成导出文件"}
+        self.repository.pause_task_execution(task_id, workspace_id)
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] != "paused":
+            return {**self._task_response(task), "message": "任务已结束，无需暂停"}
         return {**self._task_response(task), "message": "产品处理任务已暂停"}
+
+    @staticmethod
+    def _task_has_unfinished_items(task: dict[str, Any]) -> bool:
+        return any(
+            str(item.get("status") or "") in {"pending", "running"}
+            for item in (task.get("items") or [])
+        )
 
     def resume_task(
         self,
@@ -3025,7 +3099,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         用户已保存的预览覆盖优先展示；未覆盖时展示生成结果原值。
         """
         task = self._require_task(task_id, workspace_id)
-        if task["status"] not in {"completed", "failed", "partial_failure"}:
+        if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
             raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
         excluded_ids = {
             int(value)
@@ -3033,7 +3107,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             if str(value).isdigit()
         }
         items = []
-        for item in task["items"]:
+        preview_items = task["items"]
+        if task["status"] == "cancelled":
+            # “暂停后导出成功商品”会永久取消余项；预检只显示当时已成功的
+            # 商品，取消/失败项既不进入预检，也不会进入最终表格。
+            preview_items = [item for item in preview_items if item["status"] == "completed"]
+        for item in preview_items:
             result = item.get("result") or {}
             draft_id = item.get("product_draft_id")
             draft = self.repository.get_draft(draft_id, workspace_id=workspace_id) if draft_id else None
@@ -3131,6 +3210,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """
         task = self._require_task(task_id, workspace_id)
         normalized = self._normalized_preview_entries(task, items)
+        previous_dimension_overrides = self._saved_dimension_overrides(
+            normalized, workspace_id=workspace_id
+        )
         try:
             saved_items = self.preview_images.save_preview(
                 task_id,
@@ -3145,6 +3227,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raise ProductProcessingValidationError(str(exc)) from exc
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
+        self._record_manual_shipping_observations(
+            task,
+            normalized,
+            saved_items,
+            previous_dimension_overrides,
+            workspace_id=workspace_id,
+        )
         return {"task_id": task_id, "saved_count": len(saved_items), "items": saved_items}
 
     def upload_preview_image(
@@ -3259,8 +3348,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "未配置可导出的图床：请配置 COS 或公共媒体地址（public_base_url）"
             )
         normalized = self._normalized_preview_entries(task, items)
+        previous_dimension_overrides = self._saved_dimension_overrides(
+            normalized, workspace_id=workspace_id
+        )
         try:
-            return self.preview_images.begin_finalize(
+            run = self.preview_images.begin_finalize(
                 task_id,
                 normalized,
                 workspace_id=workspace_id,
@@ -3272,6 +3364,231 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raise ProductProcessingValidationError(str(exc)) from exc
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
+        self._record_manual_shipping_observations(
+            task,
+            normalized,
+            list(run.get("snapshot") or []),
+            previous_dimension_overrides,
+            workspace_id=workspace_id,
+        )
+        return run
+
+    def _saved_dimension_overrides(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        workspace_id: str,
+    ) -> dict[int, dict[str, Any]]:
+        previous: dict[int, dict[str, Any]] = {}
+        for entry in entries:
+            draft_id = int(entry.get("product_draft_id") or 0)
+            draft = self.repository.get_draft(draft_id, workspace_id=workspace_id)
+            overrides = (draft or {}).get("preview_overrides") or {}
+            previous[draft_id] = dict(overrides) if isinstance(overrides, dict) else {}
+        return previous
+
+    def _record_manual_shipping_observations(
+        self,
+        task: dict[str, Any],
+        entries: list[dict[str, Any]],
+        saved_items: list[dict[str, Any]],
+        previous_overrides: dict[int, dict[str, Any]],
+        *,
+        workspace_id: str,
+    ) -> None:
+        results_by_draft = {
+            int(item.get("product_draft_id") or 0): dict(item.get("result") or {})
+            for item in task.get("items") or []
+            if item.get("product_draft_id")
+        }
+        saved_by_draft = {
+            int(item.get("product_draft_id") or 0): item for item in saved_items
+        }
+        for entry in entries:
+            draft_id = int(entry.get("product_draft_id") or 0)
+            saved = saved_by_draft.get(draft_id)
+            if saved is None:
+                continue
+            desired = (entry.get("overrides") or {}).get("shipping_package_records") or {}
+            if not isinstance(desired, dict):
+                continue
+            old_saved = previous_overrides.get(draft_id, {})
+            old = old_saved.get("shipping_package_records") or {}
+            if not isinstance(old, dict):
+                old = {}
+            result = results_by_draft.get(draft_id, {})
+            title = self._text(result.get("optimized_title") or result.get("title"))
+            desired_core = (entry.get("overrides") or {}).get("core_fields") or {}
+            old_core = old_saved.get("core_fields") or {}
+            if isinstance(desired_core, dict) and isinstance(old_core, dict):
+                dimensions = result.get("product_dimensions") or {}
+                if not isinstance(dimensions, dict):
+                    dimensions = {}
+                matched_packages = [
+                    record
+                    for record in (result.get("shipping_package_records") or [])
+                    if isinstance(record, dict)
+                    and (record.get("selected") or record.get("match_status") == "matched")
+                ]
+                selected_package = next(
+                    (
+                        record
+                        for record in matched_packages
+                    ),
+                    {},
+                )
+                changed_core = {}
+                for field in AXIS_FIELDS:
+                    if field not in desired_core:
+                        continue
+                    previous_value = old_core.get(
+                        field, selected_package.get(field, dimensions.get(field))
+                    )
+                    desired_number = self._number(desired_core.get(field))
+                    previous_number = self._number(previous_value)
+                    if (
+                        desired_number is not None
+                        and (
+                            previous_number is None
+                            or abs(float(desired_number) - float(previous_number)) > 1e-9
+                        )
+                    ):
+                        changed_core[field] = desired_core[field]
+                # A product with concrete SKU package rows learns only from
+                # those SKU identities. The product-level fallback would count
+                # the same physical package a second time.
+                if changed_core and not matched_packages:
+                    try:
+                        self.dimension_templates.record_observation(
+                            workspace_id=workspace_id,
+                            observation_key=f"package:{draft_id}:__default__",
+                            raw=result,
+                            title=title,
+                            values=changed_core,
+                            provenance={field: "manual_confirmed" for field in changed_core},
+                            source_kind="manual_confirmed",
+                            estimate_context=(
+                                result.get("product_dimensions")
+                                if isinstance(result.get("product_dimensions"), dict)
+                                else {}
+                            ),
+                            task_id=int(task.get("id") or 0),
+                            product_draft_id=draft_id,
+                            variant_key="__default__",
+                        )
+                    except Exception:  # noqa: BLE001 - learning must not break a saved preview
+                        _LOGGER.exception(
+                            "failed to record manual default shipping dimension observation",
+                            extra={"task_id": task.get("id"), "product_draft_id": draft_id},
+                        )
+            for variant_key, patch in desired.items():
+                if not isinstance(patch, dict):
+                    continue
+                old_patch = old.get(variant_key) if isinstance(old.get(variant_key), dict) else {}
+                changed = {
+                    field: patch[field]
+                    for field in AXIS_FIELDS
+                    if field in patch
+                    and (
+                        self._number(old_patch.get(field)) is None
+                        or abs(
+                            float(self._number(patch.get(field)) or 0)
+                            - float(self._number(old_patch.get(field)) or 0)
+                        )
+                        > 1e-9
+                    )
+                }
+                if not changed:
+                    continue
+                try:
+                    self.dimension_templates.record_observation(
+                        workspace_id=workspace_id,
+                        observation_key=f"package:{draft_id}:{variant_key}",
+                        raw=result,
+                        title=title,
+                        values=changed,
+                        provenance={field: "manual_confirmed" for field in changed},
+                        source_kind="manual_confirmed",
+                        estimate_context=(
+                            result.get("product_dimensions")
+                            if isinstance(result.get("product_dimensions"), dict)
+                            else {}
+                        ),
+                        task_id=int(task.get("id") or 0),
+                        product_draft_id=draft_id,
+                        variant_key=str(variant_key),
+                    )
+                except Exception:  # noqa: BLE001 - learning must not break a saved preview
+                    _LOGGER.exception(
+                        "failed to record manual shipping dimension observation",
+                        extra={"task_id": task.get("id"), "product_draft_id": draft_id},
+                    )
+
+    def _record_source_shipping_observations(
+        self,
+        result: dict[str, Any],
+        *,
+        task_id: int,
+        product_draft_id: int,
+        workspace_id: str,
+    ) -> None:
+        dimension_repository = getattr(self, "dimension_templates", None)
+        if dimension_repository is None:
+            return
+        records = result.get("shipping_package_records") or []
+        if not isinstance(records, list):
+            return
+        title = self._text(result.get("optimized_title") or result.get("title"))
+        has_matched_package = any(
+            isinstance(record, dict)
+            and (record.get("match_status") == "matched" or record.get("selected"))
+            for record in records
+        )
+        if has_matched_package:
+            try:
+                dimension_repository.delete_observation(
+                    workspace_id=workspace_id,
+                    observation_key=f"package:{product_draft_id}:__default__",
+                )
+            except Exception:  # noqa: BLE001 - cleanup must not break processing
+                _LOGGER.exception(
+                    "failed to remove duplicate default shipping dimension observation",
+                    extra={"task_id": task_id, "product_draft_id": product_draft_id},
+                )
+        for index, record in enumerate(records):
+            if not isinstance(record, dict):
+                continue
+            if record.get("match_status") != "matched" and not record.get("selected"):
+                continue
+            variant_key = self._text(
+                record.get("variant_key")
+                or record.get("variant_sku_id")
+                or record.get("record_key")
+            ) or f"row-{index + 1}"
+            values = {field: record.get(field) for field in AXIS_FIELDS if record.get(field) is not None}
+            try:
+                dimension_repository.record_observation(
+                    workspace_id=workspace_id,
+                    observation_key=f"package:{product_draft_id}:{variant_key}",
+                    raw=result,
+                    title=title,
+                    values=values,
+                    provenance={field: "source_confirmed" for field in values},
+                    source_kind="source_confirmed",
+                    estimate_context=(
+                        result.get("product_dimensions")
+                        if isinstance(result.get("product_dimensions"), dict)
+                        else {}
+                    ),
+                    task_id=int(task_id),
+                    product_draft_id=int(product_draft_id),
+                    variant_key=variant_key,
+                )
+            except Exception:  # noqa: BLE001 - learning must not break product processing
+                _LOGGER.exception(
+                    "failed to record source shipping dimension observation",
+                    extra={"task_id": task_id, "product_draft_id": product_draft_id},
+                )
 
     def _normalized_preview_entries(
         self, task: dict[str, Any], items: list[dict[str, Any]]
@@ -3514,6 +3831,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if not isinstance(dimensions, dict):
             dimensions = {}
         provenance_source = str(dimensions.get("source") or "").strip()
+        field_provenance = dimensions.get("field_provenance") or {}
+        if not isinstance(field_provenance, dict):
+            field_provenance = {}
+        field_confidence = dimensions.get("field_confidence") or {}
+        if not isinstance(field_confidence, dict):
+            field_confidence = {}
         # 1688 件重尺（#productPackInfo）抓到的真实物流包裹数据。前端「物流包裹
         # 长/宽/高/重量」框优先采用这些真实值，避免回退到商品本体尺寸的 AI 预估。
         shipping_package_records = result.get("shipping_package_records") or []
@@ -3541,16 +3864,37 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             if package_value is not None and package_value > 0:
                 package_dimensions[key] = float(package_value)
         dimension_provenance: dict[str, str] = {}
+        dimension_confidence: dict[str, str] = {}
         for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
-            if key in core_fields:
+            baseline_value = package_dimensions.get(key, dimensions.get(key))
+            manual_value = self._number(core_fields.get(key)) if key in core_fields else None
+            baseline_number = self._number(baseline_value)
+            is_manual_change = key in core_fields and (
+                manual_value is None
+                or baseline_number is None
+                or abs(float(manual_value) - float(baseline_number)) > 1e-9
+            )
+            if is_manual_change:
                 dimension_provenance[key] = "manual"
+                dimension_confidence[key] = "high"
             elif key in package_dimensions:
                 # 该字段来自件重尺真实抓取值，而非 AI 预估。
                 dimension_provenance[key] = "source"
-            elif "source_evidence" in provenance_source or "source_evidence" in str(dimensions.get("reason") or ""):
+                dimension_confidence[key] = "high"
+            elif field_provenance.get(key) == "source_confirmed" or (
+                not field_provenance
+                and (
+                    "source_evidence" in provenance_source
+                    or "source_evidence" in str(dimensions.get("reason") or "")
+                )
+            ):
                 dimension_provenance[key] = "source"
+                dimension_confidence[key] = "high"
             else:
                 dimension_provenance[key] = "ai"
+                dimension_confidence[key] = str(
+                    field_confidence.get(key) or dimensions.get("confidence") or "medium"
+                )
         # 标题/描述：覆盖优先，其次生成结果
         title = str(saved.get("title") or result.get("optimized_title") or "").strip()
         description = str(saved.get("description") or result.get("description") or "").strip()
@@ -3570,6 +3914,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "billing_retried": _item_had_retry(result),
             "title": title,
             "description": description,
+            "source_url": str(result.get("source_url") or result.get("product_link") or "").strip(),
             "source_image_urls": [self._display_url(value) for value in (result.get("source_image_urls") or [])],
             "carousel_images": [self._display_url(value) for value in carousel_sources],
             "main_image": self._display_url(main_source),
@@ -3583,6 +3928,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # measurements and must never drive the product body/canvas size.
             "shipping_package_records": shipping_package_records,
             "dimension_provenance": dimension_provenance,
+            "dimension_confidence": dimension_confidence,
+            "dimension_clamped_fields": list(dimensions.get("clamped_fields") or []),
             "preview_revision": preview_revision,
             "result_version": task_item_result_version(result),
             # Kept separate from product_dimensions: these are shipping package
@@ -3916,7 +4263,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         successes: list[dict[str, Any]] = [
             dict(item.get("result") or {}) for item in task["items"] if item["status"] == "completed"
         ]
-        failures: list[dict[str, Any]] = []
+        # 断点续跑只处理 pending/running；暂停前已经落库的失败项也必须重新
+        # 纳入错误报告，否则恢复后的最终导出会漏掉这些明细。
+        failures: list[dict[str, Any]] = [
+            dict(item)
+            for item in task["items"]
+            if item["status"] not in {"pending", "running", "completed"}
+        ]
         source_images: list[str] = [
             str(url)
             for result in successes
@@ -4078,7 +4431,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
                                 self._mark_draft_failed(draft, workspace_id)
 
-        final_status = self._require_task(task_id, workspace_id)["status"]
+        final_task = self._require_task(task_id, workspace_id)
+        final_status = final_task["status"]
         if final_status in {"paused", "cancelled"}:
             if final_status == "cancelled":
                 # 取消发生在自动补跑轮中段：执行被检查点中止且不会走到收尾的
@@ -4095,7 +4449,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         )
                 except Exception:
                     pass
-            return self._require_task(task_id, workspace_id)
+                return self._require_task(task_id, workspace_id)
+            # 暂停只中断仍需调用 AI 的条目。若最后一项已经持久化，继续完成
+            # 本地工作簿/错误报告收尾，避免任务停在 6/6、99% 且无法导出。
+            if self._task_has_unfinished_items(final_task):
+                return final_task
 
         preserve = settings.get("source_image_to_library")
         if preserve is None:
@@ -4589,26 +4947,55 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # 重试溢价：该链接发生过 AI 重试/重绘/修复时标记，服务端按重试单价结算。
             "billing_retried": _item_had_retry(result),
         }
+        skipped_kinds = {
+            str(value or "").strip()
+            for value in (result.get("billing_skipped_kinds") or [])
+            if str(value or "").strip()
+        }
         first_error: Exception | None = None
         for kind, usage in self._reserved_usage_ids(task_id, item_id).items():
             if not self._claim_usage_settlement(task_id, item_id, kind, usage):
                 continue
+            skipped_without_provider_call = kind in skipped_kinds
             attempt = self._product_billing_attempt_for_usage(task_id, item_id, kind, usage)
             if attempt is not None:
                 self.repository.mark_product_billing_desired_outcome(
                     int(attempt["id"]),
-                    desired_outcome="succeeded",
-                    error_message="",
+                    desired_outcome=(
+                        "failed" if skipped_without_provider_call else "succeeded"
+                    ),
+                    error_message=(
+                        "exact AI stage cache hit; provider was not called"
+                        if skipped_without_provider_call
+                        else ""
+                    ),
                 )
             try:
-                response = _billing_call_with_retry(
-                    client.settle_ai_usage_success,
-                    remote_token,
-                    usage,
-                    {"metadata": metadata},
-                )
+                if skipped_without_provider_call:
+                    response = _billing_call_with_retry(
+                        client.settle_ai_usage_failure,
+                        remote_token,
+                        usage,
+                        {
+                            "error_message": (
+                                "exact AI stage cache hit; provider was not called"
+                            )
+                        },
+                    )
+                else:
+                    response = _billing_call_with_retry(
+                        client.settle_ai_usage_success,
+                        remote_token,
+                        usage,
+                        {"metadata": metadata},
+                    )
                 remote_status = self._remote_settlement_status(response, usage)
-                if remote_status != "succeeded":
+                valid_statuses = (
+                    {"succeeded", "failed"}
+                    if skipped_without_provider_call
+                    else {"succeeded"}
+                )
+                if remote_status not in valid_statuses:
                     raise CustomerBillingProtocolError()
             except Exception as exc:
                 error = self._stable_remote_billing_error(exc)
@@ -5067,12 +5454,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             }
         raw = draft["raw_payload"]
         title = self._text(draft.get("title") or draft.get("product_name") or raw.get("source_title"))
-        source_title = self._text(
-            raw.get("source_title")
-            or raw.get("title")
-            or raw.get("product_name")
-            or title
-        )
+        # ``draft.title`` is the operator-editable Chinese reference title from
+        # the draft pool. Keep the collected title in raw_payload for traceability,
+        # but make the operator's correction authoritative for every downstream
+        # AI stage (vision identity, text, dimensions and image planning).
+        source_title = title
         image_url = self._text(draft.get("image_url") or raw.get("main_image_url") or self._first(raw.get("source_image_urls")))
         source_url = self._text(raw.get("source_url") or raw.get("product_link") or draft.get("source_ref"))
         missing = [name for name, value in (("title", title), ("image", image_url)) if not value]
@@ -5269,6 +5655,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 self._raise_if_task_stopped(task_id, workspace_id)
                 attempt_state = self._attempt_state()
                 attempt_state.doubao_vision = None
+                attempt_state.doubao_vision_cache_hit = False
+                attempt_state.workspace_id = workspace_id
                 try:
                     analysis = self._recognize_doubao_subject(
                         vision_reference_urls, source_title
@@ -5331,7 +5719,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 provider_attempts["doubao_vision"] = (
                     1 if measured_attempts is None else max(0, int(measured_attempts))
                 )
-                provider_status_classes["doubao_vision"] = "success"
+                vision_cache_hit = bool(
+                    getattr(attempt_state, "doubao_vision_cache_hit", False)
+                )
+                provider_status_classes["doubao_vision"] = (
+                    "cache_hit" if vision_cache_hit else "success"
+                )
+                if vision_cache_hit:
+                    ai_notes.append("subject_identity:cache-hit")
             record_stage("doubao_subject", stage_started)
             vision_identity = {
                 **analysis.as_dict(),
@@ -5541,28 +5936,45 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     vision_identity=vision_identity,
                     workspace_id=workspace_id,
                 )
+        dimension_repository = getattr(self, "dimension_templates", None)
+        dimension_template = (
+            dimension_repository.resolve(raw, title, workspace_id=workspace_id)
+            if "product_dimensions" in scope and dimension_repository is not None
+            else None
+        )
+        structured_stage_input = {
+            "draft_id": int(draft["id"]),
+            "title": title,
+            "category": category,
+            "raw": self._stable_raw(raw),
+            "target_site": target_site,
+            "target_language": target_language,
+            "scope": sorted(
+                {"title", "details", "product_dimensions"} & scope
+            ),
+            "vision_identity": vision_identity,
+            "vision_prompt_version": DOUBAO_VISION_PROMPT_VERSION,
+            "provider": "doubao",
+            "model": DOUBAO_TEXT_MODEL_ID,
+            "prompt_version": DOUBAO_TEXT_PROMPT_VERSION,
+            # Operator template additions are separate from the global prompt
+            # repository. Switching or editing a template must invalidate a
+            # cross-task text result even when every source field is unchanged.
+            "active_prompt_additions": self._active_template_prompts(),
+            # Learned bounds/defaults are part of the dimension result.
+            # A changed template must invalidate an older stage receipt/cache.
+            "dimension_template_signature": template_signature(dimension_template),
+        }
+        structured_stage_hash = self._processing_stage_input_hash(
+            "doubao_text",
+            structured_stage_input,
+        )
         structured_receipt_input = (
-            self._processing_stage_input_hash(
-                "doubao_text",
-                {
-                    "draft_id": int(draft["id"]),
-                    "title": title,
-                    "category": category,
-                    "raw": self._stable_raw(raw),
-                    "target_site": target_site,
-                    "target_language": target_language,
-                    "scope": sorted(
-                        {"title", "details", "product_dimensions"} & scope
-                    ),
-                    "vision_identity": vision_identity,
-                    "vision_prompt_version": DOUBAO_VISION_PROMPT_VERSION,
-                    "provider": "doubao",
-                    "model": DOUBAO_TEXT_MODEL_ID,
-                    "prompt_version": DOUBAO_TEXT_PROMPT_VERSION,
-                },
-            )
-            if supports_stage_receipts
-            else ""
+            structured_stage_hash if supports_stage_receipts else ""
+        )
+        structured_cache_key = self._ai_stage_cache_key(
+            "doubao_text",
+            input_data={"stage_input_hash": structured_stage_hash},
         )
         structured_receipt: dict[str, Any] | None = None
         if task_item_id and supports_stage_receipts:
@@ -5624,47 +6036,70 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 provider_status_classes["doubao_text"] = "receipt_hit"
                 text_generation["status"] = "receipt_hit"
             elif needs_title or needs_desc or needs_dimensions or variant_values:
-                # 检查点：任务被暂停/取消时不再发起豆包文案生成。
-                self._raise_if_task_stopped(task_id, workspace_id)
-                stage_started = time.perf_counter()
-                attempt_state = self._attempt_state()
-                attempt_state.doubao_text = None
-                try:
-                    combined = self._generate_doubao_text(
-                        title,
-                        category,
-                        raw,
-                        target_language,
-                        target_site,
-                        ai_notes,
-                        vision_identity=vision_identity,
-                        needs_title=bool(needs_title),
-                        needs_description=bool(needs_desc),
-                        needs_dimensions=bool(needs_dimensions),
-                        known_dimensions=known_dimensions,
-                    )
-                except DoubaoTextError as exc:
-                    text_failure = exc
-                    combined = None
-                    needs_title = False
-                    needs_desc = False
-                    product_dimensions = dict(known_dimensions)
-                    provider_attempts["doubao_text"] = max(
-                        0, int(exc.attempt_count)
-                    )
-                    provider_status_classes["doubao_text"] = exc.error_kind
-                    text_generation["status"] = "failed"
-                    ai_notes.append(f"text:managed-service-failed:{exc.error_kind}")
+                cached_combined = self._load_ai_stage_cache(
+                    "doubao_text",
+                    structured_cache_key,
+                    workspace_id=workspace_id,
+                )
+                if isinstance(cached_combined, dict):
+                    combined = dict(cached_combined)
+                    ai_notes.append("structured_text:cache-hit")
+                    provider_attempts["doubao_text"] = 0
+                    provider_status_classes["doubao_text"] = "cache_hit"
+                    text_generation["status"] = "cache_hit"
                 else:
-                    measured_attempts = getattr(attempt_state, "doubao_text", None)
-                    provider_attempts["doubao_text"] = (
-                        1
-                        if measured_attempts is None
-                        else max(0, int(measured_attempts))
-                    )
-                    provider_status_classes["doubao_text"] = "success"
-                    text_generation["status"] = "success"
-                record_stage("doubao_text", stage_started)
+                    # 检查点：任务被暂停/取消时不再发起豆包文案生成。
+                    self._raise_if_task_stopped(task_id, workspace_id)
+                    stage_started = time.perf_counter()
+                    attempt_state = self._attempt_state()
+                    attempt_state.doubao_text = None
+                    try:
+                        combined = self._generate_doubao_text(
+                            title,
+                            category,
+                            raw,
+                            target_language,
+                            target_site,
+                            ai_notes,
+                            vision_identity=vision_identity,
+                            needs_title=bool(needs_title),
+                            needs_description=bool(needs_desc),
+                            needs_dimensions=bool(needs_dimensions),
+                            known_dimensions=known_dimensions,
+                            dimension_template=dimension_template,
+                        )
+                    except DoubaoTextError as exc:
+                        text_failure = exc
+                        combined = None
+                        needs_title = False
+                        needs_desc = False
+                        product_dimensions = self._combined_dimensions(
+                            {}, known_dimensions, dimension_template
+                        )
+                        provider_attempts["doubao_text"] = max(
+                            0, int(exc.attempt_count)
+                        )
+                        provider_status_classes["doubao_text"] = exc.error_kind
+                        text_generation["status"] = "failed"
+                        ai_notes.append(f"text:managed-service-failed:{exc.error_kind}")
+                    else:
+                        measured_attempts = getattr(attempt_state, "doubao_text", None)
+                        provider_attempts["doubao_text"] = (
+                            1
+                            if measured_attempts is None
+                            else max(0, int(measured_attempts))
+                        )
+                        provider_status_classes["doubao_text"] = "success"
+                        text_generation["status"] = "success"
+                        if combined:
+                            self._save_ai_stage_cache(
+                                "doubao_text",
+                                structured_cache_key,
+                                output_data=combined,
+                                input_data=structured_stage_input,
+                                workspace_id=workspace_id,
+                            )
+                    record_stage("doubao_text", stage_started)
                 if combined and task_item_id and supports_stage_receipts:
                     self.repository.upsert_stage_receipt(
                         task_id,
@@ -5688,10 +6123,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 if combined.get("variant_translations"):
                     translations = combined["variant_translations"]
                 if needs_dimensions:
-                    product_dimensions = dict(combined.get("product_dimensions") or {})
-                    # Never let the text model replace measurements explicitly
-                    # captured from the source table, selected SKU, or image.
-                    product_dimensions.update(known_dimensions)
+                    product_dimensions = self._combined_dimensions(
+                        combined.get("product_dimensions") or {},
+                        known_dimensions,
+                        dimension_template,
+                    )
                 ai_notes.append("text:managed-service-combined")
             if (needs_title or needs_desc) and text_failure is None:
                 text_failure = DoubaoTextError(
@@ -5731,7 +6167,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if (
             not preflight_only
             and text_failure is None
-            and text_generation["status"] in {"success", "receipt_hit"}
+            and text_generation["status"] in {"success", "receipt_hit", "cache_hit"}
             and task_item_id
             and supports_stage_receipts
         ):
@@ -6091,6 +6527,27 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         text_failure_is_config = bool(
             text_failure is not None and text_failure.error_kind == "configuration"
         )
+        text_provider_attempted = any(
+            int(provider_attempts.get(stage) or 0) > 0
+            for stage in ("doubao_vision", "doubao_text")
+        )
+        text_reused = any(
+            provider_status_classes.get(stage) in {"receipt_hit", "cache_hit"}
+            for stage in ("doubao_vision", "doubao_text")
+        )
+        billable_kinds = {
+            kind for kind, _feature in self._billable_product_processing_features(settings)
+        }
+        billing_skipped_kinds = (
+            ["text"]
+            if (
+                "text" in billable_kinds
+                and text_failure is None
+                and text_reused
+                and not text_provider_attempted
+            )
+            else []
+        )
         result = {
             "product_draft_id": draft["id"],
             "candidate_id": raw.get("candidate_id") or draft.get("candidate_id"),
@@ -6136,6 +6593,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "ai_notes": ai_notes,
             "provider_attempts": provider_attempts,
             "provider_status_classes": provider_status_classes,
+            # Reserved text usage is released rather than charged when both
+            # recognition and listing text were supplied entirely by exact
+            # stage receipts/content-addressed caches.
+            "billing_skipped_kinds": billing_skipped_kinds,
             "stage_timings_ms": timing_snapshot(),
             "preview_overrides": draft.get("preview_overrides") or {},
             "selection_run_id": draft.get("selection_run_id"),
@@ -6185,6 +6646,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "retryable": text_failure is not None,
             "exchange_contract": "daily-selection-product-processing-v1" if draft.get("selection_run_id") else None,
         }
+        self._record_source_shipping_observations(
+            result,
+            task_id=int(task_id),
+            product_draft_id=int(draft["id"]),
+            workspace_id=workspace_id,
+        )
         return {
             **item,
             "skc": skc,
@@ -6243,6 +6710,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         needs_description: bool,
         needs_dimensions: bool,
         known_dimensions: dict[str, Any] | None = None,
+        dimension_template: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Generate every requested listing-text field in one text-only Doubao stage."""
         variant_values = self._unique_variant_values(raw)
@@ -6353,6 +6821,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "variant_translations": variant_values,
             "product_dimensions": bool(needs_dimensions),
         }
+        dimension_policy = (
+            {
+                field: template_axis_policy(dimension_template, field)
+                for field in AXIS_FIELDS
+            }
+            if dimension_template
+            else {}
+        )
         dimension_contract = (
             "PRODUCT DIMENSION ESTIMATION CONTRACT:\n"
             "Because product_dimensions is requested, return all four positive numeric fields: "
@@ -6363,7 +6839,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "When the source provides no weight or size evidence at all, estimate within the typical "
             "range for the product category and avoid implausible extremes (for example an ordinary "
             "smartphone should never be estimated below 50 g or a garment above several kilograms). "
-            "Do not use dimension estimates in the title or description.\n"
+            "Do not use dimension estimates in the title or description. The expected ranges below "
+            "are soft category guidance; the hard range is mandatory for estimated values. Source "
+            "measurements listed as known dimensions remain authoritative even outside the range.\n"
+            f"Dimension template policy: {json.dumps(dimension_policy, ensure_ascii=False, sort_keys=True)}\n"
             if needs_dimensions
             else ""
         )
@@ -6418,7 +6897,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 raise ValueError("Doubao text variant translations are incomplete")
 
             dimensions = self._combined_dimensions(
-                result.product_dimensions, known
+                result.product_dimensions, known, dimension_template
             )
             if needs_dimensions and any(
                 self._number(dimensions.get(key)) is None
@@ -7586,12 +8065,21 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         )
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
-    def _load_ai_stage_cache(self, stage: str, cache_key: str) -> Any:
+    def _load_ai_stage_cache(
+        self,
+        stage: str,
+        cache_key: str,
+        *,
+        workspace_id: str = "local",
+    ) -> Any:
         """读取阶段级 AI 缓存；命中返回输出对象，否则 None。缓存异常不影响主流程。"""
         if not cache_key:
             return None
         try:
-            cached = self.repository.get_ai_stage_cache(cache_key, workspace_id="local")
+            cached = self.repository.get_ai_stage_cache(
+                cache_key,
+                workspace_id=workspace_id,
+            )
         except Exception:
             return None
         return cached.get("output") if cached else None
@@ -7604,6 +8092,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         output_data: Any,
         prompt: str = "",
         input_data: Any = None,
+        workspace_id: str = "local",
     ) -> None:
         if not cache_key:
             return
@@ -7614,7 +8103,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             ).hexdigest()
             self.repository.save_ai_stage_cache(
                 cache_key,
-                workspace_id="local",
+                workspace_id=workspace_id,
                 stage=stage,
                 model_signature="",
                 prompt_hash=prompt_hash,
@@ -7942,29 +8431,108 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         cls,
         value: Any,
         known: dict[str, Any] | None = None,
+        dimension_template: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Validate combined dimension output while preserving source evidence."""
+        """Resolve shipping measurements without allowing estimates to replace evidence.
+
+        Learned P10/P90 values are soft expected ranges. Only conservative human
+        prior min/max values are hard-clamped; this avoids clipping legitimate
+        tails simply because they fall outside a percentile band.
+        """
 
         raw = dict(value) if isinstance(value, dict) else {}
+        previous_raw_estimate = (
+            dict(raw.get("raw_estimate")) if isinstance(raw.get("raw_estimate"), dict) else {}
+        )
+        previous_resolution_method = (
+            dict(raw.get("resolution_method"))
+            if isinstance(raw.get("resolution_method"), dict)
+            else {}
+        )
         result: dict[str, Any] = {}
-        for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
-            number = cls._number(raw.get(key))
+        raw_estimate: dict[str, float] = {}
+        provenance: dict[str, str] = {}
+        confidence: dict[str, str] = {}
+        resolution_method: dict[str, str] = {}
+        clamped: list[str] = []
+        for key in AXIS_FIELDS:
+            previous_method = str(previous_resolution_method.get(key) or "")
+            if previous_method in {"known_default", "stat_p50_default"}:
+                number = None
+            else:
+                number = cls._number(previous_raw_estimate.get(key, raw.get(key)))
             if number is not None and number > 0:
-                result[key] = float(number)
-        for key in ("length_cm", "width_cm", "height_cm", "weight_g"):
+                resolved = float(number)
+                raw_estimate[key] = resolved
+                policy = template_axis_policy(dimension_template, key) if dimension_template else {}
+                hard_min = cls._number(policy.get("hard_min"))
+                hard_max = cls._number(policy.get("hard_max"))
+                if hard_min is not None and resolved < hard_min:
+                    resolved = float(hard_min)
+                    clamped.append(key)
+                if hard_max is not None and resolved > hard_max:
+                    resolved = float(hard_max)
+                    clamped.append(key)
+                result[key] = resolved
+                provenance[key] = "package_estimate"
+                expected_min = cls._number(policy.get("expected_min"))
+                expected_max = cls._number(policy.get("expected_max"))
+                outside_expected = (
+                    (expected_min is not None and resolved < expected_min)
+                    or (expected_max is not None and resolved > expected_max)
+                )
+                confidence[key] = "low" if key in clamped or outside_expected else "medium"
+                resolution_method[key] = "ai_clamped" if key in clamped else "ai"
+        for key in AXIS_FIELDS:
             source_value = cls._number((known or {}).get(key))
             if source_value is not None and source_value > 0:
                 result[key] = float(source_value)
+                provenance[key] = "source_confirmed"
+                confidence[key] = "high"
+                resolution_method[key] = "source"
+                clamped = [field for field in clamped if field != key]
+        if dimension_template:
+            for key in AXIS_FIELDS:
+                if key in result:
+                    continue
+                default = cls._number(template_axis_policy(dimension_template, key).get("default"))
+                if default is not None and default > 0:
+                    result[key] = float(default)
+                    provenance[key] = "package_estimate"
+                    confidence[key] = "low"
+                    resolution_method[key] = (
+                        "stat_p50_default"
+                        if template_axis_policy(dimension_template, key).get("uses_statistics")
+                        else "known_default"
+                    )
         if not result:
             return {}
+        confidence_order = {"low": 0, "medium": 1, "high": 2}
+        overall_confidence = min(
+            confidence.values(), key=lambda item: confidence_order.get(item, 0)
+        )
+        all_source = bool(provenance) and all(value == "source_confirmed" for value in provenance.values())
         result.update(
             {
-                "confidence": cls._text(raw.get("confidence")) or (
-                    "high" if known and all((known or {}).get(key) for key in result) else "medium"
+                "confidence": overall_confidence,
+                "field_confidence": confidence,
+                "field_provenance": provenance,
+                "resolution_method": resolution_method,
+                "raw_estimate": raw_estimate,
+                "clamped_fields": sorted(set(clamped)),
+                "package_profile": cls._text(raw.get("package_profile")) or (
+                    str(dimension_template.get("package_profile") or "") if dimension_template else ""
                 ),
-                "package_profile": cls._text(raw.get("package_profile")),
                 "reason": cls._text(raw.get("reason")),
-                "source": "combined_ai_with_source_evidence" if known else "combined_ai_estimated",
+                "source": (
+                    "source_evidence"
+                    if all_source
+                    else ("dimension_template_resolved" if dimension_template else "combined_ai_estimated")
+                ),
+                "template_key": (
+                    str(dimension_template.get("category_key") or "") if dimension_template else ""
+                ),
+                "template_version": template_signature(dimension_template),
             }
         )
         return result
@@ -7975,7 +8543,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         parts: list[str] = []
         if title:
             parts.append(f"title: {title}")
-        category = raw.get("category") or raw.get("source_category_path")
+        category = raw.get("category_path") or raw.get("source_category_path") or raw.get("category")
         if category:
             parts.append(f"category: {category}")
         evidence = cls._canonical_prompt_evidence(raw)
@@ -8086,29 +8654,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         image_urls = [image_url] if isinstance(image_url, str) else list(image_url)
         image_urls = [str(value or "").strip() for value in image_urls if str(value or "").strip()][:6]
         normalized_title = " ".join(str(source_title or "").split()).strip()[:1000]
-        cache_payload = json.dumps(
-            {
-                "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
-                "image_urls": image_urls,
-                "source_title": normalized_title,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
-        cache = getattr(self, "_doubao_subject_cache", None)
-        lock = getattr(self, "_doubao_subject_cache_lock", None)
-        if cache is None or lock is None:
-            cache = {}
-            lock = threading.Lock()
-            self._doubao_subject_cache = cache
-            self._doubao_subject_cache_lock = lock
-        with lock:
-            cached = cache.get(cache_key)
-        if cached is not None:
-            self._attempt_state().doubao_vision = 0
-            return cached
         data_urls = [
             data_url
             for value in image_urls
@@ -8120,13 +8665,71 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 error_kind="transient",
                 retryable=True,
             )
+        # Persistent identity caching is based on the bytes actually sent to
+        # Doubao, not just on mutable CDN URLs. A changed source image therefore
+        # invalidates the cache even when its URL remains unchanged.
+        cache_input = {
+            "prompt_version": DOUBAO_VISION_PROMPT_VERSION,
+            "model": DOUBAO_VISION_MODEL_ID,
+            "source_title": normalized_title,
+            "image_hashes": [
+                hashlib.sha256(value.encode("utf-8")).hexdigest()
+                for value in data_urls
+            ],
+        }
+        cache_key = self._ai_stage_cache_key(
+            "vision_identity",
+            input_data=cache_input,
+        )
+        cache = getattr(self, "_doubao_subject_cache", None)
+        lock = getattr(self, "_doubao_subject_cache_lock", None)
+        if cache is None or lock is None:
+            cache = {}
+            lock = threading.Lock()
+            self._doubao_subject_cache = cache
+            self._doubao_subject_cache_lock = lock
+        with lock:
+            cached = cache.get(cache_key)
+        attempt_state = self._attempt_state()
+        if cached is None:
+            workspace_id = str(
+                getattr(attempt_state, "workspace_id", "local") or "local"
+            )
+            persisted = self._load_ai_stage_cache(
+                "vision_identity",
+                cache_key,
+                workspace_id=workspace_id,
+            )
+            if isinstance(persisted, dict):
+                try:
+                    cached = subject_analysis_from_dict(persisted)
+                except DoubaoVisionError:
+                    cached = None
+        if cached is not None:
+            attempt_state.doubao_vision = 0
+            attempt_state.doubao_vision_cache_hit = True
+            with lock:
+                cache[cache_key] = cached
+            return cached
         client = self._doubao_vision_client()
         try:
             analysis = client.recognize_subject(data_urls, normalized_title)
         finally:
-            self._attempt_state().doubao_vision = client.last_attempt_count
+            attempt_state.doubao_vision = client.last_attempt_count
+        attempt_state.doubao_vision_cache_hit = False
         with lock:
             cache[cache_key] = analysis
+            while len(cache) > 128:
+                cache.pop(next(iter(cache)))
+        self._save_ai_stage_cache(
+            "vision_identity",
+            cache_key,
+            output_data=analysis.as_dict(),
+            input_data=cache_input,
+            workspace_id=str(
+                getattr(attempt_state, "workspace_id", "local") or "local"
+            ),
+        )
         return analysis
 
     def _media_processor(self) -> Any:

@@ -111,7 +111,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       ipCheck: true,
       maxParallelDrafts: 8,
       imageTemplate: 'A',
-      autoRepull: true,
+      autoRepull: false,
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
@@ -164,6 +164,22 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   const taskActive = batchProcessing || taskPaused;
   const batchTotal = batch?.total_count || 0;
   const batchProcessed = batch?.processed_count ?? 0;
+  // 进行中条数与最长已持续时长：从轮询返回的 items 里 status=running 的条目
+  // 提取「已持续 N 秒」心跳文本，让操作员在生图/文本长耗时期间看到具体走向。
+  const runningCount = batch
+    ? batch.items.filter((item) => processingStatuses.includes(item.status)).length
+    : 0;
+  const maxOngoingSeconds = useMemo(() => {
+    if (!batch) return 0;
+    let max = 0;
+    for (const item of batch.items) {
+      if (item.status !== 'running') continue;
+      // 心跳文本形如「…中 · 心跳正常 · 已持续 N 秒」
+      const match = item.reason.match(/已持续\s+(\d+)\s+秒/);
+      if (match) max = Math.max(max, Number(match[1]));
+    }
+    return max;
+  }, [batch]);
   // 只要任务到达终态（含整单失败/取消/完成待复核），进度都应计算为 100%，
   // 否则前端会永远被 Math.min(99,…) 卡在 99%。自动补跑轮仍在运行时除外。
   const taskDone = batch
@@ -257,7 +273,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       ip_check: options.ipCheck,
       max_parallel_drafts: options.maxParallelDrafts,
       image_template: options.imageTemplate || 'A',
-      // 用户选择是否对技术可重试的失败项自动补跑（默认开启）
+      // 用户选择是否对技术可重试的失败项自动补跑（默认关闭）
       auto_repull: options.autoRepull !== false,
       // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
       image_generation_count: 4,
@@ -310,6 +326,29 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     try {
       const data = await ppRequest(ctx, `${API_BASE}/tasks/${batch.task_id}/resume`, { body: {} });
       notify((data as { message?: string }).message || '任务已继续处理');
+    } catch (err) { fail(err); }
+    finally { setControlBusy(false); }
+  };
+
+  // 暂停后只保留已成功商品进入预检；确认后剩余商品永久取消，任务不可恢复。
+  const finalizeSuccessfulItems = async () => {
+    if (!batch || !taskPaused || controlBusy || batch.success_count <= 0) return;
+    const remaining = batch.items.filter(
+      (item) => item.status === 'pending' || item.status === 'running'
+    ).length;
+    if (!window.confirm(
+      `将保留当前 ${batch.success_count} 个成功商品进入预检，并永久取消剩余 ${remaining} 个未完成商品。取消后不能继续处理，确认导出？`
+    )) return;
+    setControlBusy(true);
+    try {
+      const data = await ppRequest<TaskOutputsResponse>(
+        ctx,
+        `${API_BASE}/tasks/${batch.task_id}/finalize-successes`,
+        { body: {} },
+      );
+      setBatch(data);
+      notify(data.message || `已保留 ${data.success_count} 个成功商品进入预检`);
+      onOpenPrecheck?.(batch.task_id);
     } catch (err) { fail(err); }
     finally { setControlBusy(false); }
   };
@@ -423,7 +462,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
               <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
               <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
               {!!initialPremiumDraftIds?.length && (
-                <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条：一次 4K 智能生图，拆为 4 张高清图</span>
+                <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条</span>
               )}
             </div>
           </section>}
@@ -463,6 +502,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                           : <>已处理 <b>{batchProcessed}</b> / {batchTotal} 条</>}
                       </span>
                       <span className="verify-elapsed">已用时 {formatDuration(batch.elapsed_seconds ?? batch.task.elapsed_seconds)}</span>
+                      {batchProcessing && runningCount > 0 && (
+                        <span className="verify-live-detail">
+                          进行中 <b>{runningCount}</b> 条
+                          {maxOngoingSeconds > 0 && <> · 最长已持续 {formatDuration(maxOngoingSeconds)}</>}
+                        </span>
+                      )}
                     </div>
                   </div>
                 )}
@@ -508,12 +553,27 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       title="取消任务：立即停止后续 AI 调用，未处理链接标记失败并释放积分（不可恢复）"
                     >取消任务</button>
                   )}
-                  <button
-                    className="primary"
-                    disabled={taskActive}
-                    onClick={() => onOpenPrecheck?.(batch.task_id)}
-                    title={taskActive ? '处理完成后可进入预检' : '打开预检页：核对标题/图片/字段，修改后导出最终版表格'}
-                  >预检并导出最终版</button>
+                  {taskPaused ? (
+                    <button
+                      className="primary"
+                      disabled={controlBusy || loading || batch.success_count <= 0}
+                      onClick={() => void finalizeSuccessfulItems()}
+                      title={batch.success_count > 0
+                        ? '永久取消剩余未完成商品，只预检并导出当前成功商品'
+                        : '当前还没有成功商品可导出'}
+                    >预检并导出成功商品（{batch.success_count}）</button>
+                  ) : (
+                    <button
+                      className="primary"
+                      disabled={taskActive || batch.success_count <= 0}
+                      onClick={() => onOpenPrecheck?.(batch.task_id)}
+                      title={taskActive
+                        ? '处理完成后可进入预检'
+                        : batch.success_count <= 0
+                          ? '当前没有成功商品可预检导出'
+                          : '打开预检页：核对标题/图片/字段，修改后导出最终版表格'}
+                    >{taskCancelled ? '预检并导出成功商品' : '预检并导出最终版'}</button>
+                  )}
                   {batch.outputs.product_video_manifest && <button onClick={() => void downloadOutput('video_manifest', `product_video_manifest_task_${batch.task_id}.csv`)}>下载视频清单</button>}
                 </div>
               </>

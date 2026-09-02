@@ -97,6 +97,7 @@ def test_preview_default_matches_generated_results(tmp_path: Path) -> None:
     assert preview["item_count"] == 1
     item = preview["items"][0]
     assert item["title"] == "Original AI Generated Title"
+    assert item["source_url"] == "https://src.example.com/product"
     assert item["overrides"] == {}
     assert item["carousel_images"][0] == "https://cos.example.com/c1.jpg"
     assert item["main_image"] == "https://cos.example.com/c1.jpg"
@@ -349,7 +350,7 @@ def test_export_final_workbook_applies_overrides(tmp_path: Path) -> None:
     assert row["*轮播图"] == "https://user.example.com/c1.jpg\nhttps://user.example.com/c2.jpg"
     assert row["*申报价格\n(店铺币种)"] == 999
     assert row["*长（cm）"] == 30
-    # 人工确认的实际重量必须原样导出，不能被体积重兜底静默改写。
+    # 当前重量保持权威；整百值原样导出。
     assert row["*重量（g）"] == 500
 
 
@@ -367,6 +368,21 @@ def test_dxm_single_export_row_defaults_without_overrides() -> None:
             "https://cos.example.com/summary.jpg",
         ]
     )
-    # 系统生成值仍应用体积重兜底：20×15×10÷6=500，需严格大于 500。
-    assert values[14] == 501
+    # 系统生成的当前重量为 300g；尺寸不再参与重量计算。
+    assert values[14] == 300
     assert values[19] == "https://cos.example.com/c1.jpg"
+
+
+def test_dxm_export_uses_current_weight_and_only_rounds_up_to_100g() -> None:
+    row = _base_result()
+    row["product_dimensions"] = {
+        "length_cm": 100,
+        "width_cm": 100,
+        "height_cm": 100,
+        "weight_g": 301,
+    }
+
+    values = _dxm_single_export_row(row, None)
+
+    # 即使尺寸对应的抛重很高，也只把当前 301g 向上取整为 400g。
+    assert values[14] == 400

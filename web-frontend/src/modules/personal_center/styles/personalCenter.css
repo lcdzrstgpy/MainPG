@@ -488,6 +488,21 @@
 .usage-state, .usage-empty { padding: 28px; color: #718096; text-align: center; }
 .usage-state.is-error { color: #be123c; }
 
+/* 消费统计卡：按日期/筛选范围汇总总消费、冻结、释放 */
+.usage-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
+.usage-stat { padding: 14px 16px; border: 1px solid #e5edf5; border-radius: 14px; background: #fbfdff; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.usage-stat.is-total { border-color: #bcd6ec; background: #eef8ff; }
+.usage-stat span { color: #64748b; font-size: 12px; font-weight: 700; }
+.usage-stat b { color: #0f172a; font-size: 22px; line-height: 1.2; letter-spacing: -0.02em; }
+.usage-stat small { color: #8190a5; font-size: 11px; }
+
+/* 消费流水分页 */
+.usage-pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 16px; }
+.usage-pager button { min-height: 34px; padding: 0 14px; border: 1px solid #d8e3ee; border-radius: 10px; background: #fff; color: #334155; font-size: 13px; font-weight: 700; cursor: pointer; }
+.usage-pager button:disabled { opacity: 0.5; cursor: not-allowed; color: #94a3b8; }
+.usage-pager button:not(:disabled):hover { border-color: #93c5fd; color: #2563eb; background: #eff6ff; }
+.usage-pager span { color: #64748b; font-size: 13px; }
+
 @media (max-width: 900px) {
   .personal-content-layout { grid-template-columns: 1fr; }
   .personal-subnav { position: static; grid-template-columns: 1fr 1fr; }

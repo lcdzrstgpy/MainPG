@@ -79,11 +79,40 @@ const pricingFeatures: Array<{ key: string; label: string; note: string }> = [
   { key: "product_processing.batch", label: "批量链接处理", note: "整批商品处理任务" },
 ];
 
-function usageServiceLabel(featureKey: string) {
-  if (featureKey === "pod_customization.batch") return "POD 定制";
-  if (featureKey === "product_processing.image_grid_2k") return "智能生图";
-  if (featureKey === "product_processing.batch") return "批量链接处理";
-  return "商品文本";
+/** 消费流水的「服务板块」归类：优先用 feature_key，其次回退解析 usage_id/source_ref。
+ *  组合套装的扣费通过 free_batch_points(idempotency_key=combo-kit:xxx) 写入，
+ *  usage_id 形如 batch:combo-kit:image:...，但 feature_key 可能被归为 product_processing.batch，
+ *  故需按 usage_id 前缀识别，才能把套餐组合/生图/文本等区分到对应板块，便于后续管理。 */
+export type UsageServiceGroup = "combo" | "pod" | "batch" | "image" | "text";
+
+export function usageServiceGroup(entry: BillingUsageEntry): UsageServiceGroup {
+  const fk = String(entry.feature_key || "");
+  if (fk === "pod_customization.batch") return "pod";
+  if (fk === "product_processing.image_grid_2k") return "image";
+  if (fk === "product_processing.text") return "text";
+  const ref = `${entry.usage_id || ""} ${entry.source_ref || ""}`;
+  if (ref.includes("combo-kit:image") || ref.includes("combo-kit:fusion")) return "combo";
+  if (ref.includes("combo-kit:")) return "combo";
+  return "batch";
+}
+
+export const USAGE_SERVICE_LABEL: Record<UsageServiceGroup, string> = {
+  combo: "套装组合",
+  pod: "POD 定制",
+  batch: "AI 批量处理",
+  image: "智能生图",
+  text: "商品文本",
+};
+
+export function usageServiceLabel(entry: BillingUsageEntry): string {
+  return USAGE_SERVICE_LABEL[usageServiceGroup(entry)];
+}
+
+function usageServiceSubLabel(entry: BillingUsageEntry): string | null {
+  const ref = `${entry.usage_id || ""} ${entry.source_ref || ""}`;
+  if (ref.includes("combo-kit:image") || ref.includes("combo-kit:fusion")) return "生图";
+  if (ref.includes("combo-kit:text") || ref.includes("combo-kit:subject")) return "文本/主体";
+  return null;
 }
 
 // 用量明细的调用信息：内部模型名（doubao-* 等供应商标识）不对外展示。
@@ -130,8 +159,8 @@ function usageCacheKey(accountId?: string) {
   return `${USAGE_CACHE_PREFIX}.${accountId || "anonymous"}`;
 }
 
-function buildUsageFilterKey(feature: string, status: string, from: string, to: string) {
-  return `${feature}|${status}|${from}|${to}`;
+function buildUsageFilterKey(service: string, status: string, from: string, to: string) {
+  return `${service}|${status}|${from}|${to}`;
 }
 
 function readUsageCache(key: string): UsageCachePayload | null {
@@ -209,14 +238,18 @@ export function PersonalCenterPage() {
   const [passwordError, setPasswordError] = useState("");
   // 消费流水刷新保护：30 秒内（含页面刷新，随缓存持久化）相同筛选条件不重复请求；筛选变更因缓存键变化自动重新拉取。
   const USAGE_REFRESH_COOLDOWN_MS = 30_000;
-  // 消费流水筛选条件（服务/状态/日期）。
-  const [filterFeature, setFilterFeature] = useState("");
+  // 消费流水筛选条件（服务板块/状态/日期）。
+  const [filterService, setFilterService] = useState<"" | UsageServiceGroup>("");
   const [filterStatus, setFilterStatus] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
+  // 每页条数与当前页码：一次拉取上限（服务端 limit≤100），页码切分在客户端完成。
+  const USAGE_PAGE_SIZE = 10;
+  const USAGE_LOAD_LIMIT = 100;
+  const [usagePage, setUsagePage] = useState(1);
 
   const loadUsage = useCallback((force = false) => {
-    const filterKey = buildUsageFilterKey(filterFeature, filterStatus, filterDateFrom, filterDateTo);
+    const filterKey = buildUsageFilterKey(filterService, filterStatus, filterDateFrom, filterDateTo);
     const cached = readUsageCache(usageCacheKeyValue);
     // 冷却窗口内同条件已有缓存：直接复用，不再请求服务器（页面刷新后依然有效）。
     if (!force && cached && cached.filterKey === filterKey && Date.now() - cached.fetchedAt < USAGE_REFRESH_COOLDOWN_MS) {
@@ -226,28 +259,67 @@ export function PersonalCenterPage() {
     }
     setUsageLoading(true);
     setUsageError("");
-    loadBillingUsageHistory({
-      featureKey: filterFeature || undefined,
-      usageStatus: filterStatus || undefined,
-      dateFrom: filterDateFrom || undefined,
-      dateTo: filterDateTo || undefined,
-    })
+    loadBillingUsageHistory({ limit: USAGE_LOAD_LIMIT })
       .then((payload) => {
         setUsageEntries(payload.items);
+        setUsagePage(1);
         writeUsageCache(usageCacheKeyValue, { items: payload.items, filterKey, fetchedAt: Date.now() });
       })
       .catch((exc) => setUsageError(exc instanceof Error ? exc.message : "读取消费流水失败"))
       .finally(() => setUsageLoading(false));
-  }, [filterFeature, filterStatus, filterDateFrom, filterDateTo, usageCacheKeyValue]);
+  }, [filterService, filterStatus, filterDateFrom, filterDateTo, usageCacheKeyValue]);
 
-  const hasUsageFilter = Boolean(filterFeature || filterStatus || filterDateFrom || filterDateTo);
+  const hasUsageFilter = Boolean(filterService || filterStatus || filterDateFrom || filterDateTo);
   const resetUsageFilters = () => {
-    setFilterFeature("");
+    setFilterService("");
     setFilterStatus("");
     setFilterDateFrom("");
     setFilterDateTo("");
+    setUsagePage(1);
     // 筛选变更后由下方 effect 依据新的筛选键自动重新拉取。
   };
+
+  // 本地筛选（服务板块/状态/日期）：服务端按 feature_key 过滤无法区分组合套装的多个分类，
+  // 且某些环境只返回 cursor/limit，这里统一在客户端过滤，保证统计与分页正确。
+  const filteredUsageEntries = useMemo(() => {
+    const service = filterService;
+    const statusSet = filterStatus.split(",").map((s) => s.trim()).filter(Boolean);
+    const from = filterDateFrom;
+    const to = filterDateTo;
+    const dateOf = (iso: string) => (iso || "").slice(0, 10);
+    return usageEntries.filter((entry) => {
+      if (service && usageServiceGroup(entry) !== service) return false;
+      if (statusSet.length && !statusSet.includes(entry.status)) return false;
+      const day = dateOf(entry.created_at);
+      if (from && day < from) return false;
+      if (to && day > to) return false;
+      return true;
+    });
+  }, [usageEntries, filterService, filterStatus, filterDateFrom, filterDateTo]);
+
+  const usagePageCount = Math.max(1, Math.ceil(filteredUsageEntries.length / USAGE_PAGE_SIZE));
+  const safeUsagePage = Math.min(usagePage, usagePageCount);
+  const pagedUsageEntries = useMemo(
+    () => filteredUsageEntries.slice((safeUsagePage - 1) * USAGE_PAGE_SIZE, safeUsagePage * USAGE_PAGE_SIZE),
+    [filteredUsageEntries, safeUsagePage],
+  );
+
+  // 按日期统计总消费积分：统计当前筛选范围内「已结算」记录的实际扣费总和。
+  const usageStats = useMemo(() => {
+    let totalCharged = 0;
+    let totalReserved = 0;
+    let totalRefunded = 0;
+    let settledCount = 0;
+    for (const entry of filteredUsageEntries) {
+      totalReserved += Number(entry.reserved_points || 0);
+      if (entry.status === "succeeded") {
+        totalCharged += Number(entry.charged_points || 0);
+        totalRefunded += Number(entry.refunded_points || 0);
+        settledCount += 1;
+      }
+    }
+    return { totalCharged, totalReserved, totalRefunded, settledCount, count: filteredUsageEntries.length };
+  }, [filteredUsageEntries]);
 
   const customAmountCents = useMemo(() => {
     if (!/^\d+$/.test(customAmount)) return 0;
@@ -354,7 +426,7 @@ export function PersonalCenterPage() {
             writePendingOrderId("");
             const promotionBonus = promotionBonusPoints(order);
             setPaymentNotice(
-              `充值成功，${totalPoints(order).toLocaleString()} 积分已到账。${promotionBonus ? `含活动赠送 ${promotionBonus.toLocaleString()} 积分。` : ""}`,
+              `充值成功，${totalPoints(order).toLocaleString()} 积分已到账。${promotionBonus ? `含赠送 ${promotionBonus.toLocaleString()} 积分。` : ""}`,
             );
           }
         })
@@ -641,11 +713,9 @@ export function PersonalCenterPage() {
               支付宝
             </button>
           </div>
-          {summary?.topup_promotion?.active && (
-            <p className="topup-promotion-banner">
-              {summary.topup_promotion.name || "充值积分翻倍活动"}：充值任意金额，基础积分翻倍到账。
-            </p>
-          )}
+          <p className="topup-promotion-banner">
+            {summary?.topup_promotion?.name || "固定套餐常驻赠送 25%"}：仅 49 / 99 / 499 / 4999 元固定套餐享赠送，自定义金额按原价到账。
+          </p>
           <div className="topup-products">
             {summary?.topup_products.map((item) => (
               <button
@@ -658,7 +728,7 @@ export function PersonalCenterPage() {
                 <span>{money(item.amount_cents)}</span>
                 <small>
                   基础 {basePoints(item).toLocaleString()}
-                  {promotionBonusPoints(item) ? ` + 活动赠送 ${promotionBonusPoints(item).toLocaleString()}` : ""}
+                  {promotionBonusPoints(item) ? ` + 赠送 25% ${promotionBonusPoints(item).toLocaleString()}` : ""}
                   {promotionBonusPoints(item) ? ` = 合计 ${totalPoints(item).toLocaleString()}` : ""}
                 </small>
               </button>
@@ -695,7 +765,7 @@ export function PersonalCenterPage() {
                     : customQuoteError
                       ? customQuoteError
                       : customQuote
-                        ? `预计基础 ${basePoints(customQuote).toLocaleString()} + 活动赠送 ${promotionBonusPoints(customQuote).toLocaleString()} = 合计 ${totalPoints(customQuote).toLocaleString()} 积分`
+                        ? `预计到账 ${totalPoints(customQuote).toLocaleString()} 积分（自定义金额不参与固定套餐赠送）`
                         : "正在获取服务器报价..."}
             </small>
           </label>
@@ -707,7 +777,7 @@ export function PersonalCenterPage() {
               <strong>订单已创建：{createdOrder.order.out_trade_no}</strong>
               <span>
                 本订单到账：基础 {basePoints(createdOrder.order).toLocaleString()}
-                {promotionBonusPoints(createdOrder.order) ? ` + 活动赠送 ${promotionBonusPoints(createdOrder.order).toLocaleString()}` : ""}
+                {promotionBonusPoints(createdOrder.order) ? ` + 赠送 ${promotionBonusPoints(createdOrder.order).toLocaleString()}` : ""}
                 {` = 合计 ${totalPoints(createdOrder.order).toLocaleString()} 积分`}
               </span>
               <span>{createdOrder.payment.message}</span>
@@ -732,7 +802,7 @@ export function PersonalCenterPage() {
                 <div>
                   <b>{money(order.amount_cents)}</b>
                   <span>+{totalPoints(order).toLocaleString()} 积分</span>
-                  {promotionBonusPoints(order) > 0 && <small>含活动赠送 {promotionBonusPoints(order).toLocaleString()} 积分</small>}
+                  {promotionBonusPoints(order) > 0 && <small>含赠送 {promotionBonusPoints(order).toLocaleString()} 积分</small>}
                 </div>
               </div>
             )) : <p className="empty-orders">暂无充值订单</p>}
@@ -821,13 +891,15 @@ export function PersonalCenterPage() {
               <label>
                 <span>服务</span>
                 <select
-                  value={filterFeature}
-                  onChange={(event) => setFilterFeature(event.target.value)}
+                  value={filterService}
+                  onChange={(event) => setFilterService(event.target.value as "" | UsageServiceGroup)}
                 >
                   <option value="">全部服务</option>
-                  <option value="product_processing.image_grid_2k">智能生图</option>
-                  <option value="product_processing.text">商品文本</option>
-                  <option value="product_processing.batch">批量链接处理</option>
+                  <option value="combo">套装组合</option>
+                  <option value="pod">POD 定制</option>
+                  <option value="batch">AI 批量处理</option>
+                  <option value="image">智能生图</option>
+                  <option value="text">商品文本</option>
                 </select>
               </label>
               <label>
@@ -851,19 +923,48 @@ export function PersonalCenterPage() {
             {usageLoading && <p className="usage-state">正在读取服务器消费账本…</p>}
             {usageError && <p className="usage-state is-error">{usageError}</p>}
             {!usageLoading && !usageError && (
+              <div className="usage-stats">
+                <div className="usage-stat is-total">
+                  <span>{hasUsageFilter ? "统计范围内总消费" : "累计总消费积分"}</span>
+                  <b>{usageStats.totalCharged.toLocaleString()}</b>
+                  <small>{usageStats.settledCount} 条已结算记录</small>
+                </div>
+                <div className="usage-stat">
+                  <span>累计冻结</span>
+                  <b>{usageStats.totalReserved.toLocaleString()}</b>
+                </div>
+                <div className="usage-stat">
+                  <span>累计释放</span>
+                  <b>{usageStats.totalRefunded.toLocaleString()}</b>
+                </div>
+                <div className="usage-stat">
+                  <span>{hasUsageFilter ? "匹配记录" : "已加载记录"}</span>
+                  <b>{usageStats.count.toLocaleString()}</b>
+                  {!hasUsageFilter && <small>统计基于已加载（上限 {USAGE_LOAD_LIMIT} 条）</small>}
+                </div>
+              </div>
+            )}
+            {!usageLoading && !usageError && (
               <div className="usage-table-wrap">
                 <table className="usage-table">
                   <thead><tr><th>时间</th><th>服务</th><th>状态</th><th>冻结</th><th>实际扣费</th><th>释放</th><th>规则</th><th>调用信息</th></tr></thead>
-                  <tbody>{usageEntries.length ? usageEntries.map((entry) => (
+                  <tbody>{pagedUsageEntries.length ? pagedUsageEntries.map((entry) => (
                     <tr key={entry.usage_id}>
                       <td><b>{formatUsageTime(entry.created_at)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
-                      <td>{usageServiceLabel(entry.feature_key)}{usageDetailText(entry) && <small>{usageDetailText(entry)}</small>}</td>
+                      <td>{usageServiceLabel(entry)}{usageServiceSubLabel(entry) && <small>{usageServiceSubLabel(entry)}</small>}{usageDetailText(entry) && <small>{usageDetailText(entry)}</small>}</td>
                       <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" || entry.status === "frozen" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
                       <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
                       <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.task ? `任务 #${entry.task} · ` : ""}{entry.usage_id.slice(0, 14)}…</small></td>
                     </tr>
                   )) : <tr><td colSpan={8} className="usage-empty">{hasUsageFilter ? "没有匹配的消费流水，试试调整筛选条件" : "暂无消费流水"}</td></tr>}</tbody>
                 </table>
+              </div>
+            )}
+            {!usageLoading && !usageError && usagePageCount > 1 && (
+              <div className="usage-pager">
+                <button type="button" disabled={safeUsagePage <= 1} onClick={() => setUsagePage(safeUsagePage - 1)}>上一页</button>
+                <span>第 {safeUsagePage} / {usagePageCount} 页 · 共 {filteredUsageEntries.length} 条</span>
+                <button type="button" disabled={safeUsagePage >= usagePageCount} onClick={() => setUsagePage(safeUsagePage + 1)}>下一页</button>
               </div>
             )}
           </article>

@@ -39,6 +39,7 @@ from .schemas import (
     DraftCreateRequest,
     DraftDeleteRequest,
     DraftProcessRequest,
+    DraftRestoreRequest,
     DraftUpdateRequest,
     PreviewFinalizeRequest,
     PreviewSaveRequest,
@@ -464,6 +465,15 @@ def create_product_processing_router(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
         return service.delete_drafts(None if body.delete_all else body.draft_ids, _workspace(workspace_id))
 
+    @router.post("/drafts/restore")
+    def restore_drafts(
+        body: DraftRestoreRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        if not body.draft_ids:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
+        return service.restore_drafts(body.draft_ids, _workspace(workspace_id))
+
     @router.post("/drafts/process")
     def process_drafts(
         request: Request,
@@ -798,6 +808,18 @@ def create_product_processing_router(
     ) -> dict[str, Any]:
         """取消任务：终态操作，未处理链接立即标记失败并释放（不再产生 AI 费用）。"""
         return _call(service.cancel_task, task_id, _workspace(workspace_id))
+
+    @router.post("/tasks/{task_id}/finalize-successes")
+    def finalize_paused_successes(
+        task_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """永久取消暂停任务的剩余商品，并只保留成功商品进入预检。"""
+        return _call(
+            service.finalize_paused_successes,
+            task_id,
+            _workspace(workspace_id),
+        )
 
     @router.post("/tasks/{task_id}/resume")
     def resume_task(
@@ -1219,6 +1241,7 @@ def _legacy_billing_pricing() -> dict[str, Any]:
         "features": {
             "product_processing.text": {"reserve_points": 5},
             "product_processing.image_grid_2k": {"reserve_points": 40},
+            "product_processing.vision": {"reserve_points": 15},
         },
     }
 
@@ -1260,7 +1283,17 @@ def _billing_points_per_item(payload: dict[str, Any], pricing: dict[str, Any]) -
         image_points = float(features["product_processing.image_grid_2k"]["reserve_points"])
     except (KeyError, TypeError, ValueError):
         _raise_invalid_remote_wallet_summary()
-    return (text_points if text_enabled else 0.0) + (image_points if image_enabled else 0.0)
+    try:
+        vision_points = float(features["product_processing.vision"]["reserve_points"])
+    except (KeyError, TypeError, ValueError):
+        # 旧服务端未下发 vision 规则时保守按 0 处理，避免破坏旧版本预检。
+        vision_points = 0.0
+    total = (text_points if text_enabled else 0.0) + (image_points if image_enabled else 0.0)
+    # 主体识别（视觉）与文本/生图主链路伴生，业务上主图必填因此几乎总会触发；
+    # 预检按保守估计计入，实际逐项预留并按最终结果结算退款。
+    if text_enabled or image_enabled:
+        total += vision_points
+    return total
 
 
 def _billing_quantity(payload: dict[str, Any]) -> int:

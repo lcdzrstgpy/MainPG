@@ -195,40 +195,108 @@ def test_direct_mode_prefers_remote_reference_urls_over_local_cache_paths(tmp_pa
     assert output.provider == "image_gpt"
 
 
-def test_direct_mode_falls_back_to_local_paths_when_no_remote_url(tmp_path, monkeypatch) -> None:
-    """全部参考都是本地路径（无远端 URL）时仍按原逻辑加载本地文件，不报错。"""
-    local_file = tmp_path / "local-only.jpg"
-    local_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-bytes")
+def test_direct_wuyin_relays_local_only_reference_and_cleans_it_up(monkeypatch) -> None:
+    """本地缓存图必须通过临时 COS URL 传给无印，完成后立即清理。"""
 
-    captured: dict[str, object] = {}
+    class _SubmitResponse:
+        ok = True
+        status_code = 200
 
-    def fake_load(values, *, limit):
-        captured["values"] = list(values)
-        return [(b"reference", "source.png", "image/jpeg")]
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield b'{"code":200,"data":{"id":"task-1"}}'
 
-    def fake_request_edit(*_args, **_kwargs):
-        return b"generated-image", "image/png"
+        def close(self) -> None:
+            return
+
+    class _TemporaryStore:
+        def __init__(self) -> None:
+            self.published: list[tuple[bytes, str]] = []
+            self.deleted: list[object] = []
+
+        def publish(self, content: bytes, content_type: str):
+            self.published.append((content, content_type))
+            return SimpleNamespace(
+                key="ai-service/transient/reference.image",
+                url="https://bucket.cos.ap-guangzhou.myqcloud.com/reference.image?signature=short-lived",
+            )
+
+        def delete(self, reference) -> None:
+            self.deleted.append(reference)
 
     processor = ProductImageProcessor(lambda: {})
-    monkeypatch.setattr(processor, "_load_references", fake_load)
-    monkeypatch.setattr(processor, "_request_edit", fake_request_edit)
+    store = _TemporaryStore()
+    submitted: dict[str, object] = {}
 
-    processor._generate_with_limits(
-        stage="grid_image",
-        prompt="prompt",
-        reference_values=[str(local_file)],
-        providers=[
-            {
-                "base_url": "https://api.wuyinkeji.com",
-                "api_key": "secret",
-                "name": "image_gpt",
-                "model": "image_gpt",
-                "reference_model": "",
-            }
-        ],
-        config={},
+    def submit(*_args, **kwargs):
+        submitted.update(kwargs)
+        return _SubmitResponse()
+
+    monkeypatch.setattr(processor, "_config", lambda: {"cos": {
+        "bucket": "bucket",
+        "region": "ap-guangzhou",
+        "secret_id": "secret-id",
+        "secret_key": "secret-key",
+    }})
+    monkeypatch.setattr(media_module, "TemporaryCosStore", lambda _config: store)
+    monkeypatch.setattr(media_module._SESSION, "post", submit)
+    monkeypatch.setattr(
+        processor,
+        "_poll_wuyin_image_result",
+        lambda *_args, **_kwargs: "https://scapi.net/result.png",
     )
-    assert captured["values"] == [str(local_file)]
+    monkeypatch.setattr(
+        media_module,
+        "_download_provider_result_image",
+        lambda _url: (b"generated-image", "image/png"),
+    )
+
+    content, content_type = processor._request_wuyin_image(
+        {
+            "base_url": "https://api.wuyinkeji.com",
+            "api_key": "secret",
+            "image_size": "2K",
+        },
+        "prompt",
+        [(b"reference", "source.png", "image/jpeg")],
+        timeout_seconds=600,
+    )
+
+    assert (content, content_type) == (b"generated-image", "image/png")
+    assert store.published == [(b"reference", "image/jpeg")]
+    assert submitted["json"]["urls"] == [
+        "https://bucket.cos.ap-guangzhou.myqcloud.com/reference.image?signature=short-lived"
+    ]
+    assert [item.key for item in store.deleted] == ["ai-service/transient/reference.image"]
+
+
+def test_wuyin_poll_does_not_print_provider_response(monkeypatch, capsys) -> None:
+    """Provider task IDs and result URLs must not leak into production stdout."""
+
+    class _DetailResponse:
+        ok = True
+        status_code = 200
+
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield (
+                b'{"code":200,"data":{"status":"success",'
+                b'"url":"https://scapi.net/private-result.png"}}'
+            )
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(media_module._SESSION, "get", lambda *args, **kwargs: _DetailResponse())
+    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+    processor = ProductImageProcessor(lambda: {})
+
+    result = processor._poll_wuyin_image_result(
+        {"base_url": "https://api.wuyinkeji.com", "api_key": "secret"},
+        "sensitive-task-id",
+        timeout_seconds=30,
+    )
+
+    assert result == "https://scapi.net/private-result.png"
+    assert capsys.readouterr().out == ""
 
 
 def test_four_grid_prompt_forbids_all_typography_and_requires_validated_dividers() -> None:
@@ -1157,3 +1225,100 @@ def test_system_settings_cos_credentials_feed_internal_media_config(monkeypatch)
         "secret_id": "runtime-id",
         "secret_key": "runtime-key",
     }
+
+
+def _poll_response(payload: dict) -> SimpleNamespace:
+    """Build a fake requests response shaped like _SESSION.get(...)."""
+    body = json.dumps(payload).encode("utf-8")
+    return SimpleNamespace(
+        ok=True,
+        status_code=200,
+        content=body,
+        text=body.decode("utf-8"),
+        close=lambda: None,
+        iter_content=lambda chunk_size=65536: [body],
+        headers={},
+        url="",
+    )
+
+
+def test_wuyin_poll_status_3_is_processing_and_waits_for_image(monkeypatch) -> None:
+    """status=3（等待中）不是失败终态，应继续轮询直到拿到 status=1 的图片 URL。"""
+    processor = ProductImageProcessor(lambda: {})
+    # 第一次轮询返回 status=3 无图；第二次返回 status=1 带图。
+    calls: list[str] = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        if len(calls) == 1:
+            return _poll_response(
+                {"code": 200, "data": {"status": 3, "msg": "成功"}, "msg": "成功"}
+            )
+        return _poll_response(
+            {
+                "code": 200,
+                "data": {
+                    "status": 1,
+                    "image": "https://wxtechsz.oss.example.com/grid.png",
+                },
+            }
+        )
+
+    monkeypatch.setattr(media_module._SESSION, "get", fake_get)
+    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+
+    result_url = processor._poll_wuyin_image_result(
+        {"base_url": "https://api.wuyinkeji.com", "api_key": "secret"},
+        "task-1",
+        timeout_seconds=30,
+    )
+    assert result_url == "https://wxtechsz.oss.example.com/grid.png"
+    assert len(calls) == 2
+
+
+def test_wuyin_poll_status_negative_is_failure(monkeypatch) -> None:
+    """status<0（如 -1 处理失败）应抛错且状态可重试（transient）。"""
+    processor = ProductImageProcessor(lambda: {})
+
+    def fake_get(url, **kwargs):
+        return _poll_response({"code": 200, "data": {"status": -1, "msg": "处理失败"}})
+
+    monkeypatch.setattr(media_module._SESSION, "get", fake_get)
+    monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+
+    with pytest.raises(MediaProcessingError) as caught:
+        processor._poll_wuyin_image_result(
+            {"base_url": "https://api.wuyinkeji.com", "api_key": "secret"},
+            "task-1",
+            timeout_seconds=30,
+        )
+    assert "provider image task failed" in str(caught.value)
+    assert caught.value.status_class == "transient"
+
+
+def test_wuyin_poll_status_4_5_are_processing_not_failure(monkeypatch) -> None:
+    """status=4（处理中）、5（发布处理中）都属处理中，绝不误判为失败。"""
+    for numeric in ("4", "5"):
+        processor = ProductImageProcessor(lambda: {})
+        returned_url = "https://wxtechsz.oss.example.com/grid.png"
+
+        def fake_get(url, _n=numeric, _url=returned_url, **kwargs):
+            if _n == numeric:
+                return _poll_response({"code": 200, "data": {"status": numeric, "msg": "成功"}})
+            return _poll_response(
+                {"code": 200, "data": {"status": 1, "image": _url}}
+            )
+
+        monkeypatch.setattr(media_module._SESSION, "get", fake_get)
+        monkeypatch.setattr(media_module.time, "sleep", lambda *_args: None)
+
+        # 只返回一次 status=4/5 无图 → 最多轮询到 deadline 仍无图，应抛超时而非“失败”。
+        # 这里直接验证 status=4/5 不会被当作失败终态（不抛 provider image task failed）。
+        with pytest.raises(MediaProcessingError) as caught:
+            processor._poll_wuyin_image_result(
+                {"base_url": "https://api.wuyinkeji.com", "api_key": "secret"},
+                "task-1",
+                timeout_seconds=1,
+            )
+        assert "timed out" in str(caught.value)
+        assert caught.value.status_class == ""  # 超时不属于非重试失败

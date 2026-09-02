@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from .orm import Base
 from . import dimension_canvas_orm as _dimension_canvas_orm  # noqa: F401
+from . import dimension_template_orm as _dimension_template_orm  # noqa: F401
 from . import preview_image_orm as _preview_image_orm  # noqa: F401
 from . import media_asset_orm as _media_asset_orm  # noqa: F401
 

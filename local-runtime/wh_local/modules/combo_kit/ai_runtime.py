@@ -60,6 +60,7 @@ class ComboKitAiRuntime:
         reference_values: list[str],
         set_name: str,
         subject_summaries: list[str],
+        primary_subject: str = "",
         custom_prompt: str = "",
     ) -> dict[str, Any]:
         from .generation import _make_media_processor
@@ -69,7 +70,10 @@ class ComboKitAiRuntime:
         if not processor:
             raise ComboKitValidationError("融合主图处理器不可用")
         prompt = build_fusion_main_prompt(
-            set_name=set_name, subject_summaries=subject_summaries, custom_prompt=custom_prompt
+            set_name=set_name,
+            subject_summaries=subject_summaries,
+            primary_subject=primary_subject,
+            custom_prompt=custom_prompt,
         )
         media = processor.generate(
             stage="main",
@@ -98,6 +102,9 @@ class ComboKitAiRuntime:
         fusion_suffix: str,
         set_id: str,
         workspace_id: str,
+        title: str = "",
+        category: str = "",
+        roles: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         from .generation import generate_combo_images
 
@@ -109,6 +116,9 @@ class ComboKitAiRuntime:
             fusion_suffix=fusion_suffix,
             set_id=set_id,
             workspace_id=workspace_id,
+            title=title,
+            category=category,
+            roles=roles,
         )
 
 
@@ -258,7 +268,7 @@ def _parse_text_json(content: str) -> dict[str, Any]:
         raise ComboKitValidationError("文本生成缺少标题")
     return {
         "title": title[:500],
-        "description": description[:3000],
+        "description": description[:320],
         "bullets": cleaned[:5],
     }
 

@@ -155,7 +155,7 @@ class ComboKitRepository:
         cols = ("item_id", "set_id", "workspace_id", "owner_user_id", "item_index",
                 "original_asset_id", "original_path", "original_url", "subject_keywords",
                 "mask_json", "mask_inverted", "mask_regex_serial", "subject_parsed_json",
-                "spec_text", "width", "height", "error_message", "created_at", "updated_at")
+                "spec_text", "is_primary", "width", "height", "error_message", "created_at", "updated_at")
         with self._connect() as connection:
             connection.execute(
                 f"INSERT INTO combo_kit_items ({_cols(cols)}) VALUES ({_hole(len(cols))})",
@@ -165,8 +165,8 @@ class ComboKitRepository:
 
     def update_item(self, item_id: str, values: dict[str, object]) -> dict[str, object]:
         allowed = ("subject_keywords", "mask_json", "mask_inverted", "mask_regex_serial",
-                   "subject_parsed_json", "spec_text", "original_url", "original_path",
-                   "error_message", "item_index")
+                   "subject_parsed_json", "spec_text", "is_primary", "original_url",
+                   "original_path", "error_message", "item_index")
         with self._connect() as connection:
             existing = connection.execute(
                 "SELECT 1 FROM combo_kit_items WHERE item_id = ?", (item_id,)
@@ -196,9 +196,56 @@ class ComboKitRepository:
             )
             return bool(result.rowcount)
 
+    def set_primary_item(self, set_id: str, item_id: str) -> dict[str, object]:
+        """把该 set 的某成员设为唯一主要商品（其余成员 is_primary 归零，原子）。"""
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM combo_kit_items WHERE set_id = ? AND item_id = ?",
+                (set_id, item_id),
+            ).fetchone()
+            if exists is None:
+                raise KeyError(item_id)
+            connection.execute(
+                "UPDATE combo_kit_items SET is_primary = 0, updated_at = ? WHERE set_id = ?",
+                (_now(), set_id),
+            )
+            connection.execute(
+                "UPDATE combo_kit_items SET is_primary = 1, updated_at = ? WHERE item_id = ?",
+                (_now(), item_id),
+            )
+        return self.get_item(item_id)
+
+    def clear_primary_item(self, set_id: str) -> None:
+        """取消该 set 的主要商品标记（全部归零）。"""
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE combo_kit_items SET is_primary = 0, updated_at = ? WHERE set_id = ?",
+                (_now(), set_id),
+            )
+
+    def remove_set(self, set_id: str) -> bool:
+        """级联删除一个组合套装及其所有子记录（素材/Prompt/任务/扣费/预检）。"""
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM combo_kit_sets WHERE set_id = ?", (set_id,)
+            ).fetchone()
+            if exists is None:
+                return False
+            for table in (
+                "combo_kit_items",
+                "combo_kit_prompts",
+                "combo_kit_tasks",
+                "combo_kit_billing",
+                "combo_kit_previews",
+            ):
+                connection.execute(f"DELETE FROM {table} WHERE set_id = ?", (set_id,))
+            connection.execute("DELETE FROM combo_kit_sets WHERE set_id = ?", (set_id,))
+            return True
+
     def _item_dict(self, row: sqlite3.Row) -> dict[str, object]:
         data = self._row_keys(row)
         data["mask_inverted"] = bool(data.get("mask_inverted"))
+        data["is_primary"] = bool(data.get("is_primary"))
         return _parse_json_fields(data, ("mask_json", "subject_parsed_json"))
 
     # ---- Prompt 配置 ----
@@ -442,6 +489,7 @@ def _default_for(column: str) -> object:
         "mask_json": "{}",
         "subject_parsed_json": "{}",
         "spec_text": "",
+        "is_primary": 0,
         "original_asset_id": "",
         "original_path": "",
         "original_url": "",

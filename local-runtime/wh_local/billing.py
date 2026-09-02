@@ -24,9 +24,12 @@ BATCH_BILLING_PROFILE_POD = "pod_random_v1"
 # POD 每条款式定价：服务器随机取 40..50 整数积分。
 POD_LINK_PRICE_MIN_POINTS = 40
 POD_LINK_PRICE_VARIANTS = 11
-TOPUP_PROMOTION_ID = "topup_double"
-TOPUP_PROMOTION_NAME = "充值积分翻倍活动"
-TOPUP_PROMOTION_MULTIPLIER = 2
+# The historical ``topup_double`` configuration remains in SQLite for audit
+# and old order snapshots.  New orders use this fixed rule and deliberately do
+# not read that mutable configuration.
+TOPUP_PROMOTION_ID = "fixed_package_bonus_25"
+TOPUP_PROMOTION_NAME = "固定套餐赠送 25%"
+TOPUP_PROMOTION_BONUS_PERCENT = 25
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,9 @@ FEATURE_PRICING: dict[str, FeaturePricing] = {
     # (text 5 + image 35) and reserves 45 points while it is running.
     "product_processing.text": FeaturePricing(5, 5, 5, 1.0),
     "product_processing.image_grid_2k": FeaturePricing(40, 35, 35, 1.0),
+    # 豆包识图独立计费：视觉主体识别不再与文本共用 usage_id("text")，避免
+    # 视觉成本被文本 5 分打包。该值为兼容估计（×10 单位），预留 15 / 扣 10 积分。
+    "product_processing.vision": FeaturePricing(15, 10, 10, 1.0),
     # 商品自定义组合：整条流程一口价，分两步单次计费（生成主图 40 / 并行三图+文本 60）。
     "product_processing.combo_main": FeaturePricing(40, 40, 40, 1.0),
     "product_processing.combo_process": FeaturePricing(60, 60, 60, 1.0),
@@ -71,74 +77,13 @@ def active_pricing(database_path: Path) -> dict[str, Any]:
     return cache.get_or_set("pricing:active", 60, load)
 
 
-def topup_promotion_status(database_path: Path) -> dict[str, Any]:
-    """Return the current manually managed recharge activity state."""
-    with transaction(database_path) as conn:
-        return _topup_promotion_payload(_topup_promotion(conn))
-
-
-def set_topup_promotion_active(
-    database_path: Path,
-    *,
-    active: bool,
-    updated_by: str,
-) -> dict[str, Any]:
-    """Enable or disable the fixed double-points campaign without a restart."""
-    now = _utc_now()
-    with transaction(database_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO billing_topup_promotions (
-                promotion_id, name, multiplier, is_active, updated_at, updated_by
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(promotion_id) DO UPDATE SET
-                name = excluded.name,
-                multiplier = excluded.multiplier,
-                is_active = excluded.is_active,
-                updated_at = excluded.updated_at,
-                updated_by = excluded.updated_by
-            """,
-            (
-                TOPUP_PROMOTION_ID,
-                TOPUP_PROMOTION_NAME,
-                TOPUP_PROMOTION_MULTIPLIER,
-                1 if active else 0,
-                now,
-                str(updated_by or "operator")[:160],
-            ),
-        )
-        return _topup_promotion_payload(_topup_promotion(conn))
-
-
-def _topup_promotion(conn: Any) -> Any:
-    row = conn.execute(
-        """
-        SELECT promotion_id, name, multiplier, is_active, updated_at
-        FROM billing_topup_promotions
-        WHERE promotion_id = ?
-        """,
-        (TOPUP_PROMOTION_ID,),
-    ).fetchone()
-    if row is not None:
-        return row
-    # Defensive fallback for databases opened before init_db completed. The
-    # next normal initialization seeds the durable disabled configuration.
+def topup_promotion_status() -> dict[str, Any]:
+    """Describe the permanent rule used for new fixed-package orders."""
     return {
-        "promotion_id": TOPUP_PROMOTION_ID,
+        "active": True,
         "name": TOPUP_PROMOTION_NAME,
-        "multiplier": TOPUP_PROMOTION_MULTIPLIER,
-        "is_active": 0,
-        "updated_at": "",
-    }
-
-
-def _topup_promotion_payload(row: Any) -> dict[str, Any]:
-    return {
-        "active": bool(int(row["is_active"])),
-        "name": str(row["name"]),
-        "multiplier": int(row["multiplier"]),
-        "updated_at": str(row["updated_at"] or ""),
+        "bonus_rate_percent": TOPUP_PROMOTION_BONUS_PERCENT,
+        "applies_to": "fixed_packages",
     }
 
 
@@ -294,6 +239,10 @@ def usage_history(
         raw_status = str(row["status"] or "")
         billing_profile = str(row["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
         is_pod = billing_profile == BATCH_BILLING_PROFILE_POD
+        freeze_id = str(row["freeze_id"] or "")
+        # 组合套装扣费通过 freeze_batch_points(idempotency_key=combo-kit:xxx) 写入，
+        # 按 freeze_id 前缀划分独立板块，便于消费流水按服务归类管理。
+        is_combo = freeze_id.startswith("combo-kit:")
         if raw_status == "settled":
             status = "succeeded"
         elif raw_status == "released":
@@ -302,15 +251,21 @@ def usage_history(
             status = "frozen"
         result.append(
             {
-                "usage_id": f"batch:{row['freeze_id']}",
-                "feature_key": "pod_customization.batch" if is_pod else "product_processing.batch",
+                "usage_id": f"batch:{freeze_id}",
+                "feature_key": (
+                    "combo_kit.batch"
+                    if is_combo
+                    else ("pod_customization.batch" if is_pod else "product_processing.batch")
+                ),
                 "billing_profile": billing_profile,
                 "source_ref": "",
                 "reserved_points": _display_points(int(row["frozen_points"]), scale),
                 "charged_points": _display_points(int(row["charged_points"]), scale),
                 "refunded_points": _display_points(int(row["refunded_points"]), scale),
                 "status": status,
-                "provider": "POD 定制结算" if is_pod else "批量链接结算",
+                "provider": (
+                    "套装组合结算" if is_combo else ("POD 定制结算" if is_pod else "批量链接结算")
+                ),
                 "model": (
                     f"{int(row['link_count'])} 款创作"
                     if is_pod
@@ -846,6 +801,11 @@ def _pricing_payload(rule: Any) -> dict[str, Any]:
     text_charge = int(rule["text_charge_units"])
     image_reserve = int(rule["image_reserve_units"])
     image_charge = int(rule["image_charge_units"])
+    # 视觉主体识别兼容估计：与 _pricing 的 legacy 路径（points × scale）保持一致，
+    # 没有独立规则列，取值来自 FEATURE_PRICING，按 point_unit_scale 换算成单位。
+    _vision = FEATURE_PRICING["product_processing.vision"]
+    vision_reserve = int(_vision.reserve_points) * scale
+    vision_charge = int(_vision.fixed_charge_points) * scale
     return {
         "rule_version": int(rule["rule_version"]),
         "currency": "CNY",
@@ -869,6 +829,12 @@ def _pricing_payload(rule: Any) -> dict[str, Any]:
                 "charge_units": image_charge,
                 "reserve_points": _display_points(image_reserve, scale),
                 "charge_points": _display_points(image_charge, scale),
+            },
+            "product_processing.vision": {
+                "reserve_units": vision_reserve,
+                "charge_units": vision_charge,
+                "reserve_points": _display_points(vision_reserve, scale),
+                "charge_points": _display_points(vision_charge, scale),
             },
         },
         "min_client_version": str(rule["min_client_version"] or ""),

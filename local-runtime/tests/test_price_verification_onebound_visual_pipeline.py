@@ -12,7 +12,10 @@ from wh_local.price_verification.plugin.shared_gateway import SharedPluginGatewa
 from wh_local.price_verification.repository import BatchSelectionRecord, PriceVerificationRepository
 from wh_local.price_verification.sourcing.contracts import SourceSearchTask
 from wh_local.price_verification.sourcing.onebound_adapter import OneBoundSourceAdapter
-from wh_local.price_verification.sourcing.service import SourcingService
+from wh_local.price_verification.sourcing.service import (
+    SourcingService,
+    _append_history_candidates,
+)
 from wh_local.price_verification.sourcing import onebound_adapter
 
 
@@ -63,6 +66,83 @@ class _Provider:
                 }
             }
         )
+
+
+def test_adapter_resolves_complete_history_source_detail() -> None:
+    provider = _Provider()
+    adapter = OneBoundSourceAdapter(
+        object.__new__(PriceVerificationRepository), lambda: provider
+    )
+
+    candidates = adapter.lookup_history_sources(
+        PriceVerificationActor(workspace_id="workspace", actor_id="employee"),
+        {
+            "skc-1": {
+                "source_url": "https://detail.1688.com/offer/111111.html",
+                "history_task_id": 7,
+                "history_item_id": 8,
+                "matched_title": "AI title",
+            }
+        },
+    )
+
+    assert provider.detail_calls == 1
+    assert candidates["skc-1"]["offer_id"] == "111111"
+    assert candidates["skc-1"]["source_channel"] == "history"
+    assert candidates["skc-1"]["history_lookup"] is True
+    assert candidates["skc-1"]["source_title"] == "宠物降温冰垫详情"
+    assert candidates["skc-1"]["main_image_url"] == "https://images.example/detail-gallery.jpg"
+    assert candidates["skc-1"]["pic_url"] == "https://images.example/detail-gallery.jpg"
+
+
+def test_history_candidate_keeps_original_results_when_duplicate_or_fewer_than_five() -> None:
+    duplicate_result = {
+        "items": [
+            {
+                "skc_id": "skc-1",
+                "candidates": [
+                    {
+                        "num_iid": str(100000 + index),
+                        "item_url": f"https://detail.1688.com/offer/{100000 + index}.html",
+                    }
+                    for index in range(1, 6)
+                ],
+            }
+        ],
+        "counts": {"candidate_count": 5},
+    }
+    history = {
+        "skc-1": {
+            "offer_id": "100003",
+            "source_url": "https://detail.1688.com/offer/100003.html",
+            "history_lookup": True,
+        }
+    }
+
+    _append_history_candidates(duplicate_result, history)
+
+    assert len(duplicate_result["items"][0]["candidates"]) == 5
+    assert duplicate_result["counts"]["candidate_count"] == 5
+
+    incomplete_original = {
+        "items": [
+            {
+                "skc_id": "skc-1",
+                "candidates": duplicate_result["items"][0]["candidates"][:4],
+            }
+        ],
+        "counts": {"candidate_count": 4},
+    }
+    history["skc-1"] = {
+        "offer_id": "999999",
+        "source_url": "https://detail.1688.com/offer/999999.html",
+        "history_lookup": True,
+    }
+
+    _append_history_candidates(incomplete_original, history)
+
+    assert len(incomplete_original["items"][0]["candidates"]) == 4
+    assert incomplete_original["counts"]["candidate_count"] == 4
 
 
 def test_adapter_recalls_sixty_and_keeps_verified_thumbnail_with_offer(monkeypatch: Any) -> None:
@@ -536,6 +616,143 @@ def test_batch_sourcing_explicitly_disables_keyword_search(monkeypatch: Any) -> 
     )
 
     assert seen == [False]
+
+
+def test_batch_sourcing_appends_nonduplicate_history_match_as_sixth(
+    monkeypatch: Any,
+) -> None:
+    repository = object.__new__(PriceVerificationRepository)
+    selection = BatchSelectionRecord(
+        id=1,
+        workspace_id="workspace",
+        batch_id="batch-1",
+        skc_id="skc-1",
+        quote_keys=("quote-1",),
+        product_title="AI processed title",
+        main_image_url="https://images.example/temu.jpg",
+        official_link_url="https://temu.example/product/1",
+        site="US",
+        adjusted_min="10.00",
+        max_candidates=5,
+        status="retained",
+    )
+    repository.list_batch_selections = lambda **kwargs: (selection,)  # type: ignore[method-assign]
+    repository.get_batch_sourcing_session = lambda **kwargs: None  # type: ignore[method-assign]
+    repository.save_batch_sourcing_session = lambda **kwargs: kwargs  # type: ignore[method-assign]
+    seen_history_requests: list[dict[str, Any]] = []
+
+    def history_lookup(
+        requests: list[dict[str, Any]], workspace_id: str
+    ) -> dict[str, dict[str, Any]]:
+        assert workspace_id == "workspace"
+        seen_history_requests.extend(requests)
+        return {
+            "skc-1": {
+                "source_url": "https://detail.1688.com/offer/999999.html",
+                "history_task_id": 8,
+                "history_item_id": 9,
+                "matched_title": "AI processed title",
+            }
+        }
+
+    service = SourcingService(
+        repository=repository,
+        plugin_gateway=object.__new__(SharedPluginGateway),
+        history_source_lookup=history_lookup,
+    )
+    service.prepare_batch_sourcing = lambda *args, **kwargs: {  # type: ignore[method-assign]
+        "selected_skc_ids": ("skc-1",),
+        "unresolved_skc_ids": ("skc-1",),
+        "matched_products": (),
+        "selected_candidates": (),
+    }
+
+    class Adapter:
+        def __init__(self, *args: object) -> None:
+            pass
+
+        def search_by_image(
+            self,
+            actor: PriceVerificationActor,
+            tasks: tuple[SourceSearchTask, ...],
+            *,
+            keyword_search: bool,
+        ) -> dict[str, Any]:
+            del actor, tasks, keyword_search
+            candidates = [
+                {
+                    "num_iid": str(100000 + index),
+                    "item_url": f"https://detail.1688.com/offer/{100000 + index}.html",
+                    "title": f"image result {index}",
+                    "pic_url": f"https://images.example/{index}.jpg",
+                    "price": "2.00",
+                    "min_num": 1,
+                    "source_channel": "image",
+                    "image_search_rank": index,
+                }
+                for index in range(1, 6)
+            ]
+            return {
+                "status": "succeeded",
+                "items": [
+                    {
+                        "task_key": "skc-1",
+                        "skc_id": "skc-1",
+                        "status": "succeeded",
+                        "candidates": candidates,
+                        "evidence": [],
+                    }
+                ],
+                "counts": {"candidate_count": 5},
+            }
+
+        def lookup_history_sources(
+            self,
+            actor: PriceVerificationActor,
+            sources: dict[str, dict[str, Any]],
+        ) -> dict[str, dict[str, Any]]:
+            del actor
+            assert sources["skc-1"]["history_item_id"] == 9
+            return {
+                "skc-1": {
+                    "offer_id": "999999",
+                    "source_url": "https://detail.1688.com/offer/999999.html",
+                    "source_title": "historical 1688 source",
+                    "main_image_url": "https://images.example/history.jpg",
+                    "price": "3.00",
+                    "moq": 1,
+                    "source_channel": "history",
+                    "history_lookup": True,
+                    "history_task_id": 8,
+                    "history_item_id": 9,
+                }
+            }
+
+    monkeypatch.setattr(onebound_adapter, "OneBoundSourceAdapter", Adapter)
+
+    preview = service.search_batch_selections_by_image(
+        PriceVerificationActor(workspace_id="workspace", actor_id="employee"),
+        batch_id="batch-1",
+        provider_factory=lambda: _Provider(),
+    )
+
+    assert seen_history_requests == [
+        {
+            "skc": "skc-1",
+            "title": "AI processed title",
+            "excluded_offer_ids": ["100001", "100002", "100003", "100004", "100005"],
+        }
+    ]
+    candidates = preview["items"][0]["all_candidates"]
+    assert [candidate["offer_id"] for candidate in candidates[:5]] == [
+        "100001",
+        "100002",
+        "100003",
+        "100004",
+        "100005",
+    ]
+    assert candidates[5]["offer_id"] == "999999"
+    assert candidates[5]["history_lookup"] is True
 
 
 def test_adapter_runs_two_skcs_concurrently_and_preserves_input_order(monkeypatch: Any) -> None:

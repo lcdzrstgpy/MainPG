@@ -90,19 +90,38 @@ def _build_row(set_data: dict[str, Any], images: dict[str, str]) -> list[Any]:
     if isinstance(text, dict):
         ai_title = str(text.get("title") or "").strip()
         ai_description = str(text.get("description") or "").strip()
+        ai_bullets = [str(b).strip() for b in (text.get("bullets") or []) if str(b).strip()]
     else:
         ai_title = ""
         ai_description = ""
+        ai_bullets = []
 
     title = ai_title or str(set_data.get("name") or "").strip()
     english_title = ai_title or title
-    description = ai_description or str(set_data.get("description") or "").strip()
+    # 描述列采用「描述正文 + 五点 + 详情图 <img> 逐行」结构：店小秘对「一行一个模块」
+    # 能解析出独立的文字/图片模块；若把一大段文本连着图片塞进同一单元，会当作纯文字
+    # 按 500 字上限截断。故正文、每条五点、每张图各占一行。
+    description_lines: list[str] = []
+    body = ai_description or str(set_data.get("description") or "").strip()
+    if body:
+        # 兜底：店小秘/Temu 单个文字模块上限约 500 字符，让正文再少一些留足余量，
+        # 否则长正文会触发单模块截断（旧数据可能未受生成期长度限制）。
+        description_lines.append(body[:320])
+    description_lines.extend(ai_bullets[:5])
+    if not description_lines:
+        description_lines = [body] if body else []
     sku = str(set_data.get("sku") or "").strip()
     sku_display = str(set_data.get("sku_display") or "").strip()
 
     # 图片列：预览图/产品素材图取主图（缺主图时退回白底图）。
     main = images.get("main") or images.get("white_bg") or ""
     carousel = "\n".join(images.get(role) for role in COMBO_IMAGE_ROLES if images.get(role))
+    # 详情图：只放合成的「多场景拼贴详情海报」（detail_page），作为详情区主图；
+    # 缺失时退回细节图（detail_shot）。不把主图/轮播/白底等再叠进描述列。
+    detail_url = images.get("detail_page") or images.get("detail_shot") or ""
+    if detail_url:
+        description_lines.append(f'<img src="{detail_url}" />')
+    description = "\n".join(description_lines)
 
     row: list[Any] = ["" for _ in DXM_COLUMNS]
     values: dict[int, Any] = {

@@ -19,18 +19,25 @@ import ssl
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import urlsplit
 
 import requests
 
 from ..domain.policy import is_safe_external_url, resolve_safe_external_url
 from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
+from ...ai_service.temporary_cos import (
+    TemporaryCosStore,
+    TemporaryReference,
+    TemporaryReferenceError,
+)
+from ...basic_settings.service import RuntimeCosConfig
 from .grid_layout import (
     GridLayoutError,
     build_grid_scaffold,
@@ -91,9 +98,83 @@ DOWNLOAD_RETRY_BACKOFF_SECONDS = (0.2, 0.6)
 _PROVIDER_CURSOR_LOCK = threading.Lock()
 _PROVIDER_CURSORS: dict[str, int] = {}
 
-# 服务器托管图片生成串行闸：网关对并发图片生成不稳定（上游 image_gpt 并发受限），
-# 并发请求会被重置 TLS 或排队超时。本地一次只发一条，失败重试一次后放行下一条商品。
-_SERVER_MANAGED_IMAGE_GATE = threading.BoundedSemaphore(1)
+class _FairUsageRequestGate:
+    """Serialize provider calls while rotating fairly between billable items.
+
+    One product may enqueue several slot-repair requests at once. A plain
+    semaphore can let those repairs reacquire the only provider slot before a
+    different product gets its first image. Queues are therefore grouped by
+    ``usage_id`` and each group receives at most one turn before moving to the
+    back of the rotation.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._waiters_by_key: dict[str, deque[threading.Event]] = {}
+        self._ready_keys: deque[str] = deque()
+        self._ready_key_set: set[str] = set()
+        self._active_key: str | None = None
+
+    @staticmethod
+    def _key(value: str) -> str:
+        return str(value or "").strip() or "__anonymous__"
+
+    def acquire(self, key: str) -> None:
+        normalized = self._key(key)
+        waiter = threading.Event()
+        with self._lock:
+            queue = self._waiters_by_key.setdefault(normalized, deque())
+            queue.append(waiter)
+            # Further calls belonging to the active product wait for its next
+            # round instead of immediately competing with other products.
+            if self._active_key != normalized and normalized not in self._ready_key_set:
+                self._ready_keys.append(normalized)
+                self._ready_key_set.add(normalized)
+            self._dispatch_locked()
+        waiter.wait()
+
+    def release(self, key: str) -> None:
+        normalized = self._key(key)
+        with self._lock:
+            if self._active_key != normalized:
+                raise RuntimeError("fair image gate released by a non-owner")
+            self._active_key = None
+            # The just-served product goes behind every product that arrived
+            # while its request was in flight.
+            if self._waiters_by_key.get(normalized) and normalized not in self._ready_key_set:
+                self._ready_keys.append(normalized)
+                self._ready_key_set.add(normalized)
+            self._dispatch_locked()
+
+    @contextmanager
+    def hold(self, key: str) -> Iterator[None]:
+        self.acquire(key)
+        try:
+            yield
+        finally:
+            self.release(key)
+
+    def _dispatch_locked(self) -> None:
+        if self._active_key is not None:
+            return
+        while self._ready_keys:
+            key = self._ready_keys.popleft()
+            self._ready_key_set.discard(key)
+            queue = self._waiters_by_key.get(key)
+            if not queue:
+                self._waiters_by_key.pop(key, None)
+                continue
+            waiter = queue.popleft()
+            if not queue:
+                self._waiters_by_key.pop(key, None)
+            self._active_key = key
+            waiter.set()
+            return
+
+
+# 服务器托管图片仍保持全局单并发，但按商品 usage_id 轮转。这样不放大
+# 上游 image_gpt 压力，同时避免一个商品的多张修复图连续占满闸口。
+_SERVER_MANAGED_IMAGE_GATE = _FairUsageRequestGate()
 
 
 class MediaConfigurationError(RuntimeError):
@@ -1151,18 +1232,43 @@ class ProductImageProcessor:
                     errors.append(f"local image failed: {_safe_error(exc)}")
                     continue
                 references.append((content, path.name, content_type))
-            else:
+            elif _plausible_public_http_url(value):
                 try:
                     content, content_type = self._download_reference_image_cached(value)
                 except (requests.RequestException, MediaProcessingError) as exc:
                     detail = f"download failed: {_safe_error(exc)}"
                     errors.append(detail)
+                    # 打印具体失败值，便于在客户机器上定位是哪个参考图 URL 出问题。
+                    print(
+                        f"[reference-skip] stage=reference_input branch=url "
+                        f"value={value[:160]!r} detail={detail}",
+                        flush=True,
+                    )
                     continue
                 if not content or not content_type.startswith("image/"):
                     detail = "reference URL did not return an image"
                     errors.append(detail)
+                    print(
+                        f"[reference-skip] stage=reference_input branch=url "
+                        f"value={value[:160]!r} detail={detail}",
+                        flush=True,
+                    )
                     continue
                 references.append((content, _filename_for_url(value), content_type, value))
+            else:
+                # 既不是 data URI 也不是本机存在文件，也不满足公网 http(s) URL 结构：
+                # 说明该参考值是一段脏字符串/失效的本地路径（例如 windows 绝对路径、
+                # 裸 token），不能当作图片 URL 去下载，否则会以
+                # "provider result URL is not a safe public URL" 硬失败并拖垮整条图生图。
+                # 这里直接跳过，交给后续仍可用的参考，避免一个坏值拖垮整条生成。
+                errors.append(f"reference value is not a usable source: {value[:120]!r}")
+                # 打印被跳过的具体脏值，便于在客户机器上确认是哪个引用值污损。
+                print(
+                    f"[reference-skip] stage=reference_input branch=non-url "
+                    f"value={value[:160]!r} reason=not-a-public-http-url",
+                    flush=True,
+                )
+                continue
         if not references:
             detail = f" ({errors[0]})" if errors else ""
             raise MediaProcessingError(f"reference image download failed{detail}")
@@ -1292,7 +1398,7 @@ class ProductImageProcessor:
         ]
         response: requests.Response | None = None
         try:
-            with _SERVER_MANAGED_IMAGE_GATE:
+            with _SERVER_MANAGED_IMAGE_GATE.hold(reservation):
                 response = _SESSION.post(
                     f"{gateway_base_url()}/api/customer/ai/image",
                     headers={
@@ -1344,44 +1450,92 @@ class ProductImageProcessor:
         timeout_seconds: float,
         image_size: str | None = None,
     ) -> tuple[bytes, str]:
-        urls = [
-            str(ref[3]).strip()
-            for ref in references
-            if len(ref) >= 4 and is_safe_external_url(str(ref[3]).strip())
-        ]
-        global_ai_request_limiter().acquire()
-        response = _SESSION.post(
-            f"{provider['base_url']}{WUYIN_IMAGE_SUBMIT_PATH}",
-            params={"key": provider["api_key"]},
-            headers={
-                "Authorization": provider["api_key"],
-                "Content-Type": "application/json",
-            },
-            json={
-                "prompt": prompt,
-                "size": _wuyin_size(image_size or provider.get("image_size")),
-                **({"urls": urls} if urls else {}),
-            },
-            timeout=max(1.0, min(30.0, float(timeout_seconds))),
-            stream=True,
-        )
+        urls, temporary_store, temporary_references = self._wuyin_reference_urls(references)
         try:
-            if not response.ok:
-                raise MediaProcessingError(
-                    f"provider returned HTTP {response.status_code}",
-                    status_code=response.status_code,
-                )
-            payload = _bounded_response_json(response)
+            global_ai_request_limiter().acquire()
+            response = _SESSION.post(
+                f"{provider['base_url']}{WUYIN_IMAGE_SUBMIT_PATH}",
+                params={"key": provider["api_key"]},
+                headers={
+                    "Authorization": provider["api_key"],
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "prompt": prompt,
+                    "size": _wuyin_size(image_size or provider.get("image_size")),
+                    "urls": urls,
+                },
+                timeout=max(1.0, min(30.0, float(timeout_seconds))),
+                stream=True,
+            )
+            try:
+                if not response.ok:
+                    raise MediaProcessingError(
+                        f"provider returned HTTP {response.status_code}",
+                        status_code=response.status_code,
+                    )
+                payload = _bounded_response_json(response)
+            finally:
+                response.close()
+            if not isinstance(payload, dict) or int(payload.get("code") or 0) != 200:
+                raise MediaProcessingError(f"provider submit failed: {_provider_message(payload)}")
+            data = payload.get("data") or {}
+            task_id = str(data.get("id") or data.get("task_id") or "").strip() if isinstance(data, dict) else ""
+            if not task_id:
+                raise MediaProcessingError("provider response does not contain image task id")
+            result_url = self._poll_wuyin_image_result(provider, task_id, timeout_seconds=timeout_seconds)
+            return _download_provider_result_image(result_url)
         finally:
-            response.close()
-        if not isinstance(payload, dict) or int(payload.get("code") or 0) != 200:
-            raise MediaProcessingError(f"provider submit failed: {_provider_message(payload)}")
-        data = payload.get("data") or {}
-        task_id = str(data.get("id") or data.get("task_id") or "").strip() if isinstance(data, dict) else ""
-        if not task_id:
-            raise MediaProcessingError("provider response does not contain image task id")
-        result_url = self._poll_wuyin_image_result(provider, task_id, timeout_seconds=timeout_seconds)
-        return _download_provider_result_image(result_url)
+            if temporary_store is not None:
+                for temporary in temporary_references:
+                    temporary_store.delete(temporary)
+
+    def _wuyin_reference_urls(
+        self,
+        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
+    ) -> tuple[list[str], TemporaryCosStore | None, list[TemporaryReference]]:
+        """Return provider-fetchable URLs, relaying local-only references through private COS."""
+        urls: list[str] = []
+        local_references: list[tuple[bytes, str]] = []
+        for reference in references:
+            candidate = str(reference[3]).strip() if len(reference) >= 4 else ""
+            if candidate and is_safe_external_url(candidate):
+                urls.append(candidate)
+            else:
+                local_references.append((bytes(reference[0]), str(reference[2] or "image/jpeg")))
+
+        if not local_references:
+            if not urls:
+                raise MediaProcessingError("direct image provider requires a reference image")
+            return urls, None, []
+
+        cos = dict(self._config().get("cos") or {})
+        store = TemporaryCosStore(
+            RuntimeCosConfig(
+                bucket=str(cos.get("bucket") or "").strip(),
+                region=str(cos.get("region") or "").strip(),
+                secret_id=str(cos.get("secret_id") or "").strip(),
+                secret_key=str(cos.get("secret_key") or "").strip(),
+            )
+        )
+        temporary_references: list[TemporaryReference] = []
+        try:
+            for content, content_type in local_references:
+                temporary = store.publish(content, content_type)
+                if not _plausible_public_http_url(temporary.url):
+                    raise TemporaryReferenceError(
+                        "temporary COS reference did not return a provider-fetchable URL"
+                    )
+                temporary_references.append(temporary)
+                urls.append(temporary.url)
+        except TemporaryReferenceError as exc:
+            for temporary in temporary_references:
+                store.delete(temporary)
+            raise MediaProcessingError(
+                "failed to relay local reference image to the direct image provider"
+            ) from exc
+
+        return urls, store, temporary_references
 
     def _poll_wuyin_image_result(
         self,
@@ -1419,27 +1573,37 @@ class ProductImageProcessor:
                 continue
             data = payload.get("data") or {}
             status_value = str(data.get("status") or payload.get("status") or "").strip().lower() if isinstance(data, dict) else ""
-            # 临时诊断：打印无影 detail 原始返回，确认 status 数字语义（3/4/5 是失败还是处理中）
-            if _is_wuyin_image_provider(provider):
-                try:
-                    print(f"[wuyin-detail-diag] task={task_id} raw={json.dumps(payload, ensure_ascii=False)[:600]}", flush=True)
-                except Exception:
-                    print(f"[wuyin-detail-diag] task={task_id} raw={str(payload)[:600]}", flush=True)
             result_url = _first_image_url(data) or _first_image_url(payload)
             if result_url:
                 return result_url
             message = _provider_message(payload)
             message_lower = message.lower()
-            if status_value in {"2", "success", "succeeded", "finish", "finished", "completed", "done"}:
+            # 上游 status 为异步任务状态码（含纯数字与文本两种表达）。语义：
+            #   1      任务处理完成（成功）；≥0 且命中文末（0/2/3/4/5/6）= 排队/准备/等待/处理中/发布
+            #   <0     任务处理失败；fail/failed/error/cancelled = 明确失败
+            # 数字状态无法安全按文本失败集归类（3/4/5 实为“处理中”，会误判成失败终态），
+            # 先尝试转数字：≥0 一律视为处理中继续轮询等图片；<0 才判失败。
+            try:
+                numeric_status = int(float(status_value)) if status_value else None
+            except (TypeError, ValueError):
+                numeric_status = None
+            if numeric_status is not None:
+                if numeric_status < 0:
+                    raise MediaProcessingError(
+                        f"provider image task failed: status={status_value} code={code} {message}",
+                        status_class="transient",
+                    )
+                # status ∈ {0,2,3,4,5,6}: 处理中，等图片就绪后返回
+                last_message = message or f"status={status_value}"
+                continue
+            if status_value in {"success", "succeeded", "finish", "finished", "completed", "done"}:
                 raise MediaProcessingError(
                     f"provider image task succeeded without image url: status={status_value} code={code} {message}"
                 )
-            if status_value == "5" and ("成功" in message or "success" in message_lower):
-                last_message = message or "status=5"
-                continue
-            if status_value in {"3", "4", "5", "fail", "failed", "error", "cancelled", "canceled"}:
+            if status_value in {"fail", "failed", "error", "cancelled", "canceled"}:
                 raise MediaProcessingError(
-                    f"provider image task failed: status={status_value} code={code} {message}"
+                    f"provider image task failed: status={status_value} code={code} {message}",
+                    status_class="transient",
                 )
             last_message = message or f"status={status_value or 'processing'}"
         raise MediaProcessingError(f"provider image task timed out: {last_message}")

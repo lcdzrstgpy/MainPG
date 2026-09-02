@@ -174,6 +174,18 @@
   box-shadow: 0 6px 14px rgba(207, 96, 104, 0.15);
 }
 
+.verify-actions button.undo-delete:not(:disabled) {
+  color: var(--theme-primary, #1677ff);
+  border-color: color-mix(in srgb, var(--theme-primary, #1677ff) 42%, transparent);
+  background: var(--theme-primary-light, #eef7ff);
+}
+
+.verify-actions button.undo-delete > span {
+  font-size: 17px;
+  line-height: 1;
+  font-weight: 700;
+}
+
 .verify-download-hint {
   margin: 8px 0 0;
   color: #7d94aa;
@@ -886,6 +898,13 @@
   color: #18334d;
   outline-color: #13a9f2;
   font-size: 0.9rem;
+}
+
+.verify-title-reference-tip {
+  font-size: 0.72rem;
+  line-height: 1.45;
+  font-weight: 500;
+  color: #71869b;
 }
 
 .verify-source-ref {
@@ -1680,6 +1699,39 @@
   min-width: 0;
   display: grid;
   gap: 18px;
+}
+
+.precheck-source-address {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin-top: -10px;
+  padding: 0 10px;
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+}
+
+.precheck-source-address strong {
+  flex: 0 0 auto;
+  color: var(--theme-text-primary);
+}
+
+.precheck-source-address a {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--theme-primary);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.precheck-source-address a:hover {
+  text-decoration: underline;
+}
+
+.precheck-source-address span {
+  color: var(--theme-text-muted);
 }
 
 .precheck-image-block {
@@ -2768,6 +2820,17 @@
 .verify-elapsed::before {
   content: "⏱";
   font-size: 0.85rem;
+}
+.verify-live-detail {
+  color: #147a9b;
+}
+.verify-live-detail::before {
+  content: "⚙";
+  font-size: 0.8rem;
+}
+.verify-live-detail b {
+  color: #147a9b;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── 处理进度（环形，参考产品采集进度条） ── */

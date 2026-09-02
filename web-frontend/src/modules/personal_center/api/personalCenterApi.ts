@@ -74,9 +74,12 @@ export type BillingSummary = {
   };
   topup_products: BillingPackage[];
   topup_promotion?: {
-    active: boolean;
     name: string;
-    multiplier: number;
+    /** 固定套餐的常驻赠送百分比。 */
+    bonus_rate_percent: number;
+    applies_to: "fixed_packages";
+    /** 常驻规则始终为 true；保留该字段供服务端摘要表达规则状态。 */
+    active: true;
   };
   recent_ledger: BillingLedgerEntry[];
   recent_orders: BillingOrder[];
@@ -146,10 +149,12 @@ export type BillingUsageQuery = {
   /** YYYY-MM-DD，按记录创建日期过滤（含当日） */
   dateFrom?: string;
   dateTo?: string;
+  /** 单次拉取条数上限（服务端上限 100）。分页与统计在客户端完成。 */
+  limit?: number;
 };
 
 export function loadBillingUsageHistory(query: BillingUsageQuery = {}) {
-  const params = new URLSearchParams({ limit: "30" });
+  const params = new URLSearchParams({ limit: String(query.limit ?? 30) });
   if (query.cursor) params.set("cursor", query.cursor);
   if (query.featureKey) params.set("feature_key", query.featureKey);
   if (query.usageStatus) params.set("usage_status", query.usageStatus);
@@ -175,7 +180,7 @@ export function createTopupOrder(input: {
 }
 
 /**
- * 自定义金额的到账积分必须由服务端报价，避免活动切换期间由客户端自行推算。
+ * 自定义金额的到账积分必须由服务端报价，客户端不自行推算赠送规则。
  */
 export function quoteCustomTopup(amountCents: number) {
   return httpJson<TopupQuoteResponse>("/api/customer/billing/topup-quote", {

@@ -39,7 +39,10 @@ class MessagesRepository:
         return con
 
     def upsert_server_announcements(self, items: list[dict[str, Any]]) -> int:
-        """按 server_id 幂等写入服务器公告，返回新增条数（新公告默认未读）。"""
+        """按 server_id 同步服务器公告，返回新增条数（新公告默认未读）。
+
+        已存在的公告会更新服务端字段，但保留本机 ``read`` 状态。
+        """
         con = self._connect()
         try:
             new_count = 0
@@ -47,20 +50,29 @@ class MessagesRepository:
                 server_id = int(item.get("id") or 0)
                 if server_id <= 0:
                     continue
+                title = str(item.get("title") or "").strip()
+                content = str(item.get("content") or "")
+                published_at = str(item.get("published_at") or "")
                 cur = con.execute(
                     """
-                    INSERT OR IGNORE INTO messages (
+                    INSERT INTO messages (
                         server_id, title, content, published_at, read
                     ) VALUES (?, ?, ?, ?, 0)
+                    ON CONFLICT(server_id) DO NOTHING
                     """,
-                    (
-                        server_id,
-                        str(item.get("title") or "").strip(),
-                        str(item.get("content") or ""),
-                        str(item.get("published_at") or ""),
-                    ),
+                    (server_id, title, content, published_at),
                 )
-                new_count += cur.rowcount
+                if cur.rowcount > 0:
+                    new_count += 1
+                    continue
+                con.execute(
+                    """
+                    UPDATE messages
+                    SET title = ?, content = ?, published_at = ?
+                    WHERE server_id = ?
+                    """,
+                    (title, content, published_at, server_id),
+                )
             con.commit()
             return new_count
         finally:

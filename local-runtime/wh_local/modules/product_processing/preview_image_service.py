@@ -312,8 +312,15 @@ class PreviewImageService:
         saved: Mapping[str, Any],
         workspace_id: str,
         media_contract_version: int = 1,
+        task_owned_draft_ids: set[int] | None = None,
     ) -> dict[str, Any]:
-        self.require_task_draft(task_id, product_draft_id, workspace_id)
+        # 性能：task_preview 批量构建单个商品时，调用方已保证其归属（整个 task 的
+        # items 已在该次请求内加载完毕）。此时跳过 require_task_draft 的重复全任务查询，
+        # 避免大数据量下 O(N²) 的 DB 往返。仅在未提供 owned ids 时做一次归属校验。
+        if task_owned_draft_ids is None:
+            self.require_task_draft(task_id, product_draft_id, workspace_id)
+        elif int(product_draft_id) not in task_owned_draft_ids:
+            raise LookupError("preview image target does not belong to this task")
         if media_contract_version >= 2 and self.media_assets is not None:
             return self._project_item_images_v2(
                 task_id=task_id,

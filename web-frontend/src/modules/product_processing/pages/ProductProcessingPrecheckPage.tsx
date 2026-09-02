@@ -76,6 +76,7 @@ function taskStatusLabel(status: string): string {
     queued: '等待处理',
     running: '处理中',
     paused: '已暂停',
+    cancelled: '已终止，仅保留成功商品',
     completed: '已完成',
     partial_failure: '部分完成',
     failed: '任务失败',
@@ -85,18 +86,29 @@ function taskStatusLabel(status: string): string {
 const PROVENANCE_META: Record<string, { label: string; tone: string }> = {
   source: { label: '采集值', tone: 'ok' },
   manual: { label: '手动', tone: 'attn' },
-  ai: { label: 'AI 预估，建议核对', tone: 'risk' },
+  ai: { label: 'AI预估', tone: 'ok' },
 };
 
 function provenanceBadge(
   provenance: PreviewItem['dimension_provenance'],
+  confidence: PreviewItem['dimension_confidence'],
   field: 'length_cm' | 'width_cm' | 'height_cm' | 'weight_g',
 ): ReactNode {
   const value = provenance?.[field];
   const meta = (value && PROVENANCE_META[value]) || PROVENANCE_META.ai;
+  const confidenceValue = confidence?.[field];
+  const confidenceLabel = confidenceValue === 'low'
+    ? '低置信'
+    : confidenceValue === 'medium'
+      ? '中置信'
+      : confidenceValue === 'high'
+        ? '高置信'
+        : '';
+  const label = value === 'ai' && confidenceLabel ? `${meta.label}·${confidenceLabel}` : meta.label;
+  const tone = value === 'ai' && confidenceValue === 'low' ? 'attn' : meta.tone;
   return (
-    <span className={`precheck-provenance-badge tone-${meta.tone}`} title={`该字段来源：${meta.label}`}>
-      {meta.label}
+    <span className={`precheck-provenance-badge tone-${tone}`} title={`该字段来源：${meta.label}${confidenceLabel ? `；${confidenceLabel}` : ''}`}>
+      {label}
     </span>
   );
 }
@@ -864,6 +876,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         const assets = effectiveAssets(item);
         const hasOverrides = itemIsDirty(item);
         const isExpanded = expandedDraftIds.has(draftId);
+        const sourceUrl = String(item.source_url ?? '').trim();
+        const safeSourceUrl = /^https?:\/\//i.test(sourceUrl) ? sourceUrl : '';
         return (
           <section key={item.item_id} className={`verify-section precheck-card${hasOverrides ? ' is-edited' : ''}`}>
             <div className="precheck-card-head">
@@ -936,16 +950,16 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                   <label>类目ID
                     <input disabled={mutationsLocked} value={coreFields.category_id ?? ''} onChange={(event) => setField(draftId, 'category_id', event.target.value)} />
                   </label>
-                  <label><span className="precheck-dim-label">物流包裹长(cm) {provenanceBadge(item.dimension_provenance, 'length_cm')}</span>
+                  <label><span className="precheck-dim-label">物流包裹长(cm) {provenanceBadge(item.dimension_provenance, item.dimension_confidence, 'length_cm')}</span>
                     <input disabled={mutationsLocked} value={coreFields.length_cm ?? ''} onChange={(event) => setField(draftId, 'length_cm', event.target.value)} />
                   </label>
-                  <label><span className="precheck-dim-label">物流包裹宽(cm) {provenanceBadge(item.dimension_provenance, 'width_cm')}</span>
+                  <label><span className="precheck-dim-label">物流包裹宽(cm) {provenanceBadge(item.dimension_provenance, item.dimension_confidence, 'width_cm')}</span>
                     <input disabled={mutationsLocked} value={coreFields.width_cm ?? ''} onChange={(event) => setField(draftId, 'width_cm', event.target.value)} />
                   </label>
-                  <label><span className="precheck-dim-label">物流包裹高(cm) {provenanceBadge(item.dimension_provenance, 'height_cm')}</span>
+                  <label><span className="precheck-dim-label">物流包裹高(cm) {provenanceBadge(item.dimension_provenance, item.dimension_confidence, 'height_cm')}</span>
                     <input disabled={mutationsLocked} value={coreFields.height_cm ?? ''} onChange={(event) => setField(draftId, 'height_cm', event.target.value)} />
                   </label>
-                  <label><span className="precheck-dim-label">重量(g) {provenanceBadge(item.dimension_provenance, 'weight_g')}</span>
+                  <label><span className="precheck-dim-label">重量(g) {provenanceBadge(item.dimension_provenance, item.dimension_confidence, 'weight_g')}</span>
                     <input disabled={mutationsLocked} value={coreFields.weight_g ?? ''} onChange={(event) => setField(draftId, 'weight_g', event.target.value)} />
                   </label>
                 </div>
@@ -1027,6 +1041,14 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                     disabled={mutationsLocked}
                     onClick={() => onOpenDimensionItem(taskId, item.item_id)}
                   >添加尺寸图</button>
+                </div>
+                <div className="precheck-source-address">
+                  <strong>处理前商品地址</strong>
+                  {safeSourceUrl ? (
+                    <a href={safeSourceUrl} target="_blank" rel="noreferrer" title={sourceUrl}>{sourceUrl}</a>
+                  ) : (
+                    <span>暂无商品地址</span>
+                  )}
                 </div>
                 <PrecheckImageManager
                   assets={assets}

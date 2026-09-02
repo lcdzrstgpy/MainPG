@@ -26,6 +26,7 @@ export type ComboKitItem = {
   mask_regex_serial: number;
   subject_parsed_json: Record<string, unknown>;
   spec_text: string;
+  is_primary: boolean;
   width: number;
   height: number;
 };
@@ -52,8 +53,11 @@ export type ComboKitSet = {
   category_id: string;
   attributes: Record<string, unknown>;
   sku_specs: string[];
+  sku_specs_json?: string[] | unknown;
   status: string;
   stage: string;
+  created_at?: string;
+  updated_at?: string;
   fusion_prompt?: string;
   declared_price?: string;
   length_cm?: number;
@@ -128,8 +132,16 @@ export async function removeItem(ctx: ApiContext, setId: string, itemId: string)
   return ppRequest(ctx, `${API_BASE}/sets/${setId}/items/${itemId}`, { method: 'DELETE' });
 }
 
+export async function deleteSet(ctx: ApiContext, setId: string): Promise<unknown> {
+  return ppRequest(ctx, `${API_BASE}/sets/${setId}`, { method: 'DELETE' });
+}
+
 export async function reorderItems(ctx: ApiContext, setId: string, order: string[]): Promise<{ items: ComboKitItem[] }> {
   return ppRequest(ctx, `${API_BASE}/sets/${setId}/items/order`, { body: { order } });
+}
+
+export async function setPrimaryItem(ctx: ApiContext, setId: string, itemId: string): Promise<ComboKitItem> {
+  return ppRequest(ctx, `${API_BASE}/sets/${setId}/items/${itemId}/primary`, { method: 'POST' });
 }
 
 export async function analyzeSubject(ctx: ApiContext, setId: string, itemIds?: string[]): Promise<{ results: unknown[]; items: ComboKitItem[] }> {
@@ -152,8 +164,12 @@ export async function generateText(ctx: ApiContext, setId: string): Promise<{ ti
   return ppRequest(ctx, `${API_BASE}/sets/${setId}/generate-text`, { method: 'POST' });
 }
 
-export async function generateImages(ctx: ApiContext, setId: string): Promise<unknown> {
-  return ppRequest(ctx, `${API_BASE}/sets/${setId}/generate-images`, { method: 'POST' });
+export async function generateImages(ctx: ApiContext, setId: string, roles?: string[]): Promise<{ images: Array<{ role: string; label: string; url: string; public_url?: string }> }> {
+  return ppRequest(ctx, `${API_BASE}/sets/${setId}/generate-images`, { method: 'POST', body: roles && roles.length ? { roles } : {} });
+}
+
+export async function deleteGeneratedImage(ctx: ApiContext, setId: string, role: string): Promise<{ images: Array<{ role: string; label: string; url: string; public_url?: string }>; status: string }> {
+  return ppRequest(ctx, `${API_BASE}/sets/${setId}/images/${role}`, { method: 'DELETE' });
 }
 
 export async function createPreview(ctx: ApiContext, setId: string): Promise<Record<string, unknown>> {

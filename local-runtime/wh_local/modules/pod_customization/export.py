@@ -221,6 +221,14 @@ def _is_complete_style_copy(value: Any) -> bool:
     )
 
 
+def _raw_listing_copy_text(field: str, value: object) -> str:
+    """Write a manual listing copy verbatim, without re-applying AI copy rules."""
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field} is required")
+    return text
+
+
 def _export_skus(listing_fields: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     """Expand current SKU snapshots and retain global fields for legacy snapshots."""
     saved_skus = listing_fields.get("skus")
@@ -263,13 +271,19 @@ def _build_row(
     *,
     sku_index: int = 1,
 ) -> list[Any]:
-    safe_title = validate_listing_copy_text("title", copy.get("title"), max_length=200)
-    safe_english_title = validate_listing_copy_text(
-        "english_title", copy.get("english_title"), max_length=200
-    )
-    safe_description = validate_listing_copy_text(
-        "description", copy.get("description"), max_length=1000
-    )
+    manual = copy.get("source") == "manual"
+    if manual:
+        safe_title = _raw_listing_copy_text("title", copy.get("title"))
+        safe_english_title = _raw_listing_copy_text("english_title", copy.get("english_title"))
+        safe_description = _raw_listing_copy_text("description", copy.get("description"))
+    else:
+        safe_title = validate_listing_copy_text("title", copy.get("title"), max_length=200)
+        safe_english_title = validate_listing_copy_text(
+            "english_title", copy.get("english_title"), max_length=200
+        )
+        safe_description = validate_listing_copy_text(
+            "description", copy.get("description"), max_length=1000
+        )
     suffix = f"{style_index:03d}"
     image_urls = [images[role] for role in LISTING_PRESENTATION_ROLES]
     description = "\n".join(

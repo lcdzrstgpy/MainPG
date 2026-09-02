@@ -12,6 +12,7 @@ from typing import Any
 from .doubao_ark import (
     API_URL,
     MODEL_ID,
+    VISION_TIMEOUT_SECONDS,
     DoubaoArkClient,
     DoubaoArkError,
 )
@@ -20,6 +21,11 @@ from .doubao_ark import (
 PROMPT_VERSION = "doubao-subject-v4"
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.5
+MAX_VISION_IMAGES = 6
+# 识别请求体安全上限（JSON 序列化后的字节数）：超大 body 会被直连火山方舟/网关以
+# HTTP 413/400 秒拒（provider_http）。超限时先丢弃最重的图片再重试，仍超限则用可读
+# 错误提前拦截，避免不透光的 `provider_http`。
+MAX_VISION_PAYLOAD_BYTES = 10 * 1024 * 1024
 
 SUBJECT_ANALYSIS_PROMPT = """Analyze the supplied original product images and identify the actual sellable product.
 Ignore people, hands, rooms, furniture, surfaces, scenery, decorative props, packaging, and other background elements unless they are physically part of the sellable product.
@@ -75,11 +81,17 @@ def append_subject_analysis(
     """Append the authoritative Doubao JSON after an internal GPT image prompt."""
     if analysis is None:
         return str(prompt or "")
-    normalized = (
-        analysis
-        if isinstance(analysis, SubjectAnalysis)
-        else _subject_analysis_from_payload(dict(analysis))
-    )
+    if isinstance(analysis, SubjectAnalysis):
+        normalized = analysis
+    else:
+        # 兼容：视觉识别失败降级时可能传入空 dict（无有效主体结果），此时静默跳过，
+        # 避免 _text_list(None) 抛 "subject list field failed validation" 而失败整条。
+        if not isinstance(analysis, Mapping):
+            return str(prompt or "")
+        payload = dict(analysis)
+        if not payload.get("sellable_subject"):
+            return str(prompt or "")
+        normalized = _subject_analysis_from_payload(payload)
     subject_json = json.dumps(
         normalized.as_dict(),
         ensure_ascii=False,
@@ -105,7 +117,8 @@ def subject_analysis_from_dict(payload: Mapping[str, Any]) -> SubjectAnalysis:
 class DoubaoVisionClient:
     def __init__(self) -> None:
         self.last_attempt_count = 0
-        self._ark = DoubaoArkClient()
+        # 视觉主体识别独立计费：使用独立的 usage_kind，读取 product_processing.vision 的 usage_id。
+        self._ark = DoubaoArkClient(usage_kind="vision")
         self.api_key = self._ark.api_key
 
     def recognize_subject(
@@ -116,7 +129,7 @@ class DoubaoVisionClient:
             if isinstance(image_data_url, str)
             else [str(value or "") for value in image_data_url]
         )
-        image_data_urls = image_data_urls[:6]
+        image_data_urls = image_data_urls[:MAX_VISION_IMAGES]
         if not image_data_urls or any(not value.startswith("data:image/") for value in image_data_urls):
             raise DoubaoVisionError(
                 "Doubao vision requires one or more image data URLs",
@@ -139,13 +152,29 @@ class DoubaoVisionClient:
             "clearly visible, or if the sellable subject remains ambiguous, return "
             "confidence low and explain the conflict in uncertainty_reason."
         )
+        # 加固：请求体超限时优先丢弃最重的单张图，直到落在安全上限内；仍超限则用可读错误
+        # 提前拦截，避免直连被上游 413/400 秒拒（provider_http）。
+        selected = list(image_data_urls)
+        while (
+            len(selected) > 1
+            and _vision_message_payload_bytes(title_context, selected) > MAX_VISION_PAYLOAD_BYTES
+        ):
+            heaviest_idx = max(range(len(selected)), key=lambda i: len(selected[i]))
+            selected.pop(heaviest_idx)
+        if _vision_message_payload_bytes(title_context, selected) > MAX_VISION_PAYLOAD_BYTES:
+            raise DoubaoVisionError(
+                "Doubao vision request body exceeds the safe size limit; "
+                "the original images are too large to analyze",
+                error_kind="invalid_input",
+                retryable=False,
+            )
         messages = [
             {
                 "role": "user",
                 "content": [
                     *[
                         {"type": "image_url", "image_url": {"url": value}}
-                        for value in image_data_urls
+                        for value in selected
                     ],
                     {"type": "text", "text": title_context},
                 ],
@@ -154,15 +183,39 @@ class DoubaoVisionClient:
         for attempt in range(1, MAX_ATTEMPTS + 1):
             self.last_attempt_count = attempt
             try:
-                content = self._ark.complete(messages)
+                content = self._ark.complete(messages, timeout=VISION_TIMEOUT_SECONDS)
                 return _parse_subject_analysis(content)
             except DoubaoVisionError as exc:
                 exc.attempt_count = attempt
+                # 视觉输出是随机的：偶发的非法 JSON / 不符合主体合同也可在预算内重试
+                # （与文本客户端一致），避免一次坏输出就把整单判 dead。
+                if exc.error_kind == "invalid_response":
+                    exc.retryable = True
                 if not exc.retryable or attempt >= MAX_ATTEMPTS:
                     raise
             if attempt < MAX_ATTEMPTS:
                 time.sleep(RETRY_BACKOFF_SECONDS)
         raise AssertionError("unreachable")
+
+
+def _vision_message_payload_bytes(title_context: str, image_data_urls: Sequence[str]) -> int:
+    """Estimated JSON serialized size of the multimodal request for a given image set."""
+    try:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    *[
+                        {"type": "image_url", "image_url": {"url": str(value)}}
+                        for value in image_data_urls
+                    ],
+                    {"type": "text", "text": title_context},
+                ],
+            }
+        ]
+        return len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+    except Exception:
+        return len(str(title_context).encode("utf-8"))
 
 
 def _parse_subject_analysis(content: str) -> SubjectAnalysis:

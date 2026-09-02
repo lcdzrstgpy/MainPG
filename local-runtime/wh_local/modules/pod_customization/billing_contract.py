@@ -16,6 +16,9 @@ _PRODUCT_BATCH_FEATURES: tuple[tuple[PodFeature, str], ...] = (
     ("pod.image", "four_grid"),
 )
 
+# 每个款式预留的标题调用次数。与 title_runtime.MAX_ATTEMPTS 保持一致；标题重生不额外计费。
+TITLE_ATTEMPTS = 5
+
 
 class PodBillingAuthorizationRequired(RuntimeError):
     """The durable billing action must pause until a fresh grant is issued."""
@@ -59,9 +62,10 @@ class PodCallPlan:
             for call in (
                 PodPlannedCall(f"{batch_id}:style:{style_index}:image:1", "pod.image"),
                 PodPlannedCall(f"{batch_id}:style:{style_index}:image:2", "pod.image"),
-                PodPlannedCall(f"{batch_id}:style:{style_index}:title:1", "pod.title"),
-                PodPlannedCall(f"{batch_id}:style:{style_index}:title:2", "pod.title"),
-                PodPlannedCall(f"{batch_id}:style:{style_index}:title:3", "pod.title"),
+                *(
+                    PodPlannedCall(f"{batch_id}:style:{style_index}:title:{attempt}", "pod.title")
+                    for attempt in range(1, TITLE_ATTEMPTS + 1)
+                ),
             )
         )
         return cls(idempotency_key=f"pod:batch:{batch_id}:initial", calls=calls)
@@ -89,7 +93,7 @@ class PodCallPlan:
         if include_title:
             calls.extend(
                 PodPlannedCall(f"{trial_id}:title:{attempt}", "pod.title")
-                for attempt in range(1, 4)
+                for attempt in range(1, TITLE_ATTEMPTS + 1)
             )
         return cls(idempotency_key=f"pod:trial:{trial_id}", calls=tuple(calls))
 
@@ -102,7 +106,7 @@ class PodCallPlan:
         if include_title:
             calls.extend(
                 PodPlannedCall(f"{action_id}:title:{attempt}", "pod.title")
-                for attempt in range(1, 4)
+                for attempt in range(1, TITLE_ATTEMPTS + 1)
             )
         return cls(idempotency_key=f"pod:retry:{action_id}", calls=tuple(calls))
 
@@ -136,12 +140,12 @@ class PodCallPlan:
             if include_title:
                 calls.extend(
                     PodPlannedCall(f"{action_id}:style:{style_index}:title:{attempt}", "pod.title")
-                    for attempt in range(1, 4)
+                    for attempt in range(1, TITLE_ATTEMPTS + 1)
                 )
         for style_index in title_indices:
             calls.extend(
                 PodPlannedCall(f"{action_id}:style:{style_index}:title:{attempt}", "pod.title")
-                for attempt in range(1, 4)
+                for attempt in range(1, TITLE_ATTEMPTS + 1)
             )
         return cls(idempotency_key=f"pod:retry:{action_id}", calls=tuple(calls))
 

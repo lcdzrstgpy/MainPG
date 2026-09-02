@@ -123,7 +123,11 @@ def build_patch(
         target = output_dir / source.relative_to(to_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
-    (output_dir / "patch-manifest.json").write_bytes(canonical_patch_bytes(manifest) + b"\n")
+    # 写盘需带 signature：canonical_patch_bytes 只序列化 payload 字段，会丢掉签名，
+    # 导致客户端 _validate_manifest 因字段缺失而拒绝。用完整 JSON 序列化输出。
+    (output_dir / "patch-manifest.json").write_bytes(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    )
     return manifest
 
 

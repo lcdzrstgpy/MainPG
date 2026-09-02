@@ -266,7 +266,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [maxSkuStock, setMaxSkuStock] = useState("");
   const [targetCount, setTargetCount] = useState("");
   const [excludeRisks, setExcludeRisks] = useState(false);
-  const [maxParallelCollect, setMaxParallelCollect] = useState(1);
+  const [maxParallelCollect, setMaxParallelCollect] = useState(8);
   const [advancedCollectionOpen, setAdvancedCollectionOpen] = useState(false);
   const [runs, setRuns] = useState<DailySelectionRunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<DailySelectionRun | null>(null);
@@ -308,10 +308,20 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
   useEffect(() => {
     if (isActive) return;
+    setAdvancedCollectionOpen(false);
     setHistoryDrawerOpen(false);
     setPresetDialogOpen(false);
     setPendingDeleteDirection(null);
   }, [isActive]);
+
+  useEffect(() => {
+    if (!advancedCollectionOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAdvancedCollectionOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [advancedCollectionOpen]);
 
   const filteredCandidates = useMemo(() => {
     if (!activeRun) return [];
@@ -511,7 +521,12 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         const state = await getSkuRepullState(activeRun.run_id);
         setSkuRepull(state);
         if (state.status !== "running") {
-          setActiveRun(await getSelectionRun(activeRun.run_id));
+          const [refreshedRun, refreshedRuns] = await Promise.all([
+            getSelectionRun(activeRun.run_id),
+            listSelectionRuns(),
+          ]);
+          setActiveRun(refreshedRun);
+          setRuns(refreshedRuns);
         }
       } catch (requestError) {
         setError(requestError instanceof Error ? requestError.message : "SKU 补齐进度读取失败");
@@ -646,7 +661,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     setMinMoq("2");
     setTargetCount(String(direction.target));
     setExcludeRisks(true);
-    setMaxParallelCollect(6);
+    setMaxParallelCollect(8);
   }
 
   function resetPresetForm() {
@@ -1220,36 +1235,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           </div>
 
           <div className="collection-advanced-header">
-            <span>更多筛选、并发与风险规则</span>
-            <button type="button" className={advancedCollectionOpen ? "is-open" : ""} aria-expanded={advancedCollectionOpen} onClick={() => setAdvancedCollectionOpen((value) => !value)}>
-              {advancedCollectionOpen ? "收起高级设置" : "高级设置"}
+            <div><strong>高级筛选</strong><span>价格、SKU、并发与风险规则</span></div>
+            <button type="button" aria-expanded={advancedCollectionOpen} aria-controls="collection-settings-drawer" onClick={() => { setHistoryDrawerOpen(false); setAdvancedCollectionOpen(true); }}>
+              <span aria-hidden="true">⚙</span>高级设置
             </button>
-          </div>
-
-          <div className={`collection-advanced-collapse ${advancedCollectionOpen ? "is-open" : ""}`}>
-            <div className="collection-advanced-collapse-inner">
-              <div className="collection-fields collection-advanced-fields">
-            <label><span>最低价格（元）</span><input type="number" min="0" step="0.01" value={minPrice} onChange={(event) => setMinPrice(event.target.value)} /></label>
-            <label><span>最高价格（元）</span><input type="number" min="0" step="0.01" value={maxPrice} onChange={(event) => setMaxPrice(event.target.value)} /></label>
-            <label><span>起订量上限（件）</span><input type="number" min="1" value={minMoq} onChange={(event) => setMinMoq(event.target.value)} /></label>
-            <label><span>SKU 规格数 ≥</span><input type="number" min="1" value={minSkuCount} onChange={(event) => setMinSkuCount(event.target.value)} placeholder="如 2" title="商品 SKU（规格）数量大于或等于该值" /></label>
-            <label><span>SKU 规格数 ≤</span><input type="number" min="1" value={maxSkuCount} onChange={(event) => setMaxSkuCount(event.target.value)} placeholder="如 20" title="商品 SKU（规格）数量小于或等于该值" /></label>
-            <label><span>SKU 最低价（元）≥</span><input type="number" min="0" step="0.01" value={minSkuPrice} onChange={(event) => setMinSkuPrice(event.target.value)} placeholder="如 0.5" title="所有 SKU 价格均不低于该值" /></label>
-            <label><span>SKU 最高价（元）≤</span><input type="number" min="0" step="0.01" value={maxSkuPrice} onChange={(event) => setMaxSkuPrice(event.target.value)} placeholder="如 50" title="所有 SKU 价格均不高于该值" /></label>
-            <label><span>SKU 库存 ≥</span><input type="number" min="1" value={minSkuStock} onChange={(event) => setMinSkuStock(event.target.value)} placeholder="如 1000" title="每个 SKU 的库存均不低于该值" /></label>
-            <label><span>SKU 库存 ≤</span><input type="number" min="1" value={maxSkuStock} onChange={(event) => setMaxSkuStock(event.target.value)} placeholder="如 50000" title="每个 SKU 的库存均不高于该值" /></label>
-            <label className="field-slider">
-              <span>采集并行数</span>
-              <input type="range" min={1} max={10} step={1} value={maxParallelCollect} onChange={(event) => setMaxParallelCollect(Number(event.target.value) || 1)} />
-              <em>{maxParallelCollect} 线程{maxParallelCollect <= 1 ? '（串行）' : ''}</em>
-            </label>
-              </div>
-              <label className="risk-switch">
-                <input type="checkbox" checked={excludeRisks} onChange={(event) => setExcludeRisks(event.target.checked)} />
-                <span aria-hidden="true" />
-                自动排除高风险候选
-              </label>
-            </div>
           </div>
 
           {platform && platform !== "1688" && (
@@ -1315,7 +1304,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               </div>
             )}
             {activeRun && <span>批次 {activeRun.run_id.slice(0, 8)} · {activeRun.candidate_count} 条</span>}
-            <button type="button" className="history-drawer-trigger" onClick={() => setHistoryDrawerOpen(true)}><span aria-hidden="true">◷</span> 最近批次 <b>{runs.length}</b></button>
+            <button type="button" className="history-drawer-trigger" onClick={() => { setAdvancedCollectionOpen(false); setHistoryDrawerOpen(true); }}><span aria-hidden="true">◷</span> 最近批次 <b>{runs.length}</b></button>
             {activeRun && (
               <div className={`sku-repull-control ${skuRepull?.status === "running" ? "is-running" : ""}`}>
                 <button
@@ -1452,6 +1441,55 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           </section>
         </div>
       )}
+      <div
+        className={`collection-settings-layer ${advancedCollectionOpen ? "is-open" : ""}`}
+        aria-hidden={!advancedCollectionOpen}
+        onMouseDown={(event) => {
+          if (event.currentTarget === event.target) setAdvancedCollectionOpen(false);
+        }}
+      >
+        <aside id="collection-settings-drawer" className="collection-settings-drawer" role="dialog" aria-modal="true" aria-labelledby="collection-settings-title">
+          <header className="collection-settings-drawer-header">
+            <div><span>COLLECTION SETTINGS</span><strong id="collection-settings-title">高级设置</strong><small>设置会立即用于下一次采集</small></div>
+            <button type="button" onClick={() => setAdvancedCollectionOpen(false)} aria-label="关闭高级设置">×</button>
+          </header>
+          <div className="collection-settings-drawer-body">
+            <section className="collection-settings-section">
+              <div className="collection-settings-section-title"><strong>商品筛选</strong><span>留空表示不限制</span></div>
+              <div className="collection-fields collection-settings-fields">
+                <label><span>最低价格（元）</span><input type="number" min="0" step="0.01" value={minPrice} onChange={(event) => setMinPrice(event.target.value)} /></label>
+                <label><span>最高价格（元）</span><input type="number" min="0" step="0.01" value={maxPrice} onChange={(event) => setMaxPrice(event.target.value)} /></label>
+                <label><span>起订量上限（件）</span><input type="number" min="1" value={minMoq} onChange={(event) => setMinMoq(event.target.value)} /></label>
+                <label><span>SKU 规格数 ≥</span><input type="number" min="1" value={minSkuCount} onChange={(event) => setMinSkuCount(event.target.value)} placeholder="如 2" title="商品 SKU（规格）数量大于或等于该值" /></label>
+                <label><span>SKU 规格数 ≤</span><input type="number" min="1" value={maxSkuCount} onChange={(event) => setMaxSkuCount(event.target.value)} placeholder="如 20" title="商品 SKU（规格）数量小于或等于该值" /></label>
+                <label><span>SKU 最低价（元）≥</span><input type="number" min="0" step="0.01" value={minSkuPrice} onChange={(event) => setMinSkuPrice(event.target.value)} placeholder="如 0.5" title="所有 SKU 价格均不低于该值" /></label>
+                <label><span>SKU 最高价（元）≤</span><input type="number" min="0" step="0.01" value={maxSkuPrice} onChange={(event) => setMaxSkuPrice(event.target.value)} placeholder="如 50" title="所有 SKU 价格均不高于该值" /></label>
+                <label><span>SKU 库存 ≥</span><input type="number" min="1" value={minSkuStock} onChange={(event) => setMinSkuStock(event.target.value)} placeholder="如 1000" title="每个 SKU 的库存均不低于该值" /></label>
+                <label><span>SKU 库存 ≤</span><input type="number" min="1" value={maxSkuStock} onChange={(event) => setMaxSkuStock(event.target.value)} placeholder="如 50000" title="每个 SKU 的库存均不高于该值" /></label>
+              </div>
+            </section>
+            <section className="collection-settings-section">
+              <div className="collection-settings-section-title"><strong>采集执行</strong><span>控制速度与风险过滤</span></div>
+              <div className="collection-settings-runtime">
+                <label className="field-slider">
+                  <span>采集并行数</span>
+                  <input type="range" min={1} max={10} step={1} value={maxParallelCollect} onChange={(event) => setMaxParallelCollect(Number(event.target.value) || 1)} />
+                  <em>{maxParallelCollect} 线程{maxParallelCollect <= 1 ? "（串行）" : ""}</em>
+                </label>
+                <label className="risk-switch">
+                  <input type="checkbox" checked={excludeRisks} onChange={(event) => setExcludeRisks(event.target.checked)} />
+                  <span aria-hidden="true" />
+                  <b>自动排除高风险候选</b>
+                </label>
+              </div>
+            </section>
+          </div>
+          <footer className="collection-settings-drawer-footer">
+            <span>已填写的设置会保留</span>
+            <button type="button" onClick={() => setAdvancedCollectionOpen(false)}>完成</button>
+          </footer>
+        </aside>
+      </div>
       <div
         className={`history-drawer-layer ${historyDrawerOpen ? "is-open" : ""}`}
         aria-hidden={!historyDrawerOpen}

@@ -1567,3 +1567,153 @@ def test_resume_after_pause_submits_only_the_remaining_style(tmp_path: Path) -> 
     assert stored["completed_count"] == 2
     service.close()
     runtime.close()
+
+
+class ConcurrencyTrackingRuntime(FakePodRuntime):
+    """Tracks peak provider and publication concurrency for the streaming tests."""
+
+    def __init__(self, grids: list[bytes | Exception], *, workers: int = 8, generation_pause: float = 0.0) -> None:
+        super().__init__(grids)
+        self.executor.shutdown(wait=True, cancel_futures=True)
+        self.executor = ThreadPoolExecutor(max_workers=max(16, int(workers) * 2), thread_name_prefix="test-pod-concurrent")
+        self.config = SimpleNamespace(executor_workers=max(1, int(workers)))
+        self.generation_pause = float(generation_pause)
+        self._generation_lock = threading.Lock()
+        self.generation_active = 0
+        self.max_generation_active = 0
+
+    def generate_listing_grid(self, request, *, grant=None, call_id="") -> GeneratedMedia:
+        assert grant is not None and grant.provider_key("wuyin")
+        with self._generation_lock:
+            self.generation_active += 1
+            self.max_generation_active = max(self.max_generation_active, self.generation_active)
+        try:
+            if self.generation_pause:
+                time.sleep(self.generation_pause)
+            return super().generate_listing_grid(request, grant=grant, call_id=call_id)
+        finally:
+            with self._generation_lock:
+                self.generation_active -= 1
+
+
+class PipelineProbeRuntime(ConcurrencyTrackingRuntime):
+    """Returns the first grid immediately and holds the rest behind a gate."""
+
+    def __init__(self, grids: list[bytes]) -> None:
+        super().__init__(grids, workers=3)
+        self.first_publish_started = threading.Event()
+        self.hold_nonfirst_generations = threading.Event()
+        self._generated = 0
+        self._generated_lock = threading.Lock()
+
+    def generate_listing_grid(self, request, *, grant=None, call_id="") -> GeneratedMedia:
+        with self._generated_lock:
+            self._generated += 1
+            is_first = self._generated == 1
+        if not is_first:
+            assert self.hold_nonfirst_generations.wait(timeout=3)
+        return super().generate_listing_grid(request, grant=grant, call_id=call_id)
+
+    def publish_listing_image(self, media, *, namespace: str, role: str) -> str:
+        self.first_publish_started.set()
+        return super().publish_listing_image(media, namespace=namespace, role=role)
+
+
+def _track_postprocess_concurrency(service: PodCustomizationService):
+    """Wrap ``_process_style_grids`` to measure its peak concurrent invocations."""
+    state = {"active": 0, "max": 0}
+    lock = threading.Lock()
+    original = service.worker._process_style_grids
+
+    def tracked(batch_arg, grids, billing_run):
+        with lock:
+            state["active"] += 1
+            state["max"] = max(state["max"], state["active"])
+        try:
+            time.sleep(0.004)
+            return original(batch_arg, grids, billing_run)
+        finally:
+            with lock:
+                state["active"] -= 1
+
+    service.worker._process_style_grids = tracked
+    return state
+
+
+def test_four_grid_generation_and_postprocess_stay_within_image_workers(tmp_path: Path) -> None:
+    patterns = [_pattern(index % 90) for index in range(160)]
+    runtime = ConcurrencyTrackingRuntime(
+        [_grid(patterns[index:index + 4]) for index in range(0, 160, 4)],
+        workers=8,
+        generation_pause=0.005,
+    )
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"], count=40)
+    postprocess = _track_postprocess_concurrency(service)
+
+    service.worker.process_batch(batch["id"])
+
+    stored = service.get_batch(actor, batch["id"])
+    assert stored["status"] == "completed"
+    assert stored["completed_count"] == 40
+    assert runtime.max_generation_active <= 8
+    assert postprocess["max"] <= 8
+    assert runtime.max_generation_active > 1
+    assert postprocess["max"] > 1
+    service.close()
+    runtime.close()
+
+
+def test_postprocess_starts_immediately_after_first_grid_returns(tmp_path: Path) -> None:
+    patterns = [_pattern(index) for index in range(12)]
+    runtime = PipelineProbeRuntime([_grid(patterns[index:index + 4]) for index in range(0, 12, 4)])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"], count=3)
+
+    future = service.worker.submit(batch["id"])
+
+    # 第一款返回后应立即开始发布，即使其余款式仍被挡在生图闸口之后。
+    assert runtime.first_publish_started.wait(timeout=2)
+    runtime.hold_nonfirst_generations.set()
+    future.result(timeout=3)
+
+    stored = service.get_batch(actor, batch["id"])
+    assert stored["status"] == "completed"
+    assert stored["completed_count"] == 3
+    service.close()
+    runtime.close()
+
+
+def test_parallel_postprocess_failure_isolates_single_style(tmp_path: Path) -> None:
+    patterns = [_pattern(index % 90) for index in range(44)]
+    runtime = ConcurrencyTrackingRuntime(
+        [_grid(patterns[index:index + 4]) for index in range(0, 44, 4)],
+        workers=8,
+        generation_pause=0.002,
+    )
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"], count=10)
+
+    original = service.worker._process_style_grids
+
+    def tracked(batch_arg, grids, billing_run):
+        if grids[0][0]["style_index"] == 3:
+            raise RuntimeError("COS publish failed")
+        return original(batch_arg, grids, billing_run)
+
+    service.worker._process_style_grids = tracked
+
+    service.worker.process_batch(batch["id"])
+
+    stored = service.get_batch(actor, batch["id"])
+    assert stored["status"] == "partial_failure"
+    assert stored["completed_count"] == 9
+    assert stored["failed_count"] == 1
+    service.close()
+    runtime.close()

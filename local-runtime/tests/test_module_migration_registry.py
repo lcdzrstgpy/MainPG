@@ -19,10 +19,12 @@ def test_shop_and_direct_intake_migrations_are_registered_in_dependency_order() 
     shop_leases = migration_ids.index("data_collection:006_shop_collection_lease_tokens")
     sku_repull_outbox = migration_ids.index("data_collection:007_sku_repull_outbox")
     direct_intake = migration_ids.index("product_processing:004_shop_candidate_uniqueness")
+    dimension_templates = migration_ids.index("product_processing:005_dimension_templates")
 
     assert shop_schema < shop_leases
     assert shop_leases < sku_repull_outbox
     assert direct_intake > migration_ids.index("product_processing:003_source_image_sync_lease")
+    assert dimension_templates > direct_intake
 
 
 def test_pod_customization_migrations_are_registered_in_forward_order() -> None:
@@ -43,7 +45,47 @@ def test_pod_customization_migrations_are_registered_in_forward_order() -> None:
         "pod_customization:007_requested_count_upgrade",
         "pod_customization:008_persistent_billing_runs",
         "pod_customization:009_export_records",
+        "pod_customization:010_pod_title_source",
     ]
+
+
+def test_init_db_applies_pod_title_source_migration(tmp_path: Path) -> None:
+    database_path = tmp_path / "pod.sqlite3"
+    init_db(database_path)
+
+    with transaction(database_path) as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(pod_customization_style_titles)")
+        }
+
+    assert "source" in columns
+
+
+def test_dimension_template_migration_creates_learning_and_quality_columns(tmp_path: Path) -> None:
+    database_path = tmp_path / "dimension-templates.sqlite3"
+    init_db(database_path)
+
+    with transaction(database_path) as conn:
+        template_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(product_dimension_templates)")
+        }
+        observation_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(product_dimension_observations)")
+        }
+        refresh_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(product_dimension_template_refresh_queue)")
+        }
+
+    assert {"accuracy_json", "quarantined_axis_count"}.issubset(template_columns)
+    assert {
+        "quality_json",
+        "raw_estimate_json",
+        "resolved_estimate_json",
+        "error_metrics_json",
+    }.issubset(observation_columns)
+    assert {"pending_changes", "not_before_epoch", "last_error"}.issubset(refresh_columns)
 
 
 def test_operator_role_receives_new_pod_permissions(tmp_path: Path) -> None:

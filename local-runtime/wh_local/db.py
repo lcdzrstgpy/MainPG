@@ -436,8 +436,9 @@ CREATE TABLE IF NOT EXISTS billing_payment_orders (
 CREATE INDEX IF NOT EXISTS idx_billing_payment_orders_account_status
     ON billing_payment_orders (account_id, status, created_at);
 
--- 充值活动由开发运维命令维护，默认关闭。订单在创建时复制活动快照，
--- 因此启停不会改变已经生成的待支付订单。
+-- Legacy double-points campaign configuration is retained only for audit of
+-- historical orders. New fixed packages use a permanent 25% bonus rule and
+-- never read this switch.
 CREATE TABLE IF NOT EXISTS billing_topup_promotions (
     promotion_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -815,6 +816,17 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 shop_candidate_uniqueness_sql.read_text(encoding="utf-8"),
             )
         )
+    dimension_templates_sql = (
+        root / "modules" / "product_processing" / "migrations" / "005_dimension_templates.sql"
+    )
+    if dimension_templates_sql.exists():
+        migrations.append(
+            (
+                "product_processing:005_dimension_templates",
+                "product_processing",
+                dimension_templates_sql.read_text(encoding="utf-8"),
+            )
+        )
     pod_customization_migrations = (
         "001_pod_customization",
         "002_direct_listing_trials",
@@ -825,6 +837,7 @@ def _module_migrations() -> list[tuple[str, str, str]]:
         "007_requested_count_upgrade",
         "008_persistent_billing_runs",
         "009_export_records",
+        "010_pod_title_source",
     )
     for migration_name in pod_customization_migrations:
         sql_path = (
@@ -1029,6 +1042,12 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_payment_orders", "total_points", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "billing_payment_orders", "promotion_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "billing_payment_orders", "promotion_name", "TEXT NOT NULL DEFAULT ''")
+    # The retired 2x switch must not remain armed after the permanent package
+    # rule ships. Existing orders already carry immutable bonus snapshots.
+    conn.execute(
+        "UPDATE billing_topup_promotions SET is_active = 0 "
+        "WHERE promotion_id = 'topup_double' AND is_active <> 0"
+    )
     _migrate_billing_points_to_tenths(conn)
 
 
