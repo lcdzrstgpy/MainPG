@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 import threading
 import uuid
@@ -55,7 +55,7 @@ class DailySelectionProgressTracker:
         self._lock = Lock()
 
     def create(self, *, workspace_id: str) -> DailySelectionTaskStatus:
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         task_id = str(uuid.uuid4())
         with self._lock:
             self._prune(now)
@@ -93,7 +93,7 @@ class DailySelectionProgressTracker:
             record.completed = max(0, int(completed))
             record.total = max(0, int(total))
             record.message = message
-            record.updated_at = datetime.now(UTC)
+            record.updated_at = datetime.now(timezone.utc)
 
     def complete(self, task_id: str, *, run_id: str) -> None:
         with self._lock:
@@ -107,7 +107,7 @@ class DailySelectionProgressTracker:
             record.message = "采集完成"
             record.run_id = run_id
             record.error = None
-            record.updated_at = datetime.now(UTC)
+            record.updated_at = datetime.now(timezone.utc)
 
     def fail(self, task_id: str, *, error: str) -> None:
         with self._lock:
@@ -118,7 +118,7 @@ class DailySelectionProgressTracker:
             record.stage = "failed"
             record.message = "采集失败"
             record.error = error.strip() or "采集任务失败"
-            record.updated_at = datetime.now(UTC)
+            record.updated_at = datetime.now(timezone.utc)
 
     def cancel(self, task_id: str, *, workspace_id: str) -> DailySelectionTaskStatus:
         """Request a running task to stop; collected candidates are kept."""
@@ -129,7 +129,7 @@ class DailySelectionProgressTracker:
             if record.status not in {"completed", "failed", "cancelled"}:
                 record.cancel_event.set()
                 record.message = "中断请求已发送，正在停止…"
-                record.updated_at = datetime.now(UTC)
+                record.updated_at = datetime.now(timezone.utc)
             return self._public(task_id, record)
 
     def cancel_event_for(self, task_id: str, *, workspace_id: str) -> threading.Event:
@@ -150,7 +150,7 @@ class DailySelectionProgressTracker:
             record.message = "采集已中断，以下为已采集的候选"
             record.run_id = run_id
             record.error = None
-            record.updated_at = datetime.now(UTC)
+            record.updated_at = datetime.now(timezone.utc)
 
     def get(self, task_id: str, *, workspace_id: str) -> DailySelectionTaskStatus:
         with self._lock:
