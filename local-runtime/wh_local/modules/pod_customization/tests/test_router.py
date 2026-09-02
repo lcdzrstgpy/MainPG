@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import io
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from urllib.error import HTTPError
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,6 +21,12 @@ from wh_local.customer.contracts import (
 )
 from wh_local.customer.remote_client import CustomerAuthClient
 from wh_local.modules.pod_customization.remote_billing import RemotePodBillingCoordinator
+from wh_local.modules.pod_customization.contracts import (
+    BatchCreate,
+    BusinessFields,
+    ListingFields,
+)
+from wh_local.session import Actor
 
 
 def _png() -> bytes:
@@ -191,23 +198,17 @@ def test_real_remote_client_composition_preserves_pod_auth_status_without_detail
     local_status: int,
     detail: str,
 ) -> None:
-    def reject_remote_request(*_args, **_kwargs):
-        raise HTTPError(
-            "https://customer.example.test/api/customer/billing/pod/freeze",
-            remote_status,
-            "rejected",
-            None,
-            io.BytesIO(
-                b'{"detail":"permission denied Authorization: Bearer LEAK token=LEAK"}'
-            ),
-        )
-
+    remote_client = CustomerAuthClient("https://customer.example.test")
     monkeypatch.setattr(
-        "wh_local.customer.remote_client.urlopen",
-        reject_remote_request,
+        remote_client._session,
+        "request",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status_code=remote_status,
+            text='{"detail":"permission denied Authorization: Bearer LEAK token=LEAK"}',
+        ),
     )
     billing = RemotePodBillingCoordinator(
-        CustomerAuthClient("https://customer.example.test"),
+        remote_client,
         lambda _actor: "live-remote-token",
     )
     app = FastAPI()
@@ -332,6 +333,77 @@ def test_batch_create_list_detail_and_scene_optimization_contract(tmp_path) -> N
     )
     assert item_retry.status_code == 409
     assert item_retry.json()["detail"] == "POD single-image regeneration is not available in this release"
+
+
+def test_export_selection_patch_contract_returns_current_selection(tmp_path) -> None:
+    app = FastAPI()
+    router = create_router(
+        tmp_path / "workbench.sqlite3",
+        tmp_path / "assets",
+        RouterRuntime(),
+        start_workers=False,
+    )
+    app.include_router(router)
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer dev-admin-token"}
+    service = getattr(router, "pod_customization_service")
+    actor = Actor(id="local-demo-admin", username="local-demo", role="admin", workspace_id="default")
+    template = service.upload_template(actor, name="Ready", filename="scene.png", content=_png())
+    service.calibrate_template(actor, template["id"])
+    batch = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=1,
+            business_fields=BusinessFields(product_name="Bag", product_category="bags"),
+            listing_fields=ListingFields(
+                declared_price=18.5,
+                suggested_price_usd=29.99,
+                category_name="bags",
+                skus=[{"name": "SKU", "length_cm": 1, "width_cm": 1, "height_cm": 1, "weight_g": 1}],
+            ),
+        ),
+        enqueue=False,
+    )
+    with sqlite3.connect(service.database_path) as connection:
+        rows = connection.execute(
+            "SELECT result_id, variant_index FROM pod_customization_style_grid_results WHERE batch_id = ? ORDER BY variant_index",
+            (batch["id"],),
+        ).fetchall()
+        for (result_id, _), role in zip(rows, ("hero", "detail_a", "detail_b", "lifestyle"), strict=True):
+            connection.execute(
+                "UPDATE pod_customization_style_grid_results SET status = 'completed' WHERE result_id = ?",
+                (result_id,),
+            )
+            connection.execute(
+                "INSERT INTO pod_customization_style_grid_publications (result_id, role, public_url, updated_at) VALUES (?, ?, ?, 'now')",
+                (result_id, role, f"https://images.example.com/{role}.png"),
+            )
+        connection.execute(
+            "UPDATE pod_customization_style_titles SET status = 'completed' WHERE batch_id = ? AND style_index = 1",
+            (batch["id"],),
+        )
+        connection.execute("UPDATE pod_customization_batches SET status = 'completed' WHERE batch_id = ?", (batch["id"],))
+    service.repository.upsert_style_copy(
+        batch["id"], actor.workspace_id, actor.id, 1,
+        title="Title", english_title="English", description="Description",
+    )
+
+    response = client.patch(
+        f"/api/pod-customization/batches/{batch['id']}/styles/1/export-selection",
+        headers=headers,
+        json={"selected": False},
+    )
+    repeated = client.patch(
+        f"/api/pod-customization/batches/{batch['id']}/styles/1/export-selection",
+        headers=headers,
+        json={"selected": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"style_index": 1, "export_selected": False}
+    assert repeated.status_code == 200
+    assert repeated.json() == {"style_index": 1, "export_selected": False}
 
 
 @pytest.mark.parametrize(

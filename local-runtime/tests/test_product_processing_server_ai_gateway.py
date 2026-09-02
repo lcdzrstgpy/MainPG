@@ -139,6 +139,200 @@ def _reserved_usage(client: TestClient, headers: dict[str, str], feature_key: st
     return str(response.json()["usage"]["usage_id"])
 
 
+def test_pod_title_gateway_settles_free_server_managed_call_without_exposing_secret(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    usage = _reserved_usage(client, headers, "pod.title", "pod-title")
+    monkeypatch.setenv("WH_TEXT_API_KEY", "pod-title-server-secret")
+    monkeypatch.setattr(
+        auth_server.requests,
+        "post",
+        lambda *_args, **_kwargs: _Response(
+            {
+                "secret": "pod-title-server-secret",
+                "choices": [{"message": {"content": "regenerated title"}}],
+            }
+        ),
+    )
+
+    response = client.post(
+        "/api/customer/ai/pod/title",
+        headers=headers,
+        json={"usage_id": usage, "messages": [{"role": "user", "content": "regenerate title"}]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert "pod-title-server-secret" not in response.text
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        usage_row = conn.execute(
+            "SELECT status, reserved_points, charged_points FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage,),
+        ).fetchone()
+        gateway_row = conn.execute(
+            "SELECT status, feature_key FROM billing_ai_gateway_requests WHERE usage_id = ?",
+            (usage,),
+        ).fetchone()
+    assert dict(usage_row) == {"status": "succeeded", "reserved_points": 0, "charged_points": 0}
+    assert dict(gateway_row) == {"status": "succeeded", "feature_key": "pod.title"}
+
+
+def test_pod_whole_style_image_gateway_charges_once_and_replays_cached_result(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import wh_local.billing as billing_module
+
+    client, headers = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(billing_module.secrets, "randbelow", lambda _upper: 0)
+    usage = _reserved_usage(client, headers, "pod.image", "pod-style-image")
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "pod-image-server-secret")
+    submits = 0
+
+    def fake_post(*_args, **_kwargs):
+        nonlocal submits
+        submits += 1
+        return _Response({"code": 200, "data": {"id": "pod-style-provider-task"}})
+
+    monkeypatch.setattr(auth_server.requests, "post", fake_post)
+    monkeypatch.setattr(
+        auth_server.requests,
+        "get",
+        lambda *_args, **_kwargs: _Response(
+            {"code": 200, "data": {"status": "done", "url": "https://images.example.test/pod.png"}}
+        ),
+    )
+    payload = {"usage_id": usage, "prompt": "four images for one complete POD style", "urls": [], "size": "1:1"}
+
+    first = client.post("/api/customer/ai/pod/image", headers=headers, json=payload)
+    second = client.post("/api/customer/ai/pod/image", headers=headers, json=payload)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert submits == 1
+    assert "pod-image-server-secret" not in second.text
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        usage_row = conn.execute(
+            "SELECT status, reserved_points, charged_points FROM billing_ai_usage_events WHERE usage_id = ?",
+            (usage,),
+        ).fetchone()
+        gateway_row = conn.execute(
+            "SELECT status, provider_task_id FROM billing_ai_gateway_requests WHERE usage_id = ?",
+            (usage,),
+        ).fetchone()
+    assert dict(usage_row) == {"status": "succeeded", "reserved_points": 400, "charged_points": 400}
+    assert dict(gateway_row) == {"status": "succeeded", "provider_task_id": "pod-style-provider-task"}
+
+
+def test_pod_gateway_reconciles_submitted_style_task_and_settles_without_client_callback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import wh_local.billing as billing_module
+
+    client, headers = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(billing_module.secrets, "randbelow", lambda _upper: 0)
+    usage = _reserved_usage(client, headers, "pod.image", "pod-reconcile")
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "pod-reconcile-server-secret")
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        account = conn.execute(
+            "SELECT account_id FROM auth_accounts WHERE username = 'gateway_user'"
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO billing_ai_gateway_requests (
+                usage_id, request_hash, account_id, feature_key, status,
+                phase, provider_task_id, lease_expires_at
+            ) VALUES (?, 'pod-reconcile-request', ?, 'pod.image', 'in_progress',
+                      'polling', 'submitted-pod-provider-task', '2099-01-01T00:00:00+00:00')
+            """,
+            (usage, account["account_id"]),
+        )
+    monkeypatch.setattr(
+        auth_server.requests,
+        "get",
+        lambda *_args, **_kwargs: _Response(
+            {"code": 200, "data": {"status": "done", "url": "https://images.example.test/reconciled-pod.png"}}
+        ),
+    )
+
+    reconciled = auth_server.reconcile_pod_gateway_requests(tmp_path / "auth.sqlite3")
+
+    assert reconciled == {"completed": 1, "failed": 0, "pending": 0}
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        usage_row = conn.execute(
+            "SELECT status, charged_points FROM billing_ai_usage_events WHERE usage_id = ?", (usage,)
+        ).fetchone()
+        gateway_row = conn.execute(
+            "SELECT status, response_json FROM billing_ai_gateway_requests WHERE usage_id = ?", (usage,)
+        ).fetchone()
+    assert dict(usage_row) == {"status": "succeeded", "charged_points": 400}
+    assert gateway_row["status"] == "succeeded"
+    assert "pod-reconcile-server-secret" not in gateway_row["response_json"]
+
+
+def test_pod_gateway_releases_whole_style_reservation_when_provider_rejects_before_submit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import wh_local.billing as billing_module
+
+    client, headers = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(billing_module.secrets, "randbelow", lambda _upper: 0)
+    usage = _reserved_usage(client, headers, "pod.image", "pod-provider-reject")
+    monkeypatch.setenv("WH_WUYIN_IMAGE_API_KEY", "pod-reject-server-secret")
+    monkeypatch.setattr(
+        auth_server.requests,
+        "post",
+        lambda *_args, **_kwargs: _Response({"code": 400, "message": "rejected"}),
+    )
+
+    response = client.post(
+        "/api/customer/ai/pod/image",
+        headers=headers,
+        json={"usage_id": usage, "prompt": "rejected POD style", "urls": [], "size": "1:1"},
+    )
+
+    assert response.status_code == 502
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        usage_row = conn.execute(
+            "SELECT status, refunded_points FROM billing_ai_usage_events WHERE usage_id = ?", (usage,)
+        ).fetchone()
+        wallet = conn.execute("SELECT locked_points FROM billing_wallets").fetchone()
+    assert dict(usage_row) == {"status": "failed", "refunded_points": 400}
+    assert wallet["locked_points"] == 0
+
+
+def test_pod_gateway_recovery_releases_submit_uncertain_reservation(tmp_path: Path, monkeypatch) -> None:
+    import wh_local.billing as billing_module
+
+    client, headers = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(billing_module.secrets, "randbelow", lambda _upper: 0)
+    usage = _reserved_usage(client, headers, "pod.image", "pod-submit-uncertain-recovery")
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        account = conn.execute(
+            "SELECT account_id FROM auth_accounts WHERE username = 'gateway_user'"
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO billing_ai_gateway_requests (
+                usage_id, request_hash, account_id, feature_key, status, phase,
+                provider_task_id, lease_expires_at
+            ) VALUES (?, 'pod-uncertain-request', ?, 'pod.image', 'failed',
+                      'submit_uncertain', '', '')
+            """,
+            (usage, account["account_id"]),
+        )
+
+    reconciled = auth_server.reconcile_pod_gateway_requests(tmp_path / "auth.sqlite3")
+
+    assert reconciled == {"completed": 0, "failed": 1, "pending": 0}
+    with transaction(tmp_path / "auth.sqlite3") as conn:
+        usage_row = conn.execute(
+            "SELECT status, refunded_points FROM billing_ai_usage_events WHERE usage_id = ?", (usage,)
+        ).fetchone()
+        wallet = conn.execute("SELECT locked_points FROM billing_wallets").fetchone()
+    assert dict(usage_row) == {"status": "failed", "refunded_points": 400}
+    assert wallet["locked_points"] == 0
+
+
 def test_init_db_upgrades_legacy_gateway_rows_with_recovery_columns(tmp_path: Path) -> None:
     db_path = tmp_path / "legacy-gateway.sqlite3"
     with sqlite3.connect(db_path) as conn:

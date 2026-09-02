@@ -149,6 +149,43 @@ class PodCallPlan:
             )
         return cls(idempotency_key=f"pod:retry:{action_id}", calls=tuple(calls))
 
+    @classmethod
+    def for_batch_resume(
+        cls,
+        batch_id: str,
+        resume_id: str,
+        *,
+        image_style_indices: Sequence[int],
+        title_style_indices: Sequence[int],
+    ) -> "PodCallPlan":
+        """Freeze only work that remains after a previously settled pause.
+
+        Call identifiers intentionally remain tied to the original batch and
+        style so the worker can resume its persisted generation state, while
+        the freeze idempotency key identifies this distinct resume action.
+        """
+        image_indices = tuple(image_style_indices)
+        title_indices = tuple(title_style_indices)
+        if not image_indices and not title_indices:
+            raise ValueError("at least one remaining POD style is required")
+        if set(image_indices) & set(title_indices):
+            raise ValueError("a resumed style cannot be both image and title only")
+        calls: list[PodPlannedCall] = []
+        for style_index in image_indices:
+            calls.extend(
+                PodPlannedCall(f"{batch_id}:style:{style_index}:image:{attempt}", "pod.image")
+                for attempt in (1, 2)
+            )
+        for style_index in title_indices:
+            calls.extend(
+                PodPlannedCall(f"{batch_id}:style:{style_index}:title:{attempt}", "pod.title")
+                for attempt in range(1, TITLE_ATTEMPTS + 1)
+            )
+        return cls(
+            idempotency_key=f"pod:batch:{batch_id}:resume:{resume_id}",
+            calls=tuple(calls),
+        )
+
     def freeze_payload(self, *, encrypted_session_key: str) -> dict[str, object]:
         return {
             "idempotency_key": self.idempotency_key,

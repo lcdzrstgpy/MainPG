@@ -558,6 +558,43 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  const updateExportSelection = async (styleIndex: number, selected: boolean) => {
+    if (!activeBatch) return;
+    const previousSelected = activeBatch.style_titles?.find((title) => title.style_index === styleIndex)?.export_selected ?? true;
+    const previousExportStatus = activeBatch.dianxiaomi_export;
+    const selectionDelta = selected === previousSelected ? 0 : selected ? 1 : -1;
+    setBusyAction(`update-export-selection:${styleIndex}`);
+    clearMessages();
+    setActiveBatch((current) => current ? {
+      ...current,
+      dianxiaomi_export: current.dianxiaomi_export.selected_exportable_style_count === undefined ? current.dianxiaomi_export : {
+        ...current.dianxiaomi_export,
+        selected_exportable_style_count: Math.max(0, current.dianxiaomi_export.selected_exportable_style_count + selectionDelta),
+        user_excluded_style_count: current.dianxiaomi_export.user_excluded_style_count === undefined
+          ? undefined
+          : Math.max(0, current.dianxiaomi_export.user_excluded_style_count - selectionDelta),
+      },
+      style_titles: current.style_titles?.map((title) => title.style_index === styleIndex ? { ...title, export_selected: selected } : title),
+    } : current);
+    try {
+      const updated = await podCustomizationApi.updateExportSelection(activeBatch.id, styleIndex, selected);
+      setActiveBatch((current) => current ? {
+        ...current,
+        style_titles: current.style_titles?.map((title) => title.style_index === updated.style_index ? { ...title, export_selected: updated.export_selected } : title),
+      } : current);
+      setNotice(updated.export_selected ? `款式 #${styleIndex} 已选中，导出时会包含该款。` : `款式 #${styleIndex} 已取消选中，导出时会剔除该款。`);
+    } catch (cause) {
+      setActiveBatch((current) => current ? {
+        ...current,
+        dianxiaomi_export: previousExportStatus,
+        style_titles: current.style_titles?.map((title) => title.style_index === styleIndex ? { ...title, export_selected: previousSelected } : title),
+      } : current);
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   const saveManualTitle = async (styleIndex: number, title: string) => {
     if (!activeBatch) return;
     setBusyAction(`save-title:${styleIndex}`);
@@ -777,6 +814,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             onOpenResult={(item) => setSelectedItemId(item.id)}
             onRegenerateStyle={(styleIndex) => void regenerateStyle(styleIndex)}
             onRegenerateTitle={(styleIndex) => void regenerateStyleTitle(styleIndex)}
+            onUpdateExportSelection={(styleIndex, selected) => void updateExportSelection(styleIndex, selected)}
             onSaveTitle={(styleIndex, title) => saveManualTitle(styleIndex, title)}
             onExportDianxiaomi={() => void exportDianxiaomi()}
             onResumeBilling={(run) => void resumeBillingRun(run)}

@@ -61,7 +61,13 @@ class PodBillingRun:
 
     def start(self, call_id: str, feature: str) -> None:
         provider = "ark" if feature == "pod.title" else "wuyin"
-        if not self.grant.provider_key(provider):
+        # Gateway grants intentionally contain no provider key: the desktop
+        # submits with its authenticated remote token and the server owns the
+        # provider credential/task ledger. Legacy grants still require the
+        # scoped provider key below.
+        if not self.grant.provider_key(provider) and not str(
+            getattr(self.grant, "remote_token", "") or ""
+        ):
             message = "POD billing grant expired; sign in to resume this action"
             if self.repository is not None:
                 self.repository.mark_billing_auth_required(self.action_key, message)
@@ -323,7 +329,7 @@ class PodBatchWorker:
                     run.settle()
                 except Exception as exc:
                     self.repository.mark_billing_pending(run.action_key, safe_error_message(exc))
-            elif not billing_paused and not paused:
+            elif not billing_paused:
                 try:
                     run.settle()
                 except Exception as exc:
@@ -371,6 +377,7 @@ class PodBatchWorker:
                 self._process_style_grids_streaming(
                     batch, template_content, template_asset["content_type"], billing_run
                 )
+                self._process_pending_titles_from_existing_images(batch, billing_run)
                 self.repository.fail_remaining_items(batch_id, "本款图片生成未返回完整结果")
                 self.repository.fail_unready_titles(batch_id, "本款四张公开图片未完整生成，暂不能生成标题")
                 if self.title_runtime is None:
@@ -768,16 +775,10 @@ class PodBatchWorker:
             if item.get("status") == "completed":
                 style_index = int(item.get("style_index") or 0)
                 completed_by_style[style_index] = completed_by_style.get(style_index, 0) + 1
-        completed_titles = {
-            int(title["style_index"])
-            for title in batch.get("style_titles", [])
-            if title.get("status") == "completed"
-        }
         style_indices = [
             index
             for index in range(1, batch["requested_count"] + 1)
             if completed_by_style.get(index, 0) < 4
-            or (self.title_runtime is not None and index not in completed_titles)
         ]
         processed: set[int] = set()
         retry_reasons: dict[int, str] = {}
@@ -806,6 +807,59 @@ class PodBatchWorker:
                     style_index,
                     retry_reasons.get(style_index, "本款两次图片生成均失败"),
                 )
+
+    def _process_pending_titles_from_existing_images(
+        self, batch: dict[str, Any], billing_run: PodBillingRun
+    ) -> None:
+        """Resume only title work after images were already durably published.
+
+        A paused batch can reach the title stage after its four images are
+        finished.  Its new freeze contains title calls only, so it must not
+        route back through image generation (which would otherwise consume an
+        absent image call from the fresh plan).
+        """
+        if self.title_runtime is None:
+            return
+        # Standard initial/full-style plans own image calls. Their title work
+        # is submitted by `_process_style_grids` as soon as each lifestyle
+        # panel is published. This path is only for a resume plan that carries
+        # title calls but deliberately contains no image calls.
+        if any(call.feature == "pod.image" for call in billing_run.plan.calls):
+            return
+        pending: list[int] = []
+        for title in batch.get("style_titles", []):
+            style_index = int(title.get("style_index") or 0)
+            if style_index < 1 or title.get("status") == "completed":
+                continue
+            if self._title_call_ids(billing_run, batch["batch_id"], style_index):
+                pending.append(style_index)
+        if not pending:
+            return
+        self._set_batch_stage(batch["batch_id"], "generating_titles")
+        futures: list[Future[Any]] = []
+        for style_index in pending:
+            self._check_control(batch["batch_id"])
+            context = self.repository.get_style_title_context(batch["batch_id"], style_index)
+            title = context["title"]
+            self.repository.claim_style_title(
+                batch["batch_id"],
+                style_index,
+                style_task_id=str(title.get("style_task_id") or "") or None,
+                allow_billing_resume=True,
+            )
+            futures.append(
+                self.title_runtime.submit(
+                    self._generate_style_title,
+                    context["batch"],
+                    style_index,
+                    str(title.get("style_task_id") or ""),
+                    self._lifestyle_media(context),
+                    billing_run,
+                    self._title_call_ids(billing_run, batch["batch_id"], style_index),
+                )
+            )
+        for future in as_completed(futures):
+            future.result()
 
     def _stream_style_attempts(
         self,

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from wh_local.customer import remote_client as remote_client_module
 from wh_local.customer.remote_client import CustomerAuthClient
+from wh_local.modules.pod_customization.billing_contract import PodCallPlan
+from wh_local.modules.pod_customization.remote_billing import RemotePodBillingCoordinator
+from wh_local.session import Actor
 
 
 def test_remote_client_wraps_pod_freeze_session_and_decrypts_grants_in_memory(monkeypatch) -> None:
@@ -116,3 +119,60 @@ def test_remote_client_pod_settle_status_and_regrant_use_dedicated_paths(monkeyp
     assert regrant["rule_version"] == 7
     assert regrant["expires_at"] == "2030-01-01T06:00:00+00:00"
     assert "grant_envelope" not in regrant
+
+
+def test_remote_client_uses_server_managed_pod_gateway_routes_without_key_grants(monkeypatch) -> None:
+    client = CustomerAuthClient("https://customer.example.test")
+    calls: list[tuple[str, str, dict]] = []
+
+    def billing_post(path: str, token: str, payload: dict) -> dict:
+        calls.append((path, token, payload))
+        return {"ok": True, "result_url": "https://images.example.test/result.png"}
+
+    monkeypatch.setattr(client, "_billing_post", billing_post)
+
+    title = client.gateway_pod_title(
+        "remote-token",
+        {"usage_id": "use_pod_title", "messages": [{"role": "user", "content": "title"}]},
+    )
+    image = client.gateway_pod_image(
+        "remote-token",
+        {"usage_id": "use_pod_image", "prompt": "four images", "urls": [], "size": "1:1"},
+    )
+
+    assert title["ok"] is True
+    assert image["result_url"] == "https://images.example.test/result.png"
+    assert calls == [
+        (
+            "/api/customer/ai/pod/title",
+            "remote-token",
+            {"usage_id": "use_pod_title", "messages": [{"role": "user", "content": "title"}]},
+        ),
+        (
+            "/api/customer/ai/pod/image",
+            "remote-token",
+            {"usage_id": "use_pod_image", "prompt": "four images", "urls": [], "size": "1:1"},
+        ),
+    ]
+
+
+def test_server_managed_pod_billing_grant_never_requests_or_exposes_provider_keys() -> None:
+    class RemoteClient:
+        def freeze_batch_points(self, *_args, **_kwargs):
+            raise AssertionError("server-managed POD must not request a provider-key grant")
+
+        def settle_batch_points(self, *_args, **_kwargs):
+            raise AssertionError("server-managed POD gateway settles provider outcomes itself")
+
+    actor = Actor(id="user-1", username="user", role="admin", workspace_id="workspace-1")
+    coordinator = RemotePodBillingCoordinator(
+        RemoteClient(), lambda _actor: "customer-session-token", server_managed=True
+    )
+    plan = PodCallPlan.for_batch("batch-gateway", style_count=1)
+
+    grant = coordinator.freeze(actor, plan)
+    coordinator.settle(actor, grant, plan, ())
+
+    assert grant.provider_keys == {}
+    assert grant.provider_key("wuyin") == ""
+    assert grant.remote_token == "customer-session-token"

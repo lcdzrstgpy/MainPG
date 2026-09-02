@@ -30,6 +30,7 @@ MIGRATION_NAMES = (
     "008_persistent_billing_runs",
     "009_export_records",
     "010_pod_title_source",
+    "011_pod_style_export_selection",
 )
 
 

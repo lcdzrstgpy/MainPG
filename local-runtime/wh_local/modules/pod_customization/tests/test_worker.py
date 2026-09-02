@@ -984,7 +984,7 @@ def test_batch_retry_rejects_billing_interrupted_batch_before_freezing(
             (blocked_status, batch["id"]),
         )
 
-    with pytest.raises(PodRepositoryError, match="billing is not recovered") as raised:
+    with pytest.raises(PodRepositoryError, match="billing recovery is required") as raised:
         service.retry_failed(
             actor, batch["id"], image_style_indices=[1], title_style_indices=[2]
         )
@@ -997,7 +997,7 @@ def test_batch_retry_rejects_billing_interrupted_batch_before_freezing(
     runtime.close()
 
 
-def test_batch_retry_allows_settlement_pending_batch_before_old_billing_is_recovered(
+def test_batch_retry_rejects_settlement_pending_batch_before_old_billing_is_recovered(
     tmp_path: Path,
 ) -> None:
     runtime = ListingOnlyRuntime([])
@@ -1013,12 +1013,12 @@ def test_batch_retry_allows_settlement_pending_batch_before_old_billing_is_recov
                SET status = 'settlement_pending' WHERE batch_id = ?""",
             (batch["id"],),
         )
-    service.worker.submit_batch_retry = lambda *_args: None
+    with pytest.raises(PodRepositoryError, match="billing recovery is required") as raised:
+        service.retry_failed(actor, batch["id"], image_style_indices=[1], title_style_indices=[2])
 
-    service.retry_failed(actor, batch["id"], image_style_indices=[1], title_style_indices=[2])
-
-    assert len(billing.freezes) == 2
-    assert service.get_batch(actor, batch["id"])["status"] == "generating_patterns"
+    assert raised.value.status_code == 409
+    assert len(billing.freezes) == 1
+    assert service.get_batch(actor, batch["id"])["status"] == "settlement_pending"
     service.close()
     runtime.close()
 
@@ -1310,7 +1310,7 @@ def test_single_item_scene_optimization_is_optional_and_preserves_pattern_asset(
     runtime.close()
 
 
-def test_completed_whole_style_retry_is_rejected_without_freezing_or_mutating(tmp_path: Path) -> None:
+def test_completed_whole_style_can_be_regenerated_and_freezes_one_retry_plan(tmp_path: Path) -> None:
     patterns = [_pattern(index) for index in range(80)]
     replacement_grid = _grid([_pattern(index) for index in range(100, 104)])
     runtime = FakePodRuntime(
@@ -1322,23 +1322,20 @@ def test_completed_whole_style_retry_is_rejected_without_freezing_or_mutating(tm
     template = _ready_template(service, actor)
     batch = _create_batch(service, actor, template["id"])
     service.worker.process_batch(batch["id"])
-    before_items = service.get_batch(actor, batch["id"])["items"]
     target_style = 2
     freezes_before = len(billing.freezes)
 
-    with pytest.raises(PodRepositoryError, match="only a failed POD style") as captured:
-        service.regenerate_style(
-            actor,
-            batch["id"],
-            target_style,
-            creative_prompt="smaller botanical elements",
-            enqueue=False,
-        )
-    after_items = service.get_batch(actor, batch["id"])["items"]
+    regenerated = service.regenerate_style(
+        actor,
+        batch["id"],
+        target_style,
+        creative_prompt="smaller botanical elements",
+        enqueue=False,
+    )
 
-    assert captured.value.status_code == 409
-    assert len(billing.freezes) == freezes_before
-    assert after_items == before_items
+    assert regenerated["style_index"] == target_style
+    assert len(billing.freezes) == freezes_before + 1
+    assert {item["status"] for item in regenerated["results"]} == {"generating_pattern"}
     service.close()
     runtime.close()
 
@@ -1459,7 +1456,7 @@ def test_cancel_batch_recovers_an_abandoned_cancelling_state(tmp_path: Path) -> 
     runtime.close()
 
 
-def test_resume_batch_requires_pending_billing_run(tmp_path: Path) -> None:
+def test_resume_batch_creates_a_fresh_freeze_when_the_paused_run_is_already_settled(tmp_path: Path) -> None:
     runtime = ListingOnlyRuntime([])
     service = _service(tmp_path, runtime)
     actor = _actor()
@@ -1469,16 +1466,15 @@ def test_resume_batch_requires_pending_billing_run(tmp_path: Path) -> None:
 
     service.repository.request_pause(batch_id)
     service.repository.mark_batch_paused(batch_id, "已暂停")
-    # 计费 run 已结算后不再可恢复，继续应被拒绝。
+    # 暂停时原冻结已结算；继续必须为剩余工作创建一个新的冻结。
     with service.repository._connect() as connection:
         connection.execute(
             "UPDATE pod_customization_billing_runs SET status = 'settled' WHERE batch_id = ?",
             (batch_id,),
         )
-    with pytest.raises(PodRepositoryError, match="缺少可恢复的计费授权"):
-        service.resume_batch(actor, batch_id)
-    # 批次仍处于 paused，未被误改。
-    assert service.repository.get_batch_status(batch_id) == "paused"
+    resumed = service.resume_batch(actor, batch_id)
+    assert resumed["status"] in {"queued", "generating_patterns"}
+    assert len(service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)) == 1
 
     service.close()
     runtime.close()
@@ -1505,6 +1501,32 @@ def test_pause_drains_submitted_style_without_submitting_the_next_style(tmp_path
     assert stored["status"] == "paused"
     assert stored["completed_count"] == 1
     assert stored["items"][4]["status"] == "queued"
+    service.close()
+    runtime.close()
+
+
+def test_pause_settles_the_current_freeze_and_releases_unstarted_calls(tmp_path: Path) -> None:
+    runtime = BlockingListingRuntime([
+        _grid([_pattern(index) for index in range(4)]),
+        _grid([_pattern(index + 10) for index in range(4)]),
+    ])
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"], count=2), enqueue=False)
+
+    future = service.worker.submit(batch["id"])
+    assert runtime.first_request_started.wait(timeout=1)
+    service.pause_batch(actor, batch["id"])
+    runtime.allow_first_request_to_finish.set()
+    future.result(timeout=2)
+
+    assert len(billing.settlements) == 1
+    _plan, outcomes = billing.settlements[0]
+    assert any(item.feature == "pod.image" and item.status == "success" for item in outcomes)
+    assert any(item.status == "no_return" for item in outcomes)
+    assert service.get_batch(actor, batch["id"])["status"] == "paused"
     service.close()
     runtime.close()
 

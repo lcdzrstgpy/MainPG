@@ -18,6 +18,7 @@ from .contracts import (
     BatchRetryFailedCreate,
     CalibrationUpdate,
     DirectListingTrialCreate,
+    ExportSelectionUpdate,
     ManualTitleUpdate,
     RegenerateItemCreate,
     SceneOptimizationCreate,
@@ -167,6 +168,22 @@ def create_router(
     ) -> dict[str, Any]:
         permitted(actor, "pod_customization.read")
         return _call(service.list_exports, actor, batch_id)
+
+    @router.patch("/batches/{batch_id}/styles/{style_index}/export-selection")
+    def set_export_selection(
+        batch_id: str,
+        style_index: int,
+        body: ExportSelectionUpdate,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(
+            service.set_style_export_selection,
+            actor,
+            batch_id,
+            style_index,
+            selected=body.selected,
+        )
 
     @router.get("/batches/{batch_id}/exports/dianxiaomi")
     def export_dianxiaomi(

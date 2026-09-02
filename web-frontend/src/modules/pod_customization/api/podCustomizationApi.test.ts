@@ -39,3 +39,10 @@ test("batch retry posts separated image and title style selections", () => {
   assert.match(source, /batches\/\$\{encodeURIComponent\(batchId\)\}\/retry-failed/);
   assert.match(source, /\{ method: "POST", body \}/);
 });
+
+test("export selection updates the individual style through the POD endpoint", () => {
+  const source = readFileSync(new URL("./podCustomizationApi.ts", import.meta.url), "utf8");
+  assert.match(source, /updateExportSelection: \(batchId: string, styleIndex: number, selected: boolean\) => httpJson<\{ style_index: number; export_selected: boolean \}>\(/);
+  assert.match(source, /batches\/\$\{encodeURIComponent\(batchId\)\}\/styles\/\$\{styleIndex\}\/export-selection/);
+  assert.match(source, /\{ method: "PATCH", body: \{ selected \} \}/);
+});

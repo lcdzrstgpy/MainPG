@@ -838,6 +838,7 @@ def _module_migrations() -> list[tuple[str, str, str]]:
         "008_persistent_billing_runs",
         "009_export_records",
         "010_pod_title_source",
+        "011_pod_style_export_selection",
     )
     for migration_name in pod_customization_migrations:
         sql_path = (

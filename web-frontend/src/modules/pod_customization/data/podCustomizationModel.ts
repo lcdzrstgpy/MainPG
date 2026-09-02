@@ -19,6 +19,7 @@ export type PodStyleRow = {
   title_status?: PodStyleTitleStatus;
   title_source?: PodStyleTitleSource;
   listing_ready?: boolean;
+  export_selected: boolean;
   title_error_message?: string;
   results: Array<PodBatchItem | undefined>;
   status: "queued" | "generating" | "completed" | "partial_failure" | "failed";
@@ -74,9 +75,9 @@ const ACTIVE_ITEM_STATUSES = new Set<PodBatchItemStatus>([
 ]);
 const ACTIVE_TITLE_STATUSES = new Set<PodStyleTitleStatus>(["queued", "generating"]);
 const SETTLED_BATCH_STATUSES = new Set<PodBatchStatus>(["completed", "partial_failure", "failed", "cancelled"]);
-const RETRYABLE_BATCH_STATUSES = new Set<PodBatchStatus>([...SETTLED_BATCH_STATUSES, "settlement_pending"]);
-// Manual titles must never clobber unsettled billing state, so this stays narrower
-// than RETRYABLE_BATCH_STATUSES (it deliberately excludes settlement_pending).
+const RETRYABLE_BATCH_STATUSES = SETTLED_BATCH_STATUSES;
+// Regeneration must never race a billing recovery.  All retry and manual-title
+// entry points therefore use the same fully settled status set.
 const MANUAL_TITLE_EDITABLE_BATCH_STATUSES = new Set<PodBatchStatus>([
   "completed",
   "partial_failure",
@@ -219,6 +220,7 @@ export function groupPodStyleRows(
       title_status: styleTitle?.status,
       title_source: styleTitle?.source,
       listing_ready: styleTitle?.listing_ready,
+      export_selected: styleTitle?.export_selected ?? true,
       title_error_message: styleTitle?.error_message,
       results: presentationResults,
       status,
@@ -254,8 +256,10 @@ export function isActivePodStyleTitleStatus(status: PodStyleTitleStatus): boolea
 export function canRegeneratePodStyle(
   batchStatus: PodBatchStatus,
   styleStatus: PodStyleRow["status"],
+  listingReady = false,
 ): boolean {
-  return RETRYABLE_BATCH_STATUSES.has(batchStatus) && styleStatus === "failed";
+  if (styleStatus === "failed") return RETRYABLE_BATCH_STATUSES.has(batchStatus);
+  return styleStatus === "completed" && listingReady && !isBillingInterruptedPodBatch(batchStatus) && SETTLED_BATCH_STATUSES.has(batchStatus);
 }
 
 export function isBillingInterruptedPodBatch(status: PodBatchStatus): boolean {
@@ -284,10 +288,10 @@ export function canRegeneratePodStyleTitle(
   titleStatus: PodStyleTitleStatus | undefined,
   results: Array<Pick<PodBatchItem, "status" | "public_url"> | undefined>,
 ): boolean {
-  return RETRYABLE_BATCH_STATUSES.has(batchStatus)
-    && titleStatus === "failed"
-    && results.length === 4
-    && results.every((item) => item?.status === "completed" && Boolean(item.public_url));
+  const completeResults = results.length === 4 && results.every((item) => item?.status === "completed" && Boolean(item.public_url));
+  if (!completeResults) return false;
+  if (titleStatus === "failed") return RETRYABLE_BATCH_STATUSES.has(batchStatus);
+  return titleStatus === "completed" && !isBillingInterruptedPodBatch(batchStatus) && SETTLED_BATCH_STATUSES.has(batchStatus);
 }
 
 export function canEditPodStyleTitle(

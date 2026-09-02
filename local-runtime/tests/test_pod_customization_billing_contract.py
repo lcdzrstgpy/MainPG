@@ -14,7 +14,7 @@ def test_batch_call_plan_matches_remote_pod_freeze_contract() -> None:
 
     assert plan.freeze_payload(encrypted_session_key="rsa-envelope") == {
         "idempotency_key": "pod:batch:batch-1:initial",
-        "title_call_count": 6,
+        "title_call_count": 10,
         "image_call_count": 4,
         "calls": [
             {"call_id": "batch-1:style:1:image:1", "feature": "pod.image"},
@@ -22,11 +22,15 @@ def test_batch_call_plan_matches_remote_pod_freeze_contract() -> None:
             {"call_id": "batch-1:style:1:title:1", "feature": "pod.title"},
             {"call_id": "batch-1:style:1:title:2", "feature": "pod.title"},
             {"call_id": "batch-1:style:1:title:3", "feature": "pod.title"},
+            {"call_id": "batch-1:style:1:title:4", "feature": "pod.title"},
+            {"call_id": "batch-1:style:1:title:5", "feature": "pod.title"},
             {"call_id": "batch-1:style:2:image:1", "feature": "pod.image"},
             {"call_id": "batch-1:style:2:image:2", "feature": "pod.image"},
             {"call_id": "batch-1:style:2:title:1", "feature": "pod.title"},
             {"call_id": "batch-1:style:2:title:2", "feature": "pod.title"},
             {"call_id": "batch-1:style:2:title:3", "feature": "pod.title"},
+            {"call_id": "batch-1:style:2:title:4", "feature": "pod.title"},
+            {"call_id": "batch-1:style:2:title:5", "feature": "pod.title"},
         ],
         "encrypted_session_key": "rsa-envelope",
     }
@@ -40,6 +44,8 @@ def test_settlement_payload_has_one_outcome_for_every_frozen_call() -> None:
         PodCallOutcome(call_id=plan.calls[2].call_id, feature="pod.title", status="no_return"),
         PodCallOutcome(call_id=plan.calls[3].call_id, feature="pod.title", status="success"),
         PodCallOutcome(call_id=plan.calls[4].call_id, feature="pod.title", status="no_return"),
+        PodCallOutcome(call_id=plan.calls[5].call_id, feature="pod.title", status="no_return"),
+        PodCallOutcome(call_id=plan.calls[6].call_id, feature="pod.title", status="no_return"),
     ]
 
     assert plan.settlement_payload("freeze-1", outcomes) == {
@@ -50,6 +56,8 @@ def test_settlement_payload_has_one_outcome_for_every_frozen_call() -> None:
             {"call_id": "batch-1:style:1:title:1", "feature": "pod.title", "status": "no_return"},
             {"call_id": "batch-1:style:1:title:2", "feature": "pod.title", "status": "success"},
             {"call_id": "batch-1:style:1:title:3", "feature": "pod.title", "status": "no_return"},
+            {"call_id": "batch-1:style:1:title:4", "feature": "pod.title", "status": "no_return"},
+            {"call_id": "batch-1:style:1:title:5", "feature": "pod.title", "status": "no_return"},
         ],
     }
 
@@ -63,6 +71,21 @@ def test_pod_batch_reuses_product_processing_freeze_contract_per_style() -> None
         "scope": ["title", "four_grid"],
         "billing_profile": "pod_random_v1",
     }
+
+
+def test_resume_plan_freezes_only_the_remaining_style_with_original_call_identity() -> None:
+    plan = PodCallPlan.for_batch_resume("batch-1", "resume-1", image_style_indices=(2,), title_style_indices=())
+
+    assert plan.product_batch_freeze_payload() == {
+        "idempotency_key": "pod:batch:batch-1:resume:resume-1",
+        "link_count": 1,
+        "scope": ["four_grid"],
+        "billing_profile": "pod_random_v1",
+    }
+    assert [call.call_id for call in plan.calls] == [
+        "batch-1:style:2:image:1",
+        "batch-1:style:2:image:2",
+    ]
 
 
 def test_pod_attempts_fold_into_product_processing_subitem_results() -> None:
@@ -92,12 +115,12 @@ def test_pod_attempts_fold_into_product_processing_subitem_results() -> None:
     }
 
 
-def test_batch_plan_accepts_200_styles_as_exactly_1000_calls_and_rejects_more() -> None:
+def test_batch_plan_accepts_200_styles_as_exactly_1400_calls_and_rejects_more() -> None:
     plan = PodCallPlan.for_batch("batch-max-200", style_count=200)
 
-    assert len(plan.calls) == 1000
+    assert len(plan.calls) == 1400
     assert sum(call.feature == "pod.image" for call in plan.calls) == 400
-    assert sum(call.feature == "pod.title" for call in plan.calls) == 600
+    assert sum(call.feature == "pod.title" for call in plan.calls) == 1000
 
     with pytest.raises(ValueError, match="1 and 200"):
         PodCallPlan.for_batch("batch-too-large", style_count=201)

@@ -8,6 +8,7 @@ import {
   canPausePodBatch,
   canRegeneratePodStyle,
   canRegeneratePodStyleTitle,
+  isBillingInterruptedPodBatch,
   canRetryPodBatchFailed,
   canResumePodBatch,
   formatPodBatchWaitingTime,
@@ -64,7 +65,7 @@ test("pause cancel and resume guards follow the backend state gate", () => {
   assert.equal(canResumePodBatch("queued"), false);
   assert.equal(canRetryPodBatchFailed("cancelled"), true);
   // 账务结算与生成结果分开：结算待处理不能锁死失败项重试。
-  assert.equal(canRetryPodBatchFailed("settlement_pending"), true);
+  assert.equal(canRetryPodBatchFailed("settlement_pending"), false);
   assert.equal(canRetryPodBatchFailed("billing_auth_required"), false);
 });
 
@@ -185,13 +186,38 @@ test("listing fields reject SKU names longer than 120 characters", () => {
   assert.deepEqual(result, { error: "SKU 名称不能超过 120 个字符。" });
 });
 
-test("successful POD results do not expose retry actions", () => {
+test("successful listing-ready POD results can regenerate title and whole style outside billing interruption", () => {
   const publicResults = Array.from({ length: 4 }, () => ({
     status: "completed" as const,
     public_url: "https://images.example.com/result.png",
   }));
-  assert.equal(canRegeneratePodStyle("completed", "completed"), false);
+  assert.equal(canRegeneratePodStyle("completed", "completed", true), true);
   assert.equal(canRegeneratePodStyle("failed", "failed"), true);
-  assert.equal(canRegeneratePodStyleTitle("completed", "completed", publicResults), false);
+  assert.equal(canRegeneratePodStyleTitle("completed", "completed", publicResults), true);
   assert.equal(canRegeneratePodStyleTitle("partial_failure", "failed", publicResults), true);
+  assert.equal(canRegeneratePodStyle("settlement_pending", "completed", true), false);
+  assert.equal(canRegeneratePodStyleTitle("billing_auth_required", "completed", publicResults), false);
+  assert.equal(isBillingInterruptedPodBatch("settlement_pending"), true);
+});
+
+test("style rows preserve the backend export selection and default legacy rows to selected", () => {
+  const base = {
+    style_grid: true,
+    business_fields: { product_name: "Laundry Hamper" },
+    items: Array.from({ length: 4 }, (_, index) => ({
+      id: `result-${index + 1}`,
+      style_index: 1,
+      variant_index: index + 1,
+      status: "completed" as const,
+      public_url: `https://images.example.com/${index + 1}.png`,
+    })),
+  };
+  const unselected = groupPodStyleRows({
+    ...base,
+    style_titles: [{ style_index: 1, style_task_id: "title-1", status: "completed", title: "Selected title", listing_ready: true, export_selected: false, updated_at: "2026-09-02T00:00:00Z" }],
+  });
+  const legacy = groupPodStyleRows({ ...base, style_titles: [] });
+
+  assert.equal(unselected[0].export_selected, false);
+  assert.equal(legacy[0].export_selected, true);
 });

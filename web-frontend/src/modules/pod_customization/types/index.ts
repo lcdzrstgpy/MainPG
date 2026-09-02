@@ -91,6 +91,8 @@ export type PodDianxiaomiExportStatus = {
   ready: boolean;
   exportable_style_count: number;
   skipped_style_count: number;
+  selected_exportable_style_count?: number;
+  user_excluded_style_count?: number;
   block_reason: string | null;
 };
 
@@ -128,6 +130,7 @@ export type PodStyleTitle = {
   title: string | null;
   source?: PodStyleTitleSource;
   listing_ready: boolean;
+  export_selected: boolean;
   error_message?: string;
   updated_at: string;
 };

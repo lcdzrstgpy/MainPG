@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 
 SUPPORTED_PATTERN_COUNTS = (20, 40, 100)
@@ -176,3 +176,9 @@ class ManualTitleUpdate(BaseModel):
         if not self.title:
             raise ValueError("title is required")
         return self
+
+
+class ExportSelectionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selected: StrictBool

@@ -116,6 +116,8 @@ MAX_GATEWAY_RESPONSE_BYTES = 8 * 1024 * 1024
 GATEWAY_DISTINCT_REQUEST_LIMITS = {
     "product_processing.text": 2,
     "product_processing.image_grid_2k": 13,
+    "pod.title": 1,
+    "pod.image": 1,
 }
 # Text adapters retry an identical upstream request at most three times; the
 # image generation adapter has a five-attempt outer budget.  Keep the server
@@ -123,11 +125,17 @@ GATEWAY_DISTINCT_REQUEST_LIMITS = {
 GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS = {
     "product_processing.text": 3,
     "product_processing.image_grid_2k": 5,
+    "pod.title": 3,
+    "pod.image": 5,
 }
 GATEWAY_LEASE_SECONDS = {
     "product_processing.text": 600,
     "product_processing.image_grid_2k": 900,
+    "pod.title": 600,
+    "pod.image": 900,
 }
+POD_GATEWAY_FEATURE_KEYS = {"pod.title", "pod.image"}
+GATEWAY_IMAGE_FEATURE_KEYS = {"product_processing.image_grid_2k", "pod.image"}
 DEFAULT_ALIPAY_LOCAL_RETURN_URL = "http://127.0.0.1:8010/?module=personal_center&payment=success"
 
 
@@ -641,6 +649,12 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     init_pod_billing_schema(db_path)
     _init_pod_grant_compensation_schema(db_path)
     _recover_pending_pod_grant_compensations(db_path)
+    try:
+        reconcile_pod_gateway_requests(db_path)
+    except Exception:
+        # Reconciliation is intentionally retried by the periodic sweep below.
+        # A provider outage must never prevent account-service startup.
+        pass
     service = SQLiteCustomerAuthService(
         db_path,
         email_sender=TencentCloudSESEmailSender.from_env(),
@@ -659,6 +673,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             try:
                 time.sleep(60 * 60)
                 release_expired_batch_freezes(db_path)
+                reconcile_pod_gateway_requests(db_path)
             except Exception:
                 time.sleep(60 * 60)
 
@@ -977,6 +992,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             "product_processing.text",
             "product_processing.image_grid_2k",
             "product_processing.vision",
+            "pod.title",
+            "pod.image",
         }:
             raise HTTPException(status_code=400, detail="unsupported billing feature")
         if not 16 <= len(idempotency_key) <= 200:
@@ -1209,7 +1226,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         # 该网关同时承载文本与视觉（多模态）聊天。feature_key 由 usage 事件决定，
         # 不再硬编码文本，确保视觉 usage_id 不会被 "usage feature does not match" 拒绝。
         feature_key = _usage_feature(db_path, usage_id)
-        if feature_key not in {"product_processing.text", "product_processing.vision"}:
+        if feature_key not in {"product_processing.text", "product_processing.vision", "pod.title"}:
             raise HTTPException(status_code=400, detail="usage feature does not match operation")
         _require_reserved_usage(
             db_path,
@@ -1220,9 +1237,10 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         messages = _validated_chat_messages(payload.get("messages"))
         if "model" in payload and not isinstance(payload.get("model"), str):
             raise HTTPException(status_code=400, detail="text request is invalid")
-        request_hash = _gateway_request_hash(
-            {"feature_key": feature_key, "model": TEXT_MODEL, "messages": messages}
-        )
+        # ``usage_id`` is already the feature-scoped billing authority.  Keep
+        # the stable hash compatible with existing durable text requests so a
+        # process restart cannot bypass their in-progress claim.
+        request_hash = _gateway_request_hash({"model": TEXT_MODEL, "messages": messages})
         claim = _claim_gateway_request(
             db_path,
             usage_id=usage_id,
@@ -1291,11 +1309,14 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
         usage_id = str(payload.get("usage_id") or "")
+        feature_key = _usage_feature(db_path, usage_id)
+        if feature_key not in GATEWAY_IMAGE_FEATURE_KEYS:
+            raise HTTPException(status_code=400, detail="usage feature does not match operation")
         _require_reserved_usage(
             db_path,
             usage_id=usage_id,
             account_id=str(account["account_id"]),
-            feature_key="product_processing.image_grid_2k",
+            feature_key=feature_key,
         )
         prompt = str(payload.get("prompt") or "").strip()
         urls = payload.get("urls") or []
@@ -1320,7 +1341,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             db_path,
             usage_id=usage_id,
             account_id=str(account["account_id"]),
-            feature_key="product_processing.image_grid_2k",
+            feature_key=feature_key,
             request_hash=request_hash,
         )
         if claim.cached_response is not None:
@@ -1363,6 +1384,36 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             else:
                 _fail_gateway_request(db_path, usage_id, request_hash)
             raise
+
+    @app.post("/api/customer/ai/pod/title")
+    def server_managed_pod_title(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Run a title regeneration with server-owned credentials and settle it for zero points."""
+        usage_id = str(payload.get("usage_id") or "")
+        try:
+            response = server_managed_ai_chat(payload, authorization)
+        except HTTPException:
+            _release_pod_gateway_failure_if_safe(db_path, usage_id)
+            raise
+        _settle_pod_gateway_success(db_path, usage_id)
+        return response
+
+    @app.post("/api/customer/ai/pod/image")
+    def server_managed_pod_image(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Run one complete four-image POD style and settle it on provider success."""
+        usage_id = str(payload.get("usage_id") or "")
+        try:
+            response = server_managed_ai_image(payload, authorization)
+        except HTTPException:
+            _release_pod_gateway_failure_if_safe(db_path, usage_id)
+            raise
+        _settle_pod_gateway_success(db_path, usage_id)
+        return response
 
     @app.post("/api/customer/billing/payment-callback/{provider}")
     async def billing_payment_callback(provider: str, request: Request) -> PlainTextResponse:
@@ -1796,9 +1847,160 @@ def _usage_feature(database_path: Path, usage_id: str) -> str:
 def _fixed_usage_provider(feature_key: str) -> tuple[str, str]:
     return (
         ("wuyin", "image_gpt")
-        if feature_key == "product_processing.image_grid_2k"
+        if feature_key in GATEWAY_IMAGE_FEATURE_KEYS
         else ("platform_text", "managed-text")
     )
+
+
+def _settle_pod_gateway_success(database_path: Path, usage_id: str) -> dict[str, Any]:
+    """Settle one POD gateway usage from the server-owned provider outcome.
+
+    This is deliberately not exposed as a client settlement route.  The
+    authoritative evidence is the durable gateway row written before this
+    function runs, and the underlying usage settlement is idempotent.
+    """
+    feature_key = _usage_feature(database_path, usage_id)
+    if feature_key not in POD_GATEWAY_FEATURE_KEYS:
+        raise HTTPException(status_code=400, detail="usage feature does not match POD operation")
+    provider, model = _fixed_usage_provider(feature_key)
+    return settle_ai_usage_success(
+        database_path,
+        usage_id,
+        provider=provider,
+        model=model,
+        provider_task_id=_gateway_provider_task_id_for_usage(database_path, usage_id),
+        metadata={"gateway_settlement": "server_authoritative", "pod_operation": feature_key},
+    )
+
+
+def _gateway_provider_task_id_for_usage(database_path: Path, usage_id: str) -> str:
+    with transaction(database_path) as conn:
+        row = conn.execute(
+            """
+            SELECT provider_task_id
+            FROM billing_ai_gateway_requests
+            WHERE usage_id = ? AND status = 'succeeded' AND provider_task_id <> ''
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (usage_id,),
+        ).fetchone()
+    return str(row["provider_task_id"] or "") if row is not None else ""
+
+
+def _release_pod_gateway_failure_if_safe(database_path: Path, usage_id: str) -> None:
+    """Release a POD reservation only when no provider outcome remains uncertain."""
+    try:
+        feature_key = _usage_feature(database_path, usage_id)
+    except HTTPException:
+        return
+    if feature_key not in POD_GATEWAY_FEATURE_KEYS:
+        return
+    with transaction(database_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT status, phase
+            FROM billing_ai_gateway_requests
+            WHERE usage_id = ?
+            """,
+            (usage_id,),
+        ).fetchall()
+    if any(
+        str(row["status"]) == "in_progress" or str(row["phase"]) == "submit_uncertain"
+        for row in rows
+    ):
+        return
+    settle_ai_usage_failure(
+        database_path,
+        usage_id,
+        error_message="POD gateway rejected the operation before provider submission",
+        reject_gateway_activity=True,
+    )
+
+
+def reconcile_pod_gateway_requests(database_path: Path, *, limit: int = 100) -> dict[str, int]:
+    """Reconcile durable submitted POD style tasks without any desktop callback.
+
+    A task id is persisted before polling.  Therefore process restarts and a
+    paused desktop cannot cause a second provider submission or strand the
+    reservation: a later reconciliation either settles the confirmed success,
+    releases a terminal failure, or leaves a transient provider outage pending.
+    """
+    # A crash after an upstream submit but before a durable task id cannot be
+    # polled safely.  Keep the same usage non-retryable, then release its
+    # reservation during the server sweep so no customer balance is frozen
+    # indefinitely.  The platform absorbs this deliberately conservative
+    # ambiguous-provider cost rather than charging the customer twice.
+    with transaction(database_path) as conn:
+        uncertain_rows = conn.execute(
+            """
+            SELECT usage_id FROM billing_ai_gateway_requests
+            WHERE feature_key = 'pod.image' AND status = 'failed'
+              AND phase = 'submit_uncertain' AND provider_task_id = ''
+            ORDER BY updated_at, usage_id
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+    failed = 0
+    for row in uncertain_rows:
+        settle_ai_usage_failure(
+            database_path,
+            str(row["usage_id"]),
+            error_message="POD image submit outcome remained uncertain; reservation released by server recovery",
+            reject_gateway_activity=True,
+        )
+        failed += 1
+
+    api_key = _server_provider_secret("image", "WH_WUYIN_IMAGE_API_KEY")
+    if not api_key:
+        return {"completed": 0, "failed": failed, "pending": 0}
+    with transaction(database_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT usage_id, request_hash, provider_task_id
+            FROM billing_ai_gateway_requests
+            WHERE feature_key = 'pod.image' AND status = 'in_progress'
+              AND provider_task_id <> ''
+            ORDER BY updated_at, usage_id
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+    completed = pending = 0
+    for row in rows:
+        usage_id = str(row["usage_id"])
+        request_hash = str(row["request_hash"])
+        task_id = str(row["provider_task_id"])
+        try:
+            result_url = _poll_server_wuyin(api_key, task_id)
+            _complete_gateway_request(
+                database_path,
+                usage_id,
+                request_hash,
+                {"ok": True, "task_id": task_id, "result_url": result_url},
+            )
+            _settle_pod_gateway_success(database_path, usage_id)
+            completed += 1
+        except _ImageProviderTerminalFailure:
+            _fail_gateway_request(
+                database_path,
+                usage_id,
+                request_hash,
+                phase="terminal_failed",
+                clear_provider_task=False,
+            )
+            settle_ai_usage_failure(
+                database_path,
+                usage_id,
+                error_message="POD image provider task failed",
+            )
+            failed += 1
+        except Exception:
+            # Provider timeouts and temporary outages keep the task durable;
+            # the next server reconciliation reuses the same provider id.
+            pending += 1
+    return {"completed": completed, "failed": failed, "pending": pending}
 
 
 def _gateway_request_hash(payload: dict[str, Any]) -> str:
@@ -1835,6 +2037,11 @@ def _require_reserved_usage(
         raise HTTPException(status_code=404, detail="usage event not found")
     if str(usage["feature_key"]) != feature_key:
         raise HTTPException(status_code=400, detail="usage feature does not match operation")
+    if (
+        str(usage["status"]) == "succeeded"
+        and feature_key in POD_GATEWAY_FEATURE_KEYS
+    ):
+        return
     if str(usage["status"]) != "reserved":
         raise HTTPException(status_code=409, detail="usage event is not reserved")
 
@@ -1859,9 +2066,29 @@ def _claim_gateway_request(
         if str(usage["feature_key"]) != feature_key:
             raise HTTPException(status_code=400, detail="usage feature does not match operation")
         if str(usage["status"]) != "reserved":
+            if (
+                feature_key in POD_GATEWAY_FEATURE_KEYS
+                and str(usage["status"]) == "succeeded"
+            ):
+                completed = conn.execute(
+                    """
+                    SELECT response_json
+                    FROM billing_ai_gateway_requests
+                    WHERE usage_id = ? AND request_hash = ? AND feature_key = ?
+                      AND status = 'succeeded'
+                    """,
+                    (usage_id, request_hash, feature_key),
+                ).fetchone()
+                if completed is not None:
+                    try:
+                        cached = json.loads(str(completed["response_json"] or ""))
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise HTTPException(status_code=503, detail="cached gateway response is unavailable") from exc
+                    if isinstance(cached, dict):
+                        return _GatewayRequestClaim(cached_response=cached)
             raise HTTPException(status_code=409, detail="usage event is not reserved")
 
-        if feature_key == "product_processing.image_grid_2k":
+        if feature_key in GATEWAY_IMAGE_FEATURE_KEYS:
             # A submit without a durable provider task is uncertain for the
             # whole reserved usage, not merely for one request hash.  Check it
             # before exact-hash lookup and distinct-slot accounting so changing

@@ -367,6 +367,10 @@
 .pod-style-row-status { display: grid; width: 29px; height: 29px; place-items: center; flex: 0 0 auto; border-radius: 50%; color: #fff; background: var(--pod-primary); font-weight: 900; }
 .pod-style-row.status-completed .pod-style-row-status { background: #29a880; }
 .pod-style-row.status-failed .pod-style-row-status { background: #d55d57; }
+.pod-style-export-selection { display: grid; width: 29px; height: 29px; place-items: center; flex: 0 0 auto; padding: 0; border: 0; border-radius: 50%; color: #fff; background: #29a880; font-weight: 900; cursor: pointer; }
+.pod-style-export-selection[aria-pressed="false"] { border: 1px solid var(--pod-border-strong); color: var(--pod-text-muted); background: var(--pod-surface); }
+.pod-style-export-selection:disabled { cursor: not-allowed; opacity: .55; }
+.pod-style-export-selection:focus-visible { outline: 2px solid var(--pod-primary); outline-offset: 2px; }
 .pod-style-result-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .pod-style-result { position: relative; aspect-ratio: 1 / 1; min-width: 0; overflow: hidden; border: 1px solid var(--pod-border); border-radius: 16px; background: var(--pod-surface); }
 .pod-style-result:not(:disabled):hover { border-color: var(--pod-primary); box-shadow: 0 7px 18px var(--pod-shadow); transform: translateY(-1px); }

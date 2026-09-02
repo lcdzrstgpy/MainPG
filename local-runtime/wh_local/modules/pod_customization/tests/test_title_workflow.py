@@ -608,7 +608,7 @@ def test_reprocessing_completed_images_skips_title_when_initial_calls_are_exhaus
     images.close()
 
 
-def test_completed_title_retry_is_rejected_without_freezing_or_deleting_copy(tmp_path: Path) -> None:
+def test_completed_title_regeneration_is_free_and_preserves_export_selection(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(22)])
     titles = TitleRuntime()
     billing = BillingCoordinator()
@@ -617,17 +617,16 @@ def test_completed_title_retry_is_rejected_without_freezing_or_deleting_copy(tmp
     template = _ready_template(service, actor)
     batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
     service.worker.process_batch(batch["id"])
-    copies_before = service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id)
+    service.set_style_export_selection(actor, batch["id"], 1, selected=False)
     freezes_before = len(billing.freezes)
 
-    with pytest.raises(PodRepositoryError, match="only a failed POD title") as captured:
-        service.regenerate_title(actor, batch["id"], 1, enqueue=False)
+    claimed = service.regenerate_title(actor, batch["id"], 1, enqueue=False)
     stored = service.get_batch(actor, batch["id"])
 
-    assert captured.value.status_code == 409
-    assert len(billing.freezes) == freezes_before
-    assert stored["style_titles"][0]["status"] == "completed"
-    assert service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id) == copies_before
+    assert claimed["status"] == "generating"
+    assert len(billing.freezes) == freezes_before + 1
+    assert stored["style_titles"][0]["status"] == "generating"
+    assert stored["style_titles"][0]["export_selected"] is False
     service.close()
     titles.close()
     images.close()
@@ -658,7 +657,7 @@ def test_completed_historical_title_without_full_copy_is_not_listing_ready(tmp_p
     images.close()
 
 
-def test_concurrent_completed_title_retries_are_both_rejected_without_freezing(tmp_path: Path) -> None:
+def test_concurrent_completed_title_regenerations_claim_only_one_batch_action(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(21), _grid(31)])
     titles = TitleRuntime()
     billing = BillingCoordinator()
@@ -679,17 +678,17 @@ def test_concurrent_completed_title_retries_are_both_rejected_without_freezing(t
     with ThreadPoolExecutor(max_workers=2) as executor:
         claimed = list(executor.map(claim, (1, 2)))
 
-    assert claimed == [None, None]
-    assert len(billing.freezes) == 1
+    assert sum(result is not None for result in claimed) == 1
+    assert len(billing.freezes) == 2
     active = service.get_batch(actor, batch["id"])
-    assert active["status"] == "completed"
-    assert all(title["status"] == "completed" for title in active["style_titles"])
+    assert active["status"] == "generating_titles"
+    assert sum(title["status"] == "generating" for title in active["style_titles"]) == 1
     service.close()
     titles.close()
     images.close()
 
 
-def test_completed_style_retry_preserves_title_and_does_not_freeze(tmp_path: Path) -> None:
+def test_completed_style_regeneration_replaces_images_and_resets_export_to_default(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(30), _grid(40)])
     titles = TitleRuntime()
     billing = BillingCoordinator()
@@ -698,16 +697,16 @@ def test_completed_style_retry_preserves_title_and_does_not_freeze(tmp_path: Pat
     template = _ready_template(service, actor)
     batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
     service.worker.process_batch(batch["id"])
-    before = service.get_batch(actor, batch["id"])["style_titles"][0]
+    service.set_style_export_selection(actor, batch["id"], 1, selected=False)
 
     freezes_before = len(billing.freezes)
-    with pytest.raises(PodRepositoryError, match="only a failed POD style") as captured:
-        service.regenerate_style(actor, batch["id"], 1, enqueue=False)
+    regenerated = service.regenerate_style(actor, batch["id"], 1, enqueue=False)
     after = service.get_batch(actor, batch["id"])["style_titles"][0]
 
-    assert captured.value.status_code == 409
-    assert len(billing.freezes) == freezes_before
-    assert after == before
+    assert len(billing.freezes) == freezes_before + 1
+    assert len(regenerated["results"]) == 4
+    assert after["status"] == "queued"
+    assert after["export_selected"] is False
     service.close()
     titles.close()
     images.close()

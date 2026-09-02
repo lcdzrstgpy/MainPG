@@ -56,6 +56,8 @@ class ExportAnalysis:
     exportable_styles: dict[int, dict[str, str]]
     skipped_style_count: int
     block_reason: str | None
+    selected_exportable_style_count: int = 0
+    user_excluded_style_count: int = 0
 
     @property
     def ready(self) -> bool:
@@ -73,6 +75,7 @@ def analyze_dianxiaomi_export(
         return ExportAnalysis({}, requested_count, "listing_fields_missing")
 
     exportable: dict[int, dict[str, str]] = {}
+    eligible: dict[int, dict[str, str]] = {}
     structurally_complete: set[int] = set()
     grouped: dict[int, list[dict[str, Any]]] = {}
     for item in batch.get("items", []):
@@ -83,13 +86,36 @@ def analyze_dianxiaomi_export(
             continue
         structurally_complete.add(style_index)
         if _is_complete_style_copy(style_copies.get(style_index)):
-            exportable[style_index] = images
+            eligible[style_index] = images
+            if _is_export_selected(batch, style_index):
+                exportable[style_index] = images
 
     if exportable:
-        return ExportAnalysis(exportable, requested_count - len(exportable), None)
+        return ExportAnalysis(
+            exportable,
+            requested_count - len(exportable),
+            None,
+            selected_exportable_style_count=len(exportable),
+            user_excluded_style_count=len(eligible) - len(exportable),
+        )
+    if eligible:
+        return ExportAnalysis(
+            {},
+            requested_count,
+            "all_exportable_styles_unselected",
+            selected_exportable_style_count=0,
+            user_excluded_style_count=len(eligible),
+        )
     if structurally_complete:
         return ExportAnalysis({}, requested_count, "style_copy_missing")
     return ExportAnalysis({}, requested_count, "no_exportable_styles")
+
+
+def _is_export_selected(batch: dict[str, Any], style_index: int) -> bool:
+    selections = batch.get("style_export_selections")
+    if not isinstance(selections, dict):
+        return True
+    return bool(selections.get(style_index, True))
 
 
 def build_pod_dianxiaomi_export(

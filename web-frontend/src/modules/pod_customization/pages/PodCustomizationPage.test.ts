@@ -144,3 +144,30 @@ test("result header exposes a batch failed-retry entry beside the export action"
   assert.match(gallerySource, /onClick=\{onOpenFailedRetry\}>批量重试失败项<\/button>/);
   assert.match(gallerySource, /disabled=\{Boolean\(busyAction\)\}/);
 });
+
+test("listing-ready styles expose an accessible export-selection toggle and export counters", () => {
+  assert.match(gallerySource, /onUpdateExportSelection: \(styleIndex: number, selected: boolean\) => void;/);
+  assert.match(gallerySource, /className="pod-style-export-selection"/);
+  assert.match(gallerySource, /aria-pressed=\{style\.export_selected\}/);
+  assert.match(gallerySource, /onClick=\{\(\) => onUpdateExportSelection\(style\.index, !style\.export_selected\)\}/);
+  assert.match(gallerySource, /已选可导出 \{exportStatus\.selected_exportable_style_count/);
+  assert.match(gallerySource, /用户排除 \{exportStatus\.user_excluded_style_count/);
+});
+
+test("page optimistically persists export selection and restores it when the request fails", () => {
+  assert.match(source, /const updateExportSelection = async \(styleIndex: number, selected: boolean\) => \{/);
+  assert.match(source, /export_selected: selected/);
+  assert.match(source, /podCustomizationApi\.updateExportSelection\(activeBatch\.id, styleIndex, selected\)/);
+  assert.match(source, /export_selected: updated\.export_selected/);
+  assert.match(source, /export_selected: previousSelected/);
+  assert.match(source, /selected_exportable_style_count: Math\.max\(0, current\.dianxiaomi_export\.selected_exportable_style_count \+ selectionDelta\)/);
+  assert.match(source, /dianxiaomi_export: previousExportStatus/);
+  assert.match(source, /onUpdateExportSelection=\{\(styleIndex, selected\) => void updateExportSelection\(styleIndex, selected\)\}/);
+});
+
+test("successful styles retain both regeneration actions until billing is interrupted", () => {
+  assert.match(gallerySource, /canRegeneratePodStyle\(batch\.status, style\.status, Boolean\(style\.listing_ready\)\)/);
+  assert.match(gallerySource, /canRegeneratePodStyleTitle\(batch\.status, style\.title_status, style\.results\)/);
+  assert.match(modelSource, /styleStatus === "completed" && listingReady && !isBillingInterruptedPodBatch\(batchStatus\)/);
+  assert.match(modelSource, /titleStatus === "completed" && !isBillingInterruptedPodBatch\(batchStatus\)/);
+});

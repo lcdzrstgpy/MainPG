@@ -143,6 +143,25 @@ def test_009_adds_secret_free_owner_scoped_export_records(tmp_path: Path) -> Non
         "skipped_count",
         "created_at",
     } == columns
+
+
+def test_011_adds_per_style_export_selection_with_batch_foreign_key(tmp_path: Path) -> None:
+    database = tmp_path / "export-selection.sqlite3"
+    names = sorted(path.name for path in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))
+    apply_migrations(database, names)
+
+    with sqlite3.connect(database) as connection:
+        columns = {
+            row[1] for row in connection.execute(
+                "PRAGMA table_info(pod_customization_style_export_selection)"
+            )
+        }
+        foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(pod_customization_style_export_selection)"
+        ).fetchall()
+
+    assert {"batch_id", "style_index", "selected", "updated_at"} == columns
+    assert any(row[2] == "pod_customization_batches" for row in foreign_keys)
     assert not any(
         word in column.lower()
         for column in columns

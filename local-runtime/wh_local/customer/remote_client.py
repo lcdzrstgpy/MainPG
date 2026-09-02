@@ -143,6 +143,14 @@ class CustomerAuthClient:
     def reserve_ai_usage(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._billing_post("/api/customer/billing/usage/reserve", remote_token, payload)
 
+    def gateway_pod_title(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Request a server-managed POD title; no provider credential is returned."""
+        return self._billing_post("/api/customer/ai/pod/title", remote_token, payload)
+
+    def gateway_pod_image(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Request one server-managed complete POD style; no provider credential is returned."""
+        return self._billing_post("/api/customer/ai/pod/image", remote_token, payload)
+
     def settle_ai_usage_success(self, remote_token: str, usage_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._billing_post(f"/api/customer/billing/usage/{usage_id}/succeed", remote_token, payload)
 

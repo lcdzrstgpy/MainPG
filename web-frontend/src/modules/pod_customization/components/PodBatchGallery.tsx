@@ -13,6 +13,7 @@ type Props = {
   onOpenResult: (item: PodBatchItem, styleIndex: number) => void;
   onRegenerateStyle: (styleIndex: number) => void;
   onRegenerateTitle: (styleIndex: number) => void;
+  onUpdateExportSelection: (styleIndex: number, selected: boolean) => void;
   onSaveTitle: (styleIndex: number, title: string) => Promise<void>;
   onExportDianxiaomi: () => void;
   onResumeBilling: (run: PodBillingRun) => void;
@@ -43,7 +44,7 @@ async function copyTitle(title: string): Promise<void> {
   }
 }
 
-export function PodBatchGallery({ batch, busyAction, pendingBillingRuns, onOpenResult, onRegenerateStyle, onRegenerateTitle, onSaveTitle, onExportDianxiaomi, onResumeBilling, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
+export function PodBatchGallery({ batch, busyAction, pendingBillingRuns, onOpenResult, onRegenerateStyle, onRegenerateTitle, onUpdateExportSelection, onSaveTitle, onExportDianxiaomi, onResumeBilling, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
   const [selectedStyleIndex, setSelectedStyleIndex] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
   const showWaitingTime = Boolean(batch && isActiveBatchStatus(batch.status));
@@ -93,7 +94,8 @@ export function PodBatchGallery({ batch, busyAction, pendingBillingRuns, onOpenR
         <div className="pod-dianxiaomi-export">
           <button type="button" className="pod-open-failed-retry" disabled={!canRetryBatch || Boolean(busyAction)} title={retryBlockReason || "批量重试失败款式"} onClick={onOpenFailedRetry}>批量重试失败项</button>
           {!canRetryBatch && retryBlockReason && <small>{retryBlockReason}</small>}
-          <button type="button" disabled={!canExport} title={canExport ? `可导出 ${exportStatus.exportable_style_count} 款` : exportBlockReason} onClick={onExportDianxiaomi}>{exporting ? "正在导出店小秘表格" : "导出店小秘表格"}</button>
+          <button type="button" disabled={!canExport} title={canExport ? `可导出 ${exportStatus.selected_exportable_style_count ?? exportStatus.exportable_style_count} 款` : exportBlockReason} onClick={onExportDianxiaomi}>{exporting ? "正在导出店小秘表格" : "导出店小秘表格"}</button>
+          {(exportStatus.selected_exportable_style_count !== undefined || exportStatus.user_excluded_style_count !== undefined) && <small>已选可导出 {exportStatus.selected_exportable_style_count ?? exportStatus.exportable_style_count} 款 · 用户排除 {exportStatus.user_excluded_style_count ?? 0} 款</small>}
           {showBillingRecovery && <><button type="button" className="pod-billing-resume" disabled={Boolean(busyAction)} onClick={() => onResumeBilling(billingRecoveryRun!)}>{billingRecoveryLabel}</button><small>有待结算账务，不影响继续重试或导出已完成款式。</small></>}
           {!canExport && <small>{exportBlockReason}</small>}
         </div>
@@ -104,10 +106,11 @@ export function PodBatchGallery({ batch, busyAction, pendingBillingRuns, onOpenR
       {styles.map((style) => {
         const regenerating = busyAction === `regenerate-style:${style.index}`;
         const regeneratingTitle = busyAction === `regenerate-title:${style.index}`;
-        const canRegenerate = Boolean(batch.style_grid) && canRegeneratePodStyle(batch.status, style.status);
+        const canRegenerate = Boolean(batch.style_grid) && canRegeneratePodStyle(batch.status, style.status, Boolean(style.listing_ready));
         const canRegenerateTitle = !busyAction && canRegeneratePodStyleTitle(batch.status, style.title_status, style.results);
+        const canToggleExportSelection = style.status === "completed" && Boolean(style.listing_ready);
         return <article className={`pod-style-row status-${style.status}`} key={style.index}>
-          <header><span className="pod-style-row-status" aria-hidden="true">{style.status === "completed" ? "✓" : style.status === "failed" ? "!" : "·"}</span><div className="pod-style-row-main"><button type="button" className="pod-style-title-button" title={style.title} onClick={() => setSelectedStyleIndex(style.index)}>{style.title}</button><small>{podStyleTitleStatusLabel(style.title_status, style.listing_ready)} · {style.status === "partial_failure" ? "图片部分生成失败" : style.status === "generating" ? "图片正在生成" : podItemStatusLabel(style.status)}</small>{style.title_error_message && <small className="pod-style-title-error" title={style.title_error_message}>标题生成失败，可重新生成</small>}</div><div className="pod-style-row-actions"><button type="button" disabled={!style.title.trim()} onClick={() => void copyTitle(style.title)}>复制标题</button><button type="button" disabled={!canRegenerateTitle || regeneratingTitle} onClick={() => onRegenerateTitle(style.index)}>{regeneratingTitle ? "标题生成中" : "只重生标题"}</button><button type="button" disabled={!canRegenerate || regenerating} onClick={() => onRegenerateStyle(style.index)}>{regenerating ? "重新生成中" : "整款重生成"}</button></div></header>
+          <header>{canToggleExportSelection ? <button type="button" className="pod-style-export-selection" aria-label={`${style.title}，${style.export_selected ? "已选中导出" : "已取消导出"}`} aria-pressed={style.export_selected} disabled={Boolean(busyAction)} onClick={() => onUpdateExportSelection(style.index, !style.export_selected)}>{style.export_selected ? "✓" : ""}</button> : <span className="pod-style-row-status" aria-hidden="true">{style.status === "completed" ? "✓" : style.status === "failed" ? "!" : "·"}</span>}<div className="pod-style-row-main"><button type="button" className="pod-style-title-button" title={style.title} onClick={() => setSelectedStyleIndex(style.index)}>{style.title}</button><small>{podStyleTitleStatusLabel(style.title_status, style.listing_ready)} · {style.status === "partial_failure" ? "图片部分生成失败" : style.status === "generating" ? "图片正在生成" : podItemStatusLabel(style.status)}</small>{style.title_error_message && <small className="pod-style-title-error" title={style.title_error_message}>标题生成失败，可重新生成</small>}</div><div className="pod-style-row-actions"><button type="button" disabled={!style.title.trim()} onClick={() => void copyTitle(style.title)}>复制标题</button><button type="button" disabled={!canRegenerateTitle || regeneratingTitle} onClick={() => onRegenerateTitle(style.index)}>{regeneratingTitle ? "标题生成中" : "只重生标题"}</button><button type="button" disabled={!canRegenerate || regenerating} onClick={() => onRegenerateStyle(style.index)}>{regenerating ? "重新生成中" : "整款重生成"}</button></div></header>
           <div className="pod-style-result-grid">
             {style.results.map((item, offset) => {
               const preview = item?.composite_preview_url || item?.pattern_preview_url;

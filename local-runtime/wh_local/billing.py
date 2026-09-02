@@ -52,6 +52,12 @@ FEATURE_PRICING: dict[str, FeaturePricing] = {
     # 豆包识图独立计费：视觉主体识别不再与文本共用 usage_id("text")，避免
     # 视觉成本被文本 5 分打包。该值为兼容估计（×10 单位），预留 15 / 扣 10 积分。
     "product_processing.vision": FeaturePricing(15, 10, 10, 1.0),
+    # POD is always executed through the customer-auth gateway.  A title-only
+    # regeneration is free; a complete four-image style is one billed unit.
+    # The image price is selected server-side in ``_pricing`` and persisted in
+    # the reservation snapshot so retries and settlement cannot re-roll it.
+    "pod.title": FeaturePricing(0, 0, 0, 1.0),
+    "pod.image": FeaturePricing(POD_LINK_PRICE_MIN_POINTS, POD_LINK_PRICE_MIN_POINTS, POD_LINK_PRICE_MIN_POINTS, 1.0),
     # 商品自定义组合：整条流程一口价，分两步单次计费（生成主图 40 / 并行三图+文本 60）。
     "product_processing.combo_main": FeaturePricing(40, 40, 40, 1.0),
     "product_processing.combo_process": FeaturePricing(60, 60, 60, 1.0),
@@ -836,6 +842,19 @@ def _pricing_payload(rule: Any) -> dict[str, Any]:
                 "reserve_points": _display_points(vision_reserve, scale),
                 "charge_points": _display_points(vision_charge, scale),
             },
+            "pod.title": {
+                "reserve_units": 0,
+                "charge_units": 0,
+                "reserve_points": 0,
+                "charge_points": 0,
+            },
+            "pod.image": {
+                "reserve_units_min": POD_LINK_PRICE_MIN_POINTS * scale,
+                "reserve_units_max": (POD_LINK_PRICE_MIN_POINTS + POD_LINK_PRICE_VARIANTS - 1) * scale,
+                "charge_units_min": POD_LINK_PRICE_MIN_POINTS * scale,
+                "charge_units_max": (POD_LINK_PRICE_MIN_POINTS + POD_LINK_PRICE_VARIANTS - 1) * scale,
+                "price_policy": "per_style_server_random_snapshot",
+            },
         },
         "min_client_version": str(rule["min_client_version"] or ""),
         "effective_at": str(rule["effective_at"] or ""),
@@ -864,6 +883,13 @@ def _pricing(conn: Any, feature_key: str) -> FeaturePricing:
             int(rule["image_charge_units"]),
             1.0,
         )
+    if feature_key == "pod.title":
+        return FeaturePricing(0, 0, 0, 1.0)
+    if feature_key == "pod.image":
+        style_price_units = (
+            POD_LINK_PRICE_MIN_POINTS + secrets.randbelow(POD_LINK_PRICE_VARIANTS)
+        ) * int(rule["point_unit_scale"])
+        return FeaturePricing(style_price_units, style_price_units, style_price_units, 1.0)
     legacy = FEATURE_PRICING.get(feature_key, FeaturePricing(50, 10, 20, 3.0))
     return FeaturePricing(
         legacy.reserve_points * 10,

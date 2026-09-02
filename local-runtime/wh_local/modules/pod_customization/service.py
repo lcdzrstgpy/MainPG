@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,11 @@ class PodCustomizationService:
             else None
         )
         self.start_workers = start_workers
+        # The repository claim is the cross-process correctness boundary. This
+        # short local critical section closes the pre-claim freeze window in a
+        # single workbench process, so two rapid clicks cannot create separate
+        # per-style billing reservations before one claim loses.
+        self._regeneration_lock = threading.RLock()
         # Restarts never inherit request-local secrets. Queued work remains
         # paused until the composition root obtains an explicit regrant.
 
@@ -400,7 +406,17 @@ class PodCustomizationService:
             raise PodRepositoryError("仅已暂停的 POD 批次可以继续", 409)
         run = self._pending_billing_run_for_batch(actor, batch_id)
         if run is None:
-            raise PodRepositoryError("POD 批次缺少可恢复的计费授权，请重新授权后再继续", 409)
+            run = self._freeze_paused_batch_remainder(actor, batch)
+            if not self.repository.resume_paused_batch(batch_id):
+                self._settle_unclaimed_retry(run)
+                raise PodRepositoryError("POD 批次无法继续", 409)
+            if self.worker is None:
+                raise RuntimeError("POD worker is disabled")
+            self.worker.register_billing_run(batch_id, run)
+            self.worker.submit(batch_id, run)
+            return self._batch_payload(
+                self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+            )
         self.repository.resume_paused_batch(batch_id)
         self.resume_billing_run(actor, run["run_id"], enqueue=self.start_workers)
         return self._batch_payload(self.repository.get_batch(batch_id, actor.workspace_id, actor.id))
@@ -422,6 +438,9 @@ class PodCustomizationService:
                 "listing_fields_missing": "POD batch listing snapshot is missing",
                 "style_copy_missing": "POD style copy is missing",
                 "no_exportable_styles": "POD batch has zero exportable styles",
+                "all_exportable_styles_unselected": (
+                    "POD batch has zero exportable styles because every ready style was deselected"
+                ),
                 "billing_recovery_required": (
                     "POD batch still has incomplete image/title/copy work and "
                     "requires billing authorization to resume"
@@ -445,6 +464,23 @@ class PodCustomizationService:
             filename=exported.filename,
             export_id=record["id"],
         )
+
+    def set_style_export_selection(
+        self,
+        actor: Actor,
+        batch_id: str,
+        style_index: int,
+        *,
+        selected: bool,
+    ) -> dict[str, Any]:
+        selected = self.repository.upsert_style_export_selection(
+            batch_id,
+            actor.workspace_id,
+            actor.id,
+            style_index,
+            selected=selected,
+        )
+        return {"style_index": style_index, "export_selected": selected}
 
     def list_exports(self, actor: Actor, batch_id: str) -> dict[str, Any]:
         self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
@@ -522,6 +558,20 @@ class PodCustomizationService:
         creative_prompt: str = "",
         enqueue: bool = True,
     ) -> dict[str, Any]:
+        with self._regeneration_lock:
+            return self._regenerate_style(
+                actor, batch_id, style_index, creative_prompt=creative_prompt, enqueue=enqueue
+            )
+
+    def _regenerate_style(
+        self,
+        actor: Actor,
+        batch_id: str,
+        style_index: int,
+        *,
+        creative_prompt: str = "",
+        enqueue: bool = True,
+    ) -> dict[str, Any]:
         self._preflight_style_retry(actor, batch_id, style_index)
         action_id = f"{batch_id}:style:{style_index}:retry:{uuid.uuid4().hex}"
         billing_run = self._freeze_style_retry(
@@ -549,6 +599,17 @@ class PodCustomizationService:
         }
 
     def regenerate_title(
+        self,
+        actor: Actor,
+        batch_id: str,
+        style_index: int,
+        *,
+        enqueue: bool = True,
+    ) -> dict[str, Any]:
+        with self._regeneration_lock:
+            return self._regenerate_title(actor, batch_id, style_index, enqueue=enqueue)
+
+    def _regenerate_title(
         self,
         actor: Actor,
         batch_id: str,
@@ -654,28 +715,27 @@ class PodCustomizationService:
 
     def _preflight_style_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
-            if batch["status"] == "billing_auth_required":
-                raise PodRepositoryError(
-                    "POD billing is not recovered; resume billing authorization before regenerating one style",
-                    409,
-                )
+        if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+            raise PodRepositoryError(
+                "POD billing recovery is required before regenerating one style", 409
+            )
+        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
             raise PodRepositoryError("POD batch must settle before regenerating one style", 409)
         results = [
             item for item in batch.get("items", [])
             if int(item.get("style_index") or 0) == int(style_index)
         ]
-        if len(results) != 4 or any(item.get("status") != "failed" for item in results):
-            raise PodRepositoryError("only a failed POD style can be regenerated", 409)
+        statuses = {str(item.get("status") or "") for item in results}
+        if len(results) != 4 or statuses not in ({"failed"}, {"completed"}):
+            raise PodRepositoryError("only a settled POD style can be regenerated", 409)
 
     def _preflight_title_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
-            if batch["status"] == "billing_auth_required":
-                raise PodRepositoryError(
-                    "POD billing is not recovered; resume billing authorization before regenerating its title",
-                    409,
-                )
+        if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+            raise PodRepositoryError(
+                "POD billing recovery is required before regenerating its title", 409
+            )
+        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
             raise PodRepositoryError("POD batch must settle before regenerating its title", 409)
         title = next(
             (row for row in batch.get("style_titles", []) if int(row["style_index"]) == int(style_index)),
@@ -685,8 +745,8 @@ class PodCustomizationService:
             item for item in batch.get("items", [])
             if int(item.get("style_index") or 0) == int(style_index)
         ]
-        if title is None or title.get("status") != "failed":
-            raise PodRepositoryError("only a failed POD title can be regenerated", 409)
+        if title is None or title.get("status") not in {"failed", "completed"}:
+            raise PodRepositoryError("only a settled POD title can be regenerated", 409)
         if len(results) != 4 or any(
             item.get("status") != "completed" or not item.get("public_url") for item in results
         ):
@@ -715,12 +775,11 @@ class PodCustomizationService:
         title_style_indices: tuple[int, ...],
     ) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
-            if batch["status"] == "billing_auth_required":
-                raise PodRepositoryError(
-                    "POD billing is not recovered; resume billing authorization before retrying failed styles",
-                    409,
-                )
+        if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+            raise PodRepositoryError(
+                "POD billing recovery is required before retrying failed styles", 409
+            )
+        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
             raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
         if any(index > int(batch["requested_count"]) for index in (*image_style_indices, *title_style_indices)):
             raise PodRepositoryError("POD style index is outside the batch range", 422)
@@ -992,6 +1051,51 @@ class PodCustomizationService:
         plan = PodCallPlan.for_batch(batch_id, style_count=style_count)
         return self._freeze_action(
             actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
+        )
+
+    def _freeze_paused_batch_remainder(
+        self, actor: Actor, batch: dict[str, Any]
+    ) -> PodBillingRun:
+        batch_id = str(batch["batch_id"])
+        completed_images: dict[int, int] = {}
+        for item in batch.get("items", []):
+            if item.get("status") == "completed":
+                style_index = int(item.get("style_index") or 0)
+                completed_images[style_index] = completed_images.get(style_index, 0) + 1
+        title_statuses = {
+            int(title["style_index"]): str(title.get("status") or "")
+            for title in batch.get("style_titles", [])
+        }
+        image_indices = tuple(
+            style_index
+            for style_index in range(1, int(batch["requested_count"]) + 1)
+            if completed_images.get(style_index, 0) < 4
+        )
+        title_indices = tuple(
+            style_index
+            for style_index in range(1, int(batch["requested_count"]) + 1)
+            if completed_images.get(style_index, 0) == 4
+            and self.title_runtime is not None
+            and title_statuses.get(style_index) != "completed"
+        )
+        if not image_indices and not title_indices:
+            raise PodRepositoryError("POD 批次没有待继续的款式", 409)
+        plan = PodCallPlan.for_batch_resume(
+            batch_id,
+            uuid.uuid4().hex,
+            image_style_indices=image_indices,
+            title_style_indices=title_indices,
+        )
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="batch_initial",
+            target_id=batch_id,
+            batch_id=batch_id,
+            action_payload={
+                "resume_image_style_indices": list(image_indices),
+                "resume_title_style_indices": list(title_indices),
+            },
         )
 
     def _freeze_trial(
@@ -1296,6 +1400,8 @@ class PodCustomizationService:
             "dianxiaomi_export": {
                 "ready": export_analysis.ready,
                 "exportable_style_count": len(export_analysis.exportable_styles),
+                "selected_exportable_style_count": export_analysis.selected_exportable_style_count,
+                "user_excluded_style_count": export_analysis.user_excluded_style_count,
                 "skipped_style_count": export_analysis.skipped_style_count,
                 "block_reason": export_analysis.block_reason,
             },
@@ -1381,6 +1487,7 @@ class PodCustomizationService:
             "title": title.get("title") or None,
             "source": title.get("source", "ai"),
             "listing_ready": bool(title.get("listing_ready", False)),
+            "export_selected": bool(title.get("export_selected", True)),
             "error_message": title.get("error_message", ""),
             "updated_at": title.get("updated_at", ""),
         }
@@ -1397,6 +1504,7 @@ class PodCustomizationService:
             "id": item["item_id"],
             "index": item["item_index"],
             "style_index": item.get("style_index", item["item_index"]),
+            "export_selected": bool(item.get("export_selected", True)),
             "variant_index": item.get("variant_index", 1),
             "status": item["status"],
             "pattern_preview_url": f"/api/pod-customization/assets/{pattern_id}" if pattern_id else None,

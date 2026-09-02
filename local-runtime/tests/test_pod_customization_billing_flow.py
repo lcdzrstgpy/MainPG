@@ -39,6 +39,8 @@ def test_provider_return_is_success_and_unused_prefrozen_calls_are_no_return() -
         ("batch-1:style:1:title:1", "no_return"),
         ("batch-1:style:1:title:2", "no_return"),
         ("batch-1:style:1:title:3", "no_return"),
+        ("batch-1:style:1:title:4", "no_return"),
+        ("batch-1:style:1:title:5", "no_return"),
     ]
 
 

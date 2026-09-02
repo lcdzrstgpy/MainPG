@@ -344,6 +344,14 @@ def _settle(service: PodCustomizationService, batch_id: str, status: str = "comp
         connection.execute("UPDATE pod_customization_batches SET status = ? WHERE batch_id = ?", (status, batch_id))
 
 
+def _complete_listing_title(service: PodCustomizationService, batch_id: str, style_index: int) -> None:
+    with sqlite3.connect(service.database_path) as connection:
+        connection.execute(
+            "UPDATE pod_customization_style_titles SET status = 'completed' WHERE batch_id = ? AND style_index = ?",
+            (batch_id, style_index),
+        )
+
+
 def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
@@ -428,6 +436,8 @@ def test_service_export_repeats_each_style_for_saved_skus_and_uses_last_scene_as
         ),
     )
     _settle(service, batch["id"])
+    for style_index in (1, 2):
+        _complete_listing_title(service, batch["id"], style_index)
     service.repository.upsert_style_copy(
         batch["id"], actor.workspace_id, actor.id, 1,
         title="Coastal Tote", english_title="Coastal Canvas Tote", description="Carry calm everywhere.",
@@ -462,6 +472,7 @@ def test_service_export_uses_selected_short_title_for_both_title_columns(tmp_pat
     batch = _batch(service, actor, count=1, title_mode="short")
     _complete_style(service, batch["id"], 1)
     _settle(service, batch["id"])
+    _complete_listing_title(service, batch["id"], 1)
     service.repository.upsert_style_copy(
         batch["id"], actor.workspace_id, actor.id, 1,
         title="Long descriptive product title", english_title="Short product title", description="Description",
@@ -548,11 +559,163 @@ def test_completed_style_without_copy_is_skipped_when_another_style_is_exportabl
     assert payload["dianxiaomi_export"] == {
         "ready": True,
         "exportable_style_count": 1,
+        "selected_exportable_style_count": 1,
+        "user_excluded_style_count": 0,
         "skipped_style_count": 1,
         "block_reason": None,
     }
     assert exported.exported_style_count == 1
     assert exported.skipped_style_count == 1
+
+
+def test_export_selection_defaults_to_selected_persists_and_excludes_unselected_styles(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    batch = _batch(service, actor, count=2)
+    for style_index in (1, 2):
+        _complete_style(service, batch["id"], style_index)
+        service.repository.upsert_style_copy(
+            batch["id"], actor.workspace_id, actor.id, style_index,
+            title=f"Title {style_index}",
+            english_title=f"English {style_index}",
+            description=f"Description {style_index}",
+        )
+    _settle(service, batch["id"])
+    for style_index in (1, 2):
+        _complete_listing_title(service, batch["id"], style_index)
+
+    initial = service.get_batch(actor, batch["id"])
+    assert {title["style_index"]: title["export_selected"] for title in initial["style_titles"]} == {
+        1: True,
+        2: True,
+    }
+    assert {item["export_selected"] for item in initial["items"]} == {True}
+
+    updated = service.set_style_export_selection(actor, batch["id"], 2, selected=False)
+    reloaded = service.get_batch(actor, batch["id"])
+    exported = service.export_dianxiaomi(actor, batch["id"])
+
+    assert updated == {"style_index": 2, "export_selected": False}
+    assert {title["style_index"]: title["export_selected"] for title in reloaded["style_titles"]} == {
+        1: True,
+        2: False,
+    }
+    assert reloaded["dianxiaomi_export"]["selected_exportable_style_count"] == 1
+    assert reloaded["dianxiaomi_export"]["user_excluded_style_count"] == 1
+    assert exported.exported_style_count == 1
+    assert exported.skipped_style_count == 1
+    workbook = load_workbook(io.BytesIO(exported.content), data_only=True)
+    try:
+        assert [row[3] for row in workbook.active.iter_rows(min_row=2, values_only=True)] == ["POD-001"]
+    finally:
+        workbook.close()
+
+
+def test_export_rejects_when_user_deselects_every_exportable_style(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    batch = _batch(service, actor, count=1)
+    _complete_style(service, batch["id"], 1)
+    _settle(service, batch["id"])
+    _complete_listing_title(service, batch["id"], 1)
+    service.repository.upsert_style_copy(
+        batch["id"], actor.workspace_id, actor.id, 1,
+        title="Title", english_title="English", description="Description",
+    )
+    service.set_style_export_selection(actor, batch["id"], 1, selected=False)
+
+    payload = service.get_batch(actor, batch["id"])
+    with pytest.raises(PodRepositoryError, match="deselected") as raised:
+        service.export_dianxiaomi(actor, batch["id"])
+
+    assert payload["dianxiaomi_export"]["block_reason"] == "all_exportable_styles_unselected"
+    assert payload["dianxiaomi_export"]["selected_exportable_style_count"] == 0
+    assert payload["dianxiaomi_export"]["user_excluded_style_count"] == 1
+    assert raised.value.status_code == 409
+
+
+def test_export_selection_rejects_not_ready_style_and_preserves_owner_boundary(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    stranger = _actor("operator-2")
+    batch = _batch(service, actor, count=1)
+
+    assert service.get_batch(actor, batch["id"])["style_titles"][0]["export_selected"] is False
+
+    with pytest.raises(PodRepositoryError, match="not ready") as not_ready:
+        service.set_style_export_selection(actor, batch["id"], 1, selected=False)
+    with pytest.raises(PodRepositoryError, match="not found") as not_owned:
+        service.set_style_export_selection(stranger, batch["id"], 1, selected=False)
+
+    assert not_ready.value.status_code == 409
+    assert not_owned.value.status_code == 404
+
+
+def test_whole_style_regeneration_restores_selection_but_title_only_completion_preserves_it(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    batch = _batch(service, actor, count=1)
+    _complete_style(service, batch["id"], 1)
+    _settle(service, batch["id"])
+    service.repository.upsert_style_copy(
+        batch["id"], actor.workspace_id, actor.id, 1,
+        title="Original", english_title="Original English", description="Original description",
+    )
+    _complete_listing_title(service, batch["id"], 1)
+    service.set_style_export_selection(actor, batch["id"], 1, selected=False)
+
+    service.repository.claim_style_regeneration(
+        batch["id"], 1, actor.workspace_id, actor.id
+    )
+    with sqlite3.connect(service.database_path) as connection:
+        assert connection.execute(
+            "SELECT selected FROM pod_customization_style_export_selection WHERE batch_id = ? AND style_index = 1",
+            (batch["id"],),
+        ).fetchone() is None
+        connection.execute(
+            "UPDATE pod_customization_style_titles SET status = 'generating' WHERE batch_id = ? AND style_index = 1",
+            (batch["id"],),
+        )
+    service.repository.finish_style_title(
+        batch["id"],
+        1,
+        {"title": "Replacement", "normalized_title": "Replacement"},
+        workspace_id=actor.workspace_id,
+        owner_user_id=actor.id,
+        style_copy={
+            "title": "Replacement",
+            "english_title": "Replacement English",
+            "description": "Replacement description",
+        },
+    )
+    with sqlite3.connect(service.database_path) as connection:
+        connection.execute(
+            "UPDATE pod_customization_style_grid_results SET status = 'completed' WHERE batch_id = ? AND style_index = 1",
+            (batch["id"],),
+        )
+    assert service.get_batch(actor, batch["id"])["style_titles"][0]["export_selected"] is True
+
+    service.set_style_export_selection(actor, batch["id"], 1, selected=False)
+    with sqlite3.connect(service.database_path) as connection:
+        connection.execute(
+            "UPDATE pod_customization_style_titles SET status = 'generating' WHERE batch_id = ? AND style_index = 1",
+            (batch["id"],),
+        )
+    service.repository.finish_style_title(
+        batch["id"],
+        1,
+        {"title": "Title only", "normalized_title": "Title only"},
+        workspace_id=actor.workspace_id,
+        owner_user_id=actor.id,
+        style_copy={
+            "title": "Title only",
+            "english_title": "Title only English",
+            "description": "Title only description",
+        },
+    )
+    assert service.get_batch(actor, batch["id"])["style_titles"][0]["export_selected"] is False
 
 
 def test_cancelled_batch_exports_the_styles_that_completed_before_cancellation(tmp_path: Path) -> None:
@@ -572,6 +735,8 @@ def test_cancelled_batch_exports_the_styles_that_completed_before_cancellation(t
     assert payload["dianxiaomi_export"] == {
         "ready": True,
         "exportable_style_count": 1,
+        "selected_exportable_style_count": 1,
+        "user_excluded_style_count": 0,
         "skipped_style_count": 1,
         "block_reason": None,
     }
@@ -595,6 +760,8 @@ def test_billing_auth_required_complete_batch_is_exportable(tmp_path: Path) -> N
     assert payload["dianxiaomi_export"] == {
         "ready": True,
         "exportable_style_count": 1,
+        "selected_exportable_style_count": 1,
+        "user_excluded_style_count": 0,
         "skipped_style_count": 0,
         "block_reason": None,
     }
@@ -638,6 +805,8 @@ def test_billing_auth_required_incomplete_batch_exports_ready_styles(tmp_path: P
     assert payload["dianxiaomi_export"] == {
         "ready": True,
         "exportable_style_count": 1,
+        "selected_exportable_style_count": 1,
+        "user_excluded_style_count": 0,
         "skipped_style_count": 0,
         "block_reason": None,
     }
@@ -660,6 +829,8 @@ def test_settlement_pending_batch_with_incomplete_styles_exports_ready_styles(tm
     assert payload["dianxiaomi_export"] == {
         "ready": True,
         "exportable_style_count": 1,
+        "selected_exportable_style_count": 1,
+        "user_excluded_style_count": 0,
         "skipped_style_count": 1,
         "block_reason": None,
     }
@@ -787,6 +958,8 @@ def test_batch_payload_reports_export_readiness_and_zero_exportable_block(tmp_pa
     assert payload["dianxiaomi_export"] == {
         "ready": False,
         "exportable_style_count": 0,
+        "selected_exportable_style_count": 0,
+        "user_excluded_style_count": 0,
         "skipped_style_count": 1,
         "block_reason": "no_exportable_styles",
     }

@@ -437,6 +437,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     pod_billing = RemotePodBillingCoordinator(
         remote_customer_auth,
         session_remote_token_resolver(customer_sessions),
+        server_managed=True,
     )
     pod_router = create_pod_customization_router(
         db_path,

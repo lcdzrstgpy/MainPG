@@ -466,6 +466,12 @@ class PodCustomizationRepository:
                    WHERE titles.batch_id = ? ORDER BY titles.style_index""",
                 (batch_id,),
             ).fetchall()
+            selection_rows = connection.execute(
+                """SELECT style_index, selected
+                   FROM pod_customization_style_export_selection
+                   WHERE batch_id = ?""",
+                (batch_id,),
+            ).fetchall()
         result = dict(batch)
         result["business_fields"] = json.loads(result.pop("business_fields_json"))
         result["listing_fields"] = json.loads(result.pop("listing_fields_json"))
@@ -475,6 +481,27 @@ class PodCustomizationRepository:
         result["items"] = [dict(item) for item in items]
         result["style_grid"] = style_grid
         result["style_titles"] = [self._decode_title_row(row) for row in title_rows]
+        result["style_export_selections"] = {
+            int(row["style_index"]): bool(row["selected"])
+            for row in selection_rows
+        }
+        for title in result["style_titles"]:
+            title["export_selected"] = bool(title["listing_ready"]) and result[
+                "style_export_selections"
+            ].get(
+                int(title["style_index"]), True
+            )
+        listing_ready_by_style = {
+            int(title["style_index"]): bool(title["listing_ready"])
+            for title in result["style_titles"]
+        }
+        for item in result["items"]:
+            style_index = int(item["style_index"])
+            item["export_selected"] = listing_ready_by_style.get(
+                style_index, False
+            ) and result["style_export_selections"].get(
+                style_index, True
+            )
         result["title_completed_count"] = sum(row["status"] == "completed" for row in result["style_titles"])
         result["title_failed_count"] = sum(row["status"] == "failed" for row in result["style_titles"])
         result["listing_ready_count"] = sum(bool(row["listing_ready"]) for row in result["style_titles"])
@@ -531,6 +558,32 @@ class PodCustomizationRepository:
             )
         return values
 
+    def upsert_style_export_selection(
+        self,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        style_index: int,
+        *,
+        selected: bool,
+    ) -> bool:
+        if not isinstance(selected, bool):
+            raise ValueError("selected must be a boolean")
+        with self._connect() as connection:
+            self._require_owned_listing_ready_style(
+                connection, batch_id, workspace_id, owner_user_id, style_index
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_style_export_selection
+                   (batch_id, style_index, selected, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(batch_id, style_index) DO UPDATE SET
+                     selected = excluded.selected,
+                     updated_at = excluded.updated_at""",
+                (batch_id, style_index, int(selected), _now()),
+            )
+        return selected
+
     @staticmethod
     def _style_copy_values(title: Any, english_title: Any, description: Any) -> dict[str, str]:
         values = {
@@ -563,6 +616,44 @@ class PodCustomizationRepository:
             or not 1 <= style_index <= int(batch["requested_count"])
         ):
             raise ValueError("style_index is outside the batch range")
+
+    @classmethod
+    def _require_owned_listing_ready_style(
+        cls,
+        connection: sqlite3.Connection,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        style_index: int,
+    ) -> None:
+        cls._require_owned_style(
+            connection, batch_id, workspace_id, owner_user_id, style_index
+        )
+        title = connection.execute(
+            """SELECT 1
+               FROM pod_customization_style_titles AS titles
+               INNER JOIN pod_customization_style_copy AS copies
+                 ON copies.batch_id = titles.batch_id
+                AND copies.style_index = titles.style_index
+               WHERE titles.batch_id = ? AND titles.style_index = ?
+                 AND titles.status = 'completed'
+                 AND TRIM(copies.title) <> ''
+                 AND TRIM(copies.english_title) <> ''
+                 AND TRIM(copies.description) <> ''""",
+            (batch_id, style_index),
+        ).fetchone()
+        images = connection.execute(
+            """SELECT COUNT(*)
+               FROM pod_customization_style_grid_results AS results
+               INNER JOIN pod_customization_style_grid_publications AS publications
+                 ON publications.result_id = results.result_id
+               WHERE results.batch_id = ? AND results.style_index = ?
+                 AND results.status = 'completed'
+                 AND TRIM(publications.public_url) <> ''""",
+            (batch_id, style_index),
+        ).fetchone()
+        if title is None or int(images[0]) != 4:
+            raise PodRepositoryError("POD style is not ready for Dianxiaomi export", 409)
 
     @staticmethod
     def _upsert_style_copy_record(
@@ -1191,7 +1282,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_batches
                    SET status = 'generating_titles', error_message = '', updated_at = ?, finished_at = ''
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
-                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')""",
+                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled')""",
                 (now, batch_id, workspace_id, owner_user_id),
             )
             if batch_claim.rowcount != 1:
@@ -1202,7 +1293,7 @@ class PodCustomizationRepository:
                        visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
                        error_message = '', started_at = ?, finished_at = '', updated_at = ?
                    WHERE batch_id = ? AND style_index = ? AND style_task_id <> ''
-                     AND status = 'failed'""",
+                     AND status IN ('failed', 'completed')""",
                 (now, now, batch_id, style_index),
             )
             if result.rowcount != 1:
@@ -1274,6 +1365,19 @@ class PodCustomizationRepository:
             if copy_values is not None:
                 self._upsert_style_copy_record(
                     connection, batch_id, style_index, values=copy_values, now=now
+                )
+                # A missing row is left by whole-style regeneration.  Keep an
+                # explicit row untouched so title-only regeneration preserves
+                # the user's existing export choice.
+                connection.execute(
+                    """INSERT INTO pod_customization_style_export_selection
+                       (batch_id, style_index, selected, updated_at)
+                       SELECT ?, ?, 1, ?
+                       WHERE NOT EXISTS (
+                         SELECT 1 FROM pod_customization_style_export_selection
+                         WHERE batch_id = ? AND style_index = ?
+                       )""",
+                    (batch_id, style_index, now, batch_id, style_index),
                 )
 
     def complete_manual_title(
@@ -1912,13 +2016,17 @@ class PodCustomizationRepository:
             ).fetchone()
             if batch is None:
                 raise PodRepositoryError("POD batch not found", 404)
-            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
+            if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+                raise PodRepositoryError(
+                    "POD billing recovery is required before regenerating one style", 409
+                )
+            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
                 raise PodRepositoryError("POD batch must settle before regenerating one style", 409)
             result = connection.execute(
                 """UPDATE pod_customization_style_grid_results
                    SET status = 'generating_pattern', error_message = '', updated_at = ?
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ? AND style_index = ?
-                     AND status = 'failed'""",
+                     AND status IN ('failed', 'completed')""",
                 (now, batch_id, workspace_id, owner_user_id, style_index),
             )
             if result.rowcount != 4:
@@ -1933,6 +2041,13 @@ class PodCustomizationRepository:
             )
             if title_reset.rowcount not in {0, 1}:
                 raise PodRepositoryError("POD style title reset failed", 409)
+            # Make this whole-style regeneration receive a fresh default
+            # selection once new images and title/copy have completed.
+            connection.execute(
+                """DELETE FROM pod_customization_style_export_selection
+                   WHERE batch_id = ? AND style_index = ?""",
+                (batch_id, style_index),
+            )
             self._refresh_counts(connection, batch_id, now)
             connection.execute(
                 """UPDATE pod_customization_batches SET status = 'generating_patterns', updated_at = ?, error_message = ''
@@ -1985,12 +2100,11 @@ class PodCustomizationRepository:
             ).fetchone()
             if batch is None:
                 raise PodRepositoryError("POD batch not found", 404)
-            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
-                if batch["status"] == "billing_auth_required":
-                    raise PodRepositoryError(
-                        "POD billing is not recovered; resume billing authorization before retrying failed styles",
-                        409,
-                    )
+            if batch["status"] in {"billing_auth_required", "settlement_pending"}:
+                raise PodRepositoryError(
+                    "POD billing recovery is required before retrying failed styles", 409
+                )
+            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
                 raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
             requested_count = int(batch["requested_count"])
             if any(not 1 <= index <= requested_count for index in (*image_style_indices, *title_style_indices)):
@@ -2034,7 +2148,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_batches
                    SET status = ?, error_message = '', updated_at = ?, finished_at = ''
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
-                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')""",
+                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled')""",
                 (next_status, now, batch_id, workspace_id, owner_user_id),
             )
             if claimed.rowcount != 1:

@@ -303,6 +303,17 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
     "010_pod_title_source": MigrationEffect(
         column_additions={"pod_customization_style_titles": ("source",)}
     ),
+    "011_pod_style_export_selection": MigrationEffect(
+        tables={
+            "pod_customization_style_export_selection": _table(
+                "batch_id style_index selected updated_at",
+                checks=(
+                    "CHECK (style_index >= 1)",
+                    "CHECK (selected IN (0, 1))",
+                ),
+            )
+        }
+    ),
 }
 
 

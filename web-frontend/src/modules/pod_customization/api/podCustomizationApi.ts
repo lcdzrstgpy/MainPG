@@ -133,6 +133,10 @@ export const podCustomizationApi = {
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/styles/${styleIndex}/title`,
     { method: "PATCH", body: { title } },
   ),
+  updateExportSelection: (batchId: string, styleIndex: number, selected: boolean) => httpJson<{ style_index: number; export_selected: boolean }>(
+    `${API_BASE}/batches/${encodeURIComponent(batchId)}/styles/${styleIndex}/export-selection`,
+    { method: "PATCH", body: { selected } },
+  ),
   retryFailed: (batchId: string, body: PodBatchRetryRequest) => httpJson<PodBatchRetryResult>(
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/retry-failed`,
     { method: "POST", body },
