@@ -264,18 +264,46 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setMessage('');
   }, []);
 
-  const load = useCallback(async (preserveLocalEdits = false) => {
-    setLoading(true);
+  const load = useCallback(async (preserveLocalEdits = false, quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
       const data = await ppRequest<PreviewResponse>(ctx, `${API_BASE}/tasks/${taskId}/preview`);
       setPreview(data);
       if (!preserveLocalEdits) setEdits({});
     } catch (err) {
-      fail(err);
+      if (!quiet) fail(err);
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [ctx, fail, taskId]);
+
+  // 存在仍在同步（pending/materializing）的原始源图时，持续静默轮询刷新，
+  // 使后台物化完成后「等待同步」自动变为「可用」，无需手动重进页面。
+  const hasPendingSourceSync = useMemo(() => {
+    if (!preview) return false;
+    return preview.items.some((item) =>
+      item.assets.some(
+        (a) =>
+          a.bucket === 'source' &&
+          (a.media_status === 'pending' || a.media_status === 'materializing'),
+      ),
+    );
+  }, [preview]);
+
+  const sourceSyncPollRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (hasPendingSourceSync && sourceSyncPollRef.current === null) {
+      sourceSyncPollRef.current = window.setInterval(() => {
+        void load(true, true);
+      }, 3000);
+    }
+    return () => {
+      if (sourceSyncPollRef.current !== null) {
+        window.clearInterval(sourceSyncPollRef.current);
+        sourceSyncPollRef.current = null;
+      }
+    };
+  }, [hasPendingSourceSync, load]);
 
   const downloadRun = useCallback(async (run: PreviewFinalizeRun, automatic: boolean) => {
     if (!run.workbook_ready || !run.download || !run.file) return;
