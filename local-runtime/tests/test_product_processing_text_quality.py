@@ -606,6 +606,10 @@ def test_doubao_text_failure_keeps_gpt_image_result_and_requires_attention(monke
     assert result["result"]["provider_attempts"]["doubao_text"] == 3
     assert result["result"]["provider_status_classes"]["doubao_text"] == "invalid_response"
     assert result["result"]["text_generation"]["status"] == "failed"
+    assert result["result"]["error_type"] == "text_invalid_response"
+    assert result["result"]["text_failure_detail"] == "text contract exhausted"
+    assert "text contract exhausted" in result["result"]["operator_hint"]
+    assert "text contract exhausted" in result["result"]["debug_hint"]
     assert captured["title"] == _draft()["title"]
 
 

@@ -18,11 +18,19 @@ from ....customer.local_session import LocalSessionService
 from ....customer.remote_client import CustomerAuthClient
 from ....session import Actor, actor_from_authorization
 from ..dimension_canvas_service import DimensionCanvasService
+from ..doubao_ark import DoubaoArkClient, DoubaoArkError
 from ..infrastructure.assets import ProductProcessingAssets
 from ..infrastructure.database import create_database
 from ..infrastructure.dimension_canvas_repository import DimensionCanvasRepository
 from ..infrastructure.dimension_renderer import DimensionRenderer
 from ..infrastructure.repository import ProductProcessingRepository
+from ..listing_advice import (
+    build_listing_advice_messages,
+    deterministic_listing_advice,
+    merge_ai_listing_advice,
+    prepare_listing_context,
+)
+from ..server_ai_proxy import server_ai_context
 from ..service import (
     COMBO_SCOPE_MAIN,
     COMBO_SCOPE_PROCESS,
@@ -41,6 +49,7 @@ from .schemas import (
     DraftProcessRequest,
     DraftRestoreRequest,
     DraftUpdateRequest,
+    ListingAdviceRequest,
     PreviewFinalizeRequest,
     PreviewSaveRequest,
     PromptTemplateRequest,
@@ -621,6 +630,112 @@ def create_product_processing_router(
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
         return _call(service.task_preview, task_id, workspace_id=_workspace(workspace_id))
+
+    @router.post("/tasks/{task_id}/preview/items/{draft_id}/listing-advice")
+    def listing_advice(
+        request: Request,
+        task_id: int,
+        draft_id: int,
+        body: ListingAdviceRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        normalized_workspace = _workspace(workspace_id)
+        snapshot = _task_billing_snapshot(service, task_id, normalized_workspace, actor)
+        items = snapshot.get("items") if isinstance(snapshot, dict) else []
+        if not any(
+            isinstance(item, dict) and int(item.get("product_draft_id") or 0) == int(draft_id)
+            for item in (items or [])
+        ):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "preview product not found")
+
+        context = prepare_listing_context(body.title, body.description, body.category_path)
+        token = _remote_token(request, customer_sessions)
+        if remote_customer_auth is None or not token:
+            return deterministic_listing_advice(
+                context,
+                notice="AI 会话暂不可用，当前为 996 表格规则建议。",
+            )
+
+        usage_id = ""
+        try:
+            reservation = remote_customer_auth.reserve_ai_usage(
+                token,
+                {
+                    "feature_key": "product_processing.text",
+                    "idempotency_key": f"listing-advice:{task_id}:{draft_id}:{body.request_id}",
+                    "source_ref": f"product_processing:tasks/{task_id}/preview/{draft_id}/listing-advice",
+                    "metadata": {
+                        "task_id": task_id,
+                        "item_id": draft_id,
+                        "operation": "listing_advice",
+                    },
+                },
+            )
+            usage = reservation.get("usage") if isinstance(reservation, dict) else None
+            if not isinstance(usage, dict):
+                raise CustomerBillingProtocolError()
+            usage_id = str(usage.get("usage_id") or "").strip()
+            usage_status = str(usage.get("status") or "").strip()
+            usage_feature = str(usage.get("feature_key") or "").strip()
+            if not usage_id or usage_status != "reserved" or (
+                usage_feature and usage_feature != "product_processing.text"
+            ):
+                raise CustomerBillingProtocolError()
+        except (
+            CustomerAuthRejected,
+            CustomerAuthUnavailable,
+            CustomerBillingPermissionError,
+            CustomerBillingProtocolError,
+        ):
+            return deterministic_listing_advice(
+                context,
+                notice="AI 积分服务暂不可用，当前为 996 表格规则建议。",
+            )
+
+        try:
+            with server_ai_context(token, {"text": usage_id}):
+                content = DoubaoArkClient("text").complete(build_listing_advice_messages(context))
+            advice = merge_ai_listing_advice(context, content)
+        except (DoubaoArkError, ValueError, TypeError):
+            try:
+                remote_customer_auth.settle_ai_usage_failure(
+                    token,
+                    usage_id,
+                    {"error_message": "listing advice generation failed"},
+                )
+            except (
+                CustomerAuthRejected,
+                CustomerAuthUnavailable,
+                CustomerBillingPermissionError,
+                CustomerBillingProtocolError,
+            ):
+                pass
+            return deterministic_listing_advice(
+                context,
+                notice="AI 暂未生成成功，已返回 996 表格规则建议，未扣本次 AI 积分。",
+            )
+
+        try:
+            remote_customer_auth.settle_ai_usage_success(
+                token,
+                usage_id,
+                {
+                    "metadata": {
+                        "task_id": task_id,
+                        "item_id": draft_id,
+                        "matched_rule_number": advice["matched_rule_number"],
+                    }
+                },
+            )
+        except (
+            CustomerAuthRejected,
+            CustomerAuthUnavailable,
+            CustomerBillingPermissionError,
+            CustomerBillingProtocolError,
+        ):
+            advice["notice"] = "建议已生成，积分结算状态将在服务恢复后同步。"
+        return advice
 
     @router.patch("/tasks/{task_id}/preview")
     def save_preview(

@@ -61,6 +61,35 @@ export type PreviewSaveResponse = {
   items: Array<{ product_draft_id: number; preview_revision: number }>;
 };
 
+export type ListingAdvice = {
+  level: string;
+  action: string;
+  recommended_category: string;
+  reason: string;
+  warning: string;
+  required_documents: string[];
+  matched_rule_number: number;
+  matched_rule: string;
+  source: "ai+rules" | "rules";
+  notice: string;
+};
+
+export function getListingAdvice(
+  ctx: ApiContext,
+  taskId: number,
+  draftId: number,
+  input: { title: string; description: string; category_path: string },
+): Promise<ListingAdvice> {
+  return ppRequest(
+    ctx,
+    `/api/product-processing/tasks/${taskId}/preview/items/${draftId}/listing-advice`,
+    {
+      method: "POST",
+      body: { ...input, request_id: crypto.randomUUID() },
+    },
+  );
+}
+
 export async function uploadPreviewAssets(
   ctx: ApiContext,
   taskId: number,

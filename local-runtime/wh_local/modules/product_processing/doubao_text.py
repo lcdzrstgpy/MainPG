@@ -62,11 +62,19 @@ class DoubaoTextClient:
                 error_kind="invalid_input",
                 retryable=False,
             )
+        base_prompt = str(prompt)
+        retry_feedback = ""
+        last_contract_error: DoubaoTextError | None = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             self.last_attempt_count = attempt
             try:
+                attempt_prompt = _prompt_for_attempt(
+                    base_prompt,
+                    attempt=attempt,
+                    retry_feedback=retry_feedback,
+                )
                 content = self._ark.complete(
-                    [{"role": "user", "content": str(prompt)}]
+                    [{"role": "user", "content": attempt_prompt}]
                 )
                 result = _parse_text_result(content)
                 if validator is not None:
@@ -78,6 +86,19 @@ class DoubaoTextClient:
                 # invalid JSON attempt within the same three-call budget.
                 if exc.error_kind == "invalid_response":
                     exc.retryable = True
+                    retry_feedback = _safe_retry_feedback(exc)
+                    last_contract_error = exc
+                elif (
+                    exc.status_code == 409
+                    and retry_feedback
+                    and last_contract_error is not None
+                    and attempt >= MAX_ATTEMPTS
+                ):
+                    # Rolling deployments may still have the old two-distinct-request
+                    # gateway limit.  Preserve the real contract failure instead of
+                    # replacing it with a misleading final HTTP 409 diagnostic.
+                    last_contract_error.attempt_count = attempt
+                    raise last_contract_error from exc
                 if not exc.retryable or attempt >= MAX_ATTEMPTS:
                     raise
             except ValueError as exc:
@@ -91,9 +112,36 @@ class DoubaoTextClient:
                 )
                 if attempt >= MAX_ATTEMPTS:
                     raise error from exc
+                retry_feedback = _safe_retry_feedback(exc)
+                last_contract_error = error
             if attempt < MAX_ATTEMPTS:
                 time.sleep(RETRY_BACKOFF_SECONDS)
         raise AssertionError("unreachable")
+
+
+def _safe_retry_feedback(exc: Exception) -> str:
+    """Keep retry guidance useful without echoing prompts or provider bodies."""
+    message = " ".join(str(exc).split()).strip()
+    return message[:240] or "the previous response failed the required output contract"
+
+
+def _prompt_for_attempt(base_prompt: str, *, attempt: int, retry_feedback: str) -> str:
+    """Change invalid-response retries so the managed gateway generates fresh output.
+
+    The managed gateway caches completed responses by usage id and request hash.  Replaying
+    the identical prompt therefore replays the same invalid response instead of retrying the
+    model.  A compact repair instruction makes each contract retry a distinct request while
+    transient transport retries continue to reuse the original request.
+    """
+    if attempt <= 1 or not retry_feedback:
+        return base_prompt
+    return (
+        f"{base_prompt.rstrip()}\n\n"
+        "NON-OVERRIDABLE RETRY CORRECTION:\n"
+        f"The previous response was rejected because: {retry_feedback}.\n"
+        f"This is repair attempt {attempt}. Generate a fresh response and correct that problem. "
+        "Return only the exact JSON object required above; do not mention this retry."
+    )
 
 
 def text_result_from_dict(payload: Mapping[str, Any]) -> DoubaoTextResult:

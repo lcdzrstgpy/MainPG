@@ -2696,7 +2696,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         self,
         requests: list[dict[str, Any]],
         workspace_id: str = "local",
-    ) -> dict[str, dict[str, Any]]:
+    ) -> dict[str, list[dict[str, Any]]]:
         """Expose a read-only, workspace-scoped history lookup to sourcing."""
         return self.repository.latest_completed_sources_by_title(requests, workspace_id)
 
@@ -6082,6 +6082,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         provider_status_classes["doubao_text"] = exc.error_kind
                         text_generation["status"] = "failed"
                         ai_notes.append(f"text:managed-service-failed:{exc.error_kind}")
+                        self._note_ai_failure(ai_notes, "text", _ai_error_reason(exc))
                     else:
                         measured_attempts = getattr(attempt_state, "doubao_text", None)
                         provider_attempts["doubao_text"] = (
@@ -6548,6 +6549,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             )
             else []
         )
+        text_failure_detail = (
+            _ai_error_reason(text_failure) if text_failure is not None else ""
+        )
+        text_failure_is_invalid = bool(
+            text_failure is not None and text_failure.error_kind == "invalid_response"
+        )
         result = {
             "product_draft_id": draft["id"],
             "candidate_id": raw.get("candidate_id") or draft.get("candidate_id"),
@@ -6626,13 +6633,21 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 else (
                     "text_service_configuration"
                     if text_failure_is_config
-                    else "text_service_unavailable"
+                    else (
+                        "text_invalid_response"
+                        if text_failure_is_invalid
+                        else "text_service_unavailable"
+                    )
                 )
             ),
             "operator_hint": (
                 ""
                 if text_failure is None
-                else "AI 文案服务暂不可用，请稍后重试"
+                else (
+                    f"AI 文案返回内容未通过校验：{text_failure_detail}"
+                    if text_failure_is_invalid
+                    else "AI 文案服务暂不可用，请稍后重试"
+                )
             ),
             "debug_hint": (
                 ""
@@ -6640,10 +6655,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 else (
                     "服务端文本服务配置异常；请检查 AI 服务配置或余额后重试"
                     if text_failure_is_config
-                    else "文本生成已耗尽内部重试；图片结果已保留，可直接重试补文本"
+                    else (
+                        f"文本生成已耗尽内部重试；具体原因：{text_failure_detail}；"
+                        "图片结果已保留，可直接重试补文本"
+                    )
                 )
             ),
-            "retryable": text_failure is not None,
+            "text_failure_detail": text_failure_detail,
+            "retryable": bool(text_failure is not None and text_failure.retryable),
             "exchange_contract": "daily-selection-product-processing-v1" if draft.get("selection_run_id") else None,
         }
         self._record_source_shipping_observations(

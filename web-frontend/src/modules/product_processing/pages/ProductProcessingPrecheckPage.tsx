@@ -5,6 +5,7 @@ import { productProcessingApiContext } from '../api/context';
 import {
   excludePreviewItem,
   finalizeProductPreview,
+  getListingAdvice,
   getPreviewFinalizeRun,
   restorePreviewItem,
   retryMediaAsset,
@@ -12,6 +13,7 @@ import {
   saveProductPreview,
   uploadPreviewAssets,
   type PreviewSavePayload,
+  type ListingAdvice,
 } from '../api/productProcessingApi';
 import { DimensionChangeSetReview } from '../components/DimensionChangeSetReview';
 import { PrecheckFinalizeProgress } from '../components/PrecheckFinalizeProgress';
@@ -245,6 +247,10 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [onlySuccess, setOnlySuccess] = useState(false);
   const [imageZoomed, setImageZoomed] = useState(false);
   const [expandedDraftIds, setExpandedDraftIds] = useState<Set<number>>(new Set());
+  const [listingAdviceByDraftId, setListingAdviceByDraftId] = useState<Record<number, ListingAdvice>>({});
+  const [listingAdviceLoadingIds, setListingAdviceLoadingIds] = useState<Set<number>>(new Set());
+  const [listingAdviceErrors, setListingAdviceErrors] = useState<Record<number, string>>({});
+  const listingAdviceRequestRef = useRef<Record<number, string>>({});
 
   useEffect(() => {
     if (!isActive) setActiveImage(null);
@@ -309,6 +315,10 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setFinalizeRun(null);
     setUndoSnackbar(null);
     setActiveImage(null);
+    setListingAdviceByDraftId({});
+    setListingAdviceLoadingIds(new Set());
+    setListingAdviceErrors({});
+    listingAdviceRequestRef.current = {};
     setMessage('');
     setError('');
   }, [taskId]);
@@ -421,6 +431,44 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     ...(editFor(item).core_fields ?? {}),
   });
 
+  const requestListingAdvice = async (item: PreviewItem) => {
+    const draftId = item.product_draft_id ?? item.item_id;
+    if (item.product_draft_id == null || listingAdviceLoadingIds.has(draftId)) return;
+    const edit = editFor(item);
+    const coreFields = effectiveCoreFields(item);
+    const requestMarker = crypto.randomUUID();
+    listingAdviceRequestRef.current[draftId] = requestMarker;
+    setListingAdviceLoadingIds((current) => new Set(current).add(draftId));
+    setListingAdviceErrors((current) => {
+      const next = { ...current };
+      delete next[draftId];
+      return next;
+    });
+    try {
+      const advice = await getListingAdvice(ctx, taskId, item.product_draft_id, {
+        title: edit.title ?? item.title,
+        description: edit.description ?? item.description,
+        category_path: String(coreFields.category_path ?? ''),
+      });
+      if (listingAdviceRequestRef.current[draftId] !== requestMarker) return;
+      setListingAdviceByDraftId((current) => ({ ...current, [draftId]: advice }));
+    } catch (err) {
+      if (listingAdviceRequestRef.current[draftId] !== requestMarker) return;
+      setListingAdviceErrors((current) => ({
+        ...current,
+        [draftId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      if (listingAdviceRequestRef.current[draftId] !== requestMarker) return;
+      delete listingAdviceRequestRef.current[draftId];
+      setListingAdviceLoadingIds((current) => {
+        const next = new Set(current);
+        next.delete(draftId);
+        return next;
+      });
+    }
+  };
+
   const isEditableShippingPackageRecord = (record: ShippingPackageRecord): boolean => (
     record.match_status === 'matched' && record.variant_key.trim().length > 0
   );
@@ -498,6 +546,28 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setEdit(draftId, { imageManifest: cloneManifest(manifest) });
   };
 
+  const clearListingAdvice = (draftId: number) => {
+    delete listingAdviceRequestRef.current[draftId];
+    setListingAdviceLoadingIds((current) => {
+      if (!current.has(draftId)) return current;
+      const next = new Set(current);
+      next.delete(draftId);
+      return next;
+    });
+    setListingAdviceByDraftId((current) => {
+      if (!current[draftId]) return current;
+      const next = { ...current };
+      delete next[draftId];
+      return next;
+    });
+    setListingAdviceErrors((current) => {
+      if (!current[draftId]) return current;
+      const next = { ...current };
+      delete next[draftId];
+      return next;
+    });
+  };
+
   const setField = (draftId: number, key: keyof PreviewCoreFields, value: string) => {
     const item = allItems.find((candidate) => (candidate.product_draft_id ?? candidate.item_id) === draftId);
     if (!item) return;
@@ -514,6 +584,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     if (parsed !== base) nextCore[key] = parsed as never;
     else delete nextCore[key];
     setEdit(draftId, { core_fields: nextCore });
+    if (key === 'category_path') clearListingAdvice(draftId);
   };
 
   const setShippingPackageField = (
@@ -878,6 +949,10 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         const isExpanded = expandedDraftIds.has(draftId);
         const sourceUrl = String(item.source_url ?? '').trim();
         const safeSourceUrl = /^https?:\/\//i.test(sourceUrl) ? sourceUrl : '';
+        const listingAdvice = listingAdviceByDraftId[draftId];
+        const listingAdviceLoading = listingAdviceLoadingIds.has(draftId);
+        const listingAdviceError = listingAdviceErrors[draftId];
+        const listingAdviceTone = listingAdvice?.level.trim().charAt(0).toLowerCase() || 'c';
         return (
           <section key={item.item_id} className={`verify-section precheck-card${hasOverrides ? ' is-edited' : ''}`}>
             <div className="precheck-card-head">
@@ -917,20 +992,60 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                     rows={3}
                     value={edit.title ?? item.title}
                     disabled={mutationsLocked}
-                    onChange={(event) => setEdit(draftId, { title: event.target.value })}
+                    onChange={(event) => {
+                      setEdit(draftId, { title: event.target.value });
+                      clearListingAdvice(draftId);
+                    }}
                     placeholder="AI 生成标题"
                   />
                 </label>
-                <label className="precheck-label">
-                  <span>产品描述（导出产品描述列，详情图自动追加）</span>
+                <div className="precheck-label precheck-description-field">
+                  <div className="precheck-field-heading">
+                    <span>产品描述（导出产品描述列，详情图自动追加）</span>
+                    <button
+                      type="button"
+                      className="precheck-advice-button"
+                      disabled={listingAdviceLoading || item.product_draft_id == null}
+                      onClick={() => void requestListingAdvice(item)}
+                      title="结合 996 类目资质表并使用一次文本 AI 分析"
+                    >
+                      <span aria-hidden="true">✦</span>
+                      {listingAdviceLoading ? '分析中…' : listingAdvice ? '重新建议' : '上架建议'}
+                    </button>
+                  </div>
                   <textarea
                     rows={5}
                     value={edit.description ?? item.description}
                     disabled={mutationsLocked}
-                    onChange={(event) => setEdit(draftId, { description: event.target.value })}
+                    onChange={(event) => {
+                      setEdit(draftId, { description: event.target.value });
+                      clearListingAdvice(draftId);
+                    }}
                     placeholder="AI 生成五点描述"
                   />
-                </label>
+                  {listingAdviceError && (
+                    <p className="listing-advice-error" role="alert">建议生成失败：{listingAdviceError}</p>
+                  )}
+                  {listingAdvice && (
+                    <aside className={`listing-advice-card tone-${listingAdviceTone}`} aria-label="上架建议">
+                      <div className="listing-advice-summary">
+                        <span className="listing-advice-level">{listingAdvice.level}</span>
+                        <strong>{listingAdvice.action}</strong>
+                        <span className="listing-advice-source">
+                          {listingAdvice.source === 'ai+rules' ? 'AI + 表格规则' : '表格规则'}
+                        </span>
+                      </div>
+                      <p><b>建议类目：</b>{listingAdvice.recommended_category}</p>
+                      <p><b>判断：</b>{listingAdvice.reason}</p>
+                      <p><b>注意：</b>{listingAdvice.warning}</p>
+                      {listingAdvice.required_documents.length > 0 && (
+                        <p><b>资料：</b>{listingAdvice.required_documents.join('；')}</p>
+                      )}
+                      {listingAdvice.notice && <small>{listingAdvice.notice}</small>}
+                      <small>仅供预检参考，最终以平台审核结果为准。</small>
+                    </aside>
+                  )}
+                </div>
                 <div className="precheck-core-grid">
                   <label>SKU货号
                     <input disabled={mutationsLocked} value={coreFields.sku ?? ''} onChange={(event) => setField(draftId, 'sku', event.target.value)} />
