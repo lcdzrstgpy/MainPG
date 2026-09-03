@@ -31,6 +31,9 @@ button { cursor: pointer; }
 .auth-form-card form { display: grid; gap: 17px; }.auth-form-card label { display: grid; gap: 7px; font-size: .9rem; font-weight: 750; color: var(--theme-auth-label-color, #4b617a); }.auth-form-card input { border: 1px solid var(--theme-auth-input-border, #d6e2ed); padding: 13px 14px; border-radius: 10px; outline-color: var(--theme-auth-input-outline, #1e91e6); color: var(--theme-text-primary, #13233a); }.primary-button { border: 0; color: white; padding: 14px 16px; font-weight: 800; border-radius: 11px; margin-top: 8px; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); box-shadow: 0 10px 20px var(--theme-primary-button-shadow, #0b93dc35); }.primary-button:disabled { opacity: .6; cursor: not-allowed; }.form-hint { color: var(--theme-auth-hint-color, #7a8fa5); font-size: .84rem; line-height: 1.6; }.auth-error { margin: 0; padding: 11px 13px; border: 1px solid #ffd0d2; border-radius: 10px; color: #b00020; background: #fff2f2; font-size: .85rem; line-height: 1.5; }
 .auth-code-row { display: grid; grid-template-columns: minmax(0, 1fr) 124px; gap: 9px; }.auth-code-row button { border: 1px solid #bfd7ee; border-radius: 10px; background: #eef7ff; color: #0876df; font-weight: 750; cursor: pointer; }.auth-code-row button:disabled { opacity: .6; cursor: not-allowed; }.auth-notice { margin: 0; padding: 11px 13px; border: 1px solid #bde8d4; border-radius: 10px; color: #087746; background: #effcf5; font-size: .85rem; line-height: 1.5; }.link-button { border: 0; padding: 0; background: transparent; color: var(--theme-auth-tabs-active-color, #0876df); font-size: inherit; font-weight: 700; cursor: pointer; }.link-button:hover { text-decoration: underline; }
 .brand-mark { display: inline-grid; place-items: center; width: 31px; min-width: 31px; height: 31px; flex: 0 0 31px; border-radius: 9px; background: var(--theme-brand-gradient, linear-gradient(145deg, #008bff, #16d7c0)); color: white; font-weight: 900; box-shadow: 0 7px 15px var(--theme-brand-shadow, #0a91e134); }.brand-mark-large { width: 56px; height: 56px; border-radius: 17px; font-size: 1.7rem; background: var(--theme-brand-large-bg, #ffffff); color: var(--theme-brand-large-color, #086bbd); box-shadow: none; }.brand-logo { display: block; width: 144px; height: 56px; object-fit: contain; object-position: left center; }.brand-logo.is-mark { width: 36px; height: 36px; object-position: center; }.brand-logo-large, .brand-logo-hero { display: block; height: auto; padding: 0; object-fit: contain; object-position: left center; border: 0; background: transparent; box-shadow: none; }.brand-logo-large { width: clamp(210px, 22vw, 280px); filter: brightness(0) invert(1) drop-shadow(0 12px 24px rgba(7, 38, 69, .24)); }.brand-logo-hero { width: clamp(200px, 20vw, 260px); margin-bottom: 16px; filter: brightness(0) invert(1) drop-shadow(0 10px 22px rgba(5, 42, 76, .24)); }.eyebrow { margin: 0; color: #6b88a8; font-size: .72rem; font-weight: 850; letter-spacing: .13em; }.auth-brand-card .eyebrow { margin-top: 30px; color: var(--theme-auth-brand-eyebrow, #9fd9f3); }
+.auth-form-card .auth-agree { display: flex; align-items: center; gap: 9px; font-size: .84rem; font-weight: 650; color: #6c8097; cursor: pointer; }
+.auth-form-card .auth-agree input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #14b8a8; cursor: pointer; }
+.auth-form-card .auth-agree .link-button { padding: 0; }
 
 .workspace-shell { min-height: 100vh; display: grid; grid-template-columns: 248px 1fr; gap: 18px; padding: 18px; background: var(--theme-page-bg, #edf4fb); transition: grid-template-columns .22s ease; }.workspace-main { min-width: 0; display: grid; grid-template-rows: auto 1fr; gap: 18px; }.sidebar-card { width: 100%; min-width: 0; min-height: calc(100vh - 36px); padding: 18px 12px; display: flex; flex-direction: column; overflow: hidden; transition: width .22s ease, box-shadow .22s ease; }.sidebar-card.is-collapsed { width: 100%; }.workspace-shell:has(.sidebar-card.is-collapsed) { grid-template-columns: 72px 1fr; }.brand-lockup { display: flex; align-items: center; gap: 10px; padding: 6px 9px; font-weight: 850; font-size: 1.08rem; white-space: nowrap; }.brand-name, .sidebar-label { white-space: nowrap; }.sidebar-caption { margin: 21px 9px 10px; color: #8a9cb0; font-size: .73rem; font-weight: 700; white-space: nowrap; }.sidebar-menu { display: grid; gap: 5px; }.sidebar-group { display: grid; gap: 4px; }.sidebar-item, .sidebar-subitem { display: flex; gap: 12px; align-items: center; width: 100%; border: 0; border-radius: 11px; background: transparent; color: #527089; text-align: left; font-weight: 720; white-space: nowrap; }.sidebar-item { padding: 12px; }.sidebar-subitem { padding: 9px 10px 9px 38px; color: #6f849a; font-size: .86rem; }.sidebar-submenu { display: grid; gap: 3px; margin: -1px 0 4px; }.sidebar-item:hover, .sidebar-subitem:hover { background: #f0f7fb; }.sidebar-item.is-active { background: linear-gradient(100deg, #ccecff, #d5f5ef); color: #056fc8; box-shadow: inset 0 0 0 1px #8fd3ec, 0 5px 13px #168ac014; }.sidebar-subitem.is-active { color: #056fc8; background: #dcefff; }.sidebar-item span:first-child { width: 18px; flex: 0 0 18px; text-align: center; font-size: 1.05rem; }.sidebar-subitem span:first-child { width: 14px; color: #95a9ba; }.sidebar-status { margin: auto 8px 2px; padding-top: 15px; border-top: 1px solid #e5edf4; font-size: .76rem; color: #72869a; white-space: nowrap; }.status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #1bc39a; margin-right: 7px; }
 @media (min-width: 801px) { .sidebar-card.is-collapsed .brand-name, .sidebar-card.is-collapsed .sidebar-label { display: none; }.sidebar-card.is-collapsed .brand-lockup { justify-content: center; gap: 0; padding-right: 0; padding-left: 0; }.sidebar-card.is-collapsed .brand-logo { width: 36px; height: 36px; object-fit: contain; object-position: center; }.sidebar-card.is-collapsed .sidebar-caption, .sidebar-card.is-collapsed .sidebar-submenu, .sidebar-card.is-collapsed .sidebar-status { display: none; }.sidebar-card.is-collapsed .sidebar-item { justify-content: center; gap: 0; padding: 13px; } }
@@ -678,8 +681,118 @@ button { cursor: pointer; }
   font-size: .74rem;
 }
 
+/* ---- 右上角主题风格快捷切换：简约笑脸按钮 + 弹出面板 ---- */
+.theme-quick-menu {
+  position: relative;
+  display: flex;
+}
+
+/* 整个按钮就是一张扁平淡黄笑脸面，简约扁平风格 */
+.theme-quick-trigger {
+  position: relative;
+  width: 64px;
+  height: 40px;
+  border: 0;
+  border-radius: 14px;
+  background: #ffe9ad;
+  cursor: pointer;
+  transition: background .16s ease, transform .15s ease, box-shadow .16s ease;
+}
+
+.theme-quick-trigger:hover {
+  background: #ffdf92;
+  box-shadow: 0 6px 14px rgba(200, 150, 40, .22);
+  transform: translateY(-1px);
+}
+
+.theme-quick-trigger:active {
+  transform: scale(.96);
+}
+
+.theme-quick-trigger.is-active {
+  background: #ffd47d;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, .7);
+}
+
+/* 眼睛：直接用伪元素画在按钮面 + 眨眼动画 */
+.theme-quick-trigger::before,
+.theme-quick-trigger::after {
+  content: "";
+  position: absolute;
+  top: 13px;
+  width: 4px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6d4f16;
+  animation: face-blink 4.6s ease-in-out infinite;
+}
+
+.theme-quick-trigger::before { left: 16px; }
+.theme-quick-trigger::after { right: 16px; animation-delay: .1s; }
+
+/* 微笑弧线 */
+.theme-quick-trigger .face-mouth {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  width: 12px;
+  height: 7px;
+  margin-left: -6px;
+  border-bottom: 2px solid #6d4f16;
+  border-radius: 0 0 12px 12px;
+}
+
+@keyframes face-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(.15); }
+}
+
+.theme-quick-popover {
+  position: absolute;
+  z-index: 3;
+  top: 48px;
+  right: 0;
+  width: 260px;
+  max-width: calc(100vw - 24px);
+  padding: 10px;
+  border: 1px solid #d6e4ee;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 18px 40px rgba(21, 59, 92, .15);
+  transform-origin: calc(100% - 22px) 0;
+  animation: workspace-popover-enter .2s cubic-bezier(.2, .78, .26, 1) both;
+}
+
+.theme-quick-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 6px 8px;
+  border-bottom: 1px solid #e9f0f6;
+}
+
+.theme-quick-header strong {
+  color: #1a3551;
+  font-size: .9rem;
+}
+
+.theme-quick-options {
+  display: grid;
+  gap: 4px;
+  padding-top: 8px;
+}
+
+.theme-quick-options .theme-option {
+  width: 100%;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .inbox-popover {
+  .theme-quick-trigger::before,
+  .theme-quick-trigger::after {
+    animation: none;
+  }
+
+  .theme-quick-popover {
     animation: none;
   }
 }

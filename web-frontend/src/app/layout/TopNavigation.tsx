@@ -38,9 +38,22 @@ type TopNavigationProps = {
 export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar, onSelectTab, onCloseTab, onOpenPersonalCenter, onSignOut }: TopNavigationProps) {
   const [closingKeys, setClosingKeys] = useState<string[]>([]);
   const [topbarStuck, setTopbarStuck] = useState(false);
+  const [themePanelOpen, setThemePanelOpen] = useState(false);
   const topbarRef = useRef<HTMLElement>(null);
+  const themeMenuRef = useRef<HTMLDivElement>(null);
   const { theme, setTheme } = useTheme();
   const { uiMode, setUiMode } = useUiMode();
+
+  useEffect(() => {
+    if (!themePanelOpen) return;
+    const onDocMouseDown = (event: MouseEvent) => {
+      if (themeMenuRef.current && !themeMenuRef.current.contains(event.target as Node)) {
+        setThemePanelOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [themePanelOpen]);
 
   useEffect(() => {
     const updateStuckState = () => {
@@ -86,6 +99,40 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
         )}
         <div id="workspace-topbar-status" className="topbar-status-slot" />
         <div className="topbar-actions">
+          <div className="theme-quick-menu" ref={themeMenuRef}>
+            <button
+              type="button"
+              className={`theme-quick-trigger ${themePanelOpen ? "is-active" : ""}`}
+              onClick={() => setThemePanelOpen((open) => !open)}
+              aria-label={`主题风格（当前：${THEME_META[theme].label}）`}
+              aria-expanded={themePanelOpen}
+              title="主题风格"
+            >
+              <span className="face-mouth" aria-hidden="true" />
+            </button>
+            {themePanelOpen && (
+              <div className="theme-quick-popover" role="dialog" aria-label="主题风格">
+                <header className="theme-quick-header"><strong>主题风格</strong></header>
+                <div className="theme-quick-options">
+                  {(Object.keys(THEME_META) as ThemeId[]).map((id) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={`theme-option ${theme === id ? "is-active" : ""}`}
+                      onClick={() => {
+                        setTheme(id);
+                        setThemePanelOpen(false);
+                      }}
+                    >
+                      <span className="theme-swatch" style={{ background: THEME_META[id].swatch }} />
+                      <span className="theme-option-name">{THEME_META[id].label}</span>
+                      {theme === id && <span className="theme-check">✓</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
           <InboxBell />
           <details className="user-menu">
             <summary><span className="avatar">{uiMode === "apple" ? "界" : "U"}</span><span>本地用户</span><span className="caret">⌄</span></summary>
@@ -115,25 +162,6 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
                   ))}
                 </div>
               </div>
-              {uiMode === "classic" && (
-                <div className="theme-switcher">
-                  <span className="theme-switcher-label">主题风格</span>
-                  <div className="theme-options">
-                    {(Object.keys(THEME_META) as ThemeId[]).map((id) => (
-                      <button
-                        key={id}
-                        type="button"
-                        className={`theme-option ${theme === id ? "is-active" : ""}`}
-                        onClick={() => setTheme(id)}
-                      >
-                        <span className="theme-swatch" style={{ background: THEME_META[id].swatch }} />
-                        <span className="theme-option-name">{THEME_META[id].label}</span>
-                        {theme === id && <span className="theme-check">✓</span>}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
               <button className="user-menu-signout" type="button" onClick={onSignOut}>退出登录</button>
             </div>
           </details>

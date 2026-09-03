@@ -128,62 +128,80 @@ class OneBoundSourceAdapter:
     def lookup_history_sources(
         self,
         actor: PriceVerificationActor,
-        sources: Mapping[str, Mapping[str, Any]],
+        sources: Mapping[str, Sequence[Mapping[str, Any]]],
     ) -> dict[str, dict[str, Any]]:
-        """Resolve historical 1688 URLs without affecting image-search success."""
+        """Resolve each SKC's newest live, complete historical 1688 source."""
         if not isinstance(actor, PriceVerificationActor):
             raise TypeError("actor must be PriceVerificationActor")
         entries = tuple(
-            (str(skc), dict(source))
-            for skc, source in sources.items()
+            (
+                str(skc),
+                tuple(dict(source) for source in candidates if isinstance(source, Mapping)),
+            )
+            for skc, candidates in sources.items()
             if str(skc).strip()
+            and isinstance(candidates, Sequence)
+            and not isinstance(candidates, (str, bytes))
         )
         if not entries:
             return {}
 
-        def lookup(entry: tuple[str, dict[str, Any]]) -> tuple[str, dict[str, Any] | None]:
-            skc_id, source = entry
-            source_url = _text(source.get("source_url"))
-            offer_id = _offer_id({"source_url": source_url})
-            if not offer_id:
-                return skc_id, None
-            try:
-                provider = self._provider_factory()
-                with self._provider_request_gate:
-                    detail_result = provider.get_item_detail(offer_id)
-                if not _result_ok(detail_result):
-                    return skc_id, None
-                detail = dict(_detail_item(_response(detail_result)))
-                source_title = next(
-                    (
-                        _text(detail.get(key))
-                        for key in ("source_title", "title", "product_title", "item_title", "subject", "name")
-                        if _text(detail.get(key))
-                    ),
-                    "",
-                )
-                candidate = {
-                    **detail,
-                    "offer_id": offer_id,
-                    "source_url": source_url,
-                    "source_title": source_title,
-                    "main_image_url": _candidate_image_url(detail),
-                    "source_channel": "history",
-                    "history_lookup": True,
-                    "history_task_id": source.get("history_task_id"),
-                    "history_item_id": source.get("history_item_id"),
-                    "matched_history_title": source.get("matched_title"),
-                    "moq": detail.get("moq") or detail.get("min_num"),
-                }
-                if not _history_candidate_complete(candidate):
-                    return skc_id, None
-                return skc_id, _safe_candidate(
-                    candidate,
-                    _redacted_audits(detail_result),
-                    channel="history",
-                )
-            except Exception:
-                return skc_id, None
+        def lookup(
+            entry: tuple[str, tuple[dict[str, Any], ...]],
+        ) -> tuple[str, dict[str, Any] | None]:
+            skc_id, source_chain = entry
+            provider = self._provider_factory()
+            for source in source_chain:
+                source_url = _text(source.get("source_url"))
+                offer_id = _offer_id({"source_url": source_url})
+                if not offer_id:
+                    continue
+                try:
+                    with self._provider_request_gate:
+                        detail_result = provider.get_item_detail(offer_id)
+                    if not _result_ok(detail_result):
+                        continue
+                    detail = dict(_detail_item(_response(detail_result)))
+                    source_title = next(
+                        (
+                            _text(detail.get(key))
+                            for key in (
+                                "source_title",
+                                "title",
+                                "product_title",
+                                "item_title",
+                                "subject",
+                                "name",
+                            )
+                            if _text(detail.get(key))
+                        ),
+                        "",
+                    )
+                    candidate = {
+                        **detail,
+                        "offer_id": offer_id,
+                        "source_url": source_url,
+                        "source_title": source_title,
+                        "main_image_url": _candidate_image_url(detail),
+                        "source_channel": "history",
+                        "history_lookup": True,
+                        "history_task_id": source.get("history_task_id"),
+                        "history_item_id": source.get("history_item_id"),
+                        "matched_history_title": source.get("matched_title"),
+                        "moq": detail.get("moq") or detail.get("min_num"),
+                    }
+                    if not _history_candidate_complete(candidate):
+                        continue
+                    return skc_id, _safe_candidate(
+                        candidate,
+                        _redacted_audits(detail_result),
+                        channel="history",
+                    )
+                except Exception:
+                    # A stale or malformed newest record does not make older
+                    # exact-title history invalid. Continue newest-to-oldest.
+                    continue
+            return skc_id, None
 
         workers = min(_MAX_PARALLEL_PROVIDER_REQUESTS, len(entries))
         if workers <= 1:

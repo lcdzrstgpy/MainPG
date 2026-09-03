@@ -6,7 +6,6 @@ import json
 import socket
 import sqlite3
 import threading
-import time
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -464,11 +463,11 @@ def test_chat_gateway_rejects_excess_distinct_requests_before_provider_call(tmp_
             "usage_id": usage,
             "messages": [{"role": "user", "content": f"request-{index}"}],
         }).status_code
-        for index in range(3)
+        for index in range(17)
     ]
 
-    assert statuses == [200, 200, 409]
-    assert provider_calls == 2
+    assert statuses == ([200] * 16) + [409]
+    assert provider_calls == 16
 
 
 def test_chat_gateway_fails_closed_for_in_progress_identical_request(tmp_path: Path, monkeypatch) -> None:
@@ -1815,68 +1814,58 @@ def test_image_adapter_calls_platform_gateway_and_downloads_safe_result(monkeypa
     assert gateway_request["json"]["urls"] == ["https://images.example.test/source.jpg"]
 
 
-def test_server_image_gate_rotates_between_usage_ids_before_same_item_repairs() -> None:
-    gate = media_module._FairUsageRequestGate()
-    execution_order: list[str] = []
-    execution_lock = threading.Lock()
-    release_events = {
-        label: threading.Event()
-        for label in ("product-a-repair-1", "product-a-repair-2", "product-b-main")
+def test_server_managed_images_are_not_globally_serialized(monkeypatch) -> None:
+    entered = threading.Barrier(2)
+    active_lock = threading.Lock()
+    active = 0
+    max_active = 0
+    requests_seen: list[str] = []
+
+    class _ConcurrentMediaSession:
+        def post(self, _url, **kwargs):
+            nonlocal active, max_active
+            usage = str(kwargs["json"]["usage_id"])
+            with active_lock:
+                requests_seen.append(usage)
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                entered.wait(timeout=2)
+                return _Response({"ok": True, "result_url": "https://images.example.test/result.png"})
+            finally:
+                with active_lock:
+                    active -= 1
+
+    monkeypatch.setattr(media_module, "_SESSION", _ConcurrentMediaSession())
+    monkeypatch.setattr(media_module, "is_safe_external_url", lambda _url: True)
+    monkeypatch.setattr(
+        media_module,
+        "_download_pinned_public_image",
+        lambda *_args, **_kwargs: (b"image-bytes", "image/png"),
+    )
+    provider = {
+        "base_url": "server-managed-wuyin",
+        "api_key": "server-managed",
+        "model": "image_gpt",
+        "reference_model": "image_gpt",
+        "image_size": "2048x2048",
     }
 
-    # Hold product A's current request while its repairs and product B's main
-    # request enter the queue in a deterministic order.
-    gate.acquire("usage-a")
+    def request_image(index: int) -> tuple[bytes, str]:
+        processor = ProductImageProcessor(lambda: {})
+        with server_ai_context(f"platform-token-{index}", {"image_grid": f"usage-{index}"}):
+            return processor._request_edit(
+                provider,
+                f"product prompt {index}",
+                [(b"source", "source.jpg", "image/jpeg", "https://images.example.test/source.jpg")],
+            )
 
-    def run(label: str, usage: str) -> None:
-        with gate.hold(usage):
-            with execution_lock:
-                execution_order.append(label)
-            release_events[label].wait(timeout=2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(request_image, (1, 2)))
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = [
-            pool.submit(run, "product-a-repair-1", "usage-a"),
-            pool.submit(run, "product-a-repair-2", "usage-a"),
-        ]
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            with gate._lock:
-                if len(gate._waiters_by_key.get("usage-a", ())) == 2:
-                    break
-            time.sleep(0.005)
-        futures.append(pool.submit(run, "product-b-main", "usage-b"))
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            with gate._lock:
-                if len(gate._waiters_by_key.get("usage-b", ())) == 1:
-                    break
-            time.sleep(0.005)
-
-        gate.release("usage-a")
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline and not execution_order:
-            time.sleep(0.005)
-        assert execution_order == ["product-b-main"]
-
-        release_events["product-b-main"].set()
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline and len(execution_order) < 2:
-            time.sleep(0.005)
-        assert execution_order[:2] == ["product-b-main", "product-a-repair-1"]
-
-        release_events["product-a-repair-1"].set()
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline and len(execution_order) < 3:
-            time.sleep(0.005)
-        assert execution_order == [
-            "product-b-main",
-            "product-a-repair-1",
-            "product-a-repair-2",
-        ]
-        release_events["product-a-repair-2"].set()
-        for future in futures:
-            future.result(timeout=2)
+    assert results == [(b"image-bytes", "image/png")] * 2
+    assert sorted(requests_seen) == ["usage-1", "usage-2"]
+    assert max_active == 2
 
 
 @pytest.mark.parametrize(

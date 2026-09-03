@@ -57,6 +57,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const [forgotCodeCooldown, setForgotCodeCooldown] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // 政策同意：登录与注册均需勾选《界野隐私政策》后才可提交。
+  const [agreed, setAgreed] = useState(false);
 
   useEffect(() => {
     if (codeCooldown <= 0) return;
@@ -159,6 +161,10 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     setNotice("");
     setBusy(true);
     try {
+      if (!agreed) {
+        setError("请先阅读并同意《界野隐私政策》");
+        return;
+      }
       if (isLogin) {
         const payload = identifier.includes("@")
           ? { email: identifier, password }
@@ -235,6 +241,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
                 </>
               )}
               <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete={isLogin ? "current-password" : "new-password"} required /></label>
+              <label className="auth-agree"><input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} /><span>我已阅读并同意 <a className="link-button" href="/privacy" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>《界野隐私政策》</a></span></label>
               {error && <p className="auth-error">{error}</p>}
               {notice && <p className="auth-notice">{notice}</p>}
               <button className="primary-button" type="submit" disabled={busy}>{busy ? "处理中…" : isLogin ? "登录并进入工作台 →" : "注册并进入工作台 →"}</button>

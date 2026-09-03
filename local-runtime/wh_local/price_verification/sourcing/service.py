@@ -60,7 +60,10 @@ class SourcingService:
         plugin_bridge: PluginBridgeService | None = None,
         product_library_service: Any | None = None,
         history_source_lookup: (
-            Callable[[list[dict[str, Any]], str], Mapping[str, Mapping[str, Any]]]
+            Callable[
+                [list[dict[str, Any]], str],
+                Mapping[str, Sequence[Mapping[str, Any]]],
+            ]
             | None
         ) = None,
     ) -> None:
@@ -151,7 +154,6 @@ class SourcingService:
                     history_requests.append(
                         {
                             "skc": item.skc_id,
-                            "title": item.product_title,
                             "excluded_offer_ids": sorted(
                                 value for value in excluded_offer_ids if value
                             ),

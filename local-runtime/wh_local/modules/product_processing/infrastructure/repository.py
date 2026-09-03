@@ -935,30 +935,64 @@ class ProductProcessingRepository:
         self,
         requests: list[dict[str, Any]],
         workspace_id: str = "local",
-    ) -> dict[str, dict[str, Any]]:
-        """Find the newest usable 1688 source for each normalized AI title."""
-        pending: dict[str, list[dict[str, Any]]] = {}
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Return newest-first 1688 histories for each current SKC's real AI title."""
+        requested: dict[str, dict[str, Any]] = {}
         for request in requests:
             skc = str(request.get("skc") or "").strip()
-            normalized = _normalized_history_title(request.get("title"))
-            if skc and normalized:
-                excluded_offer_ids = {
-                    str(value).strip()
-                    for value in request.get("excluded_offer_ids") or ()
-                    if str(value).strip()
+            if skc:
+                requested[skc] = {
+                    "skc": skc,
+                    "excluded_offer_ids": {
+                        str(value).strip()
+                        for value in request.get("excluded_offer_ids") or ()
+                        if str(value).strip()
+                    },
                 }
-                pending.setdefault(normalized, []).append(
-                    {
-                        "skc": skc,
-                        "title": str(request.get("title") or ""),
-                        "excluded_offer_ids": excluded_offer_ids,
-                    }
-                )
-        if not pending:
+        if not requested:
             return {}
 
-        matched: dict[str, dict[str, Any]] = {}
+        current_titles: dict[str, tuple[str, str]] = {}
+        matched: dict[str, list[dict[str, Any]]] = {}
+        seen_offer_ids: dict[str, set[str]] = {}
         with self.database.sessions() as session:
+            # The capture title in price verification can be truncated or
+            # edited. Resolve the current SKC's newest successful AI title from
+            # product-processing history instead of trusting that snapshot.
+            current_rows = session.scalars(
+                select(ProcessingTaskItemRow)
+                .join(ProcessingTaskRow, ProcessingTaskRow.id == ProcessingTaskItemRow.task_id)
+                .where(
+                    ProcessingTaskRow.workspace_id == workspace_id,
+                    ProcessingTaskItemRow.status == "completed",
+                    ProcessingTaskItemRow.skc.in_(tuple(requested)),
+                )
+                .order_by(ProcessingTaskItemRow.updated_at.desc(), ProcessingTaskItemRow.id.desc())
+            ).yield_per(200)
+            for row in current_rows:
+                current_skc = str(row.skc or "").strip()
+                if current_skc in current_titles:
+                    continue
+                result = loads(row.result_json, {})
+                if not isinstance(result, dict):
+                    continue
+                ai_title = str(result.get("optimized_title") or "").strip()
+                normalized = _normalized_history_title(ai_title)
+                if normalized:
+                    current_titles[current_skc] = (normalized, ai_title)
+
+            targets_by_title: dict[str, list[dict[str, Any]]] = {}
+            for skc, target in requested.items():
+                current_title = current_titles.get(skc)
+                if current_title is None:
+                    continue
+                target["ai_title"] = current_title[1]
+                targets_by_title.setdefault(current_title[0], []).append(target)
+                matched[skc] = []
+                seen_offer_ids[skc] = set()
+            if not targets_by_title:
+                return {}
+
             rows = session.scalars(
                 select(ProcessingTaskItemRow)
                 .join(ProcessingTaskRow, ProcessingTaskRow.id == ProcessingTaskItemRow.task_id)
@@ -972,8 +1006,9 @@ class ProductProcessingRepository:
                 result = loads(row.result_json, {})
                 if not isinstance(result, dict):
                     continue
-                normalized = _normalized_history_title(result.get("optimized_title") or row.title)
-                targets = pending.get(normalized)
+                history_title = str(result.get("optimized_title") or "").strip()
+                normalized = _normalized_history_title(history_title)
+                targets = targets_by_title.get(normalized)
                 if not targets:
                     continue
                 source_url = str(result.get("source_url") or "").strip()
@@ -986,29 +1021,24 @@ class ProductProcessingRepository:
                 )
                 source_offer_id = source_offer_match.group(1) if source_offer_match else ""
                 history_skc = str(result.get("skc") or row.skc or "").strip()
-                remaining: list[dict[str, Any]] = []
                 for target in targets:
                     if (
                         (history_skc and history_skc == target["skc"])
                         or source_offer_id in target["excluded_offer_ids"]
+                        or source_offer_id in seen_offer_ids[target["skc"]]
                     ):
-                        remaining.append(target)
                         continue
-                    matched[target["skc"]] = {
+                    seen_offer_ids[target["skc"]].add(source_offer_id)
+                    matched[target["skc"]].append({
                         "source_url": source_url,
                         "history_task_id": int(row.task_id),
                         "history_item_id": int(row.id),
                         "history_skc": history_skc,
-                        "matched_title": str(result.get("optimized_title") or row.title or ""),
+                        "matched_title": history_title,
+                        "current_ai_title": target["ai_title"],
                         "updated_at": row.updated_at,
-                    }
-                if remaining:
-                    pending[normalized] = remaining
-                else:
-                    pending.pop(normalized, None)
-                if not pending:
-                    break
-        return matched
+                    })
+        return {skc: candidates for skc, candidates in matched.items() if candidates}
 
     def queued_tasks(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
         with self.database.sessions() as session:

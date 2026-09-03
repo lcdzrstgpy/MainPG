@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -52,7 +52,13 @@ class PriceVerificationRouteDependencies:
     provider_factory: Callable[[Mapping[str, Any]], Any] | None = None
     plugin_queue: DataCollectionPluginQueue | None = None
     draft_writer: Callable[[Mapping[str, Any]], tuple[Mapping[str, Any], bool]] | None = None
-    history_source_lookup: Callable[[list[dict[str, Any]], str], Mapping[str, Mapping[str, Any]]] | None = None
+    history_source_lookup: (
+        Callable[
+            [list[dict[str, Any]], str],
+            Mapping[str, Sequence[Mapping[str, Any]]],
+        ]
+        | None
+    ) = None
     # Optional profit-activity product library: retained SKCs with active 1688
     # source links are auto-synced here after link/unlink operations.
     product_library_service: Any | None = None

@@ -179,7 +179,38 @@ _CACHE_VOLATILE_RAW_KEYS = frozenset(
     }
 )
 
-_STAGE_CACHE_VERSION = 4
+_STAGE_CACHE_VERSION = 5
+_VARIANT_TRANSLATION_BATCH_SIZE = 20
+_COMMON_VARIANT_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "en": {
+        "黑色": "Black", "白色": "White", "米白": "Ivory", "米白色": "Ivory",
+        "米色": "Beige", "灰色": "Gray", "浅灰": "Light Gray", "浅灰色": "Light Gray",
+        "中灰": "Medium Gray", "深灰": "Dark Gray", "深灰色": "Dark Gray",
+        "红色": "Red", "大红色": "Red", "暗红": "Dark Red", "酒红": "Burgundy",
+        "酒红色": "Burgundy", "粉色": "Pink", "粉红": "Pink", "粉红色": "Pink",
+        "浅粉": "Light Pink", "浅粉色": "Light Pink", "玫红": "Rose Red",
+        "玫红色": "Rose Red", "韩粉": "Korean Pink", "藕粉": "Dusty Pink",
+        "蓝色": "Blue", "浅蓝": "Light Blue", "浅蓝色": "Light Blue",
+        "湖蓝": "Lake Blue", "湖蓝色": "Lake Blue", "牛仔蓝": "Denim Blue",
+        "绿色": "Green", "浅绿": "Light Green", "浅绿色": "Light Green",
+        "豆绿": "Sage Green", "豆绿色": "Sage Green", "翠绿": "Emerald Green",
+        "翠绿色": "Emerald Green", "黄色": "Yellow", "浅黄": "Light Yellow",
+        "浅黄色": "Light Yellow", "亮黄": "Bright Yellow", "亮黄色": "Bright Yellow",
+        "橙色": "Orange", "橘色": "Orange", "紫色": "Purple", "淡紫": "Lavender",
+        "淡紫色": "Lavender", "咖啡色": "Brown", "棕色": "Brown", "卡其": "Khaki",
+        "卡其色": "Khaki", "驼色": "Camel", "焦糖色": "Caramel", "虾色": "Shrimp Pink",
+    },
+    "es": {
+        "黑色": "Negro", "白色": "Blanco", "米白": "Marfil", "米白色": "Marfil",
+        "米色": "Beige", "灰色": "Gris", "浅灰": "Gris claro", "浅灰色": "Gris claro",
+        "深灰": "Gris oscuro", "深灰色": "Gris oscuro", "红色": "Rojo",
+        "酒红": "Burdeos", "酒红色": "Burdeos", "粉色": "Rosa", "粉红": "Rosa",
+        "粉红色": "Rosa", "蓝色": "Azul", "浅蓝": "Azul claro", "浅蓝色": "Azul claro",
+        "绿色": "Verde", "浅绿": "Verde claro", "浅绿色": "Verde claro",
+        "黄色": "Amarillo", "橙色": "Naranja", "橘色": "Naranja", "紫色": "Morado",
+        "咖啡色": "Marrón", "棕色": "Marrón", "卡其": "Caqui", "卡其色": "Caqui",
+    },
+}
 _TASK_HEARTBEAT_SECONDS = 10.0
 # 前端任务页轮询 /tasks/{id}/outputs 即为心跳；超过该时长没有心跳（页面关闭/
 # 切走/浏览器标签被回收）自动把任务置为暂停，避免用户已不在看却继续烧 AI 成本。
@@ -2696,7 +2727,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         self,
         requests: list[dict[str, Any]],
         workspace_id: str = "local",
-    ) -> dict[str, dict[str, Any]]:
+    ) -> dict[str, list[dict[str, Any]]]:
         """Expose a read-only, workspace-scoped history lookup to sourcing."""
         return self.repository.latest_completed_sources_by_title(requests, workspace_id)
 
@@ -3930,6 +3961,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "dimension_provenance": dimension_provenance,
             "dimension_confidence": dimension_confidence,
             "dimension_clamped_fields": list(dimensions.get("clamped_fields") or []),
+            "variant_translation_review_values": [
+                str(value).strip()
+                for value in (result.get("variant_translation_review_values") or [])
+                if str(value or "").strip()
+            ],
+            "variant_translation_sources": result.get("variant_translation_sources") or {},
             "preview_revision": preview_revision,
             "result_version": task_item_result_version(result),
             # Kept separate from product_dimensions: these are shipping package
@@ -6000,6 +6037,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "prompt_version": DOUBAO_TEXT_PROMPT_VERSION,
             "status": "not_requested",
         }
+        variant_translation_review_values: list[str] = []
+        variant_translation_sources: dict[str, int] = {
+            "ai": 0,
+            "builtin": 0,
+            "original": 0,
+        }
         if not preflight_only:
             local_title = title
             local_desc = description
@@ -6082,6 +6125,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         provider_status_classes["doubao_text"] = exc.error_kind
                         text_generation["status"] = "failed"
                         ai_notes.append(f"text:managed-service-failed:{exc.error_kind}")
+                        self._note_ai_failure(ai_notes, "text", _ai_error_reason(exc))
                     else:
                         measured_attempts = getattr(attempt_state, "doubao_text", None)
                         provider_attempts["doubao_text"] = (
@@ -6122,6 +6166,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     needs_desc = False
                 if combined.get("variant_translations"):
                     translations = combined["variant_translations"]
+                raw_review_values = combined.get("variant_translation_review_values")
+                if isinstance(raw_review_values, list):
+                    variant_translation_review_values = [
+                        self._text(value)[:200]
+                        for value in raw_review_values
+                        if self._text(value)
+                    ]
+                raw_translation_sources = combined.get("variant_translation_sources")
+                if isinstance(raw_translation_sources, dict):
+                    variant_translation_sources = {
+                        key: max(0, int(raw_translation_sources.get(key) or 0))
+                        for key in ("ai", "builtin", "original")
+                    }
                 if needs_dimensions:
                     product_dimensions = self._combined_dimensions(
                         combined.get("product_dimensions") or {},
@@ -6254,14 +6311,22 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     workspace_id=workspace_id,
                 )
 
-        # 规格翻译和尺寸补全均来自同一次豆包文本请求，不再启动独立文本调用。
+        # 标题/描述/尺寸来自主文本请求；大量或漏翻规格由同一计费阶段分批补齐。
         variant_value_translations: dict[str, str] = dict(
             combined_variant_translations
         )
         if not preflight_only:
-            if combined_variant_translations:
+            if variant_translation_sources.get("ai"):
                 ai_notes.append("variant_values:managed-service")
-            elif self._unique_variant_values(raw):
+            if variant_translation_sources.get("builtin"):
+                ai_notes.append(
+                    f"variant_values:builtin:{variant_translation_sources['builtin']}"
+                )
+            if variant_translation_review_values:
+                ai_notes.append(
+                    f"variant_values:review-required:{len(variant_translation_review_values)}"
+                )
+            elif self._unique_variant_values(raw) and not combined_variant_translations:
                 ai_notes.append("variant_values:managed-service-unavailable")
             dimensions_complete = all(
                 self._number(product_dimensions.get(key)) is not None
@@ -6369,6 +6434,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         "optimized_title": optimized_title,
                         "description": description,
                         "variant_value_translations": variant_value_translations,
+                        "variant_translation_review_values": variant_translation_review_values,
+                        "variant_translation_sources": variant_translation_sources,
                         "product_dimensions": product_dimensions,
                         "vision_identity": vision_identity,
                         "text_generation": text_generation,
@@ -6456,6 +6523,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     "optimized_title": optimized_title,
                     "description": description,
                     "variant_value_translations": variant_value_translations,
+                    "variant_translation_review_values": variant_translation_review_values,
+                    "variant_translation_sources": variant_translation_sources,
                     "product_dimensions": product_dimensions,
                     "vision_identity": vision_identity,
                     "text_generation": text_generation,
@@ -6548,6 +6617,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             )
             else []
         )
+        text_failure_detail = (
+            _ai_error_reason(text_failure) if text_failure is not None else ""
+        )
+        text_failure_is_invalid = bool(
+            text_failure is not None and text_failure.error_kind == "invalid_response"
+        )
         result = {
             "product_draft_id": draft["id"],
             "candidate_id": raw.get("candidate_id") or draft.get("candidate_id"),
@@ -6571,6 +6646,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # not the drawable product body.
             "shipping_package_records": raw.get("shipping_package_records") or [],
             "variant_value_translations": variant_value_translations,
+            "variant_translation_review_values": variant_translation_review_values,
+            "variant_translation_sources": variant_translation_sources,
             "cost": draft.get("cost"),
             "declared_price": draft.get("declared_price"),
             "suggested_price": draft.get("cost"),
@@ -6626,13 +6703,21 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 else (
                     "text_service_configuration"
                     if text_failure_is_config
-                    else "text_service_unavailable"
+                    else (
+                        "text_invalid_response"
+                        if text_failure_is_invalid
+                        else "text_service_unavailable"
+                    )
                 )
             ),
             "operator_hint": (
                 ""
                 if text_failure is None
-                else "AI 文案服务暂不可用，请稍后重试"
+                else (
+                    f"AI 文案返回内容未通过校验：{text_failure_detail}"
+                    if text_failure_is_invalid
+                    else "AI 文案服务暂不可用，请稍后重试"
+                )
             ),
             "debug_hint": (
                 ""
@@ -6640,10 +6725,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 else (
                     "服务端文本服务配置异常；请检查 AI 服务配置或余额后重试"
                     if text_failure_is_config
-                    else "文本生成已耗尽内部重试；图片结果已保留，可直接重试补文本"
+                    else (
+                        f"文本生成已耗尽内部重试；具体原因：{text_failure_detail}；"
+                        "图片结果已保留，可直接重试补文本"
+                    )
                 )
             ),
-            "retryable": text_failure is not None,
+            "text_failure_detail": text_failure_detail,
+            "retryable": bool(text_failure is not None and text_failure.retryable),
             "exchange_contract": "daily-selection-product-processing-v1" if draft.get("selection_run_id") else None,
         }
         self._record_source_shipping_observations(
@@ -6714,6 +6803,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     ) -> dict[str, Any]:
         """Generate every requested listing-text field in one text-only Doubao stage."""
         variant_values = self._unique_variant_values(raw)
+        prompt_variant_values = variant_values[:_VARIANT_TRANSLATION_BATCH_SIZE]
         profile = language_profile(target_language)
         context = listing_prompt_context(raw, title=source_title, category=category)
         combined_template = apply_language_contract_to_prompt(
@@ -6789,7 +6879,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             format_prompt(
                 custom_variants,
                 title=source_title,
-                variant_options="\n".join(f"- {value}" for value in variant_values),
+                variant_options="\n".join(f"- {value}" for value in prompt_variant_values),
                 target_language_name=profile.get("ai_language", target_language),
                 language_code=target_language,
                 **context,
@@ -6804,7 +6894,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             description_instructions=description_instructions,
             title_instructions=title_instructions,
             variant_instructions=variant_instructions,
-            variant_options="\n".join(f"- {value}" for value in variant_values),
+            variant_options="\n".join(f"- {value}" for value in prompt_variant_values),
             target_language_name=profile.get("ai_language", target_language),
             language_code=target_language,
             **context,
@@ -6818,7 +6908,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         requirements = {
             "optimized_title": bool(needs_title),
             "description": bool(needs_description),
-            "variant_translations": variant_values,
+            "variant_translations": prompt_variant_values,
             "product_dimensions": bool(needs_dimensions),
         }
         dimension_policy = (
@@ -6891,10 +6981,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             translations = self._combined_variant_translations(
                 result_payload, variant_values
             )
-            if variant_values and any(
-                value not in translations for value in variant_values
-            ):
-                raise ValueError("Doubao text variant translations are incomplete")
 
             dimensions = self._combined_dimensions(
                 result.product_dimensions, known, dimension_template
@@ -6919,8 +7005,24 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         client = self._doubao_text_client()
         try:
             client.generate_listing_text(prompt, validator=validate)
-        finally:
             self._attempt_state().doubao_text = client.last_attempt_count
+        except Exception:
+            self._attempt_state().doubao_text = client.last_attempt_count
+            raise
+
+        translations = dict(normalized.get("variant_translations") or {})
+        translations, review_values, repair_attempts, source_counts = (
+            self._complete_variant_translations(
+                variant_values,
+                translations,
+                target_language,
+                ai_notes=ai_notes,
+            )
+        )
+        self._attempt_state().doubao_text = client.last_attempt_count + repair_attempts
+        normalized["variant_translations"] = translations
+        normalized["variant_translation_review_values"] = review_values
+        normalized["variant_translation_sources"] = source_counts
         if ai_notes is not None:
             ai_notes.append("text:managed-service")
         return normalized
@@ -8349,7 +8451,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             value: Any,
         ) -> None:
             normalized_name = re.sub(r"\s+", " ", str(name or "")).strip()
-            normalized_value = re.sub(r"\s+", " ", str(value or "")).strip()
+            # Preserve numeric options, including 0, as strings before they are
+            # deduplicated, prompted, translated, or exported.
+            normalized_value = re.sub(
+                r"\s+", " ", str(value if value is not None else "")
+            ).strip()
             if not normalized_value:
                 return
             key = (normalized_name.casefold(), normalized_value.casefold())
@@ -8412,7 +8518,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         data: dict[str, Any], variant_values: list[str]
     ) -> dict[str, str]:
         """从 combined 文本调用输出中解析变种属性值翻译（对齐 VARIANT_VALUE_TRANSLATION_PROMPT）。"""
-        seen = set(variant_values)
+        required = {value.casefold(): value for value in variant_values}
         translations: dict[str, str] = {}
         mappings = data.get("variant_translations") if isinstance(data, dict) else None
         if not isinstance(mappings, list):
@@ -8420,11 +8526,162 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         for item in mappings:
             if not isinstance(item, dict):
                 continue
-            raw_value = str(item.get("raw_value") or "").strip()
-            export_value = str(item.get("export_value") or "").strip()
-            if raw_value and export_value and raw_value in seen:
-                translations[raw_value] = export_value
+            raw_scalar = item.get("raw_value")
+            export_scalar = item.get("export_value")
+            raw_value = str(raw_scalar if raw_scalar is not None else "").strip()
+            export_value = str(export_scalar if export_scalar is not None else "").strip()
+            original = required.get(raw_value.casefold())
+            if original and export_value and original not in translations:
+                translations[original] = export_value
         return translations
+
+    def _complete_variant_translations(
+        self,
+        variant_values: list[str],
+        initial: dict[str, str],
+        target_language: str,
+        *,
+        ai_notes: list[str] | None = None,
+    ) -> tuple[dict[str, str], list[str], int, dict[str, int]]:
+        """Fill only missing original options, then fall back without failing core text.
+
+        Each repair response may be partial.  A second request contains only the
+        values still missing from that batch.  Invalid extras never become export
+        values because `_combined_variant_translations` admits only exact original
+        options.
+        """
+        translations = {
+            value: str(initial.get(value) or "").strip()
+            for value in variant_values
+            if str(initial.get(value) or "").strip()
+        }
+        initial_ai_count = len(translations)
+        missing = [value for value in variant_values if value not in translations]
+        repair_attempts = 0
+        for start in range(0, len(missing), _VARIANT_TRANSLATION_BATCH_SIZE):
+            pending = missing[start : start + _VARIANT_TRANSLATION_BATCH_SIZE]
+            for repair_round in range(1, 3):
+                if not pending:
+                    break
+                client = self._doubao_text_client()
+                try:
+                    result = client.generate_listing_text(
+                        self._variant_translation_repair_prompt(
+                            pending,
+                            target_language,
+                            repair_round=repair_round,
+                        )
+                    )
+                except DoubaoTextError as exc:
+                    repair_attempts += max(0, int(client.last_attempt_count))
+                    if ai_notes is not None:
+                        ai_notes.append(
+                            f"variant_values:repair-ai-failed:{exc.error_kind}"
+                        )
+                    break
+                repair_attempts += max(0, int(client.last_attempt_count))
+                repaired = self._combined_variant_translations(
+                    result.as_dict(), pending
+                )
+                translations.update(repaired)
+                pending = [value for value in pending if value not in repaired]
+
+        built_in_count = 0
+        review_values: list[str] = []
+        for value in variant_values:
+            if value in translations:
+                continue
+            fallback = self._common_variant_translation(value, target_language)
+            if fallback is not None:
+                translations[value] = fallback
+                built_in_count += 1
+            else:
+                translations[value] = value
+                review_values.append(value)
+
+        ai_count = max(0, len(translations) - built_in_count - len(review_values))
+        source_counts = {
+            "ai": max(initial_ai_count, ai_count),
+            "builtin": built_in_count,
+            "original": len(review_values),
+        }
+        if ai_notes is not None:
+            if repair_attempts:
+                ai_notes.append(f"variant_values:repair-attempts:{repair_attempts}")
+            if built_in_count:
+                ai_notes.append(f"variant_values:builtin-fallback:{built_in_count}")
+            if review_values:
+                ai_notes.append(f"variant_values:manual-review:{len(review_values)}")
+        return translations, review_values, repair_attempts, source_counts
+
+    @staticmethod
+    def _variant_translation_repair_prompt(
+        values: list[str], target_language: str, *, repair_round: int
+    ) -> str:
+        profile = language_profile(target_language)
+        language_name = str(profile.get("ai_language") or target_language)
+        return (
+            "Translate only the requested product variant values. Return exactly one JSON object "
+            "with exactly these four keys: optimized_title, description, variant_translations, "
+            "product_dimensions. Set optimized_title and description to empty strings and "
+            "product_dimensions to an empty object. variant_translations must be an array of "
+            "objects containing raw_value and export_value. Copy each raw_value exactly as the "
+            "JSON string supplied, including numbers, punctuation, spaces and units. Return each "
+            f"requested value once and translate export_value strictly into {language_name}. "
+            "Do not add values and do not return Markdown.\n"
+            f"Repair round: {repair_round}\n"
+            f"Requested raw values: {json.dumps(values, ensure_ascii=False)}"
+        )
+
+    @staticmethod
+    def _common_variant_translation(value: str, target_language: str) -> str | None:
+        """Translate safe common values; preserve language-neutral numbers/codes."""
+        text = " ".join(str(value or "").split()).strip()
+        if not text:
+            return None
+        if re.search(r"[\u4e00-\u9fff]", text) is None:
+            return text
+        language = target_language if target_language in _COMMON_VARIANT_TRANSLATIONS else "en"
+        mapping = _COMMON_VARIANT_TRANSLATIONS[language]
+        if text in mapping:
+            return mapping[text]
+
+        numbered_color = re.fullmatch(r"(.+?)(\d+#)", text)
+        if numbered_color and numbered_color.group(1) in mapping:
+            return f"{mapping[numbered_color.group(1)]} {numbered_color.group(2)}"
+
+        measurement = re.fullmatch(
+            r"(\d+(?:\.\d+)?(?:\s*[xX*×]\s*\d+(?:\.\d+)?)*)\s*"
+            r"(mm|cm|m|g|kg|毫米|厘米|米|克|千克|公斤)?\s*(以上|以下)?",
+            text,
+            re.IGNORECASE,
+        )
+        if measurement:
+            number = re.sub(r"\s*[xX×]\s*", "*", measurement.group(1))
+            unit = {
+                "毫米": "mm", "厘米": "cm", "米": "m", "克": "g",
+                "千克": "kg", "公斤": "kg",
+            }.get(str(measurement.group(2) or "").lower(), str(measurement.group(2) or ""))
+            qualifier = str(measurement.group(3) or "")
+            suffix = {
+                ("en", "以上"): " and above", ("en", "以下"): " and below",
+                ("es", "以上"): " o más", ("es", "以下"): " o menos",
+            }.get((language, qualifier), "")
+            return f"{number}{unit}{suffix}"
+
+        parts = re.split(r"([+＋/／、])", text)
+        if len(parts) > 1:
+            translated_parts: list[str] = []
+            for part in parts:
+                if part in {"+", "＋", "/", "／", "、"}:
+                    translated_parts.append(" + " if part in {"+", "＋", "、"} else " / ")
+                    continue
+                translated = mapping.get(part.strip())
+                if translated is None:
+                    return None
+                translated_parts.append(translated)
+            return "".join(translated_parts).strip()
+        return None
 
     @classmethod
     def _combined_dimensions(

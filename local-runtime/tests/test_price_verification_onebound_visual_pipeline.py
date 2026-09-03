@@ -77,12 +77,14 @@ def test_adapter_resolves_complete_history_source_detail() -> None:
     candidates = adapter.lookup_history_sources(
         PriceVerificationActor(workspace_id="workspace", actor_id="employee"),
         {
-            "skc-1": {
-                "source_url": "https://detail.1688.com/offer/111111.html",
-                "history_task_id": 7,
-                "history_item_id": 8,
-                "matched_title": "AI title",
-            }
+            "skc-1": [
+                {
+                    "source_url": "https://detail.1688.com/offer/111111.html",
+                    "history_task_id": 7,
+                    "history_item_id": 8,
+                    "matched_title": "AI title",
+                }
+            ]
         },
     )
 
@@ -93,6 +95,50 @@ def test_adapter_resolves_complete_history_source_detail() -> None:
     assert candidates["skc-1"]["source_title"] == "宠物降温冰垫详情"
     assert candidates["skc-1"]["main_image_url"] == "https://images.example/detail-gallery.jpg"
     assert candidates["skc-1"]["pic_url"] == "https://images.example/detail-gallery.jpg"
+
+
+def test_adapter_falls_back_to_older_history_when_newest_detail_is_invalid() -> None:
+    calls: list[str] = []
+
+    class Provider:
+        def get_item_detail(self, offer_id: str) -> _Result:
+            calls.append(offer_id)
+            if offer_id == "222222":
+                return _Result(response={"item": {}})
+            return _Result(
+                response={
+                    "item": {
+                        "num_iid": offer_id,
+                        "title": "older valid detail",
+                        "pic_url": "https://images.example/older.jpg",
+                        "price": "6.6",
+                    }
+                }
+            )
+
+    adapter = OneBoundSourceAdapter(
+        object.__new__(PriceVerificationRepository), Provider
+    )
+
+    candidates = adapter.lookup_history_sources(
+        PriceVerificationActor(workspace_id="workspace", actor_id="employee"),
+        {
+            "skc-1": [
+                {
+                    "source_url": "https://detail.1688.com/offer/222222.html",
+                    "history_item_id": 2,
+                },
+                {
+                    "source_url": "https://detail.1688.com/offer/111111.html",
+                    "history_item_id": 1,
+                },
+            ]
+        },
+    )
+
+    assert calls == ["222222", "111111"]
+    assert candidates["skc-1"]["offer_id"] == "111111"
+    assert candidates["skc-1"]["history_item_id"] == 1
 
 
 def test_history_candidate_keeps_original_results_when_duplicate_or_fewer_than_five() -> None:
@@ -643,16 +689,18 @@ def test_batch_sourcing_appends_nonduplicate_history_match_as_sixth(
 
     def history_lookup(
         requests: list[dict[str, Any]], workspace_id: str
-    ) -> dict[str, dict[str, Any]]:
+    ) -> dict[str, list[dict[str, Any]]]:
         assert workspace_id == "workspace"
         seen_history_requests.extend(requests)
         return {
-            "skc-1": {
-                "source_url": "https://detail.1688.com/offer/999999.html",
-                "history_task_id": 8,
-                "history_item_id": 9,
-                "matched_title": "AI processed title",
-            }
+            "skc-1": [
+                {
+                    "source_url": "https://detail.1688.com/offer/999999.html",
+                    "history_task_id": 8,
+                    "history_item_id": 9,
+                    "matched_title": "AI processed title",
+                }
+            ]
         }
 
     service = SourcingService(
@@ -709,10 +757,10 @@ def test_batch_sourcing_appends_nonduplicate_history_match_as_sixth(
         def lookup_history_sources(
             self,
             actor: PriceVerificationActor,
-            sources: dict[str, dict[str, Any]],
+            sources: dict[str, list[dict[str, Any]]],
         ) -> dict[str, dict[str, Any]]:
             del actor
-            assert sources["skc-1"]["history_item_id"] == 9
+            assert sources["skc-1"][0]["history_item_id"] == 9
             return {
                 "skc-1": {
                     "offer_id": "999999",
@@ -739,7 +787,6 @@ def test_batch_sourcing_appends_nonduplicate_history_match_as_sixth(
     assert seen_history_requests == [
         {
             "skc": "skc-1",
-            "title": "AI processed title",
             "excluded_offer_ids": ["100001", "100002", "100003", "100004", "100005"],
         }
     ]

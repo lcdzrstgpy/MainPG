@@ -264,6 +264,15 @@ class PreviewFinalizeRequest(PreviewSaveRequest):
     pass
 
 
+class ListingAdviceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(default="", max_length=2000)
+    description: str = Field(default="", max_length=10000)
+    category_path: str = Field(default="", max_length=1000)
+    request_id: str = Field(min_length=8, max_length=100)
+
+
 class PromptUpdateRequest(BaseModel):
     prompts: dict[str, str] = Field(default_factory=dict)
 

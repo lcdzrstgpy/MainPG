@@ -4352,6 +4352,15 @@
   box-shadow: 4px 5px 0 rgba(103, 62, 44, .08), 0 15px 34px rgba(104, 65, 47, .13);
 }
 
+/* 焦糖主题：关闭水波/水滴/绽放等装饰性动画，保持干净 */
+[data-theme="dessert"] .topbar-card::before,
+[data-theme="dessert"] .topbar-card::after,
+[data-theme="dessert"] .sidebar-card::before,
+[data-theme="dessert"] .sidebar-card::after {
+  display: none;
+  animation: none;
+}
+
 [data-theme="dessert"] .content-card {
   border-color: #dfc4ab;
   background:
@@ -4924,3 +4933,180 @@
 [data-theme="violet"] .dashboard-meteor {
   display: none !important;
 }
+
+/* ================================================================
+   每个主题的笑脸按键专属外观（基础样式见 global.css .theme-quick-trigger）
+   ================================================================ */
+
+/* 经典蓝青：蓝→青渐变 + 深蓝描边位移 */
+[data-theme="classic"] .theme-quick-trigger {
+  border: 2px solid #0b63b8;
+  border-radius: 14px;
+  background: linear-gradient(160deg, #6cc9f2, #2fbfd8);
+  box-shadow: 2px 3px 0 #0b63b8;
+}
+[data-theme="classic"] .theme-quick-trigger:hover {
+  background: linear-gradient(160deg, #8edbfc, #4cd6e8);
+  box-shadow: 2px 4px 0 #0b63b8;
+  transform: translateY(-1px);
+}
+[data-theme="classic"] .theme-quick-trigger:active {
+  transform: translateY(1px) scale(.97);
+  box-shadow: 1px 1px 0 #0b63b8;
+}
+[data-theme="classic"] .theme-quick-trigger.is-active {
+  background: linear-gradient(160deg, #ffffff, #d7f6ff);
+  border-color: #04508f;
+}
+[data-theme="classic"] .theme-quick-trigger::before,
+[data-theme="classic"] .theme-quick-trigger::after { background: #07487f; }
+[data-theme="classic"] .theme-quick-trigger .face-mouth { border-bottom-color: #07487f; }
+
+/* 暖阳橙：橙渐变 + 深棕描边 */
+[data-theme="sunset"] .theme-quick-trigger {
+  border: 2px solid #7c3a1d;
+  border-radius: 12px;
+  background: linear-gradient(160deg, #ffc35c, #f5932d);
+  box-shadow: 2px 3px 0 #7c3a1d;
+}
+[data-theme="sunset"] .theme-quick-trigger:hover {
+  background: linear-gradient(160deg, #ffd27b, #ffa44d);
+  box-shadow: 2px 4px 0 #7c3a1d;
+  transform: translateY(-1px);
+}
+[data-theme="sunset"] .theme-quick-trigger:active {
+  transform: translateY(1px) scale(.97);
+  box-shadow: 1px 1px 0 #7c3a1d;
+}
+[data-theme="sunset"] .theme-quick-trigger.is-active {
+  background: #fff4de;
+  border-color: #b45309;
+}
+[data-theme="sunset"] .theme-quick-trigger::before,
+[data-theme="sunset"] .theme-quick-trigger::after { background: #7c3a1d; }
+[data-theme="sunset"] .theme-quick-trigger .face-mouth { border-bottom-color: #7c3a1d; }
+
+/* 樱雾粉紫：粉紫渐变 + 紫描边大圆角 */
+[data-theme="violet"] .theme-quick-trigger {
+  border: 2px solid #a25bb5;
+  border-radius: 18px;
+  background: linear-gradient(160deg, #ffd9ec, #ddb9f5);
+  box-shadow: 2px 3px 0 #a25bb5;
+}
+[data-theme="violet"] .theme-quick-trigger:hover {
+  background: linear-gradient(160deg, #ffe3f1, #e8cdfb);
+  box-shadow: 2px 4px 0 #a25bb5;
+  transform: translateY(-1px);
+}
+[data-theme="violet"] .theme-quick-trigger:active {
+  transform: translateY(1px) scale(.97);
+  box-shadow: 1px 1px 0 #a25bb5;
+}
+[data-theme="violet"] .theme-quick-trigger.is-active {
+  background: linear-gradient(160deg, #ffffff, #f1e2fa);
+  border-color: #8e499d;
+}
+[data-theme="violet"] .theme-quick-trigger::before,
+[data-theme="violet"] .theme-quick-trigger::after { background: #8e499d; }
+[data-theme="violet"] .theme-quick-trigger .face-mouth { border-bottom-color: #8e499d; }
+
+/* 焦糖：奶油底 + 焦糖描边，柔和圆润 */
+[data-theme="dessert"] .theme-quick-trigger {
+  border: 2px solid #a9642f;
+  border-radius: 18px;
+  background: linear-gradient(160deg, #f9ecd8, #e7c39a);
+  box-shadow: 2px 3px 0 rgba(140, 75, 35, .45);
+}
+[data-theme="dessert"] .theme-quick-trigger:hover {
+  background: linear-gradient(160deg, #fdf3e3, #f0d3ad);
+  box-shadow: 2px 4px 0 rgba(140, 75, 35, .5);
+  transform: translateY(-1px);
+}
+[data-theme="dessert"] .theme-quick-trigger:active {
+  transform: translateY(1px) scale(.97);
+  box-shadow: 1px 1px 0 rgba(140, 75, 35, .45);
+}
+[data-theme="dessert"] .theme-quick-trigger.is-active {
+  background: #fff7ea;
+  border-color: #8a4f23;
+}
+[data-theme="dessert"] .theme-quick-trigger::before,
+[data-theme="dessert"] .theme-quick-trigger::after { background: #7a4422; }
+[data-theme="dessert"] .theme-quick-trigger .face-mouth { border-bottom-color: #7a4422; }
+
+/* 黑白钻石：黑底银边，冷峻克制 */
+[data-theme="diamond"] .theme-quick-trigger {
+  border: 2px solid #e5e7eb;
+  border-radius: 10px;
+  background: #1d2026;
+  box-shadow: 2px 3px 0 #e5e7eb;
+}
+[data-theme="diamond"] .theme-quick-trigger:hover {
+  background: #272b33;
+  box-shadow: 2px 4px 0 #ffffff;
+}
+[data-theme="diamond"] .theme-quick-trigger:active {
+  transform: translateY(1px) scale(.97);
+  box-shadow: 1px 1px 0 #e5e7eb;
+}
+[data-theme="diamond"] .theme-quick-trigger.is-active {
+  background: #ffffff;
+  border-color: #ffffff;
+}
+[data-theme="diamond"] .theme-quick-trigger.is-active::before,
+[data-theme="diamond"] .theme-quick-trigger.is-active::after { background: #111318; }
+[data-theme="diamond"] .theme-quick-trigger.is-active .face-mouth { border-bottom-color: #111318; }
+[data-theme="diamond"] .theme-quick-trigger::before,
+[data-theme="diamond"] .theme-quick-trigger::after { background: #f8fafc; }
+[data-theme="diamond"] .theme-quick-trigger .face-mouth { border-bottom-color: #f8fafc; }
+
+/* 怪趣贴纸：绿黄粉大渐变 + 粗深紫描边歪头 */
+[data-theme="quirky"] .theme-quick-trigger {
+  border: 3px solid #321448;
+  border-radius: 16px;
+  width: 68px;
+  background: linear-gradient(160deg, #b6f74e, #fde047 55%, #ff6fa5);
+  box-shadow: 3px 4px 0 #321448;
+}
+[data-theme="quirky"] .theme-quick-trigger:hover {
+  background: linear-gradient(160deg, #c8ff6e, #fde94f 55%, #ff85b3);
+  box-shadow: 3px 5px 0 #321448;
+  transform: translateY(-1px) rotate(-2deg);
+}
+[data-theme="quirky"] .theme-quick-trigger:active {
+  transform: translateY(2px) scale(.96);
+  box-shadow: 1px 1px 0 #321448;
+}
+[data-theme="quirky"] .theme-quick-trigger.is-active {
+  background: linear-gradient(160deg, #ff6fa5, #b6f74e);
+  border-color: #321448;
+}
+[data-theme="quirky"] .theme-quick-trigger::before,
+[data-theme="quirky"] .theme-quick-trigger::after { background: #321448; }
+[data-theme="quirky"] .theme-quick-trigger .face-mouth { border-bottom-color: #321448; }
+
+/* 水墨青黛：米白纸底 + 青黛描边，偏方正印章感 */
+[data-theme="chinese"] .theme-quick-trigger {
+  border: 2px solid #4a6f6a;
+  border-radius: 8px;
+  background: #f6efe0;
+  box-shadow: 1px 2px 0 rgba(74, 111, 106, .55);
+}
+[data-theme="chinese"] .theme-quick-trigger:hover {
+  background: #fbf5e8;
+  box-shadow: 1px 3px 0 rgba(74, 111, 106, .6);
+  transform: translateY(-1px);
+}
+[data-theme="chinese"] .theme-quick-trigger:active {
+  transform: translateY(1px) scale(.97);
+  box-shadow: 0 1px 0 rgba(74, 111, 106, .55);
+}
+[data-theme="chinese"] .theme-quick-trigger.is-active {
+  background: #eef4ef;
+  border-color: #30403c;
+}
+[data-theme="chinese"] .theme-quick-trigger::before,
+[data-theme="chinese"] .theme-quick-trigger::after { background: #30403c; }
+[data-theme="chinese"] .theme-quick-trigger .face-mouth { border-bottom-color: #30403c; }
+
+
