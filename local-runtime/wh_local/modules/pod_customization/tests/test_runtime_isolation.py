@@ -245,6 +245,28 @@ def test_direct_listing_grid_fails_closed_without_wuyin_grant() -> None:
         runtime.close()
 
 
+def test_direct_listing_grid_rejects_grant_without_provider_key_even_if_remote_token_exists() -> None:
+    runtime = PodCustomizationAiRuntime(image_workers=1, requests_per_minute=0)
+    try:
+        with pytest.raises(Exception, match="grant"):
+            runtime.generate_listing_grid(
+                DirectListingGridRequest(
+                    trial_id="trial-1",
+                    template_id="template-1",
+                    template_image=b"reference-image",
+                    template_content_type="image/jpeg",
+                    prompt="same shirt",
+                    attempt=1,
+                ),
+                grant=PodExecutionGrant(
+                    "freeze-1", 1, "2099-01-01T00:00:00Z", {}, remote_token="remote-token"
+                ),
+                call_id="trial-1:image:1",
+            )
+    finally:
+        runtime.close()
+
+
 def test_wuyin_result_url_receipt_survives_local_download_failure_and_redacts_detail() -> None:
     runtime = PodCustomizationAiRuntime(image_workers=1, requests_per_minute=0, poll_interval_seconds=0)
     runtime._publish_listing_reference = lambda _request: "https://cos.example.test/reference.png"  # type: ignore[method-assign]

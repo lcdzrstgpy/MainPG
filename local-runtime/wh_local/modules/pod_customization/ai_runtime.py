@@ -16,8 +16,6 @@ from typing import Any, Callable
 
 from PIL import Image, ImageDraw
 
-from wh_local.config import default_config
-from wh_local.customer.remote_client import CustomerAuthClient
 from wh_local.modules.product_processing.domain.policy import is_safe_external_url
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia, MediaProcessingError
 from wh_local.modules.product_processing.infrastructure.media import ProductImageProcessor
@@ -114,12 +112,8 @@ class PodCustomizationAiRuntime(AiRuntime):
         This remains one provider request per service-level attempt.  The
         service decides whether a malformed grid receives its single retry.
         """
-        reference_url = self._publish_listing_reference(request)
-        if not grant.provider_key("wuyin") and str(getattr(grant, "remote_token", "") or ""):
-            return self._generate_listing_grid_via_gateway(
-                request, grant=grant, call_id=call_id, reference_url=reference_url, on_start=on_start
-            )
         _required_provider_key(grant, "wuyin")
+        reference_url = self._publish_listing_reference(request)
         try:
             with self.provider_slot():
                 _required_provider_key(grant, "wuyin")
@@ -153,70 +147,6 @@ class PodCustomizationAiRuntime(AiRuntime):
             content_type=content_type,
             suffix=_suffix_for_content_type(content_type),
             provider="suchuang",
-            model=request.model_id,
-            reference_count=1,
-            attempt_count=1,
-        )
-
-    def _generate_listing_grid_via_gateway(
-        self,
-        request: DirectListingGridRequest,
-        *,
-        grant: PodExecutionGrant,
-        call_id: str,
-        reference_url: str,
-        on_start: Callable[[], None] | None,
-    ) -> GeneratedMedia:
-        """Submit one complete style to the server-owned image gateway.
-
-        No desktop-side provider key exists on this path.  The gateway
-        persists submit/task state and settles the usage record itself; this
-        process only downloads the completed public result.
-        """
-        remote_token = str(grant.remote_token or "")
-        if not remote_token:
-            raise PodBillingAuthorizationRequired("POD gateway authorization is unavailable")
-        client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=35)
-        if not client.configured():
-            raise PodBillingAuthorizationRequired("POD gateway is not configured")
-        try:
-            reservation = client.reserve_ai_usage(
-                remote_token,
-                {"feature_key": "pod.image", "idempotency_key": f"pod:gateway:{call_id}"},
-            )
-            usage = reservation.get("usage") if isinstance(reservation, dict) else None
-            usage_id = str(usage.get("usage_id") or "") if isinstance(usage, dict) else ""
-            if not usage_id:
-                raise RuntimeError("POD gateway reservation is invalid")
-            if on_start is not None:
-                on_start()
-            payload = client.gateway_pod_image(
-                remote_token,
-                {
-                    "usage_id": usage_id,
-                    "prompt": request.prompt,
-                    "size": _suchuang_size(request.size),
-                    "urls": [reference_url],
-                },
-            )
-            result_url = str(payload.get("result_url") or "") if isinstance(payload, dict) else ""
-            if not result_url:
-                raise RuntimeError("POD gateway returned no image result")
-            content, content_type = self._download_suchuang_grid(result_url)
-        except PodBillingAuthorizationRequired:
-            raise
-        except Exception as exc:
-            raise MediaProcessingError(
-                f"POD server image gateway is unavailable: {exc.__class__.__name__}",
-                attempt_count=1,
-                status_class="transient",
-            ) from exc
-        return GeneratedMedia(
-            stage="grid_image",
-            content=content,
-            content_type=content_type,
-            suffix=_suffix_for_content_type(content_type),
-            provider="server-gateway",
             model=request.model_id,
             reference_count=1,
             attempt_count=1,

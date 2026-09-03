@@ -744,12 +744,12 @@ def test_cancelled_batch_exports_the_styles_that_completed_before_cancellation(t
     assert exported.skipped_style_count == 1
 
 
-def test_billing_auth_required_complete_batch_is_exportable(tmp_path: Path) -> None:
+def test_interrupted_complete_batch_is_exportable(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
     batch = _batch(service, actor, count=1)
     _complete_style(service, batch["id"], 1)
-    _settle(service, batch["id"], "billing_auth_required")
+    _settle(service, batch["id"], "partial_failure")
     service.repository.upsert_style_copy(
         batch["id"], actor.workspace_id, actor.id, 1,
         title="Coastal Tote", english_title="Coastal Canvas Tote", description="Carry calm everywhere.",
@@ -789,12 +789,12 @@ def test_settlement_pending_complete_batch_is_exportable(tmp_path: Path) -> None
     assert exported.exported_style_count == 1
 
 
-def test_billing_auth_required_incomplete_batch_exports_ready_styles(tmp_path: Path) -> None:
+def test_failed_batch_exports_ready_styles(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
     batch = _batch(service, actor, count=1)
     _complete_style(service, batch["id"], 1)
-    _settle(service, batch["id"], "billing_auth_required")
+    _settle(service, batch["id"], "partial_failure")
     service.repository.upsert_style_copy(
         batch["id"], actor.workspace_id, actor.id, 1,
         title="Coastal Tote", english_title="Coastal Canvas Tote", description="Carry calm everywhere.",

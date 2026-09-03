@@ -1,15 +1,12 @@
 import { getAuthToken, httpBlob, httpJson } from "../../../transport/http/client";
 import { parseDianxiaomiExportFilename, parseDianxiaomiExportHeaderCount } from "../data/dianxiaomiExport";
 import { podStyleTitleRegenerateRequest } from "../data/styleTitleRequest";
-import { podBillingPendingRequest, podBillingResumeRequest } from "../data/billingRuns";
 import type { PodBatchRetryRequest } from "../data/podBatchRetry";
 import type {
   CreatePodBatchRequest,
   PodBatch,
   PodBatchItem,
   PodBatchListResponse,
-  PodBillingRun,
-  PodBillingRunListResponse,
   PodStyleTitle,
   PodTemplate,
   PodTemplateCalibration,
@@ -141,14 +138,6 @@ export const podCustomizationApi = {
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/retry-failed`,
     { method: "POST", body },
   ),
-  listPendingBillingRuns: () => {
-    const request = podBillingPendingRequest();
-    return httpJson<PodBillingRunListResponse>(request.path);
-  },
-  resumeBillingRun: (runId: string) => {
-    const request = podBillingResumeRequest(runId);
-    return httpJson<PodBillingRun>(request.path, request.options);
-  },
   exportDianxiaomi,
   downloadAsset,
 };

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { podCustomizationApi } from "../api/podCustomizationApi";
 import { PodBatchGallery } from "../components/PodBatchGallery";
@@ -35,7 +35,6 @@ import type {
   PodBatch,
   PodBatchCount,
   PodBatchSummary,
-  PodBillingRun,
   PodBusinessFieldsDraft,
   PodListingFieldsDraft,
   PodTemplate,
@@ -143,7 +142,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     : { state: createEmptyPodCustomizationDraft(), error: "登录账号信息不可用，暂不读取或保存 POD 本地草稿。" });
   const [templates, setTemplates] = useState<PodTemplate[]>([]);
   const [batches, setBatches] = useState<PodBatchSummary[]>([]);
-  const [pendingBillingRuns, setPendingBillingRuns] = useState<PodBillingRun[]>([]);
   const [activeBatch, setActiveBatch] = useState<PodBatch | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState(initialDraft.state.selected_template_id);
   const [selectedTemplateSnapshot, setSelectedTemplateSnapshot] = useState<PodTemplate | null>(null);
@@ -167,6 +165,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [visibility, setVisibility] = useState<DocumentVisibilityState>(() => document.visibilityState);
   const requestGenerationRef = useRef(0);
   const lastDraftSaveErrorRef = useRef("");
+  const businessTextareasRef = useRef<Array<HTMLTextAreaElement | null>>([]);
 
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId);
   const summaryTemplate = selectedTemplateSnapshot ?? selectedTemplate;
@@ -190,10 +189,9 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     const generation = ++requestGenerationRef.current;
     const bootstrap = async () => {
       setLoading(true);
-      const [templateResult, historyResult, billingResult] = await Promise.allSettled([
+      const [templateResult, historyResult] = await Promise.allSettled([
         podCustomizationApi.listTemplates(),
         podCustomizationApi.listBatches(),
-        podCustomizationApi.listPendingBillingRuns(),
       ]);
       if (stopped || requestGenerationRef.current !== generation) return;
 
@@ -218,8 +216,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
           }
         }
       }
-      if (billingResult.status === "fulfilled") setPendingBillingRuns(billingResult.value.runs);
-      const failures = [templateResult, historyResult, billingResult]
+      const failures = [templateResult, historyResult]
         .filter((result): result is PromiseRejectedResult => result.status === "rejected")
         .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
       if (failures.length) setError(failures.join("；"));
@@ -265,10 +262,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         if (stopped) return;
         setActiveBatch(fresh);
         setBatches((current) => sortBatches([toSummary(fresh), ...current.filter((batch) => batch.id !== fresh.id)]));
-        if (fresh.status === "billing_auth_required" || fresh.status === "settlement_pending") {
-          const pending = await podCustomizationApi.listPendingBillingRuns();
-          if (!stopped) setPendingBillingRuns(pending.runs);
-        }
       } catch (cause) {
         if (!stopped) setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
@@ -301,6 +294,15 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       setError(result.error);
     }
   }, [batchCount, businessFields, currentBatchEdit, customCountInput, customCountMode, draftScope?.accountId, draftScope?.workspaceId, listingFields, selectedTemplateId, systemTemplates]);
+
+  // Resize multiline business textareas on mount and whenever their values change.
+  // onChange handles live typing; this effect handles initial load and draft restore.
+  useLayoutEffect(() => {
+    businessTextareasRef.current.forEach((textarea) => {
+      if (!textarea) return;
+      autoGrowBusinessTextarea(textarea);
+    });
+  }, [businessFields.core_selling_points, businessFields.excluded_elements]);
 
   const clearMessages = () => {
     setNotice("");
@@ -615,22 +617,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
-  const resumeBillingRun = async (run: PodBillingRun) => {
-    setBusyAction(`resume-billing:${run.id}`);
-    clearMessages();
-    try {
-      await podCustomizationApi.resumeBillingRun(run.id);
-      const pending = await podCustomizationApi.listPendingBillingRuns();
-      setPendingBillingRuns(pending.runs);
-      setNotice("已重新授权并提交恢复，任务将在后台继续。");
-      if (run.batch_id) await refreshActiveBatch(run.batch_id);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusyAction("");
-    }
-  };
-
   const pauseBatch = async () => {
     if (!activeBatch) return;
     setBusyAction("pause-batch");
@@ -738,12 +724,15 @@ export function PodCustomizationPage({ isActive = true }: Props) {
           <section className="pod-setup-card pod-business-editor">
             <div className="pod-section-title"><span>BRIEF EDITOR</span><h2>业务信息编辑</h2><small>用于直出 Prompt</small></div>
             <div className="pod-business-fields">
-              {BUSINESS_FIELDS.map((field) => <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}</span>{field.multiline
-                ? <textarea rows={1} value={businessFields[field.key]} onChange={(event) => {
-                  updateBusinessField(field.key, event.currentTarget.value);
-                  autoGrowBusinessTextarea(event.currentTarget);
-                }} />
-                : <input value={businessFields[field.key]} onChange={(event) => updateBusinessField(field.key, event.target.value)} />}</label>)}
+              {BUSINESS_FIELDS.map((field, fieldIndex) => {
+                const multilineIndex = BUSINESS_FIELDS.slice(0, fieldIndex).filter((f) => f.multiline).length;
+                return <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}</span>{field.multiline
+                  ? <textarea rows={1} ref={(el) => { businessTextareasRef.current[multilineIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
+                    updateBusinessField(field.key, event.currentTarget.value);
+                    autoGrowBusinessTextarea(event.currentTarget);
+                  }} />
+                  : <input value={businessFields[field.key]} onChange={(event) => updateBusinessField(field.key, event.target.value)} />}</label>;
+              })}
             </div>
             <section className="pod-listing-fields" aria-labelledby="pod-dianxiaomi-listing-title">
               <div className="pod-listing-fields-heading"><span>DIANXIAOMI LISTING</span><h3 id="pod-dianxiaomi-listing-title">店小秘上架信息</h3><small>创建批次时保存为不可缺失的上架快照</small></div>
@@ -810,14 +799,12 @@ export function PodCustomizationPage({ isActive = true }: Props) {
           <PodBatchGallery
             batch={activeBatch}
             busyAction={busyAction}
-            pendingBillingRuns={pendingBillingRuns}
             onOpenResult={(item) => setSelectedItemId(item.id)}
             onRegenerateStyle={(styleIndex) => void regenerateStyle(styleIndex)}
             onRegenerateTitle={(styleIndex) => void regenerateStyleTitle(styleIndex)}
             onUpdateExportSelection={(styleIndex, selected) => void updateExportSelection(styleIndex, selected)}
             onSaveTitle={(styleIndex, title) => saveManualTitle(styleIndex, title)}
             onExportDianxiaomi={() => void exportDianxiaomi()}
-            onResumeBilling={(run) => void resumeBillingRun(run)}
             onOpenFailedRetry={() => setFailedRetryOpen(true)}
             onPauseBatch={() => void pauseBatch()}
             onCancelBatch={() => void cancelBatch()}

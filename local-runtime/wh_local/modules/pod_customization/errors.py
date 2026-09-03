@@ -16,6 +16,10 @@ _SECRET_ASSIGNMENT = re.compile(
 )
 
 
+class PodExecutionExpired(RuntimeError):
+    """Raised when a worker-side mutation is rejected because the batch epoch has advanced."""
+
+
 class PodProviderResultReceivedError(RuntimeError):
     def __init__(self, provider: str, message: str) -> None:
         self.provider = str(provider)

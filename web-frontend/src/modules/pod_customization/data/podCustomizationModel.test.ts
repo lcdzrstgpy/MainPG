@@ -45,11 +45,9 @@ test("POD count accepts custom integers from 1 through 200", () => {
   assert.equal(isPodBatchCount(1.5), false);
 });
 
-test("billing recovery statuses are visible and only settlement keeps polling", () => {
+test("settlement-pending status remains separate from generation failure", () => {
   assert.equal(isActiveBatchStatus("settlement_pending"), true);
-  assert.equal(isActiveBatchStatus("billing_auth_required"), false);
   assert.equal(podBatchStatusLabel("settlement_pending"), "等待计费结算");
-  assert.equal(podBatchStatusLabel("billing_auth_required"), "需要重新授权");
 });
 
 test("pause cancel and resume guards follow the backend state gate", () => {
@@ -66,7 +64,6 @@ test("pause cancel and resume guards follow the backend state gate", () => {
   assert.equal(canRetryPodBatchFailed("cancelled"), true);
   // 账务结算与生成结果分开：结算待处理不能锁死失败项重试。
   assert.equal(canRetryPodBatchFailed("settlement_pending"), false);
-  assert.equal(canRetryPodBatchFailed("billing_auth_required"), false);
 });
 
 test("pause and cancel statuses render labels and keep pausing polling", () => {
@@ -196,7 +193,6 @@ test("successful listing-ready POD results can regenerate title and whole style 
   assert.equal(canRegeneratePodStyleTitle("completed", "completed", publicResults), true);
   assert.equal(canRegeneratePodStyleTitle("partial_failure", "failed", publicResults), true);
   assert.equal(canRegeneratePodStyle("settlement_pending", "completed", true), false);
-  assert.equal(canRegeneratePodStyleTitle("billing_auth_required", "completed", publicResults), false);
   assert.equal(isBillingInterruptedPodBatch("settlement_pending"), true);
 });
 

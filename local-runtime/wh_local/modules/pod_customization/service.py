@@ -42,7 +42,7 @@ from .runtime_contracts import (
     PodAiRuntime,
 )
 from .title_runtime import PodTitleRequest, visual_signature
-from .worker import PodBatchWorker, PodBillingRun
+from .worker import PodBatchWorker, PodBillingRun, POD_PROGRESS_TIMEOUT_SECONDS
 
 
 class PodCustomizationService:
@@ -83,8 +83,12 @@ class PodCustomizationService:
         # single workbench process, so two rapid clicks cannot create separate
         # per-style billing reservations before one claim loses.
         self._regeneration_lock = threading.RLock()
-        # Restarts never inherit request-local secrets. Queued work remains
-        # paused until the composition root obtains an explicit regrant.
+        # The grant is request-local. If a provider call loses it, that call is
+        # recorded as a normal failure and can be retried from the batch UI.
+        self._reaper_stop: threading.Event = threading.Event()
+        self._reaper_thread: threading.Thread | None = None
+        if start_workers:
+            self._start_reaper()
 
     def upload_template(
         self,
@@ -197,7 +201,6 @@ class PodCustomizationService:
         generated_grids: list[Any] = []
         split_error = ""
 
-        billing_auth_required = False
         try:
             return self._run_direct_listing_trial_authorized(
                 actor,
@@ -208,16 +211,10 @@ class PodCustomizationService:
                 prompt=prompt,
                 billing_run=billing_run,
             )
-        except PodBillingAuthorizationRequired:
-            billing_auth_required = True
-            self.repository.mark_billing_auth_required(
-                billing_run.action_key,
-                "POD provider grant expired; sign in to resume this direct trial",
-            )
-            raise
+        except PodBillingAuthorizationRequired as exc:
+            raise RuntimeError(str(exc)) from exc
         finally:
-            if not billing_auth_required:
-                billing_run.settle()
+            billing_run.settle()
 
     def _run_direct_listing_trial_authorized(
         self,
@@ -404,29 +401,17 @@ class PodCustomizationService:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         if batch["status"] != "paused":
             raise PodRepositoryError("仅已暂停的 POD 批次可以继续", 409)
-        run = self._pending_billing_run_for_batch(actor, batch_id)
-        if run is None:
-            run = self._freeze_paused_batch_remainder(actor, batch)
-            if not self.repository.resume_paused_batch(batch_id):
-                self._settle_unclaimed_retry(run)
-                raise PodRepositoryError("POD 批次无法继续", 409)
-            if self.worker is None:
-                raise RuntimeError("POD worker is disabled")
-            self.worker.register_billing_run(batch_id, run)
-            self.worker.submit(batch_id, run)
-            return self._batch_payload(
-                self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-            )
-        self.repository.resume_paused_batch(batch_id)
-        self.resume_billing_run(actor, run["run_id"], enqueue=self.start_workers)
+        # Resuming a paused batch always creates a fresh plan for the
+        # remaining styles. It never asks the user to re-authorize an old run.
+        run = self._freeze_paused_batch_remainder(actor, batch)
+        if not self.repository.resume_paused_batch(batch_id):
+            self._settle_unclaimed_retry(run)
+            raise PodRepositoryError("POD 批次无法继续", 409)
+        if self.worker is None:
+            raise RuntimeError("POD worker is disabled")
+        self.worker.register_billing_run(batch_id, run)
+        self.worker.submit(batch_id, run)
         return self._batch_payload(self.repository.get_batch(batch_id, actor.workspace_id, actor.id))
-
-    def _pending_billing_run_for_batch(self, actor: Actor, batch_id: str) -> dict[str, Any] | None:
-        try:
-            runs = self.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
-        except Exception:
-            return None
-        return next((run for run in runs if run.get("batch_id") == batch_id), None)
 
     def export_dianxiaomi(self, actor: Actor, batch_id: str) -> DianxiaomiExport:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
@@ -441,10 +426,7 @@ class PodCustomizationService:
                 "all_exportable_styles_unselected": (
                     "POD batch has zero exportable styles because every ready style was deselected"
                 ),
-                "billing_recovery_required": (
-                    "POD batch still has incomplete image/title/copy work and "
-                    "requires billing authorization to resume"
-                ),
+                "billing_recovery_required": "POD batch still has incomplete image/title/copy work",
             }
             raise PodRepositoryError(messages[analysis.block_reason], 409)
         exported = build_pod_dianxiaomi_export(batch, copies)
@@ -715,11 +697,7 @@ class PodCustomizationService:
 
     def _preflight_style_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        if batch["status"] in {"billing_auth_required", "settlement_pending"}:
-            raise PodRepositoryError(
-                "POD billing recovery is required before regenerating one style", 409
-            )
-        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
+        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
             raise PodRepositoryError("POD batch must settle before regenerating one style", 409)
         results = [
             item for item in batch.get("items", [])
@@ -731,11 +709,7 @@ class PodCustomizationService:
 
     def _preflight_title_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        if batch["status"] in {"billing_auth_required", "settlement_pending"}:
-            raise PodRepositoryError(
-                "POD billing recovery is required before regenerating its title", 409
-            )
-        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
+        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
             raise PodRepositoryError("POD batch must settle before regenerating its title", 409)
         title = next(
             (row for row in batch.get("style_titles", []) if int(row["style_index"]) == int(style_index)),
@@ -756,15 +730,7 @@ class PodCustomizationService:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
             if batch["status"] == "settlement_pending":
-                raise PodRepositoryError(
-                    "POD billing settlement is pending; settle billing before saving a manual title",
-                    409,
-                )
-            if batch["status"] == "billing_auth_required":
-                raise PodRepositoryError(
-                    "POD billing is not recovered; resume billing authorization before saving a manual title",
-                    409,
-                )
+                raise PodRepositoryError("POD billing settlement is pending", 409)
             raise PodRepositoryError("POD batch must settle before saving a manual title", 409)
 
     def _preflight_batch_retry(
@@ -775,11 +741,7 @@ class PodCustomizationService:
         title_style_indices: tuple[int, ...],
     ) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        if batch["status"] in {"billing_auth_required", "settlement_pending"}:
-            raise PodRepositoryError(
-                "POD billing recovery is required before retrying failed styles", 409
-            )
-        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
+        if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
             raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
         if any(index > int(batch["requested_count"]) for index in (*image_style_indices, *title_style_indices)):
             raise PodRepositoryError("POD style index is outside the batch range", 422)
@@ -809,12 +771,61 @@ class PodCustomizationService:
         try:
             billing_run.settle()
         except Exception:
-            # The durable billing run remains settlement_pending and can be resumed.
+            # The durable billing run remains settlement_pending for settlement
+            # bookkeeping; it must not lock the failed generation retry path.
             pass
 
     def close(self) -> None:
+        if self._reaper_thread is not None:
+            self._reaper_stop.set()
+            self._reaper_thread.join(timeout=5.0)
+            self._reaper_thread = None
+        # Revoke active epochs before cancelling the local executors.  Provider
+        # calls already inside requests cannot be force-killed safely, but any
+        # result they deliver after this point is rejected by the repository.
+        self.repository.pause_billing_runs_for_shutdown()
         if self.worker is not None:
             self.worker.close()
+
+    def _start_reaper(self) -> None:
+        """Start the background reaper daemon that revokes stale batch epochs."""
+        self._reaper_stop.clear()
+        self._reaper_thread = threading.Thread(
+            target=self._run_stuck_batch_reaper,
+            name="pod-batch-reaper",
+            daemon=True,
+        )
+        self._reaper_thread.start()
+
+    def _run_stuck_batch_reaper(self) -> None:
+        """Loop: reap stale batches every 60 seconds until stopped."""
+        import logging
+        logger = logging.getLogger(__name__)
+        while not self._reaper_stop.wait(timeout=60.0):
+            try:
+                self.reap_stuck_batches_once()
+            except Exception as exc:
+                logger.warning("POD reaper encountered an error: %s", exc)
+
+    def reap_stuck_batches_once(self) -> list[dict]:
+        """Reap batches that have not progressed within the inactivity window.
+
+        Exposed as a public method for deterministic tests and operator diagnostics.
+        Returns the list of reaped batch records (batch_id, old_epoch, new_status).
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        reaped = self.repository.reap_stuck_batches(
+            stale_after_seconds=POD_PROGRESS_TIMEOUT_SECONDS,
+        )
+        for record in reaped:
+            logger.info(
+                "POD reaper: batch %s reaped (old_epoch=%s, new_status=%s, reason=inactivity_timeout)",
+                record["batch_id"],
+                record["old_epoch"],
+                record["new_status"],
+            )
+        return reaped
 
     def recover_interrupted_work(self) -> int:
         recovered = self.repository.recover_interrupted_batches()
@@ -865,8 +876,8 @@ class PodCustomizationService:
             else:
                 grant = self.billing_coordinator.regrant(actor, stored["freeze_id"])
         except CustomerBillingPermissionError:
-            self.repository.mark_billing_auth_required(
-                stored["action_key"], "POD billing authentication is required"
+            self.repository.mark_billing_pending(
+                stored["action_key"], "POD billing service authentication failed"
             )
             raise
         except Exception as exc:
@@ -925,7 +936,7 @@ class PodCustomizationService:
                         billing_run=run,
                     )
                 except PodBillingAuthorizationRequired as exc:
-                    self.repository.mark_billing_auth_required(run.action_key, str(exc))
+                    self.repository.mark_billing_pending(run.action_key, str(exc))
                     return
                 try:
                     run.settle()
@@ -999,7 +1010,7 @@ class PodCustomizationService:
         if stored["batch_id"]:
             refreshed = self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
             result_status = refreshed["result_status"]
-            if result_status and result_status not in {"billing_auth_required", "settlement_pending"}:
+            if result_status and result_status not in {"settlement_pending"}:
                 self.repository.set_batch_status(stored["batch_id"], result_status)
         return self._billing_run_payload(
             self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)

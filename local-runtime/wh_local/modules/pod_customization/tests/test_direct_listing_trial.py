@@ -260,7 +260,7 @@ def test_direct_listing_trial_bills_provider_success_when_local_result_download_
     assert "DO-NOT-LEAK" not in str(coordinator.settlements)
 
 
-def test_direct_listing_trial_image_expiry_pauses_durable_billing_for_regrant(tmp_path: Path) -> None:
+def test_direct_listing_trial_image_expiry_is_a_normal_failure(tmp_path: Path) -> None:
     runtime = DirectTrialRuntime(
         [PodBillingAuthorizationRequired("POD wuyin grant expired before provider request")]
     )
@@ -277,16 +277,15 @@ def test_direct_listing_trial_image_expiry_pauses_durable_billing_for_regrant(tm
         actor, name="WPS shirt", filename="wps-shirt.png", content=_png("#ffffff")
     )
 
-    with pytest.raises(PodBillingAuthorizationRequired, match="expired"):
+    with pytest.raises(RuntimeError, match="expired"):
         service.run_direct_listing_trial(actor, _request(template["id"]))
 
     pending = service.list_pending_billing_runs(actor)
-    assert pending["total"] == 1
-    assert pending["runs"][0]["status"] == "auth_required"
-    assert coordinator.settlements == []
+    assert pending["total"] == 0
+    assert len(coordinator.settlements) == 1
 
 
-def test_direct_listing_trial_title_expiry_pauses_instead_of_persisting_failed_copy(tmp_path: Path) -> None:
+def test_direct_listing_trial_title_expiry_is_a_normal_failure(tmp_path: Path) -> None:
     class ExpiredTitleRuntime:
         def generate_title(self, *_args, **_kwargs):
             raise PodBillingAuthorizationRequired("POD ark grant expired before provider request")
@@ -306,12 +305,12 @@ def test_direct_listing_trial_title_expiry_pauses_instead_of_persisting_failed_c
         actor, name="WPS shirt", filename="wps-shirt.png", content=_png("#ffffff")
     )
 
-    with pytest.raises(PodBillingAuthorizationRequired, match="expired"):
+    with pytest.raises(RuntimeError, match="expired"):
         service.run_direct_listing_trial(actor, _request(template["id"]))
 
     assert service.list_direct_listing_trials(actor) == {"trials": [], "total": 0}
-    assert service.list_pending_billing_runs(actor)["runs"][0]["status"] == "auth_required"
-    assert coordinator.settlements == []
+    assert service.list_pending_billing_runs(actor)["runs"] == []
+    assert len(coordinator.settlements) == 1
 
 
 def test_direct_listing_trial_returns_persisted_partial_result_when_publication_fails(tmp_path: Path) -> None:

@@ -668,17 +668,28 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
 
     # TTL 兜底：每小时释放超过 7 天未结算的批次冻结积分，防止崩溃/断网
     # 导致用户积分被永久锁定。线程为守护线程，服务退出自动终止。
-    def _batch_ttl_sweep_loop() -> None:
-        while True:
+    # Stop event 使 shutdown 处理器可以及时停止循环，而不必等待整个 sleep 周期。
+    _gateway_stop_event = threading.Event()
+
+    def _run_pod_gateway_reconcile_loop(
+        stop_event: threading.Event,
+        *,
+        interval_seconds: float = 60.0,
+    ) -> None:
+        release_due_at = time.monotonic()
+        while not stop_event.is_set():
             try:
-                time.sleep(60 * 60)
-                release_expired_batch_freezes(db_path)
                 reconcile_pod_gateway_requests(db_path)
+                if time.monotonic() >= release_due_at:
+                    release_expired_batch_freezes(db_path)
+                    release_due_at = time.monotonic() + 60 * 60
             except Exception:
-                time.sleep(60 * 60)
+                pass
+            stop_event.wait(interval_seconds)
 
     ttl_thread = threading.Thread(
-        target=_batch_ttl_sweep_loop,
+        target=_run_pod_gateway_reconcile_loop,
+        args=(_gateway_stop_event,),
         name="batch-freeze-ttl-sweep",
         daemon=True,
     )
@@ -686,7 +697,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
 
     @app.on_event("shutdown")
     def _stop_batch_ttl_sweep() -> None:
-        pass
+        _gateway_stop_event.set()
+        ttl_thread.join(timeout=5.0)
 
     @app.get("/health")
     def health() -> dict[str, Any]:

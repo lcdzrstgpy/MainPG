@@ -4,7 +4,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -15,7 +15,7 @@ from ...pod_migrations import (
 )
 from .billing_contract import PodCallOutcome, PodCallPlan, PodExecutionGrant
 from .contracts import BatchCreate, Calibration, grid_call_count, style_grid_call_count
-from .errors import safe_error_message
+from .errors import PodExecutionExpired, safe_error_message
 from .prompts import build_direct_listing_prompt
 
 
@@ -721,7 +721,7 @@ class PodCustomizationRepository:
 
     def recover_interrupted_batches(self) -> int:
         now = _now()
-        message = "本机服务重启且短期凭据已丢弃；重新登录后可领取 grant 并重试失败款"
+        message = "POD 批次中断，未完成款式已记为失败，可从失败项重试"
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT batches.batch_id FROM pod_customization_batches AS batches
@@ -731,31 +731,12 @@ class PodCustomizationRepository:
             ).fetchall()
             for row in rows:
                 batch_id = row["batch_id"]
-                resumable_billing = (
-                    connection.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pod_customization_billing_runs'"
-                    ).fetchone()
-                    and connection.execute(
-                        """SELECT 1 FROM pod_customization_billing_runs
-                           WHERE batch_id = ? AND status IN ('authorized', 'settling', 'auth_required')
-                           LIMIT 1""",
-                        (batch_id,),
-                    ).fetchone()
-                )
                 connection.execute(
                     """UPDATE pod_customization_generation_calls
                        SET status = 'interrupted', error_message = ?, finished_at = ?
                        WHERE batch_id = ? AND status IN ('queued', 'running')""",
                     (message, now, batch_id),
                 )
-                if resumable_billing:
-                    connection.execute(
-                        """UPDATE pod_customization_batches
-                           SET status = 'billing_auth_required', error_message = ?, updated_at = ?
-                           WHERE batch_id = ?""",
-                        (message, now, batch_id),
-                    )
-                    continue
                 connection.execute(
                     """UPDATE pod_customization_style_titles
                        SET status = 'failed', error_message = ?, updated_at = ?, finished_at = ?
@@ -800,10 +781,35 @@ class PodCustomizationRepository:
                 ).fetchone()[0])
                 connection.execute(
                     """UPDATE pod_customization_batches
-                       SET status = ?, error_message = ?, updated_at = ?, finished_at = ? WHERE batch_id = ?""",
-                    ("billing_auth_required", message, now, now, batch_id),
+                       SET status = ?, execution_epoch = execution_epoch + 1,
+                           error_message = ?, updated_at = ?, finished_at = ? WHERE batch_id = ?""",
+                    ("partial_failure" if int(counts["completed_count"]) > 0 else "failed", message, now, now, batch_id),
                 )
-        return len(rows)
+            legacy_rows = connection.execute(
+                """SELECT batch_id, completed_count FROM pod_customization_batches
+                   WHERE status = 'billing_auth_required'"""
+            ).fetchall()
+            for row in legacy_rows:
+                connection.execute(
+                    """UPDATE pod_customization_batches
+                       SET status = ?, execution_epoch = execution_epoch + 1,
+                           error_message = ?, updated_at = ?, finished_at = ?
+                       WHERE batch_id = ? AND status = 'billing_auth_required'""",
+                    (
+                        "partial_failure" if int(row["completed_count"]) > 0 else "failed",
+                        message,
+                        now,
+                        now,
+                        row["batch_id"],
+                    ),
+                )
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'settlement_pending', error_message = ?, updated_at = ?
+                   WHERE status = 'auth_required'""",
+                (message, now),
+            )
+        return len(rows) + len(legacy_rows)
 
     def list_queued_batch_ids(self) -> list[str]:
         with self._connect() as connection:
@@ -904,7 +910,7 @@ class PodCustomizationRepository:
             rows = connection.execute(
                 """SELECT run_id FROM pod_customization_billing_runs
                    WHERE workspace_id = ? AND owner_user_id = ?
-                     AND status IN ('authorized', 'settling', 'settlement_pending', 'auth_required')
+                     AND status IN ('authorized', 'settling', 'settlement_pending')
                    ORDER BY created_at, run_id""",
                 (workspace_id, owner_user_id),
             ).fetchall()
@@ -997,10 +1003,7 @@ class PodCustomizationRepository:
                     "SELECT status FROM pod_customization_batches WHERE batch_id = ?",
                     (run["batch_id"],),
                 ).fetchone()
-                if batch is not None and batch["status"] not in {
-                    "billing_auth_required",
-                    "settlement_pending",
-                }:
+                if batch is not None and batch["status"] != "settlement_pending":
                     connection.execute(
                         """UPDATE pod_customization_billing_runs
                            SET result_status = ? WHERE action_key = ? AND result_status = ''""",
@@ -1035,13 +1038,13 @@ class PodCustomizationRepository:
             )
 
     def mark_billing_auth_required(self, action_key: str, error_message: str) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """UPDATE pod_customization_billing_runs
-                   SET status = 'auth_required', error_message = ?, updated_at = ?
-                   WHERE action_key = ? AND status <> 'settled'""",
-                (_safe_error(error_message), _now(), action_key),
-            )
+        """Backward-compatible alias for callers from the pre-fencing API.
+
+        ``auth_required`` is no longer used as a recovery gate.  Persisting the
+        action as ``settlement_pending`` keeps the old method harmless while
+        allowing the normal settlement/resume path to proceed.
+        """
+        self.mark_billing_pending(action_key, error_message)
 
     def mark_billing_authorized(
         self, action_key: str, *, rule_version: int, expires_at: str
@@ -1063,7 +1066,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_billing_runs
                    SET status = 'resume_claimed', error_message = '', updated_at = ?
                    WHERE run_id = ? AND workspace_id = ? AND owner_user_id = ?
-                     AND status IN ('auth_required', 'settlement_pending')""",
+                     AND status IN ('settlement_pending')""",
                 (_now(), run_id, workspace_id, owner_user_id),
             )
         return result.rowcount == 1
@@ -1080,7 +1083,7 @@ class PodCustomizationRepository:
 
     def recover_billing_runs(self) -> int:
         now = _now()
-        message = "POD short-lived grant was discarded during restart; sign in to resume billing"
+        message = "本机服务中断，已完成结果保留，未完成调用按失败结算"
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT run_id FROM pod_customization_billing_runs
@@ -1088,15 +1091,22 @@ class PodCustomizationRepository:
             ).fetchall()
             connection.execute(
                 """UPDATE pod_customization_billing_runs
-                   SET status = 'auth_required', error_message = ?, updated_at = ?
+                   SET status = 'settlement_pending', error_message = ?, updated_at = ?
                    WHERE status IN ('authorized', 'resume_claimed', 'settling')""",
                 (message, now),
             )
         return len(rows)
 
     def pause_billing_runs_for_shutdown(self) -> int:
+        """Fence every active POD execution before its thread pools are closed.
+
+        ThreadPoolExecutor cannot interrupt a provider call that is already
+        running.  Incrementing ``execution_epoch`` first makes any late result
+        from that call a no-op (the repository raises ``PodExecutionExpired``),
+        so an old worker can never mutate a subsequent service instance.
+        """
         now = _now()
-        message = "POD worker stopped; sign in after restart to resume unfinished billing actions"
+        message = "本机服务中断，已完成结果保留，未完成调用按失败结算"
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT run_id, batch_id FROM pod_customization_billing_runs
@@ -1104,20 +1114,48 @@ class PodCustomizationRepository:
             ).fetchall()
             connection.execute(
                 """UPDATE pod_customization_billing_runs
-                   SET status = 'auth_required', error_message = ?, updated_at = ?
+                   SET status = 'settlement_pending', error_message = ?, updated_at = ?
                    WHERE status = 'authorized'""",
                 (message, now),
             )
-            batch_ids = [str(row["batch_id"]) for row in rows if str(row["batch_id"])]
-            if batch_ids:
-                placeholders = ",".join("?" for _ in batch_ids)
+            active_batches = connection.execute(
+                """SELECT batch_id FROM pod_customization_batches
+                   WHERE status IN ('queued', 'generating_patterns', 'compositing', 'generating_titles')"""
+            ).fetchall()
+            active_ids = [str(row["batch_id"]) for row in active_batches]
+            if active_ids:
+                placeholders = ",".join("?" for _ in active_ids)
                 connection.execute(
-                    f"""UPDATE pod_customization_batches
-                        SET status = 'billing_auth_required', error_message = ?, updated_at = ?
-                        WHERE batch_id IN ({placeholders})
-                          AND status IN ('queued', 'generating_patterns', 'compositing', 'generating_titles')""",
-                    (message, now, *batch_ids),
+                    f"""UPDATE pod_customization_generation_calls
+                        SET status = 'interrupted', error_message = ?, finished_at = ?
+                        WHERE batch_id IN ({placeholders}) AND status IN ('queued', 'running')""",
+                    (message, now, *active_ids),
                 )
+                connection.execute(
+                    f"""UPDATE pod_customization_batch_items
+                        SET status = 'failed', error_message = ?, updated_at = ?
+                        WHERE batch_id IN ({placeholders})
+                          AND status IN ('queued', 'compositing', 'generating_pattern')""",
+                    (message, now, *active_ids),
+                )
+                connection.execute(
+                    f"""UPDATE pod_customization_style_titles
+                        SET status = 'failed', error_message = ?, updated_at = ?, finished_at = ?
+                        WHERE batch_id IN ({placeholders}) AND status IN ('queued', 'generating')""",
+                    (message, now, now, *active_ids),
+                )
+            # Fence all active batches, including batches whose billing row was
+            # already moved to a non-authorized state.  This is deliberately a
+            # single SQL transition per batch so shutdown is atomic with respect
+            # to late worker writes.
+            connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = CASE WHEN completed_count > 0 THEN 'partial_failure' ELSE 'failed' END,
+                       execution_epoch = execution_epoch + 1,
+                       error_message = ?, updated_at = ?, last_progress_at = ?, finished_at = ?
+                   WHERE status IN ('queued', 'generating_patterns', 'compositing', 'generating_titles')""",
+                (message, now, now, now),
+            )
         return len(rows)
 
     def claim_batch(self, batch_id: str, *, allow_billing_resume: bool = False) -> bool:
@@ -1127,24 +1165,188 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_batches
                    SET status = 'generating_patterns', started_at = CASE WHEN started_at = '' THEN ? ELSE started_at END,
                        updated_at = ?, error_message = ''
-                   WHERE batch_id = ? AND (
-                     status = 'queued' OR (? = 1 AND status = 'billing_auth_required')
-                   )""",
-                (now, now, batch_id, int(allow_billing_resume)),
+                   WHERE batch_id = ? AND status = 'queued'""",
+                (now, now, batch_id),
             )
         return result.rowcount == 1
 
-    def set_batch_status(self, batch_id: str, status: str, error_message: str = "") -> None:
+    def claim_batch_with_epoch(
+        self, batch_id: str, *, allow_billing_resume: bool = False
+    ) -> int | None:
+        """Atomically claim a batch and return the new epoch, or None if not claimable.
+
+        The epoch is incremented on every successful claim so stale worker threads
+        can detect they are operating on a superseded execution context.
+        last_progress_at is initialised to the claim timestamp so the reaper has a
+        meaningful starting point for inactivity measurement.
+        """
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = 'generating_patterns',
+                       execution_epoch = execution_epoch + 1,
+                       started_at = CASE WHEN started_at = '' THEN ? ELSE started_at END,
+                       updated_at = ?,
+                       last_progress_at = ?,
+                       error_message = ''
+                   WHERE batch_id = ?
+                     AND status = 'queued'""",
+                (now, now, now, batch_id),
+            )
+            if result.rowcount != 1:
+                return None
+            row = connection.execute(
+                "SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+        return int(row["execution_epoch"]) if row else None
+
+    def touch_batch_progress(self, batch_id: str, *, execution_epoch: int | None = None) -> None:
+        """Refresh the inactivity heartbeat without reviving a stale worker."""
+        now = _now()
+        with self._connect() as connection:
+            if execution_epoch is None:
+                result = connection.execute(
+                    """UPDATE pod_customization_batches
+                       SET last_progress_at = ?, updated_at = ?
+                       WHERE batch_id = ?""",
+                    (now, now, batch_id),
+                )
+            else:
+                result = connection.execute(
+                    """UPDATE pod_customization_batches
+                       SET last_progress_at = ?, updated_at = ?
+                       WHERE batch_id = ? AND execution_epoch = ?""",
+                    (now, now, batch_id, execution_epoch),
+                )
+            if result.rowcount != 1:
+                if execution_epoch is not None:
+                    raise PodExecutionExpired(
+                        f"progress heartbeat for batch {batch_id} rejected: batch epoch has advanced"
+                    )
+                raise PodRepositoryError("POD batch not found", 404)
+
+    def reap_stuck_batches(
+        self, *, stale_after_seconds: int, limit: int = 100
+    ) -> list[dict[str, object]]:
+        """Atomically revoke the epoch of batches that have made no progress recently.
+
+        Only batches in active generation states are considered.  The epoch is
+        incremented so any in-flight worker thread whose write includes the old
+        epoch predicate will produce zero affected rows and should raise
+        PodExecutionExpired rather than silently succeeding.
+
+        Returns the list of reaped batches (batch_id, old_epoch, new_status).
+        """
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
+        ).isoformat(timespec="milliseconds")
+        now = _now()
+        finished_at = now
+        timeout_msg = f"batch timed out after {stale_after_seconds}s of inactivity"
+
+        with self._connect() as connection:
+            candidates = connection.execute(
+                """SELECT batch_id, execution_epoch, completed_count
+                   FROM pod_customization_batches
+                   WHERE status IN ('generating_patterns', 'compositing', 'generating_titles')
+                     AND last_progress_at != ''
+                     AND last_progress_at <= ?
+                   ORDER BY last_progress_at
+                   LIMIT ?""",
+                (cutoff, limit),
+            ).fetchall()
+
+            reaped: list[dict[str, object]] = []
+            for row in candidates:
+                batch_id = str(row["batch_id"])
+                old_epoch = int(row["execution_epoch"])
+                new_status = "partial_failure" if int(row["completed_count"]) > 0 else "failed"
+
+                updated = connection.execute(
+                    """UPDATE pod_customization_batches
+                       SET status = ?,
+                           execution_epoch = execution_epoch + 1,
+                           error_message = ?,
+                           updated_at = ?,
+                           last_progress_at = ?,
+                           finished_at = ?
+                       WHERE batch_id = ?
+                         AND execution_epoch = ?
+                         AND status IN ('generating_patterns', 'compositing', 'generating_titles')""",
+                    (
+                        new_status,
+                        timeout_msg,
+                        now,
+                        now,
+                        finished_at,
+                        batch_id,
+                        old_epoch,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    continue
+
+                # Mark queued/running items terminal.
+                connection.execute(
+                    """UPDATE pod_customization_batch_items
+                       SET status = 'failed', error_message = ?, updated_at = ?
+                       WHERE batch_id = ? AND status IN ('queued', 'compositing', 'generating_pattern')""",
+                    (timeout_msg, now, batch_id),
+                )
+                # Mark any associated billing run settlement_pending when it has
+                # an uncertain 'started' outcome; never introduce a nonexistent status.
+                connection.execute(
+                    """UPDATE pod_customization_billing_runs
+                       SET status = 'settlement_pending', error_message = ?, updated_at = ?
+                       WHERE batch_id = ?
+                         AND status IN ('authorized', 'resume_claimed', 'settling')
+                         AND EXISTS (
+                             SELECT 1 FROM pod_customization_billing_outcomes o
+                             WHERE o.run_id = pod_customization_billing_runs.run_id
+                               AND o.status = 'started'
+                         )""",
+                    (timeout_msg, now, batch_id),
+                )
+
+                reaped.append(
+                    {"batch_id": batch_id, "old_epoch": old_epoch, "new_status": new_status}
+                )
+        return reaped
+
+    def set_batch_status(
+        self,
+        batch_id: str,
+        status: str,
+        error_message: str = "",
+        *,
+        execution_epoch: int | None = None,
+    ) -> None:
         now = _now()
         finished_at = now if status in {"completed", "partial_failure", "failed", "cancelled"} else ""
         with self._connect() as connection:
-            result = connection.execute(
-                """UPDATE pod_customization_batches SET status = ?, error_message = ?, updated_at = ?,
-                       finished_at = CASE WHEN ? <> '' THEN ? ELSE finished_at END
-                   WHERE batch_id = ?""",
-                (status, _safe_error(error_message), now, finished_at, finished_at, batch_id),
-            )
+            if execution_epoch is not None:
+                result = connection.execute(
+                    """UPDATE pod_customization_batches SET status = ?, error_message = ?, updated_at = ?,
+                           finished_at = CASE WHEN ? <> '' THEN ? ELSE finished_at END
+                       WHERE batch_id = ? AND execution_epoch = ?""",
+                    (status, _safe_error(error_message), now, finished_at, finished_at, batch_id, execution_epoch),
+                )
+            else:
+                result = connection.execute(
+                    """UPDATE pod_customization_batches SET status = ?, error_message = ?, updated_at = ?,
+                           finished_at = CASE WHEN ? <> '' THEN ? ELSE finished_at END
+                       WHERE batch_id = ?""",
+                    (status, _safe_error(error_message), now, finished_at, finished_at, batch_id),
+                )
         if result.rowcount != 1:
+            if execution_epoch is not None:
+                raise PodExecutionExpired(
+                    f"set_batch_status to {status!r} rejected for batch {batch_id}: epoch has advanced"
+                )
             raise PodRepositoryError("POD batch not found", 404)
 
     def get_batch_status(self, batch_id: str) -> str:
@@ -1156,6 +1358,36 @@ class PodCustomizationRepository:
         if row is None:
             raise PodRepositoryError("POD batch not found", 404)
         return str(row["status"])
+
+    @staticmethod
+    def _raise_if_execution_expired(
+        connection: sqlite3.Connection, batch_id: str, execution_epoch: int
+    ) -> None:
+        row = connection.execute(
+            "SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+        if row is not None and int(row["execution_epoch"]) != execution_epoch:
+            raise PodExecutionExpired(
+                f"POD batch {batch_id} write rejected: batch epoch has advanced"
+            )
+
+    def get_batch_execution_epoch(self, action_key: str) -> int | None:
+        """Return the current execution_epoch for the batch associated with this billing action key.
+
+        Returns None if the action key does not map to a known batch.
+        Used by PodBillingRun to fence billing writes against a reaped epoch.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT b.execution_epoch
+                   FROM pod_customization_batches AS b
+                   INNER JOIN pod_customization_billing_runs AS r
+                       ON r.batch_id = b.batch_id
+                   WHERE r.action_key = ?""",
+                (action_key,),
+            ).fetchone()
+        return int(row["execution_epoch"]) if row is not None else None
 
     def request_pause(self, batch_id: str) -> bool:
         """Atomically ask the running worker to pause at its next checkpoint."""
@@ -1221,6 +1453,7 @@ class PodCustomizationRepository:
         *,
         style_task_id: str | None = None,
         allow_billing_resume: bool = False,
+        execution_epoch: int | None = None,
     ) -> dict[str, Any]:
         """Atomically start a title attempt, optionally replacing its image task identity."""
         now = _now()
@@ -1232,6 +1465,8 @@ class PodCustomizationRepository:
                        visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
                        error_message = '', started_at = ?, finished_at = '', updated_at = ?
                    WHERE batch_id = ? AND style_index = ?
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)
                      AND (status IN ('queued', 'completed', 'failed')
                           OR (? = 1 AND status = 'generating'))""",
                 (
@@ -1241,6 +1476,9 @@ class PodCustomizationRepository:
                     now,
                     batch_id,
                     style_index,
+                    execution_epoch,
+                    batch_id,
+                    execution_epoch,
                     int(allow_billing_resume),
                 ),
             )
@@ -1249,6 +1487,8 @@ class PodCustomizationRepository:
                 (batch_id, style_index),
             ).fetchone()
             if result.rowcount != 1 or row is None:
+                if execution_epoch is not None:
+                    self._raise_if_execution_expired(connection, batch_id, execution_epoch)
                 raise PodRepositoryError("POD style title is not available for generation", 409)
             connection.execute(
                 "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
@@ -1282,7 +1522,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_batches
                    SET status = 'generating_titles', error_message = '', updated_at = ?, finished_at = ''
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
-                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled')""",
+                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')""",
                 (now, batch_id, workspace_id, owner_user_id),
             )
             if batch_claim.rowcount != 1:
@@ -1319,6 +1559,7 @@ class PodCustomizationRepository:
         workspace_id: str | None = None,
         owner_user_id: str | None = None,
         style_copy: dict[str, Any] | None = None,
+        execution_epoch: int | None = None,
     ) -> None:
         now = _now()
         title = str(title_result.get("title") or "").strip()
@@ -1346,7 +1587,9 @@ class PodCustomizationRepository:
                    SET status = 'completed', source = 'ai', title = ?, normalized_title = ?,
                        visual_tags_json = ?, model = ?, prompt_version = ?, attempt_count = ?,
                        error_message = '', updated_at = ?, finished_at = ?
-                   WHERE batch_id = ? AND style_index = ? AND status = 'generating'""",
+                   WHERE batch_id = ? AND style_index = ? AND status = 'generating'
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)""",
                 (
                     title,
                     normalized,
@@ -1358,9 +1601,14 @@ class PodCustomizationRepository:
                     now,
                     batch_id,
                     style_index,
+                    execution_epoch,
+                    batch_id,
+                    execution_epoch,
                 ),
             )
             if result.rowcount != 1:
+                if execution_epoch is not None:
+                    self._raise_if_execution_expired(connection, batch_id, execution_epoch)
                 raise PodRepositoryError("POD style title generation is not active", 409)
             if copy_values is not None:
                 self._upsert_style_copy_record(
@@ -1447,6 +1695,7 @@ class PodCustomizationRepository:
         *,
         style_task_id: str | None = None,
         attempt_count: int = 0,
+        execution_epoch: int | None = None,
     ) -> None:
         now = _now()
         with self._connect() as connection:
@@ -1456,7 +1705,9 @@ class PodCustomizationRepository:
                        status = 'failed', title = '', normalized_title = NULL,
                        visual_tags_json = '{}', attempt_count = ?, error_message = ?,
                        updated_at = ?, finished_at = ?
-                   WHERE batch_id = ? AND style_index = ? AND status IN ('queued', 'generating')""",
+                   WHERE batch_id = ? AND style_index = ? AND status IN ('queued', 'generating')
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)""",
                 (
                     style_task_id,
                     style_task_id,
@@ -1466,12 +1717,20 @@ class PodCustomizationRepository:
                     now,
                     batch_id,
                     style_index,
+                    execution_epoch,
+                    batch_id,
+                    execution_epoch,
                 ),
             )
         if result.rowcount != 1:
+            if execution_epoch is not None:
+                with self._connect() as check_connection:
+                    self._raise_if_execution_expired(check_connection, batch_id, execution_epoch)
             raise PodRepositoryError("POD style title generation is not active", 409)
 
-    def fail_unready_titles(self, batch_id: str, error_message: str) -> int:
+    def fail_unready_titles(
+        self, batch_id: str, error_message: str, *, execution_epoch: int | None = None
+    ) -> int:
         now = _now()
         with self._connect() as connection:
             result = connection.execute(
@@ -1486,6 +1745,8 @@ class PodCustomizationRepository:
                        status = 'failed', title = '', normalized_title = NULL,
                        visual_tags_json = '{}', error_message = ?, updated_at = ?, finished_at = ?
                    WHERE titles.batch_id = ? AND titles.status IN ('queued', 'generating')
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)
                      AND (SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
                           INNER JOIN pod_customization_style_grid_publications AS publications
                             ON publications.result_id = results.result_id
@@ -1493,8 +1754,10 @@ class PodCustomizationRepository:
                             AND results.style_index = titles.style_index
                             AND results.status = 'completed'
                             AND publications.public_url <> '') <> 4""",
-                (_safe_error(error_message), now, now, batch_id),
+                (_safe_error(error_message), now, now, batch_id, execution_epoch, batch_id, execution_epoch),
             )
+            if execution_epoch is not None:
+                self._raise_if_execution_expired(connection, batch_id, execution_epoch)
         return int(result.rowcount or 0)
 
     def fail_pending_titles(self, batch_id: str, error_message: str) -> int:
@@ -1538,7 +1801,7 @@ class PodCustomizationRepository:
             raise PodRepositoryError("POD style lifestyle image is unavailable", 409)
         return {"batch": batch, "title": title, "lifestyle": lifestyle}
 
-    def settle_batch_by_listing_readiness(self, batch_id: str, error_message: str = "") -> str:
+    def settle_batch_by_listing_readiness(self, batch_id: str, error_message: str = "", *, execution_epoch: int | None = None) -> str:
         """Set a new title-aware batch terminal status while retaining legacy semantics."""
         now = _now()
         with self._connect() as connection:
@@ -1563,12 +1826,15 @@ class PodCustomizationRepository:
                     (batch_id,),
                 ).fetchone()[0])
                 if active_count:
-                    connection.execute(
+                    result = connection.execute(
                         """UPDATE pod_customization_batches
                            SET status = 'generating_titles', error_message = '', updated_at = ?, finished_at = ''
-                           WHERE batch_id = ?""",
-                        (now, batch_id),
+                           WHERE batch_id = ?
+                             AND (? IS NULL OR execution_epoch = ?)""",
+                        (now, batch_id, execution_epoch, execution_epoch),
                     )
+                    if result.rowcount != 1 and execution_epoch is not None:
+                        self._raise_if_execution_expired(connection, batch_id, execution_epoch)
                     return "generating_titles"
                 ready_count = int(connection.execute(
                     """SELECT COUNT(*) FROM pod_customization_style_titles AS titles
@@ -1598,11 +1864,16 @@ class PodCustomizationRepository:
                 status = "completed" if ready_count == int(requested["requested_count"]) else (
                     "partial_failure" if ready_count else "failed"
                 )
-            connection.execute(
+            result = connection.execute(
                 """UPDATE pod_customization_batches
-                   SET status = ?, error_message = ?, updated_at = ?, finished_at = ? WHERE batch_id = ?""",
-                (status, _safe_error(error_message), now, now, batch_id),
+                   SET status = ?, error_message = ?, updated_at = ?, finished_at = ? WHERE batch_id = ?
+                     AND (? IS NULL OR execution_epoch = ?)""",
+                (status, _safe_error(error_message), now, now, batch_id, execution_epoch, execution_epoch),
             )
+            if result.rowcount != 1:
+                if execution_epoch is not None:
+                    self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+                raise PodRepositoryError("POD batch not found", 404)
         return status
 
     def reconcile_stale_generating_titles(self, batch_id: str) -> bool:
@@ -1731,23 +2002,41 @@ class PodCustomizationRepository:
             ).fetchone()
         return int(row[0])
 
-    def mark_generation_call_running(self, call_id: str) -> None:
+    def mark_generation_call_running(self, call_id: str, execution_epoch: int | None = None) -> None:
         with self._connect() as connection:
-            connection.execute(
+            result = connection.execute(
                 """UPDATE pod_customization_generation_calls SET status = 'running', started_at = ?
-                   WHERE call_id = ? AND status = 'queued'""",
-                (_now(), call_id),
+                   WHERE call_id = ? AND status = 'queued'
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = (SELECT batch_id FROM pod_customization_generation_calls
+                                                          WHERE call_id = ?)) = ?)""",
+                (_now(), call_id, execution_epoch, call_id, execution_epoch),
             )
+            if result.rowcount != 1 and execution_epoch is not None:
+                batch_row = connection.execute(
+                    "SELECT batch_id FROM pod_customization_generation_calls WHERE call_id = ?", (call_id,)
+                ).fetchone()
+                if batch_row is not None:
+                    self._raise_if_execution_expired(connection, batch_row["batch_id"], execution_epoch)
 
-    def requeue_generation_call(self, call_id: str) -> None:
+    def requeue_generation_call(self, call_id: str, execution_epoch: int | None = None) -> None:
         """Undo a local start which was stopped before the provider accepted it."""
         with self._connect() as connection:
-            connection.execute(
+            result = connection.execute(
                 """UPDATE pod_customization_generation_calls
                    SET status = 'queued', started_at = '', error_message = '', finished_at = ''
-                   WHERE call_id = ? AND status = 'running' AND grid_asset_id = ''""",
-                (call_id,),
+                   WHERE call_id = ? AND status = 'running' AND grid_asset_id = ''
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = (SELECT batch_id FROM pod_customization_generation_calls
+                                                          WHERE call_id = ?)) = ?)""",
+                (call_id, execution_epoch, call_id, execution_epoch),
             )
+            if result.rowcount != 1 and execution_epoch is not None:
+                batch_row = connection.execute(
+                    "SELECT batch_id FROM pod_customization_generation_calls WHERE call_id = ?", (call_id,)
+                ).fetchone()
+                if batch_row is not None:
+                    self._raise_if_execution_expired(connection, batch_row["batch_id"], execution_epoch)
 
     def finish_generation_call(
         self,
@@ -1756,14 +2045,31 @@ class PodCustomizationRepository:
         status: str,
         grid_asset_id: str = "",
         error_message: str = "",
+        execution_epoch: int | None = None,
     ) -> None:
+        now = _now()
         with self._connect() as connection:
-            connection.execute(
-                """UPDATE pod_customization_generation_calls
-                   SET status = ?, grid_asset_id = ?, error_message = ?, finished_at = ?
-                   WHERE call_id = ?""",
-                (status, grid_asset_id, _safe_error(error_message), _now(), call_id),
-            )
+            if execution_epoch is not None:
+                result = connection.execute(
+                    """UPDATE pod_customization_generation_calls
+                       SET status = ?, grid_asset_id = ?, error_message = ?, finished_at = ?
+                       WHERE call_id = ?
+                         AND (SELECT execution_epoch FROM pod_customization_batches
+                              WHERE batch_id = (SELECT batch_id FROM pod_customization_generation_calls
+                                               WHERE call_id = ?)) = ?""",
+                    (status, grid_asset_id, _safe_error(error_message), now, call_id, call_id, execution_epoch),
+                )
+                if result.rowcount == 0:
+                    raise PodExecutionExpired(
+                        f"generation call {call_id} write rejected: batch epoch has advanced"
+                    )
+            else:
+                connection.execute(
+                    """UPDATE pod_customization_generation_calls
+                       SET status = ?, grid_asset_id = ?, error_message = ?, finished_at = ?
+                       WHERE call_id = ?""",
+                    (status, grid_asset_id, _safe_error(error_message), now, call_id),
+                )
 
     def record_candidate(
         self,
@@ -1846,6 +2152,7 @@ class PodCustomizationRepository:
         role: str = "",
         public_url: str = "",
         error_message: str = "",
+        execution_epoch: int | None = None,
     ) -> None:
         now = _now()
         with self._connect() as connection:
@@ -1856,12 +2163,17 @@ class PodCustomizationRepository:
                        pattern_fingerprint = CASE WHEN ? <> '' THEN ? ELSE pattern_fingerprint END,
                        scene_optimized = CASE WHEN ? <> '' THEN 0 ELSE scene_optimized END,
                        error_message = ?, updated_at = ?
-                   WHERE batch_id = ? AND style_index = ? AND variant_index = ?""",
+                   WHERE batch_id = ? AND style_index = ? AND variant_index = ?
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)""",
                 (status, pattern_asset_id, pattern_asset_id, composite_asset_id, composite_asset_id,
                  fingerprint, fingerprint, pattern_asset_id, _safe_error(error_message), now,
-                 batch["batch_id"], style_index, variant_index),
+                 batch["batch_id"], style_index, variant_index,
+                 execution_epoch, batch["batch_id"], execution_epoch),
             )
             if result.rowcount != 1:
+                if execution_epoch is not None:
+                    self._raise_if_execution_expired(connection, batch["batch_id"], execution_epoch)
                 raise PodRepositoryError("POD style result not found", 404)
             row = connection.execute(
                 """SELECT result_id FROM pod_customization_style_grid_results
@@ -1887,18 +2199,35 @@ class PodCustomizationRepository:
                  variant_index, "accepted" if status == "completed" else "rejected",
                  _safe_error(error_message), fingerprint, pattern_asset_id, now),
             )
-            self._refresh_counts(connection, batch["batch_id"], now)
+            self._refresh_counts(connection, batch["batch_id"], now, execution_epoch)
 
-    def fail_style_grid(self, batch: dict[str, Any], style_index: int, error_message: str) -> None:
+    def fail_style_grid(
+        self,
+        batch: dict[str, Any],
+        style_index: int,
+        error_message: str,
+        *,
+        execution_epoch: int | None = None,
+    ) -> None:
         now = _now()
         with self._connect() as connection:
+            if execution_epoch is not None:
+                epoch_row = connection.execute(
+                    "SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
+                    (batch["batch_id"],),
+                ).fetchone()
+                if epoch_row is not None and int(epoch_row["execution_epoch"]) != execution_epoch:
+                    raise PodExecutionExpired(
+                        f"fail_style_grid for style {style_index} rejected: batch epoch has advanced"
+                    )
             connection.execute(
                 """UPDATE pod_customization_style_grid_results
                    SET status = 'failed', error_message = ?, updated_at = ?
-                   WHERE batch_id = ? AND style_index = ? AND status IN ('queued', 'generating_pattern', 'compositing')""",
+                   WHERE batch_id = ? AND style_index = ?
+                     AND status IN ('queued', 'generating_pattern', 'compositing')""",
                 (_safe_error(error_message), now, batch["batch_id"], style_index),
             )
-            self._refresh_counts(connection, batch["batch_id"], now)
+            self._refresh_counts(connection, batch["batch_id"], now, execution_epoch)
 
     def list_candidates(self, batch_id: str, workspace_id: str, owner_user_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -1922,18 +2251,67 @@ class PodCustomizationRepository:
             ).fetchall()
         return [row["pattern_fingerprint"] for row in rows]
 
-    def fail_remaining_items(self, batch_id: str, message: str) -> int:
+    def fail_remaining_items(
+        self,
+        batch_id: str,
+        message: str,
+        *,
+        execution_epoch: int | None = None,
+    ) -> int:
         now = _now()
         with self._connect() as connection:
+            if execution_epoch is not None:
+                epoch_row = connection.execute(
+                    "SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
+                    (batch_id,),
+                ).fetchone()
+                if epoch_row is not None and int(epoch_row["execution_epoch"]) != execution_epoch:
+                    raise PodExecutionExpired(
+                        f"fail_remaining_items rejected for batch {batch_id}: epoch has advanced"
+                    )
             result = connection.execute(
                 """UPDATE pod_customization_style_grid_results SET status = 'failed', error_message = ?, updated_at = ?
-                   WHERE batch_id = ? AND status IN ('queued', 'generating_pattern', 'compositing')"""
+                   WHERE batch_id = ? AND status IN ('queued', 'generating_pattern', 'compositing')
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)"""
                 if self._is_style_grid_batch(connection, batch_id) else
                 """UPDATE pod_customization_batch_items SET status = 'failed', error_message = ?, updated_at = ?
-                   WHERE batch_id = ? AND status = 'queued'""",
-                (_safe_error(message), now, batch_id),
+                   WHERE batch_id = ? AND status = 'queued'
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)""",
+                (_safe_error(message), now, batch_id, execution_epoch, batch_id, execution_epoch),
             )
-            self._refresh_counts(connection, batch_id, now)
+            self._refresh_counts(connection, batch_id, now, execution_epoch)
+        return int(result.rowcount or 0)
+
+    def fail_all_items(
+        self,
+        batch_id: str,
+        message: str,
+        *,
+        execution_epoch: int | None = None,
+    ) -> int:
+        """Fail every non-terminal item when the batch-wide grant is unusable."""
+        now = _now()
+        with self._connect() as connection:
+            self._raise_if_execution_expired(connection, batch_id, execution_epoch) if execution_epoch is not None else None
+            if self._is_style_grid_batch(connection, batch_id):
+                result = connection.execute(
+                    """UPDATE pod_customization_style_grid_results
+                       SET status = 'failed', error_message = ?, updated_at = ?
+                       WHERE batch_id = ?
+                         AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?) = ?)""",
+                    (_safe_error(message), now, batch_id, execution_epoch, batch_id, execution_epoch),
+                )
+            else:
+                result = connection.execute(
+                    """UPDATE pod_customization_batch_items
+                       SET status = 'failed', error_message = ?, updated_at = ?
+                       WHERE batch_id = ?
+                         AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?) = ?)""",
+                    (_safe_error(message), now, batch_id, execution_epoch, batch_id, execution_epoch),
+                )
+            self._refresh_counts(connection, batch_id, now, execution_epoch)
         return int(result.rowcount or 0)
 
     def get_item(self, batch_id: str, item_id: str, workspace_id: str, owner_user_id: str) -> dict[str, Any]:
@@ -2016,11 +2394,7 @@ class PodCustomizationRepository:
             ).fetchone()
             if batch is None:
                 raise PodRepositoryError("POD batch not found", 404)
-            if batch["status"] in {"billing_auth_required", "settlement_pending"}:
-                raise PodRepositoryError(
-                    "POD billing recovery is required before regenerating one style", 409
-                )
-            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
+            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
                 raise PodRepositoryError("POD batch must settle before regenerating one style", 409)
             result = connection.execute(
                 """UPDATE pod_customization_style_grid_results
@@ -2100,11 +2474,7 @@ class PodCustomizationRepository:
             ).fetchone()
             if batch is None:
                 raise PodRepositoryError("POD batch not found", 404)
-            if batch["status"] in {"billing_auth_required", "settlement_pending"}:
-                raise PodRepositoryError(
-                    "POD billing recovery is required before retrying failed styles", 409
-                )
-            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled"}:
+            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
                 raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
             requested_count = int(batch["requested_count"])
             if any(not 1 <= index <= requested_count for index in (*image_style_indices, *title_style_indices)):
@@ -2148,7 +2518,7 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_batches
                    SET status = ?, error_message = '', updated_at = ?, finished_at = ''
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
-                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled')""",
+                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')""",
                 (next_status, now, batch_id, workspace_id, owner_user_id),
             )
             if claimed.rowcount != 1:
@@ -2326,12 +2696,17 @@ class PodCustomizationRepository:
         )
 
     @staticmethod
-    def _refresh_counts(connection: sqlite3.Connection, batch_id: str, now: str) -> None:
+    def _refresh_counts(
+        connection: sqlite3.Connection,
+        batch_id: str,
+        now: str,
+        execution_epoch: int | None = None,
+    ) -> None:
         style_grid = connection.execute(
             "SELECT 1 FROM pod_customization_style_grid_batches WHERE batch_id = ?", (batch_id,)
         ).fetchone() is not None
         if style_grid:
-            connection.execute(
+            result = connection.execute(
                 """WITH style_counts AS (
                        SELECT style_index,
                               SUM(CASE WHEN status IN ('completed', 'failed') THEN 1 ELSE 0 END) AS settled,
@@ -2343,11 +2718,20 @@ class PodCustomizationRepository:
                        completed_count = (SELECT COUNT(*) FROM style_counts WHERE completed = 4),
                        failed_count = (SELECT COUNT(*) FROM style_counts WHERE settled = 4 AND completed < 4),
                        updated_at = ?
-                   WHERE batch_id = ?""",
-                (batch_id, now, batch_id),
+                   WHERE batch_id = ?"""
+                   + (" AND execution_epoch = ?" if execution_epoch is not None else ""),
+                (batch_id, now, batch_id, execution_epoch)
+                if execution_epoch is not None else (batch_id, now, batch_id),
             )
+            if execution_epoch is not None and result.rowcount != 1:
+                # SQLite may report -1 for a CTE-backed UPDATE even when the
+                # epoch predicate matched.  Only the follow-up epoch check is
+                # authoritative for distinguishing that case from a stale run.
+                PodCustomizationRepository._raise_if_execution_expired(
+                    connection, batch_id, execution_epoch
+                )
             return
-        connection.execute(
+        result = connection.execute(
             """UPDATE pod_customization_batches
                SET processed_count = (SELECT COUNT(*) FROM pod_customization_batch_items
                                       WHERE batch_id = ? AND status IN ('completed', 'failed')),
@@ -2356,9 +2740,16 @@ class PodCustomizationRepository:
                    failed_count = (SELECT COUNT(*) FROM pod_customization_batch_items
                                    WHERE batch_id = ? AND status = 'failed'),
                    updated_at = ?
-               WHERE batch_id = ?""",
-            (batch_id, batch_id, batch_id, now, batch_id),
+               WHERE batch_id = ?"""
+               + (" AND execution_epoch = ?" if execution_epoch is not None else ""),
+            (batch_id, batch_id, batch_id, now, batch_id, execution_epoch)
+            if execution_epoch is not None
+            else (batch_id, batch_id, batch_id, now, batch_id),
         )
+        if execution_epoch is not None and result.rowcount != 1:
+            PodCustomizationRepository._raise_if_execution_expired(
+                connection, batch_id, execution_epoch
+            )
 
     @staticmethod
     def _is_style_grid_batch(connection: sqlite3.Connection, batch_id: str) -> bool:

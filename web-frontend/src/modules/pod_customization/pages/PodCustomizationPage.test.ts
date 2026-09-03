@@ -14,6 +14,13 @@ test("POD page does not render the pending billing authorization banner", () => 
   assert.doesNotMatch(source, />继续任务</);
 });
 
+test("POD gallery does not expose manual billing recovery", () => {
+  assert.doesNotMatch(gallerySource, /pod-billing-resume/);
+  assert.doesNotMatch(gallerySource, /重新授权并恢复/);
+  assert.doesNotMatch(source, /onResumeBilling/);
+  assert.doesNotMatch(source, /resumeBillingRun/);
+});
+
 test("current template card follows the selected template and current draft", () => {
   assert.match(source, /const summaryTemplate = selectedTemplateSnapshot \?\? selectedTemplate;/);
   assert.match(source, /const summaryFields = businessFieldsForApi\(businessFields\);/);

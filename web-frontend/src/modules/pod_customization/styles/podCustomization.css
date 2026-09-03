@@ -492,8 +492,6 @@
 .pod-dianxiaomi-export small { color: #aa6351; font-size: .53rem; line-height: 1.35; text-align: right; }
 .pod-open-failed-retry { color: var(--pod-primary) !important; background: var(--pod-surface) !important; }
 .pod-open-failed-retry:hover:not(:disabled) { border-color: var(--pod-primary); background: var(--pod-surface-tint) !important; }
-.pod-billing-resume { color: var(--pod-primary) !important; background: var(--pod-surface) !important; }
-.pod-billing-resume:hover:not(:disabled) { border-color: var(--pod-primary); background: var(--pod-surface-tint) !important; }
 
 .pod-batch-control { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: flex-end; gap: 6px; }
 .pod-batch-control button { min-height: 34px; padding: 7px 10px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .63rem; font-weight: 850; white-space: nowrap; cursor: pointer; }

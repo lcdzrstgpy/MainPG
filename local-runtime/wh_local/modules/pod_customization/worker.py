@@ -4,6 +4,7 @@ import hashlib
 import math
 import inspect
 import threading
+import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field
 from functools import wraps
@@ -13,7 +14,7 @@ from typing import Any
 
 from ...session import Actor
 from .assets import PodAssetStore
-from .errors import image_provider_outcome_for_exception, safe_error_message
+from .errors import PodExecutionExpired, image_provider_outcome_for_exception, safe_error_message
 from .billing_contract import (
     PodBillingAuthorizationRequired,
     PodBillingCoordinator,
@@ -29,12 +30,37 @@ from .runtime_contracts import DirectListingGridRequest, PatternGridRequest, Pod
 from .title_runtime import PodTitleRequest, visual_signature
 
 
+# Inactivity deadline for a running batch. A batch that produces no durable
+# progress (no provider result, no post-process completion, no title) for this
+# many seconds will be reaped by the live reaper and its epoch revoked.
+# Must be above the ai_runtime provider polling ceiling (600 s) so a legitimately
+# slow but still-progressing style is not reaped mid-flight.
+POD_PROGRESS_TIMEOUT_SECONDS: int = 900
+
+# How often the deadline-aware wait loop polls for new completions.
+POD_WAIT_POLL_SECONDS: float = 5.0
+
+
 class PodBatchCancelled(RuntimeClosedError):
     """Raised from a batch control checkpoint when the batch was cancelled."""
 
 
 class PodBatchPaused(RuntimeClosedError):
     """Raised from a batch control checkpoint when the batch was paused."""
+
+
+@dataclass
+class BatchExecutionContext:
+    """Carries the durable execution epoch claimed for a single batch run.
+
+    Every worker-side repository write that should be fenced passes this context
+    so the repository can include ``AND execution_epoch = ?`` in its SQL.  A
+    stale worker whose epoch no longer matches the DB value will receive a
+    PodExecutionExpired exception rather than silently succeeding.
+    """
+
+    batch_id: str
+    epoch: int
 
 
 @dataclass
@@ -46,6 +72,7 @@ class PodBillingRun:
     repository: PodCustomizationRepository | None = field(default=None, repr=False)
     action_key: str = ""
     resumed: bool = False
+    execution_epoch: int = 0
     _outcomes: dict[str, PodCallOutcome] = field(default_factory=dict, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
@@ -56,27 +83,41 @@ class PodBillingRun:
             if existing is not None and existing != outcome:
                 raise RuntimeError(f"POD call {call_id} has conflicting outcomes")
             if self.repository is not None:
+                if self.execution_epoch > 0:
+                    current = self.repository.get_batch_execution_epoch(self.action_key)
+                    if current is not None and current != self.execution_epoch:
+                        from .errors import PodExecutionExpired
+                        raise PodExecutionExpired(
+                            f"billing record for {call_id} rejected: batch epoch has advanced"
+                        )
                 self.repository.record_billing_outcome(self.action_key, outcome)
             self._outcomes[call_id] = outcome
 
     def start(self, call_id: str, feature: str) -> None:
         provider = "ark" if feature == "pod.title" else "wuyin"
-        # Gateway grants intentionally contain no provider key: the desktop
-        # submits with its authenticated remote token and the server owns the
-        # provider credential/task ledger. Legacy grants still require the
-        # scoped provider key below.
-        if not self.grant.provider_key(provider) and not str(
-            getattr(self.grant, "remote_token", "") or ""
-        ):
-            message = "POD billing grant expired; sign in to resume this action"
-            if self.repository is not None:
-                self.repository.mark_billing_auth_required(self.action_key, message)
-            raise PodBillingAuthorizationRequired(message)
+        if not self.grant.provider_key(provider):
+            raise PodBillingAuthorizationRequired(
+                "POD provider grant unavailable; this call will be recorded as failed"
+            )
         if self.repository is not None:
+            if self.execution_epoch > 0:
+                current = self.repository.get_batch_execution_epoch(self.action_key)
+                if current is not None and current != self.execution_epoch:
+                    from .errors import PodExecutionExpired
+                    raise PodExecutionExpired(
+                        f"billing start for {call_id} rejected: batch epoch has advanced"
+                    )
             self.repository.start_billing_call(self.action_key, call_id, feature)
 
     def settle(self) -> None:
         if self.repository is not None:
+            if self.execution_epoch > 0:
+                current = self.repository.get_batch_execution_epoch(self.action_key)
+                if current is not None and current != self.execution_epoch:
+                    from .errors import PodExecutionExpired
+                    raise PodExecutionExpired(
+                        f"billing settle rejected: batch epoch has advanced (expected {self.execution_epoch}, got {current})"
+                    )
             outcomes = self.repository.prepare_billing_settlement(self.action_key)
         else:
             with self._lock:
@@ -291,26 +332,26 @@ class PodBatchWorker:
         if run is None:
             self.repository.set_batch_status(
                 batch_id,
-                "billing_auth_required",
-                "POD execution requires a fresh short-lived billing grant",
+                "failed",
+                "POD execution has no billing run; batch was marked failed",
             )
             return
-        billing_paused = False
-        paused = False
         cancelled = False
+        execution_expired = False
         try:
             self._process_batch_authorized(batch_id, run)
+        except PodExecutionExpired:
+            # The reaper has revoked this execution.  Do not let the stale
+            # coordinator settle billing or write a replacement batch status.
+            execution_expired = True
         except PodBillingAuthorizationRequired as exc:
-            billing_paused = True
-            self.repository.mark_billing_auth_required(run.action_key, str(exc))
             try:
-                self.repository.set_batch_status(batch_id, "billing_auth_required", str(exc))
-            except PodRepositoryError:
-                pass
+                self._fail_batch_after_provider_error(batch_id, run, str(exc), fail_completed=True)
+            except PodExecutionExpired:
+                execution_expired = True
         except PodBatchPaused as exc:
-            paused = True
-            # 暂停保留已入库进度；丢弃短期 grant，恢复时通过 billing recovery 重新授权后继续。
-            self.repository.mark_billing_auth_required(run.action_key, "POD 批次已暂停，重新授权后可继续")
+            # 暂停保留已入库进度；继续时沿用普通批次恢复流程。
+            self.repository.mark_billing_pending(run.action_key, "POD 批次已暂停，等待继续")
             self.repository.mark_batch_paused(batch_id, str(exc))
         except PodBatchCancelled as exc:
             cancelled = True
@@ -319,17 +360,21 @@ class PodBatchWorker:
             self.repository.mark_batch_cancelled(batch_id, str(exc))
         except Exception as exc:
             try:
-                self.repository.set_batch_status(batch_id, "failed", str(exc))
+                self._fail_batch_after_provider_error(batch_id, run, str(exc))
+            except PodExecutionExpired:
+                execution_expired = True
             except PodRepositoryError:
                 pass
         finally:
-            if cancelled:
+            if execution_expired:
+                pass
+            elif cancelled:
                 # 取消后结算，把未使用的冻结积分返还；结算失败不回退 cancelled 终态。
                 try:
                     run.settle()
                 except Exception as exc:
                     self.repository.mark_billing_pending(run.action_key, safe_error_message(exc))
-            elif not billing_paused:
+            else:
                 try:
                     run.settle()
                 except Exception as exc:
@@ -345,18 +390,44 @@ class PodBatchWorker:
         if status == "pausing":
             raise PodBatchPaused("POD 批次已暂停")
 
-    def _set_batch_stage(self, batch_id: str, status: str) -> None:
+    def _fail_batch_after_provider_error(
+        self, batch_id: str, billing_run: PodBillingRun, error_message: str,
+        *, fail_completed: bool = False,
+    ) -> None:
+        """Turn provider/grant interruptions into ordinary POD failures.
+
+        A missing short-lived provider grant is not a user-facing recovery
+        state.  Remaining calls are reported as no-return by settlement and the
+        batch becomes retryable through the normal failed-item flow.
+        """
+        batch = self.repository.get_batch_internal(batch_id)
+        epoch = billing_run.execution_epoch or None
+        if fail_completed:
+            self.repository.fail_all_items(batch_id, error_message, execution_epoch=epoch)
+        else:
+            self.repository.fail_remaining_items(batch_id, error_message, execution_epoch=epoch)
+        self.repository.fail_unready_titles(
+            batch_id, error_message, execution_epoch=epoch
+        )
+        refreshed = self.repository.get_batch_internal(batch_id)
+        status = "partial_failure" if refreshed["completed_count"] else "failed"
+        self.repository.set_batch_status(
+            batch_id, status, error_message, execution_epoch=epoch
+        )
+
+    def _set_batch_stage(self, batch_id: str, status: str, execution_epoch: int | None = None) -> None:
         """Do not overwrite an operator's pause or cancel request while draining."""
         if self.repository.get_batch_status(batch_id) in {"pausing", "cancelling"}:
             return
-        self.repository.set_batch_status(batch_id, status)
+        self.repository.set_batch_status(batch_id, status, execution_epoch=execution_epoch)
 
     def _process_batch_authorized(self, batch_id: str, billing_run: PodBillingRun) -> None:
         current = self.repository.get_batch_internal(batch_id)
-        if not self.repository.claim_batch(
+        epoch = self.repository.claim_batch_with_epoch(
             batch_id,
-            allow_billing_resume=current["status"] == "billing_auth_required",
-        ):
+            allow_billing_resume=False,
+        )
+        if epoch is None:
             batch = self.repository.get_batch_internal(batch_id)
             if batch["status"] in {"completed", "partial_failure", "failed", "cancelled"}:
                 return
@@ -365,6 +436,8 @@ class PodBatchWorker:
             if batch["status"] in {"pausing", "paused"}:
                 raise PodBatchPaused("POD 批次已暂停")
             raise RuntimeError("POD batch is already running")
+        execution = BatchExecutionContext(batch_id=batch_id, epoch=epoch)
+        billing_run.execution_epoch = epoch
         self._check_control(batch_id)
         batch = self.repository.get_batch_internal(batch_id)
         try:
@@ -375,38 +448,52 @@ class PodBatchWorker:
             template_content = self.assets.read(template_asset["relative_path"])
             if batch.get("style_grid"):
                 self._process_style_grids_streaming(
-                    batch, template_content, template_asset["content_type"], billing_run
+                    batch, template_content, template_asset["content_type"], billing_run,
+                    execution=execution,
                 )
-                self._process_pending_titles_from_existing_images(batch, billing_run)
-                self.repository.fail_remaining_items(batch_id, "本款图片生成未返回完整结果")
-                self.repository.fail_unready_titles(batch_id, "本款四张公开图片未完整生成，暂不能生成标题")
+                self._process_pending_titles_from_existing_images(
+                    batch, billing_run, execution_epoch=execution.epoch
+                )
+                self.repository.fail_remaining_items(
+                    batch_id, "本款图片生成未返回完整结果", execution_epoch=execution.epoch
+                )
+                self.repository.fail_unready_titles(
+                    batch_id,
+                    "本款四张公开图片未完整生成，暂不能生成标题",
+                    execution_epoch=execution.epoch,
+                )
                 if self.title_runtime is None:
                     settled = self.repository.get_batch_internal(batch_id)
                     status = "completed" if settled["failed_count"] == 0 else (
                         "partial_failure" if settled["completed_count"] else "failed"
                     )
-                    self.repository.set_batch_status(batch_id, status)
+                    self.repository.set_batch_status(batch_id, status, execution_epoch=execution.epoch)
                 else:
-                    self.repository.settle_batch_by_listing_readiness(batch_id)
+                    self.repository.settle_batch_by_listing_readiness(
+                        batch_id, execution_epoch=execution.epoch
+                    )
                 return
             self.repository.fail_remaining_items(
                 batch_id,
                 "legacy non-style POD batches are read-only; create a new reference-locked style batch",
+                execution_epoch=execution.epoch,
             )
-            self.repository.set_batch_status(batch_id, "failed")
+            self.repository.set_batch_status(batch_id, "failed", execution_epoch=execution.epoch)
         except PodBillingAuthorizationRequired:
             raise
         except (PodBatchCancelled, PodBatchPaused):
             raise
         except Exception as exc:
-            self.repository.fail_remaining_items(batch_id, str(exc))
-            self.repository.fail_unready_titles(batch_id, str(exc))
+            self.repository.fail_remaining_items(batch_id, str(exc), execution_epoch=execution.epoch)
+            self.repository.fail_unready_titles(batch_id, str(exc), execution_epoch=execution.epoch)
             if self.title_runtime is None:
                 settled = self.repository.get_batch_internal(batch_id)
                 status = "partial_failure" if settled["completed_count"] else "failed"
-                self.repository.set_batch_status(batch_id, status, str(exc))
+                self.repository.set_batch_status(batch_id, status, str(exc), execution_epoch=execution.epoch)
             else:
-                self.repository.settle_batch_by_listing_readiness(batch_id, str(exc))
+                self.repository.settle_batch_by_listing_readiness(
+                    batch_id, str(exc), execution_epoch=execution.epoch
+                )
 
     @_serial_batch_action
     def optimize_scene(
@@ -420,7 +507,6 @@ class PodBatchWorker:
         if item["status"] != "optimizing_scene":
             raise RuntimeError("POD item is not awaiting scene optimization")
         provider_returned = False
-        billing_paused = False
         try:
             pattern = self.repository.get_asset(item["pattern_asset_id"], batch["workspace_id"], batch["owner_user_id"])
             composite = self.repository.get_asset(item["composite_asset_id"], batch["workspace_id"], batch["owner_user_id"])
@@ -445,20 +531,15 @@ class PodBatchWorker:
             run.record(call_id, "pod.image", "success")
             stored = self._save_asset(batch, "scene_optimized", f"scene-{item_id}.png", content)
             self.repository.finish_scene_optimization(batch_id, item_id, composite_asset_id=stored["asset_id"])
-        except PodBillingAuthorizationRequired as exc:
-            billing_paused = True
-            self.repository.mark_billing_auth_required(run.action_key, str(exc))
-            self.repository.set_batch_status(batch_id, "billing_auth_required", str(exc))
         except Exception as exc:
             if not provider_returned:
                 run.record(run.plan.calls[0].call_id, "pod.image", "no_return")
             self.repository.finish_scene_optimization(batch_id, item_id, error_message=str(exc))
         finally:
-            if not billing_paused:
-                try:
-                    run.settle()
-                except Exception as exc:
-                    self.repository.mark_billing_pending(run.action_key, safe_error_message(exc))
+            try:
+                run.settle()
+            except Exception as exc:
+                self.repository.mark_billing_pending(run.action_key, safe_error_message(exc))
             self._discard_billing_run(f"scene:{batch_id}:{item_id}", run)
 
     @_serial_batch_action
@@ -488,7 +569,6 @@ class PodBatchWorker:
             call_index=call_index,
             prompt=prompt,
         )
-        billing_paused = False
         try:
             content = self.ai_runtime.submit(
                 self._generate_grid, batch, call, request, run, run.plan.calls[0].call_id
@@ -518,18 +598,13 @@ class PodBatchWorker:
                 )
                 return
             raise RuntimeError("regeneration returned no valid POD pattern")
-        except PodBillingAuthorizationRequired as exc:
-            billing_paused = True
-            self.repository.mark_billing_auth_required(run.action_key, str(exc))
-            self.repository.set_batch_status(batch_id, "billing_auth_required", str(exc))
         except Exception as exc:
             self.repository.fail_item_regeneration(batch_id, item_id, str(exc))
         finally:
-            if not billing_paused:
-                try:
-                    run.settle()
-                except Exception as exc:
-                    self.repository.mark_billing_pending(run.action_key, safe_error_message(exc))
+            try:
+                run.settle()
+            except Exception as exc:
+                self.repository.mark_billing_pending(run.action_key, safe_error_message(exc))
             self._discard_billing_run(f"item:{batch_id}:{item_id}", run)
 
     @_serial_batch_action
@@ -556,7 +631,6 @@ class PodBatchWorker:
         prepared: list[tuple[dict[str, Any], Any, list[Any], list[str]]] = []
         last_error = "整款重新生成未返回完整结果"
         last_call_id = ""
-        billing_paused = False
         try:
             for attempt in (1, 2):
                 call_kind = "regenerate_style" if attempt == 1 else "regenerate_style_retry"
@@ -609,12 +683,6 @@ class PodBatchWorker:
                 self.repository.set_batch_status(batch_id, status)
             else:
                 self.repository.settle_batch_by_listing_readiness(batch_id)
-        except PodBillingAuthorizationRequired as exc:
-            if not finalize:
-                raise
-            billing_paused = True
-            self.repository.mark_billing_auth_required(run.action_key, str(exc))
-            self.repository.set_batch_status(batch_id, "billing_auth_required", str(exc))
         except Exception as exc:
             self.repository.fail_style_grid(batch, style_index, str(exc))
             self.repository.fail_unready_titles(batch_id, str(exc))
@@ -625,7 +693,7 @@ class PodBatchWorker:
             else:
                 self.repository.settle_batch_by_listing_readiness(batch_id, str(exc))
         finally:
-            if finalize and not billing_paused:
+            if finalize:
                 try:
                     run.settle()
                 except Exception as exc:
@@ -651,7 +719,6 @@ class PodBatchWorker:
         title = context["title"]
         if title["status"] != "generating":
             raise RuntimeError("POD style title is not awaiting regeneration")
-        billing_paused = False
         try:
             self._generate_style_title(
                 context["batch"],
@@ -661,16 +728,10 @@ class PodBatchWorker:
                 run,
                 self._title_call_ids(run, batch_id, style_index),
             )
-        except PodBillingAuthorizationRequired as exc:
-            if not finalize:
-                raise
-            billing_paused = True
-            self.repository.mark_billing_auth_required(run.action_key, str(exc))
-            self.repository.set_batch_status(batch_id, "billing_auth_required", str(exc))
         except Exception as exc:
             self.repository.fail_style_title(batch_id, style_index, str(exc))
         finally:
-            if finalize and not billing_paused:
+            if finalize:
                 self.repository.settle_batch_by_listing_readiness(batch_id)
                 try:
                     run.settle()
@@ -691,7 +752,6 @@ class PodBatchWorker:
         run = billing_run or self._billing_runs.get(f"batch-retry:{batch_id}")
         if run is None:
             raise RuntimeError("POD batch retry requires a fresh short-lived billing grant")
-        billing_paused = False
         try:
             for style_index in image_style_indices:
                 self.regenerate_style(
@@ -704,23 +764,17 @@ class PodBatchWorker:
             for style_index in title_style_indices:
                 self.regenerate_title(batch_id, style_index, run, finalize=False)
             self.repository.settle_batch_by_listing_readiness(batch_id)
-        except PodBillingAuthorizationRequired as exc:
-            billing_paused = True
-            self.repository.mark_billing_auth_required(run.action_key, str(exc))
-            self.repository.set_batch_status(batch_id, "billing_auth_required", str(exc))
         finally:
-            if not billing_paused:
-                try:
-                    run.settle()
-                except Exception as exc:
-                    self.repository.mark_billing_pending(run.action_key, safe_error_message(exc))
+            try:
+                run.settle()
+            except Exception as exc:
+                self.repository.mark_billing_pending(run.action_key, safe_error_message(exc))
             self._discard_billing_run(f"batch-retry:{batch_id}", run)
 
     def close(self) -> None:
         if self._closing.is_set():
             return
         self._closing.set()
-        self.repository.pause_billing_runs_for_shutdown()
         with self._futures_lock:
             for future in self._futures.values():
                 future.cancel()
@@ -758,6 +812,8 @@ class PodBatchWorker:
         template_content: bytes,
         template_content_type: str,
         billing_run: PodBillingRun,
+        *,
+        execution: BatchExecutionContext | None = None,
     ) -> None:
         """Generate and persist styles with a bounded generation window and a
         parallel post-processing pool.
@@ -794,6 +850,7 @@ class PodBatchWorker:
                 template_content_type,
                 attempt=attempt,
                 billing_run=billing_run,
+                execution_epoch=execution.epoch if execution is not None else None,
             )
             retry_reasons.update(attempt_errors)
             processed |= attempt_processed
@@ -806,10 +863,15 @@ class PodBatchWorker:
                     batch,
                     style_index,
                     retry_reasons.get(style_index, "本款两次图片生成均失败"),
+                    execution_epoch=execution.epoch if execution is not None else None,
                 )
 
     def _process_pending_titles_from_existing_images(
-        self, batch: dict[str, Any], billing_run: PodBillingRun
+        self,
+        batch: dict[str, Any],
+        billing_run: PodBillingRun,
+        *,
+        execution_epoch: int | None = None,
     ) -> None:
         """Resume only title work after images were already durably published.
 
@@ -835,7 +897,7 @@ class PodBatchWorker:
                 pending.append(style_index)
         if not pending:
             return
-        self._set_batch_stage(batch["batch_id"], "generating_titles")
+        self._set_batch_stage(batch["batch_id"], "generating_titles", execution_epoch)
         futures: list[Future[Any]] = []
         for style_index in pending:
             self._check_control(batch["batch_id"])
@@ -846,6 +908,7 @@ class PodBatchWorker:
                 style_index,
                 style_task_id=str(title.get("style_task_id") or "") or None,
                 allow_billing_resume=True,
+                execution_epoch=execution_epoch,
             )
             futures.append(
                 self.title_runtime.submit(
@@ -856,6 +919,7 @@ class PodBatchWorker:
                     self._lifestyle_media(context),
                     billing_run,
                     self._title_call_ids(billing_run, batch["batch_id"], style_index),
+                    execution_epoch,
                 )
             )
         for future in as_completed(futures):
@@ -870,6 +934,7 @@ class PodBatchWorker:
         *,
         attempt: int,
         billing_run: PodBillingRun,
+        execution_epoch: int | None = None,
     ) -> tuple[set[int], dict[int, str], bool]:
         """Pipeline one generation attempt with per-style post-processing.
 
@@ -889,6 +954,11 @@ class PodBatchWorker:
         exhausted = False
         pause_requested = False
         max_in_flight = self._image_worker_count()
+        _progress_deadline = time.monotonic() + POD_PROGRESS_TIMEOUT_SECONDS
+
+        def cancel_inflight() -> None:
+            for future in (*image_futures, *postprocess_futures):
+                future.cancel()
 
         def submit_postprocess(style_index: int, call: dict[str, Any], grid: Any) -> None:
             try:
@@ -963,6 +1033,10 @@ class PodBatchWorker:
                         else "provider returned no result"
                     )
                     continue
+                if not billing_run.grant.provider_key("wuyin"):
+                    raise PodBillingAuthorizationRequired(
+                        "POD provider grant expired before the next image call started"
+                    )
                 request = DirectListingGridRequest(
                     trial_id=f"{batch['batch_id']}-style-{style_index}-attempt-{attempt}",
                     template_id=batch["template_id"],
@@ -978,6 +1052,7 @@ class PodBatchWorker:
                     request,
                     billing_run,
                     provider_call_id,
+                    execution_epoch,
                 )
                 image_futures[future] = (call, style_index)
 
@@ -986,16 +1061,32 @@ class PodBatchWorker:
                 break
 
             # Wait for the first completion across generation and post-processing.
+            remaining = _progress_deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"batch coordinator timed out after {POD_PROGRESS_TIMEOUT_SECONDS}s of inactivity"
+                )
             done, _ = wait(
                 tuple(image_futures) + tuple(postprocess_futures),
+                timeout=min(remaining, POD_WAIT_POLL_SECONDS),
                 return_when=FIRST_COMPLETED,
             )
+            if not done:
+                continue
             for future in done:
                 if future in image_futures:
                     call, style_index = image_futures.pop(future)
                     try:
                         grid = future.result()
                     except PodBillingAuthorizationRequired:
+                        # A grant failure invalidates the remaining calls in
+                        # this batch.  Best-effort cancellation prevents a
+                        # previously returned grid from racing the failure
+                        # finalization and changing the durable counts.
+                        cancel_inflight()
+                        raise
+                    except PodExecutionExpired:
+                        cancel_inflight()
                         raise
                     except PodBatchPaused:
                         pause_requested = True
@@ -1010,10 +1101,17 @@ class PodBatchWorker:
                     style_index = postprocess_futures.pop(future)
                     try:
                         future.result()
+                        self.repository.touch_batch_progress(
+                            batch["batch_id"], execution_epoch=execution_epoch
+                        )
                         processed.add(style_index)
+                        _progress_deadline = time.monotonic() + POD_PROGRESS_TIMEOUT_SECONDS
                     except PodBillingAuthorizationRequired:
                         for pending_future in postprocess_futures:
                             pending_future.cancel()
+                        raise
+                    except PodExecutionExpired:
+                        cancel_inflight()
                         raise
                     except PodBatchPaused:
                         processed.add(style_index)
@@ -1048,8 +1146,10 @@ class PodBatchWorker:
         request: DirectListingGridRequest,
         billing_run: PodBillingRun,
         provider_call_id: str,
+        execution_epoch: int | None = None,
     ) -> Any:
-        self.repository.mark_generation_call_running(call["call_id"])
+        epoch = execution_epoch if execution_epoch is not None else billing_run.execution_epoch or None
+        self.repository.mark_generation_call_running(call["call_id"], epoch)
         provider_returned = False
         try:
             def start_provider_call() -> None:
@@ -1074,20 +1174,27 @@ class PodBatchWorker:
                 f"style-grid-{call['call_index']}{media.suffix}",
                 media.content,
             )
-            self.repository.finish_generation_call(call["call_id"], status="succeeded", grid_asset_id=stored["asset_id"])
+            self.repository.finish_generation_call(
+                call["call_id"], status="succeeded", grid_asset_id=stored["asset_id"],
+                execution_epoch=epoch,
+            )
             return media
-        except PodBillingAuthorizationRequired:
+        except PodBillingAuthorizationRequired as exc:
+            if not billing_run.has_outcome(provider_call_id):
+                billing_run.record(provider_call_id, "pod.image", "no_return")
+            self.repository.finish_generation_call(
+                call["call_id"], status="failed", error_message=safe_error_message(exc),
+                execution_epoch=epoch,
+            )
             raise
         except PodBatchPaused:
-            self.repository.requeue_generation_call(call["call_id"])
+            self.repository.requeue_generation_call(call["call_id"], epoch)
             raise
         except PodBatchCancelled:
-            self.repository.requeue_generation_call(call["call_id"])
+            self.repository.requeue_generation_call(call["call_id"], epoch)
             raise
         except RuntimeClosedError as exc:
-            raise PodBillingAuthorizationRequired(
-                "POD runtime stopped before this provider call; sign in to resume"
-            ) from exc
+            raise RuntimeError("POD worker stopped while processing this provider call") from exc
         except Exception as exc:
             if not provider_returned:
                 billing_run.record(
@@ -1096,7 +1203,8 @@ class PodBatchWorker:
                     image_provider_outcome_for_exception(exc),
                 )
             self.repository.finish_generation_call(
-                call["call_id"], status="failed", error_message=safe_error_message(exc)
+                call["call_id"], status="failed", error_message=safe_error_message(exc),
+                execution_epoch=epoch,
             )
             raise
 
@@ -1107,8 +1215,10 @@ class PodBatchWorker:
         request: PatternGridRequest,
         billing_run: PodBillingRun,
         provider_call_id: str,
+        execution_epoch: int | None = None,
     ) -> bytes:
-        self.repository.mark_generation_call_running(call["call_id"])
+        epoch = execution_epoch if execution_epoch is not None else billing_run.execution_epoch or None
+        self.repository.mark_generation_call_running(call["call_id"], epoch)
         try:
             billing_run.start(provider_call_id, "pod.image")
             content = self.ai_runtime.generate_pattern_grid(
@@ -1116,15 +1226,25 @@ class PodBatchWorker:
             )
             billing_run.record(provider_call_id, "pod.image", "success")
             stored = self._save_asset(batch, "grid", f"{call['call_kind']}-{call['call_index']}.png", content)
-            self.repository.finish_generation_call(call["call_id"], status="succeeded", grid_asset_id=stored["asset_id"])
+            self.repository.finish_generation_call(
+                call["call_id"], status="succeeded", grid_asset_id=stored["asset_id"],
+                execution_epoch=epoch,
+            )
             return content
-        except PodBillingAuthorizationRequired:
+        except PodBillingAuthorizationRequired as exc:
+            if not billing_run.has_outcome(provider_call_id):
+                billing_run.record(provider_call_id, "pod.image", "no_return")
+            self.repository.finish_generation_call(
+                call["call_id"], status="failed", error_message=safe_error_message(exc),
+                execution_epoch=epoch,
+            )
             raise
         except Exception as exc:
             if not billing_run.has_outcome(provider_call_id):
                 billing_run.record(provider_call_id, "pod.image", "no_return")
             self.repository.finish_generation_call(
-                call["call_id"], status="failed", error_message=safe_error_message(exc)
+                call["call_id"], status="failed", error_message=safe_error_message(exc),
+                execution_epoch=epoch,
             )
             raise
 
@@ -1174,8 +1294,10 @@ class PodBatchWorker:
         batch: dict[str, Any],
         grids: list[tuple[dict[str, Any], Any, list[Any], list[str]]],
         billing_run: PodBillingRun,
+        execution_epoch: int | None = None,
     ) -> None:
-        self._set_batch_stage(batch["batch_id"], "compositing")
+        execution_epoch = execution_epoch if execution_epoch is not None else billing_run.execution_epoch or None
+        self._set_batch_stage(batch["batch_id"], "compositing", execution_epoch)
         roles = LISTING_IMAGE_ROLES
         title_futures: dict[Future[Any], int] = {}
         for call, _grid, panels, fingerprints in grids:
@@ -1205,13 +1327,14 @@ class PodBatchWorker:
                         batch, style_index=style_index, variant_index=variant_index, call_id=call["call_id"],
                         status="failed", pattern_asset_id=panel_asset["asset_id"], role=role,
                         fingerprint=fingerprint, error_message=f"publish_error: {publish_error}",
+                        execution_epoch=execution_epoch,
                     )
                     continue
                 self.repository.finish_style_grid_result(
                     batch, style_index=style_index, variant_index=variant_index, call_id=call["call_id"],
                     status="completed", pattern_asset_id=panel_asset["asset_id"],
                     composite_asset_id=panel_asset["asset_id"], fingerprint=fingerprint,
-                    role=role, public_url=public_url,
+                    role=role, public_url=public_url, execution_epoch=execution_epoch,
                 )
                 if role == "lifestyle":
                     lifestyle_public_ready = True
@@ -1231,6 +1354,7 @@ class PodBatchWorker:
                                 style_index,
                                 style_task_id=call["call_id"],
                                 allow_billing_resume=billing_run.resumed,
+                                execution_epoch=execution_epoch,
                             )
                             future = self.title_runtime.submit(
                                 self._generate_style_title,
@@ -1240,8 +1364,11 @@ class PodBatchWorker:
                                 panel,
                                 billing_run,
                                 title_call_ids,
+                                execution_epoch,
                             )
                             title_futures[future] = style_index
+                        except PodExecutionExpired:
+                            raise
                         except Exception as exc:
                             try:
                                 self.repository.fail_style_title(
@@ -1249,6 +1376,7 @@ class PodBatchWorker:
                                     style_index,
                                     str(exc),
                                     style_task_id=call["call_id"],
+                                    execution_epoch=execution_epoch,
                                 )
                             except Exception:
                                 pass
@@ -1258,12 +1386,18 @@ class PodBatchWorker:
                 self.repository.fail_style_title(
                     batch["batch_id"], style_index, "本款主图未成功发布，暂不能生成标题",
                     style_task_id=call["call_id"],
+                    execution_epoch=execution_epoch,
                 )
                 continue
         for future in as_completed(title_futures):
             try:
                 future.result()
             except PodBillingAuthorizationRequired:
+                for pending in title_futures:
+                    if pending is not future:
+                        pending.cancel()
+                raise
+            except PodExecutionExpired:
                 for pending in title_futures:
                     if pending is not future:
                         pending.cancel()
@@ -1277,6 +1411,7 @@ class PodBatchWorker:
         hero: Any,
         billing_run: PodBillingRun,
         provider_call_ids: tuple[str, ...],
+        execution_epoch: int | None = None,
     ) -> None:
         if self.title_runtime is None:
             raise RuntimeError("POD title runtime is disabled")
@@ -1326,19 +1461,22 @@ class PodBatchWorker:
                     "english_title": result.english_title,
                     "description": result.description,
                 },
+                execution_epoch=execution_epoch,
             )
+            self.repository.touch_batch_progress(batch["batch_id"], execution_epoch=execution_epoch)
         except PodBillingAuthorizationRequired:
             raise
         except RuntimeClosedError as exc:
-            raise PodBillingAuthorizationRequired(
-                "POD runtime stopped before the next title call; sign in to resume"
-            ) from exc
+            raise RuntimeError("POD worker stopped while processing this title call") from exc
+        except PodExecutionExpired:
+            raise
         except Exception as exc:
             if not any(billing_run.has_outcome(call_id) for call_id in provider_call_ids):
                 billing_run.record(provider_call_ids[0], "pod.title", "no_return")
             attempt_count = int(getattr(exc, "attempt_count", 0) or 0)
             self.repository.fail_style_title(
-                batch["batch_id"], style_index, safe_error_message(exc), attempt_count=attempt_count
+                batch["batch_id"], style_index, safe_error_message(exc), attempt_count=attempt_count,
+                execution_epoch=execution_epoch,
             )
 
     @staticmethod

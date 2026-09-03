@@ -148,20 +148,6 @@ def create_router(
         permitted(actor, "pod_customization.create")
         return _call(service.resume_batch, actor, batch_id)
 
-    @router.get("/billing-runs/pending")
-    def list_pending_billing_runs(
-        actor: Actor = Depends(actor_from_authorization),
-    ) -> dict[str, Any]:
-        permitted(actor, "pod_customization.create")
-        return _call(service.list_pending_billing_runs, actor)
-
-    @router.post("/billing-runs/{run_id}/resume")
-    def resume_billing_run(
-        run_id: str, actor: Actor = Depends(actor_from_authorization)
-    ) -> dict[str, Any]:
-        permitted(actor, "pod_customization.create")
-        return _call(service.resume_billing_run, actor, run_id, enqueue=start_workers)
-
     @router.get("/batches/{batch_id}/exports")
     def list_exports(
         batch_id: str, actor: Actor = Depends(actor_from_authorization)

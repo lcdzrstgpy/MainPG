@@ -20,9 +20,15 @@ from wh_local.modules.pod_customization.contracts import (
     NormalizedPoint,
     NormalizedRect,
 )
-from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
+from wh_local.modules.pod_customization.billing_contract import (
+    PodBillingAuthorizationRequired,
+    PodCallPlan,
+    PodExecutionGrant,
+)
+from wh_local.modules.pod_customization.errors import PodExecutionExpired
 from wh_local.modules.pod_customization.repository import PodRepositoryError
 from wh_local.modules.pod_customization.service import PodCustomizationService
+from wh_local.modules.pod_customization.worker import PodBillingRun
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia
 from wh_local.session import Actor
 
@@ -269,18 +275,18 @@ class ExpiringCoordinator(BillingCoordinator):
         )
 
 
-def _service(tmp_path: Path, runtime: FakePodRuntime, billing=None, *, title_runtime=None) -> PodCustomizationService:
+def _service(tmp_path: Path, runtime: FakePodRuntime, billing=None, *, title_runtime=None, start_workers: bool = True) -> PodCustomizationService:
     return PodCustomizationService(
         tmp_path / "workbench.sqlite3",
         tmp_path / "pod-assets",
         runtime,
         title_runtime=title_runtime,
         billing_coordinator=billing or BillingCoordinator(),
-        start_workers=True,
+        start_workers=start_workers,
     )
 
 
-def test_worker_without_in_memory_grant_pauses_for_billing_auth(tmp_path: Path) -> None:
+def test_worker_without_in_memory_grant_marks_batch_failed(tmp_path: Path) -> None:
     runtime = ListingOnlyRuntime([_grid([_pattern(index) for index in range(4)])])
     service = PodCustomizationService(
         tmp_path / "workbench.sqlite3",
@@ -294,7 +300,7 @@ def test_worker_without_in_memory_grant_pauses_for_billing_auth(tmp_path: Path) 
 
     service.worker.process_batch(batch["id"])
 
-    assert service.get_batch(actor, batch["id"])["status"] == "billing_auth_required"
+    assert service.get_batch(actor, batch["id"])["status"] == "failed"
     assert runtime.requests == []
     service.close()
     runtime.close()
@@ -394,7 +400,7 @@ def test_persistent_billing_rows_never_store_grant_secrets(tmp_path: Path) -> No
     runtime.close()
 
 
-def test_expired_grant_pauses_unstarted_calls_and_resume_does_not_replay_success(tmp_path: Path) -> None:
+def test_unavailable_grant_fails_unstarted_calls_without_billing_recovery(tmp_path: Path) -> None:
     first = _grid([_pattern(index) for index in range(4)])
     second = _grid([_pattern(index) for index in range(10, 14)])
     grant = ExpiringGrant()
@@ -409,19 +415,12 @@ def test_expired_grant_pauses_unstarted_calls_and_resume_does_not_replay_success
 
     service.worker.process_batch(batch["id"])
 
-    assert service.get_batch(actor, batch["id"])["status"] == "billing_auth_required"
-    pending = service.list_pending_billing_runs(actor)["runs"]
-    assert pending[0]["status"] == "auth_required"
+    result = service.get_batch(actor, batch["id"])
+    assert result["status"] in {"failed", "partial_failure"}
+    assert result["failed_count"] == 2
+    assert service.list_pending_billing_runs(actor)["runs"] == []
     assert len(runtime.requests) == 1
-
-    grant.expired = False
-    resumed = service.resume_billing_run(actor, pending[0]["id"])
-
-    assert resumed["status"] == "settled"
-    assert len(runtime.requests) == 2
-    recovered_batch = service.get_batch(actor, batch["id"])
-    assert recovered_batch["completed_count"] == 2
-    assert sum(item["status"] == "completed" for item in recovered_batch["items"]) == 8
+    assert len(service.billing_coordinator.settlements) == 1
     service.close()
     runtime.close()
 
@@ -772,7 +771,7 @@ def test_batch_resume_enqueue_returns_without_processing_inline(tmp_path: Path, 
     template = _ready_template(service, actor)
     batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
     run = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)[0]
-    service.repository.mark_billing_auth_required(run["action_key"], "restart")
+    service.repository.mark_billing_pending(run["action_key"], "interrupted")
     submitted: list[tuple[str, object]] = []
     monkeypatch.setattr(
         service.worker,
@@ -797,7 +796,7 @@ def test_billing_resume_claim_is_atomic_for_concurrent_requests(tmp_path: Path) 
     actor = _actor()
     run = service._freeze_batch(actor, "concurrent-resume", 1)
     stored = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)[0]
-    service.repository.mark_billing_auth_required(stored["action_key"], "restart")
+    service.repository.mark_billing_pending(stored["action_key"], "interrupted")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(
@@ -967,7 +966,7 @@ def test_batch_retry_claims_mixed_image_and_title_failures_in_one_durable_action
 
 
 @pytest.mark.parametrize("blocked_status", ["billing_auth_required"])
-def test_batch_retry_rejects_billing_interrupted_batch_before_freezing(
+def test_batch_retry_does_not_resurrect_legacy_auth_status(
     tmp_path: Path, blocked_status: str
 ) -> None:
     runtime = ListingOnlyRuntime([])
@@ -984,7 +983,7 @@ def test_batch_retry_rejects_billing_interrupted_batch_before_freezing(
             (blocked_status, batch["id"]),
         )
 
-    with pytest.raises(PodRepositoryError, match="billing recovery is required") as raised:
+    with pytest.raises(PodRepositoryError, match="must settle") as raised:
         service.retry_failed(
             actor, batch["id"], image_style_indices=[1], title_style_indices=[2]
         )
@@ -997,7 +996,7 @@ def test_batch_retry_rejects_billing_interrupted_batch_before_freezing(
     runtime.close()
 
 
-def test_batch_retry_rejects_settlement_pending_batch_before_old_billing_is_recovered(
+def test_batch_retry_accepts_settlement_pending_batch_without_old_billing_recovery(
     tmp_path: Path,
 ) -> None:
     runtime = ListingOnlyRuntime([])
@@ -1013,12 +1012,12 @@ def test_batch_retry_rejects_settlement_pending_batch_before_old_billing_is_reco
                SET status = 'settlement_pending' WHERE batch_id = ?""",
             (batch["id"],),
         )
-    with pytest.raises(PodRepositoryError, match="billing recovery is required") as raised:
-        service.retry_failed(actor, batch["id"], image_style_indices=[1], title_style_indices=[2])
+    service.worker.submit_batch_retry = lambda *_args: None
+    result = service.retry_failed(actor, batch["id"], image_style_indices=[1], title_style_indices=[2])
 
-    assert raised.value.status_code == 409
-    assert len(billing.freezes) == 1
-    assert service.get_batch(actor, batch["id"])["status"] == "settlement_pending"
+    assert result["image_style_indices"] == [1]
+    assert result["title_style_indices"] == [2]
+    assert len(billing.freezes) == 2
     service.close()
     runtime.close()
 
@@ -1043,7 +1042,7 @@ def test_batch_retry_billing_resume_reuses_the_persisted_selection(tmp_path: Pat
         for row in service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
         if row["target_id"] == "batch_retry"
     )
-    service.repository.mark_billing_auth_required(stored["action_key"], "restart")
+    service.repository.mark_billing_pending(stored["action_key"], "interrupted")
     resumed: list[tuple[object, ...]] = []
     service.worker.process_batch_retry = lambda *args: resumed.append(args)
 
@@ -1739,3 +1738,390 @@ def test_parallel_postprocess_failure_isolates_single_style(tmp_path: Path) -> N
     assert stored["failed_count"] == 1
     service.close()
     runtime.close()
+
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — epoch fencing: stale worker writes must not mutate reaped batches
+# ---------------------------------------------------------------------------
+
+def test_stale_epoch_write_does_not_complete_item_after_reap(tmp_path: Path) -> None:
+    """After reaping, the batch is terminal and the DB epoch has advanced."""
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, start_workers=False)
+    actor = _actor()
+
+    template = service.upload_template(actor, name="Stale test", filename="stale.png", content=_encode(_pattern(0)))
+    service.update_template_calibration(
+        actor,
+        template["id"],
+        Calibration(
+            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
+            anchor=NormalizedPoint(x=0.5, y=0.5),
+        ),
+    )
+    batch = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=1,
+            business_fields=BusinessFields(product_name="Test", product_category="test"),
+            listing_fields=ListingFields(
+                declared_price=10.0,
+                suggested_price_usd=15.0,
+                category_name="Test",
+                skus=[{"name": "SKU", "length_cm": 10, "width_cm": 10, "height_cm": 10, "weight_g": 100}],
+            ),
+        ),
+        enqueue=False,
+    )
+    batch_id = batch["id"]
+
+    # Claim epoch=1
+    epoch1 = service.repository.claim_batch_with_epoch(batch_id)
+    assert epoch1 == 1
+
+    # Back-date last_progress_at so reap_stuck_batches(stale_after_seconds=0) picks it up.
+    # The strict-less-than condition in the SQL means same-millisecond timestamps are excluded,
+    # so we set a timestamp clearly in the past.
+    import sqlite3 as _sqlite3
+    with _sqlite3.connect(str(service.repository.database_path)) as _conn:
+        _conn.execute(
+            "UPDATE pod_customization_batches SET last_progress_at = '2000-01-01T00:00:00.000+00:00' WHERE batch_id = ?",
+            (batch_id,),
+        )
+
+    # Reap advances epoch to 2 and marks batch terminal
+    reaped = service.repository.reap_stuck_batches(stale_after_seconds=0)
+    assert any(r["batch_id"] == batch_id for r in reaped)
+
+    # Batch must be in a terminal state after reap
+    status = service.repository.get_batch_status(batch_id)
+    assert status in {"failed", "partial_failure"}, (
+        f"Expected terminal status after reap, got {status!r}"
+    )
+
+
+def test_stale_worker_cannot_write_grid_or_title_after_reap(tmp_path: Path) -> None:
+    """Every worker-owned result write is fenced after a batch is reaped."""
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, start_workers=False)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+    batch_id = batch["id"]
+    epoch = service.repository.claim_batch_with_epoch(batch_id)
+    assert epoch == 1
+    call = service.repository.get_or_create_generation_call(
+        service.repository.get_batch_internal(batch_id),
+        call_kind="initial",
+        call_index=1,
+    )
+
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_batches SET last_progress_at = '2000-01-01T00:00:00.000+00:00' WHERE batch_id = ?",
+            (batch_id,),
+        )
+    assert service.repository.reap_stuck_batches(stale_after_seconds=0)
+
+    with pytest.raises(PodExecutionExpired):
+        service.repository.finish_generation_call(
+            call["call_id"], status="succeeded", execution_epoch=epoch
+        )
+    with pytest.raises(PodExecutionExpired):
+        service.repository.finish_style_grid_result(
+            service.repository.get_batch_internal(batch_id),
+            style_index=1,
+            variant_index=1,
+            call_id=call["call_id"],
+            status="completed",
+            execution_epoch=epoch,
+        )
+    with pytest.raises(PodExecutionExpired):
+        service.repository.fail_style_title(batch_id, 1, "stale", execution_epoch=epoch)
+
+
+def test_reap_increments_epoch_so_current_epoch_differs(tmp_path: Path) -> None:
+    """After reaping, execution_epoch in DB must be > the epoch the worker holds."""
+    import sqlite3
+
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, start_workers=False)
+    actor = _actor()
+
+    template = service.upload_template(actor, name="Epoch drift", filename="drift.png", content=_encode(_pattern(0)))
+    service.update_template_calibration(
+        actor,
+        template["id"],
+        Calibration(
+            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
+            anchor=NormalizedPoint(x=0.5, y=0.5),
+        ),
+    )
+    batch = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=1,
+            business_fields=BusinessFields(product_name="Test", product_category="test"),
+            listing_fields=ListingFields(
+                declared_price=10.0,
+                suggested_price_usd=15.0,
+                category_name="Test",
+                skus=[{"name": "SKU", "length_cm": 10, "width_cm": 10, "height_cm": 10, "weight_g": 100}],
+            ),
+        ),
+        enqueue=False,
+    )
+    batch_id = batch["id"]
+
+    worker_epoch = service.repository.claim_batch_with_epoch(batch_id)
+    assert worker_epoch is not None
+
+    reaped = service.repository.reap_stuck_batches(stale_after_seconds=0)
+    assert any(r["batch_id"] == batch_id for r in reaped)
+
+    # Read epoch directly from DB
+    with sqlite3.connect(str(service.repository.database_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+    db_epoch = int(row["execution_epoch"])
+
+    assert db_epoch > worker_epoch, (
+        f"DB epoch ({db_epoch}) should exceed worker epoch ({worker_epoch}) after reap"
+    )
+
+
+def test_current_epoch_worker_can_still_complete_normally(tmp_path: Path) -> None:
+    """A worker holding the current epoch must NOT be blocked from writing results."""
+    import sqlite3
+
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, start_workers=False)
+    actor = _actor()
+
+    template = service.upload_template(actor, name="Valid epoch", filename="valid.png", content=_encode(_pattern(0)))
+    service.update_template_calibration(
+        actor,
+        template["id"],
+        Calibration(
+            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
+            anchor=NormalizedPoint(x=0.5, y=0.5),
+        ),
+    )
+    batch = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=1,
+            business_fields=BusinessFields(product_name="Test", product_category="test"),
+            listing_fields=ListingFields(
+                declared_price=10.0,
+                suggested_price_usd=15.0,
+                category_name="Test",
+                skus=[{"name": "SKU", "length_cm": 10, "width_cm": 10, "height_cm": 10, "weight_g": 100}],
+            ),
+        ),
+        enqueue=False,
+    )
+    batch_id = batch["id"]
+
+    epoch = service.repository.claim_batch_with_epoch(batch_id)
+    assert epoch is not None and epoch > 0
+
+    # No reap — epoch in DB should match what we got from claim
+    with sqlite3.connect(str(service.repository.database_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+    assert int(row["execution_epoch"]) == epoch
+    assert service.repository.get_batch_status(batch_id) == "generating_patterns"
+
+
+def test_progress_heartbeat_is_refreshed_for_active_batch(tmp_path: Path) -> None:
+    import sqlite3
+
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime, start_workers=False)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+    epoch = service.repository.claim_batch_with_epoch(batch["id"])
+    assert epoch is not None
+
+    with sqlite3.connect(str(service.repository.database_path)) as conn:
+        before = conn.execute(
+            "SELECT last_progress_at FROM pod_customization_batches WHERE batch_id = ?",
+            (batch["id"],),
+        ).fetchone()[0]
+    time.sleep(0.002)
+    service.repository.touch_batch_progress(batch["id"], execution_epoch=epoch)
+    with sqlite3.connect(str(service.repository.database_path)) as conn:
+        after = conn.execute(
+            "SELECT last_progress_at FROM pod_customization_batches WHERE batch_id = ?",
+            (batch["id"],),
+        ).fetchone()[0]
+
+    assert after > before
+
+
+def test_billing_run_rejects_remote_token_without_provider_key() -> None:
+    plan = PodCallPlan.for_retry("direct-only", feature="pod.image")
+    grant = PodExecutionGrant(
+        "freeze-direct-only", 1, "2099-01-01T00:00:00Z", {}, remote_token="session-token"
+    )
+    run = PodBillingRun(_actor(), BillingCoordinator(), plan, grant)
+
+    with pytest.raises(PodBillingAuthorizationRequired, match="unavailable"):
+        run.start(plan.calls[0].call_id, "pod.image")
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — deadline-aware waits: coordinator must exit on inactivity timeout
+# ---------------------------------------------------------------------------
+
+def test_coordinator_times_out_when_provider_never_returns(tmp_path: Path) -> None:
+    """When all provider futures are permanently blocked, the batch must become terminal
+    after the configured short inactivity timeout (not wait forever)."""
+    from wh_local.modules.pod_customization import worker as worker_module
+
+    original_timeout = worker_module.POD_PROGRESS_TIMEOUT_SECONDS
+    original_poll = worker_module.POD_WAIT_POLL_SECONDS
+    try:
+        # Use a very short timeout so the test runs in reasonable time
+        worker_module.POD_PROGRESS_TIMEOUT_SECONDS = 2
+        worker_module.POD_WAIT_POLL_SECONDS = 0.1
+
+        # BlockingListingRuntime holds the first request until released
+        started = threading.Event()
+        allow_finish = threading.Event()  # never set — provider hangs forever
+
+        class HangingRuntime(ListingOnlyRuntime):
+            def generate_listing_grid(self, request, *, grant=None, call_id="", on_start=None):
+                started.set()
+                # Block until the test releases — simulates hung provider
+                allow_finish.wait(timeout=10)
+                raise RuntimeError("provider was released after timeout")
+
+        runtime = HangingRuntime([_grid([_pattern(i) for i in range(4)])])
+        service = _service(tmp_path, runtime)
+        actor = _actor()
+
+        template = service.upload_template(actor, name="Timeout test", filename="to.png", content=_encode(_pattern(0)))
+        service.update_template_calibration(
+            actor,
+            template["id"],
+            Calibration(
+                mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
+                anchor=NormalizedPoint(x=0.5, y=0.5),
+            ),
+        )
+        batch = service.create_batch(
+            actor,
+            BatchCreate(
+                template_id=template["id"],
+                count=1,
+                business_fields=BusinessFields(product_name="Timeout", product_category="test"),
+                listing_fields=ListingFields(
+                    declared_price=10.0,
+                    suggested_price_usd=15.0,
+                    category_name="Test",
+                    skus=[{"name": "SKU", "length_cm": 10, "width_cm": 10, "height_cm": 10, "weight_g": 100}],
+                ),
+            ),
+        )
+        batch_id = batch["id"]
+
+        # Wait for provider to start then let timeout fire
+        assert started.wait(timeout=5), "Provider call never started"
+
+        # Wait for the batch to become terminal (timeout + processing headroom)
+        deadline = __import__('time').monotonic() + 10
+        while __import__('time').monotonic() < deadline:
+            status = service.repository.get_batch_status(batch_id)
+            if status in {"failed", "partial_failure"}:
+                break
+            __import__('time').sleep(0.2)
+        else:
+            allow_finish.set()
+            raise AssertionError(f"Batch never became terminal after timeout; status={status!r}")
+
+        allow_finish.set()
+        final_status = service.repository.get_batch_status(batch_id)
+        assert final_status in {"failed", "partial_failure"}, (
+            f"Expected terminal status after timeout, got {final_status!r}"
+        )
+    finally:
+        worker_module.POD_PROGRESS_TIMEOUT_SECONDS = original_timeout
+        worker_module.POD_WAIT_POLL_SECONDS = original_poll
+        service.close()
+
+
+def test_progress_resets_deadline_when_styles_complete(tmp_path: Path) -> None:
+    """When styles complete one-by-one, each completion resets the inactivity clock
+    so a large batch is not reaped simply because it takes longer than the timeout."""
+    from wh_local.modules.pod_customization import worker as worker_module
+
+    original_timeout = worker_module.POD_PROGRESS_TIMEOUT_SECONDS
+    original_poll = worker_module.POD_WAIT_POLL_SECONDS
+    try:
+        # Short timeout — if not reset on each completion, a 3-style batch would time out
+        worker_module.POD_PROGRESS_TIMEOUT_SECONDS = 2
+        worker_module.POD_WAIT_POLL_SECONDS = 0.1
+
+        grid_bytes = _grid([_pattern(i) for i in range(4)])
+        runtime = ListingOnlyRuntime([grid_bytes, grid_bytes, grid_bytes])
+        service = _service(tmp_path, runtime)
+        actor = _actor()
+
+        template = service.upload_template(actor, name="Progress reset", filename="pr.png", content=_encode(_pattern(0)))
+        service.update_template_calibration(
+            actor,
+            template["id"],
+            Calibration(
+                mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
+                anchor=NormalizedPoint(x=0.5, y=0.5),
+            ),
+        )
+        batch = service.create_batch(
+            actor,
+            BatchCreate(
+                template_id=template["id"],
+                count=3,
+                business_fields=BusinessFields(product_name="Progress", product_category="test"),
+                listing_fields=ListingFields(
+                    declared_price=10.0,
+                    suggested_price_usd=15.0,
+                    category_name="Test",
+                    skus=[{"name": "SKU", "length_cm": 10, "width_cm": 10, "height_cm": 10, "weight_g": 100}],
+                ),
+            ),
+        )
+        batch_id = batch["id"]
+
+        # Wait for batch to reach a settled state
+        deadline = __import__('time').monotonic() + 15
+        while __import__('time').monotonic() < deadline:
+            status = service.repository.get_batch_status(batch_id)
+            if status in {"completed", "partial_failure", "failed"}:
+                break
+            __import__('time').sleep(0.2)
+        else:
+            raise AssertionError(f"Batch never settled; status={status!r}")
+
+        final_status = service.repository.get_batch_status(batch_id)
+        # All 3 grids were provided; batch should complete (not be reaped mid-flight)
+        assert final_status in {"completed", "partial_failure"}, (
+            f"Expected completed/partial_failure, got {final_status!r}. "
+            "This may indicate the deadline was not reset on each completion."
+        )
+    finally:
+        worker_module.POD_PROGRESS_TIMEOUT_SECONDS = original_timeout
+        worker_module.POD_WAIT_POLL_SECONDS = original_poll
+        service.close()

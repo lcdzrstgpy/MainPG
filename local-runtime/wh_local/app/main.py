@@ -347,6 +347,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 shop_worker.close()
             if messages_sync is not None:
                 messages_sync.stop()
+            # Stop the POD coordinator before closing the runtimes it submits
+            # provider work to. Closing the runtimes first leaves old POD
+            # futures alive long enough to write into the next app instance.
             if pod_service is not None:
                 pod_service.close()
             if pod_title_runtime is not None:
@@ -437,7 +440,6 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     pod_billing = RemotePodBillingCoordinator(
         remote_customer_auth,
         session_remote_token_resolver(customer_sessions),
-        server_managed=True,
     )
     pod_router = create_pod_customization_router(
         db_path,

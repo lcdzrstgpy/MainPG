@@ -57,7 +57,6 @@ const ACTIVE_BATCH_STATUSES = new Set<PodBatchStatus>([
   "generating_titles",
   "pausing",
   "cancelling",
-  "settlement_pending",
 ]);
 
 // 可发起暂停的运行态，与后端 request_pause 的原子状态门槛保持一致。
@@ -74,15 +73,16 @@ const ACTIVE_ITEM_STATUSES = new Set<PodBatchItemStatus>([
   "optimizing_scene",
 ]);
 const ACTIVE_TITLE_STATUSES = new Set<PodStyleTitleStatus>(["queued", "generating"]);
-const SETTLED_BATCH_STATUSES = new Set<PodBatchStatus>(["completed", "partial_failure", "failed", "cancelled"]);
+const SETTLED_BATCH_STATUSES = new Set<PodBatchStatus>(["completed", "partial_failure", "failed", "cancelled", "settlement_pending"]);
 const RETRYABLE_BATCH_STATUSES = SETTLED_BATCH_STATUSES;
-// Regeneration must never race a billing recovery.  All retry and manual-title
-// entry points therefore use the same fully settled status set.
+// Generation results are terminal before settlement bookkeeping finishes, so
+// retry and manual-title actions use the same terminal batch status set.
 const MANUAL_TITLE_EDITABLE_BATCH_STATUSES = new Set<PodBatchStatus>([
   "completed",
   "partial_failure",
   "failed",
   "cancelled",
+  "settlement_pending",
 ]);
 
 function valueOrFallback(value: string): string {
@@ -263,7 +263,7 @@ export function canRegeneratePodStyle(
 }
 
 export function isBillingInterruptedPodBatch(status: PodBatchStatus): boolean {
-  return status === "billing_auth_required" || status === "settlement_pending";
+  return false;
 }
 
 export function canPausePodBatch(status: PodBatchStatus): boolean {
@@ -356,9 +356,13 @@ export function defaultTemplateCalibration(): PodTemplateCalibration {
   };
 }
 
-export function podBatchStatusLabel(status: PodBatchStatus, dianxiaomiReady?: boolean): string {
-  // 授权/结算中断批次若已生成完整，以导出资格为准展示，不再只显示“需要重新授权”。
-  if (dianxiaomiReady && (status === "billing_auth_required" || status === "settlement_pending")) {
+export function podBatchStatusLabel(
+  status: PodBatchStatus,
+  dianxiaomiReady?: boolean,
+  allRequestedProcessed = true,
+): string {
+  // 结算尚未完成但生成已完整时，以导出资格为准展示。
+  if (dianxiaomiReady && allRequestedProcessed && status === "settlement_pending") {
     return "生成已完成，可导出";
   }
   return {
@@ -374,7 +378,6 @@ export function podBatchStatusLabel(status: PodBatchStatus, dianxiaomiReady?: bo
     partial_failure: "部分完成",
     failed: "生成失败",
     settlement_pending: "等待计费结算",
-    billing_auth_required: "需要重新授权",
   }[status];
 }
 

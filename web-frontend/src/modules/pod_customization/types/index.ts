@@ -109,8 +109,7 @@ export type PodBatchStatus =
   | "completed"
   | "partial_failure"
   | "failed"
-  | "settlement_pending"
-  | "billing_auth_required";
+  | "settlement_pending";
 
 export type PodBatchItemStatus =
   | "queued"
@@ -186,7 +185,7 @@ export type PodBatchListResponse = {
   total: number;
 };
 
-export type PodBillingRunStatus = "auth_required" | "authorized" | "settling" | "settlement_pending" | "settled";
+export type PodBillingRunStatus = "authorized" | "settling" | "settlement_pending" | "settled";
 
 export type PodBillingRun = {
   id: string;
