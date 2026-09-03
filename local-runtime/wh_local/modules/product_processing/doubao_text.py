@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -186,28 +187,21 @@ def _result_from_payload(payload: Any) -> DoubaoTextResult:
     translations: list[tuple[str, str]] = []
     seen_values: set[str] = set()
     for item in raw_translations:
-        if not isinstance(item, dict) or set(item) != {"raw_value", "export_value"}:
-            raise DoubaoTextError(
-                "Doubao text variant mapping failed validation",
-                error_kind="invalid_response",
-                retryable=True,
-            )
-        raw_value = item.get("raw_value")
-        export_value = item.get("export_value")
-        if (
-            not isinstance(raw_value, str)
-            or not raw_value.strip()
-            or not isinstance(export_value, str)
-            or not export_value.strip()
-            or raw_value.strip() in seen_values
-        ):
-            raise DoubaoTextError(
-                "Doubao text variant mapping value failed validation",
-                error_kind="invalid_response",
-                retryable=True,
-            )
-        seen_values.add(raw_value.strip())
-        translations.append((raw_value.strip()[:200], export_value.strip()[:200]))
+        # Variant translations are auxiliary rows inside an otherwise useful
+        # title/description/dimension response.  Providers occasionally append
+        # a blank row, repeat one mapping, or serialize a numeric option as a
+        # JSON number.  Ignore malformed/duplicate extras here; the service
+        # later checks completeness against the original product's exact option
+        # list and retries only the missing values.
+        if not isinstance(item, dict):
+            continue
+        raw_value = _variant_scalar_text(item.get("raw_value"))
+        export_value = _variant_scalar_text(item.get("export_value"))
+        normalized_key = raw_value.casefold()
+        if not raw_value or not export_value or normalized_key in seen_values:
+            continue
+        seen_values.add(normalized_key)
+        translations.append((raw_value[:200], export_value[:200]))
 
     raw_dimensions = payload.get("product_dimensions")
     if not isinstance(raw_dimensions, dict) or not set(raw_dimensions).issubset(
@@ -234,3 +228,17 @@ def _result_from_payload(payload: Any) -> DoubaoTextResult:
         variant_translations=tuple(translations),
         product_dimensions=dimensions,
     )
+
+
+def _variant_scalar_text(value: Any) -> str:
+    """Normalize safe scalar variant values without accepting booleans/objects."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return ""
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return ""
+        if value.is_integer():
+            return str(int(value))
+    return str(value).strip()

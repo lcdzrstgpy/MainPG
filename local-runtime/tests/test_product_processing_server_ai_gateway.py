@@ -269,11 +269,11 @@ def test_chat_gateway_rejects_excess_distinct_requests_before_provider_call(tmp_
             "usage_id": usage,
             "messages": [{"role": "user", "content": f"request-{index}"}],
         }).status_code
-        for index in range(4)
+        for index in range(17)
     ]
 
-    assert statuses == [200, 200, 200, 409]
-    assert provider_calls == 3
+    assert statuses == ([200] * 16) + [409]
+    assert provider_calls == 16
 
 
 def test_chat_gateway_fails_closed_for_in_progress_identical_request(tmp_path: Path, monkeypatch) -> None:

@@ -5,6 +5,7 @@ import test from "node:test";
 const page = readFileSync(new URL("./ProductProcessingPrecheckPage.tsx", import.meta.url), "utf8");
 const api = readFileSync(new URL("../api/productProcessingApi.ts", import.meta.url), "utf8");
 const types = readFileSync(new URL("../types/index.ts", import.meta.url), "utf8");
+const styles = readFileSync(new URL("../styles/ProductProcessingVerifyPage.css", import.meta.url), "utf8");
 
 test("precheck renders editable matched SKU package measurements and keeps unmatched rows display-only", () => {
   assert.match(page, /SKU 包装件重尺/);
@@ -35,4 +36,13 @@ test("precheck only keeps overrides for matched source SKU package rows with val
 test("precheck edits package volume for matched SKU rows", () => {
   assert.match(page, /\['length_cm', 'width_cm', 'height_cm', 'volume_cm3'\] as const/);
   assert.match(page, /setShippingPackageField\(draftId, record\.variant_key, field, event\.target\.value\)/);
+});
+
+test("precheck highlights variant translations that retained their original value", () => {
+  assert.match(types, /variant_translation_review_values\?: string\[\]/);
+  assert.match(page, /item\.variant_translation_review_values\?\.length/);
+  assert.match(page, /规格翻译待确认/);
+  assert.match(page, /系统已保留原值，请在导出前人工修改/);
+  assert.match(styles, /\.precheck-variant-review\s*\{/);
+  assert.match(styles, /border-left:\s*4px solid #d94855/);
 });

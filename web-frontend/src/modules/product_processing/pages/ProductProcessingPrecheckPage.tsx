@@ -1046,6 +1046,24 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                     </aside>
                   )}
                 </div>
+                {!!item.variant_translation_review_values?.length && (
+                  <div className="precheck-variant-review" role="alert">
+                    <div>
+                      <strong>规格翻译待确认</strong>
+                      <span>
+                        AI 和常用词库未能翻译以下规格，系统已保留原值，请在导出前人工修改。
+                      </span>
+                    </div>
+                    <div className="precheck-variant-review-values">
+                      {item.variant_translation_review_values.slice(0, 12).map((value) => (
+                        <span key={value} title={value}>{value}</span>
+                      ))}
+                      {item.variant_translation_review_values.length > 12 && (
+                        <em>另有 {item.variant_translation_review_values.length - 12} 项</em>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div className="precheck-core-grid">
                   <label>SKU货号
                     <input disabled={mutationsLocked} value={coreFields.sku ?? ''} onChange={(event) => setField(draftId, 'sku', event.target.value)} />

@@ -277,3 +277,29 @@ def test_structural_contract_is_strict(monkeypatch, payload: dict) -> None:
 
     assert captured.value.error_kind == "invalid_response"
     assert captured.value.attempt_count == 3
+
+
+def test_variant_rows_ignore_blanks_duplicates_and_normalize_numbers(monkeypatch) -> None:
+    payload = {
+        **VALID_TEXT,
+        "variant_translations": [
+            {"raw_value": "黑色", "export_value": "Black"},
+            {"raw_value": " 黑色 ", "export_value": "Duplicate"},
+            {"raw_value": "", "export_value": ""},
+            {"raw_value": 73, "export_value": 73},
+            {"raw_value": 160.22, "export_value": "160.22"},
+            {"raw_value": True, "export_value": "True"},
+            {"unexpected": "ignored"},
+            "ignored",
+        ],
+    }
+    session = _Session([_success(payload)])
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+
+    result = doubao_text.DoubaoTextClient().generate_listing_text("prompt")
+
+    assert result.variant_translations == (
+        ("黑色", "Black"),
+        ("73", "73"),
+        ("160.22", "160.22"),
+    )
