@@ -218,7 +218,9 @@ class MediaAssetRepository:
             rows = session.scalars(
                 select(MediaAssetRow)
                 .where(*conditions)
-                .order_by(MediaAssetRow.created_at, MediaAssetRow.id)
+                # 最新注册的源图优先物化：避免大批历史 pending 积压把当前任务
+                # 刚注册的源图挤到队尾，导致预检页长时间停留在「等待同步」。
+                .order_by(MediaAssetRow.created_at.desc(), MediaAssetRow.id.desc())
                 .limit(max(1, int(limit)))
             ).all()
             claimed: list[dict[str, Any]] = []

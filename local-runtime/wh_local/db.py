@@ -534,6 +534,10 @@ CREATE TABLE IF NOT EXISTS billing_ai_usage_events (
 CREATE INDEX IF NOT EXISTS idx_billing_ai_usage_events_account_status
     ON billing_ai_usage_events (account_id, status, created_at);
 
+-- 消费流水按 created_at DESC 排序分页：全局时间倒序索引，避免全表排序。
+CREATE INDEX IF NOT EXISTS idx_billing_ai_usage_events_created
+    ON billing_ai_usage_events (created_at);
+
 -- 服务端 AI 网关请求账本：同一计费用量的同一规范化请求仅调用上游一次。
 -- 只保存已清理的业务响应，不保存平台 token、上游 key 或请求正文。
 CREATE TABLE IF NOT EXISTS billing_ai_gateway_requests (
@@ -673,6 +677,10 @@ CREATE INDEX IF NOT EXISTS idx_billing_batch_freezes_account_status
 
 CREATE INDEX IF NOT EXISTS idx_billing_batch_freezes_expiry
     ON billing_batch_freezes (status, expires_at);
+
+-- 消费流水按 created_at DESC 排序分页：全局时间倒序索引，避免全表排序。
+CREATE INDEX IF NOT EXISTS idx_billing_batch_freezes_created
+    ON billing_batch_freezes (created_at);
 
 -- 批次结算明细：每条链接的每个子项处理结果（成功/拦截/无返回），
 -- 服务端据此按当前定价规则计算扣费与退款，客户端上报后落库供对账。
