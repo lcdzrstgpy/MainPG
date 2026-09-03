@@ -368,6 +368,14 @@ export type PreviewItem = {
   dimension_confidence?: Record<string, string>;
   /** 被人工先验硬边界修正过的 AI 字段。 */
   dimension_clamped_fields?: string[];
+  /** AI 与常用词库均未翻译成功、当前保留原文的规格值。 */
+  variant_translation_review_values?: string[];
+  /** 规格翻译来源计数：AI / 内置词库 / 保留原文。 */
+  variant_translation_sources?: {
+    ai?: number;
+    builtin?: number;
+    original?: number;
+  };
 };
 
 export type PreviewResponse = {

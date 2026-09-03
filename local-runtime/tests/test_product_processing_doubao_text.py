@@ -154,6 +154,12 @@ def test_invalid_contract_retries_whole_text_stage_until_third_success(monkeypat
     assert validations == 3
     assert client.last_attempt_count == 3
     assert len(session.requests) == 3
+    prompts = [request["json"]["messages"][0]["content"] for request in session.requests]
+    assert prompts[0] == "prompt"
+    assert "description contract failed" in prompts[1]
+    assert "repair attempt 2" in prompts[1]
+    assert "repair attempt 3" in prompts[2]
+    assert len(set(prompts)) == 3
 
 
 def test_transient_errors_share_the_three_attempt_budget(monkeypatch) -> None:
@@ -170,6 +176,9 @@ def test_transient_errors_share_the_three_attempt_budget(monkeypatch) -> None:
     assert result.description == VALID_TEXT["description"]
     assert client.last_attempt_count == 3
     assert len(session.requests) == 3
+    assert {
+        request["json"]["messages"][0]["content"] for request in session.requests
+    } == {"prompt"}
 
 
 def test_invalid_ark_envelope_json_uses_the_same_three_attempt_budget(monkeypatch) -> None:
@@ -201,6 +210,26 @@ def test_three_invalid_responses_raise_sanitized_retryable_error(monkeypatch) ->
     assert captured.value.attempt_count == 3
     assert invalid_body not in str(captured.value)
     assert "ark-secret" not in str(captured.value)
+    assert len(session.requests) == 3
+
+
+def test_old_gateway_retry_limit_preserves_contract_failure(monkeypatch) -> None:
+    session = _Session(
+        [
+            _success({}),
+            _success({}),
+            _Response({"detail": "gateway request limit reached"}, status_code=409),
+        ]
+    )
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_text.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(doubao_text.DoubaoTextError) as captured:
+        doubao_text.DoubaoTextClient().generate_listing_text("prompt")
+
+    assert captured.value.error_kind == "invalid_response"
+    assert captured.value.attempt_count == 3
+    assert "output fields failed validation" in str(captured.value)
     assert len(session.requests) == 3
 
 
@@ -248,3 +277,29 @@ def test_structural_contract_is_strict(monkeypatch, payload: dict) -> None:
 
     assert captured.value.error_kind == "invalid_response"
     assert captured.value.attempt_count == 3
+
+
+def test_variant_rows_ignore_blanks_duplicates_and_normalize_numbers(monkeypatch) -> None:
+    payload = {
+        **VALID_TEXT,
+        "variant_translations": [
+            {"raw_value": "黑色", "export_value": "Black"},
+            {"raw_value": " 黑色 ", "export_value": "Duplicate"},
+            {"raw_value": "", "export_value": ""},
+            {"raw_value": 73, "export_value": 73},
+            {"raw_value": 160.22, "export_value": "160.22"},
+            {"raw_value": True, "export_value": "True"},
+            {"unexpected": "ignored"},
+            "ignored",
+        ],
+    }
+    session = _Session([_success(payload)])
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+
+    result = doubao_text.DoubaoTextClient().generate_listing_text("prompt")
+
+    assert result.variant_translations == (
+        ("黑色", "Black"),
+        ("73", "73"),
+        ("160.22", "160.22"),
+    )

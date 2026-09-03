@@ -87,6 +87,13 @@ def test_history_source_lookup_uses_latest_nonduplicate_exact_title_in_workspace
     )
     add_history(
         workspace="workspace",
+        skc="newer-candidate",
+        title="Fancy Mug",
+        offer_id="666666",
+        updated_at="2026-08-02T12:00:00+00:00",
+    )
+    add_history(
+        workspace="workspace",
         skc="current-skc",
         title="Fancy Mug",
         offer_id="111111",
@@ -111,15 +118,54 @@ def test_history_source_lookup_uses_latest_nonduplicate_exact_title_in_workspace
         [
             {
                 "skc": "current-skc",
-                "title": "fancy mug",
+                # This captured title is intentionally wrong. The lookup must
+                # resolve the current SKC's stored AI title instead.
+                "title": "captured title must not be used",
                 "excluded_offer_ids": ["222222"],
             }
         ],
         workspace_id="workspace",
     )
 
-    assert matched["current-skc"]["history_skc"] == "older-valid"
-    assert matched["current-skc"]["source_url"].endswith("/333333.html")
+    assert [item["history_skc"] for item in matched["current-skc"]] == [
+        "newer-candidate",
+        "older-valid",
+    ]
+    assert matched["current-skc"][0]["source_url"].endswith("/666666.html")
+    assert matched["current-skc"][1]["source_url"].endswith("/333333.html")
+    assert matched["current-skc"][0]["current_ai_title"] == "Fancy Mug"
+
+
+def test_history_source_lookup_requires_current_skc_ai_title(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    with service.repository.database.sessions.begin() as session:
+        task = ProcessingTaskRow(
+            workspace_id="workspace",
+            title="history",
+            status="completed",
+            total_count=1,
+            success_count=1,
+        )
+        task.items.append(
+            ProcessingTaskItemRow(
+                skc="other-skc",
+                title="Captured title",
+                status="completed",
+                result_json=dumps(
+                    {
+                        "skc": "other-skc",
+                        "optimized_title": "Captured title",
+                        "source_url": "https://detail.1688.com/offer/555555.html",
+                    }
+                ),
+            )
+        )
+        session.add(task)
+
+    assert service.latest_completed_sources_by_title(
+        [{"skc": "missing-current-skc", "title": "Captured title"}],
+        workspace_id="workspace",
+    ) == {}
 
 
 def test_skip_duplicates_marks_only_drafts_in_created_task(tmp_path: Path, monkeypatch) -> None:

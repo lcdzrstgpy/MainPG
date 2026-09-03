@@ -114,12 +114,16 @@ MAX_GATEWAY_RESPONSE_BYTES = 8 * 1024 * 1024
 # Legacy image modes can issue four primary slot calls, four slot recoveries,
 # one detail call, and up to four configured detail repair rounds.
 GATEWAY_DISTINCT_REQUEST_LIMITS = {
-    "product_processing.text": 2,
+    # Listing text may split large variant sets into bounded batches and retry
+    # only missing mappings.  Keep a finite per-usage ceiling while allowing
+    # one core response plus several 20-value translation batches/repairs.
+    "product_processing.text": 16,
     "product_processing.image_grid_2k": 13,
 }
-# Text adapters retry an identical upstream request at most three times; the
-# image generation adapter has a five-attempt outer budget.  Keep the server
-# ledger at those same bounds so a reserved usage cannot be replayed forever.
+# Text transport errors retry an identical upstream request at most three times;
+# contract-repair retries use the distinct-request allowance above.  The image
+# generation adapter has a five-attempt outer budget.  Keep the server ledger at
+# those same bounds so a reserved usage cannot be replayed forever.
 GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS = {
     "product_processing.text": 3,
     "product_processing.image_grid_2k": 5,

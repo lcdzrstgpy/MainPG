@@ -19,13 +19,12 @@ import ssl
 import threading
 import time
 import uuid
-from collections import OrderedDict, deque
-from contextlib import contextmanager
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
 
 import requests
@@ -97,85 +96,6 @@ DOWNLOAD_RETRY_BACKOFF_SECONDS = (0.2, 0.6)
 # 进程内全局共享、线程锁保护，按"每次图片请求"取模轮转起始 provider，实现负载均衡。
 _PROVIDER_CURSOR_LOCK = threading.Lock()
 _PROVIDER_CURSORS: dict[str, int] = {}
-
-class _FairUsageRequestGate:
-    """Serialize provider calls while rotating fairly between billable items.
-
-    One product may enqueue several slot-repair requests at once. A plain
-    semaphore can let those repairs reacquire the only provider slot before a
-    different product gets its first image. Queues are therefore grouped by
-    ``usage_id`` and each group receives at most one turn before moving to the
-    back of the rotation.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._waiters_by_key: dict[str, deque[threading.Event]] = {}
-        self._ready_keys: deque[str] = deque()
-        self._ready_key_set: set[str] = set()
-        self._active_key: str | None = None
-
-    @staticmethod
-    def _key(value: str) -> str:
-        return str(value or "").strip() or "__anonymous__"
-
-    def acquire(self, key: str) -> None:
-        normalized = self._key(key)
-        waiter = threading.Event()
-        with self._lock:
-            queue = self._waiters_by_key.setdefault(normalized, deque())
-            queue.append(waiter)
-            # Further calls belonging to the active product wait for its next
-            # round instead of immediately competing with other products.
-            if self._active_key != normalized and normalized not in self._ready_key_set:
-                self._ready_keys.append(normalized)
-                self._ready_key_set.add(normalized)
-            self._dispatch_locked()
-        waiter.wait()
-
-    def release(self, key: str) -> None:
-        normalized = self._key(key)
-        with self._lock:
-            if self._active_key != normalized:
-                raise RuntimeError("fair image gate released by a non-owner")
-            self._active_key = None
-            # The just-served product goes behind every product that arrived
-            # while its request was in flight.
-            if self._waiters_by_key.get(normalized) and normalized not in self._ready_key_set:
-                self._ready_keys.append(normalized)
-                self._ready_key_set.add(normalized)
-            self._dispatch_locked()
-
-    @contextmanager
-    def hold(self, key: str) -> Iterator[None]:
-        self.acquire(key)
-        try:
-            yield
-        finally:
-            self.release(key)
-
-    def _dispatch_locked(self) -> None:
-        if self._active_key is not None:
-            return
-        while self._ready_keys:
-            key = self._ready_keys.popleft()
-            self._ready_key_set.discard(key)
-            queue = self._waiters_by_key.get(key)
-            if not queue:
-                self._waiters_by_key.pop(key, None)
-                continue
-            waiter = queue.popleft()
-            if not queue:
-                self._waiters_by_key.pop(key, None)
-            self._active_key = key
-            waiter.set()
-            return
-
-
-# 服务器托管图片仍保持全局单并发，但按商品 usage_id 轮转。这样不放大
-# 上游 image_gpt 压力，同时避免一个商品的多张修复图连续占满闸口。
-_SERVER_MANAGED_IMAGE_GATE = _FairUsageRequestGate()
-
 
 class MediaConfigurationError(RuntimeError):
     pass
@@ -1398,27 +1318,30 @@ class ProductImageProcessor:
         ]
         response: requests.Response | None = None
         try:
-            with _SERVER_MANAGED_IMAGE_GATE.hold(reservation):
-                response = _SESSION.post(
-                    f"{gateway_base_url()}/api/customer/ai/image",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "usage_id": reservation,
-                        "prompt": prompt,
-                        "size": _wuyin_size(image_size or provider.get("image_size")),
-                        **({"urls": urls} if urls else {}),
-                    },
-                    timeout=max(30.0, min(float(timeout_seconds), 660.0)),
-                    allow_redirects=False,
-                    stream=True,
-                )
-                status_code = int(response.status_code)
-                if not 200 <= status_code < 300:
-                    raise _gateway_image_status_error(status_code)
-                payload = _bounded_response_json(response)
+            # Do not serialize server-managed image requests globally. Batch and
+            # provider concurrency are already bounded by ProductImageProcessor's
+            # configured image semaphore; a process-wide single slot makes every
+            # later product wait for all earlier image generations to finish.
+            response = _SESSION.post(
+                f"{gateway_base_url()}/api/customer/ai/image",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "usage_id": reservation,
+                    "prompt": prompt,
+                    "size": _wuyin_size(image_size or provider.get("image_size")),
+                    **({"urls": urls} if urls else {}),
+                },
+                timeout=max(30.0, min(float(timeout_seconds), 660.0)),
+                allow_redirects=False,
+                stream=True,
+            )
+            status_code = int(response.status_code)
+            if not 200 <= status_code < 300:
+                raise _gateway_image_status_error(status_code)
+            payload = _bounded_response_json(response)
         except MediaProcessingError:
             raise
         except requests.RequestException as exc:
