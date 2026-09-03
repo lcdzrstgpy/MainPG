@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import threading
+import unicodedata
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -181,6 +182,26 @@ _CACHE_VOLATILE_RAW_KEYS = frozenset(
 
 _STAGE_CACHE_VERSION = 5
 _VARIANT_TRANSLATION_BATCH_SIZE = 20
+
+_WS_RUN_RE = re.compile(r"\s+")
+
+
+def _variant_option_key(value: str) -> str:
+    """规格选项的稳定比对键，容忍 LLM 回显时的无害漂移。
+
+    主 prompt 与 repair prompt 都要求 raw_value 逐字复制，但 LLM 仍可能把同一个
+    选项写成全角/半角、多打一个空白、或大小写不一致（如 ``＋`` vs ``+``、
+    ``１７５cm`` vs ``175cm``、``红 色`` vs ``红色``）。这些漂移不应被判成“缺失”。
+    这里用 NFKC（全角→半角、兼容字符折叠）+ 删除所有空白 + casefold 归一成同一键。
+    规格值是短 token，内部空白不承载词分隔语义，故整体删除；比对键仅用于判定
+    “是否同一个选项”，绝不改写存储或导出的原文。多值撞键的风险由调用方的
+    “唯一性”保护兜底（撞键即放弃模糊匹配，宁缺勿滥）。
+    """
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = _WS_RUN_RE.sub("", text)
+    return text.casefold()
+
+
 _COMMON_VARIANT_TRANSLATIONS: dict[str, dict[str, str]] = {
     "en": {
         "黑色": "Black", "白色": "White", "米白": "Ivory", "米白色": "Ivory",
@@ -8517,8 +8538,38 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     def _combined_variant_translations(
         data: dict[str, Any], variant_values: list[str]
     ) -> dict[str, str]:
-        """从 combined 文本调用输出中解析变种属性值翻译（对齐 VARIANT_VALUE_TRANSLATION_PROMPT）。"""
-        required = {value.casefold(): value for value in variant_values}
+        """从 combined 文本调用输出中解析变种属性值翻译（对齐 VARIANT_VALUE_TRANSLATION_PROMPT）。
+
+        匹配走两级：先按 raw_value 的 casefold 做逐字精确命中（保留既有行为）；未命中时
+        再按 ``_variant_option_key``（NFKC + 折叠空白 + casefold）做归一化命中，容忍 LLM
+        回显时的全角/半角、内部空格、大小写等无害漂移。归一化索引仅在“唯一对应一个原始
+        选项”时才启用——若多个原始选项归一化后撞到同一 key，则放弃该 key 的模糊匹配
+        （宁缺勿滥，绝不把 A 的翻译错配到 B）。
+        """
+        required: dict[str, str] = {value.casefold(): value for value in variant_values}
+        # 惰性构建归一化索引 {_variant_option_key(value): value}，仅保留 key 唯一者。
+        normalized: dict[str, str] | None = None
+
+        def _resolve(row_value: str) -> str | None:
+            original = required.get(row_value.casefold())
+            if original is not None:
+                return original
+            nonlocal normalized
+            if normalized is None:
+                normalized = {}
+                first_seen: dict[str, str] = {}
+                ambiguous: set[str] = set()
+                for value in variant_values:
+                    key = _variant_option_key(value)
+                    if key in first_seen:
+                        ambiguous.add(key)
+                    else:
+                        first_seen[key] = value
+                for key, value in first_seen.items():
+                    if key not in ambiguous:
+                        normalized[key] = value
+            return normalized.get(_variant_option_key(row_value))
+
         translations: dict[str, str] = {}
         mappings = data.get("variant_translations") if isinstance(data, dict) else None
         if not isinstance(mappings, list):
@@ -8530,8 +8581,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             export_scalar = item.get("export_value")
             raw_value = str(raw_scalar if raw_scalar is not None else "").strip()
             export_value = str(export_scalar if export_scalar is not None else "").strip()
-            original = required.get(raw_value.casefold())
-            if original and export_value and original not in translations:
+            if not export_value:
+                continue
+            original = _resolve(raw_value)
+            if original and original not in translations:
                 translations[original] = export_value
         return translations
 
@@ -8547,15 +8600,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
         Each repair response may be partial.  A second request contains only the
         values still missing from that batch.  Invalid extras never become export
-        values because `_combined_variant_translations` admits only exact original
-        options.
+        values because `_combined_variant_translations` only admits options that
+        match an original value (exactly or via harmless-drift normalization).
+        AI-produced export values that still fail the target-language check are
+        dropped into the builtin/review fallback instead of being exported.
         """
         translations = {
             value: str(initial.get(value) or "").strip()
             for value in variant_values
             if str(initial.get(value) or "").strip()
         }
-        initial_ai_count = len(translations)
         missing = [value for value in variant_values if value not in translations]
         repair_attempts = 0
         for start in range(0, len(missing), _VARIANT_TRANSLATION_BATCH_SIZE):
@@ -8586,6 +8640,22 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 translations.update(repaired)
                 pending = [value for value in pending if value not in repaired]
 
+        # 语言校验：AI 产出的 export_value 若仍含中文（或西语任务回退英语），
+        # 视为“没翻好”，剔除后交给下方兜底链（词库/标红）处理，避免把漏译
+        # 当作已翻译导出。型号代码/数字/单位用 allow_code_only 放行，不误伤。
+        rejected_language: list[str] = []
+        for value, translated in translations.items():
+            try:
+                ensure_target_language_result(
+                    "规格", translated, target_language, allow_code_only=True
+                )
+            except ValueError:
+                rejected_language.append(value)
+        for value in rejected_language:
+            del translations[value]
+        if rejected_language and ai_notes is not None:
+            ai_notes.append(f"variant_values:language-rejected:{len(rejected_language)}")
+
         built_in_count = 0
         review_values: list[str] = []
         for value in variant_values:
@@ -8601,7 +8671,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
         ai_count = max(0, len(translations) - built_in_count - len(review_values))
         source_counts = {
-            "ai": max(initial_ai_count, ai_count),
+            "ai": ai_count,
             "builtin": built_in_count,
             "original": len(review_values),
         }

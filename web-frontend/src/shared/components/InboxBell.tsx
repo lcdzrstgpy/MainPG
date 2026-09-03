@@ -24,6 +24,8 @@ export function InboxBell() {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<InboxMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  // 弹层本地展开状态：点击消息项展开/收起正文，与服务端 read 状态解耦。
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<number>>(() => new Set());
   const rootRef = useRef<HTMLDivElement>(null);
   const listRequestIdRef = useRef(0);
 
@@ -111,6 +113,23 @@ export function InboxBell() {
     void refreshList();
   };
 
+  const toggleExpanded = (messageId: number) => {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        next.add(messageId);
+      }
+      return next;
+    });
+  };
+
+  const handleItemClick = (item: InboxMessage) => {
+    if (!item.read) void handleMarkRead(item.id);
+    toggleExpanded(item.id);
+  };
+
   return (
     <div className="inbox-menu" ref={rootRef}>
       <button
@@ -144,23 +163,30 @@ export function InboxBell() {
             ) : messages.length === 0 ? (
               <div className="inbox-empty">暂无消息</div>
             ) : (
-              messages.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`inbox-item ${item.read ? "is-read" : "is-unread"}`}
-                  onClick={() => {
-                    if (!item.read) void handleMarkRead(item.id);
-                  }}
-                >
-                  <span className="inbox-item-dot" aria-hidden="true" />
-                  <span className="inbox-item-main">
-                    <strong>{item.title}</strong>
-                    {item.content && <em>{item.content}</em>}
-                    <time>{formatTime(item.publishedAt)}</time>
-                  </span>
-                </button>
-              ))
+              messages.map((item) => {
+                const expanded = expandedIds.has(item.id);
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`inbox-item ${item.read ? "is-read" : "is-unread"} ${expanded ? "is-expanded" : ""}`}
+                    onClick={() => handleItemClick(item)}
+                    aria-expanded={expanded}
+                  >
+                    <span className="inbox-item-dot" aria-hidden="true" />
+                    <span className="inbox-item-main">
+                      <strong>{item.title}</strong>
+                      {item.content && <em>{item.content}</em>}
+                      <time>{formatTime(item.publishedAt)}</time>
+                    </span>
+                    {item.content && (
+                      <span className="inbox-item-toggle" aria-hidden="true">
+                        {expanded ? "收起" : "展开"}
+                      </span>
+                    )}
+                  </button>
+                );
+              })
             )}
           </div>
         </div>

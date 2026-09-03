@@ -39,7 +39,9 @@ def test_missing_variant_translations_are_retried_in_batches(monkeypatch) -> Non
             )
 
     monkeypatch.setattr(service, "_doubao_text_client", _PartialClient)
-    values = [f"规格{i}" for i in range(45)]
+    # 用纯 ASCII 值：export_value 需为目标语言（不含中文），否则会被语言校验
+    # 视为“漏译”剔除。真实场景里 AI 不会返回含中文的 export_value。
+    values = [f"opt-{i}" for i in range(45)]
     initial = {value: f"Initial {value}" for value in values[:5]}
 
     translations, review, attempts, sources = service._complete_variant_translations(
@@ -109,6 +111,77 @@ def test_variant_translation_matching_only_accepts_original_required_values() ->
     )
 
     assert translations == {"黑色": "Black", "73": "73", "0": "0"}
+
+
+def test_variant_translation_matching_tolerates_fullwidth_and_space_drift() -> None:
+    # AI 回显时把同一选项写成全角数字/符号、内部空格或大小写不一致，
+    # 应仍能对回原始选项，而不是误判缺失。
+    payload = {
+        "variant_translations": [
+            {"raw_value": "１７５cm＋", "export_value": "175cm+"},
+            {"raw_value": "红 色", "export_value": "Red"},
+            {"raw_value": "LightBlue", "export_value": "Light Blue"},
+        ]
+    }
+
+    translations = ProductProcessingService._combined_variant_translations(
+        payload,
+        ["175cm+", "红色", "Light Blue"],
+    )
+
+    assert translations == {
+        "175cm+": "175cm+",
+        "红色": "Red",
+        "Light Blue": "Light Blue",
+    }
+
+
+def test_variant_translation_matching_never_cross_pairs_ambiguous_options() -> None:
+    # "AB" 与 "A B" 归一化后都变成 "ab"，撞 key。此时即便 AI 回显全角 "ＡＢ"
+    # （精确 casefold 不命中），归一化也必须放弃，绝不能错配到任一原始值。
+    payload = {
+        "variant_translations": [
+            {"raw_value": "ＡＢ", "export_value": "ambiguous"},
+        ]
+    }
+
+    translations = ProductProcessingService._combined_variant_translations(
+        payload,
+        ["AB", "A B"],
+    )
+
+    assert translations == {}
+
+
+def test_ai_chinese_export_value_falls_back_to_builtin_dictionary() -> None:
+    # AI 偷懒把中文原样返回（"红色"→"红色"），语言校验应剔除它，
+    # 再走词库兜底得到正确英文，而不是当作“已翻译”导出。
+    service = object.__new__(ProductProcessingService)
+
+    translations, review, attempts, sources = service._complete_variant_translations(
+        ["红色"],
+        {"红色": "红色"},
+        "en",
+    )
+
+    assert translations == {"红色": "Red"}
+    assert review == []
+    assert sources == {"ai": 0, "builtin": 1, "original": 0}
+
+
+def test_ai_chinese_export_value_without_builtin_marks_review() -> None:
+    # AI 返回中文且词库无对应词时，语言校验剔除后应原样保留并标红待人工。
+    service = object.__new__(ProductProcessingService)
+
+    translations, review, attempts, sources = service._complete_variant_translations(
+        ["糖果色针织围巾（米白）"],
+        {"糖果色针织围巾（米白）": "糖果色针织围巾（米白）"},
+        "en",
+    )
+
+    assert translations == {"糖果色针织围巾（米白）": "糖果色针织围巾（米白）"}
+    assert review == ["糖果色针织围巾（米白）"]
+    assert sources == {"ai": 0, "builtin": 0, "original": 1}
 
 
 def test_numeric_source_variant_values_become_strings_including_zero() -> None:
