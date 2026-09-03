@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 # Release automation updates this single value when producing a desktop build.
-APP_VERSION = "1.3.7"
+APP_VERSION = "1.3.8"
 # Replace this host only when the official MainPG release origin moves. Keep the
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
