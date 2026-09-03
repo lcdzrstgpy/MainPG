@@ -1578,9 +1578,9 @@ class ProductImageProcessor:
                 return result_url
             message = _provider_message(payload)
             message_lower = message.lower()
-            # 上游 status 为异步任务状态码（含纯数字与文本两种表达）。语义：
+            # 上游 status 为异步任务状态码（含纯数字、英文与中文文本三种表达）。语义：
             #   1      任务处理完成（成功）；≥0 且命中文末（0/2/3/4/5/6）= 排队/准备/等待/处理中/发布
-            #   <0     任务处理失败；fail/failed/error/cancelled = 明确失败
+            #   <0     任务处理失败；fail/failed/error/cancelled / 失败= 明确失败
             # 数字状态无法安全按文本失败集归类（3/4/5 实为“处理中”，会误判成失败终态），
             # 先尝试转数字：≥0 一律视为处理中继续轮询等图片；<0 才判失败。
             try:
@@ -1596,11 +1596,19 @@ class ProductImageProcessor:
                 # status ∈ {0,2,3,4,5,6}: 处理中，等图片就绪后返回
                 last_message = message or f"status={status_value}"
                 continue
-            if status_value in {"success", "succeeded", "finish", "finished", "completed", "done"}:
+            # 上游可能返回中文状态（如“成功/失败”）；`.lower()` 不影响中文，需单独归并。
+            # 命中成功终态却无图片 URL 时立即报错，避免一直轮询到超时。
+            if status_value in {
+                "success", "succeeded", "finish", "finished", "completed", "done",
+                "成功", "已完成", "完成", "处理完成",
+            }:
                 raise MediaProcessingError(
                     f"provider image task succeeded without image url: status={status_value} code={code} {message}"
                 )
-            if status_value in {"fail", "failed", "error", "cancelled", "canceled"}:
+            if status_value in {
+                "fail", "failed", "error", "cancelled", "canceled",
+                "失败", "处理失败", "生成失败", "已完成失败",
+            }:
                 raise MediaProcessingError(
                     f"provider image task failed: status={status_value} code={code} {message}",
                     status_class="transient",

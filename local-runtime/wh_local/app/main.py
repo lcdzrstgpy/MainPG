@@ -546,6 +546,7 @@ def _register_frontend_shell(app: FastAPI) -> None:
     brand = frontend_dist / "brand"
     theme = frontend_dist / "theme"
     index = frontend_dist / "index.html"
+    privacy = frontend_dist / "privacy.html"
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=assets), name="workbench-assets")
     if brand.is_dir():
@@ -564,7 +565,7 @@ def _register_frontend_shell(app: FastAPI) -> None:
             path = request.url.path
             if path.startswith("/assets/"):
                 response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-            elif path == "/" or path.startswith("/brand/") or path.startswith("/theme/"):
+            elif path == "/" or path.startswith("/brand/") or path.startswith("/theme/") or path == "/privacy":
                 response.headers["Cache-Control"] = "no-cache"
         return response
 
@@ -574,6 +575,15 @@ def _register_frontend_shell(app: FastAPI) -> None:
             return FileResponse(index)
         return HTMLResponse(
             "<h1>工作台前端尚未构建</h1><p>请在 web-frontend 目录执行 npm run build。</p>",
+            status_code=200,
+        )
+
+    @app.get("/privacy", include_in_schema=False, response_class=HTMLResponse)
+    def workbench_privacy():
+        if privacy.is_file():
+            return FileResponse(privacy)
+        return HTMLResponse(
+            "<h1>隐私政策页面尚未构建</h1><p>请在 web-frontend 目录执行 npm run build。</p>",
             status_code=200,
         )
 

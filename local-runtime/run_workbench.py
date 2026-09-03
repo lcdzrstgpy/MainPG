@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import logging
 import os
 import socket
 import subprocess
 import sys
 import threading
 import time
+import traceback
 import webbrowser
+from pathlib import Path
 from urllib.parse import quote
 
 import uvicorn
@@ -174,7 +177,111 @@ def _workbench_url(host: str, port: int, app_version: str) -> str:
     return f"http://{host}:{port}/?app_version={version}"
 
 
+# 日志文件放在数据目录下（与 workbench.sqlite3 同级），避免 read-only 安装目录。
+# 打包运行时在 %APPDATA%\MainPG；源码运行在当前目录。
+def _runtime_log_path() -> Path:
+    header = "WH_LOCAL_RUNTIME_LOGDIR"
+    override_dir = os.environ.get(header)
+    if override_dir:
+        return Path(override_dir) / "runtime.log"
+    if getattr(sys, "frozen", False):
+        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(appdata) / "MainPG" / "runtime.log"
+    return Path.cwd() / "runtime.log"
+
+
+def _configure_runtime_logging() -> Path:
+    """落盘运行日志并接管未捕获异常，使后端启动故障可回传定位。
+
+    打包为 PyInstaller windowed（console=False）且 stdout/stderr 被替换为
+    devnull，任何未捕获异常都会静默丢失（用户只见“页面开了、端口没有”）。
+    这里把日志写入数据目录 runtime.log，并让 uvicorn/内部模块日志同样落盘。
+
+    返回日志文件路径。
+    """
+    log_path = _runtime_log_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        log_path = Path.cwd() / "runtime.log"
+
+    # root logger 同时路由到文件与控制台，关键：uvicorn/内部模块日志都会进来。
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    has_file = any(isinstance(h, logging.FileHandler) for h in root.handlers)
+    has_stream = any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in root.handlers
+    )
+    if not has_file:
+        try:
+            fh = logging.FileHandler(log_path, encoding="utf-8")
+            fh.setFormatter(logging.Formatter(
+                "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"))
+            root.addHandler(fh)
+        except OSError:
+            pass
+    if not has_stream:
+        sh = logging.StreamHandler()
+        sh.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"))
+        root.addHandler(sh)
+
+    # 捕获未捕获异常（主线程与后台线程），写入日志而非静默退出。
+    def _excepthook(exc_type, exc_value, exc_tb):
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        logging.getLogger("run_workbench").critical("UNCAUGHT EXCEPTION:\n%s", text)
+        _show_fatal_box("程序发生未捕获异常，详细信息已写入日志文件，请联系技术支持。")
+
+    def _thread_excepthook(args):
+        _excepthook(args.exc_type, args.exc_value, args.exc_traceback)
+
+    # 避免重复安装 hook（如模块被多次 import）。
+    if not getattr(sys, "_wh_run_excepthook_installed", False):
+        sys.excepthook = _excepthook
+        threading.excepthook = _thread_excepthook
+        sys._wh_run_excepthook_installed = True  # type: ignore[attr-defined]
+
+    logging.getLogger("run_workbench").info(
+        "workbench launcher starting | log=%s | frozen=%s | cwd=%s",
+        log_path, getattr(sys, "frozen", False), os.getcwd())
+    return log_path
+
+
+def _show_fatal_box(message: str) -> None:
+    """弹窗提示严重错误（windowed 模式下用户看不到控制台输出）。"""
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            0, message, "界野电商平台", _MB_ICONWARNING | _MB_DEFBUTTON2)
+    except Exception:
+        pass
+
+
+# uvicorn 默认 LOGGING_CONFIG 会 disable_existing_loggers=True，从而禁用我们
+# 挂到 root 的 file handler。这里用 False，并向三个关键 logger 关闭 propagate，
+# 让其错误也能被 root/file handler 捕获，完整落盘。
+_UVICORN_LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {"format": "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "default"},
+    },
+    "loggers": {
+        "uvicorn": {"handlers": ["console"], "level": "INFO"},
+        "uvicorn.error": {"level": "INFO"},
+        "uvicorn.access": {"level": "WARNING"},
+    },
+}
+
+
 def main() -> int:
+    # 尽早初始化文件日志：即便后端在 import / init_db 阶段崩溃，也能落盘定位。
+    log_path = _configure_runtime_logging()
+    _log = logging.getLogger("run_workbench")
+
     parser = argparse.ArgumentParser(description="H Smart Ecommerce Local Workbench")
     parser.add_argument("--host", default=DEFAULT_HOST, help="监听地址，默认 127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="监听端口，默认 8010")
@@ -189,15 +296,47 @@ def main() -> int:
     if port != args.port:
         print(f"[run-workbench] port {args.port} in use, fallback to {port}")
 
-    from wh_local.app.main import app
-    from wh_local.config import APP_VERSION
+    # 后端 app 在模块导入阶段即执行 create_app()/init_db()；此处捕获其异常并落盘，
+    # 否则 uvicorn 永远不会启动，用户只看到“页面开了、端口没有”且无任何报错。
+    try:
+        from wh_local.app.main import app
+        from wh_local.config import APP_VERSION
+    except BaseException as exc:  # noqa: BLE001 导入期异常需全部捕获
+        _log.critical(
+            "FATAL: failed to import backend / init db.\n%s",
+            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        )
+        _show_fatal_box(
+            "后端启动失败（初始化后端服务/数据库时出错）。\n"
+            f"详细信息已写入日志：{log_path}\n请将此文件反馈给技术支持。"
+        )
+        return 1
 
     url = _workbench_url(args.host, port, APP_VERSION)
     if not args.no_browser:
         _open_browser_later(url)
     print(f"[run-workbench] serving workbench at {url}")
 
-    uvicorn.run(app, host=args.host, port=port, log_level="info", access_log=False)
+    # uvicorn 运行期发生致命异常时同样落盘后退出，避免进程静默消失。
+    try:
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=port,
+            log_level="info",
+            access_log=False,
+            log_config=_UVICORN_LOG_CONFIG,
+        )
+    except BaseException as exc:  # noqa: BLE001 运行期致命异常需全部捕获
+        _log.critical(
+            "FATAL: uvicorn exited.\n%s",
+            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        )
+        _show_fatal_box(
+            "后端服务运行时发生错误并退出。\n"
+            f"详细信息已写入日志：{log_path}\n请将此文件反馈给技术支持。"
+        )
+        return 1
     return 0
 
 
