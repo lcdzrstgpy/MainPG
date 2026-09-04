@@ -324,6 +324,26 @@ def test_settlement_network_failure_keeps_generation_result_retryable(tmp_path: 
     runtime.close()
 
 
+def test_settle_stuck_billing_runs_releases_abandoned_pending_run(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([_grid([_pattern(index) for index in range(4)])])
+    service = _service(tmp_path, runtime, FailingSettlementCoordinator())
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+
+    pending = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
+    assert pending and pending[0]["status"] == "settlement_pending"
+
+    # Swap in a working coordinator so the automatic sweep can settle and release.
+    working = BillingCoordinator()
+    service.billing_coordinator = working
+    settled = service.settle_stuck_billing_runs()
+    assert settled == 1
+    assert service.repository.list_pending_billing_runs(actor.workspace_id, actor.id) == []
+    assert working.settlements, "expected the abandoned run to be settled"
+    service.close()
+    runtime.close()
 def test_pending_billing_run_survives_restart_and_resume_never_replays_provider(tmp_path: Path) -> None:
     database = tmp_path / "workbench.sqlite3"
     runtime = ListingOnlyRuntime([_grid([_pattern(index) for index in range(4)])])
@@ -1133,6 +1153,43 @@ def test_style_grid_retries_one_generation_failure_only_once(tmp_path: Path) -> 
     service.worker.process_batch(batch["id"])
     stored = service.get_batch(actor, batch["id"])
 
+    assert len(runtime.requests) == 3
+    assert sorted(request.attempt for request in runtime.requests) == [1, 1, 2]
+    assert sum("RETRY ATTEMPT 2 OF 2" in request.prompt for request in runtime.requests) == 1
+    assert stored["status"] == "completed"
+    assert stored["completed_count"] == 2
+    service.close()
+    runtime.close()
+
+
+def test_style_grid_auto_retries_transient_generation_failure_once(tmp_path: Path) -> None:
+    from wh_local.modules.pod_customization.worker import _is_retryable_generation_error
+    from wh_local.modules.product_processing.infrastructure.media import MediaProcessingError
+
+    # Classifier: transient/timeout is retryable; billing/auth/non-retryable and
+    # plain errors are not.
+    assert _is_retryable_generation_error(MediaProcessingError("timeout", status_class="transient"))
+    assert _is_retryable_generation_error(MediaProcessingError("bad", status_class="gateway_unavailable"))
+    assert not _is_retryable_generation_error(MediaProcessingError("bad", status_class="non_retryable_4xx"))
+    assert not _is_retryable_generation_error(MediaProcessingError("bad", status_class="billing_forbidden"))
+    assert not _is_retryable_generation_error(RuntimeError("plain"))
+
+    first = [_pattern(index) for index in range(4)]
+    retry = [_pattern(index) for index in range(24, 28)]
+    runtime = ListingOnlyRuntime([
+        MediaProcessingError("速创图片任务超时：slow", status_class="transient"),
+        _grid(first),
+        _grid(retry),
+    ])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"], count=2)
+
+    service.worker.process_batch(batch["id"])
+    stored = service.get_batch(actor, batch["id"])
+
+    # one style failed transiently on attempt 1 and was auto-retried (attempt 2)
     assert len(runtime.requests) == 3
     assert sorted(request.attempt for request in runtime.requests) == [1, 1, 2]
     assert sum("RETRY ATTEMPT 2 OF 2" in request.prompt for request in runtime.requests) == 1

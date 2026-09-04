@@ -43,7 +43,7 @@
 .pod-live-badge { display: inline-flex; align-items: center; gap: 7px; color: var(--pod-text-secondary); font-size: .7rem; font-weight: 800; }
 .pod-live-badge i { width: 8px; height: 8px; border-radius: 50%; background: #1bb99a; box-shadow: 0 0 0 5px rgba(27, 185, 154, .13); animation: pod-pulse 1.2s ease-in-out infinite; }
 
-.pod-page-message { display: flex; align-items: center; gap: 9px; margin: -6px 0 14px; padding: 10px 12px; border: 1px solid #b9e5d7; border-radius: 11px; color: #246f61; background: #effbf7; font-size: .76rem; }
+.pod-page-message { display: flex; align-items: center; gap: 9px; position: fixed; top: 16px; right: 16px; z-index: 50; max-width: min(360px, 90vw); padding: 10px 12px; border: 1px solid #b9e5d7; border-radius: 11px; color: #246f61; background: #effbf7; font-size: .76rem; box-shadow: 0 8px 24px rgba(11, 35, 55, .18); }
 .pod-page-message.is-error { border-color: #edc4c1; color: #a84c48; background: #fff4f3; }
 .pod-page-message > span { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: #fff; background: #2ab398; font-weight: 900; }
 .pod-page-message.is-error > span { background: #d76862; }
@@ -485,7 +485,7 @@
 .pod-listing-sku-dimensions [role="columnheader"] { min-width: 0; padding: 8px 7px; overflow: hidden; color: var(--pod-text); font-size: .58rem; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
 .pod-listing-sku-dimensions [role="columnheader"] { color: var(--pod-text-secondary); background: var(--pod-surface-tint); font-size: .55rem; }
 .pod-listing-legacy-dimensions dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.pod-gallery-header-actions { display: flex; align-items: stretch; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }
+.pod-gallery-header-actions { display: grid; grid-template-columns: auto auto auto; justify-content: end; align-items: start; gap: 8px 12px; flex: 0 0 auto; }
 .pod-dianxiaomi-export { display: grid; align-content: start; justify-items: end; gap: 4px; max-width: 190px; }
 .pod-dianxiaomi-export button { min-height: 34px; padding: 7px 10px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: #fff; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); font-size: .63rem; font-weight: 850; white-space: nowrap; }
 .pod-dianxiaomi-export button:disabled { cursor: not-allowed; color: var(--pod-text-muted); background: var(--pod-surface-soft); border-color: var(--pod-border); opacity: .82; }
@@ -493,13 +493,16 @@
 .pod-open-failed-retry { color: var(--pod-primary) !important; background: var(--pod-surface) !important; }
 .pod-open-failed-retry:hover:not(:disabled) { border-color: var(--pod-primary); background: var(--pod-surface-tint) !important; }
 
-.pod-batch-control { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: flex-end; gap: 6px; }
+.pod-batch-control { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
 .pod-batch-control button { min-height: 34px; padding: 7px 10px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .63rem; font-weight: 850; white-space: nowrap; cursor: pointer; }
 .pod-batch-control button:disabled { cursor: not-allowed; opacity: .55; }
 .pod-batch-resume { color: #fff !important; border-color: transparent !important; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)) !important; }
 .pod-batch-pause:hover:not(:disabled) { border-color: #db9c22; color: #b47c10; background: #fff8ec; }
 .pod-batch-cancel:hover:not(:disabled) { border-color: #d75b52; color: #c34942; background: #fff4f1; }
-.pod-batch-status-detail { grid-column: 1 / -1; color: var(--pod-text-secondary); font-size: .67rem; line-height: 1.35; text-align: right; }
+.pod-batch-status-detail { grid-column: 1 / -1; grid-row: 2; color: var(--pod-text-secondary); font-size: .67rem; line-height: 1.35; text-align: right; }
+.pod-batch-status { grid-column: 1; grid-row: 1; }
+.pod-batch-control { grid-column: 2; grid-row: 1; align-self: center; }
+.pod-dianxiaomi-export { grid-column: 3; grid-row: 1; justify-self: end; }
 
 .pod-failed-retry-backdrop { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(16, 33, 54, .38); }
 .pod-failed-retry-dialog { display: grid; width: min(680px, 100%); max-height: min(720px, calc(100dvh - 40px)); overflow: hidden; border: 1px solid var(--pod-border-strong); border-radius: 18px; background: var(--pod-surface); box-shadow: 0 24px 72px rgba(16, 33, 54, .28); }
@@ -526,6 +529,19 @@
 .pod-failed-retry-dialog > footer button:disabled { cursor: not-allowed; opacity: .55; }
 .pod-failed-retry-dialog > footer .pod-failed-retry-select-all { color: var(--pod-primary); border-color: var(--pod-border-strong); }
 .pod-failed-retry-dialog > footer .pod-failed-retry-confirm { color: #fff; border-color: transparent; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); }
+
+.pod-unsaved-confirm-backdrop { position: fixed; z-index: 300; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(16, 33, 54, .38); }
+.pod-unsaved-confirm-dialog { display: grid; width: min(460px, 100%); overflow: hidden; border: 1px solid var(--pod-border-strong); border-radius: 16px; background: var(--pod-surface); box-shadow: 0 24px 72px rgba(16, 33, 54, .28); }
+.pod-unsaved-confirm-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 18px 20px 14px; border-bottom: 1px solid var(--pod-border); }
+.pod-unsaved-confirm-dialog > header > div > span { color: var(--pod-primary); font-size: .6rem; font-weight: 900; letter-spacing: .12em; }
+.pod-unsaved-confirm-dialog > header h2 { margin: 3px 0 0; color: var(--pod-text); font-size: 1.05rem; }
+.pod-unsaved-confirm-dialog > header > button { width: 30px; height: 30px; flex: 0 0 auto; padding: 0; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-muted); background: var(--pod-surface); font-size: 1rem; }
+.pod-unsaved-confirm-message { margin: 0; padding: 16px 20px; color: var(--pod-text-secondary); font-size: .7rem; line-height: 1.7; }
+.pod-unsaved-confirm-name { color: var(--pod-text); font-weight: 850; }
+.pod-unsaved-confirm-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 20px; border-top: 1px solid var(--pod-border); background: var(--pod-surface-soft); }
+.pod-unsaved-confirm-dialog > footer button { min-height: 32px; padding: 7px 12px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .62rem; font-weight: 850; }
+.pod-unsaved-confirm-dialog > footer button:disabled { cursor: not-allowed; opacity: .55; }
+.pod-unsaved-confirm-dialog > footer .pod-unsaved-confirm-confirm { color: #fff; border-color: transparent; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); }
 
 @keyframes pod-pulse { 50% { opacity: .55; transform: scale(.88); } }
 @keyframes pod-dot { to { opacity: .35; transform: translateY(-3px); } }
@@ -581,6 +597,8 @@
   .pod-failed-retry-groups,
   .pod-failed-retry-dialog > footer { padding-inline: 14px; }
   .pod-failed-retry-dialog > footer { flex-wrap: wrap; }
+  .pod-unsaved-confirm-backdrop { padding: 12px; }
+  .pod-unsaved-confirm-dialog > footer { flex-wrap: wrap; }
   .pod-gallery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
   .pod-style-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pod-style-row > header { align-items: start; }

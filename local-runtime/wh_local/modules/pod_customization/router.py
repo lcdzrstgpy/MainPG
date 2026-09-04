@@ -143,6 +143,11 @@ def create_router(
         permitted(actor, "pod_customization.create")
         return _call(service.cancel_batch, actor, batch_id)
 
+    @router.post("/billing-runs/{run_id}/cancel")
+    def cancel_billing_run(run_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.cancel_billing_run, actor, run_id)
+
     @router.post("/batches/{batch_id}/resume")
     def resume_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")

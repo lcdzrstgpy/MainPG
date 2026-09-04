@@ -228,9 +228,38 @@ export function groupPodStyleRows(
   });
 }
 
-export function batchProgress(batch: { count: number; processed_count: number }): number {
+export function batchProgress(batch: {
+  count: number;
+  processed_count: number;
+  title_completed_count?: number;
+  title_failed_count?: number;
+}): number {
   if (batch.count <= 0) return 0;
-  return Math.min(100, Math.max(0, Math.round((batch.processed_count / batch.count) * 100)));
+  // Each style needs one image bundle AND one title, so a batch is "100%" only
+  // once both the image and title phases settle (done or failed). This keeps
+  // the bar from reporting fully complete while titles are still generating.
+  const totalUnits = batch.count * 2;
+  const imageUnits = Math.min(batch.processed_count, batch.count);
+  const titleUnits = Math.min(
+    (batch.title_completed_count ?? 0) + (batch.title_failed_count ?? 0),
+    batch.count,
+  );
+  return Math.min(100, Math.max(0, Math.round(((imageUnits + titleUnits) / totalUnits) * 100)));
+}
+
+export function podBatchProgressCounts(batch: {
+  count: number;
+  processed_count: number;
+  title_completed_count?: number;
+  title_failed_count?: number;
+}): { image: number; title: number } {
+  return {
+    image: Math.min(batch.processed_count, batch.count),
+    title: Math.min(
+      (batch.title_completed_count ?? 0) + (batch.title_failed_count ?? 0),
+      batch.count,
+    ),
+  };
 }
 
 export function formatPodBatchWaitingTime(createdAt: string, now = Date.now()): string {
@@ -367,9 +396,9 @@ export function podBatchStatusLabel(
   }
   return {
     queued: "等待启动",
-    generating_patterns: "生成图片",
-    compositing: "拆分并发布",
-    generating_titles: "生成标题",
+    generating_patterns: "生成中",
+    compositing: "生成中",
+    generating_titles: "生成中",
     pausing: "暂停中",
     paused: "已暂停",
     cancelling: "取消中",
@@ -381,17 +410,25 @@ export function podBatchStatusLabel(
   }[status];
 }
 
-export function podBatchStatusDetail(status: PodBatchStatus): string {
-  if (status === "pausing") return "已提交的款正在完成，其余款不会继续发起。";
-  if (status === "paused") return "已暂停，可继续剩余款式。";
+export function podBatchStatusDetail(status: PodBatchStatus, submittedCount?: number): string {
+  if (status === "pausing") {
+    return submittedCount !== undefined && submittedCount > 0
+      ? `已提交款式：${submittedCount}，已提交的款正在完成，其余款不会继续发起。`
+      : "已提交的款正在完成，其余款不会继续发起。";
+  }
+  if (status === "paused") {
+    return submittedCount !== undefined && submittedCount > 0
+      ? `已提交款式：${submittedCount}，已暂停，可继续剩余款式。`
+      : "已暂停，可继续剩余款式。";
+  }
   return "";
 }
 
 export function podItemStatusLabel(status: string): string {
   return ({
     queued: "等待中",
-    generating_pattern: "生成图片",
-    compositing: "拆分并发布",
+    generating_pattern: "生成中",
+    compositing: "生成中",
     completed: "已完成",
     failed: "失败",
     optimizing_scene: "优化场景",

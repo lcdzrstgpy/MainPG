@@ -608,6 +608,42 @@ def test_reprocessing_completed_images_skips_title_when_initial_calls_are_exhaus
     images.close()
 
 
+def test_orphaned_queued_title_with_complete_images_becomes_retryable(tmp_path: Path) -> None:
+    images = ImageRuntime([_grid(24), _grid(25)])
+    titles = TitleRuntime()
+    service = _service(tmp_path, images, titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"], count=2), enqueue=False)
+    service.worker.process_batch(batch["id"])
+    before = service.get_batch(actor, batch["id"])
+    assert before["style_titles"][0]["status"] == "completed"
+    # Reproduce the orphan: a style whose four public images finished, but whose
+    # title was never submitted (left queued with an empty task id). The normal
+    # image pipeline would skip it (no planned title call) and the settle step
+    # leaves it queued forever, unrecoverable by any retry path.
+    with service.repository._connect() as connection:
+        connection.execute(
+            """UPDATE pod_customization_style_titles
+               SET status = 'queued', style_task_id = '', title = '', normalized_title = NULL,
+                   visual_tags_json = '{}', attempt_count = 0, error_message = '', updated_at = ?
+               WHERE batch_id = ? AND style_index = 1""",
+            ("2099-01-01T00:00:00+00:00", batch["id"]),
+        )
+    changed = service.repository.fail_orphaned_complete_titles(batch["id"], "orphan title")
+    assert changed == 1
+    refreshed = service.get_batch(actor, batch["id"])
+    orphan = next(t for t in refreshed["style_titles"] if t["style_index"] == 1)
+    healthy = next(t for t in refreshed["style_titles"] if t["style_index"] == 2)
+    assert orphan["status"] == "failed"
+    assert orphan["style_task_id"] != ""
+    assert "未执行" in orphan["error_message"] or "orphan" in orphan["error_message"].lower()
+    assert healthy["status"] == "completed"
+    service.close()
+    titles.close()
+    images.close()
+
+
 def test_completed_title_regeneration_is_free_and_preserves_export_selection(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(22)])
     titles = TitleRuntime()

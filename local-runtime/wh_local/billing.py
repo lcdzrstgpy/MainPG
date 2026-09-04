@@ -1224,6 +1224,9 @@ DEFAULT_BATCH_FREEZE_PER_LINK = 400  # 固定 40 积分/链接（400 单位）�
 # TTL 兜底：客户端正常结算失败后，超过该天数仍未结算的冻结批次由服务端自动全额释放。
 # 主路径已改为客户端任务终态即时结算，此值仅兜底客户端崩溃/永久失联场景（2 天兼顾成本与体验）。
 BATCH_FREEZE_TTL_DAYS = 2
+# 超时未结算冻结积分的释放比例（百分比）：退还该比例的积分，其余由服务端留存。
+# 仅在服务端 TTL 清扫时生效，不向客户端提示。
+BATCH_EXPIRY_RELEASE_PERCENT = 85
 # 重试溢价：链接发生过 AI 重试/重绘/修复时，该链接加收 10 积分（100 单位）。
 # 语义是「单条链接计一次重试溢价」，不按重试次数累加，也不跨链接共享。
 RETRY_PREMIUM_UNITS = 100
@@ -2186,6 +2189,11 @@ def release_expired_batch_freezes(database_path: Path, *, now_iso: str = "") -> 
     """TTL sweep: release frozen points for batches past their expiry.
 
     Called periodically by the auth server; returns the number of releases.
+
+    Expiry releases refund only ``BATCH_EXPIRY_RELEASE_PERCENT`` (85%) of the frozen
+    points back to the wallet; the retained remainder stays with the server. The
+    retain is recorded in the server-side ledger only and is never surfaced to
+    the client.
     """
     now_iso = now_iso or _utc_now()
     released = 0
@@ -2198,6 +2206,9 @@ def release_expired_batch_freezes(database_path: Path, *, now_iso: str = "") -> 
             (now_iso,),
         ).fetchall()
         for freeze in rows:
+            frozen_units = int(freeze["frozen_points"])
+            release_units = frozen_units * BATCH_EXPIRY_RELEASE_PERCENT // 100
+            retained_units = frozen_units - release_units
             conn.execute(
                 """
                 UPDATE billing_batch_freezes
@@ -2211,21 +2222,34 @@ def release_expired_batch_freezes(database_path: Path, *, now_iso: str = "") -> 
                 account_id=str(freeze["account_id"]),
                 workspace_id=str(freeze["workspace_id"] or "default"),
                 direction="unlock",
-                points_delta=int(freeze["frozen_points"]),
+                points_delta=release_units,
                 source_type="batch_expiry_release",
                 source_id=str(freeze["freeze_id"]),
                 idempotency_key=f"batch_expiry:{freeze['freeze_id']}:unlock",
-                metadata={"link_count": int(freeze["link_count"])},
+                metadata={"link_count": int(freeze["link_count"]), "retained_units": retained_units},
             )
+            if retained_units:
+                _append_ledger(
+                    conn,
+                    account_id=str(freeze["account_id"]),
+                    workspace_id=str(freeze["workspace_id"] or "default"),
+                    direction="debit",
+                    points_delta=retained_units,
+                    source_type="batch_expiry_retain",
+                    source_id=str(freeze["freeze_id"]),
+                    idempotency_key=f"batch_expiry:{freeze['freeze_id']}:retain",
+                    metadata={"link_count": int(freeze["link_count"])},
+                )
             conn.execute(
                 """
                 UPDATE billing_wallets
-                SET locked_points = locked_points - ?,
+                SET points_balance = points_balance - ?,
+                    locked_points = locked_points - ?,
                     version = version + 1,
                     updated_at = ?
                 WHERE account_id = ?
                 """,
-                (int(freeze["frozen_points"]), _utc_now(), str(freeze["account_id"])),
+                (retained_units, frozen_units, _utc_now(), str(freeze["account_id"])),
             )
             released += 1
     return released

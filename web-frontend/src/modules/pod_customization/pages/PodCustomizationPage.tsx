@@ -6,6 +6,7 @@ import { PodBatchHistory } from "../components/PodBatchHistory";
 import { PodFailedRetryDialog } from "../components/PodFailedRetryDialog";
 import { PodResultLightbox } from "../components/PodResultLightbox";
 import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
+import { PodUnsavedTemplateConfirmDialog } from "../components/PodUnsavedTemplateConfirmDialog";
 import {
   POD_BATCH_COUNTS,
   buildPromptV1,
@@ -124,6 +125,26 @@ function sortBatches(batches: PodBatchSummary[]): PodBatchSummary[] {
   return [...batches].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
 }
 
+const EMPTY_BUSINESS_FIELDS_FOR_SWITCH: Record<keyof PodBusinessFieldsDraft, string> = {
+  product_name: "",
+  product_category: "",
+  target_market: "",
+  target_audience: "",
+  core_selling_points: "",
+  design_theme: "",
+  style_keywords: "",
+  color_preferences: "",
+  excluded_elements: "",
+};
+
+const EMPTY_LISTING_FIELDS_FOR_SWITCH: PodListingFieldsDraft = {
+  title_mode: "long",
+  declared_price: "",
+  suggested_price_usd: "",
+  category_name: "",
+  skus: [{ name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
+};
+
 function replaceTemplate(templates: PodTemplate[], updated: PodTemplate): PodTemplate[] {
   return templates.some((template) => template.id === updated.id)
     ? templates.map((template) => template.id === updated.id ? updated : template)
@@ -157,6 +178,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [failedRetryOpen, setFailedRetryOpen] = useState(false);
+  const [pendingTemplateSwitch, setPendingTemplateSwitch] = useState<string | null>(null);
+  const [switchingTemplate, setSwitchingTemplate] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState("");
   const [notice, setNotice] = useState("");
@@ -165,6 +188,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [visibility, setVisibility] = useState<DocumentVisibilityState>(() => document.visibilityState);
   const requestGenerationRef = useRef(0);
   const lastDraftSaveErrorRef = useRef("");
+  const activeBatchEpochRef = useRef(0);
   const businessTextareasRef = useRef<Array<HTMLTextAreaElement | null>>([]);
 
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId);
@@ -292,6 +316,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     if (!result.ok && lastDraftSaveErrorRef.current !== result.error) {
       lastDraftSaveErrorRef.current = result.error;
       setError(result.error);
+    } else if (result.ok) {
+      lastDraftSaveErrorRef.current = "";
     }
   }, [batchCount, businessFields, currentBatchEdit, customCountInput, customCountMode, draftScope?.accountId, draftScope?.workspaceId, listingFields, selectedTemplateId, systemTemplates]);
 
@@ -302,7 +328,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       if (!textarea) return;
       autoGrowBusinessTextarea(textarea);
     });
-  }, [businessFields.core_selling_points, businessFields.excluded_elements]);
+  }, [businessFields]);
 
   const clearMessages = () => {
     setNotice("");
@@ -342,8 +368,40 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   };
 
   const selectTemplate = (templateId: string) => {
+    if (templateId === selectedTemplateId) {
+      setSelectedTemplateSnapshot(null);
+      return;
+    }
+    const currentTemplateHasArchive = systemTemplates.some((template) => template.templateId === selectedTemplateId);
+    const formHasContent = Object.values(businessFields).some((value) => value.trim())
+      || listingFields.declared_price.trim() || listingFields.suggested_price_usd.trim()
+      || listingFields.category_name.trim() || listingFields.skus.some((sku) => Object.values(sku).some((value) => value.trim()));
+    if (!currentTemplateHasArchive && selectedTemplateId && formHasContent) {
+      setPendingTemplateSwitch(templateId);
+      return;
+    }
+    applyTemplateSwitch(templateId);
+  };
+
+  const applyTemplateSwitch = (templateId: string) => {
     setSelectedTemplateId(templateId);
     setSelectedTemplateSnapshot(null);
+    setCurrentBatchEdit(null);
+    setBusinessFields({ ...EMPTY_BUSINESS_FIELDS_FOR_SWITCH });
+    setListingFields({ ...EMPTY_LISTING_FIELDS_FOR_SWITCH });
+    setSkuFieldErrors({});
+    setAdvancedOpen(false);
+  };
+
+  const confirmTemplateSwitch = () => {
+    const templateId = pendingTemplateSwitch;
+    if (!templateId) return;
+    setSwitchingTemplate(true);
+    applyTemplateSwitch(templateId);
+    setSwitchingTemplate(false);
+    setPendingTemplateSwitch(null);
+    setTemplateDrawerOpen(false);
+    setNotice(`已切换到新模板，表单预设已清空。`);
   };
 
   const saveCurrentAsSystemTemplate = () => {
@@ -400,6 +458,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     clearMessages();
     try {
       const batch = await podCustomizationApi.getBatch(batchId);
+      activeBatchEpochRef.current += 1;
       setActiveBatch(batch);
       setSelectedItemId(undefined);
     } catch (cause) {
@@ -452,6 +511,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         listing_fields: normalizedListingFields,
         creative_prompt: resolvedPrompt,
       });
+      activeBatchEpochRef.current += 1;
       setActiveBatch(created);
       setSelectedItemId(undefined);
       setBatches((current) => sortBatches([toSummary(created), ...current.filter((batch) => batch.id !== created.id)]));
@@ -513,8 +573,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   };
 
   const refreshActiveBatch = async (batchId: string) => {
+    const epoch = activeBatchEpochRef.current;
     try {
       const fresh = await podCustomizationApi.getBatch(batchId);
+      if (epoch !== activeBatchEpochRef.current) return;
       setActiveBatch(fresh);
       setBatches((current) => sortBatches([toSummary(fresh), ...current.filter((batch) => batch.id !== fresh.id)]));
     } catch {
@@ -565,7 +627,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     const previousSelected = activeBatch.style_titles?.find((title) => title.style_index === styleIndex)?.export_selected ?? true;
     const previousExportStatus = activeBatch.dianxiaomi_export;
     const selectionDelta = selected === previousSelected ? 0 : selected ? 1 : -1;
-    setBusyAction(`update-export-selection:${styleIndex}`);
     clearMessages();
     setActiveBatch((current) => current ? {
       ...current,
@@ -584,7 +645,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         ...current,
         style_titles: current.style_titles?.map((title) => title.style_index === updated.style_index ? { ...title, export_selected: updated.export_selected } : title),
       } : current);
-      setNotice(updated.export_selected ? `款式 #${styleIndex} 已选中，导出时会包含该款。` : `款式 #${styleIndex} 已取消选中，导出时会剔除该款。`);
+
     } catch (cause) {
       setActiveBatch((current) => current ? {
         ...current,
@@ -592,8 +653,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         style_titles: current.style_titles?.map((title) => title.style_index === styleIndex ? { ...title, export_selected: previousSelected } : title),
       } : current);
       setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusyAction("");
     }
   };
 
@@ -623,7 +682,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     clearMessages();
     try {
       await podCustomizationApi.pauseBatch(activeBatch.id);
-      setNotice("已请求暂停：已提交的款会完成整款，其余款不会继续发起。");
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -638,7 +696,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     clearMessages();
     try {
       await podCustomizationApi.cancelBatch(activeBatch.id);
-      setNotice("已请求取消，正在停止批次。");
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -653,7 +710,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     clearMessages();
     try {
       await podCustomizationApi.resumeBatch(activeBatch.id);
-      setNotice("已提交继续，任务将在后台继续。");
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -717,22 +773,19 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         </div>
       </header>
 
-      {(notice || error) && <div className={`pod-page-message ${error ? "is-error" : ""}`} role={error ? "alert" : "status"}><span>{error ? "!" : "✓"}</span><p>{error || notice}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
+      {error && <div className="pod-page-message is-error" role="alert"><span>!</span><p>{error}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
 
       <div className="pod-workbench-grid">
         <aside className="pod-setup-column pod-brief-sidebar">
           <section className="pod-setup-card pod-business-editor">
             <div className="pod-section-title"><span>BRIEF EDITOR</span><h2>业务信息编辑</h2><small>用于直出 Prompt</small></div>
             <div className="pod-business-fields">
-              {BUSINESS_FIELDS.map((field, fieldIndex) => {
-                const multilineIndex = BUSINESS_FIELDS.slice(0, fieldIndex).filter((f) => f.multiline).length;
-                return <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}</span>{field.multiline
-                  ? <textarea rows={1} ref={(el) => { businessTextareasRef.current[multilineIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
-                    updateBusinessField(field.key, event.currentTarget.value);
-                    autoGrowBusinessTextarea(event.currentTarget);
-                  }} />
-                  : <input value={businessFields[field.key]} onChange={(event) => updateBusinessField(field.key, event.target.value)} />}</label>;
-              })}
+              {BUSINESS_FIELDS.map((field, fieldIndex) => (
+                <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}</span><textarea rows={1} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
+                  updateBusinessField(field.key, event.currentTarget.value);
+                  autoGrowBusinessTextarea(event.currentTarget);
+                }} /></label>
+              ))}
             </div>
             <section className="pod-listing-fields" aria-labelledby="pod-dianxiaomi-listing-title">
               <div className="pod-listing-fields-heading"><span>DIANXIAOMI LISTING</span><h3 id="pod-dianxiaomi-listing-title">店小秘上架信息</h3><small>创建批次时保存为不可缺失的上架快照</small></div>
@@ -843,6 +896,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         onUpload={uploadTemplate}
         onCalibrate={calibrateTemplate}
         onSaveCalibration={saveTemplateCalibration}
+      />
+
+      <PodUnsavedTemplateConfirmDialog
+        open={Boolean(pendingTemplateSwitch)}
+        templateName={selectedTemplate?.name ?? ""}
+        busy={switchingTemplate}
+        onClose={() => setPendingTemplateSwitch(null)}
+        onConfirm={confirmTemplateSwitch}
       />
     </section>
   );

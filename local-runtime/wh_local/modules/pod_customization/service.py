@@ -42,6 +42,7 @@ from .runtime_contracts import (
     PodAiRuntime,
 )
 from .title_runtime import PodTitleRequest, visual_signature
+from .theme_registry import ThemeRegistry
 from .worker import PodBatchWorker, PodBillingRun, POD_PROGRESS_TIMEOUT_SECONDS
 
 
@@ -66,6 +67,7 @@ class PodCustomizationService:
         if start_workers:
             self.repository.recover_interrupted_batches()
             self.repository.recover_billing_runs()
+        theme_registry = self._build_theme_registry(asset_root)
         self.worker = (
             PodBatchWorker(
                 self.repository,
@@ -73,6 +75,7 @@ class PodCustomizationService:
                 ai_runtime,
                 title_runtime=title_runtime,
                 coordinator_workers=getattr(ai_runtime, "batch_workers", 1),
+                theme_registry=theme_registry,
             )
             if start_workers
             else None
@@ -89,6 +92,27 @@ class PodCustomizationService:
         self._reaper_thread: threading.Thread | None = None
         if start_workers:
             self._start_reaper()
+
+    @staticmethod
+    def _build_theme_registry(asset_root: Path) -> ThemeRegistry:
+        """Create the theme registry, optionally wired to Doubao for enrichment.
+
+        Construction never fails startup: if the Ark client cannot be built
+        (unconfigured credentials), the registry still loads and layers any
+        persisted Doubao-learned pools, it just won't generate new ones.
+        """
+        registry_path = Path(asset_root) / "pod_theme_registry.json"
+        complete = None
+        try:
+            from wh_local.modules.product_processing.doubao_ark import DoubaoArkClient, DoubaoArkError
+
+            try:
+                complete = DoubaoArkClient(usage_kind="text").complete
+            except DoubaoArkError:
+                complete = None
+        except Exception:
+            complete = None
+        return ThemeRegistry(registry_path, complete=complete)
 
     def upload_template(
         self,
@@ -804,6 +828,7 @@ class PodCustomizationService:
         while not self._reaper_stop.wait(timeout=60.0):
             try:
                 self.reap_stuck_batches_once()
+                self.settle_stuck_billing_runs()
             except Exception as exc:
                 logger.warning("POD reaper encountered an error: %s", exc)
 
@@ -1015,6 +1040,138 @@ class PodCustomizationService:
         return self._billing_run_payload(
             self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
         )
+
+    def cancel_billing_run(self, actor: Actor, run_id: str) -> dict[str, Any]:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        stored = self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+        if stored["status"] != "settlement_pending":
+            raise PodRepositoryError("POD billing run is not cancellable", 409)
+        plan = self._billing_plan(stored["plan"])
+        has_planned_calls = any(
+            outcome["status"] == "planned" for outcome in stored["outcomes"]
+        )
+        settlement_grant = getattr(self.billing_coordinator, "settlement_grant", None)
+        try:
+            if not has_planned_calls and callable(settlement_grant):
+                grant = settlement_grant(
+                    actor,
+                    stored["freeze_id"],
+                    rule_version=stored["rule_version"],
+                    expires_at=stored["grant_expires_at"],
+                )
+            else:
+                grant = self.billing_coordinator.regrant(actor, stored["freeze_id"])
+        except CustomerBillingPermissionError:
+            self.repository.mark_billing_pending(
+                stored["action_key"], "POD billing service authentication failed"
+            )
+            raise
+        except Exception as exc:
+            self.repository.mark_billing_pending(stored["action_key"], str(exc))
+            raise
+        if grant.freeze_id != stored["freeze_id"]:
+            raise RuntimeError("POD billing service returned a mismatched freeze")
+        self.repository.mark_billing_authorized(
+            stored["action_key"], rule_version=grant.rule_version, expires_at=grant.expires_at
+        )
+        run = PodBillingRun(
+            actor,
+            self.billing_coordinator,
+            plan,
+            grant,
+            repository=self.repository,
+            action_key=stored["action_key"],
+            resumed=True,
+        )
+        try:
+            run.settle()
+        except Exception as exc:
+            self.repository.mark_billing_pending(stored["action_key"], str(exc))
+            raise
+        if stored["action_type"] == "direct_trial":
+            self.repository.fail_direct_listing_trial(
+                stored["target_id"],
+                actor.workspace_id,
+                actor.id,
+                "POD 试用已取消，冻结积分将按结算结果释放",
+            )
+        return self._billing_run_payload(
+            self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+        )
+
+
+    def _settle_stored_billing_run(self, stored: dict[str, Any]) -> None:
+        """Rebuild a persisted run and settle it, releasing unearned frozen points.
+
+        Only runs whose outcomes are all terminal (no ``started``) can be settled
+        safely.  An interrupted provider call with an unknown outcome is left
+        ``settlement_pending`` for manual review instead of being guessed.
+        """
+        if any(outcome["status"] == "started" for outcome in stored["outcomes"]):
+            raise PodRepositoryError(
+                "POD provider call outcome is uncertain after interruption; automatic settle blocked", 409
+            )
+        actor = Actor(
+            id=str(stored["owner_user_id"]),
+            username="",
+            role="",
+            workspace_id=str(stored["workspace_id"]),
+        )
+        plan = self._billing_plan(stored["plan"])
+        settlement_grant = getattr(self.billing_coordinator, "settlement_grant", None)
+        try:
+            if callable(settlement_grant):
+                grant = settlement_grant(
+                    actor,
+                    stored["freeze_id"],
+                    rule_version=stored["rule_version"],
+                    expires_at=stored["grant_expires_at"],
+                )
+            else:
+                grant = self.billing_coordinator.regrant(actor, stored["freeze_id"])
+        except CustomerBillingPermissionError:
+            self.repository.mark_billing_pending(
+                stored["action_key"], "POD billing service authentication failed"
+            )
+            raise
+        except Exception as exc:
+            self.repository.mark_billing_pending(stored["action_key"], str(exc))
+            raise
+        if grant.freeze_id != stored["freeze_id"]:
+            raise RuntimeError("POD billing service returned a mismatched freeze")
+        self.repository.mark_billing_authorized(
+            stored["action_key"], rule_version=grant.rule_version, expires_at=grant.expires_at
+        )
+        run = PodBillingRun(
+            actor,
+            self.billing_coordinator,
+            plan,
+            grant,
+            repository=self.repository,
+            action_key=stored["action_key"],
+            resumed=True,
+        )
+        run.settle()
+
+    def settle_stuck_billing_runs(self) -> int:
+        """Settle abandoned ``settlement_pending`` runs so frozen points are released.
+
+        Runs with genuinely uncertain (``started``) provider outcomes are skipped
+        and remain ``settlement_pending`` for a human to reconcile.
+        """
+        if self.billing_coordinator is None:
+            return 0
+        settled = 0
+        for run_id, workspace_id, owner_user_id in self.repository.list_settlement_pending_runs():
+            try:
+                stored = self.repository.get_billing_run(run_id, workspace_id, owner_user_id)
+                self._settle_stored_billing_run(stored)
+                settled += 1
+            except Exception:
+                # Transient or uncertain (started) — leave pending for a later sweep.
+                continue
+        return settled
 
     def asset_info(self, actor: Actor, asset_id: str) -> dict[str, Any]:
         return self.repository.get_asset(asset_id, actor.workspace_id, actor.id)

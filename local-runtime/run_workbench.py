@@ -160,6 +160,39 @@ def _first_free_port(host: str, start: int) -> int:
     raise RuntimeError("no free port available in range")
 
 
+def _bind_server_socket(host: str, start_port: int, attempts: int = 50) -> tuple[socket.socket, int]:
+    """原子式绑定监听端口，避开「先探测再绑定」的竞态。
+
+    _first_free_port 用 connect_ex 探测端口空闲，然后才把选择交给 uvicorn 去 bind。
+    当桌面端在极短时间内并发拉起多个后端实例时，每个实例都在任何一方 bind 之前
+    探测出 8010 空闲，于是全都选中 8010，接着一起 bind，只有一个成功，其余报
+    WinError 10048（地址已被占用）并触发“后端服务运行时发生错误并退出”弹窗。
+
+    这里直接自己 bind：bind 本身具备原子性，同一端口只有第一个实例能成功，失败方
+    立即落入下一个端口，从而彻底消除该竞态。绑定成功的 socket 用 sockets=[sock]
+    交给 uvicorn（Server.run(sockets=[sock])），避免 uvicorn 再次重复绑定。
+
+    返回 (sock, actual_port)；若范围内全部被占用则抛出 OSError。
+    """
+    for port in range(start_port, start_port + attempts):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            if os.name != "nt":
+                # POSIX：允许快速重启（TIME_WAIT），但处于 LISTEN 的活跃端口仍会
+                # 因 EADDRINUSE 而绑定失败，独占性不受影响。
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Windows 下默认 bind 即独占：同一活跃端口第二次 bind 会报 WinError
+            # 10048。务必不要设置 SO_REUSEADDR，否则将允许两个监听器共用同一端口，
+            # 反而破坏本函数的防竞态目的。
+            sock.bind((host, port))
+            # 交给 asyncio create_server 前无需手动 listen/setblocking，其内部处理。
+            return sock, port
+        except OSError:
+            sock.close()
+            continue
+    raise OSError("no free port available in range")
+
+
 def _open_browser_later(url: str, delay: float = 2.5) -> None:
     def _open() -> None:
         time.sleep(delay)
@@ -288,11 +321,22 @@ def main() -> int:
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     args = parser.parse_args()
 
-    # 默认端口被占时：弹窗征询用户，同意后自动释放占用进程（插件默认只连默认端口）。
+    # 默认端口被占时：尝试释放占用进程（插件默认只连默认端口）。这里的探测用于
+    # 释放「历史残留」实例；真正的端口独占由下方 _bind_server_socket 的原子 bind
+    # 保证，防止并发拉起时多个实例竞态选中同一端口导致 WinError 10048 崩溃弹窗。
     if args.port == DEFAULT_PORT and _port_in_use(args.host, args.port):
         _release_default_port(args.host, args.port)
 
-    port = _first_free_port(args.host, args.port)
+    try:
+        sock, port = _bind_server_socket(args.host, args.port)
+    except OSError:
+        _log.critical(
+            "FATAL: no free port available in range starting at %s.", args.port)
+        _show_fatal_box(
+            "后端服务启动失败（端口全部被占用）。\n"
+            f"详细信息已写入日志：{log_path}\n请将此文件反馈给技术支持。"
+        )
+        return 1
     if port != args.port:
         print(f"[run-workbench] port {args.port} in use, fallback to {port}")
 
@@ -318,8 +362,10 @@ def main() -> int:
     print(f"[run-workbench] serving workbench at {url}")
 
     # uvicorn 运行期发生致命异常时同样落盘后退出，避免进程静默消失。
+    # 用已绑定好的 sock 通过 sockets=[sock] 交给 uvicorn，避免其再次 bind 触发
+    # 端口竞态；port/host 仅用于日志与 URL 显示。
     try:
-        uvicorn.run(
+        config = uvicorn.Config(
             app,
             host=args.host,
             port=port,
@@ -327,6 +373,7 @@ def main() -> int:
             access_log=False,
             log_config=_UVICORN_LOG_CONFIG,
         )
+        uvicorn.Server(config).run(sockets=[sock])
     except BaseException as exc:  # noqa: BLE001 运行期致命异常需全部捕获
         _log.critical(
             "FATAL: uvicorn exited.\n%s",

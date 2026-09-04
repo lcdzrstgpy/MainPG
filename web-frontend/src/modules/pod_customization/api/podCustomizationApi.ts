@@ -33,6 +33,18 @@ async function uploadTemplate(file: File, name: string): Promise<PodTemplate> {
   return payload as PodTemplate;
 }
 
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+}
+
 async function downloadAsset(path: string, filename: string): Promise<void> {
   const blob = /^https?:\/\//i.test(path)
     ? await fetch(path).then((response) => {
@@ -40,12 +52,7 @@ async function downloadAsset(path: string, filename: string): Promise<void> {
       return response.blob();
     })
     : await httpBlob(path);
-  const objectUrl = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = filename;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+  triggerBlobDownload(blob, filename);
 }
 
 export type PodDianxiaomiExportDownload = {
@@ -60,12 +67,7 @@ export type PodBatchRetryResult = {
 };
 
 function saveBlob(blob: Blob, filename: string): void {
-  const objectUrl = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = filename;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+  triggerBlobDownload(blob, filename);
 }
 
 async function exportDianxiaomi(batchId: string): Promise<PodDianxiaomiExportDownload> {
