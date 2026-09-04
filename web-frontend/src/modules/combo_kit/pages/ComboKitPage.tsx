@@ -110,12 +110,16 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyList, setHistoryList] = useState<ComboKitSet[]>([]);
   const saveTimer = useRef<Record<string, number>>({});
+  const refreshSeqRef = useRef(0);
+  const openSetSeqRef = useRef(0);
 
   const notify = useCallback((ok: string) => { setMessage(ok); setError(''); }, []);
   const fail = useCallback((e: unknown) => { setError(e instanceof Error ? e.message : String(e)); setMessage(''); }, []);
 
   const refreshSet = useCallback(async (sid: string) => {
+    const seq = ++refreshSeqRef.current;
     const data = await getSet(ctx, sid);
+    if (seq !== refreshSeqRef.current) return;
     setSet(data);
     setForm((f) => ({
       ...f,
@@ -147,10 +151,13 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
   }, [isActive, ctx, fail]);
 
   const openSet = useCallback(async (sid: string) => {
+    const seq = ++openSetSeqRef.current;
     setLoading(true);
     try {
       await refreshSet(sid);
+      if (seq !== openSetSeqRef.current) return;
       const full = await getSet(ctx, sid);
+      if (seq !== openSetSeqRef.current) return;
       const p = (full.prompt || {}) as Record<string, unknown>;
       const storedBase = String(p.base_prompt_a || '').trim();
       const storedRoles = ((p.image_prompts as Record<string, string>) || {}) as Record<string, string>;
@@ -184,6 +191,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
         setPrompts(imagePrompts);
         await savePrompt(ctx, sid, { base_prompt_a: t.base_prompt_a, image_prompts: imagePrompts }).catch(() => undefined);
       }
+      if (seq !== openSetSeqRef.current) return;
       setStep(1);
       setDrawerOpen(false);
       setSelectedItemId((full.items[0] as ComboKitItem | undefined)?.item_id ?? null);
@@ -305,7 +313,8 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
     if (!set) return;
     // 乐观更新：本地先把该成员标为主要、其余取消，再请求后端持久化（失败时刷新回滚）。
     setSet((s) => (s ? { ...s, items: s.items.map((it) => ({ ...it, is_primary: it.item_id === itemId })) } : s));
-    try { await setPrimaryItem(ctx, set.set_id, itemId); } catch (e) { fail(e); }
+    try { await setPrimaryItem(ctx, set.set_id, itemId); }
+    catch (e) { fail(e); await refreshSet(set.set_id).catch(() => undefined); }
   };
 
   const onAnalyze = async () => {

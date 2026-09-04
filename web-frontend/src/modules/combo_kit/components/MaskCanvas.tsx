@@ -65,7 +65,7 @@ export function MaskCanvas({ setId, item, onSaveMask }: Props) {
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, [points, inverted]);
+  }, [points, inverted, view]);
 
   const localPoint = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
     const canvas = canvasRef.current!;
@@ -169,6 +169,8 @@ export function MaskCanvas({ setId, item, onSaveMask }: Props) {
                 // 只登记图像对象；画布尺寸由下方 ResizeObserver 跟随显示区域设定，
                 // 保证画布坐标与屏幕坐标 1:1，避免 objectFit 留边导致命中偏移。
                 imageRef.current = e.currentTarget;
+                const canvas = canvasRef.current;
+                if (canvas) draw(canvas, points, inverted, e.currentTarget);
               }}
               referrerPolicy="no-referrer"
             />

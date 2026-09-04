@@ -224,7 +224,10 @@ def create_combo_kit_router(
     def generated_asset(
         set_id: str, name: str, actor: Actor = Depends(actor_from_query_token)
     ) -> FileResponse:
-        base = service.repository.get_set(set_id)
+        try:
+            base = service.repository.get_set(set_id)
+        except KeyError:
+            raise HTTPException(404, "set not found") from None
         outputs = _read_json(base.get("image_results_json") or "[]")
         item = next((o for o in outputs if str(o.get("role") or "") == Path(name).stem), None)
         if item is None:

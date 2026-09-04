@@ -237,13 +237,13 @@ def generate_combo_text(prompt: str) -> dict[str, Any]:
 
     成功才返回内容；失败抛 ComboKitValidationError（由调用方决定扣费成败）。
     """
-    client = _ark_client()
     schema_prompt = (
         f"{prompt}\n\n"
         "Respond with exactly one JSON object and no Markdown, no extra text:\n"
         '{"title": "...", "description": "...", "bullets": ["...","...","...","...","..."]}'
     )
     try:
+        client = _ark_client()
         content = client.complete([{"role": "user", "content": schema_prompt}])
     except DoubaoArkError as exc:
         raise ComboKitValidationError(f"文本生成失败：{str(exc)[:200]}") from exc
