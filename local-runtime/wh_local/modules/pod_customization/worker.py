@@ -40,6 +40,19 @@ POD_PROGRESS_TIMEOUT_SECONDS: int = 900
 # How often the deadline-aware wait loop polls for new completions.
 POD_WAIT_POLL_SECONDS: float = 5.0
 
+# Provider status classes whose failure should be auto-retried once on the first
+# image-generation attempt (e.g. the 600s polling timeout is "transient"). These
+# mirror the retryable classes used by the media provider runtime.
+_RETRYABLE_PROVIDER_STATUS_CLASSES = frozenset({
+    "transient", "server_error", "rate_limited", "connection_error",
+    "unknown_outcome_timeout", "invalid_response",
+    "gateway_unavailable", "gateway_bad_response", "gateway_in_progress",
+})
+
+
+def _is_retryable_generation_error(exc: BaseException) -> bool:
+    return str(getattr(exc, "status_class", "") or "") in _RETRYABLE_PROVIDER_STATUS_CLASSES
+
 
 class PodBatchCancelled(RuntimeClosedError):
     """Raised from a batch control checkpoint when the batch was cancelled."""
@@ -173,11 +186,13 @@ class PodBatchWorker:
         *,
         title_runtime: Any | None = None,
         coordinator_workers: int = 1,
+        theme_registry: Any | None = None,
     ) -> None:
         self.repository = repository
         self.assets = assets
         self.ai_runtime = ai_runtime
         self.title_runtime = title_runtime
+        self._theme_registry = theme_registry
         self._batch_action_lock = threading.RLock()
         self._coordinator = ThreadPoolExecutor(
             max_workers=max(1, min(coordinator_workers, 4)),
@@ -197,6 +212,25 @@ class PodBatchWorker:
     def _require_open(self) -> None:
         if self._closing.is_set():
             raise RuntimeError("POD worker is shutting down")
+
+    def _theme_pools(self) -> dict[str, Any] | None:
+        return self._theme_registry.pools() if self._theme_registry is not None else None
+
+    def ensure_theme_pool(self, theme_label: str) -> None:
+        """Background-enrich a theme's pool via Doubao without blocking generation."""
+        if self._theme_registry is None or self._closing.is_set():
+            return
+        # errors inside ensure() are swallowed there; no result needed.
+        self._coordinator.submit(self._theme_registry.ensure, theme_label)
+
+    def _maybe_enrich_theme(self, batch: dict[str, Any]) -> None:
+        """Queue a Doubao pool build for a brief whose theme has no pool yet."""
+        if self._theme_registry is None:
+            return
+        theme = str((batch.get("business_fields") or {}).get("design_theme") or "").strip()
+        if not theme or self._theme_registry.has_pool(theme):
+            return
+        self.ensure_theme_pool(theme)
 
     def register_billing_run(self, batch_id: str, billing_run: PodBillingRun) -> None:
         with self._futures_lock:
@@ -469,6 +503,11 @@ class PodBatchWorker:
                     )
                     self.repository.set_batch_status(batch_id, status, execution_epoch=execution.epoch)
                 else:
+                    self.repository.fail_orphaned_complete_titles(
+                        batch_id,
+                        "本款标题任务未执行（标题生成调用缺失），请重试补齐标题",
+                        execution_epoch=execution.epoch,
+                    )
                     self.repository.settle_batch_by_listing_readiness(
                         batch_id, execution_epoch=execution.epoch
                     )
@@ -635,7 +674,14 @@ class PodBatchWorker:
             for attempt in (1, 2):
                 call_kind = "regenerate_style" if attempt == 1 else "regenerate_style_retry"
                 call_index = self.repository.next_generation_call_index(batch_id, call_kind)
-                prompt = build_style_listing_prompt(base_prompt, style_index=style_index, attempt=attempt)
+                prompt = build_style_listing_prompt(
+                    base_prompt,
+                    style_index=style_index,
+                    attempt=attempt,
+                    business_fields=batch["business_fields"],
+                    creative_prompt=batch["creative_prompt"],
+                    theme_pools=self._theme_pools(),
+                )
                 call = self.repository.create_generation_call(
                     batch, call_kind=call_kind, call_index=call_index, prompt_snapshot=prompt
                 )
@@ -828,6 +874,7 @@ class PodBatchWorker:
         Titles stay serialized inside the title runtime and continue to use
         already-accepted titles and visual themes as deduplication context.
         """
+        self._maybe_enrich_theme(batch)
         completed_by_style: dict[int, int] = {}
         for item in batch.get("items", []):
             if item.get("status") == "completed":
@@ -840,12 +887,16 @@ class PodBatchWorker:
         ]
         processed: set[int] = set()
         retry_reasons: dict[int, str] = {}
+        in_loop_retried: set[int] = set()
 
         for attempt in (1, 2):
-            pending = [index for index in style_indices if index not in processed]
+            pending = [
+                index for index in style_indices
+                if index not in processed and index not in in_loop_retried
+            ]
             if not pending:
                 break
-            attempt_processed, attempt_errors, pause_requested = self._stream_style_attempts(
+            attempt_processed, attempt_errors, pause_requested, attempt_retried = self._stream_style_attempts(
                 batch,
                 pending,
                 template_content,
@@ -856,6 +907,9 @@ class PodBatchWorker:
             )
             retry_reasons.update(attempt_errors)
             processed |= attempt_processed
+            # styles already auto-retried once inside this pass must not be
+            # re-attempted again by the outer second pass.
+            in_loop_retried |= attempt_retried
             if pause_requested or self.repository.get_batch_status(batch["batch_id"]) == "pausing":
                 raise PodBatchPaused("POD 批次已暂停")
 
@@ -937,7 +991,7 @@ class PodBatchWorker:
         attempt: int,
         billing_run: PodBillingRun,
         execution_epoch: int | None = None,
-    ) -> tuple[set[int], dict[int, str], bool]:
+    ) -> tuple[set[int], dict[int, str], bool, set[int]]:
         """Pipeline one generation attempt with per-style post-processing.
 
         A bounded provider window (``image_futures``) overlaps a parallel
@@ -951,7 +1005,6 @@ class PodBatchWorker:
         postprocess_futures: dict[Future[Any], int] = {}
         processed: set[int] = set()
         errors: dict[int, str] = {}
-        call_kind = "initial" if attempt == 1 else "retry"
         pending = iter(style_indices)
         exhausted = False
         pause_requested = False
@@ -978,6 +1031,79 @@ class PodBatchWorker:
             )
             postprocess_futures[future] = style_index
 
+        # Styles already auto-retried once inside this attempt pass, so a second
+        # generation failure isn't retried a third time.
+        retried: set[int] = set()
+
+        def submit_style(style_index: int, attempt_value: int) -> None:
+            attempt_kind = "initial" if attempt_value == 1 else "retry"
+            prompt = build_style_listing_prompt(
+                batch["prompt_snapshot"],
+                style_index=style_index,
+                attempt=attempt_value,
+                business_fields=batch["business_fields"],
+                creative_prompt=batch["creative_prompt"],
+                theme_pools=self._theme_pools(),
+            )
+            call = self.repository.get_or_create_generation_call(
+                batch, call_kind=attempt_kind, call_index=style_index, prompt_snapshot=prompt
+            )
+            call["style_index"] = style_index
+            provider_call_id = f"{batch['batch_id']}:style:{style_index}:image:{attempt_value}"
+            billing_status = billing_run.call_status(provider_call_id)
+            if billing_status == "success":
+                asset_id = str(call.get("grid_asset_id") or "")
+                if not asset_id:
+                    errors[style_index] = "provider call completed before restart but its asset is unavailable"
+                    return
+                asset = self.repository.get_asset(
+                    asset_id, batch["workspace_id"], batch["owner_user_id"]
+                )
+                submit_postprocess(
+                    style_index,
+                    call,
+                    SimpleNamespace(
+                        content=self.assets.read(asset["relative_path"]),
+                        content_type=asset["content_type"],
+                        suffix=Path(asset["filename"]).suffix or ".png",
+                        provider="persisted",
+                        model="persisted",
+                    ),
+                )
+                return
+            if billing_status in {"started", "no_return"}:
+                # Terminal only once the final attempt is spent; on an earlier
+                # attempt leave it out of `processed` so the second pass retries
+                # the already-planned next image call instead of skipping forever.
+                if attempt_value >= 2:
+                    errors[style_index] = (
+                        "provider call outcome was uncertain during restart" if billing_status == "started"
+                        else "provider returned no result"
+                    )
+                return
+            if not billing_run.grant.provider_key("wuyin"):
+                raise PodBillingAuthorizationRequired(
+                    "POD provider grant expired before the next image call started"
+                )
+            request = DirectListingGridRequest(
+                trial_id=f"{batch['batch_id']}-style-{style_index}-attempt-{attempt_value}",
+                template_id=batch["template_id"],
+                template_image=template_content,
+                template_content_type=template_content_type,
+                prompt=prompt,
+                attempt=attempt_value,
+            )
+            future = self.ai_runtime.submit(
+                self._generate_listing_grid,
+                batch,
+                call,
+                request,
+                billing_run,
+                provider_call_id,
+                execution_epoch,
+            )
+            image_futures[future] = (call, style_index)
+
         while True:
             # Fill the bounded generation window while not paused.
             while not pause_requested and not exhausted and len(image_futures) < max_in_flight:
@@ -996,67 +1122,7 @@ class PodBatchWorker:
                 except StopIteration:
                     exhausted = True
                     break
-                prompt = build_style_listing_prompt(
-                    batch["prompt_snapshot"], style_index=style_index, attempt=attempt
-                )
-                call = self.repository.get_or_create_generation_call(
-                    batch,
-                    call_kind=call_kind,
-                    call_index=style_index,
-                    prompt_snapshot=prompt,
-                )
-                call["style_index"] = style_index
-                provider_call_id = f"{batch['batch_id']}:style:{style_index}:image:{attempt}"
-                billing_status = billing_run.call_status(provider_call_id)
-                if billing_status == "success":
-                    asset_id = str(call.get("grid_asset_id") or "")
-                    if not asset_id:
-                        errors[style_index] = "provider call completed before restart but its asset is unavailable"
-                        continue
-                    asset = self.repository.get_asset(
-                        asset_id, batch["workspace_id"], batch["owner_user_id"]
-                    )
-                    submit_postprocess(
-                        style_index,
-                        call,
-                        SimpleNamespace(
-                            content=self.assets.read(asset["relative_path"]),
-                            content_type=asset["content_type"],
-                            suffix=Path(asset["filename"]).suffix or ".png",
-                            provider="persisted",
-                            model="persisted",
-                        ),
-                    )
-                    continue
-                if billing_status in {"started", "no_return"}:
-                    errors[style_index] = (
-                        "provider call outcome was uncertain during restart"
-                        if billing_status == "started"
-                        else "provider returned no result"
-                    )
-                    continue
-                if not billing_run.grant.provider_key("wuyin"):
-                    raise PodBillingAuthorizationRequired(
-                        "POD provider grant expired before the next image call started"
-                    )
-                request = DirectListingGridRequest(
-                    trial_id=f"{batch['batch_id']}-style-{style_index}-attempt-{attempt}",
-                    template_id=batch["template_id"],
-                    template_image=template_content,
-                    template_content_type=template_content_type,
-                    prompt=prompt,
-                    attempt=attempt,
-                )
-                future = self.ai_runtime.submit(
-                    self._generate_listing_grid,
-                    batch,
-                    call,
-                    request,
-                    billing_run,
-                    provider_call_id,
-                    execution_epoch,
-                )
-                image_futures[future] = (call, style_index)
+                submit_style(style_index, attempt)
 
             # Nothing left in flight; the attempt is complete.
             if not image_futures and not postprocess_futures:
@@ -1096,6 +1162,17 @@ class PodBatchWorker:
                     except PodBatchCancelled:
                         raise
                     except Exception as exc:
+                        if (
+                            attempt == 1
+                            and style_index not in retried
+                            and _is_retryable_generation_error(exc)
+                        ):
+                            # Auto-retry once on a transient provider failure
+                            # (e.g. the 600s polling timeout) via the already
+                            # planned second image call.
+                            retried.add(style_index)
+                            submit_style(style_index, 2)
+                            continue
                         errors[style_index] = str(exc).strip() or exc.__class__.__name__
                         continue
                     submit_postprocess(style_index, call, grid)
@@ -1130,7 +1207,7 @@ class PodBatchWorker:
             if status == "pausing":
                 pause_requested = True
 
-        return processed, errors, pause_requested
+        return processed, errors, pause_requested, retried
 
     def _validate_style_grid(
         self,

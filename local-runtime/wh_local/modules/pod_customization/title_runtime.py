@@ -368,7 +368,8 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
         "contract": {
             "market": "United States",
             "language": "English ASCII only",
-            "title_length": "80-195 ASCII characters after normalized whitespace",
+            "title_length": "80-195 ASCII characters after normalized whitespace; always at least 80, so if a draft is shorter, enrich it with concrete image-grounded detail until it reaches 80+",
+            "prohibited_terms": sorted(_PROHIBITED_TERMS),
             "title_composition": (
                 "Write a complete natural US-English noun phrase with a leading visual segment that names a "
                 "visible style-specific visual theme, motif, or color. Avoid reproducing an accepted title "
@@ -379,8 +380,12 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
                 "that is visibly grounded in this image. Then build the title in this order: distinct visual lead; "
                 "accurate product type; one or two visible or supplied factual details such as motif, material, "
                 "color, or use; a complete final qualifier. Aim for 110-150 ASCII characters and never exceed 195. "
+                "Never use any word listed in prohibited_terms (for example 'perfect', 'best', 'ultimate', "
+                "'premium', 'luxury', 'guaranteed') anywhere in title, english_title, or description, even as a "
+                "substring of a longer word. "
                 "Silently check before output that the title is not an exact duplicate of an "
-                "accepted title, contains no prohibited term, and has no dangling connector, punctuation, or "
+                "accepted title, contains no prohibited term, is at least 80 ASCII characters, and has no dangling "
+                "connector, punctuation, or "
                 "unbalanced bracket. Do not output this plan or a checklist."
             ),
             "output_json_keys": [

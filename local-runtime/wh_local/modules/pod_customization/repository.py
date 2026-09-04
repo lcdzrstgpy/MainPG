@@ -930,6 +930,17 @@ class PodCustomizationRepository:
             ).fetchall()
         return [self.get_billing_run(row["run_id"], workspace_id, owner_user_id) for row in rows]
 
+    def list_settlement_pending_runs(self) -> list[tuple[str, str, str]]:
+        """List all settlement_pending billing runs for automatic release sweeps."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT run_id, workspace_id, owner_user_id
+                   FROM pod_customization_billing_runs
+                   WHERE status = 'settlement_pending'
+                   ORDER BY created_at, run_id"""
+            ).fetchall()
+        return [(str(row["run_id"]), str(row["workspace_id"]), str(row["owner_user_id"])) for row in rows]
+
     def start_billing_call(self, action_key: str, call_id: str, feature: str) -> None:
         now = _now()
         with self._connect() as connection:
@@ -1768,6 +1779,49 @@ class PodCustomizationRepository:
                             AND results.style_index = titles.style_index
                             AND results.status = 'completed'
                             AND publications.public_url <> '') <> 4""",
+                (_safe_error(error_message), now, now, batch_id, execution_epoch, batch_id, execution_epoch),
+            )
+            if execution_epoch is not None:
+                self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+        return int(result.rowcount or 0)
+
+    def fail_orphaned_complete_titles(
+        self, batch_id: str, error_message: str, *, execution_epoch: int | None = None
+    ) -> int:
+        """Close titles that were left ``queued`` after their four images finished.
+
+        A style whose four public images are complete but whose title stayed
+        ``queued`` with no assigned task (``style_task_id = ''``) was never
+        submitted: the image pipeline skipped it (no planned provider title
+        call) and ``fail_unready_titles`` skips it too (its image count is 4).
+        Such a row is neither completed nor failed, so no retry path can ever
+        recover it.  Mark it failed (carrying the style's generation call id as
+        the title task id so batch title retries accept it) to make it retryable.
+        """
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_style_titles AS titles
+                   SET style_task_id = CASE WHEN style_task_id = '' THEN COALESCE(
+                           (SELECT calls.call_id FROM pod_customization_generation_calls AS calls
+                            WHERE calls.batch_id = titles.batch_id
+                              AND calls.call_index = titles.style_index
+                            ORDER BY calls.created_at DESC, calls.rowid DESC LIMIT 1),
+                           style_task_id
+                       ) ELSE style_task_id END,
+                       status = 'failed', title = '', normalized_title = NULL,
+                       visual_tags_json = '{}', error_message = ?, updated_at = ?, finished_at = ?
+                   WHERE titles.batch_id = ? AND titles.status = 'queued'
+                     AND titles.style_task_id = ''
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)
+                     AND (SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
+                          INNER JOIN pod_customization_style_grid_publications AS publications
+                            ON publications.result_id = results.result_id
+                          WHERE results.batch_id = titles.batch_id
+                            AND results.style_index = titles.style_index
+                            AND results.status = 'completed'
+                            AND publications.public_url <> '') = 4""",
                 (_safe_error(error_message), now, now, batch_id, execution_epoch, batch_id, execution_epoch),
             )
             if execution_epoch is not None:

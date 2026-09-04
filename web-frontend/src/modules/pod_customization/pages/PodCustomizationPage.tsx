@@ -682,7 +682,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     clearMessages();
     try {
       await podCustomizationApi.pauseBatch(activeBatch.id);
-      setNotice("已请求暂停：已提交的款会完成整款，其余款不会继续发起。");
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -697,7 +696,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     clearMessages();
     try {
       await podCustomizationApi.cancelBatch(activeBatch.id);
-      setNotice("已请求取消，正在停止批次。");
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -712,7 +710,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     clearMessages();
     try {
       await podCustomizationApi.resumeBatch(activeBatch.id);
-      setNotice("已提交继续，任务将在后台继续。");
       await refreshActiveBatch(activeBatch.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -776,7 +773,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         </div>
       </header>
 
-      {(notice || error) && <div className={`pod-page-message ${error ? "is-error" : ""}`} role={error ? "alert" : "status"}><span>{error ? "!" : "✓"}</span><p>{error || notice}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
+      {error && <div className="pod-page-message is-error" role="alert"><span>!</span><p>{error}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
 
       <div className="pod-workbench-grid">
         <aside className="pod-setup-column pod-brief-sidebar">

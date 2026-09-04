@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { batchProgress, canCancelPodBatch, canPausePodBatch, canRegeneratePodStyle, canRegeneratePodStyleTitle, canResumePodBatch, canRetryPodBatchFailed, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, podBatchStatusDetail, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
+import { batchProgress, canCancelPodBatch, canPausePodBatch, canRegeneratePodStyle, canRegeneratePodStyleTitle, canResumePodBatch, canRetryPodBatchFailed, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, podBatchProgressCounts, podBatchStatusDetail, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
 import { dianxiaomiExportBlockMessage, isDianxiaomiExportEnabled } from "../data/dianxiaomiExport";
 import { PodAssetImage } from "../data/usePodAssetUrl";
 import type { PodBatch, PodBatchItem } from "../types";
@@ -57,7 +57,9 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
   if (!batch) return <section className="pod-gallery pod-gallery-empty" aria-label="POD 批次画廊"><span className="iconfont icon-skin" aria-hidden="true" /><h2>从一个模板开始本批次</h2><p>生成结果会固定归在对应款式下。</p></section>;
 
   const progress = batchProgress(batch);
+  const progressCounts = podBatchProgressCounts(batch);
   const styles = groupPodStyleRows(batch);
+  const submittedCount = styles.filter((style) => style.status !== "queued").length;
   const exportStatus = batch.dianxiaomi_export;
   const exporting = busyAction === "export-dianxiaomi";
   const exportBlockReason = busyAction
@@ -70,7 +72,7 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
   const canPause = canPausePodBatch(batch.status);
   const canCancel = canCancelPodBatch(batch.status);
   const canResume = canResumePodBatch(batch.status);
-  const batchStatusDetail = podBatchStatusDetail(batch.status);
+  const batchStatusDetail = podBatchStatusDetail(batch.status, submittedCount);
   const pausing = busyAction === "pause-batch";
   const cancelling = busyAction === "cancel-batch";
   const resuming = busyAction === "resume-batch";
@@ -94,7 +96,7 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
         </div>
       </div>
     </header>
-    <div className="pod-gallery-progress"><div role="progressbar" aria-label="POD 批次进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div><small>{showWaitingTime && <>已等待 {formatPodBatchWaitingTime(batch.created_at, now)} · </>}完成 {batch.completed_count} 款 · 失败 {batch.failed_count} 款 · {progress}%</small></div>
+    <div className="pod-gallery-progress"><div role="progressbar" aria-label="POD 批次进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div><small>{showWaitingTime && <>已等待 {formatPodBatchWaitingTime(batch.created_at, now)} · </>}图片 {progressCounts.image}/{batch.count} · 标题 {progressCounts.title}/{batch.count} · 完成 {batch.completed_count} 款 · 失败 {batch.failed_count} 款 · {progress}%</small></div>
     <div className="pod-style-rows">
       {styles.map((style) => {
         const regenerating = busyAction === `regenerate-style:${style.index}`;
