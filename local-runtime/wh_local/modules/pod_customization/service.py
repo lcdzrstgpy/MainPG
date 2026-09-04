@@ -1016,6 +1016,65 @@ class PodCustomizationService:
             self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
         )
 
+    def cancel_billing_run(self, actor: Actor, run_id: str) -> dict[str, Any]:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        stored = self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+        if stored["status"] != "settlement_pending":
+            raise PodRepositoryError("POD billing run is not cancellable", 409)
+        plan = self._billing_plan(stored["plan"])
+        has_planned_calls = any(
+            outcome["status"] == "planned" for outcome in stored["outcomes"]
+        )
+        settlement_grant = getattr(self.billing_coordinator, "settlement_grant", None)
+        try:
+            if not has_planned_calls and callable(settlement_grant):
+                grant = settlement_grant(
+                    actor,
+                    stored["freeze_id"],
+                    rule_version=stored["rule_version"],
+                    expires_at=stored["grant_expires_at"],
+                )
+            else:
+                grant = self.billing_coordinator.regrant(actor, stored["freeze_id"])
+        except CustomerBillingPermissionError:
+            self.repository.mark_billing_pending(
+                stored["action_key"], "POD billing service authentication failed"
+            )
+            raise
+        except Exception as exc:
+            self.repository.mark_billing_pending(stored["action_key"], str(exc))
+            raise
+        if grant.freeze_id != stored["freeze_id"]:
+            raise RuntimeError("POD billing service returned a mismatched freeze")
+        self.repository.mark_billing_authorized(
+            stored["action_key"], rule_version=grant.rule_version, expires_at=grant.expires_at
+        )
+        run = PodBillingRun(
+            actor,
+            self.billing_coordinator,
+            plan,
+            grant,
+            repository=self.repository,
+            action_key=stored["action_key"],
+            resumed=True,
+        )
+        try:
+            run.settle()
+        except Exception as exc:
+            self.repository.mark_billing_pending(stored["action_key"], str(exc))
+            raise
+        if stored["action_type"] == "direct_trial":
+            self.repository.fail_direct_listing_trial(
+                stored["target_id"],
+                actor.workspace_id,
+                actor.id,
+                "POD 试用已取消，冻结积分将按结算结果释放",
+            )
+        return self._billing_run_payload(
+            self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+        )
+
     def asset_info(self, actor: Actor, asset_id: str) -> dict[str, Any]:
         return self.repository.get_asset(asset_id, actor.workspace_id, actor.id)
 

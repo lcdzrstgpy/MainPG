@@ -1,13 +1,10 @@
 import { createElement, useEffect, useRef, useState, type ImgHTMLAttributes } from "react";
 
-import { getAuthToken, httpBlob } from "../../../transport/http/client";
+import { httpBlob } from "../../../transport/http/client";
 
 async function loadPodAsset(path: string): Promise<Blob> {
   if (!/^https?:\/\//i.test(path)) return httpBlob(path);
-  const token = getAuthToken();
-  const response = await fetch(path, {
-    headers: token ? { authorization: `Bearer ${token}` } : undefined,
-  });
+  const response = await fetch(path);
   if (!response.ok) throw new Error(`素材加载失败 (HTTP ${response.status})`);
   return response.blob();
 }

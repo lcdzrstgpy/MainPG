@@ -318,6 +318,20 @@ class PodCustomizationRepository:
             ).fetchall()
         return [self.get_direct_listing_trial(row["trial_id"], workspace_id, owner_user_id) for row in rows], total
 
+    def fail_direct_listing_trial(
+        self, trial_id: str, workspace_id: str, owner_user_id: str, error_message: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_direct_listing_trials
+                   SET status = 'failed', error_message = ?, updated_at = ?
+                   WHERE trial_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (_safe_error(error_message), _now(), trial_id, workspace_id, owner_user_id),
+            )
+        if result.rowcount != 1:
+            return None
+        return self.get_direct_listing_trial(trial_id, workspace_id, owner_user_id)
+
     def create_batch(
         self,
         workspace_id: str,
@@ -1928,7 +1942,6 @@ class PodCustomizationRepository:
             )
         self.settle_batch_by_listing_readiness(batch_id)
         return True
-        return status
 
     def create_generation_call(
         self,

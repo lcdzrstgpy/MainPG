@@ -675,23 +675,25 @@ class PodBatchWorker:
             if finalize:
                 self.repository.fail_remaining_items(batch_id, "整款重新生成未返回完整结果")
                 self.repository.fail_unready_titles(batch_id, "整款重新生成未返回完整结果")
-            if self.title_runtime is None:
-                settled = self.repository.get_batch_internal(batch_id)
-                status = "completed" if settled["failed_count"] == 0 else (
-                    "partial_failure" if settled["completed_count"] else "failed"
-                )
-                self.repository.set_batch_status(batch_id, status)
-            else:
-                self.repository.settle_batch_by_listing_readiness(batch_id)
+            if finalize:
+                if self.title_runtime is None:
+                    settled = self.repository.get_batch_internal(batch_id)
+                    status = "completed" if settled["failed_count"] == 0 else (
+                        "partial_failure" if settled["completed_count"] else "failed"
+                    )
+                    self.repository.set_batch_status(batch_id, status)
+                else:
+                    self.repository.settle_batch_by_listing_readiness(batch_id)
         except Exception as exc:
             self.repository.fail_style_grid(batch, style_index, str(exc))
             self.repository.fail_unready_titles(batch_id, str(exc))
-            if self.title_runtime is None:
-                settled = self.repository.get_batch_internal(batch_id)
-                status = "partial_failure" if settled["completed_count"] else "failed"
-                self.repository.set_batch_status(batch_id, status, str(exc))
-            else:
-                self.repository.settle_batch_by_listing_readiness(batch_id, str(exc))
+            if finalize:
+                if self.title_runtime is None:
+                    settled = self.repository.get_batch_internal(batch_id)
+                    status = "partial_failure" if settled["completed_count"] else "failed"
+                    self.repository.set_batch_status(batch_id, status, str(exc))
+                else:
+                    self.repository.settle_batch_by_listing_readiness(batch_id, str(exc))
         finally:
             if finalize:
                 try:
