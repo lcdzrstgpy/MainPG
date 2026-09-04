@@ -95,6 +95,12 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   const dimensionOpenRequests = useRef(new Map<string, Promise<DimensionCanvasItem>>());
   const contentRef = useRef<HTMLDivElement>(null);
   const scrollPositions = useRef(new WorkspaceTabScrollStore());
+  // 最新 tabs 的镜像：供异步回调（await 之后）与同步判断读取最新值，
+  // 避免使用已过期的渲染闭包 tabs 导致激活/去重/上限判定失准。
+  const tabsRef = useRef(tabs);
+  useEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
   const isAdmin = isAdminRole(currentRole);
   const visibleModules = useMemo(() => filterModulesForRole(workspaceModules, isAdmin), [isAdmin]);
   const flatModules = useMemo(() => filterModulesForRole(workspacePageModules, isAdmin) as WorkspaceModule[], [isAdmin]);
@@ -274,8 +280,11 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   };
 
   const selectTab = (key: string) => {
-    const tab = tabs.find((item) => item.key === key);
-    if (tab) setExpandedGroupId(navigationGroupForModule(tab.moduleId, navigationGroups)?.id ?? null);
+    const tab = tabsRef.current.find((item) => item.key === key);
+    // 目标标签已不存在（异步流程里被关闭）时直接返回，避免把 activeTabKey
+    // 设成无效值导致所有面板 hidden、内容区整片空白。
+    if (!tab) return;
+    setExpandedGroupId(navigationGroupForModule(tab.moduleId, navigationGroups)?.id ?? null);
     activateTab(key);
   };
 
@@ -294,8 +303,14 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   };
 
   const openCollectionPanel = (directionId: string, directionName: string) => {
-    const openPanelCount = tabs.filter((tab) => tab.moduleId === "daily_selection_collection").length;
-    if (openPanelCount >= MAX_COLLECTION_PANELS) {
+    const panels = tabsRef.current.filter((tab) => tab.moduleId === "daily_selection_collection");
+    // 同一方向已打开则直接激活，避免同一采集数据被多个面板并发读写互相覆盖。
+    const existing = panels.find((tab) => tab.directionId === directionId);
+    if (existing) {
+      selectTab(existing.key);
+      return;
+    }
+    if (panels.length >= MAX_COLLECTION_PANELS) {
       setWorkspaceNotice(`最多同时打开 ${MAX_COLLECTION_PANELS} 个采集面板，请先关闭一个再继续。`);
       return;
     }
@@ -314,7 +329,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   };
 
   const openProcessingTask = (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[] = []) => {
-    const openPanelCount = tabs.filter((tab) => tab.moduleId === "product_processing_tasks").length;
+    const openPanelCount = tabsRef.current.filter((tab) => tab.moduleId === "product_processing_tasks").length;
     if (openPanelCount >= MAX_PROCESSING_PANELS) {
       setWorkspaceNotice(`最多同时打开 ${MAX_PROCESSING_PANELS} 个处理任务，请先关闭一个再继续。`);
       return false;
@@ -338,7 +353,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   };
 
   const openProcessingTaskDetail = (taskId: number) => {
-    const existing = tabs.find((tab) => tab.taskRunId === taskId);
+    const existing = tabsRef.current.find((tab) => tab.taskRunId === taskId);
     if (existing) {
       selectTab(existing.key);
       return;
@@ -359,7 +374,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   // 任务完成后的预检入口：打开「预检与导出最终版」页（生成表格 → 预检修改 → 导出最终版 → 导入店小秘）
   const openProcessingPrecheck = (taskId: number, changeSetId?: string) => {
     if (changeSetId) {
-      const existing = tabs.find((tab) => tab.taskId === taskId && tab.dimensionChangeSetId === changeSetId);
+      const existing = tabsRef.current.find((tab) => tab.taskId === taskId && tab.dimensionChangeSetId === changeSetId);
       if (existing) {
         activateTab(existing.key);
         return;
@@ -388,7 +403,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     }
     try {
       const item = await request;
-      const existing = tabs.find((tab) => tab.dimensionItemId === item.id);
+      const existing = tabsRef.current.find((tab) => tab.dimensionItemId === item.id);
       if (existing) {
         selectTab(existing.key);
         return;

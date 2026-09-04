@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -419,16 +420,27 @@ class SourcingService:
         selected_candidates = tuple(session["selected_candidates"])
         if not selected_candidates:
             raise PriceVerificationContractError("select at least one 1688 candidate before completing")
-        for candidate in selected_candidates:
-            self.link_skc_source(
-                actor, batch_id=batch_id, skc_id=_required_text(candidate.get("skc_id"), "skc_id"),
-                offer_id=_required_text(candidate.get("offer_id"), "offer_id"),
-                source_url=_required_text(candidate.get("source_url"), "source_url"),
-                source_title=_text(candidate.get("source_title")), main_image_url=_text(candidate.get("main_image_url")),
-                price_cny=candidate.get("price_cny"), weight_kg=candidate.get("weight_kg"), moq=candidate.get("moq"),
-                domestic_freight_cny=candidate.get("domestic_freight_cny"),
-                source_decision=_text(candidate.get("source_decision")),
-            )
+        linked_skc_ids: list[str] = []
+        try:
+            for candidate in selected_candidates:
+                skc_id = _required_text(candidate.get("skc_id"), "skc_id")
+                self.link_skc_source(
+                    actor, batch_id=batch_id, skc_id=skc_id,
+                    offer_id=_required_text(candidate.get("offer_id"), "offer_id"),
+                    source_url=_required_text(candidate.get("source_url"), "source_url"),
+                    source_title=_text(candidate.get("source_title")), main_image_url=_text(candidate.get("main_image_url")),
+                    price_cny=candidate.get("price_cny"), weight_kg=candidate.get("weight_kg"), moq=candidate.get("moq"),
+                    domestic_freight_cny=candidate.get("domestic_freight_cny"),
+                    source_decision=_text(candidate.get("source_decision")),
+                    auto_sync=False,
+                )
+                if skc_id not in linked_skc_ids:
+                    linked_skc_ids.append(skc_id)
+        finally:
+            # 每个受影响的 SKC 只同步一次（候选通常多条同 SKC）；中途异常时
+            # 已写入的关联也要兜底同步，避免产品库漏更新。
+            for skc_id in linked_skc_ids:
+                self._sync_skc_to_product_library(actor, batch_id=batch_id, skc_id=skc_id)
         products = self._product_library_products(
             actor, batch_id=batch_id, skc_ids=session["selected_skc_ids"]
         )
@@ -573,6 +585,8 @@ class SourcingService:
         domestic_freight_cny: object = None,
         source_decision: str = "",
         note: str = "",
+        # 批量关联时由调用方在最后统一同步一次，避免每条候选都触发一次全量同步。
+        auto_sync: bool = True,
     ) -> Mapping[str, Any]:
         """Link one 1688 offer to a retained Temu SKC (idempotent, one SKC to many offers).
 
@@ -616,7 +630,8 @@ class SourcingService:
             site=_text(selection.site),
             selling_price=_nullable_decimal_text(selection.adjusted_min),
         )
-        self._sync_skc_to_product_library(actor, batch_id=batch_id, skc_id=skc_id)
+        if auto_sync:
+            self._sync_skc_to_product_library(actor, batch_id=batch_id, skc_id=skc_id)
         return _source_link_response(record, selection=selection)
 
     def list_skc_source_links(
@@ -711,6 +726,20 @@ class SourcingService:
                 )
             )
             if not links:
+                # 移除最后一条关联后，清空产品库里的货源链接，避免残留已删除货源。
+                for product_id, selling_price in self._archive_product_targets(
+                    selection, batch.archive_product_id_type
+                ):
+                    self._product_library_service.upsert_product({
+                        "site": site, "skc": product_id, "product_id": product_id,
+                        "selling_price": str(selling_price),
+                        "source_groups_json": "[]",
+                        "source_url": "",
+                        "source_type": "price_verification",
+                        "source_main_image_url": _text(selection.main_image_url),
+                        "store_name": batch.store_name,
+                        "visibility": "shared",
+                    }, actor=actor)
                 return None
             saved: Mapping[str, Any] | None = None
             for product_id, selling_price in self._archive_product_targets(
@@ -725,28 +754,36 @@ class SourcingService:
                         site=site, selling_price=selling_price,
                         weight_kg=link.weight_kg or DEFAULT_WEIGHT_KG,
                     )
-                    groups.append({"source_url": link.source_url, "source_title": link.source_title,
+                    group = {"source_url": link.source_url, "source_title": link.source_title,
                         "main_image_url": link.main_image_url, "offer_id": link.offer_id,
                         "price_cny": link.price_cny, "weight_kg": link.weight_kg or str(DEFAULT_WEIGHT_KG),
                         "moq": link.moq, "domestic_freight_cny": link.domestic_freight_cny,
-                        "source_decision": link.source_decision, "note": link.note, "profit": profit})
+                        "source_decision": link.source_decision, "note": link.note, "profit": profit}
+                    groups.append(group)
                     cost = _decimal(profit.get("cost_price"))
                     if profit.get("available") and cost is not None:
-                        computed.append((cost, profit))
+                        computed.append((cost, group))
                 if not computed:
                     continue
-                _cost, best = min(computed, key=lambda item: item[0])
+                _cost, best_group = min(computed, key=lambda item: item[0])
+                best_profit = best_group["profit"]
                 saved = self._product_library_service.upsert_product({
                     "site": site, "skc": product_id, "product_id": product_id,
-                    "selling_price": str(selling_price), "cost_price": str(best["cost_price"]),
-                    "weight_kg": str(best["weight_kg"]), "note": f"来自核价及货源 · 批次 {batch_id}",
-                    "source_url": str(groups[0].get("source_url") or ""),
+                    "selling_price": str(selling_price), "cost_price": str(best_profit["cost_price"]),
+                    "weight_kg": str(best_profit["weight_kg"]), "note": f"来自核价及货源 · 批次 {batch_id}",
+                    "source_url": str(best_group.get("source_url") or ""),
                     "source_groups_json": json.dumps(groups, ensure_ascii=False, separators=(",", ":")),
                     "source_type": "price_verification", "source_main_image_url": _text(selection.main_image_url),
                     "store_name": batch.store_name, "visibility": "shared",
                 }, actor=actor)
             return saved
         except Exception:
+            # 自动同步失败不能阻断关联/解除关联，但必须留痕：否则产品库
+            # 未更新时没有任何可排查的线索。
+            logging.getLogger(__name__).warning(
+                "price_verification product library sync failed (batch=%s skc=%s)",
+                batch_id, skc_id, exc_info=True,
+            )
             return None
 
     def sync_all_to_product_library(self) -> int:

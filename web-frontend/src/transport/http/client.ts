@@ -46,7 +46,7 @@ export function notifySessionExpired(): void {
   window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
 }
 
-function isSessionExpired(response: Response, detail: string): boolean {
+export function isSessionExpired(response: Response, detail: string): boolean {
   if (response.status === 401) return true;
   return /login session expired|remote customer session is missing|invalid bearer token|missing bearer token/i.test(detail);
 }
@@ -110,18 +110,43 @@ export function toUserMessage(raw: string): string {
   return "操作失败，请稍后重试";
 }
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("请求超时，请稍后重试");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 export async function httpJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   const token = authToken(options.token);
   if (token) headers.authorization = `Bearer ${token}`;
 
-  const response = await fetch(`${apiBaseUrl()}${path}`, {
+  const response = await fetchWithTimeout(`${apiBaseUrl()}${path}`, {
     method: options.method ?? "GET",
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
 
-  const payload = await response.json().catch(() => ({}));
+  const contentType = response.headers.get("content-type") ?? "";
+  let payload: any = {};
+  if (contentType.includes("application/json")) {
+    payload = await response.json().catch(() => ({}));
+  } else if (!response.ok) {
+    // 非 JSON 错误响应（网关 200 html / 拦截页等）：把文本作为 detail 透出，
+    // 避免静默解析成空对象把真实失败吞掉。
+    payload = { detail: (await response.text().catch(() => "")) || `请求失败 (HTTP ${response.status})` };
+  }
 
   if (!response.ok) {
     const detail = typeof payload?.detail === "string" ? payload.detail : `请求失败 (HTTP ${response.status})`;
@@ -137,7 +162,7 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
   const token = authToken(options.token);
   if (token) headers.authorization = `Bearer ${token}`;
 
-  const response = await fetch(`${apiBaseUrl()}${path}`, {
+  const response = await fetchWithTimeout(`${apiBaseUrl()}${path}`, {
     method: options.method ?? "GET",
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),

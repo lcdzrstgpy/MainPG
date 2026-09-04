@@ -43,6 +43,19 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const themeMenuRef = useRef<HTMLDivElement>(null);
   const { theme, setTheme } = useTheme();
   const { uiMode, setUiMode } = useUiMode();
+  // 关闭动画延迟期间判活用的最新 activeKey 与在途 timer（卸载时清理）。
+  const activeKeyRef = useRef(activeKey);
+  useEffect(() => {
+    activeKeyRef.current = activeKey;
+  }, [activeKey]);
+  const closingTimers = useRef(new Set<number>());
+  useEffect(() => {
+    const timers = closingTimers.current;
+    return () => {
+      timers.forEach((id) => window.clearTimeout(id));
+      timers.clear();
+    };
+  }, []);
 
   useEffect(() => {
     if (!themePanelOpen) return;
@@ -74,10 +87,15 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const closeTabWithEffect = (key: string) => {
     if (closingKeys.includes(key)) return;
     setClosingKeys((current) => [...current, key]);
-    window.setTimeout(() => {
-      onCloseTab(key);
+    const timer = window.setTimeout(() => {
+      closingTimers.current.delete(timer);
       setClosingKeys((current) => current.filter((item) => item !== key));
+      // 180ms 动画期间该标签若被重新打开并激活（activeKey 又指向它），说明用户
+      // 想保留，跳过删除——否则会误删刚重开的标签。
+      if (activeKeyRef.current === key) return;
+      onCloseTab(key);
     }, 180);
+    closingTimers.current.add(timer);
   };
 
   return (
