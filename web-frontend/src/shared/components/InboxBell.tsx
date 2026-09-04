@@ -28,10 +28,14 @@ export function InboxBell() {
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<number>>(() => new Set());
   const rootRef = useRef<HTMLDivElement>(null);
   const listRequestIdRef = useRef(0);
+  // 本地已读变更代际：在途的 refresh 返回旧计数时据此跳过，避免覆盖本地递减/清零结果。
+  const unreadEpochRef = useRef(0);
 
   const refreshUnread = useCallback(async () => {
+    const epoch = unreadEpochRef.current;
     try {
-      setUnread(await fetchUnreadCount());
+      const count = await fetchUnreadCount();
+      if (epoch === unreadEpochRef.current) setUnread(count);
     } catch {
       // 未登录/离线时静默，保持上次数字
     }
@@ -39,12 +43,13 @@ export function InboxBell() {
 
   const refreshList = useCallback(async () => {
     const requestId = ++listRequestIdRef.current;
+    const epoch = unreadEpochRef.current;
     setLoading(true);
     try {
       const items = await fetchMessages();
       if (requestId !== listRequestIdRef.current) return;
       setMessages(items);
-      setUnread(items.filter((item) => !item.read).length);
+      if (epoch === unreadEpochRef.current) setUnread(items.filter((item) => !item.read).length);
     } catch {
       // 静默
     } finally {
@@ -98,6 +103,7 @@ export function InboxBell() {
     setMessages((current) =>
       current.map((item) => (item.id === messageId ? { ...item, read: true } : item)),
     );
+    unreadEpochRef.current += 1;
     setUnread((current) => Math.max(0, current - 1));
     void refreshList();
   };
@@ -109,6 +115,7 @@ export function InboxBell() {
       return;
     }
     setMessages((current) => current.map((item) => ({ ...item, read: true })));
+    unreadEpochRef.current += 1;
     setUnread(0);
     void refreshList();
   };

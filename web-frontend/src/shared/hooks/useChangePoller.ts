@@ -35,7 +35,9 @@ export function useChangePoller({ url, onChange, headers, intervalMs = 8000, ena
 
     const checkOnce = async () => {
       if (document.visibilityState !== "visible") return;
-      activeController?.abort();
+      // 上一请求尚未返回时跳过本轮，而不是 abort 重启：否则慢响应(耗时≥interval)
+      // 下每 tick 都中断重发，revision 永不更新、onChange 永不触发、持续空打服务器。
+      if (activeController) return;
       const controller = new AbortController();
       activeController = controller;
       try {

@@ -59,7 +59,9 @@ export function App() {
         setAccountRole(me.role ?? "operator");
       })
       .catch(() => {
-        clearAuthSession();
+        // 会话失效(401/过期)已由 httpJson 触发 auth:session-expired 统一清 token 回登录页；
+        // 走到这里只有网络闪断 / 服务端 5xx 等瞬时错误，保留 token，仅不进工作台，
+        // 避免误清会话把用户踢回登录页。
         setEnteredWorkspace(false);
       })
       .finally(() => setReady(true));
