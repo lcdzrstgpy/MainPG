@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./app/App";
 import "./shared/styles/global.css";
 import "./shared/styles/themes.css";
+import "./shared/styles/theme-personality.css";
 import "./shared/styles/framework-flow.css";
 import "./modules/product_processing/styles/product-processing.css";
 import "./shared/styles/apple-workspace.css";
