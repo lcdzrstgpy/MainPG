@@ -9,6 +9,7 @@ from typing import Any
 import requests
 
 from .server_ai_proxy import gateway_base_url, granted_key, remote_token, usage_id
+from ...config import is_ip_literal_host
 
 
 API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
@@ -135,6 +136,8 @@ class DoubaoArkClient:
         response: requests.Response | None = None
         try:
             with _SERVER_AI_REQUEST_GATE:
+                # IP-direct gateway connections cannot match the public certificate
+                # hostname; skip verification only for bare IP literals.
                 response = _HTTP_SESSION.post(
                     f"{gateway_base_url()}/api/customer/ai/chat",
                     headers={
@@ -150,6 +153,7 @@ class DoubaoArkClient:
                     },
                     timeout=timeout,
                     allow_redirects=False,
+                    verify=not is_ip_literal_host(gateway_base_url()),
                 )
                 body = bytes(response.content)
         except (requests.RequestException, TimeoutError, OSError) as exc:

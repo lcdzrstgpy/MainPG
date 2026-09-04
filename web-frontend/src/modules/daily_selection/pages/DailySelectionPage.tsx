@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import {
@@ -179,36 +179,70 @@ function hasIncompleteSkuCandidates(run: DailySelectionRun): boolean {
   return run.candidates.some((candidate) => (candidate.source_variant_records?.length ?? 0) === 0);
 }
 
+const IMAGE_MAX_RETRY = 2;
+const IMAGE_RETRY_DELAY_MS = 1500;
+
 /**
  * Renders a candidate image through the authenticated local proxy instead of
  * the raw CDN URL. alicdn rejects browser requests carrying a localhost
  * Referer (403), so images are fetched with the API token and shown as a
- * blob object URL.
+ * blob object URL. Transient load failures (network blips, proxy hiccups) are
+ * retried a bounded number of times before the failure is shown, so a single
+ * fluctuation does not leave the image permanently failed.
  */
 function DailySelectionImage({ runId, url }: { runId: string; url: string }) {
   const [objectUrl, setObjectUrl] = useState("");
   const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
+  const attemptRef = useRef(0);
 
   useEffect(() => {
     let alive = true;
     let created: string | null = null;
-    setObjectUrl("");
-    setState("loading");
-    fetch(`/desktop/daily-selection/image?run_id=${encodeURIComponent(runId)}&url=${encodeURIComponent(url)}`, {
-      headers: { Authorization: `Bearer ${getApiToken()}` },
-    })
-      .then((response) => (response.ok ? response.blob() : null))
-      .then((blob) => {
-        if (!alive || !blob) return;
-        created = URL.createObjectURL(blob);
-        setObjectUrl(created);
-        setState("ready");
+    let retryTimer: number | null = null;
+    attemptRef.current = 0;
+
+    const scheduleRetry = () => {
+      if (!alive) return;
+      if (attemptRef.current >= IMAGE_MAX_RETRY) {
+        setState("failed");
+        return;
+      }
+      attemptRef.current += 1;
+      retryTimer = window.setTimeout(load, IMAGE_RETRY_DELAY_MS);
+    };
+
+    const load = () => {
+      if (!alive) return;
+      setObjectUrl("");
+      setState("loading");
+      fetch(`/desktop/daily-selection/image?run_id=${encodeURIComponent(runId)}&url=${encodeURIComponent(url)}`, {
+        headers: { Authorization: `Bearer ${getApiToken()}` },
       })
-      .catch(() => {
-        if (alive) setState("failed");
-      });
+        .then((response) => {
+          if (!alive) return null;
+          if (response.ok) return response.blob();
+          // 4xx（404 缺失 / 403 拒绝）是确定性结果，不重试；5xx 代表
+          // 本地代理瞬时故障，交由重试恢复。
+          if (response.status < 500) {
+            setState("failed");
+            return null;
+          }
+          throw new Error("image proxy temporarily unavailable");
+        })
+        .then((blob) => {
+          if (!alive || !blob) return;
+          created = URL.createObjectURL(blob);
+          setObjectUrl(created);
+          setState("ready");
+        })
+        .catch(() => scheduleRetry());
+    };
+
+    load();
+
     return () => {
       alive = false;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
       if (created) URL.revokeObjectURL(created);
     };
   }, [runId, url]);

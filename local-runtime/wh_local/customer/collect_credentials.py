@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import ssl
 from typing import Any, Mapping
 from urllib.error import HTTPError
 from urllib.parse import urljoin
@@ -20,6 +21,8 @@ from urllib.request import Request, urlopen
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+from ..config import is_ip_literal_host
 
 
 # 云服务器 RSA 公钥（与服务器私钥配对）。服务器更换密钥对时需同步更新此处。
@@ -84,7 +87,11 @@ def request_collect_credentials(
         method="POST",
     )
     try:
-        with urlopen(request, timeout=timeout) as response:
+        # IP-direct connections to a test/staging host cannot match the public
+        # certificate's hostname. Skip chain/hostname verification only when the
+        # target is a bare IP literal; production (domain) stays fully verified.
+        context = ssl._create_unverified_context() if is_ip_literal_host(base_url) else None
+        with urlopen(request, timeout=timeout, context=context) as response:
             payload = json.loads(response.read().decode("utf-8") or "{}")
     except HTTPError as exc:
         detail = _extract_error_message(exc)

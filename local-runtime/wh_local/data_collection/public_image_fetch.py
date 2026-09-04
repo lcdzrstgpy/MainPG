@@ -14,6 +14,7 @@ import json
 import re
 import socket
 import ssl
+import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,10 @@ MAX_PUBLIC_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_PUBLIC_IMAGE_REDIRECTS = 5
 _MAX_URL_LENGTH = 4096
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+# 网络波动（一次连接被重置、读超时、TLS 抖动）时对瞬时连接故障做有限重试；
+# 仅重试连接/超时/SSL/HTTP 传输层错误，DNS/校验/重定向等确定性错误不重试。
+_PUBLIC_IMAGE_TRANSIENT_ATTEMPTS = 3
+_PUBLIC_IMAGE_TRANSIENT_BACKOFF = 0.35
 _GENERIC_MEDIA_TYPES = frozenset({"", "application/octet-stream", "binary/octet-stream"})
 _MEDIA_TYPE_ALIASES = {
     "image/jpeg": "image/jpeg",
@@ -257,13 +262,17 @@ def _request_from_approved_address(
     transport: PublicImageTransport,
 ) -> PublicImageHttpResponse:
     last_error: BaseException | None = None
-    for address in validated.addresses:
-        try:
-            return transport(validated, address, timeout_seconds, max_bytes)
-        except PublicImageFetchError:
-            raise
-        except (OSError, TimeoutError, ssl.SSLError, http.client.HTTPException) as error:
-            last_error = error
+    for attempt in range(_PUBLIC_IMAGE_TRANSIENT_ATTEMPTS):
+        last_error = None
+        for address in validated.addresses:
+            try:
+                return transport(validated, address, timeout_seconds, max_bytes)
+            except PublicImageFetchError:
+                raise
+            except (OSError, TimeoutError, ssl.SSLError, http.client.HTTPException) as error:
+                last_error = error
+        if last_error is not None and attempt < _PUBLIC_IMAGE_TRANSIENT_ATTEMPTS - 1:
+            time.sleep(_PUBLIC_IMAGE_TRANSIENT_BACKOFF)
     raise PublicImageFetchError("image request failed") from last_error
 
 

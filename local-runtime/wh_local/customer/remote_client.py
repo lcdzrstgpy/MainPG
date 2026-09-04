@@ -9,6 +9,7 @@ from urllib.error import HTTPError
 
 import requests
 
+from ..config import is_ip_literal_host
 from .contracts import (
     CustomerAuthActionResult,
     CustomerAuthRejected,
@@ -38,6 +39,11 @@ class CustomerAuthClient:
         self.timeout_seconds = timeout_seconds
         self._session = requests.Session()
         self._session.trust_env = False
+        # IP-direct connections to a test/staging host cannot match the public
+        # certificate's hostname. Skip chain/hostname verification only when the
+        # target is a bare IP literal; production (domain) stays fully verified.
+        if is_ip_literal_host(self.base_url):
+            self._session.verify = False
 
     def configured(self) -> bool:
         return bool(self.base_url)

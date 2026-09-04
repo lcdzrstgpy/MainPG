@@ -105,7 +105,19 @@ TEXT_CHAT_URL = os.environ.get(
 TEXT_MODEL = os.environ.get("WH_TEXT_MODEL", "doubao-seed-2-0-mini-260428").strip()
 WUYIN_IMAGE_SUBMIT_URL = "https://api.wuyinkeji.com/api/async/image_gpt"
 WUYIN_IMAGE_DETAIL_URL = "https://api.wuyinkeji.com/api/async/detail"
-_TEXT_GATEWAY_SEMAPHORE = threading.BoundedSemaphore(value=4)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# 全局上游文本并发预算（所有密钥合计）。此前固定 4 条链接会卡死真实用户吞吐，
+# 现默认放大以配合“单密钥上限=并发用户数”的调度语义；仍可通过环境变量收紧。
+_TEXT_GATEWAY_MAX_CONCURRENCY = max(1, _env_int("WH_TEXT_GATEWAY_MAX_CONCURRENCY", 1000))
+_TEXT_GATEWAY_SEMAPHORE = threading.BoundedSemaphore(value=_TEXT_GATEWAY_MAX_CONCURRENCY)
 MAX_CHAT_REQUEST_BYTES = 12 * 1024 * 1024
 MAX_CHAT_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_CHAT_CONTENT_PARTS = 16
@@ -181,9 +193,118 @@ class _TextCredentialPool:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._states: dict[str, dict[str, float | int]] = {}
+        self._states: dict[str, dict[str, Any]] = {}
+        # 每个 key 在窗口内的成功请求时间戳（用于统计窗口用量）。
+        self._usage: dict[str, list[float]] = {}
+        # 单密钥并发用户上限：“100”指并发用户数，而非并行链接数（一次调用可能开多条链接）。
+        # 以账号（account_id）去重统计用户，一个用户开 N 条并行链接只算 1 个用户。
+        # _key_user_cap <= 0 表示回退到各凭据自带的 max_concurrency。
+        self._key_user_cap = self._read_key_user_cap()
+        self._window_seconds = self._read_window_seconds()
+        self._key_quota = self._read_key_quota()
 
-    def acquire(self) -> tuple[dict[str, Any] | None, int]:
+    @staticmethod
+    def _read_key_user_cap() -> int:
+        try:
+            return max(0, int(os.environ.get("WH_TEXT_KEY_USER_CAP", "100")))
+        except (TypeError, ValueError):
+            return 100
+
+    def _user_cap(self, credential: dict[str, Any]) -> int:
+        if self._key_user_cap > 0:
+            return self._key_user_cap
+        return max(1, int(credential.get("max_concurrency") or 100))
+
+    @staticmethod
+    def _read_window_seconds() -> int:
+        try:
+            return max(60, int(os.environ.get("WH_TEXT_ROTATION_WINDOW_SECONDS", "3600")))
+        except (TypeError, ValueError):
+            return 3600
+
+    @staticmethod
+    def _read_key_quota() -> int:
+        try:
+            return max(0, int(os.environ.get("WH_TEXT_KEY_QUOTA_PER_WINDOW", "0")))
+        except (TypeError, ValueError):
+            return 0
+
+    def _window_count(self, credential_id: str, now: float) -> int:
+        """已成功请求数（滑动窗口内）。window 内旧时间戳会被顺带清理。
+
+        无论是否启用配额兜底都持续统计，为压力分的速率分量提供数据。
+        """
+        seq = self._usage.get(credential_id)
+        if not seq:
+            return 0
+        cutoff = now - self._window_seconds
+        while seq and seq[0] <= cutoff:
+            seq.pop(0)
+        return len(seq)
+
+    @staticmethod
+    def _calc_pressure(limit: int, users: int, window_count: int, window_seconds: int) -> float:
+        """压力分 0-100：以实时并发用户占用为主，近窗口请求速率作次要平滑。
+
+        占用按“并发用户数 / 单密钥用户上限”计算，而非并行链接数；一个用户的
+        多条并行链接不会重复计入压力。
+        """
+        occupancy = users / max(1, limit)
+        rate_ratio = 0.0
+        if window_seconds > 0:
+            rpm = window_count * 60.0 / window_seconds
+            rate_ratio = min(1.0, rpm / max(2.0, limit * 2.0))
+        return round(100.0 * (0.75 * occupancy + 0.25 * rate_ratio), 1)
+
+    @staticmethod
+    def _band(pressure: float, cooldown_until: float, now: float) -> str:
+        if cooldown_until > now:
+            return "cooling"
+        if pressure >= 75.0:
+            return "busy"
+        if pressure >= 20.0:
+            return "normal"
+        return "idle"
+
+    def _snapshot(self) -> list[dict[str, Any]]:
+        """生成每把 key 的运行时快照（用于调度选择与页面展示）。"""
+        now = time.monotonic()
+        records: list[dict[str, Any]] = []
+        with self._lock:
+            for credential in enabled_secrets("text"):
+                credential_id = str(credential["credential_id"])
+                state = self._states.get(
+                    credential_id,
+                    {"users": {}, "cooldown_until": 0.0, "last_selected": 0.0, "rate_failures": 0},
+                )
+                limit = self._user_cap(credential)
+                users: dict[str, int] = state.get("users", {})
+                user_count = len(users)
+                links = sum(users.values())
+                cooldown_until = float(state.get("cooldown_until", 0.0))
+                window_count = self._window_count(credential_id, now)
+                pressure = self._calc_pressure(limit, user_count, window_count, self._window_seconds)
+                band = self._band(pressure, cooldown_until, now)
+                records.append(
+                    {
+                        "credential_id": credential_id,
+                        "max_concurrency": limit,
+                        "users": user_count,
+                        "links": links,
+                        "available_user_slots": max(0, limit - user_count),
+                        "pressure": pressure,
+                        "state": band,
+                        "cooldown_seconds": max(0, round(cooldown_until - now, 1)) if cooldown_until > now else 0,
+                        "recent_successes": window_count,
+                    }
+                )
+        return records
+
+    def acquire(self, user_id: str) -> tuple[dict[str, Any] | None, int]:
+        user_id = str(user_id or "")
+        if not user_id:
+            # 兜底：无账号标识时退化为“一次调用一个独立用户”（即按链接计数）。
+            user_id = f"anon:{threading.get_ident()}:{time.monotonic_ns()}"
         try:
             credentials = enabled_secrets("text")
         except CredentialVaultError:
@@ -191,7 +312,7 @@ class _TextCredentialPool:
         if not credentials:
             legacy = str(os.environ.get("WH_TEXT_API_KEY") or "").strip()
             credentials = (
-                [{"credential_id": "legacy_environment", "secret": legacy, "max_concurrency": 40, "active": True}]
+                [{"credential_id": "legacy_environment", "secret": legacy, "max_concurrency": 100, "active": True}]
                 if legacy
                 else []
             )
@@ -201,75 +322,105 @@ class _TextCredentialPool:
             self._states = {
                 key: value for key, value in self._states.items() if key in current_ids
             }
-            candidates: list[tuple[float, float, dict[str, Any]]] = []
+            candidates: list[tuple[int, float, float, dict[str, Any]]] = []
             retry_after: list[float] = []
             for credential in credentials:
                 credential_id = str(credential["credential_id"])
                 state = self._states.setdefault(
                     credential_id,
-                    {"in_flight": 0, "cooldown_until": 0.0, "last_selected": 0.0, "rate_failures": 0},
+                    {"users": {}, "cooldown_until": 0.0, "last_selected": 0.0, "rate_failures": 0},
                 )
                 cooldown_until = float(state["cooldown_until"])
                 if cooldown_until > now:
                     retry_after.append(cooldown_until - now)
                     continue
-                limit = max(1, int(credential.get("max_concurrency") or 40))
-                in_flight = int(state["in_flight"])
-                if in_flight >= limit:
+                limit = self._user_cap(credential)
+                users: dict[str, int] = state["users"]
+                user_count = len(users)
+                # 用户已在此 key 上（占用已计一次）→ 继续加链接不再新增用户槽；
+                # 否则要求该 key 仍有剩余用户槽（上限=并发用户数）。
+                already_hosted = user_id in users
+                if not already_hosted and user_count >= limit:
                     retry_after.append(1.0)
                     continue
-                candidates.append((in_flight / limit, float(state["last_selected"]), credential))
+                window_count = self._window_count(credential_id, now)
+                if self._key_quota > 0 and window_count >= self._key_quota:
+                    # 该 key 已用完本窗口配额，强制分流到其它 key（等效软冷却）。
+                    seq = self._usage.get(credential_id) or []
+                    if seq:
+                        wait = min(float(self._window_seconds), max(1.0, (seq[0] + self._window_seconds) - now))
+                    else:
+                        wait = float(self._window_seconds)
+                    retry_after.append(wait)
+                    continue
+                pressure = self._calc_pressure(limit, user_count, window_count, self._window_seconds)
+                # tier=0 优先"已在此 key 上"（粘性：同一用户的并行链接尽量留在同一把 key，
+                # 避免在每把 key 都占一个用户槽）；否则按压力选最低。
+                tier = 0 if already_hosted else 1
+                candidates.append((tier, pressure, float(state["last_selected"]), credential))
             if not candidates:
                 return None, max(1, int(min(retry_after) if retry_after else 1))
-            _, _, selected = min(candidates, key=lambda value: (value[0], value[1]))
+            _, _, _, selected = min(candidates, key=lambda value: (value[0], value[1], value[2]))
             selected_state = self._states[str(selected["credential_id"])]
-            selected_state["in_flight"] = int(selected_state["in_flight"]) + 1
+            selected_users: dict[str, int] = selected_state["users"]
+            selected_users[user_id] = int(selected_users.get(user_id, 0)) + 1
             selected_state["last_selected"] = now
             return selected, 0
 
-    def release(self, credential_id: str, *, outcome: str) -> None:
+    def release(self, credential_id: str, user_id: str, *, outcome: str) -> None:
         now = time.monotonic()
+        user_id = str(user_id or "")
         with self._lock:
             state = self._states.get(credential_id)
             if state is None:
                 return
-            state["in_flight"] = max(0, int(state["in_flight"]) - 1)
-            if outcome == "rate_limited":
+            users: dict[str, int] = state["users"]
+            ref = int(users.get(user_id, 0))
+            if ref > 1:
+                users[user_id] = ref - 1
+            elif ref == 1:
+                users.pop(user_id, None)
+            if outcome == "success":
+                state["rate_failures"] = 0
+                self._usage.setdefault(credential_id, []).append(now)
+            elif outcome == "rate_limited":
                 failures = min(4, int(state["rate_failures"]) + 1)
                 state["rate_failures"] = failures
                 state["cooldown_until"] = now + min(300.0, 60.0 * (2 ** (failures - 1)))
-            elif outcome == "success":
-                state["rate_failures"] = 0
-            # outcome == "transient"（上游 5xx/超时）：只释放 in_flight，不冷却。
+            # outcome == "transient"（上游 5xx/超时）：只释放该用户的链接引用，不冷却。
             # 网关对同 hash 请求允许立即重试，冷却会误伤客户端重试路径；
             # 多 key 故障隔离由 rate_limited（上游真实 429）的指数冷却承担。
 
-    def status(self) -> dict[str, int]:
+    def status(self) -> dict[str, Any]:
         try:
-            credentials = enabled_secrets("text")
+            records = self._snapshot()
         except CredentialVaultError:
             return {"configured_keys": 0, "available_keys": 0, "available_slots": 0, "retry_after_seconds": 0}
-        now = time.monotonic()
-        with self._lock:
-            available_keys = 0
-            available_slots = 0
-            retry_after: list[float] = []
-            for credential in credentials:
-                state = self._states.get(str(credential["credential_id"]), {})
-                cooldown_until = float(state.get("cooldown_until", 0.0))
-                if cooldown_until > now:
-                    retry_after.append(cooldown_until - now)
-                    continue
-                slots = max(0, int(credential.get("max_concurrency") or 40) - int(state.get("in_flight", 0)))
-                if slots:
-                    available_keys += 1
-                    available_slots += slots
-            return {
-                "configured_keys": len(credentials),
-                "available_keys": available_keys,
-                "available_slots": available_slots,
-                "retry_after_seconds": max(0, int(min(retry_after) if retry_after else 0)),
-            }
+        available_keys = sum(1 for r in records if r["state"] != "cooling" and r["available_user_slots"] > 0)
+        available_slots = sum(r["available_user_slots"] for r in records if r["state"] != "cooling")
+        cooldowns = [r["cooldown_seconds"] for r in records if r["cooldown_seconds"] > 0]
+        result: dict[str, Any] = {
+            "configured_keys": len(records),
+            "available_keys": available_keys,
+            "available_slots": available_slots,
+            "total_users": sum(r["users"] for r in records),
+            "total_links": sum(r["links"] for r in records),
+            "retry_after_seconds": max(0, int(min(cooldowns) if cooldowns else 0)),
+            "keys": records,
+        }
+        if self._key_user_cap > 0:
+            result["user_cap"] = self._key_user_cap
+        if self._key_quota > 0:
+            result["window_seconds"] = self._window_seconds
+            result["quota_per_window"] = self._key_quota
+        return result
+
+    def detail(self) -> list[dict[str, Any]]:
+        """返回每把 key 的压力状态，供内部只读接口给 8012 拉取。"""
+        try:
+            return self._snapshot()
+        except CredentialVaultError:
+            return []
 
 
 def _server_provider_secret(kind: str, environment_name: str) -> str:
@@ -1266,8 +1417,11 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         )
         if claim.cached_response is not None:
             return claim.cached_response
+        # 单密钥上限按“并发用户数”统计，用账号去重：同一账号的多条并行链接只算一个用户。
+        # 这样“一次调用开多条链接”不会把一个用户误算成多个。
+        user_key = str(account["account_id"])
         try:
-            credential, retry_after = text_credential_pool.acquire()
+            credential, retry_after = text_credential_pool.acquire(user_key)
         except CredentialVaultError as exc:
             raise HTTPException(status_code=503, detail="server text credential vault is unavailable") from exc
         if credential is None:
@@ -1291,7 +1445,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 _server_text_chat(str(credential["secret"]), messages),
                 secrets=(str(credential["secret"]),),
             )
-            text_credential_pool.release(credential_id, outcome="success")
+            text_credential_pool.release(credential_id, user_key, outcome="success")
             _complete_gateway_request(db_path, usage_id, request_hash, response_payload)
             return response_payload
         except HTTPException as exc:
@@ -1302,11 +1456,11 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 if exc.status_code >= 500
                 else "rejected"
             )
-            text_credential_pool.release(credential_id, outcome=outcome)
+            text_credential_pool.release(credential_id, user_key, outcome=outcome)
             _fail_gateway_request(db_path, usage_id, request_hash)
             raise
         except Exception:
-            text_credential_pool.release(credential_id, outcome="transient")
+            text_credential_pool.release(credential_id, user_key, outcome="transient")
             _fail_gateway_request(db_path, usage_id, request_hash)
             raise
 
@@ -1317,6 +1471,16 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         """Expose pool capacity (counts only, never credentials) for diagnostics."""
         _required_account(db_path, authorization)
         return {"ok": True, "capacity": text_credential_pool.status()}
+
+    @app.get("/api/internal/text-pool-status")
+    def internal_text_pool_status(request: Request) -> dict[str, Any]:
+        """只读：供 8012（wh-admin）在主机内拉取文本池各密钥压力状态。
+
+        仅允许回环地址访问，避免把运行时密钥压力信息暴露到公网。
+        """
+        if request.client is None or request.client.host not in ("127.0.0.1", "::1"):
+            raise HTTPException(status_code=403, detail="internal endpoint")
+        return {"ok": True, "pool": text_credential_pool.status()}
 
     @app.post("/api/customer/ai/image")
     def server_managed_ai_image(

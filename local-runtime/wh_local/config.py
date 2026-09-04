@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import sys
@@ -79,6 +80,26 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
             "DAILY_SELECTION_ONEBOUND_ENABLED", str(local_secrets.get("enabled", True))
         ).strip().lower() in {"1", "true", "yes"},
     )
+
+
+def is_ip_literal_host(base_url: str) -> bool:
+    """Return True when a remote base URL's host is a bare IP (not a domain).
+
+    Used to keep TLS hostname/chain verification enabled for production
+    (domain-based) URLs while allowing IP-direct connections to a test/staging
+    host, whose certificate cannot match a numeric IP literal."""
+    text = str(base_url or "").strip().split("://", 1)[-1]
+    text = text.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    host = text.rsplit("@", 1)[-1]
+    if host.startswith("["):  # IPv6 literal like [::1]:443
+        host = host.split("]", 1)[0].lstrip("[")
+    else:
+        host = host.rsplit(":", 1)[0]
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
 
 
 def runtime_root(workspace: Path | None = None) -> Path:

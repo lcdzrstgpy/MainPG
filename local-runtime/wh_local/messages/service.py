@@ -5,6 +5,7 @@ import threading
 
 import httpx
 
+from ..config import is_ip_literal_host
 from .repository import MessagesRepository
 
 logger = logging.getLogger("wh_local.messages")
@@ -38,7 +39,10 @@ class AnnouncementSyncService:
             return 0
         url = f"{self.base_url}/api/announcements/public"
         try:
-            response = httpx.get(url, timeout=10)
+            # IP-direct connections to a test/staging host cannot match the public
+            # certificate's hostname; skip verification only for bare IP literals.
+            request_kwargs = {"timeout": 10, "verify": False} if is_ip_literal_host(self.base_url) else {"timeout": 10}
+            response = httpx.get(url, **request_kwargs)
             response.raise_for_status()
             payload = response.json()
             items = payload.get("announcements") if isinstance(payload, dict) else None

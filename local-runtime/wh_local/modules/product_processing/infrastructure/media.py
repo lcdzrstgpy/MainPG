@@ -31,6 +31,7 @@ import requests
 
 from ..domain.policy import is_safe_external_url, resolve_safe_external_url
 from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
+from ....config import is_ip_literal_host
 from ...ai_service.temporary_cos import (
     TemporaryCosStore,
     TemporaryReference,
@@ -1336,6 +1337,7 @@ class ProductImageProcessor:
                 },
                 timeout=max(30.0, min(float(timeout_seconds), 660.0)),
                 allow_redirects=False,
+                verify=not is_ip_literal_host(gateway_base_url()),
                 stream=True,
             )
             status_code = int(response.status_code)
