@@ -77,7 +77,6 @@ class ShopCollectionWorker:
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
-        self.repository.recover_interrupted_work()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="shop-collection-worker", daemon=True)
         self._thread.start()
@@ -395,6 +394,12 @@ class ShopCollectionWorker:
         return self.repository.get_batch_internal(batch_id).status in {"pausing", "paused"}
 
     def _run(self) -> None:
+        # 在后台线程里先恢复上次异常退出遗留的过期租约，避免在 lifespan
+        # 启动阶段同步执行数据库写操作（该同步动作会被杀软行为引擎盯上）。
+        try:
+            self.repository.recover_interrupted_work()
+        except Exception:
+            logger.exception("shop worker recover_interrupted_work failed")
         while not self._stop.is_set():
             lease = self.repository.claim_next_runnable_batch(
                 owner=self._owner, lease_seconds=self.BATCH_LEASE_SECONDS

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal, NoReturn
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
@@ -90,10 +94,27 @@ def create_product_processing_router(
         setattr(service, "_dimension_canvas_service", dimension_service)
     @asynccontextmanager
     async def lifespan(_app):
+        recover_task: asyncio.Task[None] | None = None
+
+        def _recover() -> None:
+            try:
+                service.recover_background_work()
+            except Exception:  # noqa: BLE001 - a single bad asset must not kill uvicorn
+                logger.exception("recover_background_work failed; recovered work skipped")
+
+        # 恢复任务在独立线程中 fire-and-forget 执行：
+        # 1) recover_background_work 是同步阻塞的 DB/IO 作业（拉图/重试可能耗时数分钟），
+        #    直接放在 lifespan 启动块里会阻塞事件循环，导致 uvicorn 迟迟打不出
+        #    "Application startup complete."；
+        # 2) 任何异常都被上面 try/except 吞掉，绝不冒泡到 lifespan 上下文，否则 FastAPI
+        #    判定 "Application startup failed"，uvicorn 会以 SystemExit(3) 主动退出，
+        #    launcher 观察到后反复拉起重启。
         try:
-            service.recover_background_work()
+            recover_task = asyncio.create_task(asyncio.to_thread(_recover))
             yield
         finally:
+            if recover_task is not None and not recover_task.done():
+                recover_task.cancel()
             if owns_dimension_service:
                 dimension_service.close()
             if owned_database is not None:

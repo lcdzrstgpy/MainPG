@@ -177,6 +177,10 @@ class _RuntimeExitController:
         self._grace_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_GRACE_S", "60"))
         self._idle_s = float(os.environ.get("WH_LOCAL_RUNTIME_IDLE_TIMEOUT_S", "900"))
         self._interval_s = float(os.environ.get("WH_LOCAL_RUNTIME_WATCHDOG_INTERVAL_S", "2"))
+        # 启动保护期：即便前端一直没上报首个心跳，也先等待这段时间。
+        # 避免前端资源加载/初始化偶发延迟时，看门狗把刚启动的后端秒杀，
+        # 造成用户看到“界面闪一下/无响应、后端端口没有”。
+        self._startup_grace_s = float(os.environ.get("WH_LOCAL_RUNTIME_STARTUP_GRACE_S", "90"))
         self.enabled = os.environ.get("WH_LOCAL_RUNTIME_EXIT_ON_CLOSE", "0") == "1"
         # 确认真退出前执行的「取消运行中任务并结算」回调（仅桌面端注入）。
         self._on_before_exit: Any | None = None
@@ -267,6 +271,9 @@ class _RuntimeExitController:
             if deadline is not None and now >= deadline:
                 self._exit("last frontend page closed")
             if not has_clients and deadline is None:
+                if not ever_connected and now - started_at <= self._startup_grace_s:
+                    # 启动保护期内且从未连接过前端：不退出，给前端加载时间。
+                    continue
                 if ever_connected or now - started_at > self._idle_s:
                     self._exit("frontend heartbeat idle timeout")
 
@@ -329,17 +336,26 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     async def app_lifespan(runtime_app: FastAPI):
         # This method only starts daemon workers, so an offline release server
         # cannot delay or make the desktop runtime unhealthy.
+        # 分步打点：让启动挂起时能从 runtime.log 精确定位卡在哪一步。
+        logger.info("lifespan step: startup begin")
         update_manager.start_check()
+        logger.info("lifespan step: update_manager started")
         patch_manager.start_check()
+        logger.info("lifespan step: patch_manager started")
         shop_worker = getattr(runtime_app.state, "shop_collection_worker", None)
         pod_service = getattr(runtime_app.state, "pod_customization_service", None)
         pod_ai_runtime = getattr(runtime_app.state, "pod_customization_ai_runtime", None)
         pod_title_runtime = getattr(runtime_app.state, "pod_customization_title_runtime", None)
         messages_sync = getattr(runtime_app.state, "messages_sync", None)
         if shop_worker is not None:
+            logger.info("lifespan step: starting shop_worker")
             shop_worker.start()
+            logger.info("lifespan step: shop_worker started")
         if messages_sync is not None:
+            logger.info("lifespan step: starting messages_sync")
             messages_sync.start()
+            logger.info("lifespan step: messages_sync started")
+        logger.info("lifespan step: startup done, yielding")
         try:
             yield
         finally:

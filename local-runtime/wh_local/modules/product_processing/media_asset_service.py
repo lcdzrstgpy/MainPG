@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import time
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
@@ -16,8 +17,14 @@ from wh_local.data_collection.public_image_fetch import (
 )
 
 from .infrastructure.assets import ProductProcessingAssets
-from .infrastructure.media_asset_repository import MediaAssetRepository, media_binding_key
+from .infrastructure.media_asset_repository import (
+    MediaAssetRepository,
+    MediaMaterializationConflict,
+    media_binding_key,
+)
 from .infrastructure.preview_image_files import validate_preview_image
+
+logger = logging.getLogger(__name__)
 
 _RETRY_DELAY_SECONDS = 30.0
 _TRANSIENT_FETCH_TOKENS = (
@@ -280,26 +287,35 @@ class MediaAssetService:
                 )
                 ready += 1
             except Exception as exc:  # noqa: BLE001 - persist a bounded status per asset
-                if self._is_transient(exc):
-                    retry_at = (datetime.now(timezone.utc) + timedelta(seconds=_RETRY_DELAY_SECONDS)).isoformat()
-                    self.repository.mark_materialization_retryable(
+                try:
+                    if self._is_transient(exc):
+                        retry_at = (datetime.now(timezone.utc) + timedelta(seconds=_RETRY_DELAY_SECONDS)).isoformat()
+                        self.repository.mark_materialization_retryable(
+                            asset["id"],
+                            target_workspace,
+                            asset["claim_token"],
+                            "materialization_transient",
+                            self._bounded_error(exc),
+                            retry_at,
+                        )
+                        retryable += 1
+                    else:
+                        self.repository.mark_materialization_failed(
+                            asset["id"],
+                            target_workspace,
+                            asset["claim_token"],
+                            "materialization_invalid",
+                            self._bounded_error(exc),
+                        )
+                        failed += 1
+                except (MediaMaterializationConflict, LookupError):
+                    # 该素材的抢占 token / 状态已被其他 worker 变更（并发抢占）或已被删除：
+                    # 属业务良性冲突，跳过本次状态回写，交由后续调度重新认领。绝不能把该
+                    # 异常向上冒泡，否则会穿透 lifespan 上下文拖垮整个 uvicorn 进程。
+                    logger.warning(
+                        "media materialization claim changed for asset %s; skip status write",
                         asset["id"],
-                        target_workspace,
-                        asset["claim_token"],
-                        "materialization_transient",
-                        self._bounded_error(exc),
-                        retry_at,
                     )
-                    retryable += 1
-                else:
-                    self.repository.mark_materialization_failed(
-                        asset["id"],
-                        target_workspace,
-                        asset["claim_token"],
-                        "materialization_invalid",
-                        self._bounded_error(exc),
-                    )
-                    failed += 1
         return {"claimed": len(claimed), "ready": ready, "retryable": retryable, "failed": failed}
 
     def materialize_until_idle(
