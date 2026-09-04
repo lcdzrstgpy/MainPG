@@ -7,8 +7,8 @@
 .combo-kit-header h1 { margin: 0 0 4px; font-size: 20px; color: #172b44; letter-spacing: -.02em; }
 .combo-kit-header p { margin: 0; color: #6f849a; font-size: 13px; }
 .combo-header-actions { display: flex; gap: 8px; flex-shrink: 0; }
-.combo-header-actions button { padding: 9px 16px; border-radius: 11px; border: 1px solid #cfe0eb; background: #fff; color: #2f5878; cursor: pointer; font-size: 13px; font-weight: 800; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
-.combo-header-actions button:hover:not(:disabled) { border-color: #82c9ef; box-shadow: 0 8px 18px #188bd61a; }
+.combo-header-actions button { padding: 9px 16px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 13px; font-weight: 800; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.combo-header-actions button:hover:not(:disabled) { border-color: var(--theme-module-border-strong, #82c9ef); box-shadow: 0 8px 18px #188bd61a; }
 .combo-header-actions button.primary { border: 0; color: #fff; background: linear-gradient(105deg, #087bf5, #14c8c0); }
 
 .combo-kit-message { padding: 11px 13px; border-radius: 10px; background: #f0faf3; color: #2b6a3e; border: 1px solid #d5ecdb; margin-bottom: 14px; font-size: 13px; }
@@ -47,10 +47,10 @@
 .combo-grid textarea, .combo-section textarea, .combo-preset-custom textarea { resize: none; min-height: 72px; font-family: inherit; }
 
 .combo-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
-.combo-actions button, .combo-kit-list button { padding: 10px 14px; border-radius: 11px; border: 1px solid #cfe0eb; background: #fff; color: #2f5878; cursor: pointer; font-size: 13px; font-weight: 800; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
-.combo-actions button:hover:not(:disabled), .combo-kit-list button:hover:not(:disabled) { border-color: #82c9ef; box-shadow: 0 8px 18px #188bd61a; }
-.combo-actions button:disabled { cursor: not-allowed; color: #9caaba; background: #f5f8fb; }
-.combo-actions button.primary { border: 0; color: #fff; background: linear-gradient(105deg, #087bf5, #14c8c0); }
+.combo-actions button, .combo-kit-list button { padding: 10px 14px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 13px; font-weight: 800; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.combo-actions button:hover:not(:disabled), .combo-kit-list button:hover:not(:disabled) { border-color: var(--theme-module-border-strong, #82c9ef); box-shadow: 0 8px 18px #188bd61a; }
+.combo-actions button:disabled { cursor: not-allowed; color: var(--theme-text-muted, #9caaba); background: var(--theme-module-surface-soft, #f5f8fb); }
+.combo-actions button.primary { border: 0; color: var(--theme-on-primary, #fff); background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); }
 .combo-actions button.danger, .combo-history-actions .btn-mini.danger { border: 1px solid #ffd5d5; color: #db5960; background: #fff8f8; }
 
 .combo-upload { display: inline-block; padding: 9px 14px; border: 1.5px dashed #bcd6ec; border-radius: 11px; cursor: pointer; font-size: 13px; color: #087bf5; background: #fbfdff; margin-bottom: 12px; font-weight: 800; }
@@ -83,7 +83,7 @@
 .combo-item-thumb .btn-mini { position: absolute; top: 6px; right: 6px; }
 
 /* 通用 mini 按钮 */
-.btn-mini { padding: 5px 11px; border-radius: 8px; border: 1px solid #cfe0eb; background: #fff; color: #2f5878; cursor: pointer; font-size: 12px; font-weight: 800; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+.btn-mini { padding: 5px 11px; border-radius: 8px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 12px; font-weight: 800; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
 .btn-mini:hover:not(:disabled) { border-color: #82c9ef; box-shadow: 0 6px 14px #188bd61a; }
 .btn-mini.danger { color: #db5960; border-color: #f3c4c9; background: #fff8f8; }
 .btn-mini.danger:hover:not(:disabled) { border-color: #f28b93; background: #ffecee; }
@@ -153,9 +153,9 @@
 
 /* 提示词模板预设页 */
 .combo-preset-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
-.combo-preset-tab { padding: 10px 18px; border-radius: 11px; border: 1px solid #cfe0eb; background: #fff; color: #667d94; cursor: pointer; font-size: 14px; font-weight: 800; transition: border-color .18s ease, background .18s ease, box-shadow .18s ease; }
-.combo-preset-tab:hover { border-color: #82c9ef; }
-.combo-preset-tab.is-active { color: #fff; background: linear-gradient(105deg, #087bf5, #14c8c0); border-color: transparent; box-shadow: 0 7px 14px #087bf530; }
+.combo-preset-tab { padding: 10px 18px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #667d94); cursor: pointer; font-size: 14px; font-weight: 800; transition: border-color .18s ease, background .18s ease, box-shadow .18s ease; }
+.combo-preset-tab:hover { border-color: var(--theme-module-border-strong, #82c9ef); }
+.combo-preset-tab.is-active { color: var(--theme-on-primary, #fff); background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); border-color: transparent; box-shadow: 0 7px 14px rgba(var(--theme-module-primary-rgb, 8, 123, 245), 0.18); }
 .combo-preset-body { display: flex; flex-direction: column; gap: 16px; }
 .combo-preset-card { background: #fbfdff; border: 1px solid #d8e7f2; border-radius: 18px; padding: 20px; box-shadow: 0 12px 30px #265d8a0d; }
 .combo-preset-card.is-active { border-color: #9bd3ef; }
@@ -181,7 +181,7 @@
 .combo-history-actions { display: flex; gap: 6px; }
 .combo-history-empty { padding: 32px; text-align: center; color: #8aa0b4; font-size: 13px; }
 .combo-history-pager { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 16px; }
-.combo-history-pager button { padding: 9px 14px; border-radius: 11px; border: 1px solid #cfe0eb; background: #fff; color: #2f5878; cursor: pointer; font-size: 13px; font-weight: 800; }
+.combo-history-pager button { padding: 9px 14px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 13px; font-weight: 800; }
 .combo-history-pager button:disabled { opacity: .5; cursor: not-allowed; color: #9caaba; }
 
 /* 组合生图右上角历史弹窗列表 */
@@ -196,5 +196,5 @@
 .combo-modal h3 { margin: 0 0 14px; font-size: 16px; color: #172b44; }
 .combo-modal input { width: 100%; padding: 10px 12px; border: 1px solid #cfe0eb; border-radius: 11px; font-size: 13px; color: #18334d; outline-color: #13a9f2; }
 .combo-modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
-.combo-modal-actions button { padding: 9px 14px; border-radius: 11px; border: 1px solid #cfe0eb; background: #fff; color: #2f5878; cursor: pointer; font-size: 13px; font-weight: 800; }
+.combo-modal-actions button { padding: 9px 14px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 13px; font-weight: 800; }
 .combo-modal-actions button.primary { border: 0; color: #fff; background: linear-gradient(105deg, #087bf5, #14c8c0); }

@@ -153,9 +153,12 @@ class ComboKitService:
         for src, dst in mapping.items():
             if src in payload:
                 update[dst] = str(payload.get(src) or "")
-        for key in ("bullets", "attributes", "specs"):
+        # attributes 是「键值映射」对象（与 create_set 一致），bullets/specs 是数组。
+        for key in ("bullets", "specs"):
             if key in payload:
                 update[f"{key}_json"] = json.dumps(payload.get(key) or [], ensure_ascii=False)
+        if "attributes" in payload:
+            update["attributes_json"] = json.dumps(payload.get("attributes") or {}, ensure_ascii=False)
         if "sku" in payload:
             update["sku"] = str(payload.get("sku") or "")
         if "sku_display" in payload:
@@ -394,6 +397,12 @@ class ComboKitService:
 
     def generate_images(self, set_id: str, *, actor: Any, roles: list[str] | None = None) -> dict[str, Any]:
         base = self._require_set(set_id)
+        # 防御：只允许传入 API 生图角色（main/detail_page 为融合/拼接生成，不在其列）。
+        # 否则非法角色会被 generation 层过滤成零产出，却仍按整套 100 分结算成功。
+        if roles:
+            invalid = [str(r) for r in roles if str(r) not in GENERATED_API_ROLES]
+            if invalid:
+                raise ComboKitValidationError(f"不支持的生成角色：{', '.join(invalid)}")
         items = self.repository.list_items(set_id)
         if not items:
             raise ComboKitValidationError("没有可用的来源图")
@@ -836,7 +845,9 @@ class ComboKitService:
             "reject_reason": reason if status == "rejected" else "",
         })
         if status == "passed":
-            self.repository.update_set(set_id, {"status": "completed", "stage": "completed", "finished_at": _now()})
+            # 注：combo_kit_sets 表无 finished_at 列（该字段仅存在于预览任务表），
+            # 此处不写，避免落入 update_set 的 allowed 白名单被静默丢弃。
+            self.repository.update_set(set_id, {"status": "completed", "stage": "completed"})
         else:
             self.repository.update_set(set_id, {"status": "draft", "stage": "set_info", "error_message": reason})
         return self.get_set(set_id)
