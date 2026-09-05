@@ -718,6 +718,25 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  const deleteBatch = async () => {
+    if (!activeBatch) return;
+    const title = activeBatch.title || activeBatch.template_name || "批次";
+    if (!window.confirm(`确认删除「${title}」？删除后该批次的本地图片将被清理，不可恢复。`)) return;
+    setBusyAction("delete-batch");
+    clearMessages();
+    try {
+      await podCustomizationApi.deleteBatch(activeBatch.id);
+      setBatches((current) => current.filter((batch) => batch.id !== activeBatch.id));
+      setActiveBatch(null);
+      setSelectedItemId(undefined);
+      setNotice("批次已删除。");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   const downloadAsset = async (path: string, filename: string) => {
     const itemId = selectedItem?.id ?? "asset";
     setBusyAction(`download:${itemId}`);
@@ -862,6 +881,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             onPauseBatch={() => void pauseBatch()}
             onCancelBatch={() => void cancelBatch()}
             onResumeBatch={() => void resumeBatch()}
+            onDeleteBatch={() => void deleteBatch()}
           />
         </main>
       </div>

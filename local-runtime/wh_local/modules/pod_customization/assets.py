@@ -87,6 +87,22 @@ class PodAssetStore:
             raise FileNotFoundError("POD asset is unavailable")
         return target
 
+    def remove(self, relative_path: str) -> None:
+        """Best-effort removal of a stored image, plus empty parent cleanup."""
+        target = (self.root / relative_path).resolve()
+        self._require_managed(target)
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            return
+        parent = target.parent
+        while parent != self.root:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
     def _require_managed(self, path: Path) -> None:
         if path != self.root and self.root not in path.parents:
             raise ValueError("POD asset path is outside the managed root")

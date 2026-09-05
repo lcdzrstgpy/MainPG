@@ -18,7 +18,7 @@ export function PodResultLightbox({ batch, item, busyAction, onClose, onDownload
     <button className="pod-result-lightbox-backdrop" type="button" aria-label="关闭大图" onClick={onClose} />
     <section className="pod-result-lightbox">
       <header><div><span>款式 #{String(item.style_index ?? item.index).padStart(3, "0")} · 图 {item.variant_index ?? 1}</span><h2>{podItemStatusLabel(item.status)}</h2></div><button type="button" onClick={onClose} aria-label="关闭大图">×</button></header>
-      <div className="pod-result-lightbox-media">{item.composite_preview_url || item.pattern_preview_url ? <PodAssetImage path={item.composite_preview_url || item.pattern_preview_url} alt="POD 生成结果大图" /> : <p>图片生成中</p>}</div>
+      <div className="pod-result-lightbox-media">{item.public_url || item.composite_preview_url || item.pattern_preview_url ? <PodAssetImage path={item.public_url || item.composite_preview_url || item.pattern_preview_url} alt="POD 生成结果大图" /> : <p>图片生成中</p>}</div>
       <div className="pod-result-lightbox-actions">
         <button type="button" disabled={!item.pattern_download_url || itemBusy} onClick={() => item.pattern_download_url && void onDownload(item.pattern_download_url, `${filename}-original.png`)}>下载原始直出图</button>
         <button type="button" disabled={!item.composite_download_url || itemBusy} onClick={() => item.composite_download_url && void onDownload(item.composite_download_url, `${filename}-listing.png`)}>下载当前商品图</button>

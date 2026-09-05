@@ -116,6 +116,10 @@ export const podCustomizationApi = {
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/cancel`,
     { method: "POST", body: {} },
   ),
+  deleteBatch: (batchId: string) => httpJson<{ deleted: string }>(
+    `${API_BASE}/batches/${encodeURIComponent(batchId)}`,
+    { method: "DELETE" },
+  ),
   resumeBatch: (batchId: string) => httpJson<PodBatch>(
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/resume`,
     { method: "POST", body: {} },

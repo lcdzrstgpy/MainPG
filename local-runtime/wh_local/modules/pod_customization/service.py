@@ -90,8 +90,11 @@ class PodCustomizationService:
         # recorded as a normal failure and can be retried from the batch UI.
         self._reaper_stop: threading.Event = threading.Event()
         self._reaper_thread: threading.Thread | None = None
+        self._cache_sweep_stop: threading.Event = threading.Event()
+        self._cache_sweep_thread: threading.Thread | None = None
         if start_workers:
             self._start_reaper()
+            self._start_cache_sweeper()
 
     @staticmethod
     def _build_theme_registry(asset_root: Path) -> ThemeRegistry:
@@ -420,6 +423,18 @@ class PodCustomizationService:
             # 已暂停或 worker 已退出的批次不会再经过检查点，需同步收尾。
             finish_cancelled()
         return self._batch_payload(self.repository.get_batch(batch_id, actor.workspace_id, actor.id))
+
+    def delete_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
+        relative_paths = self.repository.delete_batch(batch_id, actor.workspace_id, actor.id)
+        for relative_path in relative_paths:
+            try:
+                self.assets.remove(relative_path)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "POD delete_batch failed to remove local file: %s", relative_path
+                )
+        return {"deleted": batch_id}
 
     def resume_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
@@ -804,6 +819,10 @@ class PodCustomizationService:
             self._reaper_stop.set()
             self._reaper_thread.join(timeout=5.0)
             self._reaper_thread = None
+        if self._cache_sweep_thread is not None:
+            self._cache_sweep_stop.set()
+            self._cache_sweep_thread.join(timeout=5.0)
+            self._cache_sweep_thread = None
         # Revoke active epochs before cancelling the local executors.  Provider
         # calls already inside requests cannot be force-killed safely, but any
         # result they deliver after this point is rejected by the repository.
@@ -831,6 +850,41 @@ class PodCustomizationService:
                 self.settle_stuck_billing_runs()
             except Exception as exc:
                 logger.warning("POD reaper encountered an error: %s", exc)
+
+    def _start_cache_sweeper(self) -> None:
+        """Start the background sweeper that clears stale local image cache."""
+        self._cache_sweep_stop.clear()
+        self._cache_sweep_thread = threading.Thread(
+            target=self._run_cache_sweeper,
+            name="pod-stale-cache-sweeper",
+            daemon=True,
+        )
+        self._cache_sweep_thread.start()
+
+    def _run_cache_sweeper(self) -> None:
+        """Loop: clear stale local cache once, then every 48 hours until stopped."""
+        import logging
+        logger = logging.getLogger(__name__)
+        while True:
+            try:
+                self.reap_stale_local_cache_once()
+            except Exception as exc:
+                logger.warning("POD stale-cache sweeper encountered an error: %s", exc)
+            if self._cache_sweep_stop.wait(timeout=48 * 3600):
+                break
+
+    def reap_stale_local_cache_once(self, *, older_than_hours: int = 48) -> list[str]:
+        """Clear local image cache older than the given window and return removed paths."""
+        relative_paths = self.repository.reap_stale_local_cache(older_than_hours=older_than_hours)
+        for relative_path in relative_paths:
+            try:
+                self.assets.remove(relative_path)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "POD stale-cache sweeper failed to remove %s", relative_path
+                )
+        return relative_paths
 
     def reap_stuck_batches_once(self) -> list[dict]:
         """Reap batches that have not progressed within the inactivity window.

@@ -1497,6 +1497,175 @@ class PodCustomizationRepository:
             )
         return result.rowcount == 1
 
+    TERMINAL_BATCH_STATUSES = {"completed", "partial_failure", "failed", "cancelled"}
+
+    def delete_batch(self, batch_id: str, workspace_id: str, owner_user_id: str) -> list[str]:
+        """Delete a terminal batch and return now-unused local asset paths.
+
+        The owner-scoped lookup, terminal-state guard, billing-ledger cleanup
+        and child cascade all happen in a single transaction. Returns the
+        ``relative_path`` values whose files should be removed by the caller.
+        """
+        with self._connect() as connection:
+            batch = connection.execute(
+                """SELECT status FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None:
+                raise PodRepositoryError("POD batch not found", 404)
+            if batch["status"] not in self.TERMINAL_BATCH_STATUSES:
+                raise PodRepositoryError("仅已完成的 POD 批次可以删除", 409)
+
+            asset_ids: set[str] = set()
+            for column in ("pattern_asset_id", "composite_asset_id"):
+                for table in ("pod_customization_batch_items", "pod_customization_style_grid_results"):
+                    rows = connection.execute(
+                        f"SELECT {column} FROM {table} WHERE batch_id = ?",
+                        (batch_id,),
+                    ).fetchall()
+                    for row in rows:
+                        if row[column]:
+                            asset_ids.add(row[column])
+            rows = connection.execute(
+                "SELECT grid_asset_id FROM pod_customization_generation_calls WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchall()
+            for row in rows:
+                if row["grid_asset_id"]:
+                    asset_ids.add(row["grid_asset_id"])
+            rows = connection.execute(
+                "SELECT pattern_asset_id FROM pod_customization_pattern_candidates WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchall()
+            for row in rows:
+                if row["pattern_asset_id"]:
+                    asset_ids.add(row["pattern_asset_id"])
+
+            # The billing ledger references batch_id without a cascade FK.
+            connection.execute(
+                "DELETE FROM pod_customization_billing_runs WHERE batch_id = ?", (batch_id,)
+            )
+            connection.execute(
+                "DELETE FROM pod_customization_batches WHERE batch_id = ?", (batch_id,)
+            )
+            return self._delete_assets_and_collect_files(connection, asset_ids)
+
+    def reap_stale_local_cache(self, *, older_than_hours: int = 48) -> list[str]:
+        """Clear stale local image cache older than the given window.
+
+        Templates are never touched. Two categories are released:
+          - style-grid results older than the window whose images were already
+            published to the public image host (clear their local URL refs);
+          - asset rows older than the window that no table references anymore.
+        Returns ``relative_path`` values whose files should be removed on disk.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=older_than_hours)).isoformat(
+            timespec="milliseconds"
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_style_grid_results
+                   SET pattern_asset_id = '', composite_asset_id = ''
+                   WHERE created_at < ?
+                     AND EXISTS (
+                         SELECT 1 FROM pod_customization_style_grid_publications AS p
+                         WHERE p.result_id = pod_customization_style_grid_results.result_id
+                           AND p.public_url <> ''
+                     )""",
+                (cutoff,),
+            )
+            # Release intermediate grid/candidate assets for batches whose
+            # lifecycle has ended, so they become orphans for the sweep below.
+            for statement in (
+                """UPDATE pod_customization_generation_calls
+                   SET grid_asset_id = ''
+                   WHERE grid_asset_id <> ''
+                     AND batch_id IN (
+                         SELECT batch_id FROM pod_customization_batches
+                         WHERE status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')
+                           AND updated_at < ?
+                     )""",
+                """UPDATE pod_customization_pattern_candidates
+                   SET pattern_asset_id = ''
+                   WHERE pattern_asset_id <> ''
+                     AND batch_id IN (
+                         SELECT batch_id FROM pod_customization_batches
+                         WHERE status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')
+                           AND updated_at < ?
+                     )""",
+            ):
+                connection.execute(statement, (cutoff,))
+            protected = self._collect_trial_asset_ids(connection)
+            rows = connection.execute(
+                """SELECT a.asset_id FROM pod_customization_assets AS a
+                   WHERE a.kind <> 'template'
+                     AND a.created_at < ?
+                     AND a.asset_id NOT IN (SELECT asset_id FROM pod_customization_templates)
+                     AND a.asset_id NOT IN (SELECT asset_id FROM pod_customization_template_snapshots)
+                     AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_batch_items WHERE pattern_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT composite_asset_id FROM pod_customization_batch_items WHERE composite_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_style_grid_results WHERE pattern_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT composite_asset_id FROM pod_customization_style_grid_results WHERE composite_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT grid_asset_id FROM pod_customization_generation_calls WHERE grid_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_pattern_candidates WHERE pattern_asset_id <> '')""",
+                (cutoff,),
+            ).fetchall()
+            orphaned = {row["asset_id"] for row in rows if row["asset_id"] not in protected}
+            return self._delete_assets_and_collect_files(connection, orphaned)
+
+    @staticmethod
+    def _collect_trial_asset_ids(connection: sqlite3.Connection) -> set[str]:
+        """Collect asset ids stored as JSON on direct-listing trials."""
+        asset_ids: set[str] = set()
+        rows = connection.execute(
+            """SELECT grid_attempt_asset_ids_json, panel_asset_ids_json
+               FROM pod_customization_direct_listing_trials"""
+        ).fetchall()
+        for row in rows:
+            for raw in (row["grid_attempt_asset_ids_json"], row["panel_asset_ids_json"]):
+                try:
+                    data = json.loads(raw or "{}")
+                except (TypeError, ValueError):
+                    continue
+                values = data.values() if isinstance(data, dict) else data if isinstance(data, list) else ()
+                for value in values:
+                    if isinstance(value, str) and value:
+                        asset_ids.add(value)
+        return asset_ids
+
+    @staticmethod
+    def _delete_assets_and_collect_files(
+        connection: sqlite3.Connection, asset_ids: set[str]
+    ) -> list[str]:
+        """Delete non-template asset rows and return deduplicated unused paths."""
+        if not asset_ids:
+            return []
+        placeholders = ",".join("?" for _ in asset_ids)
+        params = tuple(asset_ids)
+        rows = connection.execute(
+            f"""SELECT asset_id, relative_path FROM pod_customization_assets
+                WHERE asset_id IN ({placeholders}) AND kind <> 'template'""",
+            params,
+        ).fetchall()
+        if not rows:
+            return []
+        connection.execute(
+            f"""DELETE FROM pod_customization_assets
+                WHERE asset_id IN ({placeholders}) AND kind <> 'template'""",
+            params,
+        )
+        relative_paths = {row["relative_path"] for row in rows}
+        unused: list[str] = []
+        for path in relative_paths:
+            remaining = connection.execute(
+                "SELECT COUNT(*) FROM pod_customization_assets WHERE relative_path = ?",
+                (path,),
+            ).fetchone()[0]
+            if remaining == 0:
+                unused.append(path)
+        return unused
+
     def claim_style_title(
         self,
         batch_id: str,
