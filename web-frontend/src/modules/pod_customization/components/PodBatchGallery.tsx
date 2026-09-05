@@ -59,7 +59,14 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
   const progress = batchProgress(batch);
   const progressCounts = podBatchProgressCounts(batch);
   const styles = groupPodStyleRows(batch);
-  const submittedCount = styles.filter((style) => style.status !== "queued").length;
+  // A style is "submitted" only after at least one of its images has left the
+  // initial queued state, i.e. a provider request was actually dispatched. A
+  // style whose four images are all still queued (waiting for the generation
+  // window) has not been submitted to the provider yet. Counting by style
+  // status alone would treat queued rows as active and over-report (e.g. "100").
+  const submittedCount = styles.filter((style) =>
+    style.results.some((item) => item && item.status !== "queued"),
+  ).length;
   const exportStatus = batch.dianxiaomi_export;
   const exporting = busyAction === "export-dianxiaomi";
   const exportBlockReason = busyAction

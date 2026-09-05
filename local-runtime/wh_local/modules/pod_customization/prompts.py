@@ -404,6 +404,14 @@ def _detect_theme(business_fields: Mapping[str, object] | None, free_text: str =
     return None
 
 
+# Themes whose built-in pool describes a STYLE/ERA/technique rather than a visual
+# subject. For these the user's own design theme (bow, wildflower, ...) is what
+# defines the subject, so the fixed pool must NOT auto-supply the motif; instead
+# the brief falls back to "invent within the theme" or a Doubao-learned pool keyed
+# by the full design theme.
+_STYLE_BIAS_THEMES = frozenset({"retro", "minimal", "abstract"})
+
+
 def _motif_for_style(
     business_fields: Mapping[str, object] | None,
     style_index: int,
@@ -413,11 +421,13 @@ def _motif_for_style(
     """Return a per-style subject that stays on the brief.
 
     The SUBJECT always comes from the user's own theme (``design_theme``) so the
-    model never replaces the brief's subject with a fixed pool subject. The pool
-    only supplies a WITHIN-THEME variation, which is subordinate to the brief.
-    Subjects reuse across styles (variety comes from the full recipe), so a
-    variation may repeat in a fresh combination. The generic pool is reached only
-    when the user expressed nothing at all.
+    model never replaces the brief's subject with a fixed pool subject. Resolution
+    order: (1) a Doubao-learned pool keyed by the exact design theme, (2) a
+    built-in pool only for subject themes (never style/era descriptors such as
+    retro/minimal/abstract), (3) "invent a subject within the brief's theme" so a
+    novel or compound theme is never replaced by an unrelated subject. Subjects
+    reuse across styles (variety comes from the full recipe). The generic pool is
+    reached only when the user expressed nothing at all.
     """
     if theme_pools is None:
         theme_pools = _THEME_MOTIFS
@@ -425,9 +435,11 @@ def _motif_for_style(
     theme_text, keywords = _brief_theme_keywords(business_fields)
     subject = theme_text or theme
     if subject:
-        pool = theme_pools.get(theme)
-        if pool is None and theme_text:
-            pool = theme_pools.get(theme_text)
+        # 1) learned pool keyed by the user's exact design theme (highest priority)
+        pool = theme_pools.get(theme_text) if theme_text else None
+        # 2) built-in pool, but only for subject themes (never style/era descriptors)
+        if pool is None and theme and theme not in _STYLE_BIAS_THEMES:
+            pool = theme_pools.get(theme)
         if pool:
             variation = pool[(style_index - 1) % len(pool)]
             return f"a variation inspired by '{variation}', within the brief's theme ({subject})"

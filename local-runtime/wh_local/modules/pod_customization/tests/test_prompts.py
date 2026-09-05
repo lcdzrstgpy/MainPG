@@ -43,14 +43,31 @@ def test_subject_reuses_across_styles_within_batch() -> None:
     assert f"within the brief's theme (海洋)" in _motif_of(beyond)
 
 
+def test_style_bias_theme_does_not_use_fixed_style_pool() -> None:
+    # "复古/轻复古" is a style/era descriptor; the fixed retro pool (atomic shapes,
+    # starbursts, ...) must NOT supply the motif for a compound user theme.
+    brief = {"design_theme": "美式轻复古手绘蝴蝶结", "style_keywords": ["手绘水彩小蝴蝶结", "Coquette"]}
+    prompt = build_style_listing_prompt(BASE, style_index=1, attempt=1, business_fields=brief)
+    assert "a NEW specific subject within the brief's theme (美式轻复古手绘蝴蝶结)" in _motif_of(prompt)
+    assert "atomic shapes" not in _motif_of(prompt)
+    assert "starbursts" not in _motif_of(prompt)
+
+
 def test_compound_theme_subject_is_anchored_to_user_theme_not_detected_style() -> None:
     # Detector finds 'retro' (via 复古), but the subject must be the user's own
     # wildflower/cottagecore theme, never the retro pool's subject.
     brief = {"design_theme": "美式复古野花田园风", "style_keywords": ["复古水彩野花", "植物花草"]}
     prompt = build_style_listing_prompt(BASE, style_index=1, attempt=1, business_fields=brief)
     assert "within the brief's theme (美式复古野花田园风)" in _motif_of(prompt)
-    # the retro-subject may appear as a subordinate variation, not as the subject
+    assert "a NEW specific subject" in _motif_of(prompt)
+    assert "atomic shapes" not in _motif_of(prompt)
+
+
+def test_subject_theme_still_uses_its_builtin_pool() -> None:
+    # Non-style themes keep their deterministic pool.
+    prompt = build_style_listing_prompt(BASE, style_index=1, attempt=1, business_fields=OCEAN_BRIEF)
     assert "a variation inspired by" in _motif_of(prompt)
+    assert "rolling ocean waves" in _motif_of(prompt)
 
 
 def test_contract_declares_theme_precedence_and_drops_binding_direction() -> None:
