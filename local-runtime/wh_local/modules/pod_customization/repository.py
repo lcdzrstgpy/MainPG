@@ -1315,13 +1315,39 @@ class PodCustomizationRepository:
                 if updated.rowcount != 1:
                     continue
 
-                # Mark queued/running items terminal.
+                # Mark queued/running generation calls and titles terminal so the
+                # stale coordinator threads cannot resurrect them.
                 connection.execute(
-                    """UPDATE pod_customization_batch_items
-                       SET status = 'failed', error_message = ?, updated_at = ?
-                       WHERE batch_id = ? AND status IN ('queued', 'compositing', 'generating_pattern')""",
+                    """UPDATE pod_customization_generation_calls
+                       SET status = 'interrupted', error_message = ?, finished_at = ?
+                       WHERE batch_id = ? AND status IN ('queued', 'running')""",
                     (timeout_msg, now, batch_id),
                 )
+                connection.execute(
+                    """UPDATE pod_customization_style_titles
+                       SET status = 'failed', error_message = ?, updated_at = ?, finished_at = ?
+                       WHERE batch_id = ? AND status IN ('queued', 'generating')""",
+                    (timeout_msg, now, now, batch_id),
+                )
+                # Mark queued/running items terminal. Style-grid batches store
+                # their items in style_grid_results; legacy batches in batch_items.
+                # Updating the wrong table strands the rows non-terminal (stuck
+                # style, unretryable). Branch on the batch flavour like
+                # fail_remaining_items / recover_interrupted_batches do.
+                if self._is_style_grid_batch(connection, batch_id):
+                    connection.execute(
+                        """UPDATE pod_customization_style_grid_results
+                           SET status = 'failed', error_message = ?, updated_at = ?
+                           WHERE batch_id = ? AND status IN ('queued', 'generating_pattern', 'compositing')""",
+                        (timeout_msg, now, batch_id),
+                    )
+                else:
+                    connection.execute(
+                        """UPDATE pod_customization_batch_items
+                           SET status = 'failed', error_message = ?, updated_at = ?
+                           WHERE batch_id = ? AND status IN ('queued', 'generating_pattern', 'compositing', 'optimizing_scene')""",
+                        (timeout_msg, now, batch_id),
+                    )
                 # Mark any associated billing run settlement_pending when it has
                 # an uncertain 'started' outcome; never introduce a nonexistent status.
                 connection.execute(
