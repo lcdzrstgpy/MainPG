@@ -21,6 +21,14 @@ export function usePodAssetUrl(path?: string, enabled = true): string {
       setUrl(path);
       return;
     }
+    // Public external URL (e.g. COS 图床外链): display it online directly via
+    // <img src>, which needs no CORS. Do NOT fetch()->blob() here: that path
+    // requires the cross-origin host to send Access-Control-Allow-Origin, and
+    // the COS bucket does not, so the image silently renders blank.
+    if (/^https?:\/\//i.test(path)) {
+      setUrl(path);
+      return;
+    }
     void loadPodAsset(path).then((blob) => {
       if (stopped) return;
       objectUrl = URL.createObjectURL(blob);

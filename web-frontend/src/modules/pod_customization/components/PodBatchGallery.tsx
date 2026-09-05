@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { batchProgress, canCancelPodBatch, canDeletePodBatch, canPausePodBatch, canRegeneratePodStyle, canRegeneratePodStyleTitle, canResumePodBatch, canRetryPodBatchFailed, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, podBatchProgressCounts, podBatchStatusDetail, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
+import { batchProgress, canCancelPodBatch, canPausePodBatch, canRegeneratePodStyle, canRegeneratePodStyleTitle, canResumePodBatch, canRetryPodBatchFailed, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, podBatchProgressCounts, podBatchStatusDetail, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
 import { dianxiaomiExportBlockMessage, isDianxiaomiExportEnabled } from "../data/dianxiaomiExport";
 import { PodAssetImage } from "../data/usePodAssetUrl";
 import type { PodBatch, PodBatchItem } from "../types";
@@ -19,7 +19,6 @@ type Props = {
   onPauseBatch: () => void;
   onCancelBatch: () => void;
   onResumeBatch: () => void;
-  onDeleteBatch: () => void;
 };
 
 const ROLE_LABELS = ["主图", "细节图 A", "细节图 B", "素材图"] as const;
@@ -43,7 +42,7 @@ async function copyTitle(title: string): Promise<void> {
   }
 }
 
-export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateStyle, onRegenerateTitle, onUpdateExportSelection, onSaveTitle, onExportDianxiaomi, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch, onDeleteBatch }: Props) {
+export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateStyle, onRegenerateTitle, onUpdateExportSelection, onSaveTitle, onExportDianxiaomi, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
   const [selectedStyleIndex, setSelectedStyleIndex] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
   const showWaitingTime = Boolean(batch && isActiveBatchStatus(batch.status));
@@ -80,12 +79,10 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
   const canPause = canPausePodBatch(batch.status);
   const canCancel = canCancelPodBatch(batch.status);
   const canResume = canResumePodBatch(batch.status);
-  const canDelete = canDeletePodBatch(batch.status);
   const batchStatusDetail = podBatchStatusDetail(batch.status, submittedCount);
   const pausing = busyAction === "pause-batch";
   const cancelling = busyAction === "cancel-batch";
   const resuming = busyAction === "resume-batch";
-  const deleting = busyAction === "delete-batch";
   return <><section className="pod-gallery" aria-label="POD 批次画廊">
     <header className="pod-gallery-header">
       <div><span>POD BATCH · {batch.id.slice(0, 8)}</span><h2>{batch.title || `${batch.template_name} 创作批次`}</h2><p>当前批次 <b>{batch.count} 款</b> · {batch.template_name}</p></div>
@@ -95,7 +92,6 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
           {canResume && <button type="button" className="pod-batch-resume" disabled={Boolean(busyAction)} onClick={onResumeBatch}>{resuming ? "继续中" : "继续"}</button>}
           {canPause && <button type="button" className="pod-batch-pause" disabled={Boolean(busyAction)} onClick={onPauseBatch}>{pausing ? "暂停中" : "暂停"}</button>}
           {canCancel && <button type="button" className="pod-batch-cancel" disabled={Boolean(busyAction)} onClick={onCancelBatch}>{cancelling ? "取消中" : "取消"}</button>}
-          {canDelete && <button type="button" className="pod-batch-delete" disabled={Boolean(busyAction)} onClick={onDeleteBatch}>{deleting ? "删除中" : "删除批次"}</button>}
         </div>
         {batchStatusDetail && <small className="pod-batch-status-detail">{batchStatusDetail}</small>}
         <div className="pod-dianxiaomi-export">

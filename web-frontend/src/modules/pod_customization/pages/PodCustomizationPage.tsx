@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { podCustomizationApi } from "../api/podCustomizationApi";
 import { PodBatchGallery } from "../components/PodBatchGallery";
-import { PodBatchHistory } from "../components/PodBatchHistory";
+import { PodBatchHistoryDrawer } from "../components/PodBatchHistoryDrawer";
 import { PodFailedRetryDialog } from "../components/PodFailedRetryDialog";
 import { PodResultLightbox } from "../components/PodResultLightbox";
 import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
@@ -11,6 +11,7 @@ import {
   POD_BATCH_COUNTS,
   buildPromptV1,
   businessFieldsForApi,
+  canDeletePodBatch,
   isPodBatchCount,
   isActiveBatchStatus,
   isActivePodItemStatus,
@@ -164,6 +165,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [templates, setTemplates] = useState<PodTemplate[]>([]);
   const [batches, setBatches] = useState<PodBatchSummary[]>([]);
   const [activeBatch, setActiveBatch] = useState<PodBatch | null>(null);
+  const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState(initialDraft.state.selected_template_id);
   const [selectedTemplateSnapshot, setSelectedTemplateSnapshot] = useState<PodTemplate | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string>();
@@ -445,7 +447,9 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     clearMessages();
     try {
       const response = await podCustomizationApi.listBatches();
-      setBatches(sortBatches(response.batches));
+      const next = sortBatches(response.batches);
+      setBatches(next);
+      setSelectedBatchIds((current) => current.filter((id) => next.some((batch) => batch.id === id && canDeletePodBatch(batch.status))));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -718,21 +722,37 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
-  const deleteBatch = async () => {
-    if (!activeBatch) return;
-    const title = activeBatch.title || activeBatch.template_name || "批次";
-    if (!window.confirm(`确认删除「${title}」？删除后该批次的本地图片将被清理，不可恢复。`)) return;
+  const selectedDeletableIds = selectedBatchIds.filter((id) => batches.some((batch) => batch.id === id && canDeletePodBatch(batch.status)));
+
+  const toggleSelectBatch = (batchId: string) => {
+    setSelectedBatchIds((current) => current.includes(batchId)
+      ? current.filter((id) => id !== batchId)
+      : [...current, batchId]);
+  };
+
+  const deleteBatches = async (ids: string[]) => {
+    if (!ids.length) return;
+    if (!window.confirm(`确认删除选中的 ${ids.length} 个批次？删除后这些批次的本地图片将被清理，不可恢复。`)) return;
     setBusyAction("delete-batch");
     clearMessages();
+    const deleted: string[] = [];
+    let failed = false;
     try {
-      await podCustomizationApi.deleteBatch(activeBatch.id);
-      setBatches((current) => current.filter((batch) => batch.id !== activeBatch.id));
-      setActiveBatch(null);
-      setSelectedItemId(undefined);
-      setNotice("批次已删除。");
+      for (const batchId of ids) {
+        await podCustomizationApi.deleteBatch(batchId);
+        deleted.push(batchId);
+      }
     } catch (cause) {
+      failed = true;
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
+      setBatches((current) => current.filter((batch) => !deleted.includes(batch.id)));
+      if (activeBatch && deleted.includes(activeBatch.id)) {
+        setActiveBatch(null);
+        setSelectedItemId(undefined);
+      }
+      setSelectedBatchIds((current) => current.filter((id) => !deleted.includes(id)));
+      if (!failed && deleted.length) setNotice(`${deleted.length} 个批次已删除。`);
       setBusyAction("");
     }
   };
@@ -789,6 +809,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
           {batchRunning && <span className="pod-live-badge"><i />批次后台运行中</span>}
           <button type="button" onClick={() => setTemplateDrawerOpen(true)}><span className="iconfont icon-upload" />上传当前批次模板</button>
           <button type="button" onClick={() => setTemplateDrawerOpen(true)}><span className="iconfont icon-appstore" />查看历史批次模板</button>
+          <button type="button" onClick={() => setHistoryOpen(true)}><span className="iconfont icon-time-circle" />查看定制记录历史</button>
         </div>
       </header>
 
@@ -850,8 +871,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             </button>
             <button type="button" className="pod-start-button" disabled={busyAction === "create-batch" || !selectedTemplate} onClick={() => void startBatch()}>{busyAction === "create-batch" ? <><span className="iconfont icon-loading" />正在提交</> : <><span className="iconfont icon-rocket" />开始生成 {customCountMode ? customCountInput || "自定义" : batchCount} 款</>}</button>
           </section>
-          <button type="button" className={`pod-history-trigger ${historyOpen ? "is-open" : ""}`} onClick={() => setHistoryOpen((open) => !open)}>定制记录<span>{historyOpen ? "收起" : `${batches.length} 个批次`}</span></button>
-          {historyOpen && <PodBatchHistory batches={batches} activeBatchId={activeBatch?.id} loading={loading || busyAction.startsWith("batch:")} onOpen={(batchId) => void openBatch(batchId)} onRefresh={() => void refreshHistory()} />}
         </aside>
         <main className="pod-results-column">
           <section className="pod-current-template-summary">
@@ -881,7 +900,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             onPauseBatch={() => void pauseBatch()}
             onCancelBatch={() => void cancelBatch()}
             onResumeBatch={() => void resumeBatch()}
-            onDeleteBatch={() => void deleteBatch()}
           />
         </main>
       </div>
@@ -901,6 +919,20 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         busy={busyAction === "retry-failed"}
         onClose={() => setFailedRetryOpen(false)}
         onSubmit={(request) => void retryFailed(request)}
+      />
+
+      <PodBatchHistoryDrawer
+        open={historyOpen}
+        batches={batches}
+        activeBatchId={activeBatch?.id}
+        loading={loading || busyAction.startsWith("batch:")}
+        busyAction={busyAction}
+        selectedIds={selectedDeletableIds}
+        onToggleSelect={toggleSelectBatch}
+        onDeleteSelected={() => void deleteBatches(selectedDeletableIds)}
+        onOpen={(batchId) => { void openBatch(batchId); setHistoryOpen(false); }}
+        onRefresh={() => void refreshHistory()}
+        onClose={() => setHistoryOpen(false)}
       />
 
       <TemplateLibraryDrawer
