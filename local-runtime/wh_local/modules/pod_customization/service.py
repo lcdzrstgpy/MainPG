@@ -1253,6 +1253,7 @@ class PodCustomizationService:
             uuid.uuid4().hex,
             image_style_indices=image_indices,
             title_style_indices=title_indices,
+            include_title=self.title_runtime is not None,
         )
         return self._freeze_action(
             actor,

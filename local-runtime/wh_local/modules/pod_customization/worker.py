@@ -938,16 +938,19 @@ class PodBatchWorker:
         """
         if self.title_runtime is None:
             return
-        # Standard initial/full-style plans own image calls. Their title work
-        # is submitted by `_process_style_grids` as soon as each lifestyle
-        # panel is published. This path is only for a resume plan that carries
-        # title calls but deliberately contains no image calls.
-        if any(call.feature == "pod.image" for call in billing_run.plan.calls):
-            return
+        # A resume plan can carry both image calls (styles half-generated) and
+        # title-only calls (styles whose four images are already durable but
+        # whose title never ran). Title work for image styles is submitted by
+        # `_process_style_grids_streaming` as each lifestyle panel is published,
+        # so this pass must only pick up styles that own a planned title call
+        # and no image call. Skipping on a blanket "has image call" check would
+        # drop the title-only styles and force them to failed.
         pending: list[int] = []
         for title in batch.get("style_titles", []):
             style_index = int(title.get("style_index") or 0)
             if style_index < 1 or title.get("status") == "completed":
+                continue
+            if self._style_owns_image_call(billing_run, style_index):
                 continue
             if self._title_call_ids(billing_run, batch["batch_id"], style_index):
                 pending.append(style_index)
@@ -1572,10 +1575,34 @@ class PodBatchWorker:
             return tuple(
                 call_id for call_id in matching if billing_run.call_status(call_id) == "planned"
             )
+        # Style-keyed batch/resume plans reserve per-style title calls. A style
+        # that has no own planned title call must NOT borrow another style's
+        # reserved calls; doing so drains the other style's attempts and strands
+        # its title in a non-terminal state, leaving the batch unexportable.
+        # Only legacy single-style plans (no :style: marker) may fall back to
+        # every planned title call, all of which belong to that one style.
+        if any(
+            call.feature == "pod.title" and ":style:" in call.call_id
+            for call in billing_run.plan.calls
+        ):
+            return ()
         return tuple(
             call.call_id
             for call in billing_run.plan.calls
             if call.feature == "pod.title" and billing_run.call_status(call.call_id) == "planned"
+        )
+
+    @staticmethod
+    def _style_owns_image_call(billing_run: PodBillingRun, style_index: int) -> bool:
+        """True when the plan generates this style's four images again.
+
+        Such a style's title is (re)submitted by `_process_style_grids` as soon
+        as its lifestyle panel publishes, so this title-only pass must skip it.
+        """
+        marker = f":style:{style_index}:"
+        return any(
+            call.feature == "pod.image" and marker in call.call_id
+            for call in billing_run.plan.calls
         )
 
     @staticmethod

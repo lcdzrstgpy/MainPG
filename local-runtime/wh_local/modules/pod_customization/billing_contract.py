@@ -157,6 +157,7 @@ class PodCallPlan:
         *,
         image_style_indices: Sequence[int],
         title_style_indices: Sequence[int],
+        include_title: bool = False,
     ) -> "PodCallPlan":
         """Freeze only work that remains after a previously settled pause.
 
@@ -176,6 +177,16 @@ class PodCallPlan:
                 PodPlannedCall(f"{batch_id}:style:{style_index}:image:{attempt}", "pod.image")
                 for attempt in (1, 2)
             )
+            # A style whose four images are being regenerated also regenerates
+            # its title (submitted by _process_style_grids when its lifestyle
+            # panel publishes). Reserve its own title calls so the worker never
+            # borrows a different style's planned title calls, which would leave
+            # that other style's title stuck non-terminal.
+            if include_title:
+                calls.extend(
+                    PodPlannedCall(f"{batch_id}:style:{style_index}:title:{attempt}", "pod.title")
+                    for attempt in range(1, TITLE_ATTEMPTS + 1)
+                )
         for style_index in title_indices:
             calls.extend(
                 PodPlannedCall(f"{batch_id}:style:{style_index}:title:{attempt}", "pod.title")
