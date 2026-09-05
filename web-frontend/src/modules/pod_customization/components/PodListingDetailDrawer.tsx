@@ -137,7 +137,7 @@ export function PodListingDetailDrawer({ batch, style, onClose, onSaveTitle }: P
           <header><div><span>LISTING IMAGES</span><h3>四张上架图片</h3></div><small>{style.results.filter((item) => item?.public_url).length} / 4 个公网链接</small></header>
           <div>
             {style.results.map((item, offset) => {
-              const preview = item?.composite_preview_url || item?.pattern_preview_url;
+              const preview = item?.public_url || item?.composite_preview_url || item?.pattern_preview_url;
               return <article key={item?.id ?? `listing-detail-${style.index}-${offset}`}>
                 <div className="pod-listing-detail-preview">{preview ? <PodAssetImage path={preview} alt={`${ROLE_LABELS[offset]}预览`} loading="lazy" decoding="async" /> : <span>暂无图片</span>}</div>
                 <div className="pod-listing-detail-link-copy">

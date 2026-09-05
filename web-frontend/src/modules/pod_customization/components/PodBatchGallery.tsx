@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { batchProgress, canCancelPodBatch, canPausePodBatch, canRegeneratePodStyle, canRegeneratePodStyleTitle, canResumePodBatch, canRetryPodBatchFailed, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, podBatchProgressCounts, podBatchStatusDetail, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
+import { batchProgress, canCancelPodBatch, canDeletePodBatch, canPausePodBatch, canRegeneratePodStyle, canRegeneratePodStyleTitle, canResumePodBatch, canRetryPodBatchFailed, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, podBatchProgressCounts, podBatchStatusDetail, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
 import { dianxiaomiExportBlockMessage, isDianxiaomiExportEnabled } from "../data/dianxiaomiExport";
 import { PodAssetImage } from "../data/usePodAssetUrl";
 import type { PodBatch, PodBatchItem } from "../types";
@@ -19,6 +19,7 @@ type Props = {
   onPauseBatch: () => void;
   onCancelBatch: () => void;
   onResumeBatch: () => void;
+  onDeleteBatch: () => void;
 };
 
 const ROLE_LABELS = ["主图", "细节图 A", "细节图 B", "素材图"] as const;
@@ -42,7 +43,7 @@ async function copyTitle(title: string): Promise<void> {
   }
 }
 
-export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateStyle, onRegenerateTitle, onUpdateExportSelection, onSaveTitle, onExportDianxiaomi, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
+export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateStyle, onRegenerateTitle, onUpdateExportSelection, onSaveTitle, onExportDianxiaomi, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch, onDeleteBatch }: Props) {
   const [selectedStyleIndex, setSelectedStyleIndex] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
   const showWaitingTime = Boolean(batch && isActiveBatchStatus(batch.status));
@@ -79,10 +80,12 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
   const canPause = canPausePodBatch(batch.status);
   const canCancel = canCancelPodBatch(batch.status);
   const canResume = canResumePodBatch(batch.status);
+  const canDelete = canDeletePodBatch(batch.status);
   const batchStatusDetail = podBatchStatusDetail(batch.status, submittedCount);
   const pausing = busyAction === "pause-batch";
   const cancelling = busyAction === "cancel-batch";
   const resuming = busyAction === "resume-batch";
+  const deleting = busyAction === "delete-batch";
   return <><section className="pod-gallery" aria-label="POD 批次画廊">
     <header className="pod-gallery-header">
       <div><span>POD BATCH · {batch.id.slice(0, 8)}</span><h2>{batch.title || `${batch.template_name} 创作批次`}</h2><p>当前批次 <b>{batch.count} 款</b> · {batch.template_name}</p></div>
@@ -92,6 +95,7 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
           {canResume && <button type="button" className="pod-batch-resume" disabled={Boolean(busyAction)} onClick={onResumeBatch}>{resuming ? "继续中" : "继续"}</button>}
           {canPause && <button type="button" className="pod-batch-pause" disabled={Boolean(busyAction)} onClick={onPauseBatch}>{pausing ? "暂停中" : "暂停"}</button>}
           {canCancel && <button type="button" className="pod-batch-cancel" disabled={Boolean(busyAction)} onClick={onCancelBatch}>{cancelling ? "取消中" : "取消"}</button>}
+          {canDelete && <button type="button" className="pod-batch-delete" disabled={Boolean(busyAction)} onClick={onDeleteBatch}>{deleting ? "删除中" : "删除批次"}</button>}
         </div>
         {batchStatusDetail && <small className="pod-batch-status-detail">{batchStatusDetail}</small>}
         <div className="pod-dianxiaomi-export">
@@ -115,7 +119,7 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
           <header>{canToggleExportSelection ? <button type="button" className="pod-style-export-selection" aria-label={`${style.title}，${style.export_selected ? "已选中导出" : "已取消导出"}`} aria-pressed={style.export_selected} disabled={Boolean(busyAction)} onClick={() => onUpdateExportSelection(style.index, !style.export_selected)}>{style.export_selected ? "✓" : ""}</button> : <span className="pod-style-row-status" aria-hidden="true">{style.status === "completed" ? "✓" : style.status === "failed" ? "!" : "·"}</span>}<div className="pod-style-row-main"><button type="button" className="pod-style-title-button" title={style.title} onClick={() => setSelectedStyleIndex(style.index)}>{style.title}</button><small>{podStyleTitleStatusLabel(style.title_status, style.listing_ready)} · {style.status === "partial_failure" ? "图片部分生成失败" : style.status === "generating" ? "图片正在生成" : podItemStatusLabel(style.status)}</small>{style.title_error_message && <small className="pod-style-title-error" title={style.title_error_message}>标题生成失败，可重新生成</small>}</div><div className="pod-style-row-actions"><button type="button" disabled={!style.title.trim()} onClick={() => void copyTitle(style.title)}>复制标题</button><button type="button" disabled={!canRegenerateTitle || regeneratingTitle} onClick={() => onRegenerateTitle(style.index)}>{regeneratingTitle ? "标题生成中" : "只重生标题"}</button><button type="button" disabled={!canRegenerate || regenerating} onClick={() => onRegenerateStyle(style.index)}>{regenerating ? "重新生成中" : "整款重生成"}</button></div></header>
           <div className="pod-style-result-grid">
             {style.results.map((item, offset) => {
-              const preview = item?.composite_preview_url || item?.pattern_preview_url;
+              const preview = item?.public_url || item?.composite_preview_url || item?.pattern_preview_url;
               return <button type="button" key={item?.id ?? `style-${style.index}-variant-${offset + 1}`} className={`pod-style-result ${item ? `status-${item.status}` : "status-queued"}`} disabled={!item || !preview} onClick={() => item && onOpenResult(item, style.index)} aria-label={`${style.title}，第 ${offset + 1} 张${preview ? "，查看大图" : "，等待生成"}`}>
                 {preview ? <PodAssetImage path={preview} alt="" loading="lazy" decoding="async" /> : <span className="pod-style-result-placeholder">等待生成</span>}
                 <small>{ROLE_LABELS[offset]} · {podItemStatusLabel(item?.status ?? "queued")}</small>{item?.error_message && <i title={item.error_message}>!</i>}

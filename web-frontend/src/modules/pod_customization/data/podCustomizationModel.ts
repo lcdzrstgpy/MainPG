@@ -307,6 +307,13 @@ export function canResumePodBatch(status: PodBatchStatus): boolean {
   return status === "paused";
 }
 
+// 可删除的终态批次，与后端 delete_batch 的状态门槛保持一致。
+const DELETABLE_BATCH_STATUSES = new Set<PodBatchStatus>(["completed", "partial_failure", "failed", "cancelled"]);
+
+export function canDeletePodBatch(status: PodBatchStatus): boolean {
+  return DELETABLE_BATCH_STATUSES.has(status);
+}
+
 // 结算任务与生成结果独立；结算待处理不能锁死失败项重试。
 export function canRetryPodBatchFailed(batchStatus: PodBatchStatus): boolean {
   return RETRYABLE_BATCH_STATUSES.has(batchStatus);

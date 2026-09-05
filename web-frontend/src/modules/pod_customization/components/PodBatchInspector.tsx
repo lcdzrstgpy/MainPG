@@ -10,7 +10,7 @@ type Props = {
 };
 
 export function PodBatchInspector({ batch, item, busyAction, onDownload }: Props) {
-  const compositePreview = usePodAssetUrl(item?.composite_preview_url);
+  const compositePreview = usePodAssetUrl(item?.public_url || item?.composite_preview_url || item?.pattern_preview_url);
   const patternPreview = usePodAssetUrl(item?.pattern_preview_url);
 
   if (!batch || !item) {

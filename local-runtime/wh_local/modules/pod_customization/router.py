@@ -133,6 +133,11 @@ def create_router(
         permitted(actor, "pod_customization.read")
         return _call(service.get_batch, actor, batch_id)
 
+    @router.delete("/batches/{batch_id}")
+    def delete_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.delete_batch, actor, batch_id)
+
     @router.post("/batches/{batch_id}/pause")
     def pause_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")

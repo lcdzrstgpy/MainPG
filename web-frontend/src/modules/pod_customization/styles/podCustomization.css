@@ -499,6 +499,7 @@
 .pod-batch-resume { color: #fff !important; border-color: transparent !important; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)) !important; }
 .pod-batch-pause:hover:not(:disabled) { border-color: #db9c22; color: #b47c10; background: #fff8ec; }
 .pod-batch-cancel:hover:not(:disabled) { border-color: #d75b52; color: #c34942; background: #fff4f1; }
+.pod-batch-delete:hover:not(:disabled) { border-color: #d75b52; color: #c34942; background: #fff4f1; }
 .pod-batch-status-detail { grid-column: 1 / -1; grid-row: 2; color: var(--pod-text-secondary); font-size: .67rem; line-height: 1.35; text-align: right; }
 .pod-batch-status { grid-column: 1; grid-row: 1; }
 .pod-batch-control { grid-column: 2; grid-row: 1; align-self: center; }
