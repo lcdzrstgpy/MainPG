@@ -47,6 +47,8 @@ export function useDimensionCanvasAutosave(
   const queuedRef = useRef<QueuedSave | null>(null);
   const lastSignatureRef = useRef("");
   const blockedRef = useRef(false);
+  const retryTimerRef = useRef<number | null>(null);
+  const retryAttemptRef = useRef(0);
   const saveRef = useRef(save);
   const baselineRef = useRef<DimensionCanvasAutosaveBaseline | null>(null);
 
@@ -94,6 +96,12 @@ export function useDimensionCanvasAutosave(
       const saved = outcome.saved;
       revisionRef.current = saved.itemRevision;
       baselineRef.current = outcome.baseline;
+      // H3: 保存成功后重置退避,并清掉排队中的自动重试
+      retryAttemptRef.current = 0;
+      if (retryTimerRef.current != null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
       if (queued.generation === generationRef.current) {
         setSavedItem(saved);
         setState("saved");
@@ -102,15 +110,32 @@ export function useDimensionCanvasAutosave(
     } catch (cause) {
       if (itemIdRef.current !== requestItemId) return;
       failed = true;
-      blockedRef.current = true;
       if (cause instanceof DimensionCanvasAutosaveConflict) {
+        // 409:语义冲突(服务端已被他人/他端修改),不能自动覆盖,进入人工处理并停止自动重试
+        blockedRef.current = true;
+        retryAttemptRef.current = 0;
+        if (retryTimerRef.current != null) {
+          window.clearTimeout(retryTimerRef.current);
+          retryTimerRef.current = null;
+        }
         setConflictItem(cause.remoteItem);
         setRetryable(false);
-        setError("预检或画布版本已变化。本地编辑仍保留，请刷新对比后再保存，系统不会静默覆盖。" );
+        setError("预检或画布版本已变化。本地编辑仍保留，请刷新对比后再保存，系统不会静默覆盖。");
       } else {
+        // H3: 网络/服务端瞬时错误 —— 保留手动重试入口,同时指数退避自动重试(2s/4s/8s 封顶)
         const message = cause instanceof Error ? cause.message : String(cause);
         setRetryable(true);
         setError(message || "自动保存失败，本地编辑仍保留");
+        const attempt = retryAttemptRef.current++;
+        const delay = Math.min(2000 * 2 ** attempt, 8000);
+        if (retryTimerRef.current != null) window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = window.setTimeout(() => {
+          retryTimerRef.current = null;
+          if (!blockedRef.current && queuedRef.current && itemIdRef.current && !inFlightRef.current) {
+            setState("saving");
+            void flush();
+          }
+        }, delay);
       }
       setState("error");
     } finally {
@@ -140,6 +165,11 @@ export function useDimensionCanvasAutosave(
     setSavedItem(null);
     setRetryable(false);
     blockedRef.current = false;
+    retryAttemptRef.current = 0;
+    if (retryTimerRef.current != null) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     if (timerRef.current != null) window.clearTimeout(timerRef.current);
   }, [item?.id]);
 
@@ -172,7 +202,12 @@ export function useDimensionCanvasAutosave(
 
   useEffect(() => () => {
     if (timerRef.current != null) window.clearTimeout(timerRef.current);
-  }, []);
+    if (retryTimerRef.current != null) window.clearTimeout(retryTimerRef.current);
+    // H3: 卸载/切页时把 250ms 防抖窗口内的末帧立即提交,避免丢失最后几秒编辑
+    if (queuedRef.current && itemIdRef.current && !blockedRef.current && !inFlightRef.current) {
+      void flush();
+    }
+  }, [flush]);
 
   const retry = useCallback(() => {
     if (!item || !retryable) return;

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from ..domain.policy import is_safe_external_url
@@ -305,6 +305,30 @@ class DimensionCanvasRepository:
                 .order_by(DimensionCanvasAssetRow.created_at, DimensionCanvasAssetRow.id)
             ).all()
             return [self._asset(row) for row in rows]
+
+    def list_assets_by_item_ids(
+        self, item_ids: list[str], workspace_id: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """list_assets 的批量版(B3):一次 IN 查询取回整批资产,按 item_id 分组。
+
+        语义与逐个 list_assets 等价(不存在/无资产的 item 不出现在返回中)。
+        """
+        ids = [str(i) for i in item_ids if str(i).strip()]
+        if not ids:
+            return {}
+        with self.database.sessions() as session:
+            rows = session.scalars(
+                select(DimensionCanvasAssetRow)
+                .where(
+                    DimensionCanvasAssetRow.item_id.in_(ids),
+                    DimensionCanvasAssetRow.workspace_id == workspace_id,
+                )
+                .order_by(DimensionCanvasAssetRow.created_at, DimensionCanvasAssetRow.id)
+            ).all()
+            grouped: dict[str, list[dict[str, Any]]] = {}
+            for row in rows:
+                grouped.setdefault(str(row.item_id), []).append(self._asset(row))
+            return grouped
 
     def get_asset(self, asset_id: str, item_id: str, workspace_id: str) -> dict[str, Any] | None:
         with self.database.sessions() as session:
@@ -629,6 +653,15 @@ class DimensionCanvasRepository:
             render_revision = int(row.render_revision) + 1
             input_hash = self._input_hash(row, asset)
             settings = _loads(row.canvas_settings_json, {})
+            # B1: 已完成渲染且输入 hash 未变(相同源图+画布状态)时,直接复用已有渲染结果,
+            # 不再递增 render_revision/清 render_asset,避免同输入整链重跑(解码-缩放-双编码)。
+            # 调用方拿到非 rendering 状态后,_render_item 会直接跳过实际渲染。
+            if (
+                str(row.state) == "completed"
+                and row.render_asset_id
+                and str(settings.get("_rendered_input_hash") or "") == str(input_hash)
+            ):
+                return self._item(row)
             settings.update(
                 {
                     "_render_input_hash": input_hash,
@@ -1655,16 +1688,17 @@ class DimensionCanvasRepository:
 
     @staticmethod
     def _batch_counts(session, batch_id: str, workspace_id: str) -> dict[str, int]:
-        rows = session.scalars(
-            select(DimensionCanvasItemRow).where(
+        # B5: 用 SQL GROUP BY 计数,避免全量拉行再 Python 分组(大批次显著降内存/往返)
+        pairs = session.execute(
+            select(DimensionCanvasItemRow.state, func.count())
+            .where(
                 DimensionCanvasItemRow.batch_id == batch_id,
                 DimensionCanvasItemRow.workspace_id == workspace_id,
             )
+            .group_by(DimensionCanvasItemRow.state)
         ).all()
-        counts: dict[str, int] = {"total_count": len(rows)}
-        for row in rows:
-            key = f"{row.state}_count"
-            counts[key] = counts.get(key, 0) + 1
+        counts: dict[str, int] = {f"{state}_count": int(n) for state, n in pairs}
+        counts["total_count"] = sum(counts.values())
         return counts
 
     def _change_set_with_items(self, session, row: DimensionCanvasChangeSetRow) -> dict[str, Any]:
@@ -1687,18 +1721,22 @@ class DimensionCanvasRepository:
         )
         if change_set is None:
             return
-        rows = session.scalars(
-            select(DimensionCanvasChangeItemRow).where(
+        # B5: GROUP BY 计数,替代全量拉行 + Python sum
+        pairs = session.execute(
+            select(DimensionCanvasChangeItemRow.status, func.count())
+            .where(
                 DimensionCanvasChangeItemRow.change_set_id == change_set_id,
                 DimensionCanvasChangeItemRow.workspace_id == workspace_id,
             )
+            .group_by(DimensionCanvasChangeItemRow.status)
         ).all()
+        by_status = {status: int(n) for status, n in pairs}
         counts = {
-            "item_count": len(rows),
-            "accepted_count": sum(row.status == "accepted" for row in rows),
-            "conflict_count": sum(row.status == "conflict" for row in rows),
-            "rejected_count": sum(row.status == "rejected" for row in rows),
-            "pending_count": sum(row.status == "pending" for row in rows),
+            "item_count": sum(by_status.values()),
+            "accepted_count": by_status.get("accepted", 0),
+            "conflict_count": by_status.get("conflict", 0),
+            "rejected_count": by_status.get("rejected", 0),
+            "pending_count": by_status.get("pending", 0),
         }
         change_set.counts_json = _dumps(counts)
         if counts["pending_count"] == 0:

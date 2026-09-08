@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { DimensionEndpointStyle, DimensionKey, DimensionLineWidth, DimensionUnit, EditorState } from "../types/dimensionCanvas";
 import { centimetersToUnit, dimensionInputUnit, dimensionUnitLabel, unitToCentimeters } from "../data/dimensionCanvasModel";
 
@@ -94,6 +95,38 @@ export function DimensionCanvasToolbar({
   };
   const customReason = editor.customValueCm && editor.customValueCm > 0 ? "" : "请先填写自定义尺寸";
 
+  // H2: 自定义尺寸输入保留中间态(支持小数),失焦/回车提交;外部变更(撤销/切商品)自动同步
+  const customTextDisplay = editor.customValueCm == null
+    ? ""
+    : String(Number(centimetersToUnit(editor.customValueCm, inputUnit).toFixed(2)));
+  const [customText, setCustomText] = useState(customTextDisplay);
+  const customEditingRef = useRef(false);
+  useEffect(() => {
+    if (!customEditingRef.current) setCustomText(customTextDisplay);
+  }, [customTextDisplay]);
+
+  const commitCustomValue = () => {
+    customEditingRef.current = false;
+    const text = customText.trim();
+    if (text === "") {
+      setCustomText(customTextDisplay);
+      if (editor.customValueCm != null) onCustomValueChange(null);
+      return;
+    }
+    const parsed = Number(text);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      const nextCm = unitToCentimeters(parsed, inputUnit);
+      if (editor.customValueCm == null || Math.abs(editor.customValueCm - nextCm) > 0.001) {
+        onCustomValueChange(nextCm);
+      } else {
+        setCustomText(customTextDisplay);
+      }
+    } else {
+      // 非法输入:回退为当前值
+      setCustomText(customTextDisplay);
+    }
+  };
+
   return (
     <aside className="dimension-toolbar" aria-label="尺寸画布工具栏">
       <div className="dimension-tool-group dimension-unit-tools">
@@ -165,15 +198,10 @@ export function DimensionCanvasToolbar({
               step="0.01"
               placeholder="输入数值"
               aria-label="自定义尺寸数值"
-              value={editor.customValueCm == null ? "" : Number(centimetersToUnit(editor.customValueCm, inputUnit).toFixed(2))}
-              onChange={(event) => {
-                const parsed = Number(event.target.value);
-                onCustomValueChange(
-                  event.target.value === "" || !Number.isFinite(parsed) || parsed <= 0
-                    ? null
-                    : unitToCentimeters(parsed, inputUnit),
-                );
-              }}
+              value={customText}
+              onChange={(event) => { customEditingRef.current = true; setCustomText(event.target.value); }}
+              onBlur={() => commitCustomValue()}
+              onKeyDown={(event) => { if (event.key === "Enter") { commitCustomValue(); (event.target as HTMLInputElement).blur(); } }}
             />
             <em>{dimensionUnitLabel(inputUnit)}</em>
           </label>
