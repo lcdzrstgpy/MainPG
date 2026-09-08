@@ -158,6 +158,18 @@ export function restorePreviewItem(
   );
 }
 
+export function regeneratePreviewDetail(
+  ctx: ApiContext,
+  taskId: number,
+  draftId: number,
+): Promise<PreviewResponse> {
+  return ppRequest(
+    ctx,
+    `/api/product-processing/tasks/${taskId}/preview/items/${draftId}/regenerate-detail`,
+    { method: "POST", body: {} },
+  );
+}
+
 export function finalizeProductPreview(
   ctx: ApiContext,
   taskId: number,

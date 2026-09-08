@@ -8,6 +8,7 @@ type PrecheckFinalizeProgressProps = {
   onRetry: () => void;
   onDownload: () => void;
   onReloadStale: () => void;
+  onExcludeFailed: () => void;
 };
 
 function sanitizedMessage(message: string, code: string): string {
@@ -29,12 +30,16 @@ export function PrecheckFinalizeProgress({
   onRetry,
   onDownload,
   onReloadStale,
+  onExcludeFailed,
 }: PrecheckFinalizeProgressProps) {
   const assetById = new Map(assets.map((asset) => [asset.id, asset]));
   const total = Math.max(0, run.total_count);
   const published = Math.min(Math.max(0, run.published_count), total || run.published_count);
   const progress = total > 0 ? Math.min(100, Math.round((published / total) * 100)) : 0;
   const active = run.status === "queued" || run.status === "publishing";
+  const failedProductCount = new Set(
+    run.errors.map((failure) => failure.product_draft_id).filter((id): id is number => id != null),
+  ).size;
 
   return (
     <section className={`precheck-finalize status-${run.status}`} aria-live="polite">
@@ -88,9 +93,14 @@ export function PrecheckFinalizeProgress({
           ) : (
             <div className="precheck-manager-empty">发布任务失败，暂无单图错误明细。</div>
           )}
-          <button type="button" className="primary" disabled={retrying} onClick={onRetry}>
-            {retrying ? "正在重试…" : "仅重试失败图片"}
-          </button>
+          <div className="precheck-finalize-actions">
+            <button type="button" className="primary" disabled={retrying} onClick={onRetry}>
+              {retrying ? "正在重试…" : "仅重试失败图片"}
+            </button>
+            <button type="button" disabled={retrying} onClick={onExcludeFailed}>
+              {failedProductCount > 0 ? `一键剔除失败商品（${failedProductCount} 个）` : "一键剔除失败商品"}
+            </button>
+          </div>
         </div>
       )}
 

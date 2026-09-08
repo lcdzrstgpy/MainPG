@@ -2059,6 +2059,14 @@
   line-height: 1.45;
 }
 
+.precheck-manager-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
 .precheck-v2-media-registry {
   border-color: #b8d7e7;
   background: linear-gradient(135deg, #f4fbff, #fbfdff);
@@ -2689,6 +2697,18 @@
   border-color: #0a8fca;
   background: #0a8fca;
   color: #fff;
+}
+
+.precheck-finalize-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.precheck-finalize-actions > button:not(.primary) {
+  border-color: #e0c6c2;
+  color: #8e332c;
 }
 
 .precheck-finalize-stale strong {
