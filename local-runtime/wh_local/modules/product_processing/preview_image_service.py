@@ -1425,15 +1425,12 @@ class PreviewImageService:
                 str(asset.get("content_type") or "").casefold(),
                 ".jpg",
             )
-            url = str(
-                self.publisher(
-                    content,
-                    str(asset.get("content_type") or "image/jpeg"),
-                    suffix,
-                    digest,
-                    workspace_id,
-                )
-                or ""
+            url = self._publish_with_retry(
+                content,
+                str(asset.get("content_type") or "image/jpeg"),
+                suffix,
+                digest,
+                workspace_id,
             )
             if not self._trusted(url):
                 raise ValueError("COS returned an untrusted or non-public image URL")
@@ -1448,6 +1445,39 @@ class PreviewImageService:
                 self._bounded_error(exc),
             )
             raise
+
+    def _publish_with_retry(
+        self,
+        content: bytes,
+        content_type: str,
+        suffix: str,
+        digest: str,
+        workspace_id: str,
+    ) -> str:
+        # 网络抖动 / COS 偶发失败时自动重试：最多 3 次，失败后指数退避，并记录每次失败原因。
+        attempts = 3
+        base_delay = 0.5
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                url = str(self.publisher(content, content_type, suffix, digest, workspace_id) or "")
+                if url:
+                    return url
+                raise ValueError("COS publisher returned an empty URL")
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "finalize publish retry digest=%s content_type=%s attempt=%d/%d failed: %s",
+                    digest[:16],
+                    content_type,
+                    attempt,
+                    attempts,
+                    self._bounded_error(exc),
+                )
+                if attempt < attempts:
+                    time.sleep(min(base_delay * (2 ** (attempt - 1)), 4.0))
+        assert last_exc is not None
+        raise last_exc
 
     def _export_rows(
         self,
