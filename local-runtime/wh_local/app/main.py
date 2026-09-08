@@ -531,7 +531,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     messages_sync = AnnouncementSyncService(
         messages_repository,
         config.announce_base_url,
-        interval_seconds=300,
+        interval_seconds=180,
     )
     app.include_router(create_messages_router(messages_repository, messages_sync))
     app.state.messages_sync = messages_sync

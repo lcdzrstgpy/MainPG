@@ -24,12 +24,25 @@ export function InboxBell() {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<InboxMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  // 新消息自动提醒弹窗：展示最新一条未读公告，× 仅关闭、不改已读状态。
+  const [announcement, setAnnouncement] = useState<{ message: InboxMessage; total: number } | null>(
+    null,
+  );
   // 弹层本地展开状态：点击消息项展开/收起正文，与服务端 read 状态解耦。
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<number>>(() => new Set());
   const rootRef = useRef<HTMLDivElement>(null);
   const listRequestIdRef = useRef(0);
   // 本地已读变更代际：在途的 refresh 返回旧计数时据此跳过，避免覆盖本地递减/清零结果。
   const unreadEpochRef = useRef(0);
+  // open 的镜像：供 async 回调读取最新值（消息中心已打开时不弹提醒）。
+  const openRef = useRef(false);
+  useEffect(() => {
+    openRef.current = open;
+  }, [open]);
+  // 上一次未读数：用于检测"新增未读"触发弹窗；null 表示尚未拿到首个计数。
+  const prevUnreadRef = useRef<number | null>(null);
+  // 本次会话已弹过提醒的消息 id：同一条消息不重复弹。
+  const announcedIdsRef = useRef<Set<number>>(new Set());
 
   const refreshUnread = useCallback(async () => {
     const epoch = unreadEpochRef.current;
@@ -88,6 +101,39 @@ export function InboxBell() {
     };
   }, [open, refreshList]);
 
+  // 新消息自动提醒：拉取列表，找最新一条"未读且未弹过"的消息弹出。
+  const maybeAnnounce = useCallback(
+    async (totalNew: number) => {
+      if (openRef.current) return; // 消息中心正打开，视为已看到，不打扰
+      try {
+        const items = await fetchMessages();
+        const fresh = items.filter(
+          (item) => !item.read && !announcedIdsRef.current.has(item.id),
+        );
+        if (fresh.length === 0) return;
+        announcedIdsRef.current = new Set([
+          ...announcedIdsRef.current,
+          ...fresh.map((item) => item.id),
+        ]);
+        setAnnouncement({ message: fresh[0], total: Math.max(totalNew, fresh.length) });
+      } catch {
+        // 静默：拉取失败不弹
+      }
+    },
+    [],
+  );
+
+  // 监听未读数变化：增加时（含首次发现有未读）弹出最新一条新消息。
+  useEffect(() => {
+    const prev = prevUnreadRef.current;
+    prevUnreadRef.current = unread;
+    if (prev === null) {
+      if (unread > 0) void maybeAnnounce(unread);
+      return;
+    }
+    if (unread > prev) void maybeAnnounce(unread - prev);
+  }, [unread, maybeAnnounce]);
+
   const togglePanel = () => {
     const next = !open;
     setOpen(next);
@@ -135,6 +181,13 @@ export function InboxBell() {
   const handleItemClick = (item: InboxMessage) => {
     if (!item.read) void handleMarkRead(item.id);
     toggleExpanded(item.id);
+  };
+
+  const handleAnnouncementOpen = () => {
+    // 点击卡片主体：关闭提醒并打开消息中心（已读状态不动，红点仍在列表内点消息才消）。
+    setAnnouncement(null);
+    setOpen(true);
+    void refreshList();
   };
 
   return (
@@ -196,6 +249,35 @@ export function InboxBell() {
               })
             )}
           </div>
+        </div>
+      )}
+      {announcement && (
+        <div className="inbox-announcement" role="alert" aria-label="新消息提醒">
+          <button
+            type="button"
+            className="inbox-announcement-close"
+            aria-label="关闭提醒"
+            title="关闭提醒"
+            onClick={() => setAnnouncement(null)}
+          >
+            ×
+          </button>
+          <button
+            type="button"
+            className="inbox-announcement-body"
+            onClick={handleAnnouncementOpen}
+            title="点击查看消息中心"
+          >
+            <strong className="inbox-announcement-title">{announcement.message.title}</strong>
+            {announcement.message.content && (
+              <em className="inbox-announcement-content">{announcement.message.content}</em>
+            )}
+            <span className="inbox-announcement-meta">
+              {formatTime(announcement.message.publishedAt)}
+              {announcement.total > 1 ? ` · 共 ${announcement.total} 条新消息` : ""}
+            </span>
+            <span className="inbox-announcement-hint">点击查看消息中心</span>
+          </button>
         </div>
       )}
     </div>
