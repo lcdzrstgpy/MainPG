@@ -777,6 +777,8 @@ def _retry_service() -> PreviewImageService:
     # 用最小实例直接测 _publish_with_retry，避免依赖完整仓库/资产。
     service = object.__new__(PreviewImageService)
     service.publisher = None
+    # _publish_with_retry 现在会调用 self._trusted()，注入一个始终信任的校验器。
+    service.trusted_public_url = lambda _value: True
     return service
 
 
@@ -836,10 +838,11 @@ def test_publish_with_retry_raises_last_exception_after_all_failures(
     service.publisher = publisher
     monkeypatch.setattr("wh_local.modules.product_processing.preview_image_service.time.sleep", lambda _s: None)
 
-    with pytest.raises(ConnectionResetError, match="boom-3"):
+    with pytest.raises(ConnectionResetError, match="boom-5"):
         service._publish_with_retry(b"data", "image/jpeg", ".jpg", "digest-abc", "ws-a")
 
-    assert attempts == [1, 2, 3]
+    # ConnectionResetError 属于瞬时网络错误，自动重连最多 _PUBLISH_TRANSIENT_MAX_ATTEMPTS 次。
+    assert attempts == [1, 2, 3, 4, 5]
 
 
 def test_publish_with_retry_treats_empty_url_as_failure(
@@ -858,7 +861,8 @@ def test_publish_with_retry_treats_empty_url_as_failure(
     with pytest.raises(ValueError, match="empty URL"):
         service._publish_with_retry(b"data", "image/jpeg", ".jpg", "digest-abc", "ws-a")
 
-    assert attempts == [1, 2, 3]
+    # 空 URL 属于业务错误，使用 _PUBLISH_FAST_MAX_ATTEMPTS 快速失败，避免无谓重试。
+    assert attempts == [1, 2]
 
 
 def test_publish_with_retry_logs_each_failure_warning(
@@ -877,6 +881,7 @@ def test_publish_with_retry_logs_each_failure_warning(
             service._publish_with_retry(b"data", "image/jpeg", ".jpg", "digest-abc", "ws-a")
 
     warnings = [record for record in caplog.records if record.levelno >= 30]
-    assert len(warnings) == 3
+    # ConnectionResetError 属于瞬时网络错误，自动重连重试 _PUBLISH_TRANSIENT_MAX_ATTEMPTS 次。
+    assert len(warnings) == 5
     assert all("finalize publish retry" in record.getMessage() for record in warnings)
-    assert all("attempt=1/3" in record.getMessage() or "attempt=2/3" in record.getMessage() or "attempt=3/3" in record.getMessage() for record in warnings)
+    assert all(f"attempt={n}/5" in record.getMessage() for n in range(1, 6) for record in [warnings[n - 1]])
