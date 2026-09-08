@@ -39,6 +39,8 @@ from ..billing import (
     freeze_batch_points,
     pricing_changelog,
     pricing_items,
+    purge_all_pending_orders,
+    purge_expired_pending_orders,
     release_expired_batch_freezes,
     reserve_ai_usage,
     settle_payment_order,
@@ -823,11 +825,16 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         interval_seconds: float = 60.0,
     ) -> None:
         release_due_at = time.monotonic()
+        pending_purge_due_at = time.monotonic()
         while not stop_event.is_set():
             try:
                 if time.monotonic() >= release_due_at:
                     release_expired_batch_freezes(db_path)
                     release_due_at = time.monotonic() + 60 * 60
+                # 每 5 分钟清理一次超 30 分钟仍未支付的订单。
+                if time.monotonic() >= pending_purge_due_at:
+                    purge_expired_pending_orders(db_path)
+                    pending_purge_due_at = time.monotonic() + 5 * 60
             except Exception:
                 pass
             stop_event.wait(interval_seconds)
@@ -848,6 +855,16 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, Any]:
         return {"ok": True, "database_path": str(db_path), "service": "customer-auth"}
+
+    @app.post("/admin/purge-pending-orders")
+    def admin_purge_pending_orders(secret: str | None = Header(default=None)) -> dict[str, Any]:
+        # 一次性清空历史全部未支付订单。仅由内部运维在部署阶段调用；token 需与
+        # 本服务进程启动时配置的管理密钥一致，避免被公网误触发。
+        admin_token = os.environ.get("WH_ADMIN_OP_TOKEN", "").strip()
+        if not admin_token or secret != admin_token:
+            raise HTTPException(status_code=403, detail="forbidden")
+        removed = purge_all_pending_orders(db_path)
+        return {"ok": True, "removed": removed}
 
     @app.post("/api/customer/register")
     def register(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2821,15 +2838,29 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             """,
             (account_id,),
         ).fetchall()
-        orders = conn.execute(
+        # 最近订单：只展示已入账（paid）的单子，最多 5 条。
+        paid_orders = conn.execute(
             """
             SELECT order_id, out_trade_no, provider, package_id, amount_cents, currency,
                    points, base_points, promotion_bonus_points, total_points,
                    promotion_id, promotion_name, status, created_at, paid_at, expires_at
             FROM billing_payment_orders
-            WHERE account_id = ?
+            WHERE account_id = ? AND status = 'paid'
+            ORDER BY paid_at DESC, created_at DESC
+            LIMIT 5
+            """,
+            (account_id,),
+        ).fetchall()
+        # 当前仍待支付的单子（最多一条）单独返回，供前端支付完成后的恢复轮询使用。
+        pending_orders = conn.execute(
+            """
+            SELECT order_id, out_trade_no, provider, package_id, amount_cents, currency,
+                   points, base_points, promotion_bonus_points, total_points,
+                   promotion_id, promotion_name, status, created_at, paid_at, expires_at
+            FROM billing_payment_orders
+            WHERE account_id = ? AND status = 'pending'
             ORDER BY created_at DESC
-            LIMIT 20
+            LIMIT 1
             """,
             (account_id,),
         ).fetchall()
@@ -2863,8 +2894,13 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         "recent_ledger": [_display_ledger_row(dict(row), pricing) for row in ledgers],
         "recent_orders": [
             _display_topup_order(dict(row), pricing)
-            for row in orders
+            for row in paid_orders
         ],
+        "pending_order": (
+            _display_topup_order(dict(pending_orders[0]), pricing)
+            if pending_orders
+            else None
+        ),
         "security": {
             "server_authoritative": True,
             "local_balance_trusted": False,
@@ -2984,6 +3020,11 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
     provider = str(payload.get("provider") or "").strip().lower()
     package_id = str(payload.get("package_id") or "").strip()
     idempotency_key = str(payload.get("idempotency_key") or "").strip()
+    # 惰性清理：创建新订单时顺手删除已超过 30 分钟仍未支付的过期单。
+    try:
+        purge_expired_pending_orders(database_path)
+    except Exception:
+        pass
     if provider not in PAYMENT_PROVIDERS:
         raise HTTPException(status_code=400, detail="provider must be wechat or alipay")
     if package_id != "custom" and package_id not in TOPUP_PACKAGE_CENTS:
