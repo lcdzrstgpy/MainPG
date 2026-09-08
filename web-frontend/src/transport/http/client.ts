@@ -4,6 +4,8 @@ type RequestOptions = {
   method?: HttpMethod;
   body?: unknown;
   token?: string;
+  /** 覆盖默认超时（毫秒）。用于外部慢接口（如 1688 图搜），默认 30s 不够时单独放宽。 */
+  timeoutMs?: number;
 };
 
 const TOKEN_KEY = "wh_demo_token";
@@ -111,8 +113,13 @@ export function toUserMessage(raw: string): string {
   if (/provider request failed|upstream (error|request failed)|bad gateway/i.test(message)) {
     return "服务商接口请求失败，请稍后重试";
   }
-  // 权限不足
-  if (/forbidden|permission denied|no permission|not authorized|insufficient permission/i.test(message)) {
+  // 数据校验/结构不一致（Pydantic schema 错误，如 extra_forbidden / 字段缺失）。
+  // 必须放在权限判断之前：否则报错文本里的 "extra_forbidden" 会被 /forbidden/ 误判成“没有权限”。
+  if (/validation error|\[type=|extra_forbidden|extra inputs are not permitted|field required|input_value=/i.test(message)) {
+    return "服务端返回的数据结构与当前版本不一致，请刷新页面重试或联系管理员确认表结构";
+  }
+  // 权限不足（用词边界 \bforbidden\b，避免误匹配 Pydantic 的 extra_forbidden）
+  if (/\bforbidden\b|permission denied|no permission|not authorized|insufficient permission|permission required/i.test(message)) {
     return "没有权限执行此操作，请确认账号权限后重试";
   }
   // 内容不存在
@@ -132,9 +139,13 @@ export function toUserMessage(raw: string): string {
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
+): Promise<Response> {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (error) {
@@ -152,11 +163,15 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
   const token = authToken(options.token);
   if (token) headers.authorization = `Bearer ${token}`;
 
-  const response = await fetchWithTimeout(`${apiBaseUrl()}${path}`, {
-    method: options.method ?? "GET",
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  });
+  const response = await fetchWithTimeout(
+    `${apiBaseUrl()}${path}`,
+    {
+      method: options.method ?? "GET",
+      headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    },
+    options.timeoutMs,
+  );
 
   const contentType = response.headers.get("content-type") ?? "";
   let payload: any = {};
@@ -182,11 +197,15 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
   const token = authToken(options.token);
   if (token) headers.authorization = `Bearer ${token}`;
 
-  const response = await fetchWithTimeout(`${apiBaseUrl()}${path}`, {
-    method: options.method ?? "GET",
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  });
+  const response = await fetchWithTimeout(
+    `${apiBaseUrl()}${path}`,
+    {
+      method: options.method ?? "GET",
+      headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    },
+    options.timeoutMs,
+  );
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "请求失败");

@@ -145,6 +145,9 @@ class QuoteCaptureBatchRecord(_Record):
     quote_count: int = 0
     skc_count: int = 0
     snapshot_count: int = 0
+    # 兼容历史表结构：某些构建在批次表里加入了 per-batch 初筛门槛列，
+    # 当前模型不写该列，但读取 `SELECT *` 会带上它。声明为可空以兼容读取。
+    prescreen_min_adjusted_price_cny: str | None = None
 
 
 class PrescreenSettingsRecord(_Record):

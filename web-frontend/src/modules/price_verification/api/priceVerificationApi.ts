@@ -3,6 +3,9 @@ import type { BatchSelection, BatchSourcingState, PluginCommand, PluginSession, 
 
 const base = "/api/v1/price-verification";
 const key = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+// 1688 图搜是同步外部调用（下载参考图→上传→item_search_img，可能被限流回退串行），
+// 远超默认 30s。为此类接口单独放宽到 90s，避免前端过早掐断。
+const SOURCE_SEARCH_TIMEOUT_MS = 90_000;
 
 export const priceVerificationApi = {
   listSessions: async () => {
@@ -22,9 +25,9 @@ export const priceVerificationApi = {
   stageBatchSelections: async (batchId: string, skcIds: string[], maxCandidates?: number) => (await httpJson<{ batch_id: string; selections: BatchSelection[] }>(`${base}/capture-batches/${encodeURIComponent(batchId)}/selections`, { method: "POST", body: { skc_ids: skcIds, ...(maxCandidates != null ? { max_candidates: maxCandidates } : {}) } })).selections,
   listBatchSelections: async (batchId: string) => (await httpJson<{ batch_id: string; selections: BatchSelection[] }>(`${base}/capture-batches/${encodeURIComponent(batchId)}/selections`)).selections,
   reviewBatchSelection: (batchId: string, selectionId: number, decision: BatchSelection["status"], maxCandidates: number, note?: string) => httpJson<BatchSelection>(`${base}/capture-batches/${encodeURIComponent(batchId)}/selections/${selectionId}/review`, { method: "POST", body: { decision, max_candidates: maxCandidates, note: note ?? "" } }),
-  prepareBatchSourcing: (batchId: string, skcIds: string[]) => httpJson<BatchSourcingState>(`${base}/capture-batches/${encodeURIComponent(batchId)}/sourcing/prepare`, { method: "POST", body: { skc_ids: skcIds } }),
+  prepareBatchSourcing: (batchId: string, skcIds: string[]) => httpJson<BatchSourcingState>(`${base}/capture-batches/${encodeURIComponent(batchId)}/sourcing/prepare`, { method: "POST", body: { skc_ids: skcIds }, timeoutMs: SOURCE_SEARCH_TIMEOUT_MS }),
   getBatchSourcingState: (batchId: string) => httpJson<BatchSourcingState>(`${base}/capture-batches/${encodeURIComponent(batchId)}/sourcing`),
-  sourceBatchSelections: (batchId: string, skcIds?: string[]) => httpJson<SourcePreview>(`${base}/capture-batches/${encodeURIComponent(batchId)}/sourcing`, { method: "POST", body: { idempotency_key: key(), skc_ids: skcIds ?? [] } }),
+  sourceBatchSelections: (batchId: string, skcIds?: string[]) => httpJson<SourcePreview>(`${base}/capture-batches/${encodeURIComponent(batchId)}/sourcing`, { method: "POST", body: { idempotency_key: key(), skc_ids: skcIds ?? [] }, timeoutMs: SOURCE_SEARCH_TIMEOUT_MS }),
   addManualSourceCandidate: (batchId: string, skcId: string, sourceUrl: string) => httpJson<BatchSourcingState>(`${base}/capture-batches/${encodeURIComponent(batchId)}/sourcing/manual-candidate`, { method: "POST", body: { skc_id: skcId, source_url: sourceUrl } }),
   selectBatchSourceCandidate: (batchId: string, skcId: string, candidate: SourceCandidate, priceCny?: string, weightKg?: string) => httpJson<BatchSourcingState>(`${base}/capture-batches/${encodeURIComponent(batchId)}/sourcing/candidates`, { method: "POST", body: { skc_id: skcId, candidate, ...(priceCny !== undefined ? { price_cny: priceCny } : {}), ...(weightKg !== undefined ? { weight_kg: weightKg } : {}) } }),
   unselectBatchSourceCandidate: (batchId: string, skcId: string, offerId: string) => httpJson<BatchSourcingState>(`${base}/capture-batches/${encodeURIComponent(batchId)}/sourcing/candidates?skc_id=${encodeURIComponent(skcId)}&offer_id=${encodeURIComponent(offerId)}`, { method: "DELETE" }),

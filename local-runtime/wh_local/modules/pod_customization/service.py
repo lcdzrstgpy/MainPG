@@ -452,14 +452,14 @@ class PodCustomizationService:
         analysis = analyze_dianxiaomi_export(batch, copies)
         if analysis.block_reason is not None:
             messages = {
-                "active_batch": "POD batch is active and cannot be exported",
-                "listing_fields_missing": "POD batch listing snapshot is missing",
-                "style_copy_missing": "POD style copy is missing",
-                "no_exportable_styles": "POD batch has zero exportable styles",
+                "active_batch": "pod 制作尚未完成，请等待全部完成重试",
+                "listing_fields_missing": "POD 批次缺少上架信息快照，无法导出",
+                "style_copy_missing": "POD 款式文案缺失，无法导出",
+                "no_exportable_styles": "POD 批次没有可导出的款式",
                 "all_exportable_styles_unselected": (
-                    "POD batch has zero exportable styles because every ready style was deselected"
+                    "POD 批次没有可导出的款式：所有就绪款式均已被取消勾选"
                 ),
-                "billing_recovery_required": "POD batch still has incomplete image/title/copy work",
+                "billing_recovery_required": "POD 批次仍有未完成的图片/标题/文案工作",
             }
             raise PodRepositoryError(messages[analysis.block_reason], 409)
         exported = build_pod_dianxiaomi_export(batch, copies)

@@ -520,7 +520,7 @@ def test_historical_listing_snapshot_without_title_mode_defaults_to_long_title(t
 
 @pytest.mark.parametrize(
     ("status", "copy", "expected"),
-    [("queued", True, "active"), ("completed", False, "copy")],
+    [("queued", True, "制作尚未完成"), ("completed", False, "款式文案缺失")],
 )
 def test_service_export_blocks_active_or_missing_copy(
     tmp_path: Path, status: str, copy: bool, expected: str
@@ -625,7 +625,7 @@ def test_export_rejects_when_user_deselects_every_exportable_style(tmp_path: Pat
     service.set_style_export_selection(actor, batch["id"], 1, selected=False)
 
     payload = service.get_batch(actor, batch["id"])
-    with pytest.raises(PodRepositoryError, match="deselected") as raised:
+    with pytest.raises(PodRepositoryError, match="取消勾选") as raised:
         service.export_dianxiaomi(actor, batch["id"])
 
     assert payload["dianxiaomi_export"]["block_reason"] == "all_exportable_styles_unselected"
@@ -963,7 +963,7 @@ def test_batch_payload_reports_export_readiness_and_zero_exportable_block(tmp_pa
         "skipped_style_count": 1,
         "block_reason": "no_exportable_styles",
     }
-    with pytest.raises(PodRepositoryError, match="exportable") as raised:
+    with pytest.raises(PodRepositoryError, match="可导出") as raised:
         service.export_dianxiaomi(actor, batch["id"])
     assert raised.value.status_code == 409
 
