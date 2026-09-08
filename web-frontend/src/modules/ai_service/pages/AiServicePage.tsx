@@ -52,6 +52,7 @@ export function AiServicePage() {
   const conversationFlowRef = useRef<HTMLDivElement>(null);
   const imageUploadVersionRef = useRef(0);
   const objectUrlsRef = useRef(new Set<string>());
+  const selectVersionRef = useRef(0);
 
   const selectableModels = useMemo(() => modelsForMode(mode), [mode]);
   const selectedModel = useMemo(
@@ -167,7 +168,17 @@ export function AiServicePage() {
 
   const openNewCreation = () => {
     setActiveConversationId(undefined);
-    setMessages([]);
+    setMessages((current) => {
+      current.forEach((message) => {
+        message.generatedImageUrls?.forEach((url) => {
+          if (objectUrlsRef.current.has(url)) {
+            URL.revokeObjectURL(url);
+            objectUrlsRef.current.delete(url);
+          }
+        });
+      });
+      return [];
+    });
     setPrompt("");
     setApiError("");
     clearComposerAttachment(true);
@@ -238,21 +249,62 @@ export function AiServicePage() {
   };
 
   const selectConversation = async (conversation: AiConversation) => {
+    const version = selectVersionRef.current + 1;
+    selectVersionRef.current = version;
     setActiveConversationId(conversation.id);
     setRemoteConversationId(conversation.id);
+    setMode(conversation.mode);
     setApiError("");
+    clearComposerAttachment(true);
+    clearComposerDocument();
+    setWebSearchEnabled(false);
     try {
       const history = await aiServiceApi.messages(conversation.id);
-      const restored = await Promise.all(history.messages.map(async (message) => ({
-        id: message.message_id,
-        role: message.role,
-        content: message.content,
-        generatedImageUrls: message.role === "assistant" && message.asset_ids.length
-          ? await Promise.all(message.asset_ids.map(aiServiceApi.loadAssetUrl)) : undefined,
-      })));
-      setMessages(restored);
+      if (selectVersionRef.current !== version) return;
+      const restored = await Promise.all(history.messages.map(async (message) => {
+        let generatedImageUrls: string[] | undefined;
+        if (message.role === "assistant" && message.asset_ids.length) {
+          generatedImageUrls = [];
+          for (const assetId of message.asset_ids) {
+            try {
+              const url = await aiServiceApi.loadAssetUrl(assetId);
+              objectUrlsRef.current.add(url);
+              generatedImageUrls.push(url);
+            } catch {
+              // 单个资产加载失败时跳过该图，避免整条会话无法显示
+            }
+          }
+        }
+        return {
+          id: message.message_id,
+          role: message.role,
+          content: message.content,
+          generatedImageUrls,
+        };
+      }));
+      if (selectVersionRef.current !== version) {
+        restored.forEach((message) => {
+          message.generatedImageUrls?.forEach((url) => {
+            URL.revokeObjectURL(url);
+            objectUrlsRef.current.delete(url);
+          });
+        });
+        return;
+      }
+      setMessages((current) => {
+        current.forEach((message) => {
+          message.generatedImageUrls?.forEach((url) => {
+            if (objectUrlsRef.current.has(url)) {
+              URL.revokeObjectURL(url);
+              objectUrlsRef.current.delete(url);
+            }
+          });
+        });
+        return restored;
+      });
       setPrompt("");
     } catch (error) {
+      if (selectVersionRef.current !== version) return;
       setApiError(error instanceof Error ? error.message : "本地会话加载失败");
     }
   };
@@ -335,6 +387,7 @@ export function AiServicePage() {
           asset_ids: draft.submitted.assetId ? [draft.submitted.assetId] : [],
         });
         const generatedImageUrls = await Promise.all(result.asset_ids.map(aiServiceApi.loadAssetUrl));
+        generatedImageUrls.forEach((url) => objectUrlsRef.current.add(url));
         setMessages((current) => [...current, {
           id: `assistant-${Date.now()}`,
           role: "assistant",

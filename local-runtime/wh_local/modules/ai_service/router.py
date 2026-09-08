@@ -15,7 +15,7 @@ from ...session import Actor, actor_from_authorization, require_permission
 from ..basic_settings.service import SystemConfigService
 from .defaults import DEFAULT_MODELS
 from .gateway import StationGateway, StationGatewayError
-from .service import AiService, AiServiceError
+from .service import AiService, AiServiceError, _is_image_type
 from .temporary_cos import TemporaryCosStore, TemporaryReference, TemporaryReferenceError
 from .web_search import search_context, search_public_web
 
@@ -174,9 +174,12 @@ def create_router(
                 if error.status_code not in {400, 415, 422} or not asset_ids or not payload.get("image"):
                     raise
                 runtime = SystemConfigService(database_path).get_runtime_config()
+                image_asset_id = next((asset_id for asset_id in asset_ids if _is_image_type(service.asset_info(actor, asset_id)["content_type"])), None)
+                if image_asset_id is None:
+                    raise
                 temporary = TemporaryCosStore(runtime.cos).publish(
-                    service.asset_content(actor, asset_ids[0]),
-                    service.asset_info(actor, asset_ids[0])["content_type"],
+                    service.asset_content(actor, image_asset_id),
+                    service.asset_info(actor, image_asset_id)["content_type"],
                 )
                 payload["image"] = temporary.url
                 results = gateway.generate_image(payload)
@@ -331,8 +334,11 @@ def _run_pod_group(
             asset_ids = _payload_asset_ids(service, actor, creation_id, kind)
             if error.status_code not in {400, 415, 422} or not asset_ids or not payload.get("image"):
                 raise
+            image_asset_id = next((asset_id for asset_id in asset_ids if _is_image_type(service.asset_info(actor, asset_id)["content_type"])), None)
+            if image_asset_id is None:
+                raise
             payload["image"] = _pod_temporary_reference_url(
-                service, database_path, actor, creation_id, asset_ids[0], pod_references, pod_references_lock,
+                service, database_path, actor, creation_id, image_asset_id, pod_references, pod_references_lock,
             )
             results = gateway.generate_image(payload)
         output_asset_ids = [_save_result(service, actor, gateway, result)["asset_id"] for result in results]
