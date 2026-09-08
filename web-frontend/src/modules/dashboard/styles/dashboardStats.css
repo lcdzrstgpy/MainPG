@@ -282,6 +282,28 @@
   font-size: clamp(1.72rem, 2.25vw, 2.25rem);
 }
 
+.dashboard-page .dashboard-manual-link {
+  justify-self: start;
+  margin-top: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border: 1px solid color-mix(in srgb, var(--theme-accent, #0e7490) 30%, transparent);
+  border-radius: 999px;
+  color: var(--theme-accent, #0e7490);
+  background: color-mix(in srgb, var(--theme-accent, #0e7490) 8%, transparent);
+  font-size: .86rem;
+  font-weight: 650;
+  text-decoration: none;
+  transition: border-color .16s ease, background .16s ease;
+}
+
+.dashboard-page .dashboard-manual-link:hover {
+  border-color: var(--theme-accent, #0e7490);
+  background: color-mix(in srgb, var(--theme-accent, #0e7490) 16%, transparent);
+}
+
 .dashboard-page .section-heading {
   align-items: flex-end;
   min-height: 46px;

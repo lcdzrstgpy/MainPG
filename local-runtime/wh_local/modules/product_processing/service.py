@@ -9245,7 +9245,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             isinstance(auto_repull, dict) and auto_repull.get("status") == "running"
         )
         if (
-            task.get("status") in {"completed", "failed", "partial_failure"}
+            task.get("status") in {"completed", "failed", "partial_failure", "cancelled"}
             and not auto_repull_running
         ):
             end = ProductProcessingService._iso_datetime(task.get("updated_at")) or datetime.now(timezone.utc)
