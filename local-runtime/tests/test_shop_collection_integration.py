@@ -126,3 +126,83 @@ def test_shop_modules_create_workspace_owned_product_draft(tmp_path: Path) -> No
         "raw_payload_json": draft["raw_payload_json"],
     }
     assert "<img" not in draft["raw_payload_json"]
+
+
+class EmptyShopProvider:
+    """1688 列表第 1 页返回 0 条（对应裸店铺主页/SID 错误等场景）。"""
+
+    def search_shop(self, seller_nick: str, page: int) -> ProviderCallResult:
+        return ProviderCallResult(
+            response={
+                "items": {"item": [], "total_results": 0, "page_size": 20},
+                "error_code": "0000",
+            },
+            audits=(ApiEvidence(provider="onebound-1688", operation="item_search_shop"),),
+        )
+
+    def get_item_detail(self, offer_id: str) -> ProviderCallResult:  # pragma: no cover
+        raise AssertionError("empty shop must not reach item detail")
+
+    def get_seller_info(self, shop_id: str) -> ProviderCallResult:  # pragma: no cover
+        raise AssertionError("empty shop must not reach seller info")
+
+
+def test_1688_empty_first_page_fails_batch_instead_of_silent_success(tmp_path: Path) -> None:
+    """1688 清单第 1 页 0 条不再静默 completed：给出可诊断失败。"""
+    database = tmp_path / "runtime.sqlite3"
+    init_db(database)
+    product_processing = app_main._product_processing_service(database)
+    repository = ShopCollectionRepository(database)
+    worker = ShopCollectionWorker(
+        repository=repository,
+        provider_config_resolver=lambda actor: {"enabled": True},
+        provider_factory=lambda config: EmptyShopProvider(),
+        intake_shop_candidate=product_processing.intake_shop_candidate,
+    )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        worker.start()
+        try:
+            yield
+        finally:
+            worker.close()
+
+    application = FastAPI(lifespan=lifespan)
+    application.include_router(
+        create_shop_collection_router(
+            ShopCollectionRouteDependencies(
+                resolve_actor=lambda: DailySelectionActor(
+                    actor_id="actor-1", workspace_id="default"
+                ),
+                database_path=database,
+                provider_config_resolver=lambda actor: {"enabled": True},
+                worker=worker,
+                repository=repository,
+            )
+        )
+    )
+
+    with TestClient(application) as client:
+        created = client.post(
+            "/desktop/data-collection/shop-batches",
+            json={"source_input": "b2b-empty-shop"},
+        )
+        assert created.status_code == 202
+        batch_id = created.json()["batch_id"]
+
+        deadline = time.monotonic() + 3
+        batch = created.json()
+        while time.monotonic() < deadline and batch["status"] not in {
+            "completed", "partial", "failed", "cancelled"
+        }:
+            time.sleep(0.02)
+            response = client.get(
+                f"/desktop/data-collection/shop-batches/{batch_id}"
+            )
+            assert response.status_code == 200
+            batch = response.json()
+
+        assert batch["status"] == "failed"
+        assert "商品列表为空" in batch["error_message"]
+        assert batch["discovered_count"] == 0

@@ -176,7 +176,11 @@ def test_1688_prepare_still_defaults_to_1688_platform(tmp_path: Path) -> None:
     assert seen_configs[0]["base_url"] == "https://api-gw.onebound.cn/1688"
 
 
-def _failing_provider(upstream_error: str | None = None, provider_code: str = "upstream_failed"):
+def _failing_provider(
+    upstream_error: str | None = None,
+    provider_code: str = "upstream_failed",
+    error_context: dict[str, Any] | None = None,
+):
     class _FailingProvider:
         def __init__(self) -> None:
             self.calls = 0
@@ -192,7 +196,15 @@ def _failing_provider(upstream_error: str | None = None, provider_code: str = "u
                 {
                     "ok": False,
                     "response": response,
-                    "error": type("Error", (), {"code": provider_code, "message": "OneBound returned an unsuccessful response"})(),
+                    "error": type(
+                        "Error",
+                        (),
+                        {
+                            "code": provider_code,
+                            "message": "OneBound returned an unsuccessful response",
+                            "context": dict(error_context or {}),
+                        },
+                    )(),
                 },
             )()
 
@@ -270,3 +282,44 @@ def test_item_failure_without_mapped_code_keeps_provider_code_and_generic_reason
     assert response["ok"] is False
     assert response["error_code"] == "upstream_failed"
     assert response["message"] == "万邦接口返回失败"
+
+
+def test_item_failure_surfaces_onebound_error_code_instead_of_generic_reason(tmp_path: Path) -> None:
+    """上游 item_get 返回 error_code=5000 时，须展示真实错误码而非笼统的'万邦接口返回失败'。"""
+    from wh_local.data_collection.plugin_onebound_capture import (
+        PluginOneBoundCaptureService,
+    )
+
+    queue = DataCollectionPluginQueue(tmp_path / "runtime.sqlite3")
+    session = queue.create_session(actor_id="actor-1", workspace_id="workspace-1")
+    provider = _failing_provider(
+        upstream_error="data",
+        provider_code="upstream_failed",
+        error_context={"upstream_code": "5000", "upstream_reason": "data error"},
+    )
+
+    router = APIRouter()
+    service = register_plugin_onebound_capture_routes(
+        router,
+        PluginOneBoundCaptureDependencies(
+            plugin_queue=queue,
+            provider_config_resolver=lambda _actor: {
+                "api_key": "key", "api_secret": "secret", "base_url": "https://api-gw.onebound.cn/1688",
+            },
+            provider_factory=lambda _config: provider,
+            budget=_Budget(),
+            draft_writer=_Drafts(),
+        ),
+    )
+    assert isinstance(service, PluginOneBoundCaptureService)
+    token = session["session_token"]
+    link = "https://item.taobao.com/item.htm?id=1072399809675"
+
+    prepared = service.prepare(session_token=token, page_url=link, source_urls=[link])
+    service.start(session_token=token, batch_token=prepared["batch_token"])
+    response = service.item(session_token=token, batch_token=prepared["batch_token"], source_url=link)
+
+    assert response["ok"] is False
+    assert response["error_code"] == "upstream_failed"
+    assert "error_code: 5000" in response["message"]
+    assert "万邦接口返回失败" not in response["message"]

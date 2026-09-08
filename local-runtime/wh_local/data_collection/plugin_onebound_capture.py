@@ -56,6 +56,16 @@ _PROVIDER_ERROR_REASONS: dict[str, str] = {
     "invalid_request": "万邦接口参数校验失败",
     "provider_disabled": "万邦采集服务未启用",
 }
+# OneBound 顶层数值业务错误码（error_code 字段）→ 面向用户的原因。
+# 只映射文档核对过的稳定码；其它数值码由上游 reason 兜底展示。
+_ONE_BOUND_ERROR_REASONS: dict[str, str] = {
+    "4000": "万邦接口调用失败（业务错误）",
+    "4001": "万邦接口参数或授权异常",
+    "4002": "万邦接口请求被拒绝",
+    "4003": "万邦接口数据异常",
+    "4005": "万邦接口无权访问该商品（接口未开通/受限类目）",
+    "0800": "万邦接口无权访问该商品（无数据权限）",
+}
 _UPSTREAM_ERROR_CODE_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 
 
@@ -1049,6 +1059,18 @@ def _provider_failure_message(result: Any) -> str:
     provider_code = str(getattr(error, "code", "") or "").strip()
     if upstream in _UPSTREAM_ERROR_REASONS:
         return f"{_UPSTREAM_ERROR_REASONS[upstream]}（code: {upstream}）"
+    if provider_code in _PROVIDER_ERROR_REASONS and provider_code != "upstream_failed":
+        return _PROVIDER_ERROR_REASONS[provider_code]
+    # 上游真实业务错误码（error_code）优先于笼统的 upstream_failed 兜底文案。
+    context = getattr(error, "context", None)
+    context = context if isinstance(context, Mapping) else {}
+    upstream_code = str(context.get("upstream_code") or "").strip()
+    if upstream_code and upstream_code not in {"0000", "0"}:
+        if upstream_code in _ONE_BOUND_ERROR_REASONS:
+            return f"{_ONE_BOUND_ERROR_REASONS[upstream_code]}（error_code: {upstream_code}）"
+        upstream_reason = str(context.get("upstream_reason") or "").strip()
+        suffix = f"，{upstream_reason[:60]}" if upstream_reason else ""
+        return f"万邦未返回该商品数据（error_code: {upstream_code}{suffix}）"
     if provider_code in _PROVIDER_ERROR_REASONS:
         return _PROVIDER_ERROR_REASONS[provider_code]
     if upstream:
