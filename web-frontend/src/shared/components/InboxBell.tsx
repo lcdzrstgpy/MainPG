@@ -12,7 +12,13 @@ const POLL_INTERVAL = 15_000;
 
 function formatTime(value: string): string {
   if (!value) return "";
-  const date = new Date(value);
+  // 远程 announcement-admin 返回的 published_at 是无时区的 ISO 字符串
+  // （如 "2026-09-08 06:57:34"），但实际是 UTC（不是本地时间）。直接交给
+  // new Date() 会被浏览器当作本地时间解析，导致国内用户看到的时间少 8 小时。
+  // 显式识别"无时区 ISO"并补 "Z" 当 UTC 解析；带时区的字符串保持原样。
+  const looksLikeNaiveDatetime = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/.test(value);
+  const normalized = looksLikeNaiveDatetime ? value.replace(" ", "T") + "Z" : value;
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return value;
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
