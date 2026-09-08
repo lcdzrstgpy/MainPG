@@ -28,6 +28,19 @@ local-runtime/wh_local/onebound.local.json
 local-runtime/wh_local/modules/product_processing/cos.local.json
 local-runtime/_rsa_private.pem
 local-runtime/_rsa_public.pem
+local-runtime/wh_local/secrets.py
+
+# 嵌入式 Python 运行时（打包用，体积大，不进 git）
+local-runtime/python-runtime/
+
+# 运行时日志
+*.log
+
+# 测试临时目录
+local-runtime/.pytest-*/
+
+# 本地备份
+_backup/
 
 # Local tooling
 local-runtime/python.exe
@@ -37,3 +50,16 @@ product_processing.db
 # 公告发布后台本地数据
 announcement-admin/announcements.sqlite3
 announcement-admin/config.json
+
+# 运行时输出与锁文件
+real-workbench/employee_workbench/product_processing/
+*.lock
+!package-lock.json
+!yarn.lock
+!pnpm-lock.yaml
+
+# pytest 残留目录（ACL 损坏，git 无法遍历，避免 warning）
+.pytest-update-admin-*/
+
+# 项目工作数据
+.workbuddy/
