@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
 import { getDashboardStats, type DashboardStats, type DashboardTrendPoint } from "../api/dashboardApi";
 import { loadBillingUsageHistory, type BillingUsageEntry } from "../../personal_center/api/personalCenterApi";
@@ -9,7 +9,27 @@ type DashboardStatsProps = { onOpenModule: (id: WorkspaceModuleId) => void; vari
 
 type TrendMode = "dual" | "sum";
 
-/* ── 折线趋势图 ─────────────────────────────────────────────── */
+/* ── 折线趋势图（重制版：平滑曲线 + 入场动画 + 跟随式悬浮卡） ── */
+
+/** Catmull-Rom 样条 → 三次贝塞尔：把折线变成顺滑曲线 */
+function smoothPath(pts: Array<{ x: number; y: number }>): string {
+  if (pts.length === 0) return "";
+  if (pts.length < 3) return pts.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(" ");
+  let d = `M${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const c1x = p1.x + (p2.x - p0.x) / 6;
+    const c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6;
+    const c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C${c1x.toFixed(2)} ${c1y.toFixed(2)} ${c2x.toFixed(2)} ${c2y.toFixed(2)} ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+  }
+  return d;
+}
+
 function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
   const [days, setDays] = useState(14);
   const [mode, setMode] = useState<TrendMode>("dual");
@@ -17,52 +37,52 @@ function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
 
   const visiblePoints = useMemo(() => points.slice(-days), [days, points]);
 
-  // 两条线：产品处理（红） 与 POD 生成（蓝）；汇总模式合成一条线。
-  const processed = useMemo(() => visiblePoints.map((p) => p.processedCount), [visiblePoints]);
-  const inbound = useMemo(() => visiblePoints.map((p) => p.inboundCount), [visiblePoints]);
-  const sums = useMemo(() => visiblePoints.map((p) => p.inboundCount + p.processedCount), [visiblePoints]);
-
-  const activeSeries = mode === "sum" ? [{ key: "sum", label: "汇总", color: "#e1568a", values: sums }]
-    : [
-        { key: "processed", label: "产品处理", color: "#e23b4e", values: processed },
-        { key: "inbound", label: "POD 生成", color: "#2f6bff", values: inbound },
-      ];
+  // 双线：产品处理（红）+ POD 生成（蓝）；汇总模式合成一条线。
+  const activeSeries = useMemo(
+    () =>
+      mode === "sum"
+        ? [{ key: "sum", label: "汇总", color: "#e1568a", values: visiblePoints.map((p) => p.inboundCount + p.processedCount) }]
+        : [
+            { key: "processed", label: "产品处理", color: "#e23b4e", values: visiblePoints.map((p) => p.processedCount) },
+            { key: "inbound", label: "POD 生成", color: "#2f6bff", values: visiblePoints.map((p) => p.inboundCount) },
+          ],
+    [mode, visiblePoints],
+  );
 
   const allValues = activeSeries.flatMap((s) => s.values);
   const total = allValues.reduce((a, b) => a + b, 0);
-  const maxValue = Math.max(...allValues, 1);
 
-  // 内边距：给坐标轴留出空间
-  const width = 720;
-  const height = 250;
-  const pad = { top: 16, right: 18, bottom: 30, left: 44 };
+  /* Y 轴漂亮刻度：步长取 1/2/2.5/5 × 10^n，顶部预留 18% 呼吸空间，曲线不顶格 */
+  const rawDataMax = Math.max(...allValues, 1);
+  const niceSteps = [1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000];
+  const step = niceSteps.find((s) => s >= rawDataMax / 4) ?? niceSteps[niceSteps.length - 1];
+  const maxValue = Math.max(Math.ceil((rawDataMax * 1.18) / step) * step, step * 4);
+  const yTicks = Array.from({ length: 5 }, (_, i) => step * i);
+
+  /* 画布几何 */
+  const width = 760;
+  const height = 280;
+  const pad = { top: 26, right: 22, bottom: 40, left: 48 };
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
-
   const xAt = (i: number) => pad.left + (i / Math.max(visiblePoints.length - 1, 1)) * plotW;
   const yAt = (v: number) => pad.top + plotH - (v / maxValue) * plotH;
 
-  const buildLine = (values: number[]) =>
-    values.map((v, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(2)},${yAt(v).toFixed(2)}`).join(" ");
-
-  const buildArea = (values: number[]) =>
-    `${buildLine(values)} L${xAt(values.length - 1).toFixed(2)},${(pad.top + plotH).toFixed(2)} L${xAt(0).toFixed(2)},${(pad.top + plotH).toFixed(2)} Z`;
-
-  // y 轴刻度（取 4 档 + 顶部）
-  const yTicks = Array.from({ length: 5 }, (_, i) => (maxValue / 4) * i);
-
-  // x 轴标签：均匀抽样，避免拥挤
+  /* X 轴标签：均匀抽样，避免拥挤 */
   const labelStep = Math.max(1, Math.ceil(visiblePoints.length / 7));
-  const labels = visiblePoints.map((p, i) => {
+  const xLabels = visiblePoints.map((p, i) => {
     const d = new Date(`${p.date}T00:00:00`);
     return { i, text: `${d.getMonth() + 1}/${d.getDate()}`, show: i % labelStep === 0 || i === visiblePoints.length - 1 };
   });
 
   const rangeLabel = visiblePoints.length
-    ? `${visiblePoints[0].date.replace(/-/g, "/")} - ${visiblePoints[visiblePoints.length - 1]?.date.replace(/-/g, "/")}`
+    ? `${visiblePoints[0].date.replace(/-/g, "/")} – ${visiblePoints[visiblePoints.length - 1]?.date.replace(/-/g, "/")}`
     : "暂无日期";
 
-  const hovered = hover !== null ? visiblePoints[hover] : null;
+  const hoveredIdx = hover !== null && hover < visiblePoints.length ? hover : null;
+  const hovered = hoveredIdx !== null ? visiblePoints[hoveredIdx] : null;
+  const hoverX = hoveredIdx !== null ? xAt(hoveredIdx) : 0;
+  const tooltipFlip = hoverX > width * 0.7; // 数据点靠右侧时悬浮卡翻到左边
 
   return (
     <section className="dashboard-trend-card">
@@ -85,7 +105,7 @@ function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
 
       <div className="dashboard-trend-plot" aria-label={`${rangeLabel}业务趋势，总计${total}`}>
         <svg
-          className="dashboard-linechart"
+          className="trend-svg"
           viewBox={`0 0 ${width} ${height}`}
           preserveAspectRatio="none"
           onMouseLeave={() => setHover(null)}
@@ -97,75 +117,96 @@ function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
             setHover(visiblePoints.length ? clamped : null);
           }}
         >
-          {/* 横向网格 + 纵坐标 */}
-          {yTicks.map((tick) => (
-            <g key={`y-${tick}`}>
-              <line className="chart-grid" x1={pad.left} x2={width - pad.right} y1={yAt(tick)} y2={yAt(tick)} />
-              <text className="chart-tick" x={pad.left - 8} y={yAt(tick) + 3} textAnchor="end">{Math.round(tick)}</text>
-            </g>
-          ))}
-          {/* 纵轴主线 */}
-          <line className="chart-axis" x1={pad.left} x2={pad.left} y1={pad.top} y2={pad.top + plotH} />
-          <line className="chart-axis" x1={pad.left} x2={width - pad.right} y1={pad.top + plotH} y2={pad.top + plotH} />
-          {/* 横轴日期 */}
-          {labels.map(({ i, text, show }) => show && (
-            <text key={`x-${i}`} className="chart-tick" x={xAt(i)} y={height - 8} textAnchor="middle">{text}</text>
-          ))}
-
-          {/* 面积渐变 */}
-          {activeSeries.map((s) => (
-            <path key={`area-${s.key}`} className="chart-area" d={buildArea(s.values)} fill={`url(#grad-${s.key})`} />
-          ))}
-          {/* 折线 */}
-          {activeSeries.map((s) => (
-            <path key={`line-${s.key}`} className="chart-line" d={buildLine(s.values)} stroke={s.color} />
-          ))}
-          {/* 数据点 */}
-          {activeSeries.map((s) => (
-            s.values.map((v, i) => (
-              <circle
-                key={`dot-${s.key}-${i}`}
-                className="chart-dot"
-                cx={xAt(i)}
-                cy={yAt(v)}
-                r={hover === i ? 4.4 : 3}
-                fill={s.color}
-              />
-            ))
-          ))}
-          {/* 悬停指示线 */}
-          {hover !== null && <line className="chart-hover-line" x1={xAt(hover)} x2={xAt(hover)} y1={pad.top} y2={pad.top + plotH} />}
-
           <defs>
             {activeSeries.map((s) => (
-              <linearGradient key={`g-${s.key}`} id={`grad-${s.key}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={s.color} stopOpacity="0.24" />
+              <linearGradient key={s.key} id={`tgrad-${s.key}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={s.color} stopOpacity="0.22" />
+                <stop offset="70%" stopColor={s.color} stopOpacity="0.05" />
                 <stop offset="100%" stopColor={s.color} stopOpacity="0" />
               </linearGradient>
             ))}
           </defs>
+
+          {/* 水平网格 + Y 轴刻度 */}
+          {yTicks.map((t) => (
+            <g key={`y-${t}`}>
+              <line className="trend-grid" x1={pad.left} x2={width - pad.right} y1={yAt(t)} y2={yAt(t)} />
+              <text className="trend-tick" x={pad.left - 10} y={yAt(t) + 3.5} textAnchor="end">{t}</text>
+            </g>
+          ))}
+
+          {/* 底部基线 */}
+          <line className="trend-baseline" x1={pad.left} x2={width - pad.right} y1={pad.top + plotH} y2={pad.top + plotH} />
+
+          {/* X 轴刻度 */}
+          {xLabels.map(({ i, text, show }) => show && (
+            <text key={`x-${i}`} className="trend-tick" x={xAt(i)} y={height - 12} textAnchor="middle">{text}</text>
+          ))}
+
+          {/* 面积 + 平滑曲线：切模式/天数时重放入场动画 */}
+          <g key={`${mode}-${days}`}>
+            {activeSeries.map((s) => {
+              const pts = s.values.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
+              const line = smoothPath(pts);
+              const lastX = pts.length ? pts[pts.length - 1].x : pad.left;
+              const firstX = pts.length ? pts[0].x : pad.left;
+              const area = `${line} L${lastX.toFixed(2)} ${(pad.top + plotH).toFixed(2)} L${firstX.toFixed(2)} ${(pad.top + plotH).toFixed(2)} Z`;
+              return (
+                <Fragment key={s.key}>
+                  <path className="trend-area" d={area} fill={`url(#tgrad-${s.key})`} />
+                  <path className="trend-line" d={line} stroke={s.color} pathLength={1} />
+                </Fragment>
+              );
+            })}
+          </g>
+
+          {/* 数据点：常显小点，悬停放大 */}
+          {activeSeries.map((s) =>
+            s.values.map((v, i) => (
+              <circle
+                key={`dot-${s.key}-${i}`}
+                className="trend-dot"
+                cx={xAt(i)}
+                cy={yAt(v)}
+                r={hoveredIdx === i ? 4.2 : 2.2}
+                fill={s.color}
+              />
+            )),
+          )}
+
+          {/* 悬停指示线 */}
+          {hoveredIdx !== null && (
+            <line className="trend-cursor" x1={hoverX} x2={hoverX} y1={pad.top} y2={pad.top + plotH} />
+          )}
         </svg>
 
         {total === 0 && <div className="dashboard-trend-empty">当前时间范围暂无业务记录</div>}
 
+        {/* 悬浮卡片：跟随数据点，靠右自动左翻 */}
         {hovered && (
           <div
-            className="dashboard-trend-tooltip"
-            style={{ left: `${(xAt(hover!) / width) * 100}%` }}
+            className="trend-tip"
+            style={{ left: `${(hoverX / width) * 100}%` }}
+            data-flip={tooltipFlip ? "true" : undefined}
           >
-            <strong>{hovered.date}</strong>
-            <span><i className="is-processed" />产品处理 <b>{hovered.processedCount}</b></span>
-            <span><i className="is-inbound" />POD 生成 <b>{hovered.inboundCount}</b></span>
-            <span><i className="is-sum" />汇总 <b>{hovered.inboundCount + hovered.processedCount}</b></span>
+            <strong>{hovered.date.replace(/-/g, "/")}</strong>
+            {mode === "sum" ? (
+              <span><i style={{ background: "#e1568a" }} />汇总<b>{hovered.inboundCount + hovered.processedCount}</b></span>
+            ) : (
+              <>
+                <span><i style={{ background: "#e23b4e" }} />产品处理<b>{hovered.processedCount}</b></span>
+                <span><i style={{ background: "#2f6bff" }} />POD 生成<b>{hovered.inboundCount}</b></span>
+              </>
+            )}
           </div>
         )}
       </div>
 
       <div className="dashboard-trend-legend">
         <div>
-          <span><i className="is-processed" />产品处理</span>
-          <span><i className="is-inbound" />POD 生成</span>
-          <span><i className="is-sum" />汇总</span>
+          {activeSeries.map((s) => (
+            <span key={s.key}><i style={{ background: s.color }} />{s.label}</span>
+          ))}
         </div>
         <small>数据每分钟自动更新</small>
       </div>
