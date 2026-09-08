@@ -90,6 +90,10 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const locallyEditedIds = useRef(new Set<string>());
   const renderWatchGeneration = useRef(new Map<string, number>());
+  // H2: 尺寸输入保留用户中间态(支持小数),失焦/回车才提交
+  type BodyDimKey = Extract<DimensionKey, "length" | "width" | "height">;
+  const [dimTexts, setDimTexts] = useState<Partial<Record<BodyDimKey, string>>>({});
+  const dimEditingKeyRef = useRef<BodyDimKey | null>(null);
 
   useEffect(() => {
     if (!isActive) setImportOpen(false);
@@ -229,16 +233,21 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
     } : current);
   }, [autosave.savedItem]);
 
-  useEffect(() => {
-    if (!batch || !activeItemId) return;
+  // M4: 下一条待预取图的 URL,作为 effect 的唯一依赖 —— autosave 合并/轮询导致 batch 引用
+  // 频繁变化时,只要下一条 item/图未变,就不会重复 new Image() 下载同一张图。
+  const prefetchUrl = useMemo(() => {
+    if (!batch || !activeItemId) return null;
     const index = batch.items.findIndex((item) => item.id === activeItemId);
     const next = batch.items[index + 1];
-    if (!next) return;
-    const url = next.assets.find((asset) => asset.previewUrl)?.previewUrl;
-    if (!url) return;
-    const image = new Image();
-    image.src = url;
+    const url = next?.assets.find((asset) => asset.previewUrl)?.previewUrl;
+    return url || null;
   }, [activeItemId, batch]);
+
+  useEffect(() => {
+    if (!prefetchUrl) return;
+    const image = new Image();
+    image.src = prefetchUrl;
+  }, [prefetchUrl]);
 
   const updateEditor = (next: EditorState, recordHistory = true, invalidatesRender = true) => {
     if (!editor || editorItemId !== activeItemId) return;
@@ -250,6 +259,53 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
         ...current,
         items: current.items.map((item) => item.id === activeItemId ? invalidateRenderOnEdit(item, next) : item),
       } : current);
+    }
+  };
+
+  // H2: 商品本体尺寸输入 —— 本地文本态编辑,失焦/回车提交,外部变更(切商品/撤销/绘制回写)自动同步显示。
+  const activeInputUnit = editor ? dimensionInputUnit(editor.displayUnit) : "cm";
+  const dimensionDisplayText = (key: BodyDimKey, valueCm: number | null) =>
+    valueCm == null ? "" : String(Number(centimetersToUnit(valueCm, activeInputUnit).toFixed(2)));
+
+  useEffect(() => {
+    if (!editor) return;
+    setDimTexts((prev) => {
+      let next: Partial<Record<BodyDimKey, string>> | null = null;
+      for (const key of ["length", "width", "height"] as const) {
+        if (dimEditingKeyRef.current === key) continue;
+        const shown = dimensionDisplayText(key, editor.dimensions[key].valueCm);
+        if ((prev[key] ?? "") !== shown) {
+          next ??= { ...prev };
+          next[key] = shown;
+        }
+      }
+      return next ?? prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, editor?.displayUnit]);
+
+  const commitDimensionInput = (key: BodyDimKey) => {
+    dimEditingKeyRef.current = null;
+    if (!editor || editorItemId !== activeItemId) return;
+    const text = (dimTexts[key] ?? "").trim();
+    const current = editor.dimensions[key];
+    if (text === "") {
+      if (current.valueCm != null) {
+        updateEditor({ ...editor, dimensions: { ...editor.dimensions, [key]: { valueCm: null, provenance: "unconfirmed", evidenceRef: "manual" } } });
+      }
+      return;
+    }
+    const parsed = Number(text);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      const nextCm = unitToCentimeters(parsed, activeInputUnit);
+      if (current.valueCm == null || Math.abs(current.valueCm - nextCm) > 0.001) {
+        updateEditor(changeDimensionValue(editor, key, nextCm));
+      } else {
+        setDimTexts((p) => ({ ...p, [key]: dimensionDisplayText(key, current.valueCm) }));
+      }
+    } else {
+      // 非法输入:回退显示为当前值
+      setDimTexts((p) => ({ ...p, [key]: dimensionDisplayText(key, current.valueCm) }));
     }
   };
 
@@ -492,18 +548,19 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               <div className="dimension-value-list">
                 {(["length", "width", "height"] as const).map((key) => {
                   const value = editor.dimensions[key];
-                  const inputUnit = dimensionInputUnit(editor.displayUnit);
                   return (
                     <label key={key} className={`provenance-${value.provenance}`}>
                       <span>{DIMENSION_LABELS[key]}</span>
-                      <input type="number" min="0" step="0.01" value={value.valueCm == null ? "" : Number(centimetersToUnit(value.valueCm, inputUnit).toFixed(2))} onChange={(event) => {
-                        const parsed = Number(event.target.value);
-                        if (event.target.value === "") {
-                          updateEditor({ ...editor, dimensions: { ...editor.dimensions, [key]: { valueCm: null, provenance: "unconfirmed", evidenceRef: "manual" } } });
-                        } else if (Number.isFinite(parsed) && parsed > 0) {
-                          updateEditor(changeDimensionValue(editor, key, unitToCentimeters(parsed, inputUnit)));
-                        }
-                      }} />
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={dimTexts[key] ?? dimensionDisplayText(key, value.valueCm)}
+                        onChange={(event) => { dimEditingKeyRef.current = key; setDimTexts((p) => ({ ...p, [key]: event.target.value })); }}
+                        onFocus={() => { dimEditingKeyRef.current = key; }}
+                        onBlur={() => commitDimensionInput(key)}
+                        onKeyDown={(event) => { if (event.key === "Enter") commitDimensionInput(key); }}
+                      />
                       <button type="button" onClick={() => selectDimensionTool(key)} disabled={value.valueCm == null || value.valueCm <= 0}>绘制</button>
                       <em>{dimensionUnitLabel(editor.displayUnit)} · {value.provenance === "package_estimate" ? "处理表估值（绘制前确认）" : value.provenance}</em>
                     </label>

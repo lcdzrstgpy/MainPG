@@ -25,19 +25,25 @@ export function DimensionChangeSetReview({ changeSetId, onChanged }: Props) {
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
 
-  const load = async () => {
+  useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     setError("");
-    try {
-      setChangeSet(await getDimensionChangeSet(changeSetId));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { void load(); }, [changeSetId]);
+    getDimensionChangeSet(changeSetId)
+      .then((data) => {
+        if (!cancelled) setChangeSet(data);
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    // M2: 切换 changeSetId 时废弃在途请求,避免旧面板慢响应覆盖新选中
+    return () => {
+      cancelled = true;
+    };
+  }, [changeSetId]);
 
   const apply = async (action: "all" | "accept" | "reject", itemId = "") => {
     setBusyId(itemId || "all");

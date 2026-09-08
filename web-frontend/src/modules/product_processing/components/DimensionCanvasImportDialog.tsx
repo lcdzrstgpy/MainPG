@@ -63,14 +63,24 @@ export function DimensionCanvasImportDialog({ open, onClose, onImported }: Props
       apply(cached);
       return;
     }
+    let cancelled = false;
     setLoading(true);
     getDimensionTaskEligibility(taskId)
       .then((data) => {
+        if (cancelled) return;
         eligibilityCache.current.set(taskId, data);
         apply(data);
       })
-      .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
-      .finally(() => setLoading(false));
+      .catch((cause) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    // M2: 任务切换/关闭时废弃在途请求,避免旧 task 的慢响应覆盖新选中
+    return () => {
+      cancelled = true;
+    };
   }, [open, taskId]);
 
   const toggle = (id: number) => {

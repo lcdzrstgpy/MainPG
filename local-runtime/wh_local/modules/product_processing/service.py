@@ -4437,6 +4437,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             task_id = int(record.get("task_id") or 0)
             if not freeze_id:
                 continue
+            if not task_id:
+                # combo 冻结(task_id=0)由 run_combo_direct 内的 _settle_combo_freeze 按真实结果
+                # (成功/失败)结算;失败时保留 open 仅靠服务端 TTL 兜底。对账无从得知 combo 的
+                # 成功/失败结果,硬算会走 task=None 分支按 5 个 feature 全 no_return 误扣,
+                # 且 scope 不匹配。跳过,避免错算。
+                continue
             try:
                 if task_id:
                     task = self.repository.get_task(task_id, workspace_id=str(record.get("workspace_id") or "local"))
@@ -9409,7 +9415,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             isinstance(auto_repull, dict) and auto_repull.get("status") == "running"
         )
         if (
-            task.get("status") in {"completed", "failed", "partial_failure"}
+            task.get("status") in {"completed", "failed", "partial_failure", "cancelled"}
             and not auto_repull_running
         ):
             end = ProductProcessingService._iso_datetime(task.get("updated_at")) or datetime.now(timezone.utc)

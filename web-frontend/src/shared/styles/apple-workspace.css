@@ -355,8 +355,11 @@
 .mac-welcome-brand span:not(.mac-brand-tile) { color: #737b89; font-size: .78rem; font-weight: 650; }
 .mac-welcome-brand h1 { margin: 3px 0 2px; color: #1d2430; font-size: clamp(1.45rem, 2.5vw, 2rem); letter-spacing: -.035em; }
 .mac-welcome-brand p { margin: 0; color: #7a8290; font-size: .86rem; }
-.mac-welcome-card > button { display: flex; gap: 7px; align-items: center; padding: 10px 15px; border: 0; border-radius: 10px; color: #fff; background: linear-gradient(#2589f5, #0872df); box-shadow: 0 5px 13px rgba(23,112,215,.24); font-weight: 750; }
-.mac-welcome-card > button span { font-size: 1.15rem; line-height: 1; }
+.mac-welcome-actions { display: flex; gap: 10px; align-items: center; }
+.mac-welcome-actions > button { display: flex; gap: 7px; align-items: center; padding: 10px 15px; border: 0; border-radius: 10px; color: #fff; background: linear-gradient(#2589f5, #0872df); box-shadow: 0 5px 13px rgba(23,112,215,.24); font-weight: 750; }
+.mac-welcome-actions > button span { font-size: 1.15rem; line-height: 1; }
+.mac-manual-link { display: inline-flex; align-items: center; gap: 5px; padding: 10px 14px; border: 1px solid rgba(23,112,215,.22); border-radius: 10px; color: #0a66c2; background: rgba(255,255,255,.72); font-size: .92rem; font-weight: 650; text-decoration: none; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+.mac-manual-link:hover { border-color: rgba(23,112,215,.5); background: #fff; box-shadow: 0 4px 12px rgba(23,112,215,.14); }
 .mac-section,
 .mac-glance-section { display: grid; gap: 14px; }
 .mac-section-heading { display: flex; justify-content: space-between; align-items: end; }
@@ -492,7 +495,7 @@
   [data-ui-mode="apple"] .sidebar-submenu.dock-popover.is-expanded { margin-top: 0; transform: translate(-50%, 0) scale(1); }
   [data-ui-mode="apple"] .scroll-to-top { right: 28px; bottom: 108px; }
   .mac-welcome-card { align-items: flex-start; }
-  .mac-welcome-card > button { white-space: nowrap; }
+  .mac-welcome-actions > button { white-space: nowrap; }
   .mac-glance-grid { grid-template-columns: 1fr; }
   .mac-launchpad { grid-template-columns: repeat(4, minmax(54px, 1fr)); padding: 16px 8px; }
   .mac-continue-grid { grid-template-columns: 1fr; }
@@ -500,7 +503,8 @@
 
 @media (max-width: 520px) {
   .mac-welcome-brand p { display: none; }
-  .mac-welcome-card > button { padding: 9px 10px; font-size: .75rem; }
+  .mac-welcome-actions > button { padding: 9px 10px; font-size: .75rem; }
+  .mac-manual-link { padding: 9px 10px; font-size: .75rem; }
   .mac-brand-tile { width: 52px; height: 52px; }
   .mac-welcome-brand h1 { font-size: 1.22rem; }
   .mac-launchpad { grid-template-columns: repeat(3, minmax(54px, 1fr)); }

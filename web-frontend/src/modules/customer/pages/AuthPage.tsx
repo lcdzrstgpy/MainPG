@@ -38,6 +38,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
 
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [email, setEmail] = useState("");
   const [emailCode, setEmailCode] = useState("");
   const [invitationCode, setInvitationCode] = useState("");
@@ -45,6 +46,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const [forgotEmail, setForgotEmail] = useState("");
   const [forgotCode, setForgotCode] = useState("");
   const [forgotNewPassword, setForgotNewPassword] = useState("");
+  const [forgotConfirmPassword, setForgotConfirmPassword] = useState("");
   // 工作区固定为 default（名称留空），注册页不允许用户修改。
   const FIXED_WORKSPACE_CODE = "default";
   const FIXED_WORKSPACE_NAME = "";
@@ -132,6 +134,10 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     setNotice("");
     setForgotBusy(true);
     try {
+      if (forgotNewPassword !== forgotConfirmPassword) {
+        setError("两次输入的新密码不一致，请重新确认");
+        return;
+      }
       const data = await httpJson<{ ok?: boolean; message?: string }>("/api/customer/reset-password", {
         method: "POST",
         body: {
@@ -146,6 +152,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       setForgotEmail("");
       setForgotCode("");
       setForgotNewPassword("");
+      setForgotConfirmPassword("");
       setError("");
       alert("密码重置成功，请用新密码登录");
     } catch (err) {
@@ -163,6 +170,10 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     try {
       if (!agreed) {
         setError("请先阅读并同意《界野隐私政策》");
+        return;
+      }
+      if (!isLogin && password !== confirmPassword) {
+        setError("两次输入的密码不一致，请重新确认");
         return;
       }
       if (isLogin) {
@@ -194,6 +205,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         });
         if (data.ok === false) throw new Error(data.message ?? "注册失败");
         setMode("login");
+        setPassword("");
+        setConfirmPassword("");
         setError("");
         alert("注册成功，请用新账号登录");
       }
@@ -214,7 +227,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         <div className="auth-feature-list"><span>✓ 模块化工作流</span><span>✓ 本地运行时</span></div>
       </section>
       <section className="auth-form-card">
-        <div className="auth-tabs"><button type="button" className={isLogin ? "is-selected" : ""} onClick={() => { setMode("login"); setError(""); setNotice(""); }}>登录</button><button type="button" className={mode === "register" ? "is-selected" : ""} onClick={() => { setMode("register"); setError(""); setNotice(""); }}>注册</button></div>
+        <div className="auth-tabs"><button type="button" className={isLogin ? "is-selected" : ""} onClick={() => { setMode("login"); setConfirmPassword(""); setError(""); setNotice(""); }}>登录</button><button type="button" className={mode === "register" ? "is-selected" : ""} onClick={() => { setMode("register"); setConfirmPassword(""); setError(""); setNotice(""); }}>注册</button></div>
         <p className="eyebrow">{isLogin ? "WELCOME BACK" : mode === "register" ? "CREATE ACCOUNT" : "RESET PASSWORD"}</p>
         <h2>{isLogin ? "登录工作台" : mode === "register" ? "注册账号" : "找回密码"}</h2>
         {mode === "forgot" ? (
@@ -222,10 +235,11 @@ export function AuthPage({ onEnter }: AuthPageProps) {
             <label>邮箱<input type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.typeMismatch ? "请输入有效的邮箱地址" : "请输入邮箱")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="email" required /></label>
             <label>邮箱验证码<div className="auth-code-row"><input type="text" value={forgotCode} onChange={(e) => setForgotCode(e.target.value.replace(/\D/g, "").slice(0, 6))} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.patternMismatch ? "请输入 6 位数字验证码" : "请输入邮箱验证码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="输入 6 位验证码" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" required /><button type="button" onClick={handleSendForgotCode} disabled={forgotCodeBusy || forgotCodeCooldown > 0}>{forgotCodeBusy ? "发送中…" : forgotCodeCooldown > 0 ? `${forgotCodeCooldown}s 后重发` : "获取验证码"}</button></div></label>
             <label>新密码<input type="password" value={forgotNewPassword} onChange={(e) => setForgotNewPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入新密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="至少 8 位" autoComplete="new-password" required /></label>
+            <label>确认新密码<input type="password" value={forgotConfirmPassword} onChange={(e) => setForgotConfirmPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请再次输入新密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="再次输入新密码" autoComplete="new-password" required /></label>
             {error && <p className="auth-error">{error}</p>}
             {notice && <p className="auth-notice">{notice}</p>}
             <button className="primary-button" type="submit" disabled={forgotBusy}>{forgotBusy ? "处理中…" : "重置密码"}</button>
-            <p className="form-hint"><button type="button" className="link-button" onClick={() => { setMode("login"); setError(""); setNotice(""); }}>← 返回登录</button></p>
+            <p className="form-hint"><button type="button" className="link-button" onClick={() => { setMode("login"); setForgotConfirmPassword(""); setError(""); setNotice(""); }}>← 返回登录</button></p>
           </form>
         ) : (
           <>
@@ -241,12 +255,13 @@ export function AuthPage({ onEnter }: AuthPageProps) {
                 </>
               )}
               <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete={isLogin ? "current-password" : "new-password"} required /></label>
+              {!isLogin && <label>确认密码<input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请再次输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="再次输入密码" autoComplete="new-password" required /></label>}
               <label className="auth-agree"><input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} /><span>我已阅读并同意 <a className="link-button" href="/privacy" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>《界野隐私政策》</a></span></label>
               {error && <p className="auth-error">{error}</p>}
               {notice && <p className="auth-notice">{notice}</p>}
               <button className="primary-button" type="submit" disabled={busy}>{busy ? "处理中…" : isLogin ? "登录并进入工作台 →" : "注册并进入工作台 →"}</button>
             </form>
-            {isLogin && <p className="form-hint"><button type="button" className="link-button" onClick={() => { setMode("forgot"); setError(""); setNotice(""); }}>忘记密码？</button></p>}
+            {isLogin && <p className="form-hint"><button type="button" className="link-button" onClick={() => { setMode("forgot"); setForgotConfirmPassword(""); setError(""); setNotice(""); }}>忘记密码？</button></p>}
             {mode === "register" && <p className="form-hint">注册成功后自动切换到登录页。</p>}
           </>
         )}

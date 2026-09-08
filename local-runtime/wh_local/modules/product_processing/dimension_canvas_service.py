@@ -233,9 +233,21 @@ class DimensionCanvasService:
         batch = self.canvas_repository.get_batch(batch_id, workspace_id)
         if batch is None:
             raise DimensionCanvasNotFound("dimension canvas batch not found")
-        for item in batch["items"]:
+        items = batch["items"]
+        for item in items:
             self._snapshot_v2_media(item["id"], workspace_id)
-        batch["items"] = [self._hydrate_item(item, workspace_id) for item in batch["items"]]
+        # B3: 整批资产一次取齐回填,避免 _hydrate_item 逐 item N+1
+        assets_by_item = self.canvas_repository.list_assets_by_item_ids(
+            [str(item.get("id") or "") for item in items], workspace_id
+        )
+        batch["items"] = [
+            self._hydrate_item(
+                item,
+                workspace_id,
+                assets=assets_by_item.get(str(item.get("id") or ""), []),
+            )
+            for item in items
+        ]
         return batch
 
     def get_item(self, item_id: str, *, workspace_id: str) -> dict[str, Any]:
@@ -597,8 +609,16 @@ class DimensionCanvasService:
                 content_type=content_type or ("image/png" if suffix == ".png" else "image/jpeg"),
             )
 
-    def _hydrate_item(self, item: dict[str, Any], workspace_id: str) -> dict[str, Any]:
+    def _hydrate_item(
+        self,
+        item: dict[str, Any],
+        workspace_id: str,
+        assets: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """assets 传入时使用预取列表(批量场景,避免逐 item N+1);默认逐 item 查,保持旧行为。"""
         result = {key: value for key, value in item.items() if key != "workspace_id"}
+        if assets is None:
+            assets = self.canvas_repository.list_assets(item["id"], workspace_id)
         result["assets"] = [
             {
                 key: value
@@ -612,7 +632,7 @@ class DimensionCanvasService:
                 }.items()
                 if key not in {"workspace_id", "managed_path"}
             }
-            for asset in self.canvas_repository.list_assets(item["id"], workspace_id)
+            for asset in assets
         ]
         return result
 
