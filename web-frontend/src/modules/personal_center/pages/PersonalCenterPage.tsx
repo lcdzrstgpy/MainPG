@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { clearAuthSession, getAuthAccount } from "../../../transport/http/client";
+import { AVATAR_CHANGED_EVENT, AVATAR_STORAGE_KEY } from "../../../app/layout/TopNavigation";
 import {
   changeAccountPassword,
   createTopupOrder,
@@ -203,6 +204,32 @@ function writePendingOrderId(orderId: string) {
 
 export function PersonalCenterPage() {
   const account = getAuthAccount<AccountSnapshot>();
+  // 头像与右上角共享：读取同一 localStorage 键，并监听 storage 事件以实时同步。
+  const [avatarSrc, setAvatarSrc] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(AVATAR_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false);
+  useEffect(() => {
+    const syncAvatar = () => {
+      try {
+        setAvatarSrc(localStorage.getItem(AVATAR_STORAGE_KEY));
+      } catch {
+        // 读取失败时保留当前头像。
+      }
+    };
+    syncAvatar();
+    // storage 事件覆盖跨标签页修改；自定义事件覆盖同页面内修改（如右上角换头像）。
+    window.addEventListener("storage", syncAvatar);
+    window.addEventListener(AVATAR_CHANGED_EVENT, syncAvatar);
+    return () => {
+      window.removeEventListener("storage", syncAvatar);
+      window.removeEventListener(AVATAR_CHANGED_EVENT, syncAvatar);
+    };
+  }, []);
   // 积分/钱包概要本地缓存：冷却窗口内页面刷新直接复用缓存，先展示、不阻塞。
   const balanceCacheKeyValue = balanceCacheKey(account?.account_id);
   const cachedBalance = readBalanceCache(balanceCacheKeyValue);
@@ -420,7 +447,9 @@ export function PersonalCenterPage() {
         .then((payload) => {
           if (disposed) return;
           setSummary(payload);
-          const order = payload.recent_orders.find((item) => item.order_id === pendingPaymentOrderId);
+          const order = payload.pending_order && payload.pending_order.order_id === pendingPaymentOrderId
+            ? payload.pending_order
+            : payload.recent_orders.find((item) => item.order_id === pendingPaymentOrderId);
           if (order?.status === "paid") {
             setPendingPaymentOrderId("");
             writePendingOrderId("");
@@ -555,13 +584,16 @@ export function PersonalCenterPage() {
     <section className="personal-center-page">
       <div className="personal-hero">
         <div className="personal-avatar-card">
-          <div className="personal-avatar">
-            {(account?.username || summary?.account.username || "U").slice(0, 1).toUpperCase()}
+          <div className="personal-avatar" onClick={() => avatarSrc && setAvatarPreviewOpen(true)} title={avatarSrc ? "查看大图" : undefined}>
+            {avatarSrc ? (
+              <img className="personal-avatar-img" src={avatarSrc} alt="用户头像" />
+            ) : (
+              (account?.username || summary?.account.username || "U").slice(0, 1).toUpperCase()
+            )}
           </div>
           <div>
             <p>个人中心</p>
             <h1>{account?.username || summary?.account.username || "当前用户"}</h1>
-            <span>{account?.workspace_name || account?.workspace_code || summary?.account.workspace_code || "默认工作区"}</span>
           </div>
         </div>
         <div className="personal-hero-actions">
@@ -571,6 +603,15 @@ export function PersonalCenterPage() {
           </button>
         </div>
       </div>
+
+      {avatarPreviewOpen && avatarSrc && (
+        <div className="personal-avatar-preview-layer" onMouseDown={() => setAvatarPreviewOpen(false)} role="dialog" aria-modal="true" aria-label="头像预览">
+          <div className="personal-avatar-preview-panel" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="personal-avatar-preview-close" type="button" onClick={() => setAvatarPreviewOpen(false)} aria-label="关闭预览">×</button>
+            <img className="personal-avatar-preview-img" src={avatarSrc} alt="头像大图" />
+          </div>
+        </div>
+      )}
 
       {passwordOpen && (
         <div className="personal-password-layer" onMouseDown={closePasswordDialog}>

@@ -87,6 +87,8 @@ export type BillingSummary = {
   };
   recent_ledger: BillingLedgerEntry[];
   recent_orders: BillingOrder[];
+  /** 当前仍在支付中的单子（最多一条）；仅供支付完成后的轮询识别到账。 */
+  pending_order?: BillingOrder | null;
   security: {
     server_authoritative: boolean;
     local_balance_trusted: boolean;
