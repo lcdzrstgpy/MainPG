@@ -3471,6 +3471,139 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         )
         return {"task_id": task_id, "saved_count": len(saved_items), "items": saved_items}
 
+    def regenerate_preview_detail_images(
+        self,
+        task_id: int,
+        draft_id: int,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """用当前轮播图重新合成详情图，并更新该商品的详情图清单。
+
+        用户在预检页修改轮播图（增删/替换/排序）后，详情图仍是旧轮播图合成的产物，
+        不会自动同步。此接口读取当前已保存 manifest 的 carousel_asset_ids，
+        用本地模板重新合成详情图，注册为新资产并更新 manifest.detail_asset_ids 持久化。
+        """
+        from .domain.preview_images import MANIFEST_KEY, PreviewImageManifest  # noqa: PLC0415
+
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] in {"queued", "running", "paused"}:
+            raise ProductProcessingConflict("任务尚未结束，不能更新详情图")
+        draft_id = int(draft_id)
+        if draft_id <= 0:
+            raise ProductProcessingValidationError("draft id must be positive")
+        item = next(
+            (
+                candidate
+                for candidate in task["items"]
+                if int(candidate.get("product_draft_id") or 0) == draft_id
+            ),
+            None,
+        )
+        if item is None:
+            raise ProductProcessingNotFound("该商品不属于此任务")
+        result = item.get("result") or {}
+        draft = self.repository.get_draft(draft_id, workspace_id=workspace_id)
+        saved = (draft or {}).get("preview_overrides") or {}
+        if not isinstance(saved, dict):
+            saved = {}
+        manifest = (
+            PreviewImageManifest.from_value(saved.get(MANIFEST_KEY))
+            if MANIFEST_KEY in saved
+            else PreviewImageManifest()
+        )
+        # 取当前轮播图：manifest 资产 id 优先（已可读），结果路径兜底。
+        source_values: list[Any] = []
+        if self.media_assets is not None:
+            for asset_id in manifest.carousel_asset_ids:
+                try:
+                    content = self.media_assets.read_ready_asset(
+                        asset_id, workspace_id=workspace_id
+                    )
+                except (LookupError, ValueError, OSError):
+                    continue
+                if content:
+                    source_values.append(content)
+        if not source_values:
+            source_values = [
+                str(path)
+                for path in (result.get("carousel_image_paths") or [])
+                if str(path or "").strip()
+            ] or result.get("provider_original_image_paths") or []
+        if not source_values:
+            raise ProductProcessingValidationError("该商品暂无可用的轮播图，无法合成详情图")
+        title = str(saved.get("title") or result.get("optimized_title") or "").strip()
+        core_fields = saved.get("core_fields") or {}
+        if not isinstance(core_fields, dict):
+            core_fields = {}
+        category = str(
+            saved.get("category")
+            or core_fields.get("category_path")
+            or result.get("category_path")
+            or result.get("category")
+            or ""
+        ).strip()
+        settings = task.get("settings") or {}
+        target_language = self._text(settings.get("target_language")) or "en"
+        try:
+            target_language = normalize_target_language(target_language)
+        except ValueError:
+            target_language = "en"
+        content = self._compose_local_detail_image(source_values, title, category, target_language)
+        if not content:
+            raise ProductProcessingValidationError("详情图合成失败，该商品暂无可用的轮播图")
+        if detect_chinese_text(content):
+            raise ProductProcessingValidationError("详情图仍包含中文，无法生成")
+        from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
+
+        media = GeneratedMedia(
+            stage="detail_image",
+            content=content,
+            content_type="image/jpeg",
+            suffix=".jpg",
+            provider="local-synthesis",
+            model="pillow",
+            reference_count=min(4, len(source_values)),
+        )
+        asset = self.preview_images.register_generated(
+            task_id=task_id,
+            product_draft_id=draft_id,
+            workspace_id=workspace_id,
+            media=media,
+        )
+        preview_url = str(asset.get("preview_url") or "")
+        if not preview_url:
+            raise ProductProcessingValidationError("详情图注册失败")
+        new_asset_id = self.preview_images.media_asset_id_for_preview_url(preview_url, workspace_id)
+        if not new_asset_id:
+            raise ProductProcessingValidationError("详情图资产解析失败")
+        new_manifest = PreviewImageManifest(
+            main_asset_id=manifest.main_asset_id,
+            carousel_asset_ids=manifest.carousel_asset_ids,
+            detail_asset_ids=(new_asset_id,),
+            library_asset_ids=manifest.library_asset_ids,
+            semantic_asset_ids=manifest.semantic_asset_ids,
+        )
+        overrides = dict(saved)
+        overrides[MANIFEST_KEY] = new_manifest.as_dict()
+        overrides["detail_images"] = [preview_url]
+        entry = {
+            "product_draft_id": draft_id,
+            "expected_preview_revision": int((draft or {}).get("preview_revision") or 0),
+            "overrides": overrides,
+        }
+        try:
+            self.preview_images.save_preview(task_id, [entry], workspace_id=workspace_id)
+        except PreviewRevisionConflict as exc:
+            raise ProductProcessingConflict(str(exc)) from exc
+        except PreviewSourceNotInLibrary as exc:
+            raise ProductProcessingValidationError(str(exc)) from exc
+        except PreviewSourceNotReady as exc:
+            raise ProductProcessingValidationError(str(exc)) from exc
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+        return self.task_preview(task_id, workspace_id=workspace_id)
+
     def upload_preview_image(
         self,
         task_id: int,
@@ -8149,9 +8282,38 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 lines.append(current)
             return lines or [text[:40]]
 
-        clean_text = re.sub(r"\s+", " ", str(title or "")).strip(" -_|/")
+        def drop_unsupported(text_font, text: str) -> str:
+            """剔除当前字体无法渲染的字符，避免标题出现 □□ 方块。
+
+            用固定缺字字符（“中”）在该字体下的 .notdef 掩码作为判据：任何字形与它
+            逐字节一致的字符都视为缺字（tofu），直接丢弃；其余可正常渲染的字符保留。
+            """
+            if not text:
+                return text
+            try:
+                reference = text_font.getmask("中")
+                ref_bytes = bytes(reference)
+            except Exception:
+                return text
+            kept: list[str] = []
+            for ch in text:
+                try:
+                    mask = text_font.getmask(ch)
+                except Exception:
+                    continue
+                if mask.size == reference.size and bytes(mask) == ref_bytes:
+                    continue
+                kept.append(ch)
+            return "".join(kept)
+
+        title_font_detector = font(38, bold=True)
+        sub_font_detector = font(19)
+        clean_text = drop_unsupported(title_font_detector, re.sub(r"\s+", " ", str(title or "")).strip(" -_|/")).strip()
         title_text = clean_text[:96] or ("Detalle del producto" if target_language == "es" else "Product Detail")
-        category_text = (re.sub(r"\s+", " ", str(category or "")).strip(" -_|/")[:44]) or "Selected Detail"
+        category_clean = drop_unsupported(
+            sub_font_detector, (re.sub(r"\s+", " ", str(category or "")).strip(" -_|/")[:44])
+        ).strip()
+        category_text = category_clean or "Selected Detail"
 
         def compose_d() -> Image.Image:
             """D 极简白底：标题置顶 + 居中大图 + 底部三小图 + 类目注脚"""
