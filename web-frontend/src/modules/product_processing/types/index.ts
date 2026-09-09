@@ -350,6 +350,8 @@ export type PreviewItem = {
   status: string;
   reason: string;
   title: string;
+  /** AI 生图失败回退来源图：未真正产出可用处理后主图/轮播图（导出回退来源图）。 */
+  image_ai_failed?: boolean;
   description: string;
   source_url?: string;
   source_image_urls: string[];
