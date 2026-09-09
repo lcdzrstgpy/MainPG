@@ -23,12 +23,20 @@ function readTheme(): ThemeId {
   return "classic";
 }
 
-function applyTheme(id: ThemeId) {
+function applyTheme(id: ThemeId, animate = true) {
   const appliedTheme = document.documentElement.getAttribute("data-ui-mode") === "apple" ? "classic" : id;
   document.documentElement.setAttribute("data-theme", appliedTheme);
   try {
     window.localStorage.setItem(STORAGE_KEY, id);
   } catch { /* ignore */ }
+  if (animate) {
+    // 主题切换入场:短暂挂 class 让主区克制地逐块浮现,结束后移除
+    const root = document.documentElement;
+    root.classList.remove("theme-cascade");
+    void root.offsetWidth; // 强制 reflow,保证连续切换时动画重播
+    root.classList.add("theme-cascade");
+    window.setTimeout(() => root.classList.remove("theme-cascade"), 700);
+  }
 }
 
 // ---- external store for cross-tab sync ----
@@ -45,7 +53,7 @@ function getSnapshot() {
 }
 
 // Apply the stored theme on first import (before React mounts)
-applyTheme(currentTheme);
+applyTheme(currentTheme, false);
 
 // Listen for storage changes from other tabs
 if (typeof window !== "undefined") {
