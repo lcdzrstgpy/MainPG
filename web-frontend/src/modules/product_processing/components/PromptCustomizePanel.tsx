@@ -174,21 +174,39 @@ export function PromptCustomizePanel() {
   useEffect(() => {
     if (!open) return;
     setError('');
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, [open]);
 
   return (
-    <section className={`prompt-panel ${open ? 'is-open' : ''}`}>
-      <button type="button" className="prompt-panel-toggle" onClick={toggleOpen} aria-expanded={open}>
-        <span className="prompt-panel-toggle-title">
-          提示词预设模板
-          <small>
-            高级 · 按账号保存多个命名模板{activeTemplate ? `，当前使用「${activeTemplate.name}」` : '，暂未启用'}
-          </small>
-        </span>
-        <span className="prompt-panel-toggle-caret">{open ? '收起 ▾' : '展开 ▸'}</span>
-      </button>
+    <>
+      <section className={`prompt-panel ${open ? 'is-open' : ''}`}>
+        <button type="button" className="prompt-panel-toggle" onClick={toggleOpen} aria-expanded={open}>
+          <span className="prompt-panel-toggle-title">
+            提示词预设模板
+            <small>
+              高级 · 按账号保存多个命名模板{activeTemplate ? `，当前使用「${activeTemplate.name}」` : '，暂未启用'}
+            </small>
+          </span>
+          <span className="prompt-panel-toggle-caret">{open ? '关闭 ✕' : '配置 ▸'}</span>
+        </button>
+      </section>
       {open && (
-        <div className="prompt-panel-body">
+        <div className="prompt-drawer-layer">
+          <button type="button" className="prompt-drawer-backdrop" onClick={() => setOpen(false)} aria-label="关闭提示词预设模板" />
+          <aside className="prompt-drawer" role="dialog" aria-modal="true" aria-label="提示词预设模板">
+            <header className="prompt-drawer-header">
+              <div>
+                <span>PROMPT PRESETS</span>
+                <h2>提示词预设模板</h2>
+                <p>按账号保存多个命名模板，启用后对所有新任务生效</p>
+              </div>
+              <button type="button" onClick={() => setOpen(false)} aria-label="关闭">×</button>
+            </header>
+            <div className="prompt-drawer-body">
           <p className="prompt-panel-note">
             填写的内容是<strong>附加要求</strong>，会拼在系统默认提示词之后，不会覆盖默认逻辑。
             生图板块只允许写<strong>宫内规划</strong>（构图、场景、道具、光影、风格）；图片结构、
@@ -268,9 +286,11 @@ export function PromptCustomizePanel() {
           </div>
           {message && <p className="prompt-panel-message ok">{message}</p>}
           {error && <p className="prompt-panel-message error">{error}</p>}
+            </div>
+          </aside>
         </div>
       )}
-    </section>
+    </>
   );
 }
 

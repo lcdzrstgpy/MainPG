@@ -1,8 +1,11 @@
 """进程内共享的 AI 供应商请求速率限制器（token bucket，默认关闭）。
 
 并发治理分两层：
-1. 任务级串行闸门（service._task_execution_gate，WH_PRODUCT_MAX_CONCURRENT_TASKS，
-   默认 1）：同一时间只执行一个任务，从根上阻止"多批次并发叠加"打爆供应商。
+1. 任务级并发闸门（service._task_execution_gate，WH_PRODUCT_MAX_CONCURRENT_TASKS，
+   默认 4）：限制同时执行的任务数，避免"多批次并发叠加"打爆供应商。AI 文本/
+   识图请求总量另有 doubao_ark._SERVER_AI_REQUEST_GATE=2 兜底限流，任务并发
+   远超 2 只会让 AI 请求排队、放大超时重试，故默认取 4 在本地图片合成与 AI
+   排队之间折中。
 2. 本模块的全局请求速率限制（WH_PRODUCT_AI_RATE_PER_MINUTE，默认 0=关闭）：
    仅供需要额外保护时开启（如供应商仍按窗口计数限流）。单批次内的草稿并行
    不受其限制，避免批量处理被拖慢。

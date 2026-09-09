@@ -590,18 +590,20 @@ def _image_generation_count(value: Any, *, default: int = 4) -> int:
 
 
 def _max_concurrent_tasks() -> int:
-    """进程内最多同时执行的产品处理任务数（默认 8=多任务并行）。
+    """进程内最多同时执行的产品处理任务数（默认 4=受限并行）。
 
     可经 WH_PRODUCT_MAX_CONCURRENT_TASKS 覆盖（上限 8）。文本/识图请求总量
-    由服务器网关门 _SERVER_AI_REQUEST_GATE=2 兜底限流，不会因任务并行叠加打爆
-    中转；图片侧为每任务实例内的信号量（默认 4），多任务并发时图片总在途可能
-    达 任务数 x4，需结合无印/中转承载合理设置。
+    由服务器网关门 _SERVER_AI_REQUEST_GATE=2 兜底限流，任务并发远超该值时
+    只会让 AI 请求排队、放大超时重试（60s×3），整体反而比串行更慢；默认 4
+    在「本地图片合成填隙」与「AI 排队」之间取平衡，可据实测在 2~4 间调整。
+    图片侧为每任务实例内的信号量（默认 4），多任务并发时图片总在途可能达
+    任务数 x4，需结合无印/中转承载合理设置。
     """
     raw = os.environ.get("WH_PRODUCT_MAX_CONCURRENT_TASKS", "")
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        value = 8
+        value = 4
     return max(1, min(value, 8))
 
 
@@ -3513,12 +3515,23 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             else PreviewImageManifest()
         )
         # 取当前轮播图：manifest 资产 id 优先（已可读），结果路径兜底。
+        # 注意：V2 下 manifest 存的是 no-copy proxy id，proxy 自身不持有字节。
+        # 读取前必须先解析回真实 unified media asset id（经 preview row 的
+        # media_asset_id），否则 read_ready_asset 查不到素材，导致详情图永远
+        # 合成失败（用户点“更新详情图”看起来没反应）。
         source_values: list[Any] = []
         if self.media_assets is not None:
             for asset_id in manifest.carousel_asset_ids:
+                media_id = str(asset_id or "").strip()
+                if self.preview_images is not None:
+                    proxy_row = self.preview_images.repository.get_asset(
+                        media_id, workspace_id=workspace_id
+                    )
+                    if proxy_row is not None:
+                        media_id = str(proxy_row.get("media_asset_id") or media_id)
                 try:
                     content = self.media_assets.read_ready_asset(
-                        asset_id, workspace_id=workspace_id
+                        media_id, workspace_id=workspace_id
                     )
                 except (LookupError, ValueError, OSError):
                     continue
@@ -3574,13 +3587,17 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         preview_url = str(asset.get("preview_url") or "")
         if not preview_url:
             raise ProductProcessingValidationError("详情图注册失败")
-        new_asset_id = self.preview_images.media_asset_id_for_preview_url(preview_url, workspace_id)
-        if not new_asset_id:
+        # 详情图清单里持久化的是 preview asset 身份（asset["id"]，含 V2 proxy 投影所需
+        # 的 media_asset_id 关联），而不是裸 unified media id。存裸 media id 会让
+        # save_preview 的 “references an asset outside its task” 校验失败，且 V2 投影
+        # 无法把它解析回当前 proxy —— 详情图卡片永远显示不出来。
+        new_detail_id = str(asset.get("id") or "")
+        if not new_detail_id:
             raise ProductProcessingValidationError("详情图资产解析失败")
         new_manifest = PreviewImageManifest(
             main_asset_id=manifest.main_asset_id,
             carousel_asset_ids=manifest.carousel_asset_ids,
-            detail_asset_ids=(new_asset_id,),
+            detail_asset_ids=(new_detail_id,),
             library_asset_ids=manifest.library_asset_ids,
             semantic_asset_ids=manifest.semantic_asset_ids,
         )
