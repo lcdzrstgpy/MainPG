@@ -427,7 +427,11 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const itemHasFailure = useCallback(
     (item: PreviewItem): boolean =>
       (item.product_draft_id != null && failedDraftIds.has(item.product_draft_id)) ||
-      item.assets.some((asset) => asset.publication_status === 'publish_failed'),
+      item.assets.some((asset) => asset.publication_status === 'publish_failed') ||
+      // AI 生图失败回退来源图：未真正产出可用处理后主图/轮播图（导出回退来源图），
+      // 属于「不能直接拿来用」的链接，纳入「只看失败链接」筛选与一键剔除。
+      item.image_ai_failed === true,
+    // image_ai_failed 是 item 自身属性，无需其它外部依赖。
     [failedDraftIds],
   );
   const filteredItems = useMemo(() => {
@@ -934,7 +938,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       .map((item) => item.skc || `商品 #${item.product_draft_id}`)
       .join('、');
     const more = failedItems.length > 5 ? ` 等共 ${failedItems.length} 个` : '';
-    if (!window.confirm(`确定一键剔除 ${failedItems.length} 个发布失败的商品吗？剔除后不再参与最终导出，可在页面底部「已排除」列表中恢复。\n${previewLabels}${more}`)) return;
+    if (!window.confirm(`确定一键剔除 ${failedItems.length} 个失败/需处理的商品吗？剔除后不再参与最终导出，可在页面底部「已排除」列表中恢复。\n${previewLabels}${more}`)) return;
     setError('');
     setMessage('');
     const failedDraftIdSet = new Set(
@@ -949,7 +953,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         latest = await excludePreviewItem(ctx, taskId, draftId);
       }
       if (latest) replacePreview(latest);
-      notify(`已一键剔除 ${failedItems.length} 个发布失败的商品`);
+      notify(`已一键剔除 ${failedItems.length} 个失败/需处理的商品`);
     } catch (err) {
       fail(err);
     } finally {
@@ -1124,7 +1128,9 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                 {!isExpanded && item.title && <span className="precheck-card-toggle-summary">{item.title}</span>}
                 <span className="verify-sub">
                   {item.exportable ? '可导出' : '不可导出'} · {hasOverrides ? '已修改' : '未修改'} · 版本 {item.preview_revision} · 状态 {item.status}
-                  {item.exportable && !manifest.main_asset_id && <em className="precheck-no-main-hint"> · 未选主图（导出回退来源图）</em>}
+                  {(item.exportable && !manifest.main_asset_id) || item.image_ai_failed === true ? (
+                    <em className="precheck-no-main-hint"> · 未选主图（导出回退来源图）</em>
+                  ) : null}
                 </span>
               </button>
               <button

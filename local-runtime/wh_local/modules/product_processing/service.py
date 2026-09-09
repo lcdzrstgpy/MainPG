@@ -4297,6 +4297,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "status": item.get("status") or "",
             "reason": item.get("reason") or "",
             "billing_retried": _item_had_retry(result),
+            # AI 生图失败回退来源图：AI 未真正产出可用处理后主图/轮播图
+            # （导出时回退来源图）。前端以此识别「未选主图」类链接，纳入
+            # 「只看失败链接」筛选与一键剔除。取值与计费判定一致。
+            "image_ai_failed": (
+                str((result.get("provider_status_classes") or {}).get("four_grid") or "") == "source_fallback"
+            ),
             "title": title,
             "description": description,
             "source_url": str(result.get("source_url") or result.get("product_link") or "").strip(),

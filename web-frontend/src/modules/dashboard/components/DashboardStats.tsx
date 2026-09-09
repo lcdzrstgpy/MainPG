@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
 import { getDashboardStats, type DashboardStats, type DashboardTrendPoint } from "../api/dashboardApi";
 import { loadBillingUsageHistory, type BillingUsageEntry } from "../../personal_center/api/personalCenterApi";
+import { getAuthToken } from "../../../transport/http/client";
 import "./../styles/dashboardStats.css";
 import { AppleAppGlyph } from "../../../shared/components/AppleAppGlyph";
 
@@ -147,6 +148,8 @@ function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
           <g key={`${mode}-${days}`}>
             {activeSeries.map((s) => {
               const pts = s.values.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
+              // 空数据系列不渲染：否则 area 会以 " L" 开头（无 M 移动命令），触发
+              // SVG "Expected moveto path command" 控制台报错。
               if (pts.length === 0) return null;
               const line = smoothPath(pts);
               const lastX = pts[pts.length - 1].x;
@@ -251,6 +254,12 @@ function DashboardPointsPie() {
 
   useEffect(() => {
     let cancelled = false;
+    // 未登录时不请求计费用量：后端会以 401 拒绝，仅产生控制台噪音。
+    if (!getAuthToken()) {
+      setLoaded(true);
+      setLoading(false);
+      return;
+    }
     loadBillingUsageHistory({ limit: 100 })
       .then((res) => {
         if (cancelled) return;
