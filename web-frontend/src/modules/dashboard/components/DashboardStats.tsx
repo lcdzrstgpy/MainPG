@@ -147,9 +147,12 @@ function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
           <g key={`${mode}-${days}`}>
             {activeSeries.map((s) => {
               const pts = s.values.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
+              // 空数据系列不渲染：否则 area 会以 " L" 开头（无 M 移动命令），触发
+              // SVG "Expected moveto path command" 控制台报错。
+              if (pts.length === 0) return null;
               const line = smoothPath(pts);
-              const lastX = pts.length ? pts[pts.length - 1].x : pad.left;
-              const firstX = pts.length ? pts[0].x : pad.left;
+              const lastX = pts[pts.length - 1].x;
+              const firstX = pts[0].x;
               const area = `${line} L${lastX.toFixed(2)} ${(pad.top + plotH).toFixed(2)} L${firstX.toFixed(2)} ${(pad.top + plotH).toFixed(2)} Z`;
               return (
                 <Fragment key={s.key}>
@@ -250,6 +253,12 @@ function DashboardPointsPie() {
 
   useEffect(() => {
     let cancelled = false;
+    // 未登录时不请求计费用量：后端会以 401 拒绝，仅产生控制台噪音。
+    if (!getAuthToken()) {
+      setLoaded(true);
+      setLoading(false);
+      return;
+    }
     loadBillingUsageHistory({ limit: 100 })
       .then((res) => {
         if (cancelled) return;
