@@ -590,18 +590,20 @@ def _image_generation_count(value: Any, *, default: int = 4) -> int:
 
 
 def _max_concurrent_tasks() -> int:
-    """进程内最多同时执行的产品处理任务数（默认 8=多任务并行）。
+    """进程内最多同时执行的产品处理任务数（默认 4=受限并行）。
 
     可经 WH_PRODUCT_MAX_CONCURRENT_TASKS 覆盖（上限 8）。文本/识图请求总量
-    由服务器网关门 _SERVER_AI_REQUEST_GATE=2 兜底限流，不会因任务并行叠加打爆
-    中转；图片侧为每任务实例内的信号量（默认 4），多任务并发时图片总在途可能
-    达 任务数 x4，需结合无印/中转承载合理设置。
+    由服务器网关门 _SERVER_AI_REQUEST_GATE=2 兜底限流，任务并发远超该值时
+    只会让 AI 请求排队、放大超时重试（60s×3），整体反而比串行更慢；默认 4
+    在「本地图片合成填隙」与「AI 排队」之间取平衡，可据实测在 2~4 间调整。
+    图片侧为每任务实例内的信号量（默认 4），多任务并发时图片总在途可能达
+    任务数 x4，需结合无印/中转承载合理设置。
     """
     raw = os.environ.get("WH_PRODUCT_MAX_CONCURRENT_TASKS", "")
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        value = 8
+        value = 4
     return max(1, min(value, 8))
 
 
