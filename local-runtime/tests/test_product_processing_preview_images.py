@@ -771,3 +771,117 @@ def test_preview_exclude_removes_item_from_finalize_eligibility(tmp_path: Path) 
     restored = service.set_preview_item_excluded(task["id"], excluded, excluded=False, workspace_id="workspace-a")
     assert restored["excluded_draft_ids"] == []
     assert {int(item["product_draft_id"]) for item in restored["items"]} == set(draft_ids)
+
+
+def _retry_service() -> PreviewImageService:
+    # 用最小实例直接测 _publish_with_retry，避免依赖完整仓库/资产。
+    service = object.__new__(PreviewImageService)
+    service.publisher = None
+    # _publish_with_retry 现在会调用 self._trusted()，注入一个始终信任的校验器。
+    service.trusted_public_url = lambda _value: True
+    return service
+
+
+def test_publish_with_retry_returns_on_first_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _retry_service()
+    calls: list[int] = []
+
+    def publisher(content: bytes, _ct: str, _suffix: str, digest: str, _workspace: str) -> str:
+        calls.append(len(calls) + 1)
+        return f"https://bucket.cos.test/preview/{digest}.jpg"
+
+    service.publisher = publisher
+    monkeypatch.setattr("wh_local.modules.product_processing.preview_image_service.time.sleep", lambda _s: None)
+
+    url = service._publish_with_retry(b"data", "image/jpeg", ".jpg", "digest-abc", "ws-a")
+
+    assert url == "https://bucket.cos.test/preview/digest-abc.jpg"
+    assert calls == [1]
+
+
+def test_publish_with_retry_recovers_after_transient_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _retry_service()
+    attempts: list[int] = []
+
+    def publisher(content: bytes, _ct: str, _suffix: str, digest: str, _workspace: str) -> str:
+        attempts.append(len(attempts) + 1)
+        if len(attempts) < 3:
+            raise ConnectionResetError("远程主机强迫关闭了一个现有的连接")
+        return f"https://bucket.cos.test/preview/{digest}.jpg"
+
+    service.publisher = publisher
+    slept: list[float] = []
+    monkeypatch.setattr(
+        "wh_local.modules.product_processing.preview_image_service.time.sleep", lambda s: slept.append(s)
+    )
+
+    url = service._publish_with_retry(b"data", "image/jpeg", ".jpg", "digest-abc", "ws-a")
+
+    assert url == "https://bucket.cos.test/preview/digest-abc.jpg"
+    assert attempts == [1, 2, 3]
+    # 指数退避：第 1 次失败 0.5s，第 2 次失败 1.0s
+    assert slept == [0.5, 1.0]
+
+
+def test_publish_with_retry_raises_last_exception_after_all_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _retry_service()
+    attempts: list[int] = []
+
+    def publisher(content: bytes, _ct: str, _suffix: str, digest: str, _workspace: str) -> str:
+        attempts.append(len(attempts) + 1)
+        raise ConnectionResetError(f"boom-{len(attempts)}")
+
+    service.publisher = publisher
+    monkeypatch.setattr("wh_local.modules.product_processing.preview_image_service.time.sleep", lambda _s: None)
+
+    with pytest.raises(ConnectionResetError, match="boom-5"):
+        service._publish_with_retry(b"data", "image/jpeg", ".jpg", "digest-abc", "ws-a")
+
+    # ConnectionResetError 属于瞬时网络错误，自动重连最多 _PUBLISH_TRANSIENT_MAX_ATTEMPTS 次。
+    assert attempts == [1, 2, 3, 4, 5]
+
+
+def test_publish_with_retry_treats_empty_url_as_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _retry_service()
+    attempts: list[int] = []
+
+    def publisher(content: bytes, _ct: str, _suffix: str, digest: str, _workspace: str) -> str:
+        attempts.append(len(attempts) + 1)
+        return ""
+
+    service.publisher = publisher
+    monkeypatch.setattr("wh_local.modules.product_processing.preview_image_service.time.sleep", lambda _s: None)
+
+    with pytest.raises(ValueError, match="empty URL"):
+        service._publish_with_retry(b"data", "image/jpeg", ".jpg", "digest-abc", "ws-a")
+
+    # 空 URL 属于业务错误，使用 _PUBLISH_FAST_MAX_ATTEMPTS 快速失败，避免无谓重试。
+    assert attempts == [1, 2]
+
+
+def test_publish_with_retry_logs_each_failure_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    service = _retry_service()
+
+    def publisher(content: bytes, _ct: str, _suffix: str, digest: str, _workspace: str) -> str:
+        raise ConnectionResetError("网络抖动")
+
+    service.publisher = publisher
+    monkeypatch.setattr("wh_local.modules.product_processing.preview_image_service.time.sleep", lambda _s: None)
+
+    with caplog.at_level("WARNING", logger="wh_local.modules.product_processing.preview_image_service"):
+        with pytest.raises(ConnectionResetError):
+            service._publish_with_retry(b"data", "image/jpeg", ".jpg", "digest-abc", "ws-a")
+
+    warnings = [record for record in caplog.records if record.levelno >= 30]
+    # ConnectionResetError 属于瞬时网络错误，自动重连重试 _PUBLISH_TRANSIENT_MAX_ATTEMPTS 次。
+    assert len(warnings) == 5
+    assert all("finalize publish retry" in record.getMessage() for record in warnings)
+    assert all(f"attempt={n}/5" in record.getMessage() for n in range(1, 6) for record in [warnings[n - 1]])

@@ -63,3 +63,6 @@ real-workbench/employee_workbench/product_processing/
 
 # 项目工作数据
 .workbuddy/
+
+# 测试残留的临时 SQLite 文件
+NONEXISTENT-NO-DB

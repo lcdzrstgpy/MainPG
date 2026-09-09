@@ -818,6 +818,19 @@ def create_product_processing_router(
             workspace_id=_workspace(workspace_id),
         )
 
+    @router.post("/tasks/{task_id}/preview/items/{draft_id}/regenerate-detail")
+    def regenerate_preview_detail(
+        task_id: int,
+        draft_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.regenerate_preview_detail_images,
+            task_id,
+            int(draft_id),
+            workspace_id=_workspace(workspace_id),
+        )
+
     @router.get("/preview/assets/{asset_id}/content", response_model=None)
     def preview_asset_content(
         asset_id: str,

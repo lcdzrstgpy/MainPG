@@ -858,6 +858,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 }} /></label>
               ))}
             </div>
+            <div className="pod-advanced-prompt">
+              <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级：本批次创意编辑</b><small>内置 POD Direct Listing Prompt v1</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
+              {advancedOpen && <div className="pod-advanced-prompt-editor"><textarea value={currentBatchEdit ?? builtInPrompt} onChange={(event) => setCurrentBatchEdit(event.target.value)} aria-label="本批次创意提示词" /><div><span>{currentBatchEdit === null ? "正在使用内置 v1" : "已为本批次自定义"}</span><button type="button" onClick={() => setCurrentBatchEdit(null)}>重置为 v1</button></div></div>}
+            </div>
             <section className="pod-listing-fields" aria-labelledby="pod-dianxiaomi-listing-title">
               <div className="pod-listing-fields-heading"><span>DIANXIAOMI LISTING</span><h3 id="pod-dianxiaomi-listing-title">店小秘上架信息</h3><small>创建批次时保存为不可缺失的上架快照</small></div>
               <div className="pod-title-mode" role="radiogroup" aria-label="标题模式">
@@ -885,10 +889,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 </div>
               </div>
             </section>
-            <div className="pod-advanced-prompt">
-              <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级：本批次创意编辑</b><small>内置 POD Direct Listing Prompt v1</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
-              {advancedOpen && <div className="pod-advanced-prompt-editor"><textarea value={currentBatchEdit ?? builtInPrompt} onChange={(event) => setCurrentBatchEdit(event.target.value)} aria-label="本批次创意提示词" /><div><span>{currentBatchEdit === null ? "正在使用内置 v1" : "已为本批次自定义"}</span><button type="button" onClick={() => setCurrentBatchEdit(null)}>重置为 v1</button></div></div>}
-            </div>
             <div className="pod-volume-inline"><b>生成数量</b></div>
             <div className="pod-count-options" role="radiogroup" aria-label="生成数量">
               {POD_BATCH_COUNTS.map((count) => <button key={count} type="button" role="radio" aria-checked={!customCountMode && batchCount === count} className={!customCountMode && batchCount === count ? "is-active" : ""} onClick={() => { setCustomCountMode(false); setBatchCount(count); }}><b>{count}</b><span>款</span></button>)}

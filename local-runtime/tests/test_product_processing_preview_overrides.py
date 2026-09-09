@@ -350,8 +350,9 @@ def test_export_final_workbook_applies_overrides(tmp_path: Path) -> None:
     assert row["*轮播图"] == "https://user.example.com/c1.jpg\nhttps://user.example.com/c2.jpg"
     assert row["*申报价格\n(店铺币种)"] == 999
     assert row["*长（cm）"] == 30
-    # 当前重量保持权威；整百值原样导出。
-    assert row["*重量（g）"] == 500
+    # 店小秘要求材积重量（长×宽×高÷6）≤ 实际重量。此处体积 30*15*10/6=750g 超过
+    # 当前 500g，导出前兜底以店小秘导入为准，将重量抬升到 800g（向上取整到 100）。
+    assert row["*重量（g）"] == 800
 
 
 def test_dxm_single_export_row_defaults_without_overrides() -> None:
@@ -368,12 +369,13 @@ def test_dxm_single_export_row_defaults_without_overrides() -> None:
             "https://cos.example.com/summary.jpg",
         ]
     )
-    # 系统生成的当前重量为 300g；尺寸不再参与重量计算。
-    assert values[14] == 300
+    # 系统生成的当前重量为 300g；但店小秘要求材积重量（长×宽×高÷6 ≤ 重量），
+    # 此处体积 20*15*10/6=500g 超过 300g，导出前兜底以店小秘导入为准，抬升到 500g。
+    assert values[14] == 500
     assert values[19] == "https://cos.example.com/c1.jpg"
 
 
-def test_dxm_export_uses_current_weight_and_only_rounds_up_to_100g() -> None:
+def test_dxm_export_raises_weight_to_volumetric_then_caps_at_899() -> None:
     row = _base_result()
     row["product_dimensions"] = {
         "length_cm": 100,
@@ -384,5 +386,6 @@ def test_dxm_export_uses_current_weight_and_only_rounds_up_to_100g() -> None:
 
     values = _dxm_single_export_row(row, None)
 
-    # 即使尺寸对应的抛重很高，也只把当前 301g 向上取整为 400g。
-    assert values[14] == 400
+    # 店小秘要求材积重量（长×宽×高÷6）≤ 实际重量，且最终重量不得超过 899g。
+    # 体积 100*100*100/6≈166666.67g 远超上限，最终封顶到 899g。
+    assert values[14] == 899

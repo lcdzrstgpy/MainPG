@@ -22,6 +22,9 @@ from .shop_repository import (
 
 logger = logging.getLogger("wh_local.data_collection.shop_worker")
 _TRANSIENT_ERRORS = frozenset({"timeout", "rate_limited", "upstream_failed", "network_error"})
+# 单店铺采集上限：万邦 item_search_shop(_pro) 对部分店铺深页数据不可靠
+# （error_code=5000/4010），按用户约定单店最多采集该数量，达到后结束翻页。
+_MAX_SHOP_ITEMS = 120
 
 
 class _WorkerStopping(RuntimeError):
@@ -209,8 +212,9 @@ class ShopCollectionWorker:
             self._raise_if_paused(batch.batch_id)
             if not _result_ok(result):
                 code = _result_error_code(result)
+                upstream = _result_upstream_code(result)
                 raise ValueError(
-                    f"万邦未返回该商品数据（error_code={code}）。该商品可能属于万邦受限类目"
+                    f"万邦未返回该商品数据（error_code={upstream or code}）。该商品可能属于万邦受限类目"
                     "（药品/农产品/五金/天猫国际/百亿补贴等，文档注明部分商品获取不到），"
                     "请换一家店的商品链接重试"
                 )
@@ -265,6 +269,7 @@ class ShopCollectionWorker:
         if batch.listing_complete:
             return batch
         page = batch.next_page
+        stalled_pages = 0
         while page <= min(batch.max_pages, 100):
             self._raise_if_stopping()
             self._renew(lease)
@@ -272,6 +277,9 @@ class ShopCollectionWorker:
             if self._apply_control_state(current, lease):
                 return self.repository.get_batch_internal(batch.batch_id)
             self._raise_if_paused(batch.batch_id)
+            if current.discovered_count >= _MAX_SHOP_ITEMS:
+                # 单店铺采集上限（万邦深页数据不可靠/按需截断）：达到后不再翻页。
+                break
             if current.platform == "taobao":
                 result = provider.search_shop(current.shop_sid, page, seller_id=current.seller_id)
             else:
@@ -279,6 +287,19 @@ class ShopCollectionWorker:
             self._raise_if_stopping()
             self._raise_if_paused(batch.batch_id)
             if not _result_ok(result):
+                if _listing_no_data(result):
+                    # 万邦对该店的数据到此为止（error_code=4010 “不存在相应的数据
+                    # 信息”、2000 无结果，或原因文本含“不存在/无数据”）：视为列表
+                    # 结束而不是整批失败，已发现的商品继续走 enriching。
+                    logger.info(
+                        "shop collection batch %s listing ended at page %s: upstream no-data (%s)",
+                        batch.batch_id, page, _result_upstream_code(result) or _result_error_code(result),
+                    )
+                    self._renew(lease)
+                    self.repository.record_shop_page(
+                        batch_id=batch.batch_id, page=page, items=(), has_next=False, missing_id_count=0,
+                    )
+                    break
                 raise RuntimeError(_shop_listing_error_message(result))
             response = _result_response(result)
             normalized = self._page_normalizer(response, getattr(result, "audit", None))
@@ -290,21 +311,49 @@ class ShopCollectionWorker:
                 has_next = page < min(total_pages, batch.max_pages, 100)
             if page >= min(batch.max_pages, 100):
                 has_next = False
-            if batch.platform == "taobao" and not values and page == 1:
+            if not values and page == 1:
                 # 第 1 页就为空：万邦未收录该店商品，或接口/权限异常；给出可诊断原因。
-                raise RuntimeError(
-                    "该店铺商品列表为空（第 1 页 0 条）：万邦可能未收录这家店的商品，"
-                    "或商品属于受限类目（平台补贴/官方直营等）。可换一家店重试，"
-                    "或联系万邦确认该店数据支持情况"
-                )
+                # 1688 分支同样要有守卫：裸店铺主页提出的 Web shop ID 不是 OneBound
+                # 的 seller_nick（b2b-…），列表会静默返回 0，不能伪装成“成功”。
+                if batch.platform == "taobao":
+                    hint = (
+                        "该店铺商品列表为空（第 1 页 0 条）：万邦可能未收录这家店的商品，"
+                        "或商品属于受限类目（平台补贴/官方直营等），"
+                        "或 item_search_shop_pro 权限/卖家身份（shop_id+seller_id）不正确"
+                    )
+                else:
+                    hint = (
+                        "该店铺商品列表为空（第 1 页 0 条）：万邦可能未收录这家店的商品，"
+                        "或商品属于受限类目（平台补贴/官方直营等），"
+                        "或店铺 SID 不是 OneBound 可用的卖家标识（seller_nick，b2b-… 形式）"
+                    )
+                raise RuntimeError(f"{hint}。可换一家店重试，或联系万邦确认该店数据支持情况")
+            if current.discovered_count + len(values) >= _MAX_SHOP_ITEMS:
+                # 本页触及单店铺采集上限：结束翻页（等价于 has_next=False）。
+                has_next = False
             self._renew(lease)
-            self.repository.record_shop_page(
+            page_result = self.repository.record_shop_page(
                 batch_id=batch.batch_id,
                 page=page,
                 items=values,
                 has_next=has_next,
                 missing_id_count=missing_count,
             )
+            if page_result["created"] == 0:
+                # 本页没有新增任何新商品（万邦分页循环/内容重复/空页）：
+                # 连续 2 页无新增即判定分页停滞，提前结束列表，避免空转。
+                stalled_pages += 1
+                if stalled_pages >= 2:
+                    logger.info(
+                        "shop collection batch %s listing stalled at page %s (no new items for %s pages)",
+                        batch.batch_id, page, stalled_pages,
+                    )
+                    self.repository.record_shop_page(
+                        batch_id=batch.batch_id, page=page, items=(), has_next=False, missing_id_count=0,
+                    )
+                    break
+            else:
+                stalled_pages = 0
             if not has_next:
                 break
             page += 1
@@ -575,9 +624,60 @@ def _result_error_code(result: Any) -> str:
     return str(getattr(error, "code", "upstream_failed") or "upstream_failed")
 
 
+def _result_upstream_code(result: Any) -> str:
+    """Return the OneBound business error code preserved on the error context.
+
+    ``provider._api_call`` records the upstream ``error_code`` (e.g. ``5000``)
+    alongside the stable provider code so user-facing diagnostics can name the
+    real OneBound failure instead of the generic ``upstream_failed``.
+    """
+    error = getattr(result, "error", None)
+    context = getattr(error, "context", None)
+    if not isinstance(context, Mapping):
+        return ""
+    value = str(context.get("upstream_code") or "").strip()
+    return value if value and value not in {"0000", "0"} else ""
+
+
+# 列表页的“无数据/数据不存在”类上游业务码：表示该店在万邦的数据到此为止。
+_LISTING_TERMINATION_CODES = frozenset({"4010", "2000", "no_results"})
+_LISTING_NO_DATA_MARKERS = ("不存在", "无数据", "没有数据", "没有找到", "未找到")
+
+
+def _listing_no_data(result: Any) -> bool:
+    """Return True when a listing call failed because the upstream has no more data.
+
+    OneBound's ``item_search_shop`` / ``item_search_shop_pro`` only cover the
+    first pages for some shops; deeper pages return ``error_code=4010``
+    (不存在相应的数据信息) or ``2000`` (无结果) instead of page data.  These are
+    end-of-list signals, not batch failures: the batch should finish listing
+    with what was already discovered and continue to enrichment.
+    """
+    if _result_ok(result):
+        return False
+    error = getattr(result, "error", None)
+    provider_code = str(getattr(error, "code", "") or "").casefold()
+    if provider_code in _LISTING_TERMINATION_CODES:
+        return True
+    upstream = _result_upstream_code(result)
+    if upstream.casefold() in _LISTING_TERMINATION_CODES:
+        return True
+    context = getattr(error, "context", None)
+    if isinstance(context, Mapping):
+        reason = str(context.get("upstream_reason") or "").strip()
+        if reason and any(marker in reason for marker in _LISTING_NO_DATA_MARKERS):
+            return True
+    message = str(getattr(error, "message", "") or "")
+    return any(marker in message for marker in _LISTING_NO_DATA_MARKERS)
+
+
 def _result_error_message(result: Any) -> str:
     error = getattr(result, "error", None)
-    return str(getattr(error, "message", "OneBound request failed") or "OneBound request failed")
+    message = str(getattr(error, "message", "OneBound request failed") or "OneBound request failed")
+    upstream = _result_upstream_code(result)
+    if upstream:
+        return f"{message} (upstream error_code={upstream})"
+    return message
 
 
 def _shop_listing_error_message(result: Any) -> str:
@@ -586,6 +686,14 @@ def _shop_listing_error_message(result: Any) -> str:
     response = _result_response(result)
     upstream_code = str(response.get("error_code") or "").strip()
     raw_error = str(response.get("error") or response.get("reason") or "")
+    error = getattr(result, "error", None)
+    if not upstream_code:
+        # 错误上下文兜底（错误响应可能不在 response 里，而在 error.context）
+        upstream_code = _result_upstream_code(result)
+    if not raw_error:
+        context = getattr(error, "context", None)
+        if isinstance(context, Mapping):
+            raw_error = str(context.get("upstream_reason") or "")
     if upstream_code == "4005" or "无权访问" in raw_error or "请开通接口" in raw_error:
         return (
             "淘宝店铺商品列表接口（taobao.item_search_shop）未开通"

@@ -156,10 +156,42 @@ def test_export_uses_matched_package_rows_and_per_sku_manual_overrides() -> None
     exported = _dxm_export_rows(row)
 
     assert [(values[10], values[11:15]) for values in exported] == [
-        ("sku-black", [53, 24, 6, 100]),
-        ("sku-gray", [54, 25, 6, 1400]),
-        ("sku-unmatched", [20, 15, 10, 1000]),
+        # sku-black 重量被手动覆盖为 100g，但材积重量 53*24*6/6=1272g 超过重量，
+        # 导出前兜底本应抬升到 1300g，但店小秘重量上限为 899g，最终封顶到 899。
+        ("sku-black", [53, 24, 6, 899]),
+        # sku-gray 重量 1400g 已满足材积约束，但超过 899g 上限 → 封顶到 899。
+        ("sku-gray", [54, 25, 6, 899]),
+        # sku-unmatched 重量 1000g，同样超过 899g 上限 → 封顶到 899。
+        ("sku-unmatched", [20, 15, 10, 899]),
     ]
+
+
+def test_export_ensures_volumetric_weight_and_caps_at_899() -> None:
+    """店小秘要求材积重量（长×宽×高÷6）≤ 实际重量，且最终重量不得超过 899g。
+
+    冲突时以店小秘导入为准：先抬升到体积重量（按 100 向上取整），再封顶到 899。
+    """
+    base = {
+        "optimized_title": "被套",
+        "description": "desc",
+        "skc": "SKC-1",
+        "sku": "SKU-1",
+        "source_variant_records": [{"sku_id": "sku-a", "attributes": {"颜色": "白"}}],
+        "product_dimensions": {"length_cm": 20, "width_cm": 15, "height_cm": 10, "weight_g": 100},
+    }
+
+    # 体积 20*15*10/6=500g 超过重量 100g → 抬升到 500g（上限内，无需封顶）
+    raised = _dxm_export_rows({**base, "shipping_package_records": [{"record_key": "sku-a", "variant_sku_id": "sku-a", "match_status": "matched", "length_cm": 20, "width_cm": 15, "height_cm": 10, "weight_g": 100}]})
+    assert raised[0][14] == 500
+
+    # 体积 500g ≤ 重量 700g 且低于上限 → 保持 700g 不变
+    kept = _dxm_export_rows({**base, "shipping_package_records": [{"record_key": "sku-a", "variant_sku_id": "sku-a", "match_status": "matched", "length_cm": 20, "width_cm": 15, "height_cm": 10, "weight_g": 700}]})
+    assert kept[0][14] == 700
+
+    # 体积 100*100*100/6≈166666.67g 远超 899 上限 → 无论怎么算最终封顶到 899
+    capped = _dxm_export_rows({**base, "shipping_package_records": [{"record_key": "sku-a", "variant_sku_id": "sku-a", "match_status": "matched", "length_cm": 100, "width_cm": 100, "height_cm": 100, "weight_g": 301}]})
+    assert capped[0][14] == 899
+
 
 
 def test_preview_persists_per_sku_package_overrides_without_mutating_capture(tmp_path: Path) -> None:

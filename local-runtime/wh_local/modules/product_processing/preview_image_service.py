@@ -49,6 +49,33 @@ from .media_asset_service import MediaAssetService
 
 logger = logging.getLogger(__name__)
 
+# 发布到 COS 的自动重连策略：区分瞬时网络错误（连接/DNS/超时/节点切换）与业务错误。
+# 瞬时错误自动重连重试次数更多；业务错误（如空 URL）快速失败，减少无谓等待。
+_PUBLISH_TRANSIENT_TOKENS = (
+    "untrusted or non-public image url",  # CDN 传播中 / 节点切换后对象尚未公开可读，可重试换新 URL
+    "cannot be resolved",
+    "dns",
+    "timed out",
+    "timeout",
+    "connection",
+    "connect",
+    "reset",
+    "refused",
+    "eof",
+    "broken pipe",
+    "remote disconnected",
+    "unreachable",
+    "socket",
+)
+_PUBLISH_TRANSIENT_MAX_ATTEMPTS = 5
+_PUBLISH_FAST_MAX_ATTEMPTS = 2
+_PUBLISH_RETRY_BASE_DELAY = 0.5
+_PUBLISH_RETRY_MAX_DELAY = 4.0
+
+
+class _PublishUntrustedUrlError(RuntimeError):
+    """COS 返回的 URL 暂未被判定为公开可信（CDN 传播中或网络节点切换），应重试重新发布。"""
+
 
 @contextlib.contextmanager
 def _instance_recover_lock(directory: Path, *, timeout: float = 5.0):
@@ -1425,15 +1452,12 @@ class PreviewImageService:
                 str(asset.get("content_type") or "").casefold(),
                 ".jpg",
             )
-            url = str(
-                self.publisher(
-                    content,
-                    str(asset.get("content_type") or "image/jpeg"),
-                    suffix,
-                    digest,
-                    workspace_id,
-                )
-                or ""
+            url = self._publish_with_retry(
+                content,
+                str(asset.get("content_type") or "image/jpeg"),
+                suffix,
+                digest,
+                workspace_id,
             )
             if not self._trusted(url):
                 raise ValueError("COS returned an untrusted or non-public image URL")
@@ -1448,6 +1472,53 @@ class PreviewImageService:
                 self._bounded_error(exc),
             )
             raise
+
+    def _publish_with_retry(
+        self,
+        content: bytes,
+        content_type: str,
+        suffix: str,
+        digest: str,
+        workspace_id: str,
+    ) -> str:
+        # 网络抖动 / 节点更换 / COS 偶发失败时自动重连重试：区分瞬时网络错误与业务错误，
+        # 瞬时错误最多重试 _PUBLISH_TRANSIENT_MAX_ATTEMPTS 次，业务错误快速失败减少无谓等待。
+        base_delay = _PUBLISH_RETRY_BASE_DELAY
+        last_exc: Exception | None = None
+        for attempt in range(1, _PUBLISH_TRANSIENT_MAX_ATTEMPTS + 1):
+            try:
+                url = str(self.publisher(content, content_type, suffix, digest, workspace_id) or "")
+                if not url:
+                    raise ValueError("COS publisher returned an empty URL")
+                if not self._trusted(url):
+                    # CDN 传播中或节点切换后对象尚未公开可读：视为瞬时问题，换新 URL 重试。
+                    raise _PublishUntrustedUrlError("COS returned an untrusted or non-public image URL")
+                return url
+            except Exception as exc:
+                last_exc = exc
+                transient = self._is_transient_publish_error(exc)
+                limit = _PUBLISH_TRANSIENT_MAX_ATTEMPTS if transient else _PUBLISH_FAST_MAX_ATTEMPTS
+                logger.warning(
+                    "finalize publish retry digest=%s content_type=%s transient=%s attempt=%d/%d failed: %s",
+                    digest[:16],
+                    content_type,
+                    transient,
+                    attempt,
+                    limit,
+                    self._bounded_error(exc),
+                )
+                if attempt >= limit:
+                    break
+                time.sleep(min(base_delay * (2 ** (attempt - 1)), _PUBLISH_RETRY_MAX_DELAY))
+        assert last_exc is not None
+        raise last_exc
+
+    @staticmethod
+    def _is_transient_publish_error(exc: Exception) -> bool:
+        if isinstance(exc, (_PublishUntrustedUrlError, OSError, TimeoutError)):
+            return True
+        message = str(exc).casefold()
+        return any(token in message for token in _PUBLISH_TRANSIENT_TOKENS)
 
     def _export_rows(
         self,

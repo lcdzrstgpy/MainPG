@@ -583,6 +583,9 @@ class OneBoundProvider:
                 code = payload.get("code")
                 if isinstance(code, (str, int, float)):
                     response_summary["upstream_code"] = code
+                upstream_error_code = payload.get("error_code")
+                if isinstance(upstream_error_code, (str, int, float)):
+                    response_summary["upstream_error_code"] = upstream_error_code
                 request_id = payload.get("request_id")
                 if isinstance(request_id, str):
                     response_summary["request_id"] = request_id
@@ -600,10 +603,21 @@ class OneBoundProvider:
                 )
                 attempt_audits.append(audit)
                 sanitized = self._sanitize(payload)
+                error_context: dict[str, Any] = {}
+                if outcome not in {"success", "no_results"}:
+                    upstream_code = payload.get("error_code")
+                    if isinstance(upstream_code, (str, int, float)) and str(upstream_code).strip() not in {"0000", "0"}:
+                        error_context["upstream_code"] = str(upstream_code).strip()
+                    upstream_reason = payload.get("reason") or payload.get("error")
+                    if isinstance(upstream_reason, str) and upstream_reason.strip():
+                        error_context["upstream_reason"] = upstream_reason.strip()[:200]
                 result = ProviderCallResult(
                     sanitized,
                     prior_audits + tuple(attempt_audits),
-                    self._error(outcome, "OneBound returned an unsuccessful response", http_status, request_id)
+                    self._error(
+                        outcome, "OneBound returned an unsuccessful response", http_status, request_id,
+                        extra_context=error_context,
+                    )
                     if outcome not in {"success", "no_results"}
                     else None,
                 )
@@ -659,30 +673,65 @@ class OneBoundProvider:
         )
 
     def _error(
-        self, code: str, message: str, http_status: int | None = None, request_id: str | None = None
+        self, code: str, message: str, http_status: int | None = None, request_id: str | None = None,
+        extra_context: Mapping[str, Any] | None = None,
     ) -> DailySelectionError:
         context: dict[str, Any] = {}
         if http_status is not None:
             context["http_status"] = http_status
         if request_id:
             context["request_id"] = request_id
+        if extra_context:
+            context.update(extra_context)
         return DailySelectionError(code=code, message=self._redact_text(message), context=self._sanitize(context))
 
     def _outcome_for_status(self, status: int, payload: Mapping[str, Any]) -> str:
-        code = str(payload.get("code", "")).casefold()
-        message = str(payload.get("msg", payload.get("message", ""))).casefold()
-        signal = f"{code} {message}"
-        if 200 <= status < 300 and code == "2000":
+        """Classify a OneBound response into a stable provider outcome.
+
+        OneBound reports the business status in the top-level ``error_code``
+        (``0000``=success, ``2000``=no results, ``4000/4001/4002/4003/5000``
+        …=errors) with ``error``/``reason`` carrying the human text.  The
+        historical code read ``code``/``msg``/``message``, which OneBound does
+        not populate, so every HTTP-200 response (including real upstream
+        errors) looked like ``success`` and faulty payloads reached the
+        normalizers.  The ``error_code`` path now wins; the legacy ``code``
+        path is kept only for providers/tests that still send those fields.
+        """
+        upstream_error_code = str(payload.get("error_code", "") or "").strip().casefold()
+        error_text = str(payload.get("error", "") or "").strip()
+        reason_text = str(payload.get("reason", "") or "").strip()
+        legacy_code = str(payload.get("code", "") or "").strip().casefold()
+        legacy_message = str(payload.get("msg", payload.get("message", "")) or "").strip().casefold()
+        signal = " ".join(part for part in (legacy_code, legacy_message, error_text, reason_text) if part)
+        has_marker = lambda *markers: any(marker in signal for marker in markers)  # noqa: E731
+
+        if upstream_error_code:
+            if upstream_error_code in {"0000", "0"}:
+                return "success" if 200 <= status < 300 else "upstream_failed"
+            if upstream_error_code == "2000":
+                return "no_results"
+            # 业务失败：按 HTTP 状态与原因文本细化分类，默认统一归上游失败。
+            if status in {401, 403} or has_marker("auth", "api key", "secret", "permission", "无权", "权限"):
+                return "authentication_failed"
+            if status == 429 or has_marker("rate", "too many", "frequent", "频繁", "限流"):
+                return "rate_limited"
+            if status == 402 or has_marker("quota", "balance", "exhausted", "insufficient", "额度", "限额"):
+                return "quota_exhausted"
+            if has_marker("parameter", "param", "invalid", "missing", "参数", "无效"):
+                return "invalid_request"
+            return "upstream_failed"
+
+        if 200 <= status < 300 and legacy_code == "2000":
             return "no_results"
-        if 200 <= status < 300 and code in {"", "0", "200"}:
+        if 200 <= status < 300 and legacy_code in {"", "0", "200"}:
             return "success"
-        if status in {401, 403} or any(marker in signal for marker in ("auth", "api key", "secret", "permission")):
+        if status in {401, 403} or has_marker("auth", "api key", "secret", "permission"):
             return "authentication_failed"
-        if status == 429 or any(marker in signal for marker in ("rate", "too many", "frequent")):
+        if status == 429 or has_marker("rate", "too many", "frequent"):
             return "rate_limited"
-        if status == 402 or any(marker in signal for marker in ("quota", "balance", "exhausted", "insufficient")):
+        if status == 402 or has_marker("quota", "balance", "exhausted", "insufficient"):
             return "quota_exhausted"
-        if status == 400 or any(marker in signal for marker in ("parameter", "param", "invalid", "missing")):
+        if status == 400 or has_marker("parameter", "param", "invalid", "missing"):
             return "invalid_request"
         return "upstream_failed"
 

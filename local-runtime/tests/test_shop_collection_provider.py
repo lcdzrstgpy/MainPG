@@ -266,6 +266,61 @@ def test_search_shop_rejects_invalid_inputs_without_a_network_call(seller_nick: 
     assert result.error.code == "invalid_request"
 
 
+@pytest.mark.parametrize(
+    ("body", "expected_ok", "expected_code", "expected_context"),
+    (
+        # OneBound 顶层 error_code 是真实成败字段：0000=成功
+        ({"error_code": "0000", "item": {"num_iid": "1"}}, True, None, None),
+        # 2000=无结果（仍属"可继续处理"的 ok 结果，但 outcome 为 no_results）
+        ({"error_code": "2000"}, True, None, None),
+        # 真实业务错误：之前因顶层没有 code 被误判成功 → 现在必须失败并携带上游码
+        (
+            {"error_code": "5000", "error": "data", "reason": "data error"},
+            False,
+            "upstream_failed",
+            {"upstream_code": "5000", "upstream_reason": "data error"},
+        ),
+        # 无权限类业务错误按原因文本细化
+        (
+            {"error_code": "4005", "error": "", "reason": "无权访问该商品"},
+            False,
+            "authentication_failed",
+            {"upstream_code": "4005"},
+        ),
+        # 旧（测试用）code 字段兼容：200=成功、2000=无结果
+        ({"code": 200, "items": {"item": []}}, True, None, None),
+        ({"code": 2000}, True, None, None),
+    ),
+)
+def test_outcome_classifies_onebound_error_code_over_legacy_fields(
+    body: dict[str, Any], expected_ok: bool, expected_code: str | None, expected_context: dict[str, str] | None
+) -> None:
+    class Transport:
+        def request(self, *args: object, **kwargs: object) -> HttpResponse:
+            return HttpResponse(status=200, body=json.dumps(body).encode())
+
+    result = _provider(Transport()).get_item_detail("123")
+
+    assert result.ok is expected_ok
+    if expected_code is None:
+        expected_outcome = (
+            "no_results"
+            if body.get("error_code") == "2000" or body.get("code") == 2000
+            else "success"
+        )
+        assert result.audit.response_summary["outcome"] == expected_outcome
+        assert result.error is None
+    else:
+        assert result.error is not None
+        assert result.error.code == expected_code
+        for key, value in (expected_context or {}).items():
+            assert result.error.context[key] == value
+    if body.get("error_code"):
+        assert result.audit.response_summary["upstream_error_code"] == str(body["error_code"])
+    else:
+        assert "upstream_error_code" not in result.audit.response_summary
+
+
 def test_item_get_concurrency_is_process_wide_across_provider_instances() -> None:
     class ConcurrentTransport:
         def __init__(self) -> None:

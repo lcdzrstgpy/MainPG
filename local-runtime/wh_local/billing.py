@@ -1195,6 +1195,35 @@ def settle_payment_order(
     return {"already_paid": False, "order": dict(settled)}
 
 
+def purge_expired_pending_orders(database_path: Path) -> int:
+    """Delete pending topup orders past their 30-minute expiry.
+
+    Only orders still ``pending`` are removed so settled/refunded/closed orders
+    are never touched. Returns the number of rows removed.
+    """
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with transaction(database_path) as conn:
+        cursor = conn.execute(
+            """
+            DELETE FROM billing_payment_orders
+            WHERE status = 'pending' AND expires_at != '' AND expires_at < ?
+            """,
+            (now,),
+        )
+    return cursor.rowcount
+
+
+def purge_all_pending_orders(database_path: Path) -> int:
+    """Delete every pending (unpaid) topup order unconditionally.
+
+    Used for a one-time historical cleanup during deployment so stale unpaid
+    orders never surface; settled/refunded/closed orders are untouched.
+    """
+    with transaction(database_path) as conn:
+        cursor = conn.execute("DELETE FROM billing_payment_orders WHERE status = 'pending'")
+    return cursor.rowcount
+
+
 def _ledger_hash(payload: dict[str, Any]) -> str:
     secret = os.environ.get("WH_BILLING_LEDGER_SECRET", "local-dev-ledger-secret").encode("utf-8")
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")

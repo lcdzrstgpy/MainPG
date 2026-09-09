@@ -7,6 +7,7 @@ import {
   finalizeProductPreview,
   getListingAdvice,
   getPreviewFinalizeRun,
+  regeneratePreviewDetail,
   restorePreviewItem,
   retryMediaAsset,
   retryPreviewFinalizeRun,
@@ -229,6 +230,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [edits, setEdits] = useState<Record<number, ItemEdits>>({});
   const [retryingMediaAssetIds, setRetryingMediaAssetIds] = useState<Set<string>>(new Set());
+  const [regeneratingDetailDraftIds, setRegeneratingDetailDraftIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [pendingUploads, setPendingUploads] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -245,6 +247,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [onlySuccess, setOnlySuccess] = useState(false);
+  const [onlyFailed, setOnlyFailed] = useState(false);
+  const [excludingDraftIds, setExcludingDraftIds] = useState<Set<number>>(new Set());
   const [imageZoomed, setImageZoomed] = useState(false);
   const [expandedDraftIds, setExpandedDraftIds] = useState<Set<number>>(new Set());
   const [listingAdviceByDraftId, setListingAdviceByDraftId] = useState<Record<number, ListingAdvice>>({});
@@ -270,10 +274,16 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setMessage('');
   }, []);
 
+  // 本地预览变更（删除/恢复/一键剔除）会递增该版本号；后台静默轮询在发起前记录版本，
+  // 若返回时版本已变化（期间发生了删除等变更），丢弃过期结果，避免旧快照覆盖新状态导致删除项「回弹」。
+  const previewVersionRef = useRef(0);
+
   const load = useCallback(async (preserveLocalEdits = false, quiet = false) => {
     if (!quiet) setLoading(true);
+    const versionAtDispatch = previewVersionRef.current;
     try {
       const data = await ppRequest<PreviewResponse>(ctx, `${API_BASE}/tasks/${taskId}/preview`);
+      if (previewVersionRef.current !== versionAtDispatch) return;
       setPreview(data);
       if (!preserveLocalEdits) setEdits({});
     } catch (err) {
@@ -343,6 +353,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setFinalizeRun(null);
     setUndoSnackbar(null);
     setActiveImage(null);
+    setExcludingDraftIds(new Set());
     setListingAdviceByDraftId({});
     setListingAdviceLoadingIds(new Set());
     setListingAdviceErrors({});
@@ -405,11 +416,30 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   // 必须放在 `if (!preview)` 提前返回之前，保证各渲染轮次 Hook 数量一致。
   const allItems = (preview?.items ?? []).filter((item) => !item.excluded);
   const excludedItems = (preview?.items ?? []).filter((item) => item.excluded);
+  // 从 finalize run 的失败明细中提取参与发布失败的草稿 ID，用于「只看失败链接」筛选与一键剔除。
+  const failedDraftIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const failure of finalizeRun?.errors ?? []) {
+      if (failure.product_draft_id != null) ids.add(failure.product_draft_id);
+    }
+    return ids;
+  }, [finalizeRun]);
+  const itemHasFailure = useCallback(
+    (item: PreviewItem): boolean =>
+      (item.product_draft_id != null && failedDraftIds.has(item.product_draft_id)) ||
+      item.assets.some((asset) => asset.publication_status === 'publish_failed'),
+    [failedDraftIds],
+  );
   const filteredItems = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    const successScoped = onlySuccess ? allItems.filter((item) => item.status === 'completed') : allItems;
-    if (!keyword) return successScoped;
-    return successScoped.filter((item) => {
+    let scoped = allItems;
+    if (onlySuccess) {
+      scoped = scoped.filter((item) => item.status === 'completed');
+    } else if (onlyFailed) {
+      scoped = scoped.filter(itemHasFailure);
+    }
+    if (!keyword) return scoped;
+    return scoped.filter((item) => {
       const candidates = [
         item.skc,
         item.core_fields?.sku,
@@ -418,7 +448,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       ];
       return candidates.some((value) => value && value.toLowerCase().includes(keyword));
     });
-  }, [allItems, search, onlySuccess]);
+  }, [allItems, search, onlySuccess, onlyFailed, itemHasFailure]);
 
   useEffect(() => {
     setPage(1);
@@ -696,6 +726,47 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     }
   };
 
+  const regenerateDetailForItem = async (item: PreviewItem) => {
+    const draftId = item.product_draft_id;
+    if (draftId == null) return;
+    if (pendingUploads > 0) {
+      fail('图片仍在导入，请等待完成后更新');
+      return;
+    }
+    setRegeneratingDetailDraftIds((current) => new Set(current).add(draftId));
+    setError('');
+    setMessage('');
+    try {
+      // 先把当前轮播图（含本地未保存编辑）持久化，让后端按最新清单合成详情图；
+      // 否则后端只会读取到保存前的旧轮播图清单。
+      await saveProductPreview(ctx, taskId, [collectDesiredState(item)]);
+      const data = await regeneratePreviewDetail(ctx, taskId, draftId);
+      previewVersionRef.current += 1;
+      setPreview(data);
+      const refreshed = data.items.find(
+        (candidate) => (candidate.product_draft_id ?? candidate.item_id) === draftId,
+      );
+      if (refreshed) {
+        setEdits((previous) => {
+          const current = previous[draftId] ?? {};
+          return {
+            ...previous,
+            [draftId]: { ...current, imageManifest: cloneManifest(refreshed.image_manifest) },
+          };
+        });
+      }
+      notify('已根据当前轮播图更新详情图');
+    } catch (err) {
+      fail(err);
+    } finally {
+      setRegeneratingDetailDraftIds((current) => {
+        const next = new Set(current);
+        next.delete(draftId);
+        return next;
+      });
+    }
+  };
+
   const saveAll = async () => {
     if (pendingUploads > 0) {
       fail('图片仍在导入，请等待完成后保存');
@@ -801,6 +872,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   };
 
   const replacePreview = (data: PreviewResponse) => {
+    previewVersionRef.current += 1;
     setPreview(data);
     setEdits({});
     // 预检清单已变化，旧 finalize run 的快照（含已删除/新恢复的链接）已失效；
@@ -816,12 +888,19 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     if (!window.confirm(`确定从预检中删除「${label}」吗？删除后该商品不再参与最终导出，可在页面底部「已排除」列表中恢复。`)) return;
     setError('');
     setMessage('');
+    setExcludingDraftIds((current) => new Set(current).add(draftId));
     try {
       const data = await excludePreviewItem(ctx, taskId, draftId);
       replacePreview(data);
       notify(`已从预检删除「${label}」`);
     } catch (err) {
       fail(err);
+    } finally {
+      setExcludingDraftIds((current) => {
+        const next = new Set(current);
+        next.delete(draftId);
+        return next;
+      });
     }
   };
 
@@ -844,6 +923,37 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       const draftId = item.product_draft_id;
       if (draftId == null) continue;
       await restoreItem(draftId);
+    }
+  };
+
+  const excludeFailedItems = async () => {
+    const failedItems = allItems.filter(itemHasFailure);
+    if (failedItems.length === 0) return;
+    const previewLabels = failedItems
+      .slice(0, 5)
+      .map((item) => item.skc || `商品 #${item.product_draft_id}`)
+      .join('、');
+    const more = failedItems.length > 5 ? ` 等共 ${failedItems.length} 个` : '';
+    if (!window.confirm(`确定一键剔除 ${failedItems.length} 个发布失败的商品吗？剔除后不再参与最终导出，可在页面底部「已排除」列表中恢复。\n${previewLabels}${more}`)) return;
+    setError('');
+    setMessage('');
+    const failedDraftIdSet = new Set(
+      failedItems.map((item) => item.product_draft_id).filter((id): id is number => id != null),
+    );
+    setExcludingDraftIds(failedDraftIdSet);
+    try {
+      let latest: PreviewResponse | null = null;
+      for (const item of failedItems) {
+        const draftId = item.product_draft_id;
+        if (draftId == null) continue;
+        latest = await excludePreviewItem(ctx, taskId, draftId);
+      }
+      if (latest) replacePreview(latest);
+      notify(`已一键剔除 ${failedItems.length} 个发布失败的商品`);
+    } catch (err) {
+      fail(err);
+    } finally {
+      setExcludingDraftIds(new Set());
     }
   };
 
@@ -925,9 +1035,23 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
             <input
               type="checkbox"
               checked={onlySuccess}
-              onChange={(event) => setOnlySuccess(event.target.checked)}
+              onChange={(event) => {
+                setOnlySuccess(event.target.checked);
+                if (event.target.checked) setOnlyFailed(false);
+              }}
             />
             只看成功链接
+          </label>
+          <label className="precheck-only-success">
+            <input
+              type="checkbox"
+              checked={onlyFailed}
+              onChange={(event) => {
+                setOnlyFailed(event.target.checked);
+                if (event.target.checked) setOnlySuccess(false);
+              }}
+            />
+            只看失败链接
           </label>
           <label className="precheck-page-size">
             每页
@@ -958,12 +1082,17 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           onRetry={() => void retryFinalize()}
           onDownload={() => void downloadRun(finalizeRun, false)}
           onReloadStale={() => void reloadAfterStale()}
+          onExcludeFailed={() => void excludeFailedItems()}
         />
       )}
 
       {allItems.length === 0 && <p className="verify-empty">任务没有可预检的成功商品。</p>}
 
-      {filteredItems.length === 0 && allItems.length > 0 && (
+      {filteredItems.length === 0 && allItems.length > 0 && onlyFailed && (
+        <p className="verify-empty">没有发布失败的链接，可切换「只看成功链接」或取消筛选查看全部商品。</p>
+      )}
+
+      {filteredItems.length === 0 && allItems.length > 0 && !onlyFailed && (
         <p className="verify-empty">没有匹配「{search}」的商品，请检查序列号 / SKU / 商品编号。</p>
       )}
 
@@ -1001,13 +1130,13 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
               <button
                 type="button"
                 className="btn-mini danger precheck-exclude-btn"
-                disabled={mutationsLocked || item.product_draft_id == null}
+                disabled={mutationsLocked || item.product_draft_id == null || excludingDraftIds.has(draftId)}
                 onClick={() => {
                   if (item.product_draft_id != null) void excludeItem(item.product_draft_id);
                 }}
                 title={item.product_draft_id == null ? '缺少草稿 ID，无法删除' : '从预检中删除此商品，可随时恢复'}
               >
-                删除
+                {excludingDraftIds.has(draftId) ? '删除中…' : '删除'}
               </button>
             </div>
 
@@ -1227,6 +1356,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                     undo,
                     expiresAt: Date.now() + 5000,
                   })}
+                  regeneratingDetail={regeneratingDetailDraftIds.has(draftId)}
+                  onRegenerateDetail={() => void regenerateDetailForItem(item)}
                 />
               </div>
             </div>

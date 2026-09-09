@@ -504,8 +504,12 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         stock = _normalize_stock(core_fields.get("stock"))
 
     # 店小秘重量导出统一以当前重量向上取整到 100：不足 100 按 100、
-    # 不足 200 按 200……（最低 100）。长宽高和抛重不参与重量计算。
-    weight = _ceil_weight_for_export(weight)
+    # 不足 200 按 200……（最低 100）。长宽高不参与重量计算。
+    # 店小秘要求材积重量（长×宽×高÷6）≤ 实际重量，否则报“材积重量大于实际重量，无法录入”。
+    # 导出前兜底：若体积重量超过当前重量，以店小秘导入为准，将重量抬升到体积重量，避免导入失败。
+    # 最后无论怎么算都不得超过 899g，超出封顶到 899，确保在店小秘导入范围内。
+    weight = _dxm_enforce_volumetric_weight(length, width, height, _ceil_weight_for_export(weight))
+    weight = _cap_dxm_weight(weight)
 
     return [
         optimized_title,
@@ -637,6 +641,51 @@ def _ceil_weight_for_export(value: Any) -> Any:
         return ""
     ceiled = int(math.ceil(number / 100.0)) * 100
     return ceiled
+
+
+# 店小秘重量导入上限：最终导出的重量（g）无论如何计算都不允许超过该值，
+# 否则无法导入。超过时直接封顶到上限。
+DXM_WEIGHT_MAX_GRAM = 899
+
+
+def _cap_dxm_weight(value: Any, max_value: float = DXM_WEIGHT_MAX_GRAM) -> Any:
+    """店小秘重量上限封顶：超过上限的导出重量封顶到 max_value，空值/非数值原样返回。"""
+    if value in ("", None):
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    if number <= 0:
+        return value
+    return min(number, max_value)
+
+
+def _dxm_enforce_volumetric_weight(length: Any, width: Any, height: Any, weight: Any) -> Any:
+    """店小秘导入前保证 材积重量（长×宽×高÷6，单位 g）≤ 实际重量。
+
+    店小秘校验：材积重量 > 实际重量 时报“材积重量大于实际重量，无法录入”。
+    导出前兜底：仅当长/宽/高齐全且当前重量有效（正数）时，若体积重量超过当前重量，
+    以店小秘导入为准，将重量抬升到体积重量并按 100 向上取整，避免导入失败。
+    当前重量缺失/非正（导出为空）时不虚构重量，原样返回以保留缺失提示。
+    """
+    if length in ("", None) or width in ("", None) or height in ("", None):
+        return weight
+    try:
+        volumetric = float(length) * float(width) * float(height) / 6.0
+    except (TypeError, ValueError):
+        return weight
+    if weight in ("", None):
+        return weight
+    try:
+        current = float(weight)
+    except (TypeError, ValueError):
+        return weight
+    if current <= 0:
+        return weight
+    if current < volumetric:
+        return _ceil_weight_for_export(volumetric)
+    return weight
 
 
 # 尺寸文本模式：如 "30*20*10" / "30×20×10cm" / "40.5*30*20 CM"（1688 变种尺寸属性值）

@@ -349,4 +349,4 @@ def _is_transient_model_failure(error: AiProviderError) -> bool:
     if status == 429 or (status is not None and status >= 500):
         return True
     cause = error.__cause__
-    return isinstance(cause, (requests.Timeout, TimeoutError))
+    return isinstance(cause, (requests.RequestException, TimeoutError, OSError))
