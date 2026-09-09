@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
 import { getDashboardStats, type DashboardStats, type DashboardTrendPoint } from "../api/dashboardApi";
 import { loadBillingUsageHistory, type BillingUsageEntry } from "../../personal_center/api/personalCenterApi";
+import { getAuthToken } from "../../../transport/http/client";
 import "./../styles/dashboardStats.css";
 import { AppleAppGlyph } from "../../../shared/components/AppleAppGlyph";
 
