@@ -147,9 +147,10 @@ function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
           <g key={`${mode}-${days}`}>
             {activeSeries.map((s) => {
               const pts = s.values.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
+              if (pts.length === 0) return null;
               const line = smoothPath(pts);
-              const lastX = pts.length ? pts[pts.length - 1].x : pad.left;
-              const firstX = pts.length ? pts[0].x : pad.left;
+              const lastX = pts[pts.length - 1].x;
+              const firstX = pts[0].x;
               const area = `${line} L${lastX.toFixed(2)} ${(pad.top + plotH).toFixed(2)} L${firstX.toFixed(2)} ${(pad.top + plotH).toFixed(2)} Z`;
               return (
                 <Fragment key={s.key}>
