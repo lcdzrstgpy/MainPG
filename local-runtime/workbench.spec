@@ -25,7 +25,9 @@ binaries: list = []
 hiddenimports: list = []
 
 # 第三方包完整收集（datas/binaries/hiddenimports）
-for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "openpyxl", "PIL"):
+# 说明：uvicorn 在运行期会惰性加载 websockets/wsproto，若不显式 collect 会导致
+# 打包产物启动时出现 "Unsupported upgrade request" 警告，故补充进收集列表。
+for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "openpyxl", "PIL", "websockets", "wsproto"):
     _d, _b, _h = collect_all(_pkg)
     datas += _d
     binaries += _b
