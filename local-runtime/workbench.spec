@@ -49,6 +49,15 @@ for _rel in (
     else:
         print(f"[workbench.spec] WARNING: 缺失 {_rel}")
 
+# 妙手导入官方模板（妙手导出按 Path(__file__) 相对位置读取）。只打包官方模板本身，
+# generated/ 下的精简缓存由运行期首次导出时自动生成，不随包分发。
+_ms_templates = ROOT / "wh_local/modules/product_processing/templates"
+if _ms_templates.is_dir():
+    for _tpl in _ms_templates.glob("*.xlsx"):
+        datas.append((str(_tpl), "wh_local/modules/product_processing/templates"))
+else:
+    print("[workbench.spec] WARNING: 妙手导入模板目录不存在")
+
 # 前端构建产物（web-frontend/dist → _internal/web-frontend/dist）
 _frontend_dist = REPO / "web-frontend" / "dist"
 if _frontend_dist.is_dir():

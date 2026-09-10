@@ -2748,6 +2748,25 @@
   font-size: 0.66rem;
 }
 
+/* 结果卡片：按格式下载表格（统一入口） */
+.precheck-finalize-completed .precheck-finalize-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.precheck-finalize-completed .precheck-finalize-downloads .precheck-finalize-downloads-label {
+  display: inline;
+  font-size: 0.72rem;
+  color: #5f6b73;
+  white-space: nowrap;
+}
+
 @media (max-width: 1100px) {
   .precheck-grid {
     grid-template-columns: 1fr;

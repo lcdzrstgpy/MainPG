@@ -32,7 +32,10 @@ from .domain.preview_images import (
     task_item_result_version,
 )
 from .domain.workbooks import (
+    MS_KIND_APPAREL,
+    MS_KIND_GENERAL,
     _dxm_export_rows,
+    create_miaoshou_workbook,
     create_result_workbook,
     require_final_public_image_urls,
 )
@@ -910,6 +913,7 @@ class PreviewImageService:
         workspace_id: str,
         idempotency_key: str = "",
         launch: bool = True,
+        export_format: str = "dxm",
     ) -> dict[str, Any]:
         self._require_ready_source_media(task_id, items, workspace_id)
         run = self.repository.create_finalize_run(
@@ -917,6 +921,7 @@ class PreviewImageService:
             task_id=task_id,
             items=items,
             idempotency_key=idempotency_key,
+            workbook_format=export_format,
         )
         if launch and run["status"] in {"queued", "publish_failed"}:
             self._launch(run["id"], workspace_id)
@@ -1204,8 +1209,17 @@ class PreviewImageService:
             run_root = self.assets.output_root / f"task_{int(claimed['task_id'])}" / "finalizations" / run_id
             run_root.mkdir(parents=True, exist_ok=True)
             temporary = run_root / f".{token}.xlsx.tmp"
-            final = run_root / f"dxm_import_task_{int(claimed['task_id'])}_{token}.xlsx"
-            create_result_workbook(rows, temporary)
+            workbook_format = str(claimed.get("workbook_format") or "dxm")
+            if workbook_format in {MS_KIND_APPAREL, MS_KIND_GENERAL}:
+                final = (
+                    run_root
+                    / f"miaoshou_{workbook_format}_task_{int(claimed['task_id'])}_{token}.xlsx"
+                )
+                spreadsheet_rows = create_miaoshou_workbook(rows, workbook_format, temporary)
+            else:
+                final = run_root / f"dxm_import_task_{int(claimed['task_id'])}_{token}.xlsx"
+                create_result_workbook(rows, temporary)
+                spreadsheet_rows = len(exports)
             logger.info(
                 "preview finalize run=%s: workbook staged at %s",
                 run_id,
@@ -1225,7 +1239,7 @@ class PreviewImageService:
                 workspace_id,
                 token,
                 workbook_path=str(final),
-                row_count=len(exports),
+                row_count=int(spreadsheet_rows),
                 product_count=len(rows),
                 snapshot=snapshot,
             )
@@ -1280,6 +1294,154 @@ class PreviewImageService:
         if run.get("status") != "completed" or not run.get("workbook_path"):
             raise FileNotFoundError("preview finalization workbook is not ready")
         return self.assets.require_managed_file(str(run["workbook_path"]))
+
+    def _miaoshou_destination(
+        self, run: Mapping[str, Any], task_id: int, kind: str
+    ) -> Path:
+        workbook_path = str(run.get("workbook_path") or "")
+        if not workbook_path:
+            raise FileNotFoundError("preview finalization workbook is not ready")
+        run_root = Path(workbook_path).resolve().parent
+        return run_root / f"miaoshou_{kind}_task_{int(task_id)}.xlsx"
+
+    def miaoshou_download_path(
+        self, task_id: int, run_id: str, kind: str, *, workspace_id: str
+    ) -> Path:
+        """妙手导出文件的下载路径；文件不存在（尚未生成）时抛错由接口转 404。"""
+        if kind not in {MS_KIND_APPAREL, MS_KIND_GENERAL}:
+            raise ValueError("miaoshou export kind must be apparel or general")
+        run = self.repository.get_finalize_run(run_id, workspace_id)
+        if run is None or int(run.get("task_id") or 0) != int(task_id):
+            raise LookupError("preview finalization run not found")
+        path = self._miaoshou_destination(run, task_id, kind)
+        if not path.is_file():
+            raise FileNotFoundError("miaoshou workbook has not been generated")
+        return self.assets.require_managed_file(str(path))
+
+    def export_miaoshou_workbook(
+        self,
+        task_id: int,
+        run_id: str,
+        kind: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """基于已完成预审的快照再次生成妙手导入模板。
+
+        优先复用店小秘 finalize 发布时已持久化的图片公网地址；对尚未回写
+        public_url 的资产（如媒体支持的生成图），按预审相同的「物化 + 发布」
+        流程补齐地址（已发布的会命中 publication 记录，不重复上传），再套用
+        妙手官方模板（服饰类/非服饰类）生成工作簿文件。
+        """
+        if kind not in {MS_KIND_APPAREL, MS_KIND_GENERAL}:
+            raise ValueError("miaoshou export kind must be apparel or general")
+        run = self.repository.get_finalize_run(run_id, workspace_id)
+        if run is None or int(run.get("task_id") or 0) != int(task_id):
+            raise LookupError("preview finalization run not found")
+        if run.get("status") != "completed":
+            raise FileNotFoundError("preview finalization has not completed")
+        snapshot = list(run.get("snapshot") or [])
+        if not snapshot:
+            raise ValueError("preview finalization snapshot is unavailable for export")
+
+        manifests = [PreviewImageManifest.from_value(entry.get("manifest")) for entry in snapshot]
+        needed_ids = list(
+            dict.fromkeys(
+                asset_id
+                for manifest in manifests
+                for asset_id in (*manifest.live_asset_ids(), *manifest.library_asset_ids)
+                if asset_id
+            )
+        )
+        assets = (
+            self.repository.get_assets(needed_ids, workspace_id) if needed_ids else []
+        )
+        by_id = {str(asset["id"]): asset for asset in assets}
+        live_ids = list(
+            dict.fromkeys(
+                asset_id
+                for manifest in manifests
+                for asset_id in manifest.live_asset_ids()
+                if asset_id
+            )
+        )
+        asset_urls: dict[str, str] = {}
+        # 优先使用库里已持久化的公网地址。
+        for asset_id in live_ids:
+            url = self._safe_public_value(
+                (by_id.get(asset_id) or {}).get("public_url")
+            )
+            if url:
+                asset_urls[asset_id] = url
+        # 对尚未回写 public_url 的资产（例如媒体支持的生成图，其预览记录不落
+        # content_hash/public_url），复用预审发布同样的「物化 + 发布」流程补齐地址；
+        # 已发布的图片会命中 publication 记录，不会重复上传。
+        #
+        # 性能：这些补齐动作包含逐张读盘/校验与 COS 公开性网络往返，串行会随图片数
+        # 线性放大（实测数十张即数十秒）。这里与 finalize 发布保持一致：用线程池并发，
+        # 并把解析结果回写资产行，使同一任务的后续导出退化为纯数据库读取。
+        missing_ids = [asset_id for asset_id in live_ids if not asset_urls.get(asset_id)]
+        for asset_id in missing_ids:
+            if by_id.get(asset_id) is None:
+                raise ValueError(
+                    f"image asset {asset_id} is missing for 妙手 export"
+                )
+        if missing_ids:
+            def _resolve_missing(asset_id: str) -> tuple[str, str]:
+                asset = by_id[asset_id]
+                materialized = self._materialize(asset, workspace_id)
+                digest = str(materialized.get("content_hash") or "")
+                if not digest:
+                    raise ValueError("image asset has no content hash")
+                published_url = self._safe_public_value(
+                    self._publish_hash(digest, materialized, workspace_id)
+                )
+                if not published_url:
+                    raise ValueError("publisher returned an empty URL")
+                # 回写：该资产确实已是公网可访问状态，后续导出不再重复物化/发布。
+                self.repository.mark_asset_reused_public_url(
+                    asset_id,
+                    workspace_id,
+                    published_url,
+                    content_hash=digest,
+                )
+                return asset_id, published_url
+
+            failures: dict[str, Exception] = {}
+            with ThreadPoolExecutor(
+                max_workers=min(self.max_publish_workers, len(missing_ids))
+            ) as pool:
+                futures = {
+                    pool.submit(_resolve_missing, asset_id): asset_id
+                    for asset_id in missing_ids
+                }
+                for future, asset_id in futures.items():
+                    try:
+                        resolved_id, url = future.result()
+                        asset_urls[resolved_id] = url
+                    except Exception as exc:  # noqa: BLE001 - 统一转成导出错误
+                        failures[asset_id] = exc
+            if failures:
+                first_id, first_exc = next(iter(failures.items()))
+                raise ValueError(
+                    f"published image {first_id} is unavailable for 妙手 export"
+                ) from first_exc
+
+        rows = self._export_rows(task_id, snapshot, asset_urls, workspace_id)
+        destination = self._miaoshou_destination(run, task_id, kind)
+        spreadsheet_rows = create_miaoshou_workbook(rows, kind, destination)
+        return {
+            "task_id": task_id,
+            "run_id": run_id,
+            "kind": kind,
+            "file": destination.name,
+            "row_count": int(spreadsheet_rows),
+            "product_count": len(rows),
+            "download": (
+                f"/api/product-processing/tasks/{task_id}/preview/finalize/"
+                f"{run_id}/miaoshou-download?kind={kind}"
+            ),
+        }
 
     def preview_asset_content(
         self,
@@ -1741,6 +1903,7 @@ class PreviewImageService:
             "id": run_id,
             "task_id": task_id,
             "status": str(run.get("status") or "queued"),
+            "workbook_format": str(run.get("workbook_format") or "dxm"),
             "total_count": int(run.get("total_count") or 0),
             "published_count": int(run.get("published_count") or 0),
             "failed_count": int(run.get("failed_count") or 0),
