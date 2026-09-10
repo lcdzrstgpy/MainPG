@@ -16,6 +16,14 @@ from .schemas import SystemConfigUpdate
 CONFIG_KEY = "system_config"
 PRIMARY_AI_BASE_URL = "https://station-88.aicoming.top/v1"
 
+# 个人中心「模型选择」只开放这两个生图模型；上游端点与凭据仍由服务端持有，
+# 客户端只保存一个模型名。
+IMAGE_MODEL_CHOICES: tuple[tuple[str, str], ...] = (
+    ("image_gpt", "GPT-Image-2（现行）"),
+    ("image_gpt_2.5", "GPT-Image-2.5（新版）"),
+)
+IMAGE_MODEL_DEFAULT = IMAGE_MODEL_CHOICES[0][0]
+
 # 这些字段不进入普通配置 JSON，避免 GET 接口把密钥明文返回给前端。
 SECRET_FIELDS: tuple[tuple[str, str], ...] = (
     ("ai", "api_key"),
@@ -66,6 +74,13 @@ class RuntimeSystemConfig:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _normalized_image_model(value: Any) -> str:
+    """把模型名收敛到白名单；历史配置（如 gpt-image-2-2k）统一显示为默认模型。"""
+    candidate = str(value or "").strip().lower()
+    choices = {choice for choice, _label in IMAGE_MODEL_CHOICES}
+    return candidate if candidate in choices else IMAGE_MODEL_DEFAULT
 
 
 def default_system_config() -> dict[str, Any]:
@@ -242,6 +257,55 @@ class SystemConfigService:
             limits=dict(config["limits"]),
             updates=dict(config["updates"]),
         )
+
+    def get_image_model(self) -> dict[str, Any]:
+        """个人中心「模型选择」读取当前生图模型。"""
+        config = self._load_raw_config()
+        return {
+            "ok": True,
+            "model": _normalized_image_model(config["image"].get("model")),
+            "choices": [{"value": value, "label": label} for value, label in IMAGE_MODEL_CHOICES],
+        }
+
+    def save_image_model(self, model: str, actor_id: str) -> dict[str, Any]:
+        """只改生图模型（主模型 + 参考图模型），不触碰其他系统配置字段。
+
+        复用 SystemConfigUpdate 的整表 PUT 会把前端未提交的字段（例如 cos.bucket）
+        一并清空，所以模型切换单独走这个轻量入口。
+        """
+        selected = _normalized_image_model(model)
+        config = self._load_raw_config()
+        config["image"]["model"] = selected
+        config["image"]["reference_model"] = selected
+        now = utc_now()
+        with transaction(self.database_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO workbench_settings(key, value_json, updated_by, updated_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_by = excluded.updated_by,
+                    updated_at = excluded.updated_at
+                """,
+                (CONFIG_KEY, json.dumps(config, ensure_ascii=False, sort_keys=True), actor_id, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO action_logs(actor_id, action, target_type, target_id, request_json, result_json, created_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    actor_id,
+                    "system_config.image_model",
+                    "system_config",
+                    CONFIG_KEY,
+                    json.dumps({"model": selected}, ensure_ascii=False, sort_keys=True),
+                    json.dumps({"ok": True}, ensure_ascii=False),
+                    now,
+                ),
+            )
+        return {"ok": True, "model": selected, "message": "生图模型已切换"}
 
     def _load_raw_config(self) -> dict[str, Any]:
         # 数据库没有保存过配置时，直接返回默认配置，保证页面首次打开也能渲染。

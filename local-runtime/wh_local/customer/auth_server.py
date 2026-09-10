@@ -105,12 +105,40 @@ CUSTOM_TOPUP_MAX_CENTS = 300_000
 PAYMENT_PROVIDERS = {"wechat", "alipay"}
 # Text generation is server managed.  A desktop client can neither select an
 # upstream model nor see the provider credential.
+# Image generation is also server managed: the desktop only picks a model name
+# from a fixed whitelist and still never sees the upstream provider credential.
 TEXT_CHAT_URL = os.environ.get(
     "WH_TEXT_API_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
 ).rstrip("/")
 TEXT_MODEL = os.environ.get("WH_TEXT_MODEL", "doubao-seed-2-0-mini-260428").strip()
-WUYIN_IMAGE_SUBMIT_URL = "https://api.wuyinkeji.com/api/async/image_gpt"
+# 上游生图模型由 URL 路径决定，请求体不含 model 字段。桌面端只从白名单里挑名字，
+# 真正的端点与凭据都在服务端，客户端依旧拿不到上游密钥。
+WUYIN_IMAGE_MODEL_ENDPOINTS = {
+    "image_gpt": "https://api.wuyinkeji.com/api/async/image_gpt",
+    "image_gpt_2.5": "https://api.wuyinkeji.com/api/async/image_gpt_2.5",
+}
+WUYIN_IMAGE_DEFAULT_MODEL = "image_gpt"
+# 向后兼容：快照/探针脚本仍引用这个常量名。
+WUYIN_IMAGE_SUBMIT_URL = WUYIN_IMAGE_MODEL_ENDPOINTS[WUYIN_IMAGE_DEFAULT_MODEL]
 WUYIN_IMAGE_DETAIL_URL = "https://api.wuyinkeji.com/api/async/detail"
+# image_gpt_2.5 只提供 1K 档，且尺寸字段是像素串 aspectRatio（没有 size）。
+WUYIN_IMAGE_ASPECT_RATIO_2_5 = {
+    "1:1": "1024x1024",
+    "16:9": "1280x720",
+    "9:16": "720x1280",
+    "4:3": "1152x864",
+    "3:4": "864x1152",
+    "3:2": "1536x1024",
+    "2:3": "1024x1536",
+    "5:4": "1120x896",
+    "4:5": "896x1120",
+    "21:9": "1456x624",
+    "9:21": "624x1456",
+    "1:3": "688x2048",
+    "3:1": "2048x688",
+    "2:1": "1536x768",
+    "1:2": "768x1536",
+}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1350,7 +1378,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         account = _required_account(db_path, authorization)
         _ensure_usage_owner(db_path, usage_id, str(account["account_id"]))
         feature_key = _usage_feature(db_path, usage_id)
-        provider, model = _fixed_usage_provider(feature_key)
+        # 客户端在 settle 载荷里带上实际使用的模型，账单才能反映真实模型。
+        provider, model = _fixed_usage_provider(feature_key, str(payload.get("model") or ""))
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
         return {
             "ok": True,
@@ -1506,6 +1535,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         prompt = str(payload.get("prompt") or "").strip()
         urls = payload.get("urls") or []
         size = str(payload.get("size") or "1:1").strip().lower()
+        image_model = _normalized_image_model(payload.get("model"))
         if not 1 <= len(prompt) <= 24_000 or not isinstance(urls, list) or len(urls) > 4:
             raise HTTPException(status_code=400, detail="image request is invalid")
         urls = [str(value).strip() for value in urls]
@@ -1516,8 +1546,9 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             "21:9", "9:21", "1:3", "3:1", "2:1", "1:2",
         }:
             raise HTTPException(status_code=400, detail="image size is invalid")
+        # model 必须参与指纹：否则切换模型后会命中上一个模型的缓存结果。
         request_hash = _gateway_request_hash(
-            {"prompt": prompt, "size": size, "urls": urls}
+            {"prompt": prompt, "size": size, "urls": urls, "model": image_model}
         )
         api_key = _server_provider_secret("image", "WH_WUYIN_IMAGE_API_KEY")
         if not api_key:
@@ -1537,7 +1568,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             task_id = claim.provider_task_id
             if not task_id:
                 _mark_gateway_submitting(db_path, usage_id, request_hash)
-                task_id = _submit_server_wuyin(api_key, prompt, urls, size)
+                task_id = _submit_server_wuyin(api_key, prompt, urls, size, image_model)
                 try:
                     _record_gateway_provider_task(db_path, usage_id, request_hash, task_id)
                 except Exception as exc:
@@ -1999,9 +2030,15 @@ def _usage_feature(database_path: Path, usage_id: str) -> str:
     return str(row["feature_key"])
 
 
-def _fixed_usage_provider(feature_key: str) -> tuple[str, str]:
+def _normalized_image_model(value: Any) -> str:
+    """把客户端传来的模型名收敛到白名单；未知值一律回到默认模型。"""
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in WUYIN_IMAGE_MODEL_ENDPOINTS else WUYIN_IMAGE_DEFAULT_MODEL
+
+
+def _fixed_usage_provider(feature_key: str, model: str = "") -> tuple[str, str]:
     return (
-        ("wuyin", "image_gpt")
+        ("wuyin", _normalized_image_model(model))
         if feature_key in GATEWAY_IMAGE_FEATURE_KEYS
         else ("platform_text", "managed-text")
     )
@@ -2619,8 +2656,9 @@ def _server_image_request(
     prompt: str,
     urls: list[str],
     size: str,
+    model: str = "",
 ) -> dict[str, Any]:
-    task_id = _submit_server_wuyin(api_key, prompt, urls, size)
+    task_id = _submit_server_wuyin(api_key, prompt, urls, size, model)
     return {
         "ok": True,
         "task_id": task_id,
@@ -2628,19 +2666,46 @@ def _server_image_request(
     }
 
 
+def _wuyin_image_body(model: str, prompt: str, urls: list[str], size: str) -> dict[str, Any]:
+    """按模型组装上游请求体。
+
+    image_gpt 用旧的 size（比例串）；image_gpt_2.5 只提供 1K 档，改用
+    aspectRatio（像素串）。
+
+    urls 的形态两个端点不同：image_gpt 要求 JSON 数组，image_gpt_2.5 要求
+    逗号拼接的字符串（传数组会被上游以 500 拒绝）。2.5 不接受 quality
+    字段，传了会被上游以 500「存在未绑定的参数」拒绝。
+    """
+    if model == "image_gpt_2.5":
+        body: dict[str, Any] = {
+            "prompt": prompt,
+            "aspectRatio": WUYIN_IMAGE_ASPECT_RATIO_2_5.get(size, "1024x1024"),
+        }
+        if urls:
+            body["urls"] = ",".join(urls)
+    else:
+        body = {"prompt": prompt, "size": size}
+        if urls:
+            body["urls"] = urls
+    return body
+
+
 def _submit_server_wuyin(
     api_key: str,
     prompt: str,
     urls: list[str],
     size: str,
+    model: str = "",
 ) -> str:
+    resolved_model = _normalized_image_model(model)
+    endpoint = WUYIN_IMAGE_MODEL_ENDPOINTS.get(resolved_model, WUYIN_IMAGE_SUBMIT_URL)
     response: requests.Response | None = None
     try:
         response = requests.post(
-            WUYIN_IMAGE_SUBMIT_URL,
+            endpoint,
             params={"key": api_key},
             headers={"Authorization": api_key, "Content-Type": "application/json"},
-            json={"prompt": prompt, "size": size, **({"urls": urls} if urls else {})},
+            json=_wuyin_image_body(resolved_model, prompt, urls, size),
             timeout=35,
             allow_redirects=False,
             stream=True,

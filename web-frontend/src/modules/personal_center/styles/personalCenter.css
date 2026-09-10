@@ -1484,3 +1484,38 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* 生图模型选择面板 */
+.model-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.model-field > span {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.model-field select {
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-module-border, #d8e3ee);
+  border-radius: 10px;
+  background: var(--theme-module-surface, #fff);
+  color: var(--theme-text-secondary, #334155);
+  font-size: 13px;
+  font-weight: 700;
+  outline: none;
+}
+
+.model-field select:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+
+.model-field select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
