@@ -510,7 +510,9 @@ def settle_ai_usage_success(
             UPDATE billing_ai_usage_events
             SET charged_points = ?, refunded_points = ?, actual_cost_cny = ?,
                 provider = ?, provider_key_id = ?, model = ?, channel = ?,
-                input_tokens = ?, output_tokens = ?, total_tokens = ?,
+                input_tokens = CASE WHEN ? > 0 THEN ? ELSE input_tokens END,
+                output_tokens = CASE WHEN ? > 0 THEN ? ELSE output_tokens END,
+                total_tokens = CASE WHEN ? > 0 THEN ? ELSE total_tokens END,
                 source_ref = CASE WHEN ? <> '' THEN ? ELSE source_ref END,
                 status = 'succeeded', metadata_json = ?, settled_at = ?
             WHERE usage_id = ?
@@ -524,7 +526,10 @@ def settle_ai_usage_success(
                 model,
                 channel,
                 int(input_tokens),
+                int(input_tokens),
                 int(output_tokens),
+                int(output_tokens),
+                int(total_tokens),
                 int(total_tokens),
                 provider_task_id,
                 provider_task_id,
