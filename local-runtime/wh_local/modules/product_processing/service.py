@@ -34,6 +34,7 @@ from wh_local.customer.contracts import (
     CustomerBillingProtocolError,
 )
 from wh_local.customer.remote_client import CustomerAuthClient
+from wh_local.runtime_logs import business_logger
 
 from .batch_billing import (
     billing_client as _batch_billing_client,
@@ -2652,6 +2653,28 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 self.repository.mark_drafts_status(
                     [draft["id"] for draft in drafts], "processing", workspace_id=workspace_id
                 )
+        # 本地 AI 处理日志（ai_processing.log）：记录批次创建与逐条草稿入队。
+        try:
+            _biz = business_logger("ai_processing")
+            settings_log = payload
+            _biz.info(
+                "========== AI 批次开始 | task_id=%s | workspace=%s | 链接数=%d | "
+                "站点=%s | 语言=%s | 范围=%s | 预检=%s | 异步=%s ==========",
+                task["id"], workspace_id, len(drafts),
+                str((settings_log or {}).get("target_site") or ""),
+                str((settings_log or {}).get("target_language") or ""),
+                ",".join(str(v) for v in ((settings_log or {}).get("processing_scope") or [])),
+                preflight_only, bool(payload.get("async_mode", True)),
+            )
+            for item in task.get("items") or []:
+                _biz.info(
+                    "批次入队 | task_id=%s | item_id=%s | draft_id=%s | skc=%s | 标题=%s",
+                    task["id"], item.get("item_id"), item.get("product_draft_id"),
+                    str(item.get("skc") or "-"),
+                    str(item.get("title") or "-")[:120],
+                )
+        except Exception:  # noqa: BLE001 本地业务日志绝不影响任务提交
+            pass
         if bool(payload.get("async_mode", True)):
             self._launch_background_execute(task["id"], workspace_id)
             return {**self._task_response(task, "任务已提交，正在后台处理"), "async_mode": True}
@@ -2725,6 +2748,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         self._task_safe_error_reason(task_id, exc),
                         workspace_id,
                     )
+                    try:
+                        business_logger("ai_processing").error(
+                            "批次异常终止 | task_id=%s | reason=%s",
+                            task_id, str(self._task_safe_error_reason(task_id, exc))[:800])
+                    except Exception:  # noqa: BLE001
+                        pass
                     self._enqueue_failure_diagnostics(task_id, workspace_id)
                     self._cleanup_terminal_billing_state(task_id)
                 except Exception:
@@ -2774,6 +2803,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         # 后台诊断分发器：消费本地 outbox 并把终态失败明细上传服务器。
         self._ensure_diagnostic_dispatcher().notify()
         for task in interrupted:
+            try:
+                business_logger("ai_processing").warning(
+                    "崩溃恢复：中断任务补记录 | task_id=%s | workspace=%s",
+                    task.get("id"), task.get("workspace_id"))
+            except Exception:  # noqa: BLE001
+                pass
             self._enqueue_failure_diagnostics(int(task["id"]), str(task["workspace_id"]))
         billing_auth_required = [
             task
@@ -3075,6 +3110,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         # 取消是终态（含「已终止·保留成功项」）：把失败明细写入本地 outbox，
         # 供后台分发器上传服务器，避免取消的任务在服务器失败日志中缺失。
         self._enqueue_failure_diagnostics(task_id, workspace_id)
+        try:
+            business_logger("ai_processing").warning(
+                "批次被用户取消 | task_id=%s | workspace=%s", task_id, workspace_id)
+        except Exception:  # noqa: BLE001
+            pass
         return {**self._task_response(task), "message": "产品处理任务已取消，未处理链接已释放，未完成链接按冻结积分 50% 结算"}
 
     def finalize_paused_successes(
@@ -3132,6 +3172,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         task = self._require_task(task_id, workspace_id)
         if task["status"] != "paused":
             return {**self._task_response(task), "message": "任务已结束，无需暂停"}
+        try:
+            business_logger("ai_processing").info(
+                "批次已暂停 | task_id=%s | workspace=%s", task_id, workspace_id)
+        except Exception:  # noqa: BLE001
+            pass
         return {**self._task_response(task), "message": "产品处理任务已暂停"}
 
     @staticmethod
@@ -3168,6 +3213,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 self._task_remote_tokens[task_id] = token
         self.repository.set_task_status(task_id, "queued", workspace_id)
         task = self._require_task(task_id, workspace_id)
+        try:
+            business_logger("ai_processing").info(
+                "批次已恢复 | task_id=%s | workspace=%s", task_id, workspace_id)
+        except Exception:  # noqa: BLE001
+            pass
         if bool(task["settings"].get("async_mode", True)):
             self._launch_background_execute(task_id, workspace_id)
             return {**self._task_response(task, "产品处理任务已继续，正在后台处理"), "async_mode": True}
@@ -3227,6 +3277,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if token:
             with self._submission_lock:
                 self._task_remote_tokens[task_id] = token
+        try:
+            business_logger("ai_processing").info(
+                "失败项手动重试 | task_id=%s | workspace=%s | 重试条数=%d",
+                task_id, workspace_id, len(retry_item_ids))
+        except Exception:  # noqa: BLE001
+            pass
         if bool(task["settings"].get("async_mode", True)):
             self._launch_background_execute(task_id, workspace_id)
             return {**self._task_response(task, "失败商品已重新处理，正在后台执行"), "async_mode": True}
@@ -4728,6 +4784,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        # 本地 AI 处理日志：批次执行参数（并发、断点续跑数量等）。
+        try:
+            business_logger("ai_processing").info(
+                "批次执行 | task_id=%s | 待处理=%d | 已成功=%d | 已失败=%d | "
+                "并发=%d | provider预算=%d | 预检=%s | direct_ai=%s",
+                task_id, len(items_to_process), len(successes), len(failures),
+                max_workers, provider_budget, preflight_only, _direct_ai_enabled())
+        except Exception:  # noqa: BLE001
+            pass
+
         def _process(item: dict[str, Any]) -> dict[str, Any] | None:
             if self._require_task(task_id, workspace_id)["status"] in {"paused", "cancelled"}:
                 return None
@@ -4803,6 +4869,32 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     result=processed.get("result") or {},
                     workspace_id=workspace_id,
                 )
+                # 本地 AI 处理日志：逐条链接的终态（含失败原因与各阶段耗时）。
+                try:
+                    _result = processed.get("result") or {}
+                    _timings = _result.get("stage_timings_ms") or {}
+                    _timing_text = "|".join(
+                        f"{k}={v}ms" for k, v in sorted(_timings.items())
+                    ) if isinstance(_timings, dict) else ""
+                    _level = business_logger("ai_processing")
+                    if str(processed.get("status") or "") == "completed":
+                        _level.info(
+                            "链接完成 | task_id=%s | item_id=%s | draft_id=%s | skc=%s | spu=%s | "
+                            "status=%s | 耗时=%s",
+                            task_id, item_id, processed.get("product_draft_id"),
+                            str(processed.get("skc") or "-"), str(processed.get("spu") or "-"),
+                            str(processed.get("status") or "-"), _timing_text or "-")
+                    else:
+                        _level.warning(
+                            "链接失败 | task_id=%s | item_id=%s | draft_id=%s | skc=%s | spu=%s | "
+                            "status=%s | reason=%s | failure_class=%s | 耗时=%s",
+                            task_id, item_id, processed.get("product_draft_id"),
+                            str(processed.get("skc") or "-"), str(processed.get("spu") or "-"),
+                            str(processed.get("status") or "-"),
+                            str(processed.get("reason") or "-")[:800],
+                            str(_result.get("failure_class") or "-"), _timing_text or "-")
+                except Exception:  # noqa: BLE001 日志失败不阻断进度落库
+                    pass
                 if str(processed.get("status") or "") == "completed":
                     if not _direct_ai_enabled():
                         self._settle_product_processing_item_success(
@@ -4941,6 +5033,21 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # 补跑轮仍在进行时不入队，等最后终态。
             self._enqueue_failure_diagnostics(task_id, workspace_id)
         self._cleanup_terminal_billing_state(task_id)
+        # 本地 AI 处理日志：批次终态汇总（成功/失败/跳过/待关注 + 产物文件）。
+        try:
+            _state = dict(settings.get("_auto_repull") or {})
+            business_logger("ai_processing").info(
+                "========== AI 批次结束 | task_id=%s | status=%s | 总数=%s | 成功=%s | "
+                "失败=%s | 跳过=%s | 待关注=%s | 补跑轮次=%s | 补跑提示=%s | "
+                "产物=%s | 错误报告=%s ==========",
+                task_id, str(completed_task.get("status") or ""),
+                completed_task.get("total_count"), completed_task.get("success_count"),
+                completed_task.get("failed_count"), completed_task.get("skipped_count"),
+                completed_task.get("attention_required_count"),
+                str(_state.get("round") or "-"), str(_state.get("message") or "-"),
+                paths.workbook, paths.errors)
+        except Exception:  # noqa: BLE001
+            pass
         return completed_task
 
     def _enqueue_failure_diagnostics(self, task_id: int, workspace_id: str) -> None:
@@ -5266,6 +5373,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         pass
                     return
                 self.repository.reset_failed_items(task_id, workspace_id, draft_ids=draft_ids)
+                try:
+                    business_logger("ai_processing").info(
+                        "自动补跑开始 | task_id=%s | workspace=%s | 补跑条数=%d",
+                        task_id, workspace_id, len(draft_ids))
+                except Exception:  # noqa: BLE001
+                    pass
                 # 清除视觉识别缓存，避免「多主体/遮挡」低置信度结论被缓存后重跑
                 # 永远命中同一结果（与手动重试行为一致）。
                 retry_item_ids = [

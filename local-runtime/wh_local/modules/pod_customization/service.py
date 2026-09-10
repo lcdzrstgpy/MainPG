@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ...customer.contracts import CustomerBillingPermissionError
+from ...runtime_logs import business_logger
 from ...session import Actor
 from .assets import PodAssetStore
 from .billing_contract import (
@@ -188,6 +189,18 @@ class PodCustomizationService:
             self.worker.register_billing_run(batch_id, billing_run)
         if enqueue and self.worker is not None:
             self.worker.submit(batch["batch_id"], billing_run)
+        # 本地 POD 处理日志（pod_processing.log）：批次创建明细。
+        try:
+            business_logger("pod_processing").info(
+                "========== POD 批次开始 | batch_id=%s | workspace=%s | 用户=%s | "
+                "模板=%s | 款式数=%d | 类目=%s | 创意提示=%s | 批次标题=%s "
+                "| 冻结计费=%s ==========",
+                batch["batch_id"], actor.workspace_id, actor.id, request.template_id,
+                request.count, request.business_fields.product_category,
+                (request.creative_prompt or "-")[:200], (request.title or "-")[:120],
+                "有" if billing_run is not None else "无")
+        except Exception:  # noqa: BLE001 本地业务日志绝不影响业务
+            pass
         return self._batch_payload(batch)
 
     def run_direct_listing_trial(
@@ -392,6 +405,11 @@ class PodCustomizationService:
             return self._batch_payload(batch)
         if not self.repository.request_pause(batch_id):
             raise PodRepositoryError("仅运行中的 POD 批次可以暂停", 409)
+        try:
+            business_logger("pod_processing").info(
+                "POD 批次暂停请求 | batch_id=%s | workspace=%s", batch_id, actor.workspace_id)
+        except Exception:  # noqa: BLE001
+            pass
         return self._batch_payload(self.repository.get_batch(batch_id, actor.workspace_id, actor.id))
 
     def cancel_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
@@ -413,6 +431,12 @@ class PodCustomizationService:
         was_paused = batch["status"] == "paused"
         if not self.repository.request_cancel(batch_id):
             raise PodRepositoryError("仅运行中或已暂停的 POD 批次可以取消", 409)
+        try:
+            business_logger("pod_processing").warning(
+                "POD 批次取消 | batch_id=%s | workspace=%s | 原状态=%s",
+                batch_id, actor.workspace_id, str(batch["status"] or "-"))
+        except Exception:  # noqa: BLE001
+            pass
         if was_paused or not worker_running:
             # 已暂停或 worker 已退出的批次不会再经过检查点，需同步收尾。
             finish_cancelled()
@@ -444,6 +468,11 @@ class PodCustomizationService:
             raise RuntimeError("POD worker is disabled")
         self.worker.register_billing_run(batch_id, run)
         self.worker.submit(batch_id, run)
+        try:
+            business_logger("pod_processing").info(
+                "POD 批次恢复 | batch_id=%s | workspace=%s", batch_id, actor.workspace_id)
+        except Exception:  # noqa: BLE001
+            pass
         return self._batch_payload(self.repository.get_batch(batch_id, actor.workspace_id, actor.id))
 
     def export_dianxiaomi(self, actor: Actor, batch_id: str) -> DianxiaomiExport:
@@ -700,6 +729,14 @@ class PodCustomizationService:
         if title_indices:
             self._require_title_runtime_configured(require_present=True)
         self._preflight_batch_retry(actor, batch_id, image_indices, title_indices)
+        try:
+            business_logger("pod_processing").info(
+                "POD 失败重试 | batch_id=%s | workspace=%s | 图片款式=%s | 标题款式=%s",
+                batch_id, actor.workspace_id,
+                ",".join(str(i) for i in image_indices) or "-",
+                ",".join(str(i) for i in title_indices) or "-")
+        except Exception:  # noqa: BLE001
+            pass
         action_id = f"{batch_id}:batch-retry:{uuid.uuid4().hex}"
         billing_run = self._freeze_batch_retry(
             actor, action_id, batch_id, image_indices, title_indices

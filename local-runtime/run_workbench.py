@@ -26,6 +26,8 @@ from urllib.parse import quote
 
 import uvicorn
 
+from wh_local.runtime_logs import business_logger, runtime_log_dir
+
 # windowed 模式（PyInstaller console=False）下 sys.stdout/stderr 为 None，
 # uvicorn 日志初始化访问 sys.stdout.isatty() 会抛异常；替换为空设备流。
 if sys.stdout is None:
@@ -213,14 +215,7 @@ def _workbench_url(host: str, port: int, app_version: str) -> str:
 # 日志文件放在数据目录下（与 workbench.sqlite3 同级），避免 read-only 安装目录。
 # 打包运行时在 %APPDATA%\MainPG；源码运行在当前目录。
 def _runtime_log_path() -> Path:
-    header = "WH_LOCAL_RUNTIME_LOGDIR"
-    override_dir = os.environ.get(header)
-    if override_dir:
-        return Path(override_dir) / "runtime.log"
-    if getattr(sys, "frozen", False):
-        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(appdata) / "MainPG" / "runtime.log"
-    return Path.cwd() / "runtime.log"
+    return runtime_log_dir() / "runtime.log"
 
 
 def _configure_runtime_logging() -> Path:
@@ -278,6 +273,17 @@ def _configure_runtime_logging() -> Path:
     logging.getLogger("run_workbench").info(
         "workbench launcher starting | log=%s | frozen=%s | cwd=%s",
         log_path, getattr(sys, "frozen", False), os.getcwd())
+    # 业务域三份日志（登录 / AI 处理 / POD 处理）与 runtime.log 同目录。
+    try:
+        business_logger("login")
+        business_logger("ai_processing")
+        business_logger("pod_processing")
+        logging.getLogger("run_workbench").info(
+            "business logs at %s: login.log / ai_processing.log / pod_processing.log",
+            runtime_log_dir())
+    except Exception as exc:  # noqa: BLE001 业务日志初始化失败不阻断启动
+        logging.getLogger("run_workbench").warning(
+            "business log setup failed (falling back to runtime.log): %s", exc)
     return log_path
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..runtime_logs import business_logger
 from .contracts import CustomerAuthRejected, CustomerAuthUnavailable
 from .local_session import LocalSessionService
 from .remote_client import CustomerAuthClient
@@ -224,6 +225,14 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
             except Exception:
                 pass
             sessions.logout(token)
+            try:
+                business_logger("login").info(
+                    "登出 | token=%s | workspace=%s",
+                    (token[:8] + "…") if token else "-",
+                    getattr(sessions.store, "workspace_id", "")
+                    if hasattr(sessions.store, "workspace_id") else "-")
+            except Exception:  # noqa: BLE001 登出日志失败不阻断
+                pass
             return {"ok": True}
         except Exception as exc:
             handle_auth_error(exc)
