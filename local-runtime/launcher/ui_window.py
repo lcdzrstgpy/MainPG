@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -87,9 +88,12 @@ CARD_RADIUS = 22
 # 主色
 PRIMARY = "#087bf5"
 PRIMARY_LIGHT = "#14c8c0"
-BRAND_GRADIENT = "linear-gradient(145deg, #008bff, #16d7c0)"
-PRIMARY_GRADIENT = "linear-gradient(105deg, #087bf5, #14c8c0)"
-PRIMARY_SHADOW = "rgba(11, 147, 220, 0.22)"
+BRAND_GRADIENT = (
+    "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #008bff, stop:1 #16d7c0)"
+)
+PRIMARY_GRADIENT = (
+    "qlineargradient(x1:0, y1:0, x2:1, y2:0.4, stop:0 #087bf5, stop:1 #14c8c0)"
+)
 
 # 文字
 TEXT_PRIMARY = "#13233a"
@@ -113,7 +117,9 @@ INFO_TEXT = "#0877d3"
 # 侧边栏
 SIDEBAR_BG = "rgba(255,255,255,0.94)"
 SIDEBAR_HOVER = "#f0f7fb"
-SIDEBAR_ACTIVE_BG = "linear-gradient(100deg, #ccecff, #d5f5ef)"
+SIDEBAR_ACTIVE_BG = (
+    "qlineargradient(x1:0, y1:0, x2:1, y2:0.2, stop:0 #ccecff, stop:1 #d5f5ef)"
+)
 SIDEBAR_ACTIVE_COLOR = "#056fc8"
 SIDEBAR_TEXT = "#527089"
 
@@ -249,10 +255,11 @@ def _primary_button() -> str:
     return (
         f"QPushButton{{color:#ffffff;border:none;border-radius:11px;"
         f"padding:0 18px;font-size:13px;font-weight:750;"
-        f"background:{PRIMARY_GRADIENT};"
-        f"box-shadow:0 10px 20px {PRIMARY_SHADOW};}}"
-        f"QPushButton:hover{{background:linear-gradient(105deg,#0a6ee0,#12b8b0);}}"
-        f"QPushButton:pressed{{background:linear-gradient(105deg,#085bb8,#0fa39c);}}"
+        f"background:{PRIMARY_GRADIENT};}}"
+        f"QPushButton:hover{{background:"
+        f"qlineargradient(x1:0, y1:0, x2:1, y2:0.4, stop:0 #0a6ee0, stop:1 #12b8b0);}}"
+        f"QPushButton:pressed{{background:"
+        f"qlineargradient(x1:0, y1:0, x2:1, y2:0.4, stop:0 #085bb8, stop:1 #0fa39c);}}"
         f"QPushButton:disabled{{background:#c8d4e0;color:#ffffff;}}"
     )
 
@@ -747,12 +754,13 @@ class MainWindow(QMainWindow):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFixedHeight(44)
             btn.setStyleSheet(
-                f"QPushButton{{color:{SIDEBAR_TEXT};background:transparent;border:none;"
-                f"border-radius:12px;padding:0 12px;font-size:13px;font-weight:720;"
+                f"QPushButton{{color:{SIDEBAR_TEXT};background:transparent;"
+                f"border:1px solid transparent;"
+                f"border-radius:12px;padding:0 11px;font-size:13px;font-weight:720;"
                 f"text-align:left;}}"
                 f"QPushButton:hover{{background:{SIDEBAR_HOVER};color:{TEXT_PRIMARY};}}"
-                f"QPushButton:checked{{background:{SIDEBAR_ACTIVE_BG};color:{SIDEBAR_ACTIVE_COLOR};"
-                f"box-shadow:inset 0 0 0 1px #8fd3ec, 0 5px 13px rgba(22,138,192,0.08);}}"
+                f"QPushButton:checked{{background:{SIDEBAR_ACTIVE_BG};"
+                f"color:{SIDEBAR_ACTIVE_COLOR};border-color:#8fd3ec;}}"
             )
             btn.clicked.connect(lambda _=False, i=idx: self._switch_page(i))
             shadow.addWidget(btn)
@@ -786,6 +794,12 @@ class MainWindow(QMainWindow):
         self.btn_launch.setFixedHeight(46)
         self.btn_launch.setStyleSheet(_primary_button())
         self.btn_launch.clicked.connect(self.on_start)
+        # Qt QSS 不支持 box-shadow，用图形效果实现按钮浮起阴影
+        launch_shadow = QGraphicsDropShadowEffect(self.btn_launch)
+        launch_shadow.setBlurRadius(20)
+        launch_shadow.setOffset(0, 5)
+        launch_shadow.setColor(QColor(11, 147, 220, 56))
+        self.btn_launch.setGraphicsEffect(launch_shadow)
         shadow.addWidget(self.btn_launch)
 
         # 默认选中第一页
