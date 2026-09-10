@@ -1139,7 +1139,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         </div>
       </section>
 
-      {presetDialogOpen && (
+      {/* portal 到 body：脱离 tab 面板层叠上下文，防被 sticky 顶栏盖住 */}
+      {presetDialogOpen && createPortal(
         <div className="preset-dialog-backdrop" role="presentation" onMouseDown={closePresetDialog}>
           <form className="preset-dialog" onSubmit={savePreset} onMouseDown={(event) => event.stopPropagation()}>
             <div className="preset-dialog-header">
@@ -1162,10 +1163,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               <button type="submit">{editingDirectionId ? "保存更改" : "保存预设"}</button>
             </div>
           </form>
-        </div>
-      )}
+        </div>, document.body)}
 
-      {pendingDeleteDirection && (
+      {pendingDeleteDirection && createPortal(
         <div className="preset-dialog-backdrop" role="presentation" onMouseDown={() => setPendingDeleteDirection(null)}>
           <div className="delete-confirm-dialog" role="alertdialog" aria-modal="true" aria-label="确认删除预设" onMouseDown={(event) => event.stopPropagation()}>
             <span className="delete-confirm-icon">!</span>
@@ -1176,8 +1176,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               <button type="button" onClick={confirmDeletePreset}>确定删除</button>
             </div>
           </div>
-        </div>
-      )}
+        </div>, document.body)}
         </>
       )}
 
@@ -1475,13 +1474,16 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           </section>
         </div>
       )}
-      <div
-        className={`collection-settings-layer ${advancedCollectionOpen ? "is-open" : ""}`}
-        aria-hidden={!advancedCollectionOpen}
-        onMouseDown={(event) => {
-          if (event.currentTarget === event.target) setAdvancedCollectionOpen(false);
-        }}
-      >
+      {/* portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
+          会把 fixed 抽屉的 z-index(170) 锁在面板内、被 sticky 顶栏(z:18)盖住头部 */}
+      {createPortal(
+        <div
+          className={`collection-settings-layer ${advancedCollectionOpen ? "is-open" : ""}`}
+          aria-hidden={!advancedCollectionOpen}
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) setAdvancedCollectionOpen(false);
+          }}
+        >
         <aside id="collection-settings-drawer" className="collection-settings-drawer" role="dialog" aria-modal="true" aria-labelledby="collection-settings-title">
           <header className="collection-settings-drawer-header">
             <div><span>COLLECTION SETTINGS</span><strong id="collection-settings-title">高级设置</strong><small>设置会立即用于下一次采集</small></div>
@@ -1523,14 +1525,18 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             <button type="button" onClick={() => setAdvancedCollectionOpen(false)}>完成</button>
           </footer>
         </aside>
-      </div>
-      <div
-        className={`history-drawer-layer ${historyDrawerOpen ? "is-open" : ""}`}
-        aria-hidden={!historyDrawerOpen}
-        onMouseDown={(event) => {
-          if (event.currentTarget === event.target) setHistoryDrawerOpen(false);
-        }}
-      >
+      </div>,
+        document.body,
+      )}
+      {/* 同上：portal 到 body 脱离 tab 面板层叠上下文，避免被 sticky 顶栏盖住 */}
+      {createPortal(
+        <div
+          className={`history-drawer-layer ${historyDrawerOpen ? "is-open" : ""}`}
+          aria-hidden={!historyDrawerOpen}
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) setHistoryDrawerOpen(false);
+          }}
+        >
         <aside className="history-drawer" role="dialog" aria-modal="true" aria-label="最近批次">
           <header className="history-drawer-header">
             <div><span>COLLECTION HISTORY</span><strong>最近批次</strong><small>选择批次后将加载对应候选商品</small></div>
@@ -1559,7 +1565,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             })}
           </div>
         </aside>
-      </div>
+      </div>,
+        document.body,
+      )}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useChangePoller } from '../../../shared/hooks/useChangePoller';
 import { SkuBatchManager } from '../components/SkuBatchManager';
 import { ppRequest, type ApiContext } from '../api/client';
@@ -118,6 +119,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [batchesOpen, setBatchesOpen] = useState(true);
   const [batchBusy, setBatchBusy] = useState(false);
+  // 批次列表是否还有更多（后端 limit 上限 200，超出时提示，避免以为“只有这么多”）
+  const [batchesHasMore, setBatchesHasMore] = useState(false);
   const draftListRef = useRef<HTMLDivElement>(null);
   const stickyToolbarRef = useRef<HTMLDivElement>(null);
   const stickySpacerRef = useRef<HTMLDivElement>(null);
@@ -262,6 +265,25 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     [filteredDrafts, pageStart, pageSize]
   );
 
+  // 勾选集合里被当前搜索/筛选条件隐藏的条数：这些草稿在列表上看不见，
+  // 却会随「开始处理 / 删除选择」一起提交，必须在动作前显式提醒。
+  const hiddenSelectedCount = useMemo(() => {
+    if (!selectedIds.size) return 0;
+    const visibleIds = new Set(filteredDrafts.map((draft) => draft.id));
+    let hidden = 0;
+    for (const id of selectedIds) if (!visibleIds.has(id)) hidden += 1;
+    return hidden;
+  }, [selectedIds, filteredDrafts]);
+
+  // 有隐藏勾选时弹确认；无隐藏勾选直接放行（不改变原有操作习惯）
+  const confirmHiddenSelection = (actionLabel: string): boolean => {
+    if (!hiddenSelectedCount) return true;
+    return window.confirm(
+      `已勾选 ${selectedIds.size} 条草稿，其中 ${hiddenSelectedCount} 条不在当前筛选结果里（被搜索或筛选条件隐藏）。\n\n`
+      + `「${actionLabel}」会把它们一并处理。是否继续？`,
+    );
+  };
+
   const notify = (ok: string) => { setMessage(ok); setError(''); };
   const fail = (err: unknown) => { setError(err instanceof Error ? err.message : String(err)); setMessage(''); };
 
@@ -277,14 +299,28 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const refresh = async () => {
     const batchQuery = activeBatchId ? `&selection_run_id=${encodeURIComponent(activeBatchId)}` : '';
     const draftData = await ppRequest<{ drafts: DraftSummary[] }>(ctx, `${API_BASE}/drafts?view=summary&limit=500${batchQuery}`);
-    setDrafts(draftData.drafts || []);
+    const nextDrafts = draftData.drafts || [];
+    setDrafts(nextDrafts);
+    // 勾选只保留仍在本次加载结果里的草稿：切换批次、批次被清理/删除、或外部
+    // 已提交处理时，残留的隐藏 id 不参与「已勾选」计数，也不会被「开始处理」一起提交。
+    const visible = new Set(nextDrafts.map((draft) => draft.id));
+    const prune = (prev: Set<number>) => {
+      if (!prev.size) return prev;
+      const kept = new Set<number>();
+      for (const id of prev) if (visible.has(id)) kept.add(id);
+      return kept.size === prev.size ? prev : kept;
+    };
+    setSelectedIds(prune);
+    setPremiumIds(prune);
   };
 
   const refreshBatches = async () => {
     try {
-      const data = await ppRequest<{ batches: DraftCollectionBatch[] }>(ctx, `${API_BASE}/draft-batches`);
-      setDraftBatches(data.batches || []);
-      if (activeBatchId && !(data.batches || []).some((batch) => batch.batch_id === activeBatchId)) {
+      const data = await ppRequest<{ batches: DraftCollectionBatch[]; pagination?: { has_more?: boolean } }>(ctx, `${API_BASE}/draft-batches?limit=200`);
+      const batches = data.batches || [];
+      setDraftBatches(batches);
+      setBatchesHasMore(Boolean(data.pagination?.has_more));
+      if (activeBatchId && !batches.some((batch) => (batch.batch_id || '__unassigned__') === activeBatchId)) {
         setActiveBatchId(null);
       }
     } catch (err) {
@@ -303,11 +339,19 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   };
 
   const selectAllBatches = () => {
-    setSelectedBatchIds(new Set(draftBatches.map((batch) => batch.batch_id)));
+    setSelectedBatchIds(new Set(draftBatches.map((batch) => batch.batch_id || '__unassigned__')));
   };
 
   const deleteSelectedBatches = async () => {
     if (selectedBatchIds.size === 0) return;
+    // 批次删除是不可逆的整批软删（草稿池的「撤回删除」只覆盖单条/勾选删除路径），
+    // 且附近没有其他入口重复提示，所以这里必须二次确认。
+    const confirmed = window.confirm(
+      `确认删除选中的 ${selectedBatchIds.size} 个采集批次？\n\n`
+      + '只会清理这些批次里「待处理」的草稿；已提交处理的草稿会保留。\n'
+      + '该操作无法在页面上撤回。',
+    );
+    if (!confirmed) return;
     setBatchBusy(true);
     setError('');
     const batchIds = [...selectedBatchIds];
@@ -520,6 +564,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const deleteSelected = async (targetIds?: Iterable<number>) => {
     const ids = targetIds ? Array.from(targetIds) : Array.from(selectedIds);
     if (!ids.length) return;
+    // 单条删除（传入 targetIds）已有自己的确认弹窗，这里只拦批量路径
+    if (!targetIds && !confirmHiddenSelection('删除选择')) return;
     setLoading(true);
     try {
       const result = await ppRequest<{ deleted_count: number; ids: number[] }>(ctx, `${API_BASE}/drafts/delete`, {
@@ -592,6 +638,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
 
   const handleProcess = async (preflightOnly = false) => {
     if (!selectedIds.size) { setError('请先勾选需要处理的草稿'); return; }
+    if (!confirmHiddenSelection(preflightOnly ? '预检' : '开始处理')) return;
     const ids = Array.from(selectedIds);
     const dirtyTargets = drafts.filter((draft) => selectedIds.has(draft.id) && draftDirty(draft, edits));
     if (dirtyTargets.length) {
@@ -678,7 +725,10 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
         <div className="verify-pool-toolbar">
           <div className="verify-pool-stats">
             <span><i className="iconfont icon-appstore" aria-hidden="true" />待处理 <strong>{selectableDrafts.length}</strong></span>
-            <span><i className="iconfont icon-check-circle" aria-hidden="true" />已选 <strong>{selectedIds.size}</strong></span>
+            <span className={hiddenSelectedCount ? 'is-hidden-selection' : ''}>
+              <i className="iconfont icon-check-circle" aria-hidden="true" />已选 <strong>{selectedIds.size}</strong>
+              {hiddenSelectedCount > 0 && <em>（{hiddenSelectedCount} 条被筛选隐藏）</em>}
+            </span>
             <span><i className="iconfont icon-gem" aria-hidden="true" />精品 <strong>{premiumIds.size}</strong></span>
             <span><i className="iconfont icon-file-text" aria-hidden="true" />本页 <strong>{pageDrafts.length}</strong></span>
             {(skuCountFilter > 1 || hideSingleSpec || viewMode === 'selected') && (
@@ -750,7 +800,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
         </div>
         </div>
 
-          {batchesOpen && (
+          {/* portal 到 body：workspace-tab-panel 的 fill-mode 动画会创建层叠上下文，
+              把 fixed 抽屉的 z-index 锁在面板内，导致抽屉被 sticky 顶栏(z:18)盖住头部 */}
+          {batchesOpen && createPortal(
             <>
               <div className="verify-batch-mask" onClick={() => setBatchesOpen(false)} />
               <div className="verify-batch-popover" role="dialog" aria-label="采集批次">
@@ -788,6 +840,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                       </button>
                     </div>
                   ))}
+                  {batchesHasMore && (
+                    <p className="verify-batch-more">仅列出最近 200 个批次，更早的批次未显示（清空后剩余批次自动上浮）。</p>
+                  )}
                 </div>
                 {activeBatchId !== null && (
                   <p className="verify-batch-active-note">
@@ -799,7 +854,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                   </p>
                 )}
               </div>
-            </>
+            </>,
+            document.body,
           )}
         </div>
 
@@ -1045,7 +1101,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
           setSkuRangeEnd('');
           setSkuRangeTip('');
         };
-        return (
+        // portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed 抽屉 z-index，被顶栏盖住
+        return createPortal(
           <div className="verify-drawer-root">
             <div className="verify-drawer-mask" onClick={closeDrawer} />
             <aside className="verify-drawer">
@@ -1148,8 +1205,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                 <button className="primary" onClick={() => { void saveRow(target); closeDrawer(); }} disabled={loading}>保存</button>
               </footer>
             </aside>
-          </div>
-        );
+          </div>, document.body);
       })()}
 
       {skuBatchOpen && selectedDrafts.length > 0 && (

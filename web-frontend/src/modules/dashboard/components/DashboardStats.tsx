@@ -13,11 +13,13 @@ type TrendMode = "dual" | "sum";
 /* ── 折线趋势图（重制版：平滑曲线 + 入场动画 + 跟随式悬浮卡） ── */
 
 /** Catmull-Rom 样条 → 三次贝塞尔：把折线变成顺滑曲线
- * baselineY: 图表底部基线 y 坐标。控制点强制不小于 baseline，
- * 避免连续 0 值附近被插值出负数（曲线会"贴着底"走，但不会下凹到基线以下）。 */
+ * baselineY: 图表底部基线 y 坐标（y=0 的位置）。SVG 的 y 轴向下递增，所以
+ * 数值越大 y 越小，baselineY 是合法 y 的上界。样条在连续 0 值附近会把控制点
+ * 算到 baselineY 之下（视觉上即跌进负数区间），这里把越界的控制点拉回基线，
+ * 让曲线"贴着底走"而不下凹。 */
 function smoothPath(pts: Array<{ x: number; y: number }>, baselineY: number): string {
   if (pts.length === 0) return "";
-  const clampY = (y: number) => (y < baselineY ? baselineY : y);
+  const clampY = (y: number) => (y > baselineY ? baselineY : y);
   if (pts.length < 3) return pts.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(2)} ${clampY(p.y).toFixed(2)}`).join(" ");
   let d = `M${pts[0].x.toFixed(2)} ${clampY(pts[0].y).toFixed(2)}`;
   for (let i = 0; i < pts.length - 1; i++) {

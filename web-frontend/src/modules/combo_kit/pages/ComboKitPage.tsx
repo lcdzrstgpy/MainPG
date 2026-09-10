@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { getAuthAccount, getAuthToken } from '../../../transport/http/client';
 import type { ApiContext } from '../../product_processing/api/client';
 import {
@@ -718,8 +719,8 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
         {set && <div className="combo-kit-content">{renderStep()}</div>}
       </main>
 
-      {/* 上传原图右侧抽屉：逐张填信息与蒙版 */}
-      {drawerOpen && set && (
+      {/* 上传原图右侧抽屉：逐张填信息与蒙版（portal 到 body 脱离 tab 面板层叠上下文，防被顶栏盖住） */}
+      {drawerOpen && set && createPortal(
         <>
           <div className="combo-drawer-mask" onClick={() => setDrawerOpen(false)} />
           <aside className="combo-drawer">
@@ -746,10 +747,9 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
               ))}
             </div>
           </aside>
-        </>
-      )}
+        </>, document.body)}
 
-      {historyOpen && (
+      {historyOpen && createPortal(
         <>
           <div className="combo-drawer-mask" onClick={() => setHistoryOpen(false)} />
           <aside className="combo-drawer">
@@ -767,10 +767,9 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
               {!historyList.length && <div className="combo-history-empty">暂无历史套装。</div>}
             </div>
           </aside>
-        </>
-      )}
+        </>, document.body)}
 
-      {showCreate && (
+      {showCreate && createPortal(
         <div className="combo-modal-mask" onClick={() => setShowCreate(false)}>
           <div className="combo-modal" onClick={(e) => e.stopPropagation()}>
             <h3>新建套装</h3>
@@ -780,8 +779,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
               <button className="primary" onClick={() => void createNewSet()} disabled={busy === 'create'}>创建</button>
             </div>
           </div>
-        </div>
-      )}
+        </div>, document.body)}
     </div>
   );
 }

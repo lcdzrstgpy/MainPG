@@ -1412,13 +1412,13 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         </section>
       )}
 
-      {undoSnackbar && (
+      {/* portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed toast 的 z-index，被顶栏盖住 */}
+      {undoSnackbar && createPortal(
         <div className="precheck-undo-snackbar" role="status" aria-live="polite">
           <span>图片已从当前输出清单移除</span>
           <button type="button" onClick={restoreUndo}>撤销</button>
           <small>5 秒内有效</small>
-        </div>
-      )}
+        </div>, document.body)}
 
       {activeImage && createPortal(
         <div className={`precheck-lightbox${imageZoomed ? ' is-zoomed' : ''}`} role="dialog" aria-modal="true" aria-label="图片预览" onClick={() => {

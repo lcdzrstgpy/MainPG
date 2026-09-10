@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   canEditPodStyleTitle,
@@ -87,7 +88,8 @@ export function PodListingDetailDrawer({ batch, style, onClose, onSaveTitle }: P
     ] as const
     : [];
 
-  return <div className="pod-listing-detail-layer">
+  // portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed 层 z-index，被顶栏盖住
+  return createPortal(<div className="pod-listing-detail-layer">
     <button type="button" className="pod-listing-detail-backdrop" onClick={onClose} aria-label="关闭款式上架链接详情" />
     <aside className="pod-listing-detail-drawer" role="dialog" aria-modal="true" aria-label="款式上架链接详情">
       <header className="pod-listing-detail-header">
@@ -152,5 +154,5 @@ export function PodListingDetailDrawer({ batch, style, onClose, onSaveTitle }: P
         </section>
       </div>
     </aside>
-  </div>;
+  </div>, document.body);
 }
