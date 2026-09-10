@@ -9,6 +9,11 @@ export const UI_MODE_META: Record<UiModeId, { label: string; description: string
 
 const STORAGE_KEY = "mainpg.uiMode";
 
+// 切换布局时短暂挂 class 让主区淡入,避免侧栏↔Dock 的硬切。
+// 时长与 global.css 的 mode-cascade 动画总时长对齐(0.72s 本体 + 0.16s 延迟 + 余量)。
+const MODE_CASCADE_MS = 1100;
+let modeCascadeTimer: number | undefined;
+
 function readUiMode(): UiModeId {
   try {
     return window.localStorage.getItem(STORAGE_KEY) === "apple" ? "apple" : "classic";
@@ -17,7 +22,7 @@ function readUiMode(): UiModeId {
   }
 }
 
-function applyUiMode(id: UiModeId) {
+function applyUiMode(id: UiModeId, animate = false) {
   document.documentElement.setAttribute("data-ui-mode", id);
   let originalTheme = "classic";
   try {
@@ -28,6 +33,17 @@ function applyUiMode(id: UiModeId) {
       : "classic";
   } catch { /* ignore */ }
   document.documentElement.setAttribute("data-theme", id === "apple" ? "classic" : originalTheme);
+  if (animate) {
+    const root = document.documentElement;
+    root.classList.remove("mode-cascade");
+    void root.offsetWidth; // 强制 reflow,保证连续切换时动画重播
+    root.classList.add("mode-cascade");
+    if (modeCascadeTimer !== undefined) window.clearTimeout(modeCascadeTimer);
+    modeCascadeTimer = window.setTimeout(() => {
+      root.classList.remove("mode-cascade");
+      modeCascadeTimer = undefined;
+    }, MODE_CASCADE_MS);
+  }
 }
 
 let currentUiMode: UiModeId = readUiMode();
@@ -50,7 +66,7 @@ if (typeof window !== "undefined") {
     const next = readUiMode();
     if (next === currentUiMode) return;
     currentUiMode = next;
-    applyUiMode(next);
+    applyUiMode(next, true);
     listeners.forEach((listener) => listener());
   });
 }
@@ -60,7 +76,7 @@ export function useUiMode() {
   const setUiMode = useCallback((id: UiModeId) => {
     if (id === currentUiMode) return;
     currentUiMode = id;
-    applyUiMode(id);
+    applyUiMode(id, true);
     listeners.forEach((listener) => listener());
   }, []);
 

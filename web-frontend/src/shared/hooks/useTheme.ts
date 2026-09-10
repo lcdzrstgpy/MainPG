@@ -15,6 +15,12 @@ export const THEME_META: Record<ThemeId, { label: string; swatch: string }> = {
 
 const STORAGE_KEY = "mainpg.theme";
 
+// 与 global.css 里最长的那一条对齐:卡片交错最晚 0.98s 延迟 + 0.8s 本体 ≈ 1.78s,
+// 再算上白板淡入的余量。改 CSS 动画时长/延迟时这里要同步改,否则动画会被 class 移除打断。
+const CASCADE_MS = 2000;
+
+let cascadeTimer: number | undefined;
+
 function readTheme(): ThemeId {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY);
@@ -30,12 +36,18 @@ function applyTheme(id: ThemeId, animate = true) {
     window.localStorage.setItem(STORAGE_KEY, id);
   } catch { /* ignore */ }
   if (animate) {
-    // 主题切换入场:短暂挂 class 让主区克制地逐块浮现,结束后移除
+    // 主题切换入场:短暂挂 class 让主区克制地逐块浮现,结束后移除。
+    // 时长必须 >= CSS 里动画总时长(0.85s 本体 + 最晚 0.34s 延迟),否则 class 提前移除会掐断动画、
+    // 元素瞬间归位,看起来就是"卡一下"。连续切换时先清掉上一个 timer,避免旧定时器提前清 class。
     const root = document.documentElement;
     root.classList.remove("theme-cascade");
     void root.offsetWidth; // 强制 reflow,保证连续切换时动画重播
     root.classList.add("theme-cascade");
-    window.setTimeout(() => root.classList.remove("theme-cascade"), 700);
+    if (cascadeTimer !== undefined) window.clearTimeout(cascadeTimer);
+    cascadeTimer = window.setTimeout(() => {
+      root.classList.remove("theme-cascade");
+      cascadeTimer = undefined;
+    }, CASCADE_MS);
   }
 }
 
