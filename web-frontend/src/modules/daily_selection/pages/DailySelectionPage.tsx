@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import {
@@ -340,8 +340,50 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [deleteMode, setDeleteMode] = useState(false);
   const [pendingDeleteDirection, setPendingDeleteDirection] = useState<Direction | null>(null);
 
+  // 抽屉焦点管理：关闭时先把焦点归还给触发按钮，再应用 aria-hidden。
+  // 否则 Chrome 会因 aria-hidden 落在仍持有焦点的后代上而阻止该属性并告警。
+  const collectionSettingsLayerRef = useRef<HTMLDivElement | null>(null);
+  const collectionSettingsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const historyDrawerLayerRef = useRef<HTMLDivElement | null>(null);
+  const historyDrawerTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  const moveFocusOutOf = (layer: HTMLDivElement | null, fallbackTrigger: HTMLElement | null) => {
+    const active = document.activeElement;
+    if (!layer || !(active instanceof HTMLElement)) return;
+    // 焦点本就不在抽屉里（如点击遮罩关掉）时不动它，避免抢走用户焦点。
+    if (!layer.contains(active)) return;
+    fallbackTrigger?.focus();
+    // focus 失败（如触发按钮不可聚焦）时强制移除焦点，确保 aria-hidden 的元素内无聚焦后代。
+    if (layer.contains(document.activeElement)) (document.activeElement as HTMLElement | null)?.blur();
+  };
+
+  // 关闭高级设置抽屉：先归还焦点，再切 aria-hidden（同步发生在提交前）。
+  const closeCollectionSettings = useCallback(() => {
+    moveFocusOutOf(collectionSettingsLayerRef.current, collectionSettingsTriggerRef.current);
+    setAdvancedCollectionOpen(false);
+  }, []);
+  const closeHistoryDrawer = useCallback(() => {
+    moveFocusOutOf(historyDrawerLayerRef.current, historyDrawerTriggerRef.current);
+    setHistoryDrawerOpen(false);
+  }, []);
+
+  // 关闭态加 inert：抽屉隐藏后的 280ms 过渡窗口内仍可被 Tab 聚焦，inert 一并阻止，
+  // 同时这也是 Chrome 针对该 aria-hidden 告警给出的推荐做法。
+  useEffect(() => {
+    const layer = collectionSettingsLayerRef.current;
+    if (layer) layer.inert = !advancedCollectionOpen;
+  }, [advancedCollectionOpen]);
+  useEffect(() => {
+    const layer = historyDrawerLayerRef.current;
+    if (layer) layer.inert = !historyDrawerOpen;
+  }, [historyDrawerOpen]);
+
   useEffect(() => {
     if (isActive) return;
+    // 页面切换到其他模块时若焦点仍在抽屉内，先把焦点移出再收抽屉，
+    // 避免 aria-hidden 与聚焦后代冲突产生 Chrome 告警。
+    moveFocusOutOf(collectionSettingsLayerRef.current, null);
+    moveFocusOutOf(historyDrawerLayerRef.current, null);
     setAdvancedCollectionOpen(false);
     setHistoryDrawerOpen(false);
     setPresetDialogOpen(false);
@@ -351,11 +393,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   useEffect(() => {
     if (!advancedCollectionOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setAdvancedCollectionOpen(false);
+      if (event.key === "Escape") closeCollectionSettings();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [advancedCollectionOpen]);
+  }, [advancedCollectionOpen, closeCollectionSettings]);
 
   const filteredCandidates = useMemo(() => {
     if (!activeRun) return [];
@@ -511,7 +553,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     if (!historyDrawerOpen) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setHistoryDrawerOpen(false);
+      if (event.key === "Escape") closeHistoryDrawer();
     };
     document.body.style.overflow = "hidden";
     window.addEventListener("keydown", closeOnEscape);
@@ -519,7 +561,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [historyDrawerOpen]);
+  }, [historyDrawerOpen, closeHistoryDrawer]);
 
   useEffect(() => {
     window.localStorage.setItem(CUSTOM_DIRECTIONS_KEY, JSON.stringify(customDirections));
@@ -1270,7 +1312,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
           <div className="collection-advanced-header">
             <div><strong>高级筛选</strong><span>价格、SKU、并发与风险规则</span></div>
-            <button type="button" aria-expanded={advancedCollectionOpen} aria-controls="collection-settings-drawer" onClick={() => { setHistoryDrawerOpen(false); setAdvancedCollectionOpen(true); }}>
+            <button type="button" ref={collectionSettingsTriggerRef} aria-expanded={advancedCollectionOpen} aria-controls="collection-settings-drawer" onClick={() => { setHistoryDrawerOpen(false); setAdvancedCollectionOpen(true); }}>
               <span className="iconfont icon-setting" aria-hidden="true"></span>高级设置
             </button>
           </div>
@@ -1338,7 +1380,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               </div>
             )}
             {activeRun && <span>批次 {activeRun.run_id.slice(0, 8)} · {activeRun.candidate_count} 条</span>}
-            <button type="button" className="history-drawer-trigger" onClick={() => { setAdvancedCollectionOpen(false); setHistoryDrawerOpen(true); }}><span aria-hidden="true">◷</span> 最近批次 <b>{runs.length}</b></button>
+            <button type="button" ref={historyDrawerTriggerRef} className="history-drawer-trigger" onClick={() => { setAdvancedCollectionOpen(false); setHistoryDrawerOpen(true); }}><span aria-hidden="true">◷</span> 最近批次 <b>{runs.length}</b></button>
             {activeRun && (
               <div className={`sku-repull-control ${skuRepull?.status === "running" ? "is-running" : ""}`}>
                 <button
@@ -1476,16 +1518,17 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         </div>
       )}
       <div
+        ref={collectionSettingsLayerRef}
         className={`collection-settings-layer ${advancedCollectionOpen ? "is-open" : ""}`}
         aria-hidden={!advancedCollectionOpen}
         onMouseDown={(event) => {
-          if (event.currentTarget === event.target) setAdvancedCollectionOpen(false);
+          if (event.currentTarget === event.target) closeCollectionSettings();
         }}
       >
         <aside id="collection-settings-drawer" className="collection-settings-drawer" role="dialog" aria-modal="true" aria-labelledby="collection-settings-title">
           <header className="collection-settings-drawer-header">
             <div><span>COLLECTION SETTINGS</span><strong id="collection-settings-title">高级设置</strong><small>设置会立即用于下一次采集</small></div>
-            <button type="button" onClick={() => setAdvancedCollectionOpen(false)} aria-label="关闭高级设置">×</button>
+            <button type="button" onClick={closeCollectionSettings} aria-label="关闭高级设置">×</button>
           </header>
           <div className="collection-settings-drawer-body">
             <section className="collection-settings-section">
@@ -1520,21 +1563,22 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           </div>
           <footer className="collection-settings-drawer-footer">
             <span>已填写的设置会保留</span>
-            <button type="button" onClick={() => setAdvancedCollectionOpen(false)}>完成</button>
+            <button type="button" onClick={closeCollectionSettings}>完成</button>
           </footer>
         </aside>
       </div>
       <div
+        ref={historyDrawerLayerRef}
         className={`history-drawer-layer ${historyDrawerOpen ? "is-open" : ""}`}
         aria-hidden={!historyDrawerOpen}
         onMouseDown={(event) => {
-          if (event.currentTarget === event.target) setHistoryDrawerOpen(false);
+          if (event.currentTarget === event.target) closeHistoryDrawer();
         }}
       >
         <aside className="history-drawer" role="dialog" aria-modal="true" aria-label="最近批次">
           <header className="history-drawer-header">
             <div><span>COLLECTION HISTORY</span><strong>最近批次</strong><small>选择批次后将加载对应候选商品</small></div>
-            <button type="button" onClick={() => setHistoryDrawerOpen(false)} aria-label="关闭最近批次">×</button>
+            <button type="button" onClick={closeHistoryDrawer} aria-label="关闭最近批次">×</button>
           </header>
           <div className="history-drawer-summary"><span>采集记录</span><b>{runs.length} 条</b></div>
           <div className="run-list history-drawer-list">
@@ -1548,7 +1592,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                   type="button"
                   className={activeRun?.run_id === run.run_id ? "is-active" : ""}
                   onClick={() => {
-                    setHistoryDrawerOpen(false);
+                    closeHistoryDrawer();
                     void openRun(run.run_id);
                   }}
                 >

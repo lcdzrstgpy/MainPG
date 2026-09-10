@@ -66,3 +66,6 @@ real-workbench/employee_workbench/product_processing/
 
 # 测试残留的临时 SQLite 文件
 NONEXISTENT-NO-DB
+
+# 本地运行时业务日志（login.log / ai_processing.log / pod_processing.log / runtime.log）
+local-runtime/*.log

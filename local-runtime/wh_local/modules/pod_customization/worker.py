@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from ...runtime_logs import business_logger
 from ...session import Actor
 from .assets import PodAssetStore
 from .errors import PodExecutionExpired, image_provider_outcome_for_exception, safe_error_message
@@ -357,6 +358,11 @@ class PodBatchWorker:
         cancelled = False
         execution_expired = False
         try:
+            try:
+                business_logger("pod_processing").info(
+                    "========== POD 批次执行开始 | batch_id=%s ==========", batch_id)
+            except Exception:  # noqa: BLE001
+                pass
             self._process_batch_authorized(batch_id, run)
         except PodExecutionExpired:
             # The reaper has revoked this execution.  Do not let the stale
@@ -399,6 +405,23 @@ class PodBatchWorker:
                     # 账务结算单独保存在 billing run；不能覆盖生成结果，
                     # 否则失败项会被“等待结算”状态反向锁死。
                     self.repository.mark_billing_pending(run.action_key, safe_error_message(exc))
+            # 本地 POD 处理日志：批次终态汇总（含图片/标题完成情况与结算）。
+            try:
+                _final = self.repository.get_batch_internal(batch_id)
+                _items = _final.get("items") or []
+                _titles = _final.get("style_titles") or []
+                _item_done = sum(1 for i in _items if str(i.get("status") or "") == "completed")
+                _item_failed = sum(1 for i in _items if str(i.get("status") or "") == "failed")
+                _title_done = sum(1 for t in _titles if str(t.get("status") or "") == "completed")
+                business_logger("pod_processing").info(
+                    "========== POD 批次执行结束 | batch_id=%s | status=%s | "
+                    "图片完成=%d/%d | 图片失败=%d | 标题完成=%d | 取消=%s | 执行过期=%s "
+                    "==========",
+                    batch_id, str(_final.get("status") or "-"),
+                    _item_done, len(_items), _item_failed, _title_done,
+                    cancelled, execution_expired)
+            except Exception:  # noqa: BLE001
+                pass
             self._discard_billing_run(batch_id, run)
 
     def _check_control(self, batch_id: str) -> None:
@@ -893,6 +916,15 @@ class PodBatchWorker:
             # styles already auto-retried once inside this pass must not be
             # re-attempted again by the outer second pass.
             in_loop_retried |= attempt_retried
+            # 本地 POD 处理日志：图片样式轮次结果（完成集 / 失败原因）。
+            try:
+                business_logger("pod_processing").info(
+                    "图片样式轮次 | batch_id=%s | 第%d轮 | 完成款式=%d | 失败款式=%d | "
+                    "失败明细=%s",
+                    batch["batch_id"], attempt, len(attempt_processed), len(attempt_errors),
+                    "; ".join(f"款式{k}:{str(v)[:160]}" for k, v in sorted(attempt_errors.items())) or "-")
+            except Exception:  # noqa: BLE001
+                pass
             if pause_requested or self.repository.get_batch_status(batch["batch_id"]) == "pausing":
                 raise PodBatchPaused("POD 批次已暂停")
 
@@ -966,6 +998,12 @@ class PodBatchWorker:
             )
         for future in as_completed(futures):
             future.result()
+        try:
+            business_logger("pod_processing").info(
+                "标题生成完成 | batch_id=%s | 标题款式数=%d",
+                batch["batch_id"], len(pending))
+        except Exception:  # noqa: BLE001
+            pass
 
     def _stream_style_attempts(
         self,

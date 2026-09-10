@@ -10,6 +10,7 @@ import secrets
 from typing import Any
 
 from ..db import transaction
+from ..runtime_logs import business_logger
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import EmailDeliveryError, VerificationEmailSender
 
@@ -698,6 +699,16 @@ class SQLiteCustomerAuthService:
         return CustomerAuthActionResult(ok=True, message="password reset")
 
     def _log_login(self, account_id: str, username: str, email: str, success: bool, reason: str) -> None:
+        # 本地登录日志文件（login.log，与 runtime.log 同目录），按事件详细记录。
+        _log = business_logger("login")
+        if success:
+            _log.info(
+                "登录成功 | account=%s | username=%s | email=%s",
+                account_id or "-", username or "-", email or "-")
+        else:
+            _log.warning(
+                "登录失败 | account=%s | username=%s | email=%s | reason=%s",
+                account_id or "-", username or "-", email or "-", reason or "-")
         with transaction(self.database_path) as conn:
             conn.execute(
                 """
@@ -827,6 +838,21 @@ def _log_security_event(
     success: bool,
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    # 本地登录日志文件（login.log）一并记录安全事件（改密/忘记密码/重置/激活等）。
+    try:
+        _log = business_logger("login")
+        if success:
+            _log.info(
+                "安全事件 | account=%s | event=%s | result=success",
+                account_id or "-", event_type)
+        else:
+            _log.warning(
+                "安全事件 | account=%s | event=%s | result=failure | metadata=%s",
+                account_id or "-", event_type,
+                json.dumps({k: str(v)[:200] for k, v in (metadata or {}).items()},
+                           ensure_ascii=False))
+    except Exception:  # noqa: BLE001 日志绝不反向影响安全事件落库
+        pass
     conn.execute(
         """
         INSERT INTO auth_security_events (
