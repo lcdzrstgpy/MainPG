@@ -1046,6 +1046,10 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_batch_freezes", "link_prices_json", "TEXT NOT NULL DEFAULT '[]'")
     # 消费流水与处理任务的关联键：客户端冻结时携带任务号，后台可按任务排查滞留冻结。
     _ensure_column(conn, "billing_batch_freezes", "task_id", "TEXT NOT NULL DEFAULT ''")
+    # 消费流水版本维度：记录产生该条调用/冻结时客户端所用的版本号，供后台按版本
+    # 分析用量与失败率（历史记录保持空串；旧客户端未上报时同样为空）。
+    _ensure_column(conn, "billing_ai_usage_events", "app_version", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "billing_batch_freezes", "app_version", "TEXT NOT NULL DEFAULT ''")
     # 支付订单的积分明细均为原始积分单位（当前为 0.1 积分）。旧订单保留
     # points 兼容字段，并在首次启动时把它作为基础积分快照。
     _ensure_column(conn, "billing_payment_orders", "base_points", "INTEGER NOT NULL DEFAULT 0")

@@ -933,6 +933,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             title_call_count=payload.get("title_call_count"),
             image_call_count=payload.get("image_call_count"),
             idempotency_key=str(payload.get("idempotency_key") or ""),
+            app_version=str(payload.get("app_version") or "")[:40],
         )
         if freeze["status"] != "frozen":
             raise HTTPException(status_code=409, detail="POD freeze is no longer active")
@@ -1071,6 +1072,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             idempotency_key=idempotency_key,
             billing_profile=billing_profile,
             task_id=str(payload.get("task_id") or ""),
+            app_version=str(payload.get("app_version") or "")[:40],
         )
         keys = _issue_batch_keys(db_path, account, freeze["freeze_id"])
         return {"ok": True, "freeze": {**freeze, "keys": keys}}
@@ -1191,6 +1193,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 idempotency_key=idempotency_key,
                 quantity=1,
                 source_ref=str(payload.get("source_ref") or "")[:200],
+                app_version=str(payload.get("app_version") or "")[:40],
                 metadata=_safe_billing_metadata(metadata),
             ),
         }
