@@ -686,6 +686,10 @@ class ProductProcessingRepository:
     ) -> tuple[list[dict[str, Any]], bool]:
         """聚合草稿池批次（按 selection_run_id 分组），最新批次在前。
 
+        只统计仍留在草稿池的待处理草稿（``status='draft'``），与
+        :meth:`list_drafts` 的默认口径一致：批次条数 = 点进去能看到的草稿数，
+        某批次的草稿全部提交处理后该批次自动从面板消失。
+
         返回每个批次的标识、条数、首末时间，并为每个批次抽取一条最新草稿的
         raw_payload 以解析采集入口（collection_channel）与平台（source_platform）。
         """
@@ -699,7 +703,7 @@ class ProductProcessingRepository:
                 )
                 .where(
                     ProductDraftRow.workspace_id == workspace_id,
-                    ProductDraftRow.status != "deleted",
+                    ProductDraftRow.status == "draft",
                 )
                 .group_by(ProductDraftRow.selection_run_id)
                 .order_by(func.max(ProductDraftRow.created_at).desc())
@@ -717,7 +721,7 @@ class ProductProcessingRepository:
                         .where(
                             ProductDraftRow.workspace_id == workspace_id,
                             ProductDraftRow.selection_run_id == batch_id,
-                            ProductDraftRow.status != "deleted",
+                            ProductDraftRow.status == "draft",
                         )
                         .order_by(ProductDraftRow.created_at.desc(), ProductDraftRow.id.desc())
                         .limit(1)
@@ -728,7 +732,7 @@ class ProductProcessingRepository:
                         .where(
                             ProductDraftRow.workspace_id == workspace_id,
                             ProductDraftRow.selection_run_id.is_(None),
-                            ProductDraftRow.status != "deleted",
+                            ProductDraftRow.status == "draft",
                         )
                         .order_by(ProductDraftRow.created_at.desc(), ProductDraftRow.id.desc())
                         .limit(1)
@@ -759,13 +763,20 @@ class ProductProcessingRepository:
     def delete_draft_batch(
         self, *, batch_id: str, workspace_id: str = "local"
     ) -> int:
-        """软删整个采集批次（selection_run_id 分组）的全部草稿。"""
+        """软删整个采集批次（selection_run_id 分组）中仍待处理的草稿。
+
+        只清草稿池内的候选（``status='draft'``）：已提交处理的草稿（processing /
+        processed）是任务预检与最终店小秘表格导出的数据来源，批次删除不连带删除。
+
+        batch_id 为空串或 ``__unassigned__``（前端未分组批次的哨兵）时，命中
+        未分组草稿（selection_run_id IS NULL），与 list_drafts 的特判保持一致。
+        """
         with self.database.sessions.begin() as session:
             statement = select(ProductDraftRow).where(
                 ProductDraftRow.workspace_id == workspace_id,
-                ProductDraftRow.status != "deleted",
+                ProductDraftRow.status == "draft",
             )
-            if batch_id:
+            if batch_id and batch_id != "__unassigned__":
                 statement = statement.where(ProductDraftRow.selection_run_id == batch_id)
             else:
                 statement = statement.where(ProductDraftRow.selection_run_id.is_(None))
@@ -779,13 +790,18 @@ class ProductProcessingRepository:
     def purge_expired_draft_batches(
         self, *, retention_hours: int = 24, workspace_id: str = "local"
     ) -> int:
-        """软删超过保留时长（默认 24h）的采集批次草稿。
+        """软删超过保留时长（默认 24h）仍未处理的采集候选草稿。
 
-        批次入口时间取该批次草稿的最早创建时间；未分组草稿（selection_run_id
-        为空）按同规则一并清理。
+        清理目标只限草稿池内待处理的草稿（``status='draft'``）：已提交处理的
+        草稿（processing / processed）是任务预检页与最终店小秘表格导出的数据
+        来源（preview_overrides、media_contract_version），超时也不清理。
+
+        批次入口时间取该批次池内草稿的最早创建时间；未分组草稿（selection_run_id
+        为空）按同规则一并清理。写操作必须在 ``sessions.begin()`` 内提交，否则
+        事务在会话关闭时回滚，清理不会落库。
         """
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=retention_hours)).isoformat()
-        with self.database.sessions() as session:
+        with self.database.sessions.begin() as session:
             statement = (
                 select(
                     ProductDraftRow.selection_run_id,
@@ -793,7 +809,7 @@ class ProductProcessingRepository:
                 )
                 .where(
                     ProductDraftRow.workspace_id == workspace_id,
-                    ProductDraftRow.status != "deleted",
+                    ProductDraftRow.status == "draft",
                 )
                 .group_by(ProductDraftRow.selection_run_id)
                 .having(func.min(ProductDraftRow.created_at) < cutoff)
@@ -805,7 +821,7 @@ class ProductProcessingRepository:
                 rows = session.scalars(
                     select(ProductDraftRow).where(
                         ProductDraftRow.workspace_id == workspace_id,
-                        ProductDraftRow.status != "deleted",
+                        ProductDraftRow.status == "draft",
                         ProductDraftRow.selection_run_id == batch_id
                         if batch_id
                         else ProductDraftRow.selection_run_id.is_(None),
