@@ -30,6 +30,10 @@ local-runtime/_rsa_private.pem
 local-runtime/_rsa_public.pem
 local-runtime/wh_local/secrets.py
 
+# 妙手导出的运行时产物：精简模板缓存与参考表由程序首次导出时自动生成
+local-runtime/wh_local/modules/product_processing/templates/generated/
+local-runtime/wh_local/modules/product_processing/templates/妙手参考表-类目ID与包装清单.xlsx
+
 # 嵌入式 Python 运行时（打包用，体积大，不进 git）
 local-runtime/python-runtime/
 

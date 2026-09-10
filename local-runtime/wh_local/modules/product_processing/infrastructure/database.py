@@ -143,6 +143,7 @@ _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("workbook_path", "TEXT NOT NULL DEFAULT ''"),
         ("row_count", "INTEGER NOT NULL DEFAULT 0"),
         ("product_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("workbook_format", "VARCHAR(32) NOT NULL DEFAULT 'dxm'"),
         ("created_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ("updated_at", "VARCHAR(64) NOT NULL DEFAULT ''"),
     ],

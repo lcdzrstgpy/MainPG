@@ -3720,6 +3720,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         *,
         workspace_id: str = "local",
         idempotency_key: str = "",
+        export_format: str = "dxm",
     ) -> dict[str, Any]:
         task = self._require_task(task_id, workspace_id)
         config = self.engine_status()["diagnostics"]["config"]
@@ -3742,6 +3743,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 normalized,
                 workspace_id=workspace_id,
                 idempotency_key=idempotency_key,
+                export_format=str(export_format or "dxm"),
             )
         except (PreviewRevisionConflict, PreviewIdempotencyConflict, PreviewPublicationConflict) as exc:
             raise ProductProcessingConflict(str(exc)) from exc
@@ -4095,6 +4097,49 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             )
         except (LookupError, FileNotFoundError) as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
+
+    def export_miaoshou_workbook(
+        self,
+        task_id: int,
+        run_id: str,
+        kind: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """基于已完成预审的最终快照再次生成妙手导入模板（服饰类/非服饰类）。"""
+        self.preview_finalize_status(task_id, run_id, workspace_id=workspace_id)
+        try:
+            return self.preview_images.export_miaoshou_workbook(
+                task_id,
+                run_id,
+                kind,
+                workspace_id=workspace_id,
+            )
+        except (LookupError, FileNotFoundError) as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+        except ValueError as exc:
+            raise ProductProcessingValidationError(str(exc)) from exc
+
+    def miaoshou_download_path(
+        self,
+        task_id: int,
+        run_id: str,
+        kind: str,
+        *,
+        workspace_id: str = "local",
+    ) -> Path:
+        self.preview_finalize_status(task_id, run_id, workspace_id=workspace_id)
+        try:
+            return self.preview_images.miaoshou_download_path(
+                task_id,
+                run_id,
+                kind,
+                workspace_id=workspace_id,
+            )
+        except (LookupError, FileNotFoundError) as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+        except ValueError as exc:
+            raise ProductProcessingValidationError(str(exc)) from exc
 
     def export_final_workbook(self, task_id: int, *, workspace_id: str = "local") -> dict[str, Any]:
         """导出最终版店小秘表格：合并各商品已保存的预检覆盖后重新生成 xlsx。
