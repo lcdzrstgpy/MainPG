@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { podCustomizationApi } from "../api/podCustomizationApi";
 import { PodBatchGallery } from "../components/PodBatchGallery";
@@ -844,7 +845,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         </div>
       </header>
 
-      {error && <div className="pod-page-message is-error" role="alert"><span>!</span><p>{error}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
+      {/* portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed toast 的 z-index，被顶栏盖住 */}
+      {error && createPortal(<div className="pod-page-message is-error" role="alert"><span>!</span><p>{error}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>, document.body)}
 
       <div className="pod-workbench-grid">
         <aside className="pod-setup-column pod-brief-sidebar">

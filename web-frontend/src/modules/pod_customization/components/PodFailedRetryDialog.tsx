@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { PodBatchRetryCandidate, PodBatchRetryRequest } from "../data/podBatchRetry";
 
@@ -50,7 +51,8 @@ export function PodFailedRetryDialog({ open, imageCandidates, titleCandidates, b
     });
   };
 
-  return <div className="pod-failed-retry-backdrop" role="presentation" onMouseDown={() => !busy && onClose()}>
+  // portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed 层 z-index，被顶栏盖住
+  return createPortal(<div className="pod-failed-retry-backdrop" role="presentation" onMouseDown={() => !busy && onClose()}>
     <section className="pod-failed-retry-dialog" role="dialog" aria-modal="true" aria-labelledby="pod-failed-retry-title" onMouseDown={(event) => event.stopPropagation()}>
       <header><div><span>FAILED ITEMS</span><h2 id="pod-failed-retry-title">批量重试失败项</h2><p>默认已选中全部可重试款式；图片失败会整款重新生成，标题失败只会重生标题。</p></div><button type="button" onClick={onClose} disabled={busy} aria-label="关闭批量重试">×</button></header>
       {noCandidates
@@ -61,7 +63,7 @@ export function PodFailedRetryDialog({ open, imageCandidates, titleCandidates, b
         </div>}
       <footer><button type="button" onClick={onClose} disabled={busy}>取消</button><button type="button" className="pod-failed-retry-select-all" disabled={busy || noCandidates} onClick={() => setSelected(allCandidateKeys(imageCandidates, titleCandidates))}>重试全部失败</button><button type="button" className="pod-failed-retry-confirm" disabled={busy || !selectedImageStyleIndices.length && !selectedTitleStyleIndices.length} onClick={() => onSubmit({ image_style_indices: selectedImageStyleIndices, title_style_indices: selectedTitleStyleIndices })}>{busy ? "正在提交" : <>确认重试（图片 {selectedImageStyleIndices.length} 款，标题 {selectedTitleStyleIndices.length} 款）</>}</button></footer>
     </section>
-  </div>;
+  </div>, document.body);
 }
 
 function CandidateGroup({ title, kind, candidates, selected, disabled, onToggle }: {

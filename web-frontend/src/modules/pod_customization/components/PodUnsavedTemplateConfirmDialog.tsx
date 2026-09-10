@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 
 type Props = {
   open: boolean;
@@ -23,7 +24,8 @@ export function PodUnsavedTemplateConfirmDialog({ open, templateName, busy = fal
 
   if (!open) return null;
 
-  return (
+  // portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed 层 z-index，被顶栏盖住
+  return createPortal(
     <div className="pod-unsaved-confirm-backdrop" role="presentation" onMouseDown={() => !busy && onClose()}>
       <section className="pod-unsaved-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="pod-unsaved-confirm-title" onMouseDown={(event) => event.stopPropagation()}>
         <header>
@@ -39,6 +41,6 @@ export function PodUnsavedTemplateConfirmDialog({ open, templateName, busy = fal
           <button type="button" className="pod-unsaved-confirm-confirm" ref={confirmRef} disabled={busy} onClick={onConfirm}>{busy ? "正在更换" : "确认更换并清空"}</button>
         </footer>
       </section>
-    </div>
+    </div>, document.body,
   );
 }

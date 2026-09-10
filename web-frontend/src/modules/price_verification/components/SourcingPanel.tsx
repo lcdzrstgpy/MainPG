@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { priceVerificationApi } from "../api/priceVerificationApi";
 import type { QuoteBatchSkuPrice, SkcSourceLink, SourceCandidate, SourceCandidateSelection, SourcePreview, SourcePreviewItem, SourcePreviewSkcGroup, SourceTopProfit } from "../types";
@@ -539,7 +540,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
       >
         {busy ? "图搜执行中…" : "重新图搜"}
       </button>
-      {temuSkuDrawer ? <div className="pv-temu-sku-drawer-layer" role="presentation" onMouseDown={(event) => {
+      {/* 三个弹层均 portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed 层 z-index，被顶栏盖住 */}
+      {temuSkuDrawer ? createPortal(<div className="pv-temu-sku-drawer-layer" role="presentation" onMouseDown={(event) => {
         if (event.currentTarget === event.target) setTemuSkuDrawer(null);
       }}>
         <aside className="pv-temu-sku-drawer" role="dialog" aria-modal="true" aria-label="Temu 商品 SKU 信息">
@@ -567,8 +569,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
             </div> : null}
           </div>
         </aside>
-      </div> : null}
-      {manualLookupSkcId ? <div className="pv-source-manual-dialog-backdrop" role="presentation" onMouseDown={() => !manualLookupBusy && setManualLookupSkcId("")}>
+      </div>, document.body) : null}
+      {manualLookupSkcId ? createPortal(<div className="pv-source-manual-dialog-backdrop" role="presentation" onMouseDown={() => !manualLookupBusy && setManualLookupSkcId("")}>
         <form className="pv-source-manual-dialog" role="dialog" aria-modal="true" aria-labelledby="pv-manual-lookup-title" onSubmit={(event) => void submitManualLookup(event)} onMouseDown={(event) => event.stopPropagation()}>
           <div>
             <p>SKC {manualLookupSkcId}</p>
@@ -583,13 +585,13 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
             <button type="submit" disabled={!manualLookupUrl.trim() || manualLookupBusy}>{manualLookupBusy ? "查询中…" : "查询并置顶"}</button>
           </div>
         </form>
-      </div> : null}
-      {imagePreviewUrl ? <div className="pv-source-image-preview-backdrop" role="presentation" onMouseDown={() => setImagePreviewUrl("")}>
+      </div>, document.body) : null}
+      {imagePreviewUrl ? createPortal(<div className="pv-source-image-preview-backdrop" role="presentation" onMouseDown={() => setImagePreviewUrl("")}>
         <section className="pv-source-image-preview" role="dialog" aria-modal="true" aria-label="商品大图预览" onMouseDown={(event) => event.stopPropagation()}>
           <button type="button" className="pv-source-image-preview-close" onClick={() => setImagePreviewUrl("")} aria-label="关闭大图预览" autoFocus>×</button>
           <img src={imagePreviewUrl} alt="商品大图" referrerPolicy="no-referrer" />
         </section>
-      </div> : null}
+      </div>, document.body) : null}
     </section>
   );
 }

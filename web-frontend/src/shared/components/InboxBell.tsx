@@ -143,7 +143,12 @@ export function InboxBell() {
   const togglePanel = () => {
     const next = !open;
     setOpen(next);
-    if (next) void refreshList();
+    if (next) {
+      // 提醒弹窗与消息中心位置完全重合（top:44px/right:0/width:330px）且 z-index 更高，
+      // 两者同时挂载时提醒会把消息列表整块盖住。打开列表前先撤掉提醒。
+      setAnnouncement(null);
+      void refreshList();
+    }
   };
 
   const handleMarkRead = async (messageId: number) => {
@@ -257,7 +262,10 @@ export function InboxBell() {
           </div>
         </div>
       )}
-      {announcement && (
+      {/* 渲染层互斥：announcement 与 popover 位置完全重合（top:44px/right:0/width:330px），
+          且 announcement z-index:4 高于 popover:3，两者同时挂载时 reminder 会把列表
+          整块盖住。popover 打开时直接不渲染 announcement，行为上更直观。 */}
+      {!open && announcement && (
         <div className="inbox-announcement" role="alert" aria-label="新消息提醒">
           <button
             type="button"

@@ -1,0 +1,65 @@
+/* ================================================================
+   MainPG 设计 token（v1）
+   只定义"规"，不直接改业务观感；各模块可渐进替换。
+   使用方式：写样式时优先引用本文件的变量，不要再手写 px/rgba。
+   ================================================================ */
+
+:root {
+  /* ---- 字体 ----
+     中文字体栈补齐：此前只有 Inter/system-ui，中文会落到系统默认字体，
+     与西文的字重、字面大小对不齐，是观感"不够讲究"的主要来源。 */
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Noto Sans SC", sans-serif;
+  --font-number: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  /* ---- 圆角：4 档 ----
+     此前实际用到 8/9/10/11/12/13/14/16/18/22 共 10 档，缺少阶梯感。 */
+  --radius-sm: 6px;   /* 小控件：chip、徽标、图标按钮 */
+  --radius-md: 10px;  /* 常规控件：按钮、输入、菜单项、弹层内卡片 */
+  --radius-lg: 16px;  /* 区块卡片：hero、快捷入口、统计块 */
+  --radius-xl: 22px;  /* 外壳卡片：侧边栏、顶栏、内容白板 */
+
+  /* ---- 阴影：3 级 ----
+     每级都是"接触层 + 环境层"双层，比单层大扩散阴影更干净。
+     环境层的颜色仍走 --theme-card-shadow，保证 8 套主题各自色系不丢。 */
+  --shadow-sm: 0 1px 2px rgba(16, 42, 74, .05), 0 2px 6px -2px rgba(16, 42, 74, .06);
+  --shadow-md: 0 1px 2px rgba(16, 42, 74, .05), 0 8px 20px -8px rgba(16, 42, 74, .10);
+  --shadow-lg: 0 1px 2px rgba(16, 42, 74, .05), 0 18px 42px -12px rgba(16, 42, 74, .14);
+
+  /* 卡片顶部内高光：让白板看起来有受光的边，而不是一块平白 */
+  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, .72);
+  --card-highlight-strong: inset 0 1px 0 rgba(255, 255, 255, .92);
+
+  /* ---- 字重：4 档 ----
+     此前出现 650/720/750/760/800/850/900 共 7 种随手值。 */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ---- 字号阶梯 ----
+     下限 .75rem(12px)：界面上出现过 .63/.65/.67rem(约 10px)，
+     低于可读下限，既显廉价也不满足无障碍。 */
+  --text-xs: .75rem;
+  --text-sm: .8125rem;
+  --text-base: .875rem;
+  --text-md: 1rem;
+  --text-lg: 1.125rem;
+
+  /* ---- 间距：4pt 栅格 ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ---- 过渡：统一缓动 ---- */
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ease-standard: cubic-bezier(.22, .8, .32, 1);
+  --duration-fast: .16s;
+  --duration-base: .22s;
+  --duration-slow: .34s;
+}
