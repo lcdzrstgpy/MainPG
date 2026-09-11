@@ -534,8 +534,9 @@ def test_card_surface_is_opaque_and_corner_is_square() -> None:
     assert min(inside) >= 250, f"卡片底色应为纯白不透明，实际 {inside}"
 
     # 直角：外接矩形四角都必须是卡片底色（圆角时四角会露出深色底图）
+    # 阈值留一点余量：卡片紧贴角落时描边落在 JPEG 块边界，振铃会让白底掉到 ~248
     for point in ((left + 2, top + 2), (right - 3, top + 2), (left + 2, bottom - 3), (right - 3, bottom - 3)):
-        assert min(pixels[point]) >= 250, f"角点 {point} 不是卡片底色 → 仍有圆角"
+        assert min(pixels[point]) >= 246, f"角点 {point} 不是卡片底色 → 仍有圆角"
 
     # 行间分隔线：卡片内部应存在明显暗于底色的横向像素行
     center_x = (left + right) // 2

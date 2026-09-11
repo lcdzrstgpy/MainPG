@@ -374,8 +374,11 @@
 .pod-current-template-summary > header h2 { margin: 2px 0 0; font-size: .9rem; }
 .pod-current-template-summary > header button { padding: 6px 9px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-primary); background: var(--pod-surface-soft); font-size: .62rem; font-weight: 800; }
 .pod-current-template-body { display: grid; grid-template-columns: 138px minmax(0, 1fr); align-items: stretch; gap: 20px; }
-.pod-current-template-image { aspect-ratio: 1 / 1; overflow: hidden; border: 1px solid var(--pod-border); border-radius: 16px; color: var(--pod-text-muted); background: var(--pod-surface-soft); }
-.pod-current-template-image img { display: block; width: 100%; height: 100%; object-fit: contain; }
+/* 模板图要贴边铺满整框：本元素是 <button>，浏览器 UA 默认内边距（Chromium/WebKit 为 1px 6px）
+   会把 width/height:100% 的图片顶进内容盒，露出框底形成白边，因此显式 padding:0；
+   图片按 cover 铺满整个圆角框，超出部分由 overflow:hidden 裁切（只改前端样式，不动图片本身）。 */
+.pod-current-template-image { aspect-ratio: 1 / 1; padding: 0; overflow: hidden; border: 1px solid var(--pod-border); border-radius: 16px; color: var(--pod-text-muted); background: var(--pod-surface-soft); }
+.pod-current-template-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .pod-current-template-body dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: center; gap: 12px 18px; margin: 0; }
 .pod-current-template-body dl > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 8px; }
 .pod-current-template-body dt { padding: 9px 10px; border-radius: 7px; color: var(--pod-text); background: var(--pod-surface-tint); font-size: .66rem; font-weight: 850; text-align: center; }
@@ -679,7 +682,6 @@
 .pod-spec-card-drawer-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 20px 22px 15px; border-bottom: 1px solid var(--pod-border); background: var(--theme-module-panel-gradient, var(--pod-surface-soft)); }
 .pod-spec-card-drawer-header > div > span { color: var(--pod-primary); font-size: .64rem; font-weight: 900; letter-spacing: .1em; }
 .pod-spec-card-drawer-header h2 { margin: 3px 0; font-size: 1.25rem; }
-.pod-spec-card-drawer-header p { margin: 0; color: var(--pod-text-secondary); font-size: .68rem; }
 .pod-spec-card-drawer-header > button { width: 34px; height: 34px; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: 1.25rem; }
 
 .pod-spec-card-frozen-banner { margin: 0; padding: 9px 22px; border-bottom: 1px solid var(--pod-border); color: #7a5a17; background: #fff8e6; font-size: .72rem; font-weight: 700; }
@@ -692,7 +694,6 @@
 .pod-spec-card-section-title { display: flex; align-items: baseline; gap: 8px; }
 .pod-spec-card-section-title > span { color: var(--pod-primary); font-size: .6rem; font-weight: 900; letter-spacing: .1em; }
 .pod-spec-card-section-title h3 { margin: 0; font-size: .88rem; }
-.pod-spec-card-section-title small { color: var(--pod-text-muted); font-size: .64rem; }
 
 .pod-spec-card-table-toolbar { display: flex; align-items: center; gap: 8px; }
 .pod-spec-card-table-toolbar > span { margin-right: auto; color: var(--pod-text-secondary); font-size: .68rem; font-weight: 700; }

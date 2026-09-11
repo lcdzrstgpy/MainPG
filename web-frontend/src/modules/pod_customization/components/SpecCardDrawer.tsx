@@ -20,7 +20,6 @@ import { SpecCardPreview } from "./SpecCardPreview";
 import { SpecCardTableEditor } from "./SpecCardTableEditor";
 
 export const SPEC_CARD_DRAWER_TITLE = "批量添加尺寸";
-export const SPEC_CARD_DRAWER_SUBTITLE = "表格内容会原样印到第 4 张图上";
 export const SPEC_CARD_FROZEN_NOTICE = "配置已冻结；改动将在下一批次生效";
 export const SPEC_CARD_UNLOCKED_NOTICE = "已解锁：保存的改动只用于下一批次，运行中的批次不会被重印。";
 export const SPEC_CARD_REEXPORT_NOTICE = "该批次需重新导出";
@@ -158,7 +157,6 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
           <div>
             <span>SPEC CARD · 素材图</span>
             <h2>{SPEC_CARD_DRAWER_TITLE}</h2>
-            <p>{SPEC_CARD_DRAWER_SUBTITLE}</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>
@@ -167,11 +165,10 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
         {mode === "terminal" && <p className="pod-spec-card-terminal-banner" role="status">当前批次已结束，可编辑后全批重印；重印完成后需要重新导出。</p>}
 
         <div className="pod-spec-card-drawer-body">
-          <section className="pod-spec-card-section" aria-label="表格内容">
+          <section className="pod-spec-card-section" aria-label="尺寸详情">
             <div className="pod-spec-card-section-title">
               <span>TABLE</span>
-              <h3>表格内容</h3>
-              <small>只印你填的字符，系统不做加工</small>
+              <h3>尺寸详情</h3>
             </div>
             <SpecCardTableEditor cells={cells} onChange={setCells} disabled={readOnly} />
           </section>

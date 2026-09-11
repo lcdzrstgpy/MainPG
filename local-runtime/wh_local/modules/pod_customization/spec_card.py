@@ -52,7 +52,7 @@ ROW_HEIGHT_PX_AT_800 = 32
 CARD_TARGET_WIDTH_RATIO = 1 / 3
 
 # 几何比例（除内边距/行高/列间距外，均「相对画布边长」）。
-_MARGIN_RATIO = 0.0325  # 外边距
+_MARGIN_RATIO = 0.0  # 外边距：0 = 卡片紧贴所选角落（2026-09-11 用户规格）
 _STROKE_RATIO = 0.0025  # 描边
 _CARD_WIDTH_RATIO = 0.46  # 卡片宽上限
 _CARD_HEIGHT_RATIO = 0.62  # 卡片高上限（12 行 × 32px ≈ 430px，需放宽）
@@ -215,7 +215,7 @@ def render_spec_card(
     base = _open_square_base(base_content)
     side = base.width
 
-    margin = max(1, round(side * _MARGIN_RATIO))
+    margin = max(0, round(side * _MARGIN_RATIO))
     stroke = max(1, round(side * _STROKE_RATIO))
     max_width = max(1, round(side * _CARD_WIDTH_RATIO))
     max_height = max(1, round(side * _CARD_HEIGHT_RATIO))

@@ -72,6 +72,9 @@ const SKU_FIELD_LABELS: Record<SkuField, string> = {
   weight_g: "重量",
 };
 
+// 成功提示（右上角 toast）只在出现后短暂停留，到点自动收起，不做常驻；错误提示仍保留到用户处理。
+const NOTICE_AUTO_DISMISS_MS = 6_000;
+
 function skuErrorKey(index: number, key: SkuField): string {
   return `${index}:${key}`;
 }
@@ -370,6 +373,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       autoGrowBusinessTextarea(textarea);
     });
   }, [businessFields]);
+
+  // 提示生命周期：成功 toast 出现后自动收起，避免一次操作后一直挂在右上角。
+  // 依赖 notice 本身：新提示出现会清掉旧计时器重新计时；手动关闭（notice 置空）也会清掉计时器。
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), NOTICE_AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   const clearMessages = () => {
     setNotice("");

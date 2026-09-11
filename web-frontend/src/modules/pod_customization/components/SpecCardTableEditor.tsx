@@ -121,7 +121,7 @@ export function SpecCardTableEditor({ cells, onChange, disabled = false }: Props
         </tbody>
       </table>
 
-      <p className="pod-spec-card-table-hint">{SPEC_CARD_HEADER_ROW_HINT}；{SPEC_CARD_COLUMN_ALIGN_HINT}；单元格内容原样印出，系统不做加工。</p>
+      <p className="pod-spec-card-table-hint">{SPEC_CARD_HEADER_ROW_HINT}；{SPEC_CARD_COLUMN_ALIGN_HINT}；单元格内容原样印出。</p>
       <p className="pod-spec-card-table-hint">{SPEC_CARD_MIN_ROWS}–{SPEC_CARD_MAX_ROWS} 行、{SPEC_CARD_MIN_COLUMNS}–{SPEC_CARD_MAX_COLUMNS} 列；空行不会印出。</p>
       {limitNotice && <p className="pod-spec-card-table-notice" role="alert">{limitNotice}</p>}
     </div>

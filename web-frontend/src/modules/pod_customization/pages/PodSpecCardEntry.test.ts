@@ -70,7 +70,8 @@ test("the drawer mirrors the shared drawer shell with dialog semantics", () => {
   assert.match(drawerSource, /className="pod-spec-card-drawer-backdrop"/);
   assert.match(drawerSource, /role="dialog" aria-modal="true" aria-label=\{SPEC_CARD_DRAWER_TITLE\}/);
   assert.match(drawerSource, /export const SPEC_CARD_DRAWER_TITLE = "批量添加尺寸";/);
-  assert.match(drawerSource, /export const SPEC_CARD_DRAWER_SUBTITLE = "表格内容会原样印到第 4 张图上";/);
+  // 用户规格（2026-09-11）：抽屉不再展示「表格内容会原样印到第 4 张图上」这类说明文案。
+  assert.doesNotMatch(drawerSource, /表格内容会原样印到第 4 张图上/);
   assert.match(styles, /\.pod-spec-card-drawer \{ position: absolute;[\s\S]*?width: min\(760px, 94vw\);/);
 });
 
