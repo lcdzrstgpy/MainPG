@@ -8,12 +8,19 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from ...shared.miaoshou_workbook import (
+    MS_KIND_APPAREL,
+    MS_KIND_GENERAL,
+    build_miaoshou_workbook_bytes,
+    miaoshou_row_values,
+)
 from .dianxiaomi import DXM_COLUMNS, build_dianxiaomi_workbook
 from .title_runtime import validate_listing_copy_text
 
 
 LISTING_IMAGE_ROLES = ("hero", "detail_a", "detail_b", "lifestyle")
 LISTING_PRESENTATION_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
+MIAOSHOU_KINDS = (MS_KIND_APPAREL, MS_KIND_GENERAL)
 SETTLED_BATCH_STATUSES = frozenset({"completed", "partial_failure", "failed", "cancelled"})
 # 账务任务与生成结果独立；已生成的完整款式可正常导出，未结算账务不会锁死生成重试。
 BILLING_INTERRUPTED_BATCH_STATUSES = frozenset({"settlement_pending"})
@@ -43,12 +50,18 @@ _DXM_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 @dataclass(frozen=True)
-class DianxiaomiExport:
+class PodWorkbookExport:
+    """POD 工作簿导出的产物（店小秘 / 妙手共用同一结构）。"""
+
     content: bytes
     exported_style_count: int
     skipped_style_count: int
     filename: str
     export_id: str = ""
+
+
+# 既有命名：店小秘导出沿用该类型名。
+DianxiaomiExport = PodWorkbookExport
 
 
 @dataclass(frozen=True)
@@ -144,6 +157,58 @@ def build_pod_dianxiaomi_export(
         skipped_style_count=analysis.skipped_style_count,
         filename=f'pod_dxm_{batch["batch_id"][:8]}.xlsx',
     )
+
+
+def build_pod_miaoshou_export(
+    batch: dict[str, Any], style_copies: dict[int, Any], kind: str
+) -> PodWorkbookExport:
+    """按妙手 Temu 导入模板导出 POD 款式（服饰类 / 非服饰类）。
+
+    可导出款式与 SKU 展开和店小秘完全同源：沿用同一份可导出判定、同一批店小秘行，
+    字段口径由共享模块（``shared/miaoshou_workbook.py``）统一，避免两个入口漂移。
+    """
+    if kind not in MIAOSHOU_KINDS:
+        raise ValueError(f"unsupported miaoshou template kind: {kind}")
+    analysis = analyze_dianxiaomi_export(batch, style_copies)
+    if analysis.block_reason is not None:
+        raise ValueError(analysis.block_reason)
+    skus = _export_skus(batch["listing_fields"])
+    rows: list[dict[int, Any]] = []
+    for style_index in sorted(analysis.exportable_styles):
+        for sku_index, sku in enumerate(skus, start=1):
+            dxm_row = _build_row(
+                style_index,
+                analysis.exportable_styles[style_index],
+                style_copies[style_index],
+                batch["business_fields"],
+                batch["listing_fields"],
+                sku,
+                sku_index=sku_index,
+            )
+            rows.append(
+                miaoshou_row_values(
+                    dxm_row,
+                    kind,
+                    # 妙手描述列不支持 HTML：把店小秘行里的 <img> 换成图片 URL 逐行。
+                    description=_miaoshou_description(dxm_row[2]),
+                    # 妙手库存必须为「大于等于 0 的整数」；POD 不设库存，按约定写 0。
+                    stock=0,
+                )
+            )
+    return PodWorkbookExport(
+        content=build_miaoshou_workbook_bytes(rows, kind),
+        exported_style_count=len(analysis.exportable_styles),
+        skipped_style_count=analysis.skipped_style_count,
+        filename=f'pod_ms_{kind}_{batch["batch_id"][:8]}.xlsx',
+    )
+
+
+_IMG_TAG = re.compile(r'<img\s+src="([^"]+)"\s*/?>', re.IGNORECASE)
+
+
+def _miaoshou_description(value: Any) -> str:
+    """妙手描述列不支持 HTML：把 ``<img src="..."/>`` 还原成图片 URL 逐行。"""
+    return _IMG_TAG.sub(lambda match: match.group(1), str(value or "")).strip()
 
 
 def _style_images(items: list[dict[str, Any]]) -> dict[str, str] | None:

@@ -36,8 +36,10 @@ from .contracts import (
 )
 from .export import (
     DianxiaomiExport,
+    PodWorkbookExport,
     analyze_dianxiaomi_export,
     build_pod_dianxiaomi_export,
+    build_pod_miaoshou_export,
 )
 from .export_records import PodExportRecordStore
 from .errors import image_provider_outcome_for_exception, safe_error_message
@@ -530,19 +532,7 @@ class PodCustomizationService:
     def export_dianxiaomi(self, actor: Actor, batch_id: str) -> DianxiaomiExport:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         copies = self.repository.get_style_copies(batch_id, actor.workspace_id, actor.id)
-        analysis = analyze_dianxiaomi_export(batch, copies)
-        if analysis.block_reason is not None:
-            messages = {
-                "active_batch": "pod 制作尚未完成，请等待全部完成重试",
-                "listing_fields_missing": "POD 批次缺少上架信息快照，无法导出",
-                "style_copy_missing": "POD 款式文案缺失，无法导出",
-                "no_exportable_styles": "POD 批次没有可导出的款式",
-                "all_exportable_styles_unselected": (
-                    "POD 批次没有可导出的款式：所有就绪款式均已被取消勾选"
-                ),
-                "billing_recovery_required": "POD 批次仍有未完成的图片/标题/文案工作",
-            }
-            raise PodRepositoryError(messages[analysis.block_reason], 409)
+        self._ensure_exportable(batch, copies)
         exported = build_pod_dianxiaomi_export(batch, copies)
         record = self.export_records.record_success(
             batch_id=batch_id,
@@ -560,6 +550,46 @@ class PodCustomizationService:
             filename=exported.filename,
             export_id=record["id"],
         )
+
+    def export_miaoshou(self, actor: Actor, batch_id: str, kind: str) -> PodWorkbookExport:
+        """按妙手 Temu 导入模板导出（kind：apparel 服饰类 / general 非服饰类）。"""
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        copies = self.repository.get_style_copies(batch_id, actor.workspace_id, actor.id)
+        self._ensure_exportable(batch, copies)
+        exported = build_pod_miaoshou_export(batch, copies, kind)
+        record = self.export_records.record_success(
+            batch_id=batch_id,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            file_name=exported.filename,
+            format=f"miaoshou_{kind}_xlsx",
+            exported_count=exported.exported_style_count,
+            skipped_count=exported.skipped_style_count,
+        )
+        return PodWorkbookExport(
+            content=exported.content,
+            exported_style_count=exported.exported_style_count,
+            skipped_style_count=exported.skipped_style_count,
+            filename=exported.filename,
+            export_id=record["id"],
+        )
+
+    def _ensure_exportable(self, batch: dict[str, Any], copies: dict[int, Any]) -> None:
+        """导出前置校验：把「不能导出」的原因映射为可读的 409（店小秘/妙手共用）。"""
+        analysis = analyze_dianxiaomi_export(batch, copies)
+        if analysis.block_reason is None:
+            return
+        messages = {
+            "active_batch": "pod 制作尚未完成，请等待全部完成重试",
+            "listing_fields_missing": "POD 批次缺少上架信息快照，无法导出",
+            "style_copy_missing": "POD 款式文案缺失，无法导出",
+            "no_exportable_styles": "POD 批次没有可导出的款式",
+            "all_exportable_styles_unselected": (
+                "POD 批次没有可导出的款式：所有就绪款式均已被取消勾选"
+            ),
+            "billing_recovery_required": "POD 批次仍有未完成的图片/标题/文案工作",
+        }
+        raise PodRepositoryError(messages[analysis.block_reason], 409)
 
     def set_style_export_selection(
         self,

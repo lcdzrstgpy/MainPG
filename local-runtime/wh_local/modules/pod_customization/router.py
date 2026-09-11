@@ -14,6 +14,7 @@ from ...customer.contracts import (
     CustomerBillingProtocolError,
 )
 from ...session import Actor, actor_from_authorization, require_permission
+from ...shared.miaoshou_workbook import MS_KIND_APPAREL
 from .contracts import (
     BatchCreate,
     BatchRetryFailedCreate,
@@ -222,6 +223,25 @@ def create_router(
     ) -> Response:
         permitted(actor, "pod_customization.export")
         exported = _call(service.export_dianxiaomi, actor, batch_id)
+        return Response(
+            content=exported.content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{exported.filename}"',
+                "X-POD-Exported-Styles": str(exported.exported_style_count),
+                "X-POD-Skipped-Styles": str(exported.skipped_style_count),
+                "X-POD-Export-ID": exported.export_id,
+            },
+        )
+
+    @router.get("/batches/{batch_id}/exports/miaoshou")
+    def export_miaoshou(
+        batch_id: str,
+        kind: str = Query(default=MS_KIND_APPAREL, max_length=16),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> Response:
+        permitted(actor, "pod_customization.export")
+        exported = _call(service.export_miaoshou, actor, batch_id, kind)
         return Response(
             content=exported.content,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

@@ -188,9 +188,10 @@
 .pod-history-drawer-body .pod-history-list { flex: 1; max-height: none; padding: 6px 0 0; overflow: auto; }
 
 .pod-gallery { min-width: 0; min-height: 0; padding: 16px; }
-.pod-gallery-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
-.pod-gallery-header > div:first-child { min-width: 0; }
-.pod-gallery-header > div:first-child > span { color: var(--pod-primary); font-size: .61rem; font-weight: 900; letter-spacing: .09em; }
+.pod-gallery-header { display: flex; align-items: center; justify-content: space-between; gap: 12px 16px; flex-wrap: wrap; }
+.pod-gallery-headline { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1 1 auto; }
+.pod-gallery-title { min-width: 0; }
+.pod-gallery-title > span { color: var(--pod-primary); font-size: .61rem; font-weight: 900; letter-spacing: .09em; }
 .pod-gallery-header h2 { overflow: hidden; margin: 4px 0 3px; font-size: 1.08rem; text-overflow: ellipsis; white-space: nowrap; }
 .pod-gallery-header p { margin: 0; color: var(--pod-text-muted); font-size: .66rem; }
 .pod-gallery-header p b { color: var(--pod-text-secondary); }
@@ -385,7 +386,6 @@
 .pod-current-template-body dd { overflow: hidden; margin: 0; padding: 9px 10px; border-radius: 7px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
 .pod-gallery { grid-area: auto; min-height: 0; padding: 16px; border-radius: 18px; }
 .pod-gallery-empty { min-height: 420px; }
-.pod-gallery-header { align-items: center; }
 .pod-gallery-header h2 { font-size: 1rem; }
 .pod-gallery-progress { margin: 10px 0 12px; }
 .pod-style-rows { display: grid; gap: 12px; }
@@ -524,8 +524,9 @@
 .pod-listing-sku-dimensions [role="columnheader"] { min-width: 0; padding: 8px 7px; overflow: hidden; color: var(--pod-text); font-size: .58rem; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
 .pod-listing-sku-dimensions [role="columnheader"] { color: var(--pod-text-secondary); background: var(--pod-surface-tint); font-size: .55rem; }
 .pod-listing-legacy-dimensions dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.pod-gallery-header-actions { display: grid; grid-template-columns: auto auto auto; justify-content: end; align-items: start; gap: 8px 12px; flex: 0 0 auto; }
-.pod-dianxiaomi-export { display: grid; align-content: start; justify-items: end; gap: 4px; max-width: 190px; }
+.pod-gallery-header-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; flex: 0 1 auto; }
+.pod-dianxiaomi-export { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.pod-export-buttons { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 5px; }
 .pod-dianxiaomi-export button { min-height: 34px; padding: 7px 10px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: #fff; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); font-size: .63rem; font-weight: 850; white-space: nowrap; }
 .pod-dianxiaomi-export button:disabled { cursor: not-allowed; color: var(--pod-text-muted); background: var(--pod-surface-soft); border-color: var(--pod-border); opacity: .82; }
 .pod-dianxiaomi-export small { color: #aa6351; font-size: .53rem; line-height: 1.35; text-align: right; }
@@ -538,10 +539,7 @@
 .pod-batch-resume { color: #fff !important; border-color: transparent !important; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)) !important; }
 .pod-batch-pause:hover:not(:disabled) { border-color: #db9c22; color: #b47c10; background: #fff8ec; }
 .pod-batch-cancel:hover:not(:disabled) { border-color: #d75b52; color: #c34942; background: #fff4f1; }
-.pod-batch-status-detail { grid-column: 1 / -1; grid-row: 2; color: var(--pod-text-secondary); font-size: .67rem; line-height: 1.35; text-align: right; }
-.pod-batch-status { grid-column: 1; grid-row: 1; }
-.pod-batch-control { grid-column: 2; grid-row: 1; align-self: center; }
-.pod-dianxiaomi-export { grid-column: 3; grid-row: 1; justify-self: end; }
+.pod-batch-status-detail { color: var(--pod-text-secondary); font-size: .67rem; line-height: 1.35; text-align: right; }
 
 .pod-failed-retry-backdrop { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(16, 33, 54, .38); }
 .pod-failed-retry-dialog { display: grid; width: min(680px, 100%); max-height: min(720px, calc(100dvh - 40px)); overflow: hidden; border: 1px solid var(--pod-border-strong); border-radius: 18px; background: var(--pod-surface); box-shadow: 0 24px 72px rgba(16, 33, 54, .28); }
@@ -626,10 +624,11 @@
   .pod-current-template-body dl > div { grid-template-columns: 82px minmax(0, 1fr); }
   .pod-gallery { padding: 12px; }
   .pod-gallery-header { align-items: flex-start; }
-  .pod-gallery-header-actions { display: grid; justify-items: end; gap: 6px; }
+  .pod-gallery-headline { flex-wrap: wrap; }
   .pod-batch-status { width: fit-content; }
-  .pod-dianxiaomi-export { max-width: 145px; }
-  .pod-dianxiaomi-export button { width: 100%; padding-inline: 8px; }
+  .pod-dianxiaomi-export { align-items: flex-start; }
+  .pod-export-buttons { justify-content: flex-start; }
+  .pod-dianxiaomi-export button { padding-inline: 8px; }
   .pod-dianxiaomi-export small { font-size: .5rem; }
   .pod-failed-retry-backdrop { padding: 12px; }
   .pod-failed-retry-dialog > header,

@@ -142,6 +142,9 @@ export type PodDianxiaomiExportStatus = {
   block_reason: string | null;
 };
 
+/** 妙手 Temu 导入模板类型：服饰类 / 非服饰类。 */
+export type PodMiaoshouTemplateKind = "apparel" | "general";
+
 export type PodBatchCount = number;
 export type PodBatchStatus =
   | "queued"
