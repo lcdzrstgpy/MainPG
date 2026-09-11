@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { DraftSummary, DraftVariant } from '../types';
 import {
   EMPTY_SKU_FILTER,
@@ -184,7 +185,8 @@ export function SkuBatchManager({ drafts, baseDeletes, onSaveDeletes, onBatchSav
     }
   };
 
-  return (
+  // portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed 抽屉 z-index，被顶栏盖住
+  return createPortal(
     <div className="verify-drawer-root">
       <div className="verify-drawer-mask" onClick={onClose} />
       <section className="sku-batch-panel" role="dialog" aria-modal="true" aria-label="批量管理 SKU">
@@ -303,6 +305,7 @@ export function SkuBatchManager({ drafts, baseDeletes, onSaveDeletes, onBatchSav
           >仅保留命中（删除其余）</button>
         </footer>
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }
