@@ -40,6 +40,7 @@ import type {
   PodBatchSummary,
   PodBusinessFieldsDraft,
   PodListingFieldsDraft,
+  PodMiaoshouTemplateKind,
   PodTemplate,
   PodTemplateCalibration,
 } from "../types";
@@ -815,6 +816,21 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  const exportMiaoshou = async (kind: PodMiaoshouTemplateKind) => {
+    if (!activeBatch) return;
+    setBusyAction(`export-miaoshou:${kind}`);
+    clearMessages();
+    try {
+      const exported = await podCustomizationApi.exportMiaoshou(activeBatch.id, kind);
+      const label = kind === "apparel" ? "服饰类" : "非服饰类";
+      setNotice(`已导出妙手${label}表格：${exported.exportedStyles} 款、跳过 ${exported.skippedStyles} 款。`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   const retryFailed = async (request: PodBatchRetryRequest) => {
     if (!activeBatch) return;
     setBusyAction("retry-failed");
@@ -927,6 +943,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             onUpdateExportSelection={(styleIndex, selected) => void updateExportSelection(styleIndex, selected)}
             onSaveTitle={(styleIndex, title) => saveManualTitle(styleIndex, title)}
             onExportDianxiaomi={() => void exportDianxiaomi()}
+            onExportMiaoshou={(kind) => void exportMiaoshou(kind)}
             onOpenFailedRetry={() => setFailedRetryOpen(true)}
             onPauseBatch={() => void pauseBatch()}
             onCancelBatch={() => void cancelBatch()}

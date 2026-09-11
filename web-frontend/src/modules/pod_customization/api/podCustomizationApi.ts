@@ -7,6 +7,7 @@ import type {
   PodBatch,
   PodBatchItem,
   PodBatchListResponse,
+  PodMiaoshouTemplateKind,
   PodStyleTitle,
   PodTemplate,
   PodTemplateCalibration,
@@ -70,23 +71,47 @@ function saveBlob(blob: Blob, filename: string): void {
   triggerBlobDownload(blob, filename);
 }
 
-async function exportDianxiaomi(batchId: string): Promise<PodDianxiaomiExportDownload> {
+async function downloadExportWorkbook(
+  batchId: string,
+  segment: string,
+  query: string,
+  fallbackName: string,
+): Promise<PodDianxiaomiExportDownload> {
   const headers: Record<string, string> = {};
   const token = getAuthToken();
   if (token) headers.authorization = `Bearer ${token}`;
-  const response = await fetch(apiUrl(`${API_BASE}/batches/${encodeURIComponent(batchId)}/exports/dianxiaomi`), { headers });
+  const response = await fetch(
+    apiUrl(`${API_BASE}/batches/${encodeURIComponent(batchId)}/exports/${segment}${query}`),
+    { headers },
+  );
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     const detail = typeof payload?.detail === "string" ? payload.detail : `导出失败 (HTTP ${response.status})`;
     throw new Error(detail);
   }
-  const filename = parseDianxiaomiExportFilename(response.headers.get("content-disposition"), `pod-${batchId}-dianxiaomi.xlsx`);
+  const filename = parseDianxiaomiExportFilename(response.headers.get("content-disposition"), fallbackName);
   saveBlob(await response.blob(), filename);
   return {
     exportedStyles: parseDianxiaomiExportHeaderCount(response.headers.get("x-pod-exported-styles")),
     skippedStyles: parseDianxiaomiExportHeaderCount(response.headers.get("x-pod-skipped-styles")),
     filename,
   };
+}
+
+function exportDianxiaomi(batchId: string): Promise<PodDianxiaomiExportDownload> {
+  return downloadExportWorkbook(batchId, "dianxiaomi", "", `pod-${batchId}-dianxiaomi.xlsx`);
+}
+
+function exportMiaoshou(
+  batchId: string,
+  kind: PodMiaoshouTemplateKind,
+): Promise<PodDianxiaomiExportDownload> {
+  return downloadExportWorkbook(
+    batchId,
+    "miaoshou",
+    `?kind=${encodeURIComponent(kind)}`,
+    `pod-${batchId}-miaoshou-${kind}.xlsx`,
+  );
 }
 
 export const podCustomizationApi = {
@@ -145,5 +170,6 @@ export const podCustomizationApi = {
     { method: "POST", body },
   ),
   exportDianxiaomi,
+  exportMiaoshou,
   downloadAsset,
 };

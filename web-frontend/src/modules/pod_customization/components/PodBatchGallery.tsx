@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { batchProgress, canCancelPodBatch, canPausePodBatch, canRegeneratePodStyle, canRegeneratePodStyleTitle, canResumePodBatch, canRetryPodBatchFailed, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, podBatchProgressCounts, podBatchStatusDetail, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
 import { dianxiaomiExportBlockMessage, isDianxiaomiExportEnabled } from "../data/dianxiaomiExport";
 import { PodAssetImage } from "../data/usePodAssetUrl";
-import type { PodBatch, PodBatchItem } from "../types";
+import type { PodBatch, PodBatchItem, PodMiaoshouTemplateKind } from "../types";
 import { PodListingDetailDrawer } from "./PodListingDetailDrawer";
 
 type Props = {
@@ -15,6 +15,7 @@ type Props = {
   onUpdateExportSelection: (styleIndex: number, selected: boolean) => void;
   onSaveTitle: (styleIndex: number, title: string) => Promise<void>;
   onExportDianxiaomi: () => void;
+  onExportMiaoshou: (kind: PodMiaoshouTemplateKind) => void;
   onOpenFailedRetry: () => void;
   onPauseBatch: () => void;
   onCancelBatch: () => void;
@@ -42,7 +43,7 @@ async function copyTitle(title: string): Promise<void> {
   }
 }
 
-export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateStyle, onRegenerateTitle, onUpdateExportSelection, onSaveTitle, onExportDianxiaomi, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
+export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateStyle, onRegenerateTitle, onUpdateExportSelection, onSaveTitle, onExportDianxiaomi, onExportMiaoshou, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
   const [selectedStyleIndex, setSelectedStyleIndex] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
   const showWaitingTime = Boolean(batch && isActiveBatchStatus(batch.status));
@@ -69,10 +70,16 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
   ).length;
   const exportStatus = batch.dianxiaomi_export;
   const exporting = busyAction === "export-dianxiaomi";
+  const exportingMiaoshou = busyAction.startsWith("export-miaoshou:")
+    ? (busyAction.slice("export-miaoshou:".length) as PodMiaoshouTemplateKind)
+    : null;
   const exportBlockReason = busyAction
-    ? exporting ? "正在生成店小秘导出文件，请稍候。" : "当前批次正在处理其他操作，请稍候。"
+    ? exporting || exportingMiaoshou ? "正在生成导出文件，请稍候。" : "当前批次正在处理其他操作，请稍候。"
     : dianxiaomiExportBlockMessage(exportStatus.block_reason);
   const canExport = isDianxiaomiExportEnabled(batch.dianxiaomi_export.ready, busyAction);
+  const exportButtonTitle = canExport
+    ? `可导出 ${exportStatus.selected_exportable_style_count ?? exportStatus.exportable_style_count} 款`
+    : exportBlockReason;
   const canRetryBatch = canRetryPodBatchFailed(batch.status);
   const retryBlockReason = "";
   const selectedStyle = styles.find((style) => style.index === selectedStyleIndex);
@@ -85,9 +92,11 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
   const resuming = busyAction === "resume-batch";
   return <><section className="pod-gallery" aria-label="POD 批次画廊">
     <header className="pod-gallery-header">
-      <div><span>POD BATCH · {batch.id.slice(0, 8)}</span><h2>{batch.title || `${batch.template_name} 创作批次`}</h2><p>当前批次 <b>{batch.count} 款</b> · {batch.template_name}</p></div>
-      <div className="pod-gallery-header-actions">
+      <div className="pod-gallery-headline">
+        <div className="pod-gallery-title"><span>POD BATCH · {batch.id.slice(0, 8)}</span><h2>{batch.title || `${batch.template_name} 创作批次`}</h2><p>当前批次 <b>{batch.count} 款</b> · {batch.template_name}</p></div>
         <div className={`pod-batch-status status-${batch.status}`}><strong>{podBatchStatusLabel(batch.status, batch.dianxiaomi_export.ready, batch.processed_count >= batch.count)}</strong><span>{batch.processed_count} / {batch.count} 款</span><span>可上架 {batch.listing_ready_count ?? 0} / 总款数 {batch.count}</span></div>
+      </div>
+      <div className="pod-gallery-header-actions">
         <div className="pod-batch-control">
           {canResume && <button type="button" className="pod-batch-resume" disabled={Boolean(busyAction)} onClick={onResumeBatch}>{resuming ? "继续中" : "继续"}</button>}
           {canPause && <button type="button" className="pod-batch-pause" disabled={Boolean(busyAction)} onClick={onPauseBatch}>{pausing ? "暂停中" : "暂停"}</button>}
@@ -97,7 +106,11 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
         <div className="pod-dianxiaomi-export">
           <button type="button" className="pod-open-failed-retry" disabled={!canRetryBatch || Boolean(busyAction)} title={retryBlockReason || "批量重试失败款式"} onClick={onOpenFailedRetry}>批量重试失败项</button>
           {!canRetryBatch && retryBlockReason && <small>{retryBlockReason}</small>}
-          <button type="button" disabled={!canExport} title={canExport ? `可导出 ${exportStatus.selected_exportable_style_count ?? exportStatus.exportable_style_count} 款` : exportBlockReason} onClick={onExportDianxiaomi}>{exporting ? "正在导出店小秘表格" : "导出店小秘表格"}</button>
+          <div className="pod-export-buttons">
+            <button type="button" disabled={!canExport} title={exportButtonTitle} onClick={onExportDianxiaomi}>{exporting ? "正在导出店小秘表格" : "导出店小秘表格"}</button>
+            <button type="button" disabled={!canExport} title={exportButtonTitle} onClick={() => onExportMiaoshou("apparel")}>{exportingMiaoshou === "apparel" ? "正在导出妙手表格" : "导出妙手表格（服饰）"}</button>
+            <button type="button" disabled={!canExport} title={exportButtonTitle} onClick={() => onExportMiaoshou("general")}>{exportingMiaoshou === "general" ? "正在导出妙手表格" : "导出妙手表格（非服饰）"}</button>
+          </div>
           {(exportStatus.selected_exportable_style_count !== undefined || exportStatus.user_excluded_style_count !== undefined) && <small>已选可导出 {exportStatus.selected_exportable_style_count ?? exportStatus.exportable_style_count} 款 · 用户排除 {exportStatus.user_excluded_style_count ?? 0} 款</small>}
           {!canExport && <small>{exportBlockReason}</small>}
         </div>
