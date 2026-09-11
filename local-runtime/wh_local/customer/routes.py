@@ -237,4 +237,30 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.post("/feedback")
+    def submit_feedback(payload: dict[str, Any], authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "submit_feedback"):
+                raise CustomerAuthUnavailable("remote feedback service is not configured")
+            return remote_auth.submit_feedback(remote_token_from_local_session(authorization), payload)
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.get("/feedback/mine")
+    def my_feedback(
+        limit: int = 20,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "list_my_feedback"):
+                raise CustomerAuthUnavailable("remote feedback service is not configured")
+            return remote_auth.list_my_feedback(
+                remote_token_from_local_session(authorization),
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
     return router
