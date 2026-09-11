@@ -12,6 +12,7 @@ import {
 } from "../navigation/modules";
 import { Sidebar } from "./Sidebar";
 import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
+import { InkTap } from "../../shared/components/InkTap";
 import { WorkspaceHomePage } from "../../modules/dashboard/pages/WorkspaceHomePage";
 import { DailySelectionPage } from "../../modules/daily_selection/pages/DailySelectionPage";
 import { ProfitActivityProductsPage } from "../../modules/profit_activity/pages/ProfitActivityProductsPage";
@@ -479,6 +480,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
 
   return (
     <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`}>
+      <InkTap />
       <Sidebar
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}
         activeId={activeModuleId}
