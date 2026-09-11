@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import { PromptCustomizePanel } from '../components/PromptCustomizePanel';
@@ -392,7 +393,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
 
   return (
     <div className="verify-page">
-      {batchProcessing && (
+      {batchProcessing && createPortal(
         <div className="daily-topbar-status is-progress" role="status" aria-label="处理进度">
           <span className="daily-topbar-status-icon" aria-hidden="true">↻</span>
           <strong>正在处理</strong>
@@ -400,7 +401,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
             <span style={{ width: `${progress}%` }} />
           </div>
           <b>{progress}%</b>
-        </div>
+        </div>,
+        // portal 到工作台顶栏的专用插槽：面板 fill-mode 动画的层叠上下文
+        // 会把 fixed 子元素锁在面板内、被 sticky 顶栏盖住（与每日选品页同款修法）。
+        document.getElementById("workspace-topbar-status") || document.body,
       )}
       <header className="verify-commandbar">
         <div className="verify-command-title">
