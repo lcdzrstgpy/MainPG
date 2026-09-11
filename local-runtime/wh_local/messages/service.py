@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import Callable
+from urllib.parse import quote
 
 import httpx
 
@@ -15,6 +17,8 @@ class AnnouncementSyncService:
     """从公告发布后台拉取公告并写入本地消息表。
 
     服务器不可达时静默降级（仅记录日志），不影响工作台任何功能。
+    定向发送：通过 account_id_provider 提供当前登录账号，同步时带上
+    ``?account_id=``，后台只返回全员公告 + 发给该账号的定向公告。
     """
 
     def __init__(
@@ -23,10 +27,12 @@ class AnnouncementSyncService:
         base_url: str,
         *,
         interval_seconds: int = 300,
+        account_id_provider: Callable[[], str] | None = None,
     ) -> None:
         self.repository = repository
         self.base_url = str(base_url or "").strip().rstrip("/")
         self.interval_seconds = interval_seconds
+        self.account_id_provider = account_id_provider
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -38,6 +44,14 @@ class AnnouncementSyncService:
         if not self.configured():
             return 0
         url = f"{self.base_url}/api/announcements/public"
+        account_id = ""
+        try:
+            if self.account_id_provider is not None:
+                account_id = (self.account_id_provider() or "").strip()
+        except Exception:  # 身份查询失败不影响同步：退化为仅拉全员公告
+            account_id = ""
+        if account_id:
+            url += f"?account_id={quote(account_id)}"
         try:
             # IP-direct connections to a test/staging host cannot match the public
             # certificate's hostname; skip verification only for bare IP literals.

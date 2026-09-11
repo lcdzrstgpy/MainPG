@@ -7,8 +7,9 @@ import threading
 import time
 
 from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -527,11 +528,29 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
 
     # 公告消息：从公告发布后台定时同步，前端右上角站内信读取。
+    # 定向发送：同步时携带最近登录的远端账号 ID，后台据此返回发给该账号的定向公告。
+    def _current_remote_account_id() -> str:
+        try:
+            with closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT account_id FROM auth_accounts ORDER BY updated_at DESC LIMIT 1"
+                ).fetchone()
+                if row and row[0]:
+                    return str(row[0])
+                # 老版本登录镜像没有 auth_accounts 行：回退到 customer_users。
+                row = conn.execute(
+                    "SELECT remote_customer_id FROM customer_users ORDER BY updated_at DESC LIMIT 1"
+                ).fetchone()
+                return str(row[0] or "") if row else ""
+        except Exception:
+            return ""
+
     messages_repository = MessagesRepository(db_path)
     messages_sync = AnnouncementSyncService(
         messages_repository,
         config.announce_base_url,
         interval_seconds=180,
+        account_id_provider=_current_remote_account_id,
     )
     app.include_router(create_messages_router(messages_repository, messages_sync))
     app.state.messages_sync = messages_sync
