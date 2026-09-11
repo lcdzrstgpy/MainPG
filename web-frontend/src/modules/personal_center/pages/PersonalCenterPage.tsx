@@ -15,6 +15,7 @@ import {
   type TopupOrderResponse,
 } from "../api/personalCenterApi";
 import { SystemVersionPanel } from "../components/SystemVersionPanel";
+import { FeedbackPanel } from "../components/FeedbackPanel";
 import "../styles/personalCenter.css";
 
 type AccountSnapshot = {
@@ -240,7 +241,7 @@ export function PersonalCenterPage() {
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "version">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "version" | "feedback">("wallet");
   const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>(
     cachedUsage && cachedUsage.filterKey === defaultUsageFilterKey ? cachedUsage.items : [],
   );
@@ -275,6 +276,8 @@ export function PersonalCenterPage() {
   const USAGE_PAGE_SIZE = 10;
   const USAGE_LOAD_LIMIT = 100;
   const [usagePage, setUsagePage] = useState(1);
+
+
 
   const loadUsage = useCallback((force = false) => {
     const filterKey = buildUsageFilterKey(filterService, filterStatus, filterDateFrom, filterDateTo);
@@ -734,6 +737,9 @@ export function PersonalCenterPage() {
           <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
             <span className="iconfont icon-setting" aria-hidden="true" /> 系统版本
           </button>
+          <button type="button" className={activePanel === "feedback" ? "is-active" : ""} onClick={() => setActivePanel("feedback")}>
+            <span className="iconfont icon-message" aria-hidden="true" /> 意见反馈
+          </button>
           <p>余额、费率与消费记录均由服务器账本实时校验。</p>
         </aside>
 
@@ -906,6 +912,8 @@ export function PersonalCenterPage() {
           </article>
         ) : activePanel === "version" ? (
           <SystemVersionPanel />
+        ) : activePanel === "feedback" ? (
+          <FeedbackPanel />
         ) : (
           <article className="personal-card usage-card">
             <div className="personal-card-title">
