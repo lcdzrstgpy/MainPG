@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ppRequest } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import '../styles/PromptCustomizePanel.css';
@@ -194,7 +195,9 @@ export function PromptCustomizePanel() {
           <span className="prompt-panel-toggle-caret">{open ? '关闭 ✕' : '配置 ▸'}</span>
         </button>
       </section>
-      {open && (
+      {/* portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
+          会把 fixed 抽屉的 z-index(400) 锁在面板内、被 sticky 顶栏(z:18)盖住头部 */}
+      {open && createPortal(
         <div className="prompt-drawer-layer">
           <button type="button" className="prompt-drawer-backdrop" onClick={() => setOpen(false)} aria-label="关闭提示词预设模板" />
           <aside className="prompt-drawer" role="dialog" aria-modal="true" aria-label="提示词预设模板">
@@ -288,8 +291,7 @@ export function PromptCustomizePanel() {
           {error && <p className="prompt-panel-message error">{error}</p>}
             </div>
           </aside>
-        </div>
-      )}
+        </div>, document.body)}
     </>
   );
 }

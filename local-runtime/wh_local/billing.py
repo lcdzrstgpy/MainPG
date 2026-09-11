@@ -340,6 +340,7 @@ def reserve_ai_usage(
     idempotency_key: str,
     quantity: int = 1,
     source_ref: str = "",
+    app_version: str = "",
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     quantity = max(1, int(quantity))
@@ -398,9 +399,9 @@ def reserve_ai_usage(
             INSERT INTO billing_ai_usage_events (
                 usage_id, account_id, workspace_id, feature_key, idempotency_key,
                 reserved_points, cost_multiplier, min_charge_points, quantity,
-                source_ref, status, metadata_json, created_at
+                source_ref, app_version, status, metadata_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)
             """,
             (
                 usage_id,
@@ -413,6 +414,7 @@ def reserve_ai_usage(
                 pricing.min_charge_points * quantity,
                 quantity,
                 source_ref,
+                str(app_version or "")[:40],
                 json.dumps(event_metadata, ensure_ascii=False, sort_keys=True),
                 now,
             ),
@@ -510,7 +512,9 @@ def settle_ai_usage_success(
             UPDATE billing_ai_usage_events
             SET charged_points = ?, refunded_points = ?, actual_cost_cny = ?,
                 provider = ?, provider_key_id = ?, model = ?, channel = ?,
-                input_tokens = ?, output_tokens = ?, total_tokens = ?,
+                input_tokens = CASE WHEN ? > 0 THEN ? ELSE input_tokens END,
+                output_tokens = CASE WHEN ? > 0 THEN ? ELSE output_tokens END,
+                total_tokens = CASE WHEN ? > 0 THEN ? ELSE total_tokens END,
                 source_ref = CASE WHEN ? <> '' THEN ? ELSE source_ref END,
                 status = 'succeeded', metadata_json = ?, settled_at = ?
             WHERE usage_id = ?
@@ -524,7 +528,10 @@ def settle_ai_usage_success(
                 model,
                 channel,
                 int(input_tokens),
+                int(input_tokens),
                 int(output_tokens),
+                int(output_tokens),
+                int(total_tokens),
                 int(total_tokens),
                 provider_task_id,
                 provider_task_id,
@@ -1568,6 +1575,7 @@ def freeze_batch_points(
     idempotency_key: str = "",
     billing_profile: str = BATCH_BILLING_PROFILE_PRODUCT,
     task_id: str = "",
+    app_version: str = "",
 ) -> dict[str, Any]:
     """Reserve batch points (N x freeze_per_link) before the client starts work.
 
@@ -1662,9 +1670,9 @@ def freeze_batch_points(
             INSERT INTO billing_batch_freezes (
                 freeze_id, account_id, workspace_id, task_id, link_count, scope_json,
                 frozen_points, status, created_at, expires_at,
-                billing_profile, rule_version, link_prices_json
+                billing_profile, rule_version, link_prices_json, app_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'frozen', ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'frozen', ?, ?, ?, ?, ?, ?)
             """,
             (
                 freeze_id,
@@ -1679,6 +1687,7 @@ def freeze_batch_points(
                 profile,
                 int(pricing["rule_version"]),
                 link_prices_json,
+                str(app_version or "")[:40],
             ),
         )
         _append_ledger(
@@ -1762,6 +1771,7 @@ def freeze_planned_points(
     scope: list[str],
     idempotency_key: str,
     source_type: str,
+    app_version: str = "",
     persist_plan: Any | None = None,
     validate_existing: Any | None = None,
 ) -> dict[str, Any]:
@@ -1835,8 +1845,8 @@ def freeze_planned_points(
             """
             INSERT INTO billing_batch_freezes (
                 freeze_id, account_id, workspace_id, link_count, scope_json,
-                frozen_points, status, created_at, expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'frozen', ?, ?)
+                frozen_points, status, created_at, expires_at, app_version
+            ) VALUES (?, ?, ?, ?, ?, ?, 'frozen', ?, ?, ?)
             """,
             (
                 idem,
@@ -1847,6 +1857,7 @@ def freeze_planned_points(
                 units,
                 now,
                 expires_at,
+                str(app_version or "")[:40],
             ),
         )
         _append_ledger(

@@ -1,4 +1,5 @@
 import { type ClipboardEvent, type DragEvent, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { toUserMessage } from "../../../transport/http/client";
 import "../styles/profitActivityTest.css";
 
@@ -950,7 +951,9 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
         </div>
       </section>
 
-      {settingsDialogOpen && (
+      {/* portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
+          会把 fixed 弹层的 z-index 锁在面板内、被 sticky 顶栏(z:18)盖住 */}
+      {settingsDialogOpen && createPortal(
         <div className="profit-settings-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setSettingsDialogOpen(false)}>
           <section className="profit-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="profit-settings-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="profit-settings-dialog-head">
@@ -967,10 +970,9 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
               <button type="button" onClick={saveOutputDirectory} disabled={!!busy}>保存目录</button>
             </div>
           </section>
-        </div>
-      )}
+        </div>, document.body)}
 
-      {importDialogOpen && (
+      {importDialogOpen && createPortal(
         <div className="profit-settings-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setImportDialogOpen(false)}>
           <section className="profit-settings-dialog profit-import-dialog" role="dialog" aria-modal="true" aria-labelledby="profit-import-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="profit-settings-dialog-head">
@@ -996,10 +998,9 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
             {importFiles.length ? <p className="profit-warn">已选择 {importFiles.length} 个文件：{importFiles.map((item) => item.name).join("、")}</p> : lastImportFiles.length ? <p className="muted">上次选择的文件：{lastImportFiles.join("、")}（浏览器出于安全原因不保留本地完整路径，切换页面后需重新选择文件）</p> : null}
             {importPreviews.length > 0 && <ImportPreviewSummary previews={importPreviews} />}
           </section>
-        </div>
-      )}
+        </div>, document.body)}
 
-      {importGuidelinesOpen && (
+      {importGuidelinesOpen && createPortal(
         <div className="profit-settings-dialog-backdrop profit-import-guidelines-backdrop" role="presentation" onMouseDown={() => setImportGuidelinesOpen(false)}>
           <section className="profit-settings-dialog profit-import-guidelines-dialog" role="dialog" aria-modal="true" aria-labelledby="profit-import-guidelines-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="profit-settings-dialog-head">
@@ -1036,8 +1037,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
               </section>
             </div>
           </section>
-        </div>
-      )}
+        </div>, document.body)}
 
       {message && <p className="profit-status" role="status">{message}</p>}
 
