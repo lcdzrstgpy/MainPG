@@ -7,6 +7,7 @@ import "./shared/styles/design-tokens.css";
 import "./shared/styles/global.css";
 import "./shared/styles/themes.css";
 import "./shared/styles/theme-personality.css";
+import "./shared/styles/ink-tap.css";
 import "./shared/styles/framework-flow.css";
 import "./modules/product_processing/styles/product-processing.css";
 import "./shared/styles/apple-workspace.css";

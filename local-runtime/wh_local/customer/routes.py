@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import sys
 from typing import Any
 
+from ..config import APP_VERSION
 from ..runtime_logs import business_logger
 from .contracts import CustomerAuthRejected, CustomerAuthUnavailable
 from .local_session import LocalSessionService
@@ -242,7 +244,14 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         try:
             if not hasattr(remote_auth, "submit_feedback"):
                 raise CustomerAuthUnavailable("remote feedback service is not configured")
-            return remote_auth.submit_feedback(remote_token_from_local_session(authorization), payload)
+            # 版本与平台由本地后端注入（本地知道自己的编译版本），不信任前端上报。
+            enriched = dict(payload)
+            enriched.setdefault("app_version", APP_VERSION)
+            enriched.setdefault(
+                "platform",
+                "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux",
+            )
+            return remote_auth.submit_feedback(remote_token_from_local_session(authorization), enriched)
         except Exception as exc:
             handle_auth_error(exc)
 
