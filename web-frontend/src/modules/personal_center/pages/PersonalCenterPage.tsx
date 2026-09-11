@@ -20,6 +20,7 @@ import {
   type TopupOrderResponse,
 } from "../api/personalCenterApi";
 import { SystemVersionPanel } from "../components/SystemVersionPanel";
+import { FeedbackPanel } from "../components/FeedbackPanel";
 import "../styles/personalCenter.css";
 
 type AccountSnapshot = {
@@ -245,7 +246,7 @@ export function PersonalCenterPage() {
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "version">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "version" | "feedback">("wallet");
   // 生图模型切换：下拉选项由服务端白名单给出，切换后所有生图任务立即跟随。
   const [imageModel, setImageModel] = useState("");
   const [imageModelChoices, setImageModelChoices] = useState<ImageModelChoice[]>([]);
@@ -810,6 +811,9 @@ export function PersonalCenterPage() {
           <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
             <span className="iconfont icon-setting" aria-hidden="true" /> 系统版本
           </button>
+          <button type="button" className={activePanel === "feedback" ? "is-active" : ""} onClick={() => setActivePanel("feedback")}>
+            <span className="iconfont icon-message" aria-hidden="true" /> 意见反馈
+          </button>
           <p>余额、费率与消费记录均由服务器账本实时校验。</p>
         </aside>
 
@@ -1053,6 +1057,8 @@ export function PersonalCenterPage() {
           </article>
         ) : activePanel === "version" ? (
           <SystemVersionPanel />
+        ) : activePanel === "feedback" ? (
+          <FeedbackPanel />
         ) : (
           <article className="personal-card usage-card">
             <div className="personal-card-title">

@@ -246,3 +246,52 @@ export function savePodImageModel(model: string) {
     { method: "PUT", body: { model } },
   );
 }
+
+// ---- 意见反馈 ----
+export type FeedbackCategory = "bug" | "suggestion" | "other";
+export type FeedbackStatus = "new" | "processing" | "resolved";
+
+export type FeedbackImagePayload = {
+  name: string;
+  mime: string;
+  data_b64: string;
+};
+
+export type FeedbackHistoryItem = {
+  feedback_id: string;
+  category: FeedbackCategory;
+  content: string;
+  contact: string;
+  image_count: number;
+  total_image_bytes: number;
+  status: FeedbackStatus;
+  admin_note: string;
+  status_updated_at: string;
+  app_version: string;
+  platform: string;
+  created_at: string;
+};
+
+export function submitFeedback(input: {
+  content: string;
+  category: FeedbackCategory;
+  contact?: string;
+  images?: FeedbackImagePayload[];
+  app_version?: string;
+  platform?: string;
+}) {
+  return httpJson<{ ok: boolean; feedback_id: string; created_at: string }>("/api/customer/feedback", {
+    method: "POST",
+    body: input,
+  });
+}
+
+export function loadMyFeedback(limit = 50, offset = 0) {
+  return httpJson<{
+    ok: boolean;
+    feedback: FeedbackHistoryItem[];
+    total: number;
+    limit: number;
+    offset: number;
+  }>(`/api/customer/feedback/mine?limit=${limit}&offset=${offset}`);
+}
