@@ -145,6 +145,10 @@ def invalidate_pricing() -> None:
     cache_delete("pricing:active")
 
 
+def invalidate_multipliers() -> None:
+    cache_delete("billing:multipliers")
+
+
 def invalidate_session(token_hash: str) -> None:
     cache_delete(f"sess:{token_hash}")
 

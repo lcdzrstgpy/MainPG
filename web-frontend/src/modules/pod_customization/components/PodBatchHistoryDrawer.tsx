@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { createPortal } from "react-dom";
 
 import { PodBatchHistory } from "./PodBatchHistory";
 import type { PodBatchSummary } from "../types";
@@ -29,7 +30,9 @@ export function PodBatchHistoryDrawer({ open, batches, activeBatchId, loading, b
 
   if (!open) return null;
 
-  return (
+  // portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
+  // 会把 fixed 抽屉的 z-index 锁在面板内、被 sticky 顶栏(z:18)盖住头部。
+  return createPortal(
     <div className="pod-history-drawer-layer">
       <button type="button" className="pod-history-drawer-backdrop" onClick={onClose} aria-label="关闭定制记录历史" />
       <aside className="pod-history-drawer" role="dialog" aria-modal="true" aria-label="定制记录历史">
@@ -51,6 +54,7 @@ export function PodBatchHistoryDrawer({ open, batches, activeBatchId, loading, b
           />
         </div>
       </aside>
-    </div>
+    </div>,
+    document.body,
   );
 }

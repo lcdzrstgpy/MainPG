@@ -1,4 +1,4 @@
-import type { PodBusinessFieldsDraft, PodListingFieldsDraft, PodTemplate } from "../types";
+import type { PodBusinessFieldsDraft, PodListingFieldsDraft, PodTemplate, SpecCardConfig } from "../types";
 
 export const POD_CUSTOMIZATION_DRAFT_VERSION = 3;
 const PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION = 2;
@@ -19,6 +19,8 @@ export type PodCustomizationDraft = {
   version: typeof POD_CUSTOMIZATION_DRAFT_VERSION;
   business_fields: PodBusinessFieldsDraft;
   listing_fields: PodListingFieldsDraft;
+  // 规格卡配置随草稿按 account/workspace 维度保存在本地，随批次提交时冻结。
+  spec_card: SpecCardConfig;
   batch_count: number;
   custom_count_mode: boolean;
   custom_count_input: string;
@@ -57,6 +59,34 @@ const EMPTY_LISTING_FIELDS: PodListingFieldsDraft = {
   skus: [{ name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
 };
 
+// 与 podCustomizationModel.EMPTY_SPEC_CARD 同形的空白表（4 行 × 2 列）。
+// 这里刻意本地实现，不 import 模型模块：本文件会被 node --experimental-strip-types
+// 直接加载（podCustomizationDraft.test.ts），无扩展名的运行时导入在 Node ESM 下无法解析。
+const EMPTY_SPEC_CARD_DRAFT: SpecCardConfig = {
+  enabled: true,
+  style: "light",
+  corner: "bottom-right",
+  cells: Array.from({ length: 4 }, () => ["", ""]),
+};
+
+function createEmptySpecCard(): SpecCardConfig {
+  return { ...EMPTY_SPEC_CARD_DRAFT, cells: EMPTY_SPEC_CARD_DRAFT.cells.map((row) => [...row]) };
+}
+
+function cloneSpecCardConfig(config: SpecCardConfig): SpecCardConfig {
+  return { ...config, cells: config.cells.map((row) => [...row]) };
+}
+
+function isSpecCardConfig(value: unknown): value is SpecCardConfig {
+  return isRecord(value)
+    && typeof value.enabled === "boolean"
+    && (value.style === "light" || value.style === "dark")
+    && (value.corner === "bottom-right" || value.corner === "bottom-left"
+      || value.corner === "top-right" || value.corner === "top-left")
+    && Array.isArray(value.cells)
+    && value.cells.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === "string"));
+}
+
 export function podCustomizationDraftStorageKey(accountId: string, workspaceId: string): string {
   return `mainpg:pod-customization:v${POD_CUSTOMIZATION_DRAFT_VERSION}:${encodeURIComponent(accountId)}:${encodeURIComponent(workspaceId)}`;
 }
@@ -74,6 +104,7 @@ export function createEmptyPodCustomizationDraft(): PodCustomizationDraft {
     version: POD_CUSTOMIZATION_DRAFT_VERSION,
     business_fields: { ...EMPTY_BUSINESS_FIELDS },
     listing_fields: { ...EMPTY_LISTING_FIELDS },
+    spec_card: createEmptySpecCard(),
     batch_count: 20,
     custom_count_mode: false,
     custom_count_input: "20",
@@ -203,6 +234,8 @@ function cloneDraft(state: PodCustomizationDraft): PodCustomizationDraft {
       ...state.listing_fields,
       skus: state.listing_fields.skus.map((sku) => ({ ...sku })),
     },
+    // v3 之前的草稿没有 spec_card，缺失/损坏时退回空白表，而不是丢弃整份草稿。
+    spec_card: specCardOrDefault(state.spec_card),
     batch_count: state.batch_count,
     custom_count_mode: state.custom_count_mode,
     custom_count_input: state.custom_count_input,
@@ -210,6 +243,10 @@ function cloneDraft(state: PodCustomizationDraft): PodCustomizationDraft {
     current_batch_edit: state.current_batch_edit,
     system_templates: state.system_templates.map(cloneSystemTemplate),
   };
+}
+
+function specCardOrDefault(value: unknown): SpecCardConfig {
+  return isSpecCardConfig(value) ? cloneSpecCardConfig(value) : createEmptySpecCard();
 }
 
 function cloneSystemTemplate(template: PodSystemTemplate): PodSystemTemplate {
@@ -232,6 +269,8 @@ function isPodCustomizationDraft(value: unknown): value is PodCustomizationDraft
   if (!isRecord(value) || value.version !== POD_CUSTOMIZATION_DRAFT_VERSION) return false;
   return isBusinessFields(value.business_fields)
     && isListingFields(value.listing_fields)
+    // spec_card 为后加的键：已存在的 v3 草稿缺失该键时视为空白表（cloneDraft 归一化），不丢弃草稿。
+    && (value.spec_card === undefined || isSpecCardConfig(value.spec_card))
     && typeof value.batch_count === "number"
     && typeof value.custom_count_mode === "boolean"
     && typeof value.custom_count_input === "string"
@@ -273,7 +312,7 @@ type PreviousPodListingFieldsDraft = Omit<PodListingFieldsDraft, "skus"> & {
   skus: PreviousPodSkuDraft[];
 };
 
-type PreviousPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields"> & {
+type PreviousPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card"> & {
   version: typeof PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION;
   listing_fields: PreviousPodListingFieldsDraft;
 };
@@ -290,7 +329,7 @@ type LegacyPodListingFieldsDraft = {
   sku_names?: string[];
 };
 
-type LegacyPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields"> & {
+type LegacyPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card"> & {
   version: typeof LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION;
   listing_fields: LegacyPodListingFieldsDraft;
 };
@@ -368,6 +407,8 @@ function migrateDraft(legacy: PreviousPodCustomizationDraft | LegacyPodCustomiza
     return {
       ...rest,
       version: POD_CUSTOMIZATION_DRAFT_VERSION,
+      // 旧草稿没有规格卡配置，迁移时补一张空白表（= 未配置，提交时会被必填拦截）。
+      spec_card: createEmptySpecCard(),
       listing_fields: {
         title_mode: previousListing.title_mode,
         declared_price: previousListing.declared_price,
@@ -382,6 +423,7 @@ function migrateDraft(legacy: PreviousPodCustomizationDraft | LegacyPodCustomiza
   return {
     ...rest,
     version: POD_CUSTOMIZATION_DRAFT_VERSION,
+    spec_card: createEmptySpecCard(),
     listing_fields: {
       title_mode: legacyListing.title_mode,
       declared_price: legacyListing.declared_price,

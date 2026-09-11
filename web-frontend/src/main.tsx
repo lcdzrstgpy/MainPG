@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import { App } from "./app/App";
 import { startRuntimeHeartbeat } from "./transport/runtimeHeartbeat";
+import "./shared/styles/design-tokens.css";
 import "./shared/styles/global.css";
 import "./shared/styles/themes.css";
 import "./shared/styles/theme-personality.css";

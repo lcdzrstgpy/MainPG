@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 
 import type { PodSystemTemplate } from "../data/podCustomizationDraft";
 import { defaultTemplateCalibration } from "../data/podCustomizationModel";
@@ -126,7 +127,9 @@ export function TemplateLibraryDrawer({
 
   if (!open) return null;
 
-  return (
+  // portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
+  // 会把 fixed 抽屉的 z-index 锁在面板内、被 sticky 顶栏(z:18)盖住头部。
+  return createPortal(
     <div className="pod-template-drawer-layer">
       <button type="button" className="pod-template-drawer-backdrop" onClick={onClose} aria-label="关闭模板库" />
       <aside className="pod-template-drawer" role="dialog" aria-modal="true" aria-label="POD 产品模板库">
@@ -224,6 +227,7 @@ export function TemplateLibraryDrawer({
           </section>
         </div>
       </aside>
-    </div>
+    </div>,
+    document.body,
   );
 }

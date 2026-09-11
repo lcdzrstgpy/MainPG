@@ -37,6 +37,34 @@ TOPUP_TIER_BONUS_PERCENTS = {
 TOPUP_PROMOTION_ID = "fixed_package_tiered_bonus"
 TOPUP_PROMOTION_NAME = "固定套餐档位递增赠送（25%~100%）"
 
+# ---------------------------------------------------------------------------
+# 积分倍率体系：管理员在后台「价格倍率」页维护两套计费口径（AI 处理 / POD 定制），
+# 每条记录保存「单条价值 points_per_unit（整数积分，NULL=基础定价）」与派生的
+# 「倍率 multiplier_percent（相对基准的百分比，100=1.0 倍）」。
+# 冻结时把生效倍率与单条价值快照到 billing_batch_freezes，结算按快照执行 ——
+# 已冻结任务不受中途调价影响，也不会出现结算金额超出冻结上限的竞态。
+# ---------------------------------------------------------------------------
+MULTIPLIER_CATEGORY_AI = "ai"
+MULTIPLIER_CATEGORY_POD = "pod"
+MULTIPLIER_CATEGORIES = (MULTIPLIER_CATEGORY_AI, MULTIPLIER_CATEGORY_POD)
+MULTIPLIER_MIN_PERCENT = 10
+MULTIPLIER_MAX_PERCENT = 500
+MULTIPLIER_DEFAULT_PERCENT = 100
+# POD 单条款式「基准价值」：随机区间 40..50 的参考中值，用于倍率换算与展示。
+POD_BASE_POINTS_PER_STYLE = 45
+
+
+def _multiplier_category(feature_key: str) -> str:
+    """Map a feature key / billing profile to its multiplier category.
+
+    ``pod.*`` / ``pod_random_v1`` -> POD 定制；其余（商品处理、AI 服务）-> AI 处理。
+    """
+    return (
+        MULTIPLIER_CATEGORY_POD
+        if str(feature_key or "").startswith("pod")
+        else MULTIPLIER_CATEGORY_AI
+    )
+
 
 def topup_bonus_percent(package_id: str) -> int:
     """Return the fixed-package bonus percent for a topup package id (0 if none)."""
@@ -89,7 +117,13 @@ def active_pricing(database_path: Path) -> dict[str, Any]:
     """Return the active server rule; callers must never accept a client price."""
     def load() -> dict[str, Any]:
         with transaction(database_path) as conn:
-            return _pricing_payload(_active_pricing(conn))
+            payload = _pricing_payload(_active_pricing(conn))
+            payload["multipliers"] = _load_multipliers(conn)
+            payload["billing_note"] = (
+                "实际扣费 = 基础单条价值 × 对应类别积分倍率；"
+                "已冻结任务按冻结时的倍率快照结算，不受中途调价影响。"
+            )
+            return payload
 
     return cache.get_or_set("pricing:active", 60, load)
 
@@ -171,6 +205,308 @@ def update_active_pricing(
         updated = _pricing_payload(_active_pricing(conn))
     cache.invalidate_pricing()
     return updated
+
+
+def _base_link_units(conn: Any, category: str) -> int:
+    """基准单条价值（单位）：AI = 当前子项定价之和；POD = 款式随机价参考中值 45 分。"""
+    if category == MULTIPLIER_CATEGORY_POD:
+        return POD_BASE_POINTS_PER_STYLE * PIC_UNIT_SCALE
+    try:
+        rule = _active_pricing(conn)
+        rows = conn.execute(
+            """
+            SELECT charge_points FROM billing_pricing_items
+            WHERE rule_version = ?
+              AND feature_key IN ('title', 'description', 'product_dimensions', 'four_grid', 'detail_images')
+            """,
+            (int(rule["rule_version"]),),
+        ).fetchall()
+        total = sum(int(row["charge_points"]) for row in rows)
+        return total or DEFAULT_BATCH_FREEZE_PER_LINK
+    except HTTPException:
+        return DEFAULT_BATCH_FREEZE_PER_LINK
+
+
+def _load_multipliers(conn: Any) -> dict[str, Any]:
+    """Read the singleton multiplier rows inside an existing transaction.
+
+    points_per_unit：管理员设置的单条价值（积分）；None = 基础定价（未调整）。
+    multiplier_percent：单条价值相对基准的百分比（100 = 1.0 倍），随设置派生，
+    用于审计与可视化图表；计费以 points_per_unit（设置时）为准。
+    """
+    rows = conn.execute(
+        """
+        SELECT category, multiplier_percent, points_per_unit, updated_at, updated_by, change_reason
+        FROM billing_multiplier_rules
+        """
+    ).fetchall()
+    by_category = {str(row["category"]): row for row in rows}
+    result: dict[str, Any] = {}
+    for category in MULTIPLIER_CATEGORIES:
+        row = by_category.get(category)
+        base_units = _base_link_units(conn, category)
+        base_points = _display_points(base_units)
+        points = (
+            int(row["points_per_unit"])
+            if row is not None and row["points_per_unit"] is not None
+            else None
+        )
+        percent = (
+            int(row["multiplier_percent"])
+            if row is not None
+            else MULTIPLIER_DEFAULT_PERCENT
+        )
+        result[category] = {
+            "category": category,
+            "multiplier_percent": percent,
+            "points_per_unit": points,
+            "base_points_per_unit": base_points,
+            "effective_points_per_unit": points if points is not None else base_points,
+            "auto_pricing": points is None,
+            "updated_at": str(row["updated_at"] or "") if row is not None else "",
+            "updated_by": str(row["updated_by"] or "system") if row is not None else "system",
+            "change_reason": str(row["change_reason"] or "") if row is not None else "",
+        }
+    return result
+
+
+def active_multipliers(database_path: Path) -> dict[str, Any]:
+    """Return the active billing multipliers（单条价值 + 派生倍率）。"""
+
+    def load() -> dict[str, Any]:
+        with transaction(database_path) as conn:
+            return _load_multipliers(conn)
+
+    return cache.get_or_set("billing:multipliers", 60, load)
+
+
+def _normalize_points_value(name: str, value: Any) -> int:
+    if isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{name} 必须是整数积分")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"{name} 必须是整数积分") from exc
+    if not 1 <= parsed <= 500:
+        raise HTTPException(status_code=400, detail=f"{name} 必须在 1 到 500 积分之间")
+    return parsed
+
+
+def _normalize_percent_value(name: str, value: Any) -> int:
+    if isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{name} 必须是整数百分比")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"{name} 必须是整数百分比") from exc
+    if not MULTIPLIER_MIN_PERCENT <= parsed <= MULTIPLIER_MAX_PERCENT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} 必须在 {MULTIPLIER_MIN_PERCENT}% 到 {MULTIPLIER_MAX_PERCENT}% 之间",
+        )
+    return parsed
+
+
+def update_multipliers(
+    database_path: Path,
+    *,
+    ai_points_per_unit: Any = None,
+    pod_points_per_unit: Any = None,
+    ai_multiplier_percent: Any = None,
+    pod_multiplier_percent: Any = None,
+    reset_ai: bool = False,
+    reset_pod: bool = False,
+    updated_by: str,
+    change_reason: str = "",
+) -> dict[str, Any]:
+    """Set per-unit credit value for AI / POD billing categories.
+
+    - ``ai_points_per_unit`` / ``pod_points_per_unit``：直接设置单条价值（整数积分）。
+    - ``ai_multiplier_percent`` / ``pod_multiplier_percent``：按基准设置倍率，
+      target = round(基准单条价值 × percent / 100)。
+    - ``reset_ai`` / ``reset_pod``：恢复基础定价（AI 按子项定价、POD 随机 40..50）。
+    每次修改都写入 billing_multiplier_changelog 审计。
+    """
+    def resolve(
+        category: str,
+        points_value: Any,
+        percent_value: Any,
+        reset: bool,
+        current_points: int | None,
+        base_points: float,
+    ) -> tuple[int | None, int | None]:
+        if reset or (points_value is not None and str(points_value).strip() in {"0", "0.0"}):
+            return None, MULTIPLIER_DEFAULT_PERCENT
+        if points_value is not None:
+            points = _normalize_points_value(f"{category}_points_per_unit", points_value)
+            percent = int(points * 100 / base_points + 0.5) if base_points else 100
+            return points, max(1, min(MULTIPLIER_MAX_PERCENT, percent))
+        if percent_value is not None:
+            percent = _normalize_percent_value(f"{category}_multiplier_percent", percent_value)
+            points = int(base_points * percent / 100 + 0.5)
+            return max(1, points), percent
+        return current_points, None
+
+    reason = str(change_reason or "").strip()
+    with transaction(database_path) as conn:
+        current = _load_multipliers(conn)
+        ai, percent_ai = resolve(
+            MULTIPLIER_CATEGORY_AI,
+            ai_points_per_unit,
+            ai_multiplier_percent,
+            bool(reset_ai),
+            current[MULTIPLIER_CATEGORY_AI]["points_per_unit"],
+            float(current[MULTIPLIER_CATEGORY_AI]["base_points_per_unit"]),
+        )
+        pod, percent_pod = resolve(
+            MULTIPLIER_CATEGORY_POD,
+            pod_points_per_unit,
+            pod_multiplier_percent,
+            bool(reset_pod),
+            current[MULTIPLIER_CATEGORY_POD]["points_per_unit"],
+            float(current[MULTIPLIER_CATEGORY_POD]["base_points_per_unit"]),
+        )
+        final_ai_percent = (
+            percent_ai if percent_ai is not None
+            else int(current[MULTIPLIER_CATEGORY_AI]["multiplier_percent"])
+        )
+        final_pod_percent = (
+            percent_pod if percent_pod is not None
+            else int(current[MULTIPLIER_CATEGORY_POD]["multiplier_percent"])
+        )
+        if (
+            ai == current[MULTIPLIER_CATEGORY_AI]["points_per_unit"]
+            and final_ai_percent == int(current[MULTIPLIER_CATEGORY_AI]["multiplier_percent"])
+            and pod == current[MULTIPLIER_CATEGORY_POD]["points_per_unit"]
+            and final_pod_percent == int(current[MULTIPLIER_CATEGORY_POD]["multiplier_percent"])
+        ):
+            raise HTTPException(status_code=400, detail="单条价值未发生变化")
+        now = _utc_now()
+        who = str(updated_by or "system")[:160]
+        reason_clip = reason[:500] if reason else "管理员调整积分倍率"
+        for category, points, percent in (
+            (MULTIPLIER_CATEGORY_AI, ai, final_ai_percent),
+            (MULTIPLIER_CATEGORY_POD, pod, final_pod_percent),
+        ):
+            before_points = current[category]["points_per_unit"]
+            before_percent = int(current[category]["multiplier_percent"])
+            if points == before_points and percent == before_percent:
+                continue
+            conn.execute(
+                """
+                UPDATE billing_multiplier_rules
+                SET points_per_unit = ?, multiplier_percent = ?,
+                    updated_at = ?, updated_by = ?, change_reason = ?
+                WHERE category = ?
+                """,
+                (points, percent, now, who, reason_clip, category),
+            )
+            conn.execute(
+                """
+                INSERT INTO billing_multiplier_changelog (
+                    category, before_percent, after_percent,
+                    before_points, after_points, changed_by, change_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    category,
+                    before_percent,
+                    percent,
+                    before_points,
+                    points,
+                    who,
+                    reason_clip,
+                ),
+            )
+        updated = _load_multipliers(conn)
+    cache.invalidate_multipliers()
+    return updated
+
+
+def multiplier_changelog(
+    database_path: Path,
+    *,
+    limit: int = 100,
+    category: str = "",
+) -> list[dict[str, Any]]:
+    """Read the append-only multiplier audit trail (newest first)."""
+    page_size = max(1, min(int(limit), 500))
+    where = "WHERE 1 = 1"
+    params: list[Any] = []
+    if category in MULTIPLIER_CATEGORIES:
+        where += " AND category = ?"
+        params.append(category)
+    with transaction(database_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, category, before_percent, after_percent, before_points, after_points,
+                   changed_by, change_reason, created_at
+            FROM billing_multiplier_changelog
+            {where}
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (*params, page_size),
+        ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "category": str(row["category"]),
+                "before_percent": int(row["before_percent"]),
+                "after_percent": int(row["after_percent"]),
+                "before_points": row["before_points"],
+                "after_points": row["after_points"],
+                "changed_by": str(row["changed_by"]),
+                "change_reason": str(row["change_reason"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+
+def _scaled_units(units: int, multiplier_percent: int | None) -> int:
+    """Scale integer billing units by a percent multiplier (100 == 1.0x).
+
+    计算结果四舍五入到整数单位（10 单位 = 1 积分），保证定价精确、无浮点误差。
+    multiplier_percent 为 None 或 100 时原样返回。
+    """
+    units = int(units)
+    if multiplier_percent is None or int(multiplier_percent) == MULTIPLIER_DEFAULT_PERCENT:
+        return units
+    return (units * int(multiplier_percent) + 50) // 100
+
+
+def distribute_link_units(
+    base_units: dict[str, int],
+    target_units: int,
+) -> dict[str, int]:
+    """按基准占比把目标单位数精确分配到各子项（最大余数法，总和恒等于 target_units）。
+
+    base_units：{feature_key: 基准单位}；target_units：该链接应扣总额（单位）。
+    仅当设置了固定单条价值（points_per_unit）时使用，保证冻结额与结算额精确一致。
+    """
+    total_base = sum(max(0, int(value)) for value in base_units.values())
+    if total_base <= 0:
+        return {key: 0 for key in base_units}
+    target = int(target_units)
+    if target <= 0:
+        return {key: 0 for key in base_units}
+    shares: dict[str, int] = {}
+    remainders: list[tuple[float, str]] = []
+    allocated = 0
+    for key, value in base_units.items():
+        exact = target * max(0, int(value)) / total_base
+        floor = int(exact)
+        shares[key] = floor
+        allocated += floor
+        remainders.append((exact - floor, key))
+    remainders.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    index = 0
+    while allocated < target and index < len(remainders):
+        shares[remainders[index][1]] += 1
+        allocated += 1
+        index += 1
+    return shares
 
 
 def usage_history(
@@ -340,6 +676,7 @@ def reserve_ai_usage(
     idempotency_key: str,
     quantity: int = 1,
     source_ref: str = "",
+    app_version: str = "",
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     quantity = max(1, int(quantity))
@@ -398,9 +735,9 @@ def reserve_ai_usage(
             INSERT INTO billing_ai_usage_events (
                 usage_id, account_id, workspace_id, feature_key, idempotency_key,
                 reserved_points, cost_multiplier, min_charge_points, quantity,
-                source_ref, status, metadata_json, created_at
+                source_ref, app_version, status, metadata_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)
             """,
             (
                 usage_id,
@@ -413,6 +750,7 @@ def reserve_ai_usage(
                 pricing.min_charge_points * quantity,
                 quantity,
                 source_ref,
+                str(app_version or "")[:40],
                 json.dumps(event_metadata, ensure_ascii=False, sort_keys=True),
                 now,
             ),
@@ -510,7 +848,9 @@ def settle_ai_usage_success(
             UPDATE billing_ai_usage_events
             SET charged_points = ?, refunded_points = ?, actual_cost_cny = ?,
                 provider = ?, provider_key_id = ?, model = ?, channel = ?,
-                input_tokens = ?, output_tokens = ?, total_tokens = ?,
+                input_tokens = CASE WHEN ? > 0 THEN ? ELSE input_tokens END,
+                output_tokens = CASE WHEN ? > 0 THEN ? ELSE output_tokens END,
+                total_tokens = CASE WHEN ? > 0 THEN ? ELSE total_tokens END,
                 source_ref = CASE WHEN ? <> '' THEN ? ELSE source_ref END,
                 status = 'succeeded', metadata_json = ?, settled_at = ?
             WHERE usage_id = ?
@@ -524,7 +864,10 @@ def settle_ai_usage_success(
                 model,
                 channel,
                 int(input_tokens),
+                int(input_tokens),
                 int(output_tokens),
+                int(output_tokens),
+                int(total_tokens),
                 int(total_tokens),
                 provider_task_id,
                 provider_task_id,
@@ -883,34 +1226,49 @@ def _display_points(units: int, scale: int = 10) -> int | float:
 
 
 def _pricing(conn: Any, feature_key: str) -> FeaturePricing:
+    """Server-authoritative per-feature pricing, scaled by the live multiplier.
+
+    旧版单次计费路径使用：reserve 时按「当前生效倍率」缩放并写入事件快照，
+    结算按快照金额执行，保证中途调价不影响已预留用量。
+    """
     rule = _active_pricing(conn)
+    multiplier_percent = int(
+        _load_multipliers(conn)[_multiplier_category(feature_key)]["multiplier_percent"]
+    )
     if feature_key == "product_processing.text":
-        return FeaturePricing(
+        base = FeaturePricing(
             int(rule["text_reserve_units"]),
             int(rule["text_charge_units"]),
             int(rule["text_charge_units"]),
             1.0,
         )
-    if feature_key == "product_processing.image_grid_2k":
-        return FeaturePricing(
+    elif feature_key == "product_processing.image_grid_2k":
+        base = FeaturePricing(
             int(rule["image_reserve_units"]),
             int(rule["image_charge_units"]),
             int(rule["image_charge_units"]),
             1.0,
         )
-    if feature_key == "pod.title":
+    elif feature_key == "pod.title":
         return FeaturePricing(0, 0, 0, 1.0)
-    if feature_key == "pod.image":
+    elif feature_key == "pod.image":
         style_price_units = (
             POD_LINK_PRICE_MIN_POINTS + secrets.randbelow(POD_LINK_PRICE_VARIANTS)
         ) * int(rule["point_unit_scale"])
-        return FeaturePricing(style_price_units, style_price_units, style_price_units, 1.0)
-    legacy = FEATURE_PRICING.get(feature_key, FeaturePricing(50, 10, 20, 3.0))
+        base = FeaturePricing(style_price_units, style_price_units, style_price_units, 1.0)
+    else:
+        legacy = FEATURE_PRICING.get(feature_key, FeaturePricing(50, 10, 20, 3.0))
+        base = FeaturePricing(
+            legacy.reserve_points * 10,
+            legacy.min_charge_points * 10,
+            legacy.fixed_charge_points * 10,
+            legacy.cost_multiplier,
+        )
     return FeaturePricing(
-        legacy.reserve_points * 10,
-        legacy.min_charge_points * 10,
-        legacy.fixed_charge_points * 10,
-        legacy.cost_multiplier,
+        reserve_points=_scaled_units(base.reserve_points, multiplier_percent),
+        min_charge_points=_scaled_units(base.min_charge_points, multiplier_percent),
+        fixed_charge_points=_scaled_units(base.fixed_charge_points, multiplier_percent),
+        cost_multiplier=base.cost_multiplier,
     )
 
 
@@ -1278,10 +1636,18 @@ RETRY_PREMIUM_UNITS = 100
 RETRY_PREMIUM_FEATURE = "product_processing.image_grid_2k"
 
 
-def pricing_items(database_path: Path, *, rule_version: int | None = None) -> dict[str, Any]:
+def pricing_items(
+    database_path: Path,
+    *,
+    rule_version: int | None = None,
+    multiplier_percent: int | None = None,
+) -> dict[str, Any]:
     """Return the active per-subitem pricing for a given rule version.
 
     rule_version defaults to the current billing_pricing_rules.rule_version.
+    multiplier_percent：None 表示基础定价（审计/展示用）；传倍率时每个子项
+    单价按该倍率缩放（四舍五入），冻结与结算共用同一套缩放结果，保证
+    结算金额永远不会超出冻结上限。
     Read-only: uses a plain connection so it can be called inside a settle
     transaction without taking a nested write lock.
     """
@@ -1307,11 +1673,12 @@ def pricing_items(database_path: Path, *, rule_version: int | None = None) -> di
         items: dict[str, Any] = {}
         total_units = 0
         for row in rows:
-            charge = int(row["charge_points"])
+            charge = _scaled_units(int(row["charge_points"]), multiplier_percent)
             total_units += charge
             items[str(row["feature_key"])] = {
                 "charge_points": _display_points(charge),
                 "charge_units": charge,
+                "base_charge_units": int(row["charge_points"]),
                 "intercept_refund_ratio": float(row["intercept_refund_ratio"]),
                 "no_return_refund_ratio": float(row["no_return_refund_ratio"]),
             }
@@ -1320,6 +1687,9 @@ def pricing_items(database_path: Path, *, rule_version: int | None = None) -> di
     return {
         "rule_version": version,
         "point_unit_scale": PIC_UNIT_SCALE,
+        "multiplier_percent": (
+            MULTIPLIER_DEFAULT_PERCENT if multiplier_percent is None else int(multiplier_percent)
+        ),
         "max_charge_per_link": _display_points(total_units),
         "max_charge_units_per_link": total_units,
         "freeze_per_link": _display_points(total_units),
@@ -1503,20 +1873,29 @@ def compute_batch_charge(
     *,
     rule_version: int | None,
     item_results: list[dict[str, str]],
+    multiplier_percent: int | None = None,
 ) -> dict[str, Any]:
     """Compute per-subitem charge/refund for one link from client-reported status.
 
     status: success -> full charge; intercept -> refund ratio; no_return -> full refund.
     The server rule is authoritative; client numbers are never trusted directly.
+    multiplier_percent 为该批次冻结时快照的倍率（None = 基础定价）。
     """
-    pricing = pricing_items(database_path, rule_version=rule_version)
+    pricing = pricing_items(
+        database_path,
+        rule_version=rule_version,
+        multiplier_percent=multiplier_percent,
+    )
     items = pricing["items"]
     charge_units = 0
     refund_units = 0
     details: list[dict[str, Any]] = []
     # 重试溢价：该链接任一子项带 retried 标记即整条链接加收一次（不按子项重复累加）。
     retried = any(str(result.get("retried") or "").lower() in {"true", "1", "yes"} for result in item_results)
-    premium_units = RETRY_PREMIUM_UNITS if retried else 0
+    premium_units = _scaled_units(
+        RETRY_PREMIUM_UNITS if retried else 0,
+        multiplier_percent,
+    )
     for result in item_results:
         key = str(result.get("feature") or "").strip()
         status = str(result.get("status") or "").strip()
@@ -1549,6 +1928,7 @@ def compute_batch_charge(
         )
     return {
         "rule_version": int(pricing["rule_version"]),
+        "multiplier_percent": int(pricing["multiplier_percent"]),
         "charge_units": charge_units,
         "refund_units": refund_units,
         "charge_points": _display_points(charge_units),
@@ -1568,6 +1948,7 @@ def freeze_batch_points(
     idempotency_key: str = "",
     billing_profile: str = BATCH_BILLING_PROFILE_PRODUCT,
     task_id: str = "",
+    app_version: str = "",
 ) -> dict[str, Any]:
     """Reserve batch points (N x freeze_per_link) before the client starts work.
 
@@ -1581,7 +1962,20 @@ def freeze_batch_points(
     profile = str(billing_profile or BATCH_BILLING_PROFILE_PRODUCT).strip()
     if profile not in {BATCH_BILLING_PROFILE_PRODUCT, BATCH_BILLING_PROFILE_POD}:
         raise HTTPException(status_code=400, detail="invalid batch billing profile")
-    pricing = pricing_items(database_path)
+    # 冻结时读取当前生效单条价值/倍率；固定价值模式按 points_per_unit 精确扣费。
+    multipliers = active_multipliers(database_path)
+    category = _multiplier_category(profile)
+    points_per_unit = multipliers[category]["points_per_unit"]
+    multiplier_percent = int(multipliers[category]["multiplier_percent"])
+    target_units_per_link = (
+        int(points_per_unit) * PIC_UNIT_SCALE if points_per_unit is not None else None
+    )
+    pricing = pricing_items(
+        database_path,
+        multiplier_percent=(
+            multiplier_percent if points_per_unit is None else None
+        ),
+    )
     idem = str(idempotency_key or "").strip()
     normalized_task_id = str(task_id or "").strip()[:64]
     normalized_scope = [str(item) for item in (scope or []) if str(item).strip()]
@@ -1599,7 +1993,26 @@ def freeze_batch_points(
             if existing is not None:
                 if str(existing["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT) != profile:
                     raise HTTPException(status_code=409, detail="batch billing profile conflict")
-                return _batch_freeze_response(existing, pricing=pricing, already_frozen=True)
+                # 幂等返回按冻结记录里的快照展示，避免与实扣金额不一致。
+                existing_points = (
+                    int(existing["points_per_unit"])
+                    if existing["points_per_unit"] is not None
+                    else None
+                )
+                existing_percent = int(existing["multiplier_percent"] or MULTIPLIER_DEFAULT_PERCENT)
+                display_pricing = (
+                    pricing_items(
+                        database_path,
+                        multiplier_percent=(
+                            existing_percent if existing_points is None else None
+                        ),
+                    )
+                    if profile == BATCH_BILLING_PROFILE_PRODUCT
+                    else pricing
+                )
+                return _batch_freeze_response(
+                    existing, pricing=display_pricing, already_frozen=True
+                )
         if profile == BATCH_BILLING_PROFILE_POD:
             allowed_scope = {"title", "four_grid"}
             if (
@@ -1612,17 +2025,33 @@ def freeze_batch_points(
             # 图片已生成后再补/重生标题不再扣积分。
             if set(normalized_scope) == {"title"}:
                 link_price_units = [0 for _ in range(link_count)]
+            elif target_units_per_link is not None:
+                # 固定单条价值模式：每款式都按管理员设置的价值收取。
+                link_price_units = [target_units_per_link for _ in range(link_count)]
             else:
                 link_price_units = [
-                    (POD_LINK_PRICE_MIN_POINTS + secrets.randbelow(POD_LINK_PRICE_VARIANTS))
-                    * PIC_UNIT_SCALE
+                    _scaled_units(
+                        (
+                            POD_LINK_PRICE_MIN_POINTS
+                            + secrets.randbelow(POD_LINK_PRICE_VARIANTS)
+                        )
+                        * PIC_UNIT_SCALE,
+                        multiplier_percent,
+                    )
                     for _ in range(link_count)
                 ]
             frozen_units = sum(link_price_units)
         else:
-            freeze_units_per_link = int(pricing["freeze_units_per_link"])
+            freeze_units_per_link = (
+                target_units_per_link
+                if target_units_per_link is not None
+                else int(pricing["freeze_units_per_link"])
+            )
             link_price_units = []
             frozen_units = freeze_units_per_link * link_count
+        effective_freeze_per_link_units = (
+            freeze_units_per_link if profile == BATCH_BILLING_PROFILE_PRODUCT else None
+        )
         frozen_points = _display_points(frozen_units)
         wallet = conn.execute(
             """
@@ -1662,9 +2091,10 @@ def freeze_batch_points(
             INSERT INTO billing_batch_freezes (
                 freeze_id, account_id, workspace_id, task_id, link_count, scope_json,
                 frozen_points, status, created_at, expires_at,
-                billing_profile, rule_version, link_prices_json
+                billing_profile, rule_version, link_prices_json, app_version,
+                multiplier_percent, points_per_unit
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'frozen', ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'frozen', ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 freeze_id,
@@ -1679,6 +2109,9 @@ def freeze_batch_points(
                 profile,
                 int(pricing["rule_version"]),
                 link_prices_json,
+                str(app_version or "")[:40],
+                multiplier_percent,
+                points_per_unit,
             ),
         )
         _append_ledger(
@@ -1694,6 +2127,8 @@ def freeze_batch_points(
                 "link_count": link_count,
                 "billing_profile": profile,
                 "rule_version": int(pricing["rule_version"]),
+                "multiplier_percent": multiplier_percent,
+                "points_per_unit": points_per_unit,
             },
         )
     return {
@@ -1703,11 +2138,13 @@ def freeze_batch_points(
         "link_count": link_count,
         "frozen_points": _display_points(frozen_units),
         "freeze_per_link": (
-            pricing["freeze_per_link"]
+            _display_points(effective_freeze_per_link_units)
             if profile == BATCH_BILLING_PROFILE_PRODUCT
             else None
         ),
         "rule_version": int(pricing["rule_version"]),
+        "multiplier_percent": multiplier_percent,
+        "points_per_unit": points_per_unit,
         "billing_profile": profile,
         "link_prices": [_display_points(units) for units in link_price_units],
         "scope": normalized_scope,
@@ -1739,11 +2176,25 @@ def _batch_freeze_response(
         "link_count": int(row["link_count"]),
         "frozen_points": _display_points(int(row["frozen_points"])),
         "freeze_per_link": (
-            pricing["freeze_per_link"]
+            _display_points(
+                int(row["points_per_unit"]) * PIC_UNIT_SCALE
+                if row["points_per_unit"] is not None
+                else int(pricing["freeze_units_per_link"])
+            )
             if profile == BATCH_BILLING_PROFILE_PRODUCT
             else None
         ),
         "rule_version": int(row["rule_version"] or pricing["rule_version"]),
+        "multiplier_percent": int(
+            row["multiplier_percent"]
+            if row["multiplier_percent"] is not None
+            else pricing.get("multiplier_percent", MULTIPLIER_DEFAULT_PERCENT)
+        ),
+        "points_per_unit": (
+            int(row["points_per_unit"])
+            if row["points_per_unit"] is not None
+            else None
+        ),
         "billing_profile": profile,
         "link_prices": [_display_points(units) for units in link_price_units],
         "scope": normalized_scope,
@@ -1762,8 +2213,11 @@ def freeze_planned_points(
     scope: list[str],
     idempotency_key: str,
     source_type: str,
+    app_version: str = "",
     persist_plan: Any | None = None,
     validate_existing: Any | None = None,
+    multiplier_percent: int | None = None,
+    points_per_unit: int | None = None,
 ) -> dict[str, Any]:
     """Lock an exact server-computed amount for a versioned call plan.
 
@@ -1774,6 +2228,14 @@ def freeze_planned_points(
     units = int(frozen_units)
     count = int(item_count)
     idem = str(idempotency_key or "").strip()
+    snapshot_multiplier = (
+        MULTIPLIER_DEFAULT_PERCENT
+        if multiplier_percent is None
+        else int(multiplier_percent)
+    )
+    snapshot_points = (
+        None if points_per_unit is None else int(points_per_unit)
+    )
     if units < 0 or count < 1 or not idem:
         raise HTTPException(status_code=400, detail="invalid planned point freeze")
     with transaction(database_path) as conn:
@@ -1835,8 +2297,9 @@ def freeze_planned_points(
             """
             INSERT INTO billing_batch_freezes (
                 freeze_id, account_id, workspace_id, link_count, scope_json,
-                frozen_points, status, created_at, expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'frozen', ?, ?)
+                frozen_points, status, created_at, expires_at, app_version,
+                multiplier_percent, points_per_unit
+            ) VALUES (?, ?, ?, ?, ?, ?, 'frozen', ?, ?, ?, ?, ?)
             """,
             (
                 idem,
@@ -1847,6 +2310,9 @@ def freeze_planned_points(
                 units,
                 now,
                 expires_at,
+                str(app_version or "")[:40],
+                snapshot_multiplier,
+                snapshot_points,
             ),
         )
         _append_ledger(
@@ -1858,7 +2324,7 @@ def freeze_planned_points(
             source_type=source_type,
             source_id=idem,
             idempotency_key=f"{source_type}:{idem}:lock",
-            metadata={"item_count": count},
+            metadata={"item_count": count, "multiplier_percent": snapshot_multiplier},
         )
         if persist_plan is not None:
             persist_plan(conn, idem)
@@ -1868,6 +2334,8 @@ def freeze_planned_points(
         "workspace_id": actor.workspace_id or "default",
         "item_count": count,
         "frozen_points": _display_points(units),
+        "multiplier_percent": snapshot_multiplier,
+        "points_per_unit": snapshot_points,
         "status": "frozen",
         "expires_at": expires_at,
         "already_frozen": False,
@@ -1965,6 +2433,77 @@ def settle_planned_points(
     }
 
 
+def _compute_link_charge_fixed(
+    database_path: Path,
+    *,
+    rule_version: int | None,
+    item_results: list[dict[str, Any]],
+    target_units_per_link: int,
+    multiplier_percent: int,
+) -> dict[str, Any]:
+    """按固定单条价值结算：目标单位按基准占比精确拆到各子项后执行状态退款。
+
+    target_units_per_link 来自冻结时快照的 points_per_unit（10 单位 = 1 积分），
+    子项按基准占比四舍五入（最大余数法），总和恒等于目标值 —— 每链接冻结与
+    结算金额完全一致，拦截 / 无返回仍按子项状态与退款比例执行。
+    """
+    pricing = pricing_items(database_path, rule_version=rule_version, multiplier_percent=None)
+    base_items = {
+        str(key): int(value["charge_units"])
+        for key, value in pricing["items"].items()
+    }
+    shares = distribute_link_units(base_items, int(target_units_per_link))
+    retried = any(
+        str(result.get("retried") or "").lower() in {"true", "1", "yes"}
+        for result in item_results
+    )
+    premium_units = _scaled_units(RETRY_PREMIUM_UNITS, multiplier_percent)
+    charge_units = 0
+    refund_units = 0
+    details: list[dict[str, Any]] = []
+    for result in item_results:
+        key = str(result.get("feature") or "").strip()
+        status = str(result.get("status") or "").strip()
+        item = pricing["items"].get(key)
+        if item is None or status not in {"success", "intercept", "no_return"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid subitem result: feature={key!r} status={status!r}",
+            )
+        units = shares.get(key, 0)
+        if status == "success":
+            charge_units += units
+            item_refund = 0
+        elif status == "intercept":
+            charged = int(round(units * (1 - float(item["intercept_refund_ratio"]))))
+            charge_units += charged
+            item_refund = units - charged
+        else:  # no_return
+            item_refund = units
+        refund_units += item_refund
+        details.append(
+            {
+                "feature": key,
+                "status": status,
+                "charge_points": _display_points(units),
+                "charge_units": units,
+                "refund_points": _display_points(item_refund),
+                "refund_units": item_refund,
+            }
+        )
+    return {
+        "rule_version": int(pricing["rule_version"]),
+        "multiplier_percent": int(multiplier_percent),
+        "charge_units": charge_units,
+        "refund_units": refund_units,
+        "charge_points": _display_points(charge_units),
+        "refund_points": _display_points(refund_units),
+        "premium_units": premium_units,
+        "premium_points": _display_points(premium_units),
+        "details": details,
+    }
+
+
 def settle_batch_points(
     database_path: Path,
     freeze_id: str,
@@ -1997,6 +2536,17 @@ def settle_batch_points(
             }
         profile = str(freeze["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
         pricing = pricing_items(database_path, rule_version=None)
+        # 结算倍率/单条价值 = 冻结时快照（老批次无快照列则按 100% 基础价结算）。
+        multiplier_percent = int(
+            freeze["multiplier_percent"]
+            if freeze["multiplier_percent"] is not None
+            else MULTIPLIER_DEFAULT_PERCENT
+        )
+        snapshot_points = (
+            int(freeze["points_per_unit"])
+            if freeze["points_per_unit"] is not None
+            else None
+        )
         freeze_rule_version = (
             int(freeze["rule_version"] or pricing["rule_version"])
             if profile == BATCH_BILLING_PROFILE_POD
@@ -2080,11 +2630,24 @@ def settle_batch_points(
                 for feature in pod_scope:
                     stored_items.append((freeze_id, index, feature, statuses[feature]))
             else:
-                computed = compute_batch_charge(
-                    database_path,
-                    rule_version=freeze_rule_version,
-                    item_results=[dict(result) for result in link_results if isinstance(result, dict)],
-                )
+                normalized_results = [
+                    dict(result) for result in link_results if isinstance(result, dict)
+                ]
+                if snapshot_points is not None:
+                    computed = _compute_link_charge_fixed(
+                        database_path,
+                        rule_version=freeze_rule_version,
+                        item_results=normalized_results,
+                        target_units_per_link=snapshot_points * PIC_UNIT_SCALE,
+                        multiplier_percent=multiplier_percent,
+                    )
+                else:
+                    computed = compute_batch_charge(
+                        database_path,
+                        rule_version=freeze_rule_version,
+                        item_results=normalized_results,
+                        multiplier_percent=multiplier_percent,
+                    )
                 # 手动付费重试（paid_retry=true）：该链接无论子项成败都按整条链接
                 # 全价计费（35-45 积分区间），不退任何子项；审计明细仍保留实际状态。
                 if bool(entry.get("paid_retry") or False):
@@ -2157,6 +2720,8 @@ def settle_batch_points(
                 "link_count": int(freeze["link_count"]),
                 "billing_profile": profile,
                 "retry_premium_units": total_premium_units,
+                "multiplier_percent": multiplier_percent,
+                "points_per_unit": snapshot_points,
             },
         )
         if total_refund_units:
@@ -2177,6 +2742,8 @@ def settle_batch_points(
         "charged_points": _display_points(total_charged_units),
         "refunded_points": _display_points(total_refund_units),
         "retry_premium_points": _display_points(total_premium_units),
+        "multiplier_percent": multiplier_percent,
+        "points_per_unit": snapshot_points,
         "already_settled": False,
     }
 
@@ -2210,6 +2777,16 @@ def batch_freeze_status(database_path: Path, freeze_id: str, *, expected_account
                 freeze["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT
             ),
             "rule_version": int(freeze["rule_version"] or 0),
+            "multiplier_percent": int(
+                freeze["multiplier_percent"]
+                if freeze["multiplier_percent"] is not None
+                else MULTIPLIER_DEFAULT_PERCENT
+            ),
+            "points_per_unit": (
+                int(freeze["points_per_unit"])
+                if freeze["points_per_unit"] is not None
+                else None
+            ),
             "scope": [
                 str(value)
                 for value in json.loads(str(freeze["scope_json"] or "[]"))

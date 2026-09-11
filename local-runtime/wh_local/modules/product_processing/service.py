@@ -5555,11 +5555,17 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         },
                     )
                 else:
+                    settle_payload: dict[str, Any] = {"metadata": metadata}
+                    if kind == "image_grid":
+                        # 服务端账单要记真实生图模型；切换模型后账单随之变化。
+                        settle_model = str(resolve_ai_provider().get("image_model") or "").strip()
+                        if settle_model:
+                            settle_payload["model"] = settle_model
                     response = _billing_call_with_retry(
                         client.settle_ai_usage_success,
                         remote_token,
                         usage,
-                        {"metadata": metadata},
+                        settle_payload,
                     )
                 remote_status = self._remote_settlement_status(response, usage)
                 valid_statuses = (

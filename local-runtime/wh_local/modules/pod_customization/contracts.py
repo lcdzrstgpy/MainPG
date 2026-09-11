@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
@@ -91,6 +92,9 @@ class ListingFields(BaseModel):
         min_length=1,
         max_length=100,
     )
+    # 第 4 张图「规格卡」；可选字段（Agent C 的集成点）。注意 SpecCardConfig 自带
+    # config，父模型的 str_strip_whitespace 不会传播到嵌套模型 —— 单元格文本逐字保留。
+    spec_card: SpecCardConfig | None = None
 
 
 class BatchCreate(BaseModel):
@@ -183,3 +187,170 @@ class ExportSelectionUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     selected: StrictBool
+
+
+# --- 第 4 张图「规格卡」（方案 docs/superpowers/specs/2026-09-10-pod-spec-card-plan.md §4/§10.4） ---
+#
+# 配置随批次冻结在 listing_fields_json.spec_card（零 DB 迁移）。
+# 渲染由 spec_card.py 负责：用户填什么就印什么 —— 不翻译、不做单位换算、不做变量替换。
+# 这里的字符串取值必须与 spec_card.STYLES / spec_card.CORNERS 保持一致。
+
+SPEC_CARD_STYLES = ("light", "dark")
+SpecCardStyle = Literal["light", "dark"]
+SPEC_CARD_CORNERS = ("bottom-right", "bottom-left", "top-right", "top-left")
+SpecCardCorner = Literal["bottom-right", "bottom-left", "top-right", "top-left"]
+SPEC_CARD_MAX_ROWS = 12
+SPEC_CARD_MAX_COLUMNS = 6
+SPEC_CARD_MAX_CELL_LENGTH = 120
+
+_SPEC_CARD_GRID_ERROR = "规格卡表格结构不正确"
+_SPEC_CARD_CELL_ERROR = "规格卡表格单元格必须是文本"
+
+
+def validate_spec_card_cells(
+    cells: Sequence[Sequence[str]] | None,
+    *,
+    require_content: bool = True,
+) -> tuple[tuple[str, ...], ...]:
+    """校验并规范化规格卡的 m×n 单元格；非法时抛 ValueError（中文消息，与页面提示一致）。
+
+    规则（§10.2）：行 1–8（**空行不计**）、列 1–3、每个单元格 ≤120 个字符。
+    单元格文本不做任何加工（不 strip、不转换），只做长度与结构校验。
+    """
+
+    rows = _coerce_spec_card_rows(cells)
+    content_rows = [row for row in rows if any(cell.strip() for cell in row)]
+    if len(content_rows) > SPEC_CARD_MAX_ROWS:
+        raise ValueError(f"规格卡最多 {SPEC_CARD_MAX_ROWS} 行")
+    columns = max((_spec_card_row_columns(row) for row in content_rows), default=0)
+    if columns > SPEC_CARD_MAX_COLUMNS:
+        raise ValueError(f"规格卡最多 {SPEC_CARD_MAX_COLUMNS} 列")
+    for row in rows:
+        for cell in row:
+            if len(cell) > SPEC_CARD_MAX_CELL_LENGTH:
+                raise ValueError(f"规格卡每格最多 {SPEC_CARD_MAX_CELL_LENGTH} 个字符")
+    if require_content and not content_rows:
+        raise ValueError("规格卡至少需要一个非空单元格")
+    return rows
+
+
+def validate_spec_card(
+    config: "SpecCardConfig | Mapping[str, Any]",
+    *,
+    require_content: bool = True,
+) -> SpecCardConfig:
+    """提交前 / worker 用的整卡校验入口：返回校验通过的配置，非法则抛 ValueError。"""
+
+    model = config if isinstance(config, SpecCardConfig) else SpecCardConfig.from_mapping(config)
+    validate_spec_card_cells(model.cells, require_content=require_content)
+    return model
+
+
+def spec_card_is_configured(config: "SpecCardConfig | Mapping[str, Any] | None") -> bool:
+    """§10.4 判定口径：只要存在任意非空单元格就算已配置（不校验行数、不要求填满）。"""
+
+    if config is None:
+        return False
+    if isinstance(config, Mapping):
+        try:
+            config = SpecCardConfig.from_mapping(config)
+        except ValueError:
+            return False
+    if not isinstance(config, SpecCardConfig):
+        return False
+    return any(cell.strip() for row in config.cells for cell in row)
+
+
+class SpecCardConfig(BaseModel):
+    """第 4 张图规格卡配置（随批次快照冻结；P1 的 per_style 不属于本模型）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    style: str = "light"
+    corner: str = "bottom-right"
+    cells: tuple[tuple[str, ...], ...] = ()
+
+    @model_validator(mode="after")
+    def validate_spec_card(self) -> "SpecCardConfig":
+        if self.style not in SPEC_CARD_STYLES:
+            raise ValueError(f"规格卡风格必须是 {' 或 '.join(SPEC_CARD_STYLES)}")
+        if self.corner not in SPEC_CARD_CORNERS:
+            raise ValueError("规格卡位置必须是右下、左下、右上、左上之一")
+        # 空表是合法状态（未配置），由 spec_card_is_configured / 提交拦截处理，这里只校验上限。
+        self.cells = validate_spec_card_cells(self.cells, require_content=False)
+        return self
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any] | None) -> "SpecCardConfig":
+        """从冻结快照字典构造；缺失字段用默认值，未知键忽略（向前兼容 P1 的 per_style）。"""
+
+        if payload is None:
+            payload = {}
+        if not isinstance(payload, Mapping):
+            raise ValueError("规格卡配置结构不正确")
+        return cls(
+            enabled=payload.get("enabled", True),
+            style=payload.get("style", "light"),
+            corner=payload.get("corner", "bottom-right"),
+            cells=validate_spec_card_cells(payload.get("cells"), require_content=False),
+        )
+
+
+class SpecCardRequestBase(BaseModel):
+    """规格卡接口请求体：``cells`` 刻意宽松（Any）。
+
+    表格结构/上限/风格/位置的错误统一交给 ``validate_spec_card`` 抛中文 ValueError，
+    路由据此返回 400，而不是让 pydantic 先给出 422 英文结构错误。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cells: Any = None
+    style: str = "light"
+    corner: str = "bottom-right"
+
+    def config_mapping(self) -> dict[str, Any]:
+        return {"cells": self.cells, "style": self.style, "corner": self.corner}
+
+
+class SpecCardPreviewRequest(SpecCardRequestBase):
+    """同源预览请求（方案 §7）；``base_template_id`` 有值时用该模板当底图。"""
+
+    base_template_id: str = ""
+
+
+class SpecCardReprintRequest(SpecCardRequestBase):
+    """终态全批重印请求（方案 §8）；``style_index`` 有值时只重印该款。"""
+
+    style_index: StrictInt | None = None
+
+
+def _coerce_spec_card_rows(cells: Sequence[Sequence[str]] | None) -> tuple[tuple[str, ...], ...]:
+    if cells is None:
+        return ()
+    if isinstance(cells, (str, bytes, bytearray)) or not isinstance(cells, Sequence):
+        raise ValueError(_SPEC_CARD_GRID_ERROR)
+    rows: list[tuple[str, ...]] = []
+    for row in cells:
+        if isinstance(row, (str, bytes, bytearray)) or not isinstance(row, Sequence):
+            raise ValueError(_SPEC_CARD_GRID_ERROR)
+        normalized: list[str] = []
+        for cell in row:
+            if cell is None:
+                normalized.append("")
+            elif isinstance(cell, str):
+                normalized.append(cell)
+            else:
+                raise ValueError(_SPEC_CARD_CELL_ERROR)
+        rows.append(tuple(normalized))
+    return tuple(rows)
+
+
+def _spec_card_row_columns(row: Sequence[str]) -> int:
+    """该行占用的列数 = 最后一个非空单元格之后不再计数（尾部空单元格不占列）。"""
+
+    for index in range(len(row) - 1, -1, -1):
+        if row[index].strip():
+            return index + 1
+    return 0

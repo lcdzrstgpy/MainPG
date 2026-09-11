@@ -207,3 +207,27 @@ export function changeAccountPassword(input: {
     body: input,
   });
 }
+
+export type ImageModelChoice = {
+  value: string;
+  label: string;
+};
+
+export type ImageModelSetting = {
+  ok: boolean;
+  model: string;
+  choices: ImageModelChoice[];
+};
+
+/** 个人中心「模型选择」：读取当前生图模型与可选项（只含模型名，不含上游凭据）。 */
+export function loadImageModel() {
+  return httpJson<ImageModelSetting>("/desktop/basic-settings/image-model");
+}
+
+/** 切换生图模型；只改模型字段，不影响系统配置的其他内容。 */
+export function saveImageModel(model: string) {
+  return httpJson<{ ok: boolean; model: string; message: string }>(
+    "/desktop/basic-settings/image-model",
+    { method: "PUT", body: { model } },
+  );
+}

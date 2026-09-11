@@ -59,6 +59,12 @@ class UpdateConfig(BaseModel):
     public_base_url: str = ""
 
 
+class ImageModelSelection(BaseModel):
+    """个人中心「模型选择」提交的生图模型名（服务端白名单校验）。"""
+
+    model: str = ""
+
+
 class SystemConfigUpdate(BaseModel):
     """系统配置页面一次保存提交的完整表单。"""
 

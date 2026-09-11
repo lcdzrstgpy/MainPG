@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ClipboardEvent, FormEvent, KeyboardEvent, MouseEvent } from "react";
 
 import { generatedImageDownloadName } from "../data/assetDownload";
@@ -448,15 +449,16 @@ export function AiServicePage() {
         {mode !== "chat" && <section className="ai-settings-card"><span className="ai-card-kicker">CREATION SETTINGS</span><h2>创作参数</h2><label>画面比例<select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value)}><option>1:1</option><option>4:5</option><option>3:4</option><option>16:9</option></select></label><label>场景风格 <small>可选</small><input value={sceneStyle} onChange={(event) => setSceneStyle(event.target.value)} list="ai-scene-style-suggestions" placeholder="如：新中式茶室、法式复古花园" /><datalist id="ai-scene-style-suggestions"><option value="自然家居" /><option value="纯色影棚" /><option value="轻奢生活方式" /><option value="户外通勤" /><option value="新中式茶室" /><option value="节日促销陈列" /></datalist></label></section>}
         <section className="ai-settings-card ai-tips-card"><span className="iconfont icon-bulb-fill" /><div><b>商品图创作小贴士</b><p>上传正面、清晰且无遮挡的商品图，换背景和场景图的效果会更稳定。</p></div></section>
       </aside>
-      {conversationMenu && <>
+      {/* portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed 层 z-index，被顶栏盖住 */}
+      {conversationMenu && createPortal(<>
         <button className="ai-context-backdrop" type="button" aria-label="关闭会话菜单" onClick={() => setConversationMenu(undefined)} />
         <div className="ai-conversation-menu" role="menu" style={{ left: conversationMenu.x, top: conversationMenu.y }}>
           <button type="button" role="menuitem" onClick={() => beginRenameConversation(conversationMenu.conversation)}>重命名</button>
           <button type="button" role="menuitem" onClick={() => void toggleConversationPin(conversationMenu.conversation)}>{conversationMenu.conversation.isPinned ? "取消置顶" : "置顶"}</button>
           <button type="button" role="menuitem" className="is-danger" onClick={() => void removeConversation(conversationMenu.conversation)}>删除会话</button>
         </div>
-      </>}
-      {renamingConversation && <div className="ai-dialog-backdrop" role="presentation"><form className="ai-conversation-dialog" onSubmit={(event) => void saveConversationRename(event)}><h2>重命名会话</h2><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={80} aria-label="会话名称" /><div><button type="button" onClick={() => setRenamingConversation(undefined)}>取消</button><button type="submit" disabled={!renameValue.trim()}>保存</button></div></form></div>}
+      </>, document.body)}
+      {renamingConversation && createPortal(<div className="ai-dialog-backdrop" role="presentation"><form className="ai-conversation-dialog" onSubmit={(event) => void saveConversationRename(event)}><h2>重命名会话</h2><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={80} aria-label="会话名称" /><div><button type="button" onClick={() => setRenamingConversation(undefined)}>取消</button><button type="submit" disabled={!renameValue.trim()}>保存</button></div></form></div>, document.body)}
     </section>
   );
 }

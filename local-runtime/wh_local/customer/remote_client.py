@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 
 import requests
 
-from ..config import is_ip_literal_host
+from ..config import default_config, is_ip_literal_host
 from .contracts import (
     CustomerAuthActionResult,
     CustomerAuthRejected,
@@ -216,10 +216,12 @@ class CustomerAuthClient:
     def _billing_post(self, path: str, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not remote_token:
             raise CustomerBillingPermissionError()
+        # 附带客户端版本号：服务端据此在消费流水上记录产生该笔调用的版本，
+        # 供后台按版本分析用量与失败率。旧服务端会忽略该字段，无兼容风险。
         return self._billing_result(
             self._post,
             path,
-            payload,
+            {**payload, "app_version": str(default_config().app_version or "")},
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 

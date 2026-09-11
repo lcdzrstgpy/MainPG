@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { clearAuthSession, getAuthAccount } from "../../../transport/http/client";
 import { AVATAR_CHANGED_EVENT, AVATAR_STORAGE_KEY } from "../../../app/layout/TopNavigation";
@@ -7,10 +8,13 @@ import {
   createTopupOrder,
   loadBillingSummary,
   loadBillingUsageHistory,
+  loadImageModel,
   quoteCustomTopup,
+  saveImageModel,
   type BillingPackage,
   type BillingSummary,
   type BillingUsageEntry,
+  type ImageModelChoice,
   type TopupOrderResponse,
 } from "../api/personalCenterApi";
 import { SystemVersionPanel } from "../components/SystemVersionPanel";
@@ -239,7 +243,13 @@ export function PersonalCenterPage() {
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "version">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "version">("wallet");
+  // 生图模型切换：下拉选项由服务端白名单给出，切换后所有生图任务立即跟随。
+  const [imageModel, setImageModel] = useState("");
+  const [imageModelChoices, setImageModelChoices] = useState<ImageModelChoice[]>([]);
+  const [imageModelBusy, setImageModelBusy] = useState(false);
+  const [imageModelMessage, setImageModelMessage] = useState("");
+  const [imageModelError, setImageModelError] = useState("");
   const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>(
     cachedUsage && cachedUsage.filterKey === defaultUsageFilterKey ? cachedUsage.items : [],
   );
@@ -274,6 +284,39 @@ export function PersonalCenterPage() {
   const USAGE_PAGE_SIZE = 10;
   const USAGE_LOAD_LIMIT = 100;
   const [usagePage, setUsagePage] = useState(1);
+
+  // 生图模型：进入「模型选择」面板时拉取当前值与可选白名单。
+  useEffect(() => {
+    if (activePanel !== "model") return;
+    let disposed = false;
+    setImageModelError("");
+    loadImageModel()
+      .then((payload) => {
+        if (disposed) return;
+        setImageModelChoices(payload.choices ?? []);
+        setImageModel(payload.model ?? "");
+      })
+      .catch((exc) => {
+        if (!disposed) setImageModelError(exc instanceof Error ? exc.message : "读取生图模型失败");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [activePanel]);
+
+  const saveImageModelSelection = useCallback(() => {
+    if (!imageModel) return;
+    setImageModelBusy(true);
+    setImageModelMessage("");
+    setImageModelError("");
+    saveImageModel(imageModel)
+      .then((payload) => {
+        setImageModel(payload.model ?? imageModel);
+        setImageModelMessage(payload.message || "生图模型已切换");
+      })
+      .catch((exc) => setImageModelError(exc instanceof Error ? exc.message : "切换生图模型失败"))
+      .finally(() => setImageModelBusy(false));
+  }, [imageModel]);
 
   const loadUsage = useCallback((force = false) => {
     const filterKey = buildUsageFilterKey(filterService, filterStatus, filterDateFrom, filterDateTo);
@@ -604,16 +647,17 @@ export function PersonalCenterPage() {
         </div>
       </div>
 
-      {avatarPreviewOpen && avatarSrc && (
+      {/* portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
+          会把 fixed 弹层的 z-index 锁在面板内、被 sticky 顶栏(z:18)盖住 */}
+      {avatarPreviewOpen && avatarSrc && createPortal(
         <div className="personal-avatar-preview-layer" onMouseDown={() => setAvatarPreviewOpen(false)} role="dialog" aria-modal="true" aria-label="头像预览">
           <div className="personal-avatar-preview-panel" onMouseDown={(event) => event.stopPropagation()}>
             <button className="personal-avatar-preview-close" type="button" onClick={() => setAvatarPreviewOpen(false)} aria-label="关闭预览">×</button>
             <img className="personal-avatar-preview-img" src={avatarSrc} alt="头像大图" />
           </div>
-        </div>
-      )}
+        </div>, document.body)}
 
-      {passwordOpen && (
+      {passwordOpen && createPortal(
         <div className="personal-password-layer" onMouseDown={closePasswordDialog}>
           <section
             className="personal-password-dialog"
@@ -677,8 +721,7 @@ export function PersonalCenterPage() {
               </footer>
             </form>
           </section>
-        </div>
-      )}
+        </div>, document.body)}
 
       {error && <div className="personal-alert is-error">{error}</div>}
       {loading && <div className="personal-alert">正在读取服务器账户与积分数据...</div>}
@@ -729,6 +772,9 @@ export function PersonalCenterPage() {
           </button>
           <button type="button" className={activePanel === "pricing" ? "is-active" : ""} onClick={() => setActivePanel("pricing")}>
             <span className="iconfont icon-calculator" aria-hidden="true" /> 计费规则
+          </button>
+          <button type="button" className={activePanel === "model" ? "is-active" : ""} onClick={() => setActivePanel("model")}>
+            <span className="iconfont icon-robot-fill" aria-hidden="true" /> 模型选择
           </button>
           <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
             <span className="iconfont icon-setting" aria-hidden="true" /> 系统版本
@@ -901,6 +947,40 @@ export function PersonalCenterPage() {
             <div className="pricing-foot">
               <span>充值换算：{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</span>
               <span>规则版本 v{summary?.pricing.rule_version ?? "--"}{summary?.pricing.effective_at ? ` · 生效于 ${summary.pricing.effective_at.replace("T", " ").slice(0, 16)}` : ""}</span>
+            </div>
+          </article>
+        ) : activePanel === "model" ? (
+          <article className="personal-card version-card">
+            <div className="personal-card-title">
+              <span className="iconfont icon-robot-fill" aria-hidden="true" />
+              <div>
+                <h2>模型选择</h2>
+                <small>切换后所有生图任务立即使用所选模型，可随时改回。</small>
+              </div>
+            </div>
+            <label className="model-field">
+              <span>生图模型</span>
+              <select
+                value={imageModel}
+                onChange={(event) => {
+                  setImageModel(event.target.value);
+                  setImageModelMessage("");
+                  setImageModelError("");
+                }}
+                disabled={imageModelBusy}
+              >
+                {imageModel === "" && <option value="">读取中…</option>}
+                {imageModelChoices.map((choice) => (
+                  <option key={choice.value} value={choice.value}>{choice.label}</option>
+                ))}
+              </select>
+            </label>
+            {imageModelMessage && <p className="version-message is-success">{imageModelMessage}</p>}
+            {imageModelError && <p className="version-message is-error" role="alert">{imageModelError}</p>}
+            <div className="version-actions">
+              <button type="button" onClick={() => saveImageModelSelection()} disabled={imageModelBusy || !imageModel}>
+                {imageModelBusy ? "保存中…" : "保存"}
+              </button>
             </div>
           </article>
         ) : activePanel === "version" ? (
