@@ -69,6 +69,16 @@ type Scope = 'all' | 'missing' | 'replaced' | 'excluded' | 'text';
 /** 单条来源链接（即一个商品）最多允许修改的 SKU 图片数。 */
 const MAX_EDITED_VARIANT_IMAGES_PER_LINK = 6;
 
+/** 关键词分隔符：中英文逗号、分号、顿号、空白（含换行）。 */
+const KEYWORD_SEPARATOR = /[,，;；、\s]+/;
+
+function splitKeywords(value: string): string[] {
+  return value
+    .split(KEYWORD_SEPARATOR)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 const SCOPE_LABELS: Array<{ value: Scope; label: string }> = [
   { value: 'all', label: '全部 SKU' },
   { value: 'missing', label: '仅无规格图' },
@@ -139,6 +149,7 @@ export function PrecheckSkuManager({
 }: Props) {
   const [filter, setFilter] = useState<SkuFilterState>(EMPTY_SKU_FILTER);
   const [scope, setScope] = useState<Scope>('all');
+  const [keywordInput, setKeywordInput] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState('');
   const [picker, setPicker] = useState<PickerState | null>(null);
@@ -261,6 +272,69 @@ export function PrecheckSkuManager({
     if (selectedRefs.length === 0) return;
     onSetVariantImage(selectedRefs.map((ref) => ({ ...ref, value: '' })));
     setNotice(`已清除 ${selectedRefs.length} 个 SKU 的替换图，恢复为规格原图。`);
+    setSelected(new Set());
+  };
+
+  /**
+   * 关键词精简：同一关键词在全部商品中只保留最先出现的那条链接里的第一个 SKU，
+   * 其余链接（以及该链接内后续重复）命中该关键词的 SKU 整行剔除；
+   * 未命中任何关键词的 SKU 保持不动。
+   */
+  const applyKeywordPrune = () => {
+    const keywords = Array.from(new Set(splitKeywords(keywordInput)));
+    if (keywords.length === 0) {
+      setNotice('请先输入关键词，用逗号或空格分隔，例如：红色 蓝色 黑色。');
+      return;
+    }
+
+    // 第一轮：为每个关键词确定唯一保留的 SKU（按侧栏商品顺序取第一条命中的链接里的第一个）。
+    const keptKeys = new Set<string>();
+    const keptNotes: string[] = [];
+    const missing: string[] = [];
+    for (const keyword of keywords) {
+      let found = false;
+      for (const row of rows) {
+        const match = row.variants.find((entry) => !entry.excluded && entry.label.includes(keyword));
+        if (!match) continue;
+        keptKeys.add(`${row.draftId}::${match.key}`);
+        keptNotes.push(`${keyword} → 「${row.title.slice(0, 20)}」${match.label}`);
+        found = true;
+        break;
+      }
+      if (!found) missing.push(keyword);
+    }
+
+    // 第二轮：命中关键词、不属于保留项、且尚未删除的 SKU 全部整行剔除。
+    const refs: VariantRef[] = [];
+    const deletedDrafts = new Set<number>();
+    for (const row of rows) {
+      for (const entry of row.variants) {
+        if (entry.excluded) continue;
+        const id = `${row.draftId}::${entry.key}`;
+        if (keptKeys.has(id)) continue;
+        if (!keywords.some((keyword) => entry.label.includes(keyword))) continue;
+        deletedDrafts.add(row.draftId);
+        refs.push({ draftId: row.draftId, variantKey: entry.key });
+      }
+    }
+
+    const tail = [
+      missing.length > 0 ? `未找到关键词：${missing.join('、')}（已跳过，相关链接不做处理）。` : '',
+      '未命中关键词的 SKU 保持不变。点击「保存预检修改」或「完成预审并导出」后生效。',
+    ].filter(Boolean).join('');
+
+    if (refs.length === 0) {
+      setNotice(`没有需要删除的 SKU。保留结果：${keptNotes.join('；') || '无'}。${tail}`);
+      return;
+    }
+    const confirmed = window.confirm(
+      `将整行删除 ${refs.length} 个 SKU（涉及 ${deletedDrafts.size} 个商品），导出表格里不再包含这些规格行。\n\n`
+      + `每个关键词保留一个 SKU：\n${keptNotes.join('\n') || '（无）'}\n`
+      + (missing.length > 0 ? `\n未找到关键词：${missing.join('、')}\n` : ''),
+    );
+    if (!confirmed) return;
+    onExclude(refs);
+    setNotice(`已删除 ${refs.length} 个重复 SKU（涉及 ${deletedDrafts.size} 个商品）。保留结果：${keptNotes.join('；') || '无'}。${tail}`);
     setSelected(new Set());
   };
 
@@ -471,6 +545,26 @@ export function PrecheckSkuManager({
               disabled={batchRefs.length === 0}
             >批量删除（{batchRefs.length}）</button>
             <span className="sku-batch-hint">换图按商品逐个进行，每个商品使用它自己的处理图。</span>
+          </div>
+
+          <div className="sku-batch-keyword">
+            <label>
+              <span>关键词精简</span>
+              <input
+                placeholder="如：红色,蓝色,黑色（逗号或空格分隔，可多个）"
+                value={keywordInput}
+                onChange={(e) => setKeywordInput(e.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              className="btn-mini"
+              onClick={applyKeywordPrune}
+              disabled={splitKeywords(keywordInput).length === 0}
+            >每个关键词只留 1 个 SKU</button>
+            <span className="sku-batch-hint">
+              同一关键词在全部商品中只保留最先出现的那条链接里的第一个 SKU，其余命中该关键词的 SKU 整行删除；未命中关键词的 SKU 保持不动。
+            </span>
           </div>
 
           {selectedRefs.length > 0 && (

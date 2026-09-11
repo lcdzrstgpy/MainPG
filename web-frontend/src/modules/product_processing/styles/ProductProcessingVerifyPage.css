@@ -4818,6 +4818,52 @@
   font-size: 0.74rem;
 }
 
+/* ── 关键词精简：每个关键词全局只保留一个 SKU ── */
+.sku-batch-keyword {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #dce9f2;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.sku-batch-keyword label {
+  display: grid;
+  gap: 5px;
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.sku-batch-keyword label span {
+  font-size: 0.74rem;
+  color: #5a7a94;
+  font-weight: 700;
+}
+
+.sku-batch-keyword input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #cfe0eb;
+  border-radius: 8px;
+  background: #fff;
+  color: #2f5878;
+  font-size: 0.82rem;
+}
+
+.sku-batch-keyword input:focus {
+  outline: none;
+  border-color: #6fc0e8;
+  box-shadow: 0 0 0 3px #dff3fd;
+}
+
+.sku-batch-keyword .sku-batch-hint {
+  flex: 1 1 100%;
+  line-height: 1.5;
+}
+
 .sku-batch-selection {
   display: flex;
   align-items: center;
